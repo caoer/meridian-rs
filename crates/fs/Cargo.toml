@@ -1,0 +1,11 @@
+[package]
+name = "fs"
+description = "Disk truth in, atomic splices out: read/walk/watch feeding the model; tmp+fsync+rename splice execution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+model = { workspace = true }
