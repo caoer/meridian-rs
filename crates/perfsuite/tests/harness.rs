@@ -258,7 +258,7 @@ fn validate_rejects_nonfinite_intensity_that_would_hang() {
 
 #[test]
 fn bundled_profiles_load() {
-    for name in ["vault-2026", "monster-10mb", "fence-bomb"] {
+    for name in ["vault-2026", "vault-1gb", "monster-10mb", "fence-bomb"] {
         let profile = Profile::resolve(name).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(profile.name, name);
     }

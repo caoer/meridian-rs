@@ -52,3 +52,11 @@ harness = false
 [[bench]]
 name = "policy"
 harness = false
+
+# Not criterion: hand-written single-pass main (see the file header). Smoke
+# lane (`-- --test`) downshifts to 50 files; full runs need explicit invocation
+# or the perf lane's full sweep.
+[[bench]]
+name = "cold-ingest"
+path = "benches/cold_ingest.rs"
+harness = false
