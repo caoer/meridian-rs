@@ -13,6 +13,7 @@ default-members = [
     "crates/wire",
     "crates/wire-map",
     "crates/transport",
+    "crates/transport-proto",
     "crates/policy",
     "crates/query",
     "crates/sidecar",
@@ -34,6 +35,7 @@ fs = { path = "crates/fs", version = "0.0.0" }
 wire = { path = "crates/wire", version = "0.0.0" }
 wire-map = { path = "crates/wire-map", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
+transport-proto = { path = "crates/transport-proto", version = "0.0.0" }
 policy = { path = "crates/policy", version = "0.0.0" }
 query = { path = "crates/query", version = "0.0.0" }
 
@@ -46,6 +48,9 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 toml = "0.8"
 rand_chacha = "0.9"
 hdrhistogram = "7"
+# typed proto transport: prost pair pinned together; build needs `protoc`
+prost = "0.14"
+prost-build = "0.14"
 
 # One lint policy for the whole workspace; every crate opts in via
 # `[lints] workspace = true`. Warn-level locally; CI escalates with -Dwarnings.

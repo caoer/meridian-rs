@@ -5,8 +5,15 @@
 //!   single-frame encode+decode round-trip, p99 via the hdr path
 //!   (`NdjsonCodec` is implemented). Recorded to staging on every run — this
 //!   target is the end-to-end proof of the claims pipeline.
+//! - `transport.codec.proto_roundtrip_p99` — **LIVE**: the typed-protobuf twin
+//!   (`transport-proto`, length-delimited `pb::Frame`) over the SAME logical
+//!   frame mix, so the two codecs stay comparable claim-to-claim.
 //! - `roundtrip.op.p99` — dormant until rung 1+: NDJSON request in → response
 //!   out through parse+assemble+project+codec, the latency Go actually feels.
+//!
+//! Throughput lanes are per-codec bytes (each codec's own encoded size), so
+//! MiB/s numbers are honest per encoding; cross-codec comparison belongs at
+//! the frames/s and p99 level.
 //!
 //! Hand-written `main` (not `criterion_main!`): criterion runs first, then the
 //! hdr claim run records its measurement — both happen in smoke mode too, so
@@ -20,6 +27,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::{RngCore, SeedableRng};
 use serde_json::json;
 use transport::{Codec, Message, NdjsonCodec, Request, Response};
+use transport_proto::pb;
 
 use perfsuite::measure::{LatencyRun, record_measurement};
 
@@ -87,6 +95,73 @@ fn encode_all(msgs: &[Message]) -> Vec<u8> {
     out
 }
 
+/// The typed twin of [`frames`]: same mix (toc/splice requests, 16-node
+/// responses), same rng draw order, so payload values match the NDJSON set.
+/// Node kind is `heading` — the untyped set's invented `"section"` kind has no
+/// typed spelling, and heading is its wire-contract counterpart.
+fn proto_frames(n: usize) -> Vec<pb::Frame> {
+    let mut rng = ChaCha8Rng::seed_from_u64(0x6d65_7269_6469_616e);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let kind = match i % 4 {
+            0 => pb::frame::Kind::Request(pb::Request {
+                id: Some(i as u64),
+                op: Some(pb::request::Op::Toc(pb::TocRequest {
+                    path: format!("notes/d{:03}/f{:05}.md", i % 7, i),
+                })),
+            }),
+            1 => pb::frame::Kind::Request(pb::Request {
+                id: Some(i as u64),
+                op: Some(pb::request::Op::Splice(pb::SpliceRequest {
+                    path: format!("notes/f{i:05}.md"),
+                    span: Some(pb::Span {
+                        start: rng.next_u64() % 4096,
+                        end: 4096 + rng.next_u64() % 4096,
+                    }),
+                    if_node_rev: format!("{:016x}", rng.next_u64()),
+                    text: "replacement body text\nsecond line\n".into(),
+                })),
+            }),
+            _ => {
+                let nodes: Vec<pb::Node> = (0..16)
+                    .map(|k: u64| pb::Node {
+                        kind: pb::NodeKind::Heading.into(),
+                        span: Some(pb::Span {
+                            start: k * 128,
+                            end: (k + 1) * 128,
+                        }),
+                        text_prefix_16b: "sixteen bytes ok".into(),
+                        hpath: vec!["section".into(), format!("h{k}")],
+                        unterminated: None,
+                        info: None,
+                        node_rev: Some(format!("{:016x}", rng.next_u64())),
+                    })
+                    .collect();
+                pb::frame::Kind::Response(pb::Response {
+                    id: Some(i as u64),
+                    ok: true,
+                    body: Some(pb::response::Body::Nodes(pb::NodesResponse {
+                        // the untyped set omits `path` in node responses; the
+                        // proto3 default string encodes zero bytes — matched.
+                        path: String::new(),
+                        nodes,
+                    })),
+                })
+            }
+        };
+        out.push(pb::Frame { kind: Some(kind) });
+    }
+    out
+}
+
+fn encode_all_proto(frames: &[pb::Frame]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frames.len() * 256);
+    for frame in frames {
+        transport_proto::encode(frame, &mut out).expect("encode to Vec cannot fail");
+    }
+    out
+}
+
 fn bench_codec(c: &mut Criterion) {
     let msgs = frames(1000);
     let encoded = encode_all(&msgs);
@@ -101,6 +176,24 @@ fn bench_codec(c: &mut Criterion) {
             let mut count = 0usize;
             while let Some(msg) = NdjsonCodec.decode(&mut input).expect("valid frames") {
                 black_box(&msg);
+                count += 1;
+            }
+            count
+        });
+    });
+
+    let proto_msgs = proto_frames(1000);
+    let proto_encoded = encode_all_proto(&proto_msgs);
+    group.throughput(Throughput::Bytes(proto_encoded.len() as u64));
+    group.bench_function("proto_encode_1000", |b| {
+        b.iter(|| encode_all_proto(black_box(&proto_msgs)).len());
+    });
+    group.bench_function("proto_decode_1000", |b| {
+        b.iter(|| {
+            let mut input: &[u8] = black_box(&proto_encoded);
+            let mut count = 0usize;
+            while let Some(frame) = transport_proto::decode(&mut input).expect("valid frames") {
+                black_box(&frame);
                 count += 1;
             }
             count
@@ -141,10 +234,43 @@ fn record_codec_claim() {
     }
 }
 
+/// The typed twin of [`record_codec_claim`]: p99 of one proto frame through
+/// encode+decode, same sample counts, same frame mix.
+fn record_proto_codec_claim() {
+    let frames = proto_frames(64);
+    let mut buf = Vec::with_capacity(4096);
+    let mut i = 0usize;
+    let run = LatencyRun::run(1_000, 20_000, || {
+        let frame = &frames[i % frames.len()];
+        i += 1;
+        buf.clear();
+        transport_proto::encode(frame, &mut buf).expect("encode");
+        let mut input: &[u8] = &buf;
+        let decoded = transport_proto::decode(&mut input)
+            .expect("decode")
+            .expect("one frame");
+        black_box(decoded);
+    });
+    let measurement = run.to_p99_measurement("transport.codec.proto_roundtrip_p99", "us");
+    match record_measurement(&measurement) {
+        Ok(path) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "claim transport.codec.proto_roundtrip_p99: p99 {:.2} µs over {} samples → {}",
+                measurement.value,
+                measurement.samples,
+                path.display()
+            );
+        }
+        Err(e) => eprintln!("claim staging failed: {e}"),
+    }
+}
+
 criterion_group!(benches, bench_codec);
 
 fn main() {
     benches();
     Criterion::default().configure_from_args().final_summary();
     record_codec_claim();
+    record_proto_codec_claim();
 }

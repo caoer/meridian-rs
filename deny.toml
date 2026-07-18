@@ -9,6 +9,9 @@ allow = [
     "MIT",
     "Apache-2.0",
     "Unicode-3.0",
+    # foldhash (via prost-build → petgraph → hashbrown, build-dep only);
+    # zlib/libpng-family permissive
+    "Zlib",
 ]
 
 [bans]

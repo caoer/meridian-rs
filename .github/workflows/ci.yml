@@ -20,6 +20,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: protoc (transport-proto's prost-build compiles meridian.proto)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy (workspace lint policy, escalated)
