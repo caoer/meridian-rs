@@ -41,15 +41,41 @@ pub struct DialectNode {
 /// deliberately doesn't (`Comment`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialectKind {
-    Frontmatter { keys: Vec<String> },
-    Heading { level: u8, text: String },
-    Fence { info_string: String, unterminated: bool },
+    Frontmatter {
+        keys: Vec<String>,
+    },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    Fence {
+        info_string: String,
+        unterminated: bool,
+    },
     InlineCode,
-    Anchor { id: String },
-    Wikilink { target: String, heading: Option<String>, block: Option<String>, alias: Option<String> },
-    Embed { target: String, heading: Option<String>, block: Option<String>, alias: Option<String> },
-    Callout { r#type: String, fold: String },
-    Task { checked: bool, depth: u32 },
+    Anchor {
+        id: String,
+    },
+    Wikilink {
+        target: String,
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
+    },
+    Embed {
+        target: String,
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
+    },
+    Callout {
+        r#type: String,
+        fold: String,
+    },
+    Task {
+        checked: bool,
+        depth: u32,
+    },
     Table,
     Comment,
 }
@@ -57,6 +83,7 @@ pub enum DialectKind {
 /// Markdown bytes → dialect nodes with byte-exact spans. Pure; the whole crate
 /// surface. Input is `&str` because the wire refuses non-UTF-8 files upstream
 /// (`invalid_utf8`) — disk bytes and string bytes are the same bytes here.
+#[must_use]
 pub fn parse(input: &str) -> Vec<DialectNode> {
     // The fork's offset iterator is the span source of truth; the lane's
     // extraction core (parser-bench lanes/rust-pulldown) relocates into this body.

@@ -11,6 +11,9 @@ publish.workspace = true
 # many modules — compile time ÷3, artifacts ÷5).
 autotests = false
 
+[lints]
+workspace = true
+
 [[test]]
 name = "main"
 path = "tests/main.rs"

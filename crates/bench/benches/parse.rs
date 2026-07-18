@@ -2,12 +2,12 @@
 //! 2.16 s cold rebuild). Placeholder measures harness overhead until
 //! `syntax::parse` has a body.
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
 fn parse_placeholder(c: &mut Criterion) {
     c.bench_function("noop-until-rung-1", |b| {
-        b.iter(|| black_box("# placeholder\n").len())
+        b.iter(|| black_box("# placeholder\n").len());
     });
 }
 

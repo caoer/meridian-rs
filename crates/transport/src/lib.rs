@@ -68,11 +68,17 @@ pub struct Notification {
 /// LSP-framing codec implements the same trait and nothing above notices.
 pub trait Codec {
     /// Encode one message as one frame.
+    ///
+    /// # Errors
+    /// I/O failure writing to `out`, or a message serde cannot serialize.
     fn encode(&self, msg: &Message, out: &mut dyn Write) -> io::Result<()>;
     /// Decode the next frame; `Ok(None)` at EOF. Blank/whitespace-only lines
     /// are skipped. A syntactically unparseable line is an `Err` here — turning
     /// that into the `bad_frame` error *response* is the caller's (sidecar's)
     /// move, because responding is meaning, not framing.
+    ///
+    /// # Errors
+    /// I/O failure reading `input`, or a syntactically unparseable frame.
     fn decode(&self, input: &mut dyn BufRead) -> io::Result<Option<Message>>;
 }
 
@@ -140,8 +146,8 @@ mod tests {
         // encode round-trip
         let mut out = Vec::new();
         NdjsonCodec.encode(&msg, &mut out).unwrap();
-        let reparsed: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(reparsed, serde_json::from_str::<serde_json::Value>(line).unwrap());
+        let reparsed: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(reparsed, serde_json::from_str::<Value>(line).unwrap());
     }
 
     /// A response serializes `id` even when null; a frame without `id` is an

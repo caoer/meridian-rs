@@ -1,4 +1,4 @@
-//! The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error
+//! The frozen wire vocabulary: `path/span/node_rev/root` + op/request/response/error
 //! types (serde-only, zero I/O) — the only Go-visible surface.
 //!
 //! # Charter
@@ -101,7 +101,7 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         kinds: Option<Vec<String>>,
     },
-    /// §6.1 ref → span + node_rev. Rung 2, NON-FROZEN sketch.
+    /// §6.1 ref → span + `node_rev`. Rung 2, NON-FROZEN sketch.
     Resolve {
         path: Path,
         #[serde(rename = "ref")]
@@ -274,7 +274,7 @@ pub enum ResponseBody {
 // ---------------------------------------------------------------------------
 
 /// Error codes, v1 namespace (contract §4 table, verbatim; flat lowercase
-/// snake_case on the wire). Clients treat unrecognized codes as non-retryable;
+/// `snake_case` on the wire). Clients treat unrecognized codes as non-retryable;
 /// `cas_mismatch` is the one code whose *purpose* is retry-after-refresh.
 ///
 /// §6.5 reserved codes join this enum only via the amendments that freeze

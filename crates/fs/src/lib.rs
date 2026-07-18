@@ -32,6 +32,9 @@ pub struct WorkspaceRoot(pub PathBuf);
 
 /// Read one workspace file into a parsed document (via `syntax` + `model`).
 /// Non-UTF-8 files are refused, never lossy-decoded (wire-contract §8 row 1).
+///
+/// # Errors
+/// I/O failure reading the file, or non-UTF-8 content (refused).
 pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document> {
     let _ = (root, rel_path);
     todo!("rung 1: read → syntax::parse → model::build")
@@ -39,6 +42,9 @@ pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document
 
 /// Walk the corpus (markdown files under the root). Cold rebuild of the whole
 /// world model from this walk is the recovery path — measured 2.16 s.
+///
+/// # Errors
+/// I/O failure traversing the root.
 pub fn walk(root: &WorkspaceRoot) -> io::Result<Vec<PathBuf>> {
     let _ = root;
     todo!("rung 1: corpus walk")
@@ -47,6 +53,9 @@ pub fn walk(root: &WorkspaceRoot) -> io::Result<Vec<PathBuf>> {
 /// Execute a validated splice atomically: write the spliced content to a temp
 /// file, fsync, rename over the original. Accepts only `model`'s capability
 /// token — see crate doc.
+///
+/// # Errors
+/// I/O failure at any step of tmp-write, fsync, or rename.
 pub fn apply_splice(
     root: &WorkspaceRoot,
     rel_path: &Path,
@@ -65,6 +74,7 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    #[must_use]
     pub fn new(root: WorkspaceRoot) -> Self {
         Watcher { _root: root }
     }
