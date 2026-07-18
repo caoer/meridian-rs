@@ -1,0 +1,34 @@
+# PR lane: correctness + harness bit-rot, timing-insensitive — hosted runners
+# are fine here. Wall-time numbers are NEVER gated in this lane (shared-runner
+# noise); that's perf.yml's job on the pinned fleet runner.
+name: ci
+
+on:
+  push:
+    branches: [main, "candidate/**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy (workspace lint policy, escalated)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: tests (all members incl. bench harness)
+        run: cargo test --workspace
+      - name: cargo-deny (fork one-copy law, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: bench smoke (one iteration per target — catches harness bit-rot)
+        run: cargo bench -p bench -- --test
+      - name: claim verdicts (renders the live claims table into the CI log)
+        run: cargo run -p bench --bin bench-report

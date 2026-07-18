@@ -40,7 +40,12 @@ query = { path = "crates/query", version = "0.0.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = "0.13"
-criterion = "0.5"
+# criterion without plotters/html: critcmp reads estimates.json, reports come
+# from bench-report — the plotting stack is pure build-time cost here.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+toml = "0.8"
+rand_chacha = "0.9"
+hdrhistogram = "7"
 
 # One lint policy for the whole workspace; every crate opts in via
 # `[lints] workspace = true`. Warn-level locally; CI escalates with -Dwarnings.

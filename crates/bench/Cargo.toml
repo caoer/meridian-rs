@@ -1,6 +1,6 @@
 [package]
 name = "bench"
-description = "Criterion benches (corpus sweep, per-assertion p99 enforcement) — out of default-members"
+description = "Perf harness: profile-driven corpus generator, claims registry with verdicts, criterion seam benches + hdr p99 path, run reports — out of default-members"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,43 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-syntax = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+rand_chacha = { workspace = true }
+hdrhistogram = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# seam crates appear as dev-deps only: benches and the dormant ≥-planted
+# assertion consume them; the harness library itself is parser-agnostic.
+syntax = { workspace = true }
+transport = { workspace = true }
+
+[[bin]]
+name = "corpusgen"
+path = "src/bin/corpusgen.rs"
+
+[[bin]]
+name = "bench-report"
+path = "src/bin/bench-report.rs"
 
 [[bench]]
 name = "parse"
+harness = false
+
+[[bench]]
+name = "assemble"
+harness = false
+
+[[bench]]
+name = "project"
+harness = false
+
+[[bench]]
+name = "roundtrip"
+harness = false
+
+[[bench]]
+name = "policy"
 harness = false

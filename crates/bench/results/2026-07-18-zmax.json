@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-07-18 15:35 UTC",
+  "git_sha": "c099822",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "machine": {
+    "hostname": "zmax",
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu": "Apple M4 Max",
+    "cores": 16
+  },
+  "verdicts": [
+    {
+      "claim_id": "parse.throughput.corpus",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.p99.monster_10mb",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.reparse.full_46kb",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "assemble.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "project.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "roundtrip.op.p99",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "transport.codec.ndjson_roundtrip_p99",
+      "measured": 19.055,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "policy.assertion.p99",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "policy.pack_load.fixtures",
+      "measured": null,
+      "verdict": "UNTESTED"
+    }
+  ],
+  "measurements": [
+    {
+      "id": "transport.codec.ndjson_roundtrip_p99",
+      "value": 19.055,
+      "unit": "us",
+      "samples": 20000,
+      "dist": {
+        "mean_us": 8.037278700000003,
+        "p50_us": 8.375,
+        "p90_us": 15.295,
+        "p99_us": 19.055,
+        "p999_us": 26.383,
+        "max_us": 41.759
+      }
+    }
+  ],
+  "criterion": []
+}
