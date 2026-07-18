@@ -1,0 +1,4 @@
+name: wiki
+type: duckdb
+options:
+  filename: ../../snapshot/wiki-snap.duckdb
