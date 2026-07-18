@@ -120,17 +120,49 @@ impl Profile {
             }
         }
         for (key, rate) in &self.constructs {
+            // `contains` also rejects NaN/±inf (comparisons are false).
             if !(0.0..=1.0).contains(&rate.file_rate) {
                 return Err(format!(
                     "profile {}: {key}.file_rate {} outside [0,1]",
                     self.name, rate.file_rate
                 ));
             }
+            // A non-finite `per_file` reaches `poisson`, whose Knuth loop never
+            // terminates on a NaN cutoff — reject it before generation.
+            if !rate.per_file.is_finite() || rate.per_file < 0.0 {
+                return Err(format!(
+                    "profile {}: {key}.per_file {} must be finite and ≥ 0",
+                    self.name, rate.per_file
+                ));
+            }
         }
-        if self.size.median_bytes == 0 || self.size.max_bytes < self.size.median_bytes {
+        // `max_bytes >= 64`: the size sampler clamps into `[64, max_bytes]`, and
+        // `u64::clamp` panics when the lower bound exceeds the upper.
+        if self.size.median_bytes == 0
+            || self.size.max_bytes < self.size.median_bytes
+            || self.size.max_bytes < 64
+        {
             return Err(format!(
-                "profile {}: degenerate size distribution",
+                "profile {}: degenerate size distribution (need 1 ≤ median ≤ max and max ≥ 64)",
                 self.name
+            ));
+        }
+        if !self.size.sigma.is_finite() || self.size.sigma < 0.0 {
+            return Err(format!(
+                "profile {}: size.sigma {} must be finite and ≥ 0",
+                self.name, self.size.sigma
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.pathology.unterminated_fence_rate) {
+            return Err(format!(
+                "profile {}: pathology.unterminated_fence_rate {} outside [0,1]",
+                self.name, self.pathology.unterminated_fence_rate
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.unicode.cjk_rate) {
+            return Err(format!(
+                "profile {}: unicode.cjk_rate {} outside [0,1]",
+                self.name, self.unicode.cjk_rate
             ));
         }
         Ok(())
