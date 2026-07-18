@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-07-18 17:43 UTC",
+  "git_sha": "35ac2b7",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "machine": {
+    "hostname": "zmax",
+    "os": "macos",
+    "arch": "aarch64",
+    "cpu": "Apple M4 Max",
+    "cores": 16
+  },
+  "verdicts": [
+    {
+      "claim_id": "parse.throughput.corpus",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.p99.monster_10mb",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "parse.reparse.full_46kb",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "assemble.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "project.p99.file",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "roundtrip.op.p99",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "transport.codec.ndjson_roundtrip_p99",
+      "measured": 19.343,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "transport.codec.proto_roundtrip_p99",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "ingest.cold.vault_1gb",
+      "measured": 22188.716458,
+      "verdict": "PASS"
+    },
+    {
+      "claim_id": "ingest.codec.ndjson.vault_1gb",
+      "measured": 1782.094042,
+      "verdict": "PASS"
+    },
+    {
+      "claim_id": "ingest.codec.proto.vault_1gb",
+      "measured": 582.9683329999999,
+      "verdict": "PASS"
+    },
+    {
+      "claim_id": "policy.assertion.p99",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "policy.pack_load.fixtures",
+      "measured": null,
+      "verdict": "UNTESTED"
+    }
+  ],
+  "measurements": [
+    {
+      "id": "ingest.codec.ndjson.vault_1gb",
+      "value": 1782.094042,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
+    },
+    {
+      "id": "ingest.codec.proto.vault_1gb",
+      "value": 582.9683329999999,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
+    },
+    {
+      "id": "ingest.cold.vault_1gb",
+      "value": 22188.716458,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
+    },
+    {
+      "id": "transport.codec.ndjson_roundtrip_p99",
+      "value": 19.343,
+      "unit": "us",
+      "samples": 20000,
+      "dist": {
+        "mean_us": 8.207133400000004,
+        "p50_us": 12.255,
+        "p90_us": 15.711,
+        "p99_us": 19.343,
+        "p999_us": 27.007,
+        "max_us": 70.975
+      }
+    }
+  ],
+  "criterion": [
+    {
+      "id": "assemble_noop_until_rung_1",
+      "mean_ns": 0.7889392563095501,
+      "median_ns": 0.6884393519160781
+    },
+    {
+      "id": "parse/placeholder_corpus_traversal",
+      "mean_ns": 102.88983321937911,
+      "median_ns": 91.1117553908642
+    },
+    {
+      "id": "policy_noop_until_rung_6",
+      "mean_ns": 0.8494531088347048,
+      "median_ns": 0.730154546683545
+    },
+    {
+      "id": "project_noop_until_rung_1",
+      "mean_ns": 0.6021511455055518,
+      "median_ns": 0.5249128720029476
+    },
+    {
+      "id": "roundtrip/ndjson_decode_1000",
+      "mean_ns": 7544185.67875,
+      "median_ns": 6800372.375
+    },
+    {
+      "id": "roundtrip/ndjson_encode_1000",
+      "mean_ns": 1579181.800363344,
+      "median_ns": 1554893.4821428573
+    }
+  ]
+}
