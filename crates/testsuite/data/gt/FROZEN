@@ -1,0 +1,42 @@
+# FROZEN — parser-bench fixture pack
+
+frozen_at: 2026-07-17T23:48:52Z
+frozen_by: lane0-corpus (agent 282a39ec)
+corpus_files: 206  # see MANIFEST.tsv (sha256 per file)
+corpus_bytes: 2537160
+adversarial_files: 13
+ground_truth_files: 10
+manifest_sha256: a4fe7a4040de32384fce3be2d14e28ff65e57806c00a97e58d3138400aaaeae5
+
+Pack contents are read-only (mode 444). Do not add, edit, or re-sample.
+Ground-truth law: ground-truth/README.md. Disputes -> 5bb58f0e (lane0 gates corrections).
+
+## adversarial sha256
+
+1cda599e82afa9a96a2f917dcd0b248dd93899575d59a6de163a58cd878f525b  adversarial/anchor-edge-cases.md
+9c8a0dbb0e27b34023addfa8d9337fba4e28bf73592526b2cf04d0cb52cb9b03  adversarial/bom.md
+eb019fb55faf608db4ff8c05cc76471601d9d2e6f7e8f63f805ccf0623f1ce93  adversarial/callout-vs-quote.md
+d05ebae6771a4ca640c9150a0f85725bee86fdde4060b2c29e405771a2b6c1f1  adversarial/crlf.md
+9d433d12dc4bd39438bfc0d91468054c6fe11648a7d70741d8e468a01dbe1909  adversarial/deep-headings.md
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  adversarial/empty.md
+cacfeb582740695be285d9bfbfedf8c110f6fe4932cc5855467ed820b0e7d856  adversarial/fence-inside-fence.md
+56d59cb42db78c32c952614ad65381f62229892ce4ac3a148d437edf60b37cb5  adversarial/frontmatter-only.md
+7f4f177d9b1c199cfed5d68d4503d913dfa686f27a638e1add7ef703d5aa684f  adversarial/hr-vs-frontmatter.md
+25c33bacc2c6886e071a94357769037f48a557f112d10ad310ce517e30a73851  adversarial/huge-10mb.md
+d2113c0036cf59b5da1a84a11a422a35ee6d3c8fc095b05fb95e5024b3fd0fac  adversarial/unclosed-frontmatter.md
+6b2bddfba8969e94fb59474df3fca46b7342d79534b5219dcf39a48c9a205601  adversarial/unicode-headings.md
+522318710f3d29c32082945ca0106a8e1b00d5133bf0a7a05dff788798cd3dff  adversarial/unterminated-fence.md
+
+## ground-truth sha256
+
+dea19a851a48c1a83cc9348d855cf204f681f20011a8d0cfba4ef26a0ce86db9  ground-truth/0001-worker-cnixvim-mdformat.expected.json
+d65ea08d22f218b15c1cb4c677056161ef1de3abc99d7bdeb9a53c4d3964594f  ground-truth/5202de72.expected.json
+6de2ec7b7694d3ce105782dd8a6c401037546bd891820cac4e005806c1ffdcf6  ground-truth/anchor-edge-cases.expected.json
+faa7015510ff652074de2644fbd4b25afd284d7eebecdbe3fa94eb8acd396b06  ground-truth/callout-vs-quote.expected.json
+3ad5e2c1ebd6f863867146cd3712a2f5dfe308206bf82227e0308c606cc9ffc7  ground-truth/claude-agent-sdk.expected.json
+7d63e46aefa64ac3ce4d5bafe5c9bf896695339b55148e79ebfae4ae865b5e7b  ground-truth/meka.expected.json
+4e39cc7fb3f773cdd0736cbe84a33e0e3951ec71f03b110c73c4205d924ac08c  ground-truth/orchestrator--no-verify-bulk-commit.expected.json
+6d5a7da624ede1845cffbea3f4277dba852cbe8be157228d02869781aa91826d  ground-truth/SESSION.expected.json
+a7e8864d23f9b88dde3a5bb37e38ccd0755d0ea11d2218f9e64dbc525e9c5670  ground-truth/sub-store.expected.json
+d9d69e86f676874e1d6c88bc863562e541bca472c099586fca0e5552b4d2c99c  ground-truth/task-28-2026-05-01-adhoc.expected.json
+bb0e5de00a9afed93cc6e92f95114858475cb71f40c823324b2f3c055b9974e2  ground-truth/README.md

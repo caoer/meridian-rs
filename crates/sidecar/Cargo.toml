@@ -1,0 +1,13 @@
+[package]
+name = "sidecar"
+description = "Thin NDJSON stdin/stdout bin over meridian + wire: arg parsing and transport wiring only — anything a lib could own, a lib owns"
+# The one real product version in the workspace (axis D): internals are 0.0.0.
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+meridian.workspace = true
+wire.workspace = true

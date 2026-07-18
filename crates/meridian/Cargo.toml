@@ -1,0 +1,11 @@
+[package]
+name = "meridian"
+description = "The markdown world model as one lib — dialect syntax, governed node tree, and disk truth as internal modules; every op the sidecar answers is a call into this curated surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pulldown-cmark.workspace = true

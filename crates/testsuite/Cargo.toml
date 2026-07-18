@@ -1,0 +1,13 @@
+[package]
+name = "testsuite"
+description = "Consolidated integration-test member (matklad doctrine: one test binary): the frozen GT pack as data, wire-level golden pairs, cross-crate tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+wire.workspace = true
