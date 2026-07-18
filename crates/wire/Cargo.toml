@@ -1,0 +1,11 @@
+[package]
+name = "wire"
+description = "The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error types (serde-only, zero I/O) — the only Go-visible surface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }

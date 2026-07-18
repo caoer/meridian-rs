@@ -1,0 +1,119 @@
+{
+ "file": "adversarial/anchor-edge-cases.md",
+ "nodes": [
+  {
+   "kind": "heading",
+   "hpath": "Anchor edge cases",
+   "span": [
+    0,
+    19
+   ],
+   "text_prefix_16b": "# Anchor edge ca"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    62,
+    68
+   ],
+   "text_prefix_16b": "^plain\n\n^lonely-"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    70,
+    96
+   ],
+   "text_prefix_16b": "^lonely-anchor-o"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    141,
+    148
+   ],
+   "text_prefix_16b": "^second\n\n- list "
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    174,
+    182
+   ],
+   "text_prefix_16b": "^in-list\n- [ ] t"
+  },
+  {
+   "kind": "task",
+   "span": [
+    183,
+    214
+   ],
+   "text_prefix_16b": "- [ ] task with "
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    206,
+    214
+   ],
+   "text_prefix_16b": "^in-task\n\n> quot"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    241,
+    250
+   ],
+   "text_prefix_16b": "^in-quote\n\n| a |"
+  },
+  {
+   "kind": "table",
+   "span": [
+    252,
+    281
+   ],
+   "text_prefix_16b": "| a | b |\n|---|-"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    283,
+    295
+   ],
+   "text_prefix_16b": "^after-table\n\n``"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    297,
+    360
+   ],
+   "text_prefix_16b": "```\ncode fence c"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    379,
+    402
+   ],
+   "text_prefix_16b": "`^not-an-anchor-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Anchor edge cases/Target heading ^heading-anchor",
+   "span": [
+    620,
+    653
+   ],
+   "text_prefix_16b": "## Target headin"
+  },
+  {
+   "kind": "anchor",
+   "span": [
+    638,
+    653
+   ],
+   "text_prefix_16b": "^heading-anchor\n"
+  }
+ ]
+}

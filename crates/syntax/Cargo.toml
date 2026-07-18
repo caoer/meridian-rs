@@ -1,0 +1,11 @@
+[package]
+name = "syntax"
+description = "One pure function: markdown bytes → dialect node list with byte-exact spans — the only crate that touches the pulldown-cmark fork"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+pulldown-cmark = { workspace = true }
