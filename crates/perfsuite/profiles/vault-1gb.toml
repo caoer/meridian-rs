@@ -1,0 +1,64 @@
+# Real-world scale: vault-2026's empirical shape scaled to ~1 GiB of content
+# (ZT ruling 2026-07-18) — the cold-ingest smoke detector's corpus. Same size
+# distribution and survey-derived construct rates as vault-2026; only `files`
+# differs: 180,000 × ~5.9 KB measured mean ≈ 1.06 GB. Consumed by
+# `cold-ingest` (single cold pass, no repetition); generated once, cached.
+
+name = "vault-1gb"
+provenance = "vault-2026 shape (lane0-corpus survey, 21,856 files, frozen 2026-07-17T23:48Z) scaled ~9x past the real vault's 104.2 MB to 1 GiB-class; construct rates unchanged"
+files = 180000
+
+[size]
+median_bytes = 2200
+sigma = 1.1 # mean ≈ median·exp(σ²/2) ≈ 4.0 KB nominal; ~5.9 KB measured with construct text
+max_bytes = 262144
+
+[constructs.frontmatter]
+file_rate = 0.976 # survey
+per_file = 1.0
+
+[constructs.heading]
+file_rate = 0.90
+per_file = 8.0
+
+[constructs.wikilink]
+file_rate = 0.218 # survey
+per_file = 6.0
+
+[constructs.callout]
+file_rate = 0.096 # survey
+per_file = 2.0
+
+[constructs.anchor]
+file_rate = 0.053 # survey
+per_file = 3.0
+
+[constructs.fence]
+file_rate = 0.30
+per_file = 2.0
+
+[constructs.inline_code]
+file_rate = 0.50
+per_file = 5.0
+
+[constructs.embed]
+file_rate = 0.08
+per_file = 1.5
+
+[constructs.table]
+file_rate = 0.10
+per_file = 1.0
+
+[constructs.task]
+file_rate = 0.15
+per_file = 6.0
+
+[constructs.comment]
+file_rate = 0.05
+per_file = 1.5
+
+[pathology]
+unterminated_fence_rate = 0.0006 # 12 of 21,856 survey files
+
+[unicode]
+cjk_rate = 0.15

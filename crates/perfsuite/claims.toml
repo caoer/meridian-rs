@@ -95,6 +95,47 @@ direction = "lower"
 harness = "benches/roundtrip.rs"
 note = "LIVE (typed protobuf path, ZT ruling 2026-07-18); same frame mix as the ndjson claim for codec-to-codec comparison; no baseline yet — first fleet run establishes it"
 
+# --- cold-ingest lane (ZT ruling 2026-07-18): real-world smoke detector.
+# One cold pass, no repetition, page cache uncontrolled. The gate philosophy is
+# order-of-magnitude: a 10× swing is noise we accept, 100×+ says something is
+# structurally broken — thresholds arm at ~100× baseline after the first run.
+
+[[claim]]
+id = "ingest.cold.vault_1gb"
+title = "Cold vault ingest: walk + read 1 GB / 180k files, single pass"
+metric = "ms"
+direction = "lower"
+baseline = 22200.0
+threshold = 2220000.0 # 100x: the broken-detector, not a regression gate
+baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1086 MB / 180k files in 22.2 s (49 MB/s — file-open syscalls dominate)"
+harness = "benches/cold_ingest.rs"
+recipe = "vault-1gb seed=1 files=180000"
+note = "walk+read today; syntax::parse joins the pass at rung 1"
+
+[[claim]]
+id = "ingest.codec.ndjson.vault_1gb"
+title = "1 GB through NdjsonCodec: splice-shaped encode+decode per file, single pass"
+metric = "ms"
+direction = "lower"
+baseline = 1780.0
+threshold = 178000.0 # 100x
+baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1130 MB encoded in 1.78 s (634 MB/s)"
+harness = "benches/cold_ingest.rs"
+recipe = "vault-1gb seed=1 files=180000"
+note = "the untyped seam's real bulk cost: JSON string escaping both ways. Frames pre-built outside the timed window"
+
+[[claim]]
+id = "ingest.codec.proto.vault_1gb"
+title = "1 GB through transport-proto: typed pb::Frame encode+decode per file, single pass"
+metric = "ms"
+direction = "lower"
+baseline = 583.0
+threshold = 58300.0 # 100x
+baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1096 MB encoded in 0.58 s (1880 MB/s) — 3.1x the ndjson path, 34 MB smaller encoded"
+harness = "benches/cold_ingest.rs"
+recipe = "vault-1gb seed=1 files=180000"
+note = "the typed path's real bulk cost on identical content — codec-to-codec comparison against the ndjson claim"
+
 [[claim]]
 id = "policy.assertion.p99"
 title = "Per-rule Lua predicate evaluation p99 vs declared budget"
