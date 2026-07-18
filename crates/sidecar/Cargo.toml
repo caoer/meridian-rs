@@ -14,4 +14,7 @@ transport = { workspace = true }
 model = { workspace = true }
 fs = { workspace = true }
 wire = { workspace = true }
+# Law 3 as amended (review C1): projection lives at the named wire-map seam,
+# tested there; this bin stays wiring-only.
+wire-map = { workspace = true }
 serde_json = { workspace = true }
