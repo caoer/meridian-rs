@@ -21,7 +21,7 @@ use rand_chacha::rand_core::{RngCore, SeedableRng};
 use serde_json::json;
 use transport::{Codec, Message, NdjsonCodec, Request, Response};
 
-use bench::measure::{LatencyRun, record_measurement};
+use perfsuite::measure::{LatencyRun, record_measurement};
 
 /// Deterministic mixed frame set: toc/read/splice-shaped requests and node-list
 /// responses, wire-contract field shapes (hpath arrays, span pairs, 16-byte

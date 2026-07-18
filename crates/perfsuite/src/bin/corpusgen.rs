@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use bench::corpus;
-use bench::profile::{ConstructRate, Pathology, Profile, Recipe, SizeDist, Unicode};
+use perfsuite::corpus;
+use perfsuite::profile::{ConstructRate, Pathology, Profile, Recipe, SizeDist, Unicode};
 
 const USAGE: &str = "usage:
   corpusgen gen --profile <name|path> [--seed N] [--files N] [--out DIR]

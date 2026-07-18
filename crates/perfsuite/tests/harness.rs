@@ -4,11 +4,11 @@
 
 use std::collections::BTreeMap;
 
-use bench::claims::{Claim, Direction, ThresholdSource, VerdictKind, join};
-use bench::corpus;
-use bench::generator::generate_file;
-use bench::inventory::Inventory;
-use bench::profile::{
+use perfsuite::claims::{Claim, Direction, ThresholdSource, VerdictKind, join};
+use perfsuite::corpus;
+use perfsuite::generator::generate_file;
+use perfsuite::inventory::Inventory;
+use perfsuite::profile::{
     ConstructRate, KNOWN_CONSTRUCTS, Pathology, Profile, Recipe, SizeDist, Unicode,
 };
 
@@ -211,10 +211,10 @@ fn verdict_join_covers_all_states() {
 
 #[test]
 fn bundled_claims_load_and_render() {
-    let claims = bench::claims::load_bundled().expect("claims.toml is valid");
+    let claims = perfsuite::claims::load_bundled().expect("claims.toml is valid");
     assert!(claims.iter().any(|c| c.id == "parse.throughput.corpus"));
-    let report = bench::report::build(&claims).unwrap();
-    let md = bench::report::render_markdown(&report, &claims);
+    let report = perfsuite::report::build(&claims).unwrap();
+    let md = perfsuite::report::render_markdown(&report, &claims);
     assert!(
         md.contains("UNTESTED"),
         "day-1 report must show UNTESTED claims"

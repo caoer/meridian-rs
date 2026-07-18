@@ -7,7 +7,7 @@
 //!
 //! Dormant until rung 1 (`wire_map::project` is `todo!()`). When it lands:
 //! build documents in setup (parse + assemble), bench `project(&doc)` per
-//! document, record `project.p99.file` via `bench::measure`.
+//! document, record `project.p99.file` via `perfsuite::measure`.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;

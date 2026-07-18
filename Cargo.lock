@@ -42,20 +42,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
-name = "bench"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "hdrhistogram",
- "rand_chacha",
- "serde",
- "serde_json",
- "syntax",
- "toml",
- "transport",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -383,6 +369,20 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "perfsuite"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "hdrhistogram",
+ "rand_chacha",
+ "serde",
+ "serde_json",
+ "syntax",
+ "toml",
+ "transport",
+]
 
 [[package]]
 name = "policy"

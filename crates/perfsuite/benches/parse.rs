@@ -10,14 +10,14 @@
 //! Until rung 1 gives `syntax::parse` a body, this measures corpus traversal
 //! only (harness overhead floor); the claims stay UNTESTED. When rung 1 lands:
 //! swap the loop body to `syntax::parse(text)` and record the four claims via
-//! `bench::measure::LatencyRun` + `record_measurement` (see benches/roundtrip.rs
+//! `perfsuite::measure::LatencyRun` + `record_measurement` (see benches/roundtrip.rs
 //! for the live pattern).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;
 
-use bench::corpus;
-use bench::profile::{Profile, Recipe};
+use perfsuite::corpus;
+use perfsuite::profile::{Profile, Recipe};
 
 /// Criterion working set: 200 files keeps dev iteration snappy; claim runs
 /// use the full files=2000 recipe on the perf lane.

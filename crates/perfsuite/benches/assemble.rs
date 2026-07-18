@@ -6,7 +6,7 @@
 //!
 //! Dormant until rung 1 (`model::build` is `todo!()`). When it lands: parse
 //! each corpus file once in setup, bench `model::build(raw, nodes)` per file,
-//! record `assemble.p99.file` via `bench::measure` (pattern: benches/roundtrip.rs).
+//! record `assemble.p99.file` via `perfsuite::measure` (pattern: benches/roundtrip.rs).
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;

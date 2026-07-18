@@ -7,8 +7,8 @@
 //! Dormant: `#[ignore]` until rung 1 gives `syntax::parse` a body — remove the
 //! attribute when the rung lands (build-out obligation, see bench's lib doc).
 
-use bench::inventory::Inventory;
-use bench::profile::{ConstructRate, KNOWN_CONSTRUCTS, Profile, Recipe, SizeDist};
+use perfsuite::inventory::Inventory;
+use perfsuite::profile::{ConstructRate, KNOWN_CONSTRUCTS, Profile, Recipe, SizeDist};
 
 fn kind_id(kind: &syntax::DialectKind) -> &'static str {
     match kind {
@@ -51,14 +51,14 @@ fn parser_finds_at_least_planted() {
             max_bytes: 65_536,
         },
         constructs,
-        pathology: bench::profile::Pathology {
+        pathology: perfsuite::profile::Pathology {
             unterminated_fence_rate: 0.2,
         },
-        unicode: bench::profile::Unicode { cjk_rate: 0.2 },
+        unicode: perfsuite::profile::Unicode { cjk_rate: 0.2 },
     };
     let recipe = Recipe::new(profile, 20_260_718, None);
     for index in 0..recipe.files {
-        let gf = bench::generator::generate_file(&recipe, index);
+        let gf = perfsuite::generator::generate_file(&recipe, index);
         let mut parsed = Inventory::new();
         for node in syntax::parse(&gf.text) {
             parsed.bump(kind_id(&node.kind));

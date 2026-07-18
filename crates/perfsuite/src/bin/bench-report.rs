@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use bench::{claims, report};
+use perfsuite::{claims, report};
 
 fn main() -> ExitCode {
     match run() {

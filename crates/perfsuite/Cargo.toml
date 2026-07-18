@@ -1,5 +1,5 @@
 [package]
-name = "bench"
+name = "perfsuite"
 description = "Perf harness: profile-driven corpus generator, claims registry with verdicts, criterion seam benches + hdr p99 path, run reports — out of default-members"
 version.workspace = true
 edition.workspace = true

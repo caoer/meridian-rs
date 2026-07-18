@@ -47,7 +47,7 @@ nothing shipped ever splits.
 | `query` | Rung-5 corpus reads stub: backlinks, board queries, span-exact rename planning — borrows the model's index, applies nothing |
 | `sidecar` (bin) | Thin NDJSON stdin/stdout binary — the only place wire and model meet |
 | `testsuite` | Consolidated integration-test member carrying the frozen GT pack as data — no library code |
-| `bench` | Perf harness: `corpusgen` (profile-driven deterministic corpora), claims registry (`claims.toml` → PASS/FAIL/MEASURED/UNTESTED verdicts), criterion seam benches + hdr p99 path, run reports — out of default-members |
+| `perfsuite` | Perf harness: `corpusgen` (profile-driven deterministic corpora), claims registry (`claims.toml` → PASS/FAIL/MEASURED/UNTESTED verdicts), criterion seam benches + hdr p99 path, run reports — out of default-members |
 
 Every charter fits one line (quality gate held — no two-line charters needed).
 Each crate's `lib.rs` doc states charter, owns/never-does, its share of the
@@ -71,7 +71,7 @@ graph TD
         QRY[query stub]
         SC((sidecar bin<br/>wiring-only; wire+model also meet at wire-map, nowhere else))
         TS[testsuite]
-        BM[bench]
+        BM[perfsuite]
     end
     PD --> SYN
     SYN --> MOD
