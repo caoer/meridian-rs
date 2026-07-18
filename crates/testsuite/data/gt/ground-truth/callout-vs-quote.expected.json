@@ -1,0 +1,54 @@
+{
+ "file": "adversarial/callout-vs-quote.md",
+ "nodes": [
+  {
+   "kind": "heading",
+   "hpath": "Callout vs blockquote",
+   "span": [
+    0,
+    23
+   ],
+   "text_prefix_16b": "# Callout vs blo"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    25,
+    72
+   ],
+   "text_prefix_16b": "> [!note]\n> A re"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    74,
+    129
+   ],
+   "text_prefix_16b": "> [!warning] Tit"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    255,
+    304
+   ],
+   "text_prefix_16b": ">[!tip] no space"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    306,
+    359
+   ],
+   "text_prefix_16b": "> [!faq]- Collap"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    454,
+    526
+   ],
+   "text_prefix_16b": "> [!custom-type]"
+  }
+ ]
+}

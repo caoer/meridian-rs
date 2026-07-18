@@ -1,0 +1,80 @@
+{
+ "file": "corpus/sessions/year=2026/month=05/09-00-adhoc/SESSION.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    142
+   ],
+   "text_prefix_16b": "---\ntype: sessio"
+  },
+  {
+   "kind": "callout",
+   "span": [
+    144,
+    296
+   ],
+   "text_prefix_16b": "> [!info] Update"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: osf foreign rebuild support",
+   "span": [
+    298,
+    335
+   ],
+   "text_prefix_16b": "# Ad-hoc: osf fo"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: osf foreign rebuild support/Pipeline",
+   "span": [
+    426,
+    437
+   ],
+   "text_prefix_16b": "## Pipeline\n- [ "
+  },
+  {
+   "kind": "task",
+   "span": [
+    438,
+    500
+   ],
+   "text_prefix_16b": "- [ ] work (infe"
+  },
+  {
+   "kind": "task",
+   "span": [
+    501,
+    513
+   ],
+   "text_prefix_16b": "- [ ] review\n- ["
+  },
+  {
+   "kind": "task",
+   "span": [
+    514,
+    539
+   ],
+   "text_prefix_16b": "- [x] compound ("
+  },
+  {
+   "kind": "heading",
+   "hpath": "Ad-hoc: osf foreign rebuild support/Inferred scope",
+   "span": [
+    541,
+    558
+   ],
+   "text_prefix_16b": "## Inferred scop"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    614,
+    636
+   ],
+   "text_prefix_16b": "`osf rebuild --r"
+  }
+ ]
+}

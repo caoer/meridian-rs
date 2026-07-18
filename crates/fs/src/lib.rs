@@ -1,0 +1,71 @@
+//! Disk truth in, atomic splices out: read/walk/watch feeding the model;
+//! tmp+fsync+rename splice execution.
+//!
+//! # Charter
+//! **Owns:** the disk boundary. Reading workspace files (refusing non-UTF-8 —
+//! spans must denote exact disk bytes or splice corrupts files), walking the
+//! corpus, watching for changes (rung 4), and *executing* validated splices
+//! atomically (tmp + fsync + rename — meridian's write discipline relocates
+//! verbatim). Feeds `model` and nothing else.
+//!
+//! **Never does:** writing bytes it didn't splice, caching anything to disk
+//! (law 2: no snapshot files, no second database — the moment memory can't be
+//! thrown away, the architecture has been violated), interpreting content.
+//!
+//! # Law enforcement (candidate thesis, this crate's part)
+//! Write execution demands `model::ValidatedSplice` — a token only `model`'s CAS
+//! validation can mint. An unvalidated write cannot reach disk by construction;
+//! the splice pipeline (validate in `model`, execute here) is enforced by types,
+//! not review.
+//!
+//! # Rungs
+//! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds
+//! the daemon's change feed.
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// The workspace root every wire `path` resolves strictly inside. Constructed
+/// once at process start; path-escape rejection (`bad_path`) anchors here.
+#[derive(Debug, Clone)]
+pub struct WorkspaceRoot(pub PathBuf);
+
+/// Read one workspace file into a parsed document (via `syntax` + `model`).
+/// Non-UTF-8 files are refused, never lossy-decoded (wire-contract §8 row 1).
+pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document> {
+    let _ = (root, rel_path);
+    todo!("rung 1: read → syntax::parse → model::build")
+}
+
+/// Walk the corpus (markdown files under the root). Cold rebuild of the whole
+/// world model from this walk is the recovery path — measured 2.16 s.
+pub fn walk(root: &WorkspaceRoot) -> io::Result<Vec<PathBuf>> {
+    let _ = root;
+    todo!("rung 1: corpus walk")
+}
+
+/// Execute a validated splice atomically: write the spliced content to a temp
+/// file, fsync, rename over the original. Accepts only `model`'s capability
+/// token — see crate doc.
+pub fn apply_splice(
+    root: &WorkspaceRoot,
+    rel_path: &Path,
+    splice: &model::ValidatedSplice,
+) -> io::Result<()> {
+    let _ = (root, rel_path, splice);
+    todo!("rung 2: tmp + fsync + rename")
+}
+
+/// Filesystem watcher (rung 4): feeds model diffs to the daemon's change feed.
+/// Hook *dispatch* (running agent work on change) stays Go — Rust never
+/// executes agent work.
+#[derive(Debug)]
+pub struct Watcher {
+    _root: WorkspaceRoot,
+}
+
+impl Watcher {
+    pub fn new(root: WorkspaceRoot) -> Self {
+        Watcher { _root: root }
+    }
+}

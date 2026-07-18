@@ -1,0 +1,30 @@
+{
+ "file": "corpus/sessions/year=2026/month=07/10-07-md-format-token-optimization/rosters/0001-worker-cnixvim-mdformat.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    218
+   ],
+   "text_prefix_16b": "---\ntype: roster"
+  },
+  {
+   "kind": "heading",
+   "hpath": "worker-cnixvim-mdformat",
+   "span": [
+    220,
+    245
+   ],
+   "text_prefix_16b": "# worker-cnixvim"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    360,
+    380
+   ],
+   "text_prefix_16b": "[[cnixvim-mdform"
+  }
+ ]
+}

@@ -1,0 +1,25 @@
+[package]
+name = "testsuite"
+description = "Consolidated integration-test member carrying the frozen GT pack as data — no library code"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# One consolidated integration-test binary (matklad doctrine: one binary,
+# many modules — compile time ÷3, artifacts ÷5).
+autotests = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[dependencies]
+syntax = { workspace = true }
+model = { workspace = true }
+wire = { workspace = true }
+transport = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

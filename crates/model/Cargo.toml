@@ -1,0 +1,11 @@
+[package]
+name = "model"
+description = "The in-memory world model: governed node tree (kind/span/node_rev/hpath), resolve, CAS-splice validation, Merkle roots — deliberately non-serializable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+syntax = { workspace = true }

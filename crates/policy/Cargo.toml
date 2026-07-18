@@ -1,0 +1,13 @@
+[package]
+name = "policy"
+description = "Rung-6 policy engine stub: compile rulesets-as-data, evaluate assertions under declared budgets, authorize I3-shaped writes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+model = { workspace = true }
+# Ruleset YAML parsing is in-charter; the YAML library choice is a rung-6
+# implementation decision — deliberately not pinned by the skeleton (see README).

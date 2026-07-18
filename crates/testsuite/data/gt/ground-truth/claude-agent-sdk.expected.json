@@ -1,0 +1,242 @@
+{
+ "file": "corpus/wiki/effects/skills/claude-agent-sdk.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    596
+   ],
+   "text_prefix_16b": "---\nname: claude"
+  },
+  {
+   "kind": "heading",
+   "hpath": "claude-agent-sdk (effect/skill)",
+   "span": [
+    598,
+    631
+   ],
+   "text_prefix_16b": "# claude-agent-s"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    653,
+    671
+   ],
+   "text_prefix_16b": "`claude-agent-sd"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    882,
+    898
+   ],
+   "text_prefix_16b": "`draws-from: []`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    921,
+    931
+   ],
+   "text_prefix_16b": "`effects/` is th"
+  },
+  {
+   "kind": "heading",
+   "hpath": "claude-agent-sdk (effect/skill)/Contract",
+   "span": [
+    975,
+    986
+   ],
+   "text_prefix_16b": "## Contract\n\n| F"
+  },
+  {
+   "kind": "table",
+   "span": [
+    988,
+    1439
+   ],
+   "text_prefix_16b": "| Field | Value "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1042,
+    1082
+   ],
+   "text_prefix_16b": "`git@github.com:"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1097,
+    1103
+   ],
+   "text_prefix_16b": "`main` |\n| Commi"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1117,
+    1159
+   ],
+   "text_prefix_16b": "`2fd2d0989538028"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1175,
+    1213
+   ],
+   "text_prefix_16b": "`skills/claude-c"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1229,
+    1271
+   ],
+   "text_prefix_16b": "`d2e453db47f66a7"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1307,
+    1333
+   ],
+   "text_prefix_16b": "`cc-continuity/i"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1343,
+    1381
+   ],
+   "text_prefix_16b": "`skills/claude-c"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1386,
+    1437
+   ],
+   "text_prefix_16b": "`~/.local/share/"
+  },
+  {
+   "kind": "heading",
+   "hpath": "claude-agent-sdk (effect/skill)/Contract/Checksum computation",
+   "span": [
+    1441,
+    1465
+   ],
+   "text_prefix_16b": "### Checksum com"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    1548,
+    1669
+   ],
+   "text_prefix_16b": "```bash\ngit -C <"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1849,
+    1868
+   ],
+   "text_prefix_16b": "`find … | shas"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1873,
+    1895
+   ],
+   "text_prefix_16b": "`git archive | s"
+  },
+  {
+   "kind": "heading",
+   "hpath": "claude-agent-sdk (effect/skill)/Contract/Staleness detection",
+   "span": [
+    1963,
+    1986
+   ],
+   "text_prefix_16b": "### Staleness de"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2002,
+    2028
+   ],
+   "text_prefix_16b": "`git cat-file -t"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2058,
+    2068
+   ],
+   "text_prefix_16b": "`location` match"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2095,
+    2103
+   ],
+   "text_prefix_16b": "`commit` trigger"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2173,
+    2181
+   ],
+   "text_prefix_16b": "`commit` + `chec"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2184,
+    2194
+   ],
+   "text_prefix_16b": "`checksum` + a c"
+  },
+  {
+   "kind": "heading",
+   "hpath": "claude-agent-sdk (effect/skill)/Changelog",
+   "span": [
+    2223,
+    2235
+   ],
+   "text_prefix_16b": "## Changelog\n\n- "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2335,
+    2353
+   ],
+   "text_prefix_16b": "`claude-agent-sd"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2370,
+    2406
+   ],
+   "text_prefix_16b": "`effects/skills/"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    2428,
+    2437
+   ],
+   "text_prefix_16b": "`2fd2d09`. (sess"
+  }
+ ]
+}
