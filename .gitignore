@@ -1,2 +1,4 @@
 /target
 /.claude/worktrees
+# per-run history: CI artifacts carry it; only the current table + latest.json are tracked
+/crates/perfsuite/results/20*.json
