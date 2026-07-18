@@ -11,6 +11,7 @@ default-members = [
     "crates/model",
     "crates/fs",
     "crates/wire",
+    "crates/wire-map",
     "crates/transport",
     "crates/policy",
     "crates/query",
@@ -31,6 +32,7 @@ syntax = { path = "crates/syntax", version = "0.0.0" }
 model = { path = "crates/model", version = "0.0.0" }
 fs = { path = "crates/fs", version = "0.0.0" }
 wire = { path = "crates/wire", version = "0.0.0" }
+wire-map = { path = "crates/wire-map", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
 policy = { path = "crates/policy", version = "0.0.0" }
 query = { path = "crates/query", version = "0.0.0" }

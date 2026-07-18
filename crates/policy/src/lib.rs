@@ -15,7 +15,15 @@
 //! `daemon_only` error), contain rules (the vocabulary is engine, rules are
 //! data — weekly-churn policy never couples to release-cadence binary).
 //!
-//! # Axis E position (a) — write authorization lives HERE, argued
+//! # Axis E — SETTLED Go-side by review C5; this stub's argument kept for the record
+//! The frozen `splice` shape carries no actor field: authorization is
+//! structurally Go's (position b). `authorize` below is **deferrable** — it is
+//! NOT on the rung-2 splice path. If hpath-shaped authorization rules ever
+//! need this crate's selector machinery, they arrive as ordinary rung-6
+//! assertions evaluated *for* Go (verdict as data, decision and actor stay
+//! Go's). The original position-(a) argument, superseded but kept:
+//!
+//! ## (superseded) position (a), argued
 //! I3 splice-authorization rules are hpath/section-shaped (`$owner`, section +
 //! path specificity) — which is *exactly* the selector machinery this crate
 //! already owns for rung 6: file-glob, hpath-glob, node predicates. Position (b)
@@ -32,9 +40,9 @@
 //! machinery exists precisely to hold that line.
 //!
 //! # Rungs
-//! Rung 2 pulls `authorize` in early (splice I3), rung 6 lands the full engine
-//! (`compile` / `evaluate` / `vocab`). Both are this crate; the wire ops appear
-//! only in `sidecar`.
+//! Rung 6 lands the engine (`compile` / `evaluate` / `vocab`); `authorize` is
+//! deferred per C5 (not on the splice path). The wire ops appear only in
+//! `sidecar`.
 
 use model::{CorpusIndex, Document};
 

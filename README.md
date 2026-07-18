@@ -1,9 +1,16 @@
-# meridian-rs — `candidate/laws-as-crates`
+# meridian-rs
 
-Skeleton-workspace candidate, rust-analyzer school: **crate boundaries make the
-three laws unbreakable by construction.** Rival: `candidate/collapse-first`
-(cargo/tokio school). Binding vision, design doc, and shared-ground resolutions:
-`main`'s README pointer + session `18-02-meridian-rs/results/meridian-rs-crate-architecture.md`.
+**The workspace shape: laws-as-crates** (ZT ruling 2026-07-18) — rust-analyzer
+school: crate boundaries make the three laws unbreakable by construction.
+Structural law enforcement during agent-speed build-out weighted above migration
+cost. Review record: `18-02-meridian-rs/results/crate-architecture-review-synthesis.md`;
+design doc: `results/meridian-rs-crate-architecture.md` (same session dir); the
+unpicked rival stays on `candidate/collapse-first` for history.
+
+**Skeleton status:** these crates are `todo!()` skeletons — compilation and the
+wire vocabulary are tested, behavior is not. Build-out is reimplementation
+against the FROZEN wire-contract-v1, with the parser-bench lane as reference
+(review C2/C3).
 
 ## Thesis
 
@@ -12,8 +19,9 @@ because a 5-minute workaround costs 5 weeks — so the laws must be cheaper to
 follow than to route around, which only compile errors achieve. Here the three
 laws are dependency edges: `model`'s public types carry no serde derives, so the
 wire cannot leak inward; `wire` is serde-only, so nothing Go-facing exists
-beyond it; `sidecar` is the single crate that sees both, so the entire
-Rust↔Go bridge is one thin auditable binary; `syntax` is the only crate touching
+beyond it; **only the named `wire-map` seam and the `sidecar` bin see both**
+(law 3 as amended by review C1 — projection is a tested library function, never
+bin code), so the entire Rust↔Go bridge stays auditable; `syntax` is the only crate touching
 the pulldown fork, so fork churn is a one-crate event. Meridian's own history is
 the evidence for boundaries-by-construction: six regex grammars that "agree by
 discipline," a shadow span-arithmetic module, and two silent data-loss bugs are
@@ -33,6 +41,7 @@ nothing shipped ever splits.
 | `model` | The in-memory world model: governed node tree (kind/span/node_rev/hpath), resolve, CAS-splice validation, Merkle roots — deliberately non-serializable |
 | `fs` | Disk truth in, atomic splices out: read/walk/watch feeding the model; tmp+fsync+rename splice execution |
 | `wire` | The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error types (serde-only, zero I/O) — the only Go-visible surface |
+| `wire-map` | The named model→wire projection seam (review C1): tree-flatten + `text_prefix_16b` + node ordering as a tested library function — never bin code |
 | `transport` | Untyped NDJSON message envelope + codec seam (lsp-server pattern): knows framing, never meaning |
 | `policy` | Rung-6 policy engine stub: compile rulesets-as-data, evaluate assertions under declared budgets, authorize I3-shaped writes |
 | `query` | Rung-5 corpus reads stub: backlinks, board queries, span-exact rename planning — borrows the model's index, applies nothing |
@@ -56,10 +65,11 @@ graph TD
         MOD[model<br/>NO serde, by design]
         FS[fs]
         WIRE[wire<br/>serde-only]
+        WMAP[wire-map<br/>the named projection seam, C1]
         TR[transport<br/>untyped envelope + Codec seam]
         POL[policy stub]
         QRY[query stub]
-        SC((sidecar bin<br/>the ONLY wire+model meeting point))
+        SC((sidecar bin<br/>wiring-only; wire+model also meet at wire-map, nowhere else))
         TS[testsuite]
         BM[bench]
     end
@@ -68,11 +78,14 @@ graph TD
     MOD --> FS
     MOD --> POL
     MOD --> QRY
+    MOD --> WMAP
+    WIRE --> WMAP
     WIRE -. dev-dep only .-> TR
     TR --> SC
     MOD --> SC
     FS --> SC
     WIRE --> SC
+    WMAP --> SC
     SYN --> BM
     SYN & MOD & WIRE & TR --> TS
 ```
@@ -91,12 +104,13 @@ graph TD
   behind a `Codec` trait with `NdjsonCodec` first. `wire` appears in
   `transport` only as a dev-dependency (the typed/untyped agreement test).
   NDJSON→JSON-RPC graduation = a second `Codec` impl, one crate touched.
-- **E (write authorization): position (a)** — `policy::authorize` evaluates
-  I3-shaped rules-as-data, verdict returned on the wire; Go pre-authorizes
-  actors and passes actor claims in as data. Full argument in `policy`'s crate
-  doc: I3 rules are hpath/section-shaped, which is exactly the selector
-  machinery the rung-6 engine owns; pushing them to Go either duplicates that
-  engine or degrades I3 to path-only rules.
+- **E (write authorization): SETTLED Go-side** (review C5, superseding this
+  branch's original position-a stub): the frozen `splice` shape carries no
+  actor field — authorization is structurally Go's, consistent with
+  policy-schema T2. `policy::authorize` is deferrable; if hpath-shaped
+  authorization rules ever need Rust's selector machinery they arrive as
+  ordinary rung-6 assertions evaluated *for* Go, which keeps the decision and
+  the actor.
 - **B, D (shared ground, not axes):** fork via `[patch.crates-io]` + rev pin
   (Zed mode — the pinned `obsidian` HEAD builds; repin with an upstream-PR
   comment per bump); `resolver = "2"`, `[workspace.package]` with
@@ -146,13 +160,16 @@ remains legal forever, and it is the exact shape law 3 exists to prevent.
 - **`policy` has no YAML dependency yet:** ruleset parsing is in-charter, but
   the YAML library choice is a rung-6 implementation decision; pinning it in a
   skeleton would be decision-by-scaffold. Placeholder type + this note instead.
-- **`root`/`guard` (rung 3) wire shapes** come from the vision ladder; the wire
-  contract does not sketch them yet. They are in `wire`'s enums as
-  loudest-marked sketches so the rung-3 additivity claim is visible as code.
-- **Wire contract is in revision round 1** (leader's gate correction): enums
-  match the current contract file (integer `id`, prefix-16b law, `[A-Za-z0-9_-]+`
-  block-id charset, kind-ordinal sort tiebreak already reflected); post-freeze
-  deltas get a re-verify pass after the branch lands.
+- **`root`/`guard` (rung 3) wire shapes** now follow contract §6.4 reserved
+  shapes (exact shapes authoritative in node-rev-merkle-spec §7) — updated in
+  the post-freeze re-verify pass; originally vision-ladder sketches.
+- **Post-freeze re-verify (2026-07-18, contract FROZEN at proto 1):** frozen
+  surface conformed as built (9 error codes, 11 kinds ordinal, integer `id`,
+  hpath array, prefix law, sort tiebreak); pass added the optional `node_rev`
+  field on the node object (§5.2), `content_span` on the resolve sketch (§6.1),
+  and renamed guard's field to `root` (§6.4). Build-out obligations the types
+  cannot enforce (server strict decode per §7 rule 2; client tolerance for
+  unknown codes/kinds) are documented in `wire`'s crate doc.
 - **`transport::NdjsonCodec` and two tests are implemented, not stubbed** — the
   codec is ~25 lines and the typed/untyped agreement test is the seam's proof;
   everything else is `todo!()` signatures.

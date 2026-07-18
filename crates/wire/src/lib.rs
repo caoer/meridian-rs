@@ -12,17 +12,27 @@
 //! only, by law — this crate must be consumable by any future client (tests, Go
 //! codegen, fixture tooling) without dragging a runtime.
 //!
-//! # Law enforcement (candidate thesis, this crate's part)
-//! `model`'s types carry no serde derives; only this crate's types serialize. The
-//! `sidecar` bin is the single crate depending on both — so "nothing Go-facing
-//! beyond the wire" (law 3) is a compile error to violate, not a review comment.
+//! # Law enforcement (this crate's part), law 3 as amended by review C1
+//! `model`'s types carry no serde derives; only this crate's types serialize.
+//! **Only the named `wire-map` seam and the `sidecar` bin see wire and model
+//! together** — projection is a tested library function in `wire-map`, never bin
+//! code; the bin stays wiring-only.
 //!
 //! # Rungs
-//! - Rung 1 (`hello`/`toc`/`extract`, error envelope, node object): contract §3–§5.
-//! - Rung 2 (`resolve`/`splice`) and rung 3 (`root`/`guard`): sketched here so v1
-//!   clients build against shapes rung 2+ *extends*; contract §6 marks the first
-//!   two NON-FROZEN; `root`/`guard` shapes come from the vision §3 ladder and have
-//!   no contract entry yet — loudest-marked sketch of all.
+//! - Rung 1 (`hello`/`toc`/`extract`, error envelope, node object): contract §3–§5,
+//!   FROZEN 2026-07-18 (`proto: 1`).
+//! - Rung 2 (`resolve`/`splice`): contract §6.1–§6.2, NON-FROZEN sketches.
+//! - Rung 3 (`root`/`guard`): contract §6.4 reserved shapes; exact shapes
+//!   authoritative in node-rev-merkle-spec §7 — no longer vision-ladder guesses.
+//!
+//! # Build-out obligations (contract laws the types alone cannot enforce)
+//! - **§7 rule 2, server side:** unknown request fields MUST be rejected with
+//!   `bad_request` — serde's default ignores them, and `deny_unknown_fields`
+//!   does not compose with `flatten`; rung-1 build-out owes a strict decode pass.
+//! - **§4/§7 rule 1, client side:** a client-side consumer of these types must
+//!   tolerate unknown error codes (non-retryable) and unknown node kinds
+//!   (ignore) — the closed enums below serve the EMITTING side; a Rust client
+//!   crate would need catch-all decode variants by amendment.
 
 use serde::{Deserialize, Serialize};
 
@@ -104,16 +114,19 @@ pub enum Op {
         if_node_rev: NodeRev,
         text: String,
     },
-    /// Rung 3 integrity read: current Merkle root for a path (or the corpus when
-    /// absent). Vision §3 ladder; NO contract entry yet — shape is a sketch.
+    /// Rung 3 integrity read: current cursor at workspace, subtree, or file
+    /// scope (a file-scope root is the file's leaf hash). Contract §6.4
+    /// reserved shape; exact shapes per node-rev-merkle-spec §7.
     Root {
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<Path>,
     },
-    /// Rung 3 commit guard: "can this apply" = root match, answered from memory.
-    /// Vision §3 ladder; NO contract entry yet — shape is a sketch.
+    /// Rung 3 commit guard: validate a held root; on mismatch the error names
+    /// the drift (`root_mismatch` w/ `expected`/`actual`/`scope`/`changed`).
+    /// Contract §6.4 reserved shape (field is `root`, per the frozen text);
+    /// exact shapes per node-rev-merkle-spec §7.
     Guard {
-        if_root: Root,
+        root: Root,
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<Path>,
     },
@@ -158,6 +171,13 @@ pub struct Node {
     pub unterminated: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<Info>,
+    /// §5.2 (frozen, optional): the node's opaque CAS token, minted over its
+    /// exact span bytes. A minting sidecar SHOULD attach it to every node;
+    /// clients MUST tolerate its absence. Admitted onto the frozen node object
+    /// because `toc` is where CAS tokens are born (else one `resolve` round
+    /// trip per node). [post-freeze re-verify addition]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_rev: Option<NodeRev>,
 }
 
 /// Per-kind `info` payloads (contract §5.2 table). Untagged: the sibling `kind`
@@ -226,18 +246,24 @@ pub enum ResponseBody {
     /// filtered to frontmatter+heading). Nodes in frozen node order.
     Nodes { path: Path, nodes: Vec<Node> },
     /// §6.1 sketch: the section (or anchor-host-block) span + its CAS token.
+    /// `content_span` (heading refs only): after the heading line to the same
+    /// end — the write target for heading-preserving section replacement;
+    /// mints no separate rev. [post-freeze re-verify addition]
     Resolve {
         path: Path,
         span: Span,
         node_rev: NodeRev,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_span: Option<Span>,
     },
     /// §6.2 sketch: new span + new rev of the spliced region, so clients chain
     /// edits without re-`resolve`. A `root` field joins additively at rung 3.
     Splice { span: Span, node_rev: NodeRev },
-    /// Rung 3 sketch (vision ladder, no contract entry): the current root.
+    /// Rung 3 reserved (contract §6.4): the current root at the requested scope.
     Root { root: Root },
-    /// Rung 3 `guard` success sketch: the root that matched. (Mismatch is the
-    /// error envelope, `root_mismatch` — code reserved by policy-schema §6.4.)
+    /// Rung 3 `guard` success (contract §6.4): the root that matched. Mismatch
+    /// is the error envelope, `root_mismatch` — §6.5 reserved code, shapes per
+    /// node-rev-merkle-spec §8.
     Guard { root: Root },
     /// §4 error envelope — see [`ErrorBody`].
     Error(ErrorBody),
@@ -250,6 +276,11 @@ pub enum ResponseBody {
 /// Error codes, v1 namespace (contract §4 table, verbatim; flat lowercase
 /// snake_case on the wire). Clients treat unrecognized codes as non-retryable;
 /// `cas_mismatch` is the one code whose *purpose* is retry-after-refresh.
+///
+/// §6.5 reserved codes join this enum only via the amendments that freeze
+/// their rungs: `would_corrupt`, `ambiguous_ref`, `lock_timeout` (rung 2);
+/// `root_mismatch` (extra fields `expected`/`actual`/`scope`/`changed`),
+/// `root_unknown` (rung 3, shapes per node-rev-merkle-spec §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {

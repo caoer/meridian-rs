@@ -519,6 +519,7 @@ dependencies = [
  "serde_json",
  "transport",
  "wire",
+ "wire-map",
 ]
 
 [[package]]
@@ -687,6 +688,14 @@ name = "wire"
 version = "0.0.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "wire-map"
+version = "0.0.0"
+dependencies = [
+ "model",
+ "wire",
 ]
 
 [[package]]
