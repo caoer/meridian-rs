@@ -40,8 +40,12 @@ attach: setup
 query runs="200": setup
     bash scripts/query.sh {{runs}}
 
+# generate the synthetic fixture used by the root-stamp demo
+fixture:
+    bash scripts/make_fixture.sh 40
+
 # step 8: root-stamp lifecycle end-to-end
-rootstamp: setup
+rootstamp: setup fixture
     {{bin}} rootstamp-demo data/fixture data/rootstamp.duckdb
 
 # full measurement sweep → logs/*.log (regenerates every REPORT.md number)
@@ -55,6 +59,7 @@ bench: setup
     bash scripts/wal_probe.sh          | tee logs/wal.log
     bash scripts/kill_test.sh          | tee logs/kill.log
     bash scripts/attach_test.sh        | tee logs/attach.log
+    bash scripts/make_fixture.sh 40 >/dev/null
     {{bin}} rootstamp-demo data/fixture data/rootstamp.duckdb | tee logs/rootstamp.log
     bash scripts/query.sh 200          | tee logs/query.log
     @echo "== all measurements in logs/ =="
