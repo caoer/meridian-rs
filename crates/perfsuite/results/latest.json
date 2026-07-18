@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "created_utc": "2026-07-18 16:20 UTC",
-  "git_sha": "40f85cd",
+  "created_utc": "2026-07-18 17:35 UTC",
+  "git_sha": "26c96b5",
   "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
   "machine": {
     "hostname": "zmax",
@@ -48,7 +48,12 @@
     },
     {
       "claim_id": "transport.codec.ndjson_roundtrip_p99",
-      "measured": 19.503,
+      "measured": 20.015,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "transport.codec.proto_roundtrip_p99",
+      "measured": 4.375,
       "verdict": "MEASURED"
     },
     {
@@ -65,18 +70,53 @@
   "measurements": [
     {
       "id": "transport.codec.ndjson_roundtrip_p99",
-      "value": 19.503,
+      "value": 20.015,
       "unit": "us",
       "samples": 20000,
       "dist": {
-        "mean_us": 8.267853500000005,
-        "p50_us": 13.631,
-        "p90_us": 15.919,
-        "p99_us": 19.503,
-        "p999_us": 45.375,
-        "max_us": 64.959
+        "mean_us": 8.248888499999994,
+        "p50_us": 12.919,
+        "p90_us": 15.751,
+        "p99_us": 20.015,
+        "p999_us": 27.759,
+        "max_us": 43.295
+      }
+    },
+    {
+      "id": "transport.codec.proto_roundtrip_p99",
+      "value": 4.375,
+      "unit": "us",
+      "samples": 20000,
+      "dist": {
+        "mean_us": 1.8698486000000003,
+        "p50_us": 2.917,
+        "p90_us": 3.543,
+        "p99_us": 4.375,
+        "p999_us": 8.711,
+        "max_us": 50.655
       }
     }
   ],
-  "criterion": []
+  "criterion": [
+    {
+      "id": "roundtrip/ndjson_decode_1000",
+      "mean_ns": 6713659.9925,
+      "median_ns": 6707208.25
+    },
+    {
+      "id": "roundtrip/ndjson_encode_1000",
+      "mean_ns": 1529996.5432524094,
+      "median_ns": 1531244.252185527
+    },
+    {
+      "id": "roundtrip/proto_decode_1000",
+      "mean_ns": 1380756.4029281775,
+      "median_ns": 1383302.690504334
+    },
+    {
+      "id": "roundtrip/proto_encode_1000",
+      "mean_ns": 421614.9771193407,
+      "median_ns": 421637.2328184224
+    }
+  ]
 }
