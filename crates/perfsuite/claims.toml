@@ -88,6 +88,14 @@ harness = "benches/roundtrip.rs"
 note = "LIVE day 1 (NdjsonCodec is implemented); no baseline yet — first fleet run establishes it"
 
 [[claim]]
+id = "transport.codec.proto_roundtrip_p99"
+title = "transport-proto encode+decode round-trip p99, single frame (typed pb::Frame)"
+metric = "us"
+direction = "lower"
+harness = "benches/roundtrip.rs"
+note = "LIVE (typed protobuf path, ZT ruling 2026-07-18); same frame mix as the ndjson claim for codec-to-codec comparison; no baseline yet — first fleet run establishes it"
+
+[[claim]]
 id = "policy.assertion.p99"
 title = "Per-rule Lua predicate evaluation p99 vs declared budget"
 metric = "us"

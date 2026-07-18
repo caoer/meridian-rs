@@ -1,0 +1,246 @@
+// meridian.v1 — protobuf transcription of wire-contract-v1 (the high-perf
+// binary path). `wire` remains the canonical contract surface; this file
+// TRANSCRIBES it and never amends it. Drift is pinned at compile time by
+// tests/wire_agreement.rs: every message here is exhaustively destructured
+// against its `wire` twin, so a new wire variant or field breaks that test's
+// build until this file catches up.
+//
+// Encoding notes (proto has its own wire form; JSON-layer serde tricks do not
+// transcribe):
+//   - serde `flatten`/`untagged` become explicit oneofs.
+//   - JSON `"id":null` on a response becomes field absence (`optional`).
+//   - Newtypes (path/node_rev/root) are plain strings — they name, not validate.
+//   - Enum ordinals shift by one for the proto3 UNSPECIFIED-0 convention; the
+//     frozen sort-tiebreak ordinal lives in `wire`, not here.
+
+syntax = "proto3";
+
+package meridian.v1;
+
+// One frame: request or response. Field 3 is reserved for rung-4+ event
+// frames (the v1 sidecar emits none — same reservation as the NDJSON layer).
+message Frame {
+  oneof kind {
+    Request request = 1;
+    Response response = 2;
+  }
+  reserved 3;
+}
+
+// ---------------------------------------------------------------------------
+// contract §3 requests — rungs 1–3 op vocabulary
+// ---------------------------------------------------------------------------
+
+message Request {
+  // Client correlation token, JSON integer in [0, 2^53). Optional for
+  // shell-pipe debuggability; pipelining clients MUST send it.
+  optional uint64 id = 1;
+  oneof op {
+    HelloRequest hello = 2;     // §5.1 FROZEN
+    TocRequest toc = 3;         // §5.3 FROZEN
+    ExtractRequest extract = 4; // §5.4 FROZEN
+    ResolveRequest resolve = 5; // §6.1 rung-2 sketch
+    SpliceRequest splice = 6;   // §6.2 rung-2 sketch
+    RootRequest root = 7;       // §6.4 rung-3 reserved
+    GuardRequest guard = 8;     // §6.4 rung-3 reserved
+  }
+}
+
+message HelloRequest {
+  uint32 proto = 1;
+  optional string client = 2;
+}
+
+message TocRequest {
+  string path = 1;
+}
+
+message ExtractRequest {
+  string path = 1;
+  // Absent ⇒ no filter (all kinds); present-but-empty ⇒ match nothing.
+  // The wrapper exists because that distinction is contractual (§5.4) and
+  // a bare `repeated` cannot carry it.
+  optional KindFilter kinds = 2;
+}
+
+message KindFilter {
+  repeated string kinds = 1;
+}
+
+message ResolveRequest {
+  string path = 1;
+  string ref = 2;
+}
+
+message SpliceRequest {
+  string path = 1;
+  Span span = 2;
+  string if_node_rev = 3;
+  string text = 4;
+}
+
+message RootRequest {
+  optional string path = 1;
+}
+
+message GuardRequest {
+  string root = 1;
+  optional string path = 2;
+}
+
+// Half-open byte range [start, end) — contract §2 span laws.
+message Span {
+  uint64 start = 1;
+  uint64 end = 2;
+}
+
+// ---------------------------------------------------------------------------
+// contract §5.2 the node object
+// ---------------------------------------------------------------------------
+
+// Declaration order in `wire` IS the frozen sort tiebreak (frontmatter=0 …
+// comment=10); here every ordinal is +1 for UNSPECIFIED-0. The agreement test
+// pins the mapping variant-by-variant.
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_FRONTMATTER = 1;
+  NODE_KIND_HEADING = 2;
+  NODE_KIND_FENCE = 3;
+  NODE_KIND_INLINE_CODE = 4;
+  NODE_KIND_ANCHOR = 5;
+  NODE_KIND_WIKILINK = 6;
+  NODE_KIND_EMBED = 7;
+  NODE_KIND_CALLOUT = 8;
+  NODE_KIND_TASK = 9;
+  NODE_KIND_TABLE = 10;
+  NODE_KIND_COMMENT = 11;
+}
+
+message Node {
+  NodeKind kind = 1;
+  Span span = 2;
+  string text_prefix_16b = 3;
+  // Headings only; empty ≡ absent (a heading always carries ≥1 segment —
+  // one element per heading level, §5.2 — so no wrapper is needed).
+  repeated string hpath = 4;
+  optional bool unterminated = 5;
+  optional Info info = 6;
+  optional string node_rev = 7;
+}
+
+// Per-kind info payloads (§5.2 table). JSON discriminates by the sibling
+// `kind`; proto carries the explicit oneof tag.
+message Info {
+  oneof info {
+    FrontmatterInfo frontmatter = 1;
+    FenceInfo fence = 2;
+    WikilinkInfo wikilink = 3; // shared by wikilink and embed kinds
+    CalloutInfo callout = 4;
+    TaskInfo task = 5;
+  }
+}
+
+message FrontmatterInfo {
+  repeated string keys = 1;
+}
+
+message FenceInfo {
+  string info_string = 1;
+}
+
+message WikilinkInfo {
+  string target = 1;
+  optional string heading = 2;
+  optional string block = 3;
+  optional string alias = 4;
+}
+
+message CalloutInfo {
+  string type = 1;
+  string fold = 2;
+}
+
+message TaskInfo {
+  bool checked = 1;
+  uint32 depth = 2;
+}
+
+// ---------------------------------------------------------------------------
+// contract §3/§5 responses + §4 error envelope
+// ---------------------------------------------------------------------------
+
+message Response {
+  // JSON serializes `"id":null` for un-correlatable errors; proto absence
+  // carries the same meaning (the Frame oneof already classifies).
+  optional uint64 id = 1;
+  bool ok = 2;
+  oneof body {
+    HelloResponse hello = 3;
+    NodesResponse nodes = 4; // toc and extract share this shape (§5.3/§5.4)
+    ResolveResponse resolve = 5;
+    SpliceResponse splice = 6;
+    RootResponse root = 7;
+    GuardResponse guard = 8;
+    ErrorBody error = 9;
+  }
+}
+
+message HelloResponse {
+  uint32 proto = 1;
+  string server = 2;
+  repeated string caps = 3;
+}
+
+message NodesResponse {
+  string path = 1;
+  repeated Node nodes = 2;
+}
+
+message ResolveResponse {
+  string path = 1;
+  Span span = 2;
+  string node_rev = 3;
+  optional Span content_span = 4;
+}
+
+message SpliceResponse {
+  Span span = 1;
+  string node_rev = 2;
+}
+
+message RootResponse {
+  string root = 1;
+}
+
+message GuardResponse {
+  string root = 1;
+}
+
+// §4 error codes, v1 namespace. §6.5 reserved codes join via the amendments
+// that freeze their rungs — mirror `wire::ErrorCode` exactly, never lead it.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_BAD_FRAME = 1;
+  ERROR_CODE_BAD_REQUEST = 2;
+  ERROR_CODE_UNKNOWN_OP = 3;
+  ERROR_CODE_UNSUPPORTED_PROTO = 4;
+  ERROR_CODE_BAD_PATH = 5;
+  ERROR_CODE_NOT_FOUND = 6;
+  ERROR_CODE_INVALID_UTF8 = 7;
+  ERROR_CODE_INTERNAL = 8;
+  ERROR_CODE_CAS_MISMATCH = 9;
+}
+
+// §4: code + optional human message + code-specific extras, never nested.
+message ErrorBody {
+  ErrorCode error = 1;
+  optional string message = 2;
+  // bad_path / not_found: the offending path, echoed.
+  optional string path = 3;
+  // unsupported_proto: protos this sidecar speaks; non-empty when present
+  // (a sidecar always speaks ≥1), so empty ≡ absent needs no wrapper.
+  repeated uint32 supported = 4;
+  // cas_mismatch: pinned rev vs current rev.
+  optional string expected = 5;
+  optional string actual = 6;
+}

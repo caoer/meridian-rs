@@ -43,6 +43,7 @@ nothing shipped ever splits.
 | `wire` | The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error types (serde-only, zero I/O) — the only Go-visible surface |
 | `wire-map` | The named model→wire projection seam (review C1): tree-flatten + `text_prefix_16b` + node ordering as a tested library function — never bin code |
 | `transport` | Untyped NDJSON message envelope + codec seam (lsp-server pattern): knows framing, never meaning |
+| `transport-proto` | Typed protobuf transport (opt-in high-perf binary path): `meridian.proto` transcribing wire-contract-v1 + length-delimited framing |
 | `policy` | Rung-6 policy engine stub: compile rulesets-as-data, evaluate assertions under declared budgets, authorize I3-shaped writes |
 | `query` | Rung-5 corpus reads stub: backlinks, board queries, span-exact rename planning — borrows the model's index, applies nothing |
 | `sidecar` (bin) | Thin NDJSON stdin/stdout binary — the only place wire and model meet |
@@ -67,6 +68,7 @@ graph TD
         WIRE[wire<br/>serde-only]
         WMAP[wire-map<br/>the named projection seam, C1]
         TR[transport<br/>untyped envelope + Codec seam]
+        TRP[transport-proto<br/>typed .proto, high-perf path]
         POL[policy stub]
         QRY[query stub]
         SC((sidecar bin<br/>wiring-only; wire+model also meet at wire-map, nowhere else))
@@ -81,6 +83,7 @@ graph TD
     MOD --> WMAP
     WIRE --> WMAP
     WIRE -. dev-dep only .-> TR
+    WIRE -. dev-dep only: drift pin .-> TRP
     TR --> SC
     MOD --> SC
     FS --> SC
@@ -104,6 +107,13 @@ graph TD
   behind a `Codec` trait with `NdjsonCodec` first. `wire` appears in
   `transport` only as a dev-dependency (the typed/untyped agreement test).
   NDJSON→JSON-RPC graduation = a second `Codec` impl, one crate touched.
+  **Amended (ZT ruling 2026-07-18):** `transport-proto` adds an opt-in TYPED
+  protobuf path (leaf crate, additive — constraint 4 shown as code): the
+  Go-visible surface becomes `wire` plus `meridian.proto`, with drift pinned
+  at compile time by exhaustive-match agreement tests (a new wire variant or
+  field breaks `transport-proto`'s test build until the `.proto` catches up).
+  The untyped seam stays the default; sidecar proto negotiation is a later
+  rung.
 - **E (write authorization): SETTLED Go-side** (review C5, superseding this
   branch's original position-a stub): the frozen `splice` shape carries no
   actor field — authorization is structurally Go's, consistent with
