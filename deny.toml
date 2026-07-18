@@ -1,0 +1,27 @@
+# cargo-deny policy. Run: cargo deny check
+# The bans entry is the mechanical form of the [patch.crates-io] one-copy law.
+
+[graph]
+all-features = true
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+
+[bans]
+# Benign transitive duplicates warn; the fork law is the hard gate below.
+multiple-versions = "warn"
+deny = [
+    # ONE pulldown-cmark copy graph-wide (workspace root, axis B) — enforced.
+    { crate = "pulldown-cmark", deny-multiple-versions = true },
+]
+
+[sources]
+unknown-git = "deny"
+allow-git = [
+    # The sanctioned fork consumed via [patch.crates-io] (branch `obsidian`).
+    "https://github.com/caoer/pulldown-cmark",
+]
