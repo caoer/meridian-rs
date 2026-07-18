@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "created_utc": "2026-07-18 17:35 UTC",
-  "git_sha": "26c96b5",
+  "created_utc": "2026-07-18 17:43 UTC",
+  "git_sha": "35ac2b7",
   "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
   "machine": {
     "hostname": "zmax",
@@ -48,13 +48,28 @@
     },
     {
       "claim_id": "transport.codec.ndjson_roundtrip_p99",
-      "measured": 20.015,
+      "measured": 19.343,
       "verdict": "MEASURED"
     },
     {
       "claim_id": "transport.codec.proto_roundtrip_p99",
-      "measured": 4.375,
-      "verdict": "MEASURED"
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "ingest.cold.vault_1gb",
+      "measured": 22188.716458,
+      "verdict": "PASS"
+    },
+    {
+      "claim_id": "ingest.codec.ndjson.vault_1gb",
+      "measured": 1782.094042,
+      "verdict": "PASS"
+    },
+    {
+      "claim_id": "ingest.codec.proto.vault_1gb",
+      "measured": 582.9683329999999,
+      "verdict": "PASS"
     },
     {
       "claim_id": "policy.assertion.p99",
@@ -69,54 +84,71 @@
   ],
   "measurements": [
     {
-      "id": "transport.codec.ndjson_roundtrip_p99",
-      "value": 20.015,
-      "unit": "us",
-      "samples": 20000,
-      "dist": {
-        "mean_us": 8.248888499999994,
-        "p50_us": 12.919,
-        "p90_us": 15.751,
-        "p99_us": 20.015,
-        "p999_us": 27.759,
-        "max_us": 43.295
-      }
+      "id": "ingest.codec.ndjson.vault_1gb",
+      "value": 1782.094042,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
     },
     {
-      "id": "transport.codec.proto_roundtrip_p99",
-      "value": 4.375,
+      "id": "ingest.codec.proto.vault_1gb",
+      "value": 582.9683329999999,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
+    },
+    {
+      "id": "ingest.cold.vault_1gb",
+      "value": 22188.716458,
+      "unit": "ms",
+      "samples": 1,
+      "dist": null
+    },
+    {
+      "id": "transport.codec.ndjson_roundtrip_p99",
+      "value": 19.343,
       "unit": "us",
       "samples": 20000,
       "dist": {
-        "mean_us": 1.8698486000000003,
-        "p50_us": 2.917,
-        "p90_us": 3.543,
-        "p99_us": 4.375,
-        "p999_us": 8.711,
-        "max_us": 50.655
+        "mean_us": 8.207133400000004,
+        "p50_us": 12.255,
+        "p90_us": 15.711,
+        "p99_us": 19.343,
+        "p999_us": 27.007,
+        "max_us": 70.975
       }
     }
   ],
   "criterion": [
     {
+      "id": "assemble_noop_until_rung_1",
+      "mean_ns": 0.7889392563095501,
+      "median_ns": 0.6884393519160781
+    },
+    {
+      "id": "parse/placeholder_corpus_traversal",
+      "mean_ns": 102.88983321937911,
+      "median_ns": 91.1117553908642
+    },
+    {
+      "id": "policy_noop_until_rung_6",
+      "mean_ns": 0.8494531088347048,
+      "median_ns": 0.730154546683545
+    },
+    {
+      "id": "project_noop_until_rung_1",
+      "mean_ns": 0.6021511455055518,
+      "median_ns": 0.5249128720029476
+    },
+    {
       "id": "roundtrip/ndjson_decode_1000",
-      "mean_ns": 6713659.9925,
-      "median_ns": 6707208.25
+      "mean_ns": 7544185.67875,
+      "median_ns": 6800372.375
     },
     {
       "id": "roundtrip/ndjson_encode_1000",
-      "mean_ns": 1529996.5432524094,
-      "median_ns": 1531244.252185527
-    },
-    {
-      "id": "roundtrip/proto_decode_1000",
-      "mean_ns": 1380756.4029281775,
-      "median_ns": 1383302.690504334
-    },
-    {
-      "id": "roundtrip/proto_encode_1000",
-      "mean_ns": 421614.9771193407,
-      "median_ns": 421637.2328184224
+      "mean_ns": 1579181.800363344,
+      "median_ns": 1554893.4821428573
     }
   ]
 }
