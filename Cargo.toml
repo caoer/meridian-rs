@@ -1,0 +1,49 @@
+# meridian-rs workspace — candidate/laws-as-crates
+# Conventions per design-doc axis D (non-negotiable): resolver 2, publish=false,
+# internals 0.0.0, {path, version="0.0.0"} deps, [patch.crates-io] fork pin.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# bench is out of default-members (criterion stays off the everyday build path)
+default-members = [
+    "crates/syntax",
+    "crates/model",
+    "crates/fs",
+    "crates/wire",
+    "crates/transport",
+    "crates/policy",
+    "crates/query",
+    "crates/sidecar",
+    "crates/testsuite",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# internal crates: path + version 0.0.0 — mechanical publish retrofit later (axis D)
+syntax = { path = "crates/syntax", version = "0.0.0" }
+model = { path = "crates/model", version = "0.0.0" }
+fs = { path = "crates/fs", version = "0.0.0" }
+wire = { path = "crates/wire", version = "0.0.0" }
+transport = { path = "crates/transport", version = "0.0.0" }
+policy = { path = "crates/policy", version = "0.0.0" }
+query = { path = "crates/query", version = "0.0.0" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pulldown-cmark = "0.13"
+criterion = "0.5"
+
+# Fork consumption, axis B resolution (Zed/lsp-types mode): [patch.crates-io] at the
+# workspace root guarantees ONE pulldown-cmark copy graph-wide, including transitive
+# edges. Fork version stays equal to upstream's; merge-from-upstream on branch
+# `obsidian`; each rev bump gets a comment naming its upstream PR.
+[patch.crates-io]
+# obsidian HEAD 2026-07-18 (pre-Step-0 fork point; repin as ENABLE_OBSIDIAN_* lands)
+pulldown-cmark = { git = "https://github.com/caoer/pulldown-cmark", rev = "bc5df96c23da33283ef53c1a8dcfc53d7b6cd4fb" }

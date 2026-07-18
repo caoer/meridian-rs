@@ -1,0 +1,105 @@
+{
+ "file": "corpus/sessions/year=2026/month=07/05-09-ccc-skill-wave/agents/5202de72.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    153
+   ],
+   "text_prefix_16b": "---\ntype: agent\n"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Memo",
+   "span": [
+    155,
+    161
+   ],
+   "text_prefix_16b": "# Memo\n\n# Todo\n\n"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Todo",
+   "span": [
+    163,
+    169
+   ],
+   "text_prefix_16b": "# Todo\n\n- [x] Fi"
+  },
+  {
+   "kind": "task",
+   "span": [
+    171,
+    234
+   ],
+   "text_prefix_16b": "- [x] Fix phase:"
+  },
+  {
+   "kind": "task",
+   "span": [
+    235,
+    272
+   ],
+   "text_prefix_16b": "- [x] Report cle"
+  },
+  {
+   "kind": "task",
+   "span": [
+    273,
+    397
+   ],
+   "text_prefix_16b": "- [x] Cross-revi"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Notes",
+   "span": [
+    399,
+    406
+   ],
+   "text_prefix_16b": "# Notes\n\n## ccc-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Notes/ccc-plan audit result: CLEAN (zero changes, no commit)",
+   "span": [
+    408,
+    465
+   ],
+   "text_prefix_16b": "## ccc-plan audi"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    646,
+    656
+   ],
+   "text_prefix_16b": "`thinking` all l"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    701,
+    723
+   ],
+   "text_prefix_16b": "`## Thinking Pat"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    776,
+    792
+   ],
+   "text_prefix_16b": "`status: active`"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1081,
+    1119
+   ],
+   "text_prefix_16b": "`plan/references"
+  }
+ ]
+}

@@ -1,0 +1,56 @@
+{
+ "file": "corpus/sessions/year=2026/month=07/12-18-md-check-fix/decisions/orchestrator--no-verify-bulk-commit.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    123
+   ],
+   "text_prefix_16b": "---\nstatus: reso"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify",
+   "span": [
+    124,
+    154
+   ],
+   "text_prefix_16b": "# Bulk commit wi"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify/Resolution",
+   "span": [
+    740,
+    753
+   ],
+   "text_prefix_16b": "## Resolution\nCo"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Bulk commit with --no-verify/Addendum: pre-push bypass (18:2x)",
+   "span": [
+    944,
+    980
+   ],
+   "text_prefix_16b": "## Addendum: pre"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1001,
+    1011
+   ],
+   "text_prefix_16b": "`md check` under"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1108,
+    1118
+   ],
+   "text_prefix_16b": "`md check` exits"
+  }
+ ]
+}

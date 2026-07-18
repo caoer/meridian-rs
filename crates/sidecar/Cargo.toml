@@ -1,0 +1,17 @@
+[package]
+name = "sidecar"
+description = "Thin NDJSON stdin/stdout binary — the only place wire and model meet"
+# The one real product version in the workspace (axis D: internals 0.0.0,
+# product version on the bin).
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+transport = { workspace = true }
+model = { workspace = true }
+fs = { workspace = true }
+wire = { workspace = true }
+serde_json = { workspace = true }

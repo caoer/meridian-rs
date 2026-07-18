@@ -1,0 +1,172 @@
+{
+ "file": "corpus/sessions/year=2026/month=05/12-02-compound-burndown/tasks/task-28-2026-05-01-adhoc.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    150
+   ],
+   "text_prefix_16b": "---\ntype: task\ns"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`",
+   "span": [
+    152,
+    197
+   ],
+   "text_prefix_16b": "# Worker Task 28"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    179,
+    197
+   ],
+   "text_prefix_16b": "`2026-05-01-adho"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    228,
+    238
+   ],
+   "text_prefix_16b": "`0328a39f`.\n\n## "
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Target",
+   "span": [
+    241,
+    250
+   ],
+   "text_prefix_16b": "## Target\n`/User"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    251,
+    318
+   ],
+   "text_prefix_16b": "`/Users/Shared/p"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Profile",
+   "span": [
+    320,
+    330
+   ],
+   "text_prefix_16b": "## Profile\n- **N"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    384,
+    414
+   ],
+   "text_prefix_16b": "`big-ram-llm-box"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    425,
+    445
+   ],
+   "text_prefix_16b": "`hardware/llm-in"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Mode",
+   "span": [
+    447,
+    454
+   ],
+   "text_prefix_16b": "## Mode\n**Memo-O"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Critical reminders",
+   "span": [
+    575,
+    596
+   ],
+   "text_prefix_16b": "## Critical remi"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    611,
+    633
+   ],
+   "text_prefix_16b": "`2026-05-12-<slu"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Workflow",
+   "span": [
+    637,
+    648
+   ],
+   "text_prefix_16b": "## Workflow\n1. `"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    652,
+    672
+   ],
+   "text_prefix_16b": "`load /ccc-compo"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    698,
+    802
+   ],
+   "text_prefix_16b": "`/Users/Shared/p"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    866,
+    883
+   ],
+   "text_prefix_16b": "`llm-wiki ingest"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    911,
+    921
+   ],
+   "text_prefix_16b": "`0328a39f` and `"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    926,
+    947
+   ],
+   "text_prefix_16b": "`killme --close-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Worker Task 28: compound `2026-05-01-adhoc`/Reporting format",
+   "span": [
+    950,
+    969
+   ],
+   "text_prefix_16b": "## Reporting for"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    970,
+    1159
+   ],
+   "text_prefix_16b": "```\nCOMPOUND 28 "
+  }
+ ]
+}

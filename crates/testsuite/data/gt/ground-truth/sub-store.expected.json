@@ -1,0 +1,252 @@
+{
+ "file": "corpus/wiki/domains/net/network/sub-store.md",
+ "nodes": [
+  {
+   "kind": "frontmatter",
+   "span": [
+    0,
+    126
+   ],
+   "text_prefix_16b": "---\ntags: [domai"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store",
+   "span": [
+    128,
+    139
+   ],
+   "text_prefix_16b": "# Sub-Store\n\nAdv"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    312,
+    333
+   ],
+   "text_prefix_16b": "[[sources/sub-st"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    346,
+    379
+   ],
+   "text_prefix_16b": "[[Sub-Store/sub-"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/Deployment",
+   "span": [
+    392,
+    405
+   ],
+   "text_prefix_16b": "## Deployment\n\n|"
+  },
+  {
+   "kind": "table",
+   "span": [
+    407,
+    882
+   ],
+   "text_prefix_16b": "| Field | Value "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    445,
+    468
+   ],
+   "text_prefix_16b": "`https://sub.0xd"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    582,
+    592
+   ],
+   "text_prefix_16b": "`zt-agent`, ingr"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    602,
+    617
+   ],
+   "text_prefix_16b": "`sub.0xdao.app` "
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    629,
+    646
+   ],
+   "text_prefix_16b": "`/data/sub-store"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    662,
+    682
+   ],
+   "text_prefix_16b": "`/var/lib/sub-st"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    697,
+    738
+   ],
+   "text_prefix_16b": "`osfiles/hosts/f"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    753,
+    774
+   ],
+   "text_prefix_16b": "`sub-store.bundl"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    851,
+    861
+   ],
+   "text_prefix_16b": "`preStart` (Vue "
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/Deployment/DNS Setup (manual, one-time)",
+   "span": [
+    884,
+    916
+   ],
+   "text_prefix_16b": "### DNS Setup (m"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    971,
+    982
+   ],
+   "text_prefix_16b": "`0xtau.com` zone"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    990,
+    1073
+   ],
+   "text_prefix_16b": "```\nsub.0xdao.ap"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/Deployment/Rebuild Frontend",
+   "span": [
+    1075,
+    1095
+   ],
+   "text_prefix_16b": "### Rebuild Fron"
+  },
+  {
+   "kind": "fence",
+   "span": [
+    1097,
+    1189
+   ],
+   "text_prefix_16b": "```bash\nssh forg"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/Role in Proxy Infrastructure",
+   "span": [
+    1191,
+    1222
+   ],
+   "text_prefix_16b": "## Role in Proxy"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    1246,
+    1283
+   ],
+   "text_prefix_16b": "[[sources/mesh-n"
+  },
+  {
+   "kind": "table",
+   "span": [
+    1303,
+    1662
+   ],
+   "text_prefix_16b": "|  | Sub-Store |"
+  },
+  {
+   "kind": "inline-code",
+   "span": [
+    1508,
+    1531
+   ],
+   "text_prefix_16b": "`registry/server"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/Format Support",
+   "span": [
+    1873,
+    1890
+   ],
+   "text_prefix_16b": "## Format Suppor"
+  },
+  {
+   "kind": "heading",
+   "hpath": "Sub-Store/See Also",
+   "span": [
+    2177,
+    2188
+   ],
+   "text_prefix_16b": "## See Also\n\n- ["
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2192,
+    2213
+   ],
+   "text_prefix_16b": "[[sources/sub-st"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2235,
+    2259
+   ],
+   "text_prefix_16b": "[[sources/mesh-n"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2297,
+    2313
+   ],
+   "text_prefix_16b": "[[subconverter]]"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2358,
+    2388
+   ],
+   "text_prefix_16b": "[[proxy-config-p"
+  },
+  {
+   "kind": "wikilink",
+   "span": [
+    2410,
+    2425
+   ],
+   "text_prefix_16b": "[[gui-clients]] "
+  }
+ ]
+}
