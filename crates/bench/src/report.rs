@@ -1,7 +1,9 @@
 //! Run reports: one canonical schema-versioned JSON, three renderings —
-//! `RESULTS.md` (human), `latest.json` (agent), `results/<date>-<host>.json`
-//! (append-only future reference). Every report carries machine fingerprint,
-//! git sha, and toolchain, so numbers are never orphaned from their context.
+//! `RESULTS.md` (human), `latest.json` (agent), and an append-only history file
+//! `results/<date>-<time>-<host>-<sha>.json`. Every report carries machine
+//! fingerprint, git sha, and toolchain, so numbers are never orphaned from
+//! their context; the time+sha in the history filename keep same-day reruns
+//! from clobbering one another.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -159,10 +161,26 @@ fn parse_estimates(root: &Path, bench_dir: &Path, estimates: &Path) -> Option<Cr
 /// criterion estimates collected, context stamped.
 pub fn build(claims: &[Claim]) -> io::Result<RunReport> {
     let measurements = measure::read_all()?;
-    let measured: BTreeMap<String, f64> = measurements
+    // Join by id, but only when the staged unit matches the claim's metric —
+    // a µs value staged for an `ms` claim would otherwise be gated against the
+    // threshold raw. A mismatch drops to UNTESTED (never a false PASS/FAIL).
+    let metric_by_id: BTreeMap<&str, &str> = claims
         .iter()
-        .map(|m| (m.id.clone(), m.value))
+        .map(|c| (c.id.as_str(), c.metric.as_str()))
         .collect();
+    let mut measured: BTreeMap<String, f64> = BTreeMap::new();
+    for m in &measurements {
+        if let Some(&metric) = metric_by_id.get(m.id.as_str())
+            && metric != m.unit
+        {
+            eprintln!(
+                "bench-report: dropping measurement '{}' — unit '{}' ≠ claim metric '{}'",
+                m.id, m.unit, metric
+            );
+            continue;
+        }
+        measured.insert(m.id.clone(), m.value);
+    }
     Ok(RunReport {
         schema_version: REPORT_SCHEMA_VERSION,
         created_utc: utc_now(),
@@ -302,13 +320,16 @@ fn fmt_ns(ns: f64) -> String {
 /// Write the three renderings into `results_dir`. Returns written paths.
 pub fn write(results_dir: &Path, report: &RunReport, claims: &[Claim]) -> io::Result<Vec<PathBuf>> {
     fs::create_dir_all(results_dir)?;
-    let date = report
-        .created_utc
-        .split(' ')
-        .next()
-        .unwrap_or("undated")
-        .to_owned();
-    let dated = results_dir.join(format!("{date}-{}.json", report.machine.hostname));
+    // created_utc is `YYYY-MM-DD HH:MM UTC`.
+    let mut parts = report.created_utc.split(' ');
+    let date = parts.next().unwrap_or("undated");
+    let hhmm = parts.next().unwrap_or("0000").replace(':', "");
+    // Historical file carries date+time+host+sha so a second run on the same
+    // host/day (or a rebuild) never silently clobbers earlier history.
+    let dated = results_dir.join(format!(
+        "{date}-{hhmm}-{}-{}.json",
+        report.machine.hostname, report.git_sha
+    ));
     let latest = results_dir.join("latest.json");
     let md_path = results_dir.join("RESULTS.md");
     let json = serde_json::to_string_pretty(report)?;

@@ -36,10 +36,18 @@ jobs:
       - name: install critcmp
         run: command -v critcmp >/dev/null || cargo install critcmp --locked
       - name: compare against named baseline
+        shell: bash
         run: |
+          set -euo pipefail
           BASE="${{ github.event.inputs.baseline || 'main' }}"
-          critcmp "$BASE" "run-${GITHUB_SHA:0:7}" | tee critcmp.txt \
-            || echo "no baseline named '$BASE' yet — promote one (see header comment)" | tee critcmp.txt
+          RUN="run-${GITHUB_SHA:0:7}"
+          # Only an absent baseline is non-fatal; a real critcmp failure (with
+          # pipefail, no longer masked by tee) fails the job.
+          if critcmp --baselines | grep -qx "$BASE"; then
+            critcmp "$BASE" "$RUN" | tee critcmp.txt
+          else
+            echo "no baseline named '$BASE' yet — promote one (see header comment)" | tee critcmp.txt
+          fi
       - name: claim verdicts + run report
         run: cargo run -p bench --bin bench-report | tee claim-verdicts.md
       - uses: actions/upload-artifact@v4

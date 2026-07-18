@@ -223,6 +223,40 @@ fn bundled_claims_load_and_render() {
 }
 
 #[test]
+fn validate_rejects_size_bounds_that_would_panic_sampling() {
+    // max_bytes < 64 passes the old median/max check but makes sample_size call
+    // `clamp(64, max_bytes)` with min > max, which panics. validate must reject.
+    let mut profile = dense_profile();
+    profile.size = SizeDist {
+        median_bytes: 32,
+        sigma: 0.0,
+        max_bytes: 32,
+    };
+    assert!(
+        profile.validate().is_err(),
+        "max_bytes < 64 must be rejected (clamp would panic)"
+    );
+}
+
+#[test]
+fn validate_rejects_nonfinite_intensity_that_would_hang() {
+    // A non-finite per_file reaches poisson's Knuth loop, whose `p < NaN` exit
+    // is never true — an infinite loop. validate must reject before generation.
+    let mut profile = dense_profile();
+    profile.constructs.insert(
+        "heading".to_owned(),
+        ConstructRate {
+            file_rate: 1.0,
+            per_file: f64::NAN,
+        },
+    );
+    assert!(
+        profile.validate().is_err(),
+        "non-finite per_file must be rejected (poisson would hang)"
+    );
+}
+
+#[test]
 fn bundled_profiles_load() {
     for name in ["vault-2026", "monster-10mb", "fence-bomb"] {
         let profile = Profile::resolve(name).unwrap_or_else(|e| panic!("{name}: {e}"));
