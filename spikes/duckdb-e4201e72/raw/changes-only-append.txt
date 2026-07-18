@@ -1,0 +1,3 @@
+EXPLAIN ANALYZE INSERT INTO changes SELECT g, now(), 'somepath.md', 'update', 'edit', 1, 2 FROM range(100000) t(g);
+││              Total Time: 0.0077s             ││
+│           INSERT          │

@@ -1,0 +1,15 @@
+# churn wiki.duckdb  n=10000
+appends            10000
+total_secs         35.6762
+sustained_appends_per_sec 280.3
+per_append_p50_us  3212.4
+per_append_p99_us  8068.5
+per_append_min_us  1907.2
+per_append_max_us  91037.2
+db_bytes_before    21508096
+db_bytes_mid       21508096
+db_bytes_after_ckpt 23867392
+wal_bytes_before   0
+wal_bytes_grown    38139302
+wal_bytes_after_ckpt 0
+changes_rows       10000

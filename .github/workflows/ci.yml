@@ -24,11 +24,11 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy (workspace lint policy, escalated)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: tests (all members incl. bench harness)
+      - name: tests (all members incl. perfsuite harness)
         run: cargo test --workspace
       - name: cargo-deny (fork one-copy law, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
       - name: bench smoke (one iteration per target — catches harness bit-rot)
-        run: cargo bench -p bench -- --test
+        run: cargo bench -p perfsuite -- --test
       - name: claim verdicts (renders the live claims table into the CI log)
-        run: cargo run -p bench --bin bench-report
+        run: cargo run -p perfsuite --bin bench-report

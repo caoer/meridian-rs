@@ -1,0 +1,7 @@
+/target
+*.duckdb
+*.duckdb.wal
+*.wal
+*.crash
+*.attach
+*.progress

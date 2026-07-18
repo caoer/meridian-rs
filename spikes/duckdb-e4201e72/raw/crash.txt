@@ -1,0 +1,11 @@
+# crash wiki.duckdb.crash
+child killed (SIGKILL) mid-append
+last_committed_seq_before_kill 10775
+--- reopen stdout ---
+┌──────────────┬─────────┐
+│ changes_rows │ max_seq │
+│    int64     │  int64  │
+├──────────────┼─────────┤
+│        10775 │   10775 │
+└──────────────┴─────────┘
+reopen_exit_ok true

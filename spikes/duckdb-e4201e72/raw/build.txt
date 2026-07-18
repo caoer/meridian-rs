@@ -1,0 +1,14 @@
+# build wiki.duckdb
+libduckdb   v1.5.4
+files       22342
+nodes       158726
+links       26642
+frontmatter 188392
+corpus_bytes 106154404
+root        ada552939df097b6
+extract_secs 0.7180  (of which file-read 0.3577)
+insert_secs  0.2400
+total_secs   0.9580
+db_bytes    21508096
+wal_bytes_after_checkpoint 0
+size_ratio_vs_corpus 0.2026

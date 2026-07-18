@@ -5,7 +5,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-# bench is out of default-members (criterion stays off the everyday build path)
+# perfsuite is out of default-members (criterion stays off the everyday build path)
 default-members = [
     "crates/syntax",
     "crates/model",

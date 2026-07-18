@@ -1,0 +1,20 @@
+# Throwaway measurement spike for round-3 DuckDB panel (panelist e4201e72).
+# Self-contained: its own [workspace] stanza so cargo does NOT fold it into the
+# meridian-rs law-crate workspace (members = ["crates/*"]). Never touches crates/.
+[package]
+name = "duckdb-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Empty workspace table => this Cargo.toml is its own workspace root; cargo will
+# not walk up to /Users/Shared/repos/meridian-rs/Cargo.toml.
+[workspace]
+
+[dependencies]
+duckdb = { version = "1", features = ["bundled"] }
+walkdir = "2"
+regex = "1"
+
+[profile.release]
+opt-level = 3

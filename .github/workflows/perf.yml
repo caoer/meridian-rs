@@ -7,8 +7,8 @@
 # Baseline discipline (criterion + critcmp):
 #   - every run saves baseline "run-<sha7>"
 #   - comparison target defaults to "main"; promote a good run on the runner:
-#       cargo bench -p bench -- --load-baseline run-<sha7> --save-baseline main
-#     (or re-run: cargo bench -p bench -- --save-baseline main)
+#       cargo bench -p perfsuite -- --load-baseline run-<sha7> --save-baseline main
+#     (or re-run: cargo bench -p perfsuite -- --save-baseline main)
 #   - results/ artifacts carry machine fingerprint + git sha in every JSON.
 name: perf
 
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: full sweep, saved as baseline run-<sha7>
-        run: cargo bench -p bench -- --save-baseline "run-${GITHUB_SHA:0:7}"
+        run: cargo bench -p perfsuite -- --save-baseline "run-${GITHUB_SHA:0:7}"
       - name: install critcmp
         run: command -v critcmp >/dev/null || cargo install critcmp --locked
       - name: compare against named baseline
@@ -49,11 +49,11 @@ jobs:
             echo "no baseline named '$BASE' yet — promote one (see header comment)" | tee critcmp.txt
           fi
       - name: claim verdicts + run report
-        run: cargo run -p bench --bin bench-report | tee claim-verdicts.md
+        run: cargo run -p perfsuite --bin bench-report | tee claim-verdicts.md
       - uses: actions/upload-artifact@v4
         with:
           name: perf-${{ github.sha }}
           path: |
             critcmp.txt
             claim-verdicts.md
-            crates/bench/results/
+            crates/perfsuite/results/

@@ -1,0 +1,18 @@
+# attach wiki.duckdb.attach
+HOLD rw open for 12s pid=39122
+--- (a) second spike process, read-only open ---
+RO-OPEN failed: IO Error: Could not set lock on file "/Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/wiki.duckdb.attach": Conflicting lock is held in /Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/target/release/duckdb-spike (PID 39122) by user caoer115. See also https://duckdb.org/docs/stable/connect/concurrency
+exit_ok true
+--- (b) duckdb CLI -readonly while writer live ---
+stdout: 
+stderr: IO Error: Could not set lock on file "/Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/wiki.duckdb.attach": Conflicting lock is held in /Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/target/release/duckdb-spike (PID 39122) by user caoer115. See also https://duckdb.org/docs/stable/connect/concurrency
+exit_ok false
+--- (c) duckdb CLI ATTACH (READ_ONLY) while writer live ---
+stdout: 
+stderr: IO Error: Could not set lock on file "/Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/wiki.duckdb.attach": Conflicting lock is held in /Users/Shared/repos/meridian-rs/spikes/duckdb-e4201e72/target/release/duckdb-spike (PID 39122) by user caoer115. See also https://duckdb.org/docs/stable/connect/concurrency
+exit_ok false
+HOLD released
+writer released
+--- (d) CONTROL: read-only open after writer released ---
+RO-OPEN ok files=22342
+exit_ok true

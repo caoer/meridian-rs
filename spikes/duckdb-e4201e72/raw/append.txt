@@ -1,0 +1,5 @@
+# append wiki.duckdb
+path /Users/Shared/projects/home-wiki/domains/research/security/rootkit-fundamentals.md
+seq  10001
+append_us 11025.7
+changes_rows 10001

@@ -1,0 +1,10 @@
+# rootstamp wiki.duckdb
+step 1  live root_before = 0176fabafa741913
+step 2  wrote batch seq=1 root_after = d1085de495530a2e
+step 3  simulate stale open: engine_live_root=deadbeefdeadbeef stored_root_after=d1085de495530a2e
+        MISMATCH -> current tables stale; discard + rebuild
+step 4  discarded current tables (files 22342 -> 0)
+step 5  rebuilt from corpus: files=22343 extract_secs=0.714 insert_secs=0.481
+        rebuilt root = eb5a83da02bb6177
+step 6  changes table SURVIVED rebuild: rows before=10002 after=10002
+rootstamp_demo_ok true
