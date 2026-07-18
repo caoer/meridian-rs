@@ -16,9 +16,8 @@ fn gt_pack_loads() {
         }
         expected_files += 1;
 
-        let parsed: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap())
-                .unwrap_or_else(|e| panic!("{} is valid JSON: {e}", path.display()));
+        let parsed: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap())
+            .unwrap_or_else(|e| panic!("{} is valid JSON: {e}", path.display()));
 
         let source_rel = parsed["file"]
             .as_str()

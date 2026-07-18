@@ -36,7 +36,7 @@ fn main() -> ExitCode {
 
     let stdin = io::stdin().lock();
     let stdout = io::stdout().lock();
-    match serve(root, stdin, stdout) {
+    match serve(&root, stdin, stdout) {
         // stdin EOF: in-flight work finished, stdout flushed, exit 0.
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -49,11 +49,15 @@ fn main() -> ExitCode {
 /// The stdin loop: decode frame → dispatch → encode exactly one response.
 /// Malformed input answers `bad_frame`/`bad_request`; the sidecar never
 /// terminates because of a bad frame.
-fn serve(root: fs::WorkspaceRoot, mut input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+fn serve(
+    root: &fs::WorkspaceRoot,
+    mut input: impl BufRead,
+    mut output: impl Write,
+) -> io::Result<()> {
     let codec = NdjsonCodec;
     while let Some(frame) = codec.decode(&mut input)? {
         let response = match frame {
-            Message::Request(req) => dispatch(&root, req),
+            Message::Request(req) => dispatch(root, req),
             // Inbound frames that aren't requests are protocol misuse → bad_frame.
             Message::Response(_) | Message::Notification(_) => todo!("rung 1: bad_frame envelope"),
         };

@@ -23,6 +23,7 @@
 /// tree to the contract's flat kinds, compute `text_prefix_16b` from the raw
 /// bytes, attach `node_rev`s, and emit in the frozen total order
 /// (span.start asc, span.end desc, kind-ordinal asc — contract §5.2).
+#[must_use]
 pub fn project(doc: &model::Document) -> Vec<wire::Node> {
     let _ = doc;
     todo!("rung 1: tree-flatten + kind map + prefix + order")
@@ -35,7 +36,14 @@ pub fn project(doc: &model::Document) -> Vec<wire::Node> {
 /// Decode: longest valid-UTF-8 head emitted as-is; each remaining byte as the
 /// four-char ASCII sequence `\xhh` (lowercase hex). Only a single multibyte
 /// character truncated by the window end ever gets escaped.
+#[must_use]
+#[expect(
+    clippy::missing_panics_doc,
+    reason = "the unwrap re-reads only bytes from_utf8 already validated"
+)]
 pub fn prefix_16b(raw: &[u8], start: usize) -> String {
+    use std::fmt::Write;
+
     let end = start.saturating_add(16).min(raw.len());
     let window = &raw[start.min(raw.len())..end];
     match std::str::from_utf8(window) {
@@ -45,7 +53,7 @@ pub fn prefix_16b(raw: &[u8], start: usize) -> String {
             let mut out = String::with_capacity(k + (window.len() - k) * 4);
             out.push_str(std::str::from_utf8(&window[..k]).unwrap());
             for b in &window[k..] {
-                out.push_str(&format!("\\x{b:02x}"));
+                let _ = write!(out, "\\x{b:02x}");
             }
             out
         }

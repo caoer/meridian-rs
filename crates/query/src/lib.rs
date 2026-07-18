@@ -27,6 +27,7 @@ pub struct Backlink {
 }
 
 /// Find-references: every wikilink/embed in the corpus resolving to `target`.
+#[must_use]
 pub fn backlinks(index: &CorpusIndex, target: &str) -> Vec<Backlink> {
     let _ = (index, target);
     todo!("rung 5: reverse lookup over the borrowed name index")
@@ -41,6 +42,7 @@ pub struct RenamePlan {
 
 /// Plan a heading/file rename: every affected wikilink rewritten
 /// depth/anchor/alias-preservingly, nothing applied.
+#[must_use]
 pub fn plan_rename(index: &CorpusIndex, from: &Ref, to: &str) -> RenamePlan {
     let _ = (index, from, to);
     todo!("rung 5: span-exact corpus rename planning")

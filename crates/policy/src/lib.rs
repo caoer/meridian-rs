@@ -82,17 +82,26 @@ pub struct CompiledRuleset {
 }
 
 /// Compile errors per the schema doc's error taxonomy (`ruleset_not_found`,
-/// `pin_mismatch`, `compile_error` + unknown_assertions, `unsupported_vocab`).
+/// `pin_mismatch`, `compile_error` + `unknown_assertions`, `unsupported_vocab`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
     NotFound,
-    PinMismatch { expected: String, actual: String },
-    UnknownAssertions { names: Vec<String>, at_rules: Vec<String> },
-    UnsupportedVocab { requires: u32, engine: u32 },
+    PinMismatch {
+        expected: String,
+        actual: String,
+    },
+    UnknownAssertions {
+        names: Vec<String>,
+        at_rules: Vec<String>,
+    },
+    UnsupportedVocab {
+        requires: u32,
+        engine: u32,
+    },
 }
 
 /// One finding: rule id, severity, and the violating node's wire coordinates
-/// (path/span/node_rev/hpath) — findings, never decisions.
+/// (`path/span/node_rev/hpath`) — findings, never decisions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Violation {
     pub rule: String,
@@ -115,6 +124,9 @@ pub enum Severity {
 
 /// Read + verify pin + compile + cache. YAML enters the engine here and
 /// nowhere else.
+///
+/// # Errors
+/// Pin mismatch, unparseable YAML, or a ruleset failing schema validation.
 pub fn compile(pin: &RulesetPin, source: &str) -> Result<CompiledRuleset, CompileError> {
     let _ = (pin, source);
     todo!("rung 6: parse → validate schema → compile; cache by content sha256")
@@ -123,6 +135,7 @@ pub fn compile(pin: &RulesetPin, source: &str) -> Result<CompiledRuleset, Compil
 /// Evaluate a ruleset over documents (gate and diagnostic modes share this
 /// path; mode/limit shaping is `sidecar`'s wire concern). `corpus` is the
 /// capability parameter: `None` in sidecar mode.
+#[must_use]
 pub fn evaluate(
     ruleset: &CompiledRuleset,
     docs: &[&Document],
@@ -136,6 +149,7 @@ pub fn evaluate(
 /// `ruleset`? `actor` arrives as pre-authorized data from Go (never resolved
 /// here); the verdict goes back on the wire. See crate doc for the position
 /// argument.
+#[must_use]
 pub fn authorize(
     doc: &Document,
     target: &model::Target,
@@ -155,6 +169,7 @@ pub enum AuthorizeVerdict {
 
 /// The engine declares itself: vocabulary version + per-assertion budgets,
 /// surfaced verbatim (the `policy_vocab` op body).
+#[must_use]
 pub fn vocab() -> Vec<(&'static str, Budget)> {
     todo!("rung 6: the 14-assertion vocabulary with declared budgets")
 }

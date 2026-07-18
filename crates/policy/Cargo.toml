@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 model = { workspace = true }
 # Ruleset YAML parsing is in-charter; the YAML library choice is a rung-6

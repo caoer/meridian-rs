@@ -1,4 +1,4 @@
-//! The in-memory world model: governed node tree (kind/span/node_rev/hpath),
+//! The in-memory world model: governed node tree (`kind/span/node_rev/hpath`),
 //! resolve, CAS-splice validation, Merkle roots — deliberately non-serializable.
 //!
 //! # Charter
@@ -51,7 +51,7 @@ pub struct MerkleRoot(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct YamlMap(pub BTreeMap<String, String>);
 
-/// The governed tree node. Every node carries kind + span + node_rev + hpath
+/// The governed tree node. Every node carries kind + span + `node_rev` + hpath
 /// (`None` for document/frontmatter), per policy-schema §2's guaranteed surface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
@@ -69,22 +69,51 @@ pub struct Node {
 /// is `sidecar`'s.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeKind {
-    Document { path: String, line_count: u32 },
-    Frontmatter { map: YamlMap },
-    Section { heading_text: String, level: u8 },
-    Heading { text: String, level: u8 },
+    Document {
+        path: String,
+        line_count: u32,
+    },
+    Frontmatter {
+        map: YamlMap,
+    },
+    Section {
+        heading_text: String,
+        level: u8,
+    },
+    Heading {
+        text: String,
+        level: u8,
+    },
     Paragraph,
     List,
     ListItem,
-    TaskItem { checked: bool },
-    CodeBlock { lang: String },
-    Callout { r#type: String, fold: String },
+    TaskItem {
+        checked: bool,
+    },
+    CodeBlock {
+        lang: String,
+    },
+    Callout {
+        r#type: String,
+        fold: String,
+    },
     Table,
-    Wikilink { target: String, fragment: Option<String> },
-    Link { target: String },
-    Embed { target: String },
-    Anchor { name: String },
-    Tag { name: String },
+    Wikilink {
+        target: String,
+        fragment: Option<String>,
+    },
+    Link {
+        target: String,
+    },
+    Embed {
+        target: String,
+    },
+    Anchor {
+        name: String,
+    },
+    Tag {
+        name: String,
+    },
 }
 
 /// One parsed file: the tree plus the raw bytes it was derived from (spans
@@ -97,8 +126,10 @@ pub struct Document {
 
 /// Build the governed tree from `syntax`'s dialect stream: assemble sections,
 /// parse frontmatter, compute hpath chains and revs. The syntax→model seam.
+#[must_use]
 pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
-    let _ = (&raw, &nodes);
+    // Moved (not borrowed): the real impl consumes both into the Document.
+    let _ = (raw, nodes);
     todo!("rung 1: governed-tree assembly (sections govern children, hpath chains)")
 }
 
@@ -129,8 +160,12 @@ pub enum ResolveError {
     Ambiguous(Vec<Target>),
 }
 
-/// `file#hpath` / `file#^anchor` → span + node_rev. Section span = heading line
+/// `file#hpath` / `file#^anchor` → span + `node_rev`. Section span = heading line
 /// through end of subtree (what makes the vision's splice example coherent).
+///
+/// # Errors
+/// [`ResolveError::NotFound`] for a missing ref; [`ResolveError::Ambiguous`]
+/// with the candidate list for duplicate hpaths.
 pub fn resolve(doc: &Document, r#ref: &Ref) -> Result<Target, ResolveError> {
     let _ = (doc, r#ref);
     todo!("rung 2: hpath/anchor resolution over the governed tree")
@@ -155,11 +190,18 @@ pub struct SpliceRequest {
 pub enum SpliceVerdict {
     Validated(ValidatedSplice),
     /// The retryable one: re-resolve, re-derive, splice again.
-    CasMismatch { expected: NodeRev, actual: NodeRev },
+    CasMismatch {
+        expected: NodeRev,
+        actual: NodeRev,
+    },
 }
 
 /// A splice that passed CAS validation against a live `Document`. Only `model`
 /// can mint one (private field), and `fs::apply_splice` only accepts one.
+#[expect(
+    clippy::manual_non_exhaustive,
+    reason = "_sealed is a capability seal (only model mints), not future-proofing"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedSplice {
     pub span: ByteSpan,
@@ -170,6 +212,7 @@ pub struct ValidatedSplice {
 /// Validate a splice against the current tree: span integrity + rev ladder
 /// (meridian I1/I2 anchor resolution + fresh/stale/omitted semantics relocate
 /// here as the validation core).
+#[must_use]
 pub fn validate_splice(doc: &Document, req: &SpliceRequest) -> SpliceVerdict {
     let _ = (doc, req);
     todo!("rung 2: CAS validation + rev ladder")
@@ -180,6 +223,7 @@ pub fn validate_splice(doc: &Document, req: &SpliceRequest) -> SpliceVerdict {
 // ---------------------------------------------------------------------------
 
 /// Current root over one document (rung 3); corpus root composes over these.
+#[must_use]
 pub fn merkle_root(doc: &Document) -> MerkleRoot {
     let _ = doc;
     todo!("rung 3: per-node hash fold")

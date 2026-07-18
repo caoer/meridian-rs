@@ -53,7 +53,8 @@ fn node_kinds_match_contract_v1_in_ordinal_order() {
 #[test]
 fn contract_example_error_envelope_roundtrips() {
     // The vision's canonical cas_mismatch line, verbatim from contract §4.
-    let line = r#"{"id":3,"ok":false,"error":"cas_mismatch","expected":"c71d09","actual":"5e2f77"}"#;
+    let line =
+        r#"{"id":3,"ok":false,"error":"cas_mismatch","expected":"c71d09","actual":"5e2f77"}"#;
     let resp: wire::Response = serde_json::from_str(line).unwrap();
     assert!(!resp.ok);
     assert_eq!(resp.id, Some(3));
