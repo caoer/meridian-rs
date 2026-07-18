@@ -1,12 +1,45 @@
-//! Criterion benches (corpus sweep, per-assertion p99 enforcement) — out of
-//! default-members.
+//! Perf harness: the pipeline is **recipe → generated corpus → seam benches →
+//! claim verdicts → three renderings** (human `RESULTS.md`, agent
+//! `latest.json`, append-only dated run JSONs).
 //!
 //! # Charter
-//! **Owns:** the workspace's benchmarks: rung 1's corpus-sweep throughput
-//! (baseline to beat: 103 MB/s lane, 2.16 s cold rebuild) and rung 6's
-//! declared-p99 enforcement (a release exceeding an assertion's declared budget
-//! fails CI here). Dedicated member so criterion-class dev-deps never pollute
-//! the libraries — mirrors the pulldown-cmark fork's own bench-member layout.
+//! **Owns:** the perf truth. `corpusgen` (profile-driven, seeded, deterministic
+//! markdown generator — corpora are cached under `target/corpora/`, never
+//! committed; a recipe file IS the corpus), the claims registry
+//! ([`claims`] — every perf claim is data in `claims.toml`, joined to
+//! measurements into PASS/FAIL/MEASURED/UNTESTED verdicts), the hdrhistogram
+//! p99 measurement path ([`measure`] — criterion sampling underestimates
+//! tails; `Budget{class, p99_us}` claims go through here), and run reports
+//! ([`report`]).
 //!
-//! **Never does:** ship code, run in default builds (`cargo bench -p bench` is
-//! the entry; the member sits outside `default-members`).
+//! **Never does:** define ground truth (the frozen GT pack in `testsuite` is
+//! the only byte-exact truth; generated corpora carry construct *inventories*,
+//! a lower bound — see [`gen`]'s recognizable-context invariant), ship in the
+//! everyday build path (out of `default-members`), or gate on wall time
+//! measured on shared runners (the perf lane runs on a pinned fleet host).
+//!
+//! # Rungs
+//! Day 1: harness + placeholder seam benches; `transport.codec` claims measure
+//! live (`NdjsonCodec` is implemented). Rung 1 flips the four parse claims from
+//! UNTESTED (baselines: parser-bench `rust-pulldown` lane — 103 MB/s corpus,
+//! 3.2 ms p99/file, 473 ms monster p99, 0.22 ms reparse). Rung 6 wires policy
+//! per-assertion budgets from ruleset data (`threshold_source = "ruleset"`).
+
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    reason = "measurement harness: lossy numeric casts are inherent to stats plumbing; per-fn error/panic/must-use annotations add noise to internal tooling"
+)]
+
+pub mod claims;
+pub mod corpus;
+pub mod generator;
+pub mod inventory;
+pub mod measure;
+pub mod profile;
+pub mod report;

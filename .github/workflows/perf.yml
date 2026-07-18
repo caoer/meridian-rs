@@ -1,0 +1,51 @@
+# Perf lane: full criterion sweep + claim measurements on CONSISTENT hardware.
+# Requires a self-hosted runner registered with labels [self-hosted, bench]
+# (pinned fleet host) — wall-time baselines are only meaningful when the
+# machine doesn't change under them. Until that runner exists this workflow
+# simply queues; registering it is an infra-ops task, not a repo change.
+#
+# Baseline discipline (criterion + critcmp):
+#   - every run saves baseline "run-<sha7>"
+#   - comparison target defaults to "main"; promote a good run on the runner:
+#       cargo bench -p bench -- --load-baseline run-<sha7> --save-baseline main
+#     (or re-run: cargo bench -p bench -- --save-baseline main)
+#   - results/ artifacts carry machine fingerprint + git sha in every JSON.
+name: perf
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "critcmp baseline name to compare against"
+        default: "main"
+        required: false
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sweep:
+    runs-on: [self-hosted, bench]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: full sweep, saved as baseline run-<sha7>
+        run: cargo bench -p bench -- --save-baseline "run-${GITHUB_SHA:0:7}"
+      - name: install critcmp
+        run: command -v critcmp >/dev/null || cargo install critcmp --locked
+      - name: compare against named baseline
+        run: |
+          BASE="${{ github.event.inputs.baseline || 'main' }}"
+          critcmp "$BASE" "run-${GITHUB_SHA:0:7}" | tee critcmp.txt \
+            || echo "no baseline named '$BASE' yet — promote one (see header comment)" | tee critcmp.txt
+      - name: claim verdicts + run report
+        run: cargo run -p bench --bin bench-report | tee claim-verdicts.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.sha }}
+          path: |
+            critcmp.txt
+            claim-verdicts.md
+            crates/bench/results/
