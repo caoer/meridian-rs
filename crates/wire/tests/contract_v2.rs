@@ -107,6 +107,8 @@ fn recovery_bindings_match_frozen_table() {
         (C::InvalidUtf8, R::Env),
         (C::CasMismatch, R::Refresh),
         (C::RefNotFound, R::Refresh),
+        (C::RootMismatch, R::Resync), // the declared rebind (was refresh)
+        (C::RootUnknown, R::Resync),
         (C::BadFrame, R::Respawn),
         (C::UnsupportedProto, R::Respawn), // the declared rebind (was fix)
         (C::Internal, R::Respawn),
@@ -326,4 +328,107 @@ fn sec_ref_three_mint_forms_roundtrip() {
             typed
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// W3-AMEND — §4.7 root/diff + the root_mismatch scope-deviation fixture
+// ---------------------------------------------------------------------------
+
+/// v2 §4.7 worked: `{"op":"root"}` takes no parameters; the response carries
+/// root + seq.
+#[test]
+fn worked_root_frames_match_contract() {
+    let request: wire::Request = serde_json::from_value(json!({"id":90,"op":"root"})).unwrap();
+    assert_eq!(request.op, wire::Op::Root);
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        json!({"id":90,"op":"root"})
+    );
+
+    let frame = wire::Response {
+        id: Some(90),
+        ok: true,
+        payload: wire::ResponsePayload::Body {
+            body: wire::ResponseBody::Root {
+                root: wire::Root(
+                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                ),
+                seq: 2,
+            },
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&frame).unwrap(),
+        json!({"id":90,"ok":true,"body":{
+            "root":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "seq":2}})
+    );
+}
+
+/// v2 §4.7 worked: the diff REQUEST shape, frozen now (the Delta-bearing
+/// response body lands with the Delta noun, D3-DELTA).
+#[test]
+fn worked_diff_request_matches_contract() {
+    let request: wire::Request = serde_json::from_value(json!({
+        "id":95,"op":"diff",
+        "from_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+        "to_root":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68"
+    }))
+    .unwrap();
+    assert_eq!(
+        request.op,
+        wire::Op::Diff {
+            from_root: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into()
+            ),
+            to_root: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into()
+            ),
+        }
+    );
+}
+
+/// Ledger flag 2, the deviation row EXECUTABLE (§18 row 2, WAIVED): the
+/// repo's reserved shape carried `expected/actual/scope/changed`; the frozen
+/// contract ships `{expected,actual,changed}` — NO `scope` key, discriminated
+/// here so the drop can never regress silently. A v1-dialect reader expecting
+/// `scope` finds the key absent.
+#[test]
+fn root_mismatch_scope_drop_deviation_fixture() {
+    let mut error = wire::ErrorBody::new(wire::ErrorCode::RootMismatch);
+    error.expected = Some(wire::NodeRev(
+        "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+    ));
+    error.actual = Some(wire::NodeRev(
+        "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+    ));
+    error.changed = Some(vec![wire::Path("notes/plan.md".into())]);
+    let frame = wire::Response {
+        id: Some(96),
+        ok: false,
+        payload: wire::ResponsePayload::Error { error },
+    };
+    let v = serde_json::to_value(&frame).unwrap();
+    assert_eq!(
+        v,
+        json!({"id":96,"ok":false,"error":{
+            "code":"root_mismatch","recovery":"resync",
+            "expected":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+            "actual":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "changed":["notes/plan.md"]}})
+    );
+    // field-for-field: exactly the frozen keys, scope ABSENT
+    let keys: Vec<&str> = v["error"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(!keys.contains(&"scope"));
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        ["actual", "changed", "code", "expected", "recovery"]
+    );
 }

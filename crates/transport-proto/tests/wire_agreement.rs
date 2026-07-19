@@ -69,6 +69,8 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::CasMismatch => pb::ErrorCode::CasMismatch,
         wire::ErrorCode::RefNotFound => pb::ErrorCode::RefNotFound,
         wire::ErrorCode::AmbiguousRef => pb::ErrorCode::AmbiguousRef,
+        wire::ErrorCode::RootMismatch => pb::ErrorCode::RootMismatch,
+        wire::ErrorCode::RootUnknown => pb::ErrorCode::RootUnknown,
     }
 }
 
@@ -203,12 +205,10 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             if_node_rev: if_node_rev.0,
             text,
         }),
-        wire::Op::Root { path } => pb::request::Op::Root(pb::RootRequest {
-            path: path.map(|p| p.0),
-        }),
-        wire::Op::Guard { root, path } => pb::request::Op::Guard(pb::GuardRequest {
-            root: root.0,
-            path: path.map(|p| p.0),
+        wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
+        wire::Op::Diff { from_root, to_root } => pb::request::Op::Diff(pb::DiffRequest {
+            from_root: from_root.0,
+            to_root: to_root.0,
         }),
     }
 }
@@ -230,6 +230,7 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
         supported,
         expected,
         actual,
+        changed,
         stage,
         dest,
         candidates,
@@ -256,6 +257,12 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
         // empty ≡ absent: a D-C5 refusal names ≥1 unknown kind
         unknown_kinds: unknown_kinds.unwrap_or_default(),
         id_raw,
+        // empty ≡ absent: a root_mismatch names its drift
+        changed: changed
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.0)
+            .collect(),
     }
 }
 
@@ -311,11 +318,8 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
                 node_rev: node_rev.0,
             })
         }
-        wire::ResponseBody::Root { root } => {
-            pb::response::Body::Root(pb::RootResponse { root: root.0 })
-        }
-        wire::ResponseBody::Guard { root } => {
-            pb::response::Body::Guard(pb::GuardResponse { root: root.0 })
+        wire::ResponseBody::Root { root, seq } => {
+            pb::response::Body::Root(pb::RootResponse { root: root.0, seq })
         }
     }
 }
@@ -391,6 +395,8 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::CasMismatch => wire::ErrorCode::CasMismatch,
         pb::ErrorCode::RefNotFound => wire::ErrorCode::RefNotFound,
         pb::ErrorCode::AmbiguousRef => wire::ErrorCode::AmbiguousRef,
+        pb::ErrorCode::RootMismatch => wire::ErrorCode::RootMismatch,
+        pb::ErrorCode::RootUnknown => wire::ErrorCode::RootUnknown,
     }
 }
 
@@ -522,12 +528,10 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             if_node_rev: wire::NodeRev(if_node_rev),
             text,
         },
-        pb::request::Op::Root(pb::RootRequest { path }) => wire::Op::Root {
-            path: path.map(wire::Path),
-        },
-        pb::request::Op::Guard(pb::GuardRequest { root, path }) => wire::Op::Guard {
-            root: wire::Root(root),
-            path: path.map(wire::Path),
+        pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
+        pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
+            from_root: wire::Root(from_root),
+            to_root: wire::Root(to_root),
         },
     }
 }
@@ -549,6 +553,7 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
         supported,
         expected,
         actual,
+        changed,
         stage,
         dest,
         candidates,
@@ -580,6 +585,11 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
             Some(unknown_kinds)
         },
         id_raw,
+        changed: if changed.is_empty() {
+            None
+        } else {
+            Some(changed.into_iter().map(wire::Path).collect())
+        },
     }
 }
 
@@ -646,11 +656,9 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
                 node_rev: wire::NodeRev(node_rev),
             }
         }
-        pb::response::Body::Root(pb::RootResponse { root }) => wire::ResponseBody::Root {
+        pb::response::Body::Root(pb::RootResponse { root, seq }) => wire::ResponseBody::Root {
             root: wire::Root(root),
-        },
-        pb::response::Body::Guard(pb::GuardResponse { root }) => wire::ResponseBody::Guard {
-            root: wire::Root(root),
+            seq,
         },
         pb::response::Body::Error(_) => unreachable!("payload_from_pb routes the error arm"),
     }
@@ -868,10 +876,14 @@ fn sample_requests() -> Vec<wire::Request> {
             if_node_rev: wire::NodeRev("33d5b0e1b27cb48b".into()),
             text: "replacement\n".into(),
         },
-        wire::Op::Root { path: None },
-        wire::Op::Guard {
-            root: wire::Root("b3:88d2aa".into()),
-            path: Some(wire::Path("notes".into())),
+        wire::Op::Root,
+        wire::Op::Diff {
+            from_root: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            to_root: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
         },
     ];
     ops.into_iter()
@@ -887,6 +899,8 @@ fn sample_requests() -> Vec<wire::Request> {
 /// code-specific extras ride their codes.
 fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
     let codes = [
+        wire::ErrorCode::RootMismatch,
+        wire::ErrorCode::RootUnknown,
         wire::ErrorCode::BadFrame,
         wire::ErrorCode::BadRequest,
         wire::ErrorCode::UnknownOp,
@@ -933,6 +947,15 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
             e.unknown_kinds =
                 matches!(code, wire::ErrorCode::BadRequest).then(|| vec!["headding".into()]);
             e.id_raw = matches!(code, wire::ErrorCode::BadRequest).then(|| "3e0".into());
+            if matches!(code, wire::ErrorCode::RootMismatch) {
+                e.expected = Some(wire::NodeRev(
+                    "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+                ));
+                e.actual = Some(wire::NodeRev(
+                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                ));
+                e.changed = Some(vec![wire::Path("notes/plan.md".into())]);
+            }
             wire::ResponsePayload::Error { error: e }
         })
         .collect()
@@ -988,8 +1011,7 @@ fn sample_responses() -> Vec<wire::Response> {
             span: wire::Span(10, 95),
             node_rev: wire::NodeRev("41f643f034e5681f".into()),
         },
-        wire::ResponseBody::Root { root: root.clone() },
-        wire::ResponseBody::Guard { root },
+        wire::ResponseBody::Root { root, seq: 2 },
     ];
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()
