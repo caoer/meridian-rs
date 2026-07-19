@@ -67,7 +67,12 @@ fn wsfix_s0_plan_node_and_file_revs_match_oracle() {
     let NodeKind::Frontmatter { map } = &fm.kind else {
         unreachable!()
     };
-    assert_eq!(map.0.get("title").map(String::as_str), Some("Plan"));
+    assert_eq!(
+        map.0
+            .iter()
+            .find_map(|(k, v)| (k == "title").then_some(v.as_str())),
+        Some("Plan")
+    );
 
     // sections (toc_s0): Goals(L1) governs Q3/Q4(L2).
     assert_node(section(&root, "Goals"), 20..136, "a6665baff294bd04");

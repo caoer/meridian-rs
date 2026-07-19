@@ -44,12 +44,20 @@ pub struct NodeRev(pub String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleRoot(pub String);
 
-/// Placeholder for parsed frontmatter YAML (policy-schema §2: the engine parses
-/// frontmatter — dialect-smart includes frontmatter). YAML library choice is an
-/// implementation decision deferred to the rung that lands it; the placeholder
-/// keeps the skeleton dependency-honest.
+/// Parsed frontmatter, DOCUMENT ORDER preserved (the M2-PROJECT ordered-keys
+/// amendment: wire `keys` must echo document order, B1 predicate 4 — a sorted
+/// map betrayed the order). Flat `(key, value)` pairs, first occurrence wins;
+/// no YAML library (no-serde crate law; nesting deferred to the rung that
+/// needs it).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct YamlMap(pub BTreeMap<String, String>);
+pub struct YamlMap(pub Vec<(String, String)>);
+
+impl YamlMap {
+    /// Keys in document order.
+    pub fn keys(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|(k, _)| k.as_str())
+    }
+}
 
 /// The governed tree node. Every node carries kind + span + `node_rev` + hpath
 /// (`None` for document/frontmatter), per policy-schema §2's guaranteed surface.
@@ -89,9 +97,11 @@ pub enum NodeKind {
     ListItem,
     TaskItem {
         checked: bool,
+        depth: u32,
     },
     CodeBlock {
         lang: String,
+        unterminated: bool,
     },
     Callout {
         r#type: String,
@@ -100,13 +110,18 @@ pub enum NodeKind {
     Table,
     Wikilink {
         target: String,
-        fragment: Option<String>,
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
     },
     Link {
         target: String,
     },
     Embed {
         target: String,
+        heading: Option<String>,
+        block: Option<String>,
+        alias: Option<String>,
     },
     Anchor {
         name: String,
@@ -114,6 +129,11 @@ pub enum NodeKind {
     Tag {
         name: String,
     },
+    /// Wire-observable leaf (M2-PROJECT vocabulary amendment — the B1
+    /// predicate-1 gap, closed: every dialect construct is representable).
+    InlineCode,
+    /// Wire-observable leaf (same amendment).
+    Comment,
 }
 
 /// One parsed file: the tree plus the raw bytes it was derived from (spans
@@ -155,8 +175,6 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
                 frontmatter = Some(leaf_node(&raw, NodeKind::Frontmatter { map }, span));
             }
             D::Heading { level, text } => headings.push((span.start, level, text)),
-            // InlineCode / Comment have no model kind — the vocabulary gap is
-            // B1-SUPERSET's fail-first surface; not papered over here.
             other => {
                 if let Some(kind) = leaf_kind(other) {
                     leaves.push(leaf_node(&raw, kind, span));
@@ -285,11 +303,11 @@ fn extend_terminator(bytes: &[u8], mut end: usize) -> usize {
 /// keys authority per the R1 forward-note, NOT `syntax`'s best-effort list. No
 /// serde/YAML crate: the no-serde crate law forbids it and the corpus frontmatter
 /// is flat; a full YAML library is deferred to the rung that needs nesting.
-/// `YamlMap` is a sorted `BTreeMap`, so document key order is not preserved here
-/// (a single-key fixture is unaffected; order is B1-SUPERSET / `wire-map`'s).
+/// Key order is document order (first occurrence wins) — the wire `keys`
+/// surface echoes it verbatim (B1 predicate 4).
 fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
     let block = raw.get(span.clone()).unwrap_or_default();
-    let mut map = BTreeMap::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
     for line in block.lines() {
         let trimmed = line.trim();
         if trimmed == "---" || trimmed.is_empty() {
@@ -304,11 +322,12 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
             if key.is_empty() {
                 continue;
             }
-            map.entry(key)
-                .or_insert_with(|| line[colon + 1..].trim().to_string());
+            if pairs.iter().all(|(k, _)| *k != key) {
+                pairs.push((key, line[colon + 1..].trim().to_string()));
+            }
         }
     }
-    YamlMap(map)
+    YamlMap(pairs)
 }
 
 /// Map a leaf dialect construct to its model node kind. `Heading`/`Frontmatter`
@@ -317,22 +336,42 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
 fn leaf_kind(dk: syntax::DialectKind) -> Option<NodeKind> {
     use syntax::DialectKind as D;
     Some(match dk {
-        D::Fence { info_string, .. } => NodeKind::CodeBlock { lang: info_string },
+        D::Fence {
+            info_string,
+            unterminated,
+        } => NodeKind::CodeBlock {
+            lang: info_string,
+            unterminated,
+        },
         D::Anchor { id } => NodeKind::Anchor { name: id },
         D::Wikilink {
             target,
             heading,
             block,
-            ..
+            alias,
         } => NodeKind::Wikilink {
             target,
-            fragment: heading.or(block),
+            heading,
+            block,
+            alias,
         },
-        D::Embed { target, .. } => NodeKind::Embed { target },
+        D::Embed {
+            target,
+            heading,
+            block,
+            alias,
+        } => NodeKind::Embed {
+            target,
+            heading,
+            block,
+            alias,
+        },
         D::Callout { r#type, fold } => NodeKind::Callout { r#type, fold },
-        D::Task { checked, .. } => NodeKind::TaskItem { checked },
+        D::Task { checked, depth } => NodeKind::TaskItem { checked, depth },
         D::Table => NodeKind::Table,
-        D::InlineCode | D::Comment | D::Frontmatter { .. } | D::Heading { .. } => return None,
+        D::InlineCode => NodeKind::InlineCode,
+        D::Comment => NodeKind::Comment,
+        D::Frontmatter { .. } | D::Heading { .. } => return None,
     })
 }
 
@@ -387,6 +426,8 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
         NodeKind::Embed { .. } => 13,
         NodeKind::Anchor { .. } => 14,
         NodeKind::Tag { .. } => 15,
+        NodeKind::InlineCode => 16,
+        NodeKind::Comment => 17,
     }
 }
 
@@ -530,7 +571,12 @@ mod tests {
         let NodeKind::Frontmatter { map } = &fm.kind else {
             unreachable!()
         };
-        assert_eq!(map.0.get("title").map(String::as_str), Some("Plan"));
+        assert_eq!(
+            map.0
+                .iter()
+                .find_map(|(k, v)| (k == "title").then_some(v.as_str())),
+            Some("Plan")
+        );
     }
 
     #[test]

@@ -136,3 +136,28 @@ fn frontmatter_key_order_preserved_in_keys() {
         "keys must preserve document order, never sorted order"
     );
 }
+
+/// M2-PROJECT gate: the frozen total order holds over the projected list —
+/// span.start asc, span.end desc (container before contained), kind ordinal
+/// as tiebreak (contract §5.2) — property-asserted pairwise over a document
+/// exercising every construct, nested sections included.
+#[test]
+fn projection_emits_frozen_total_order() {
+    let src = "---\ntitle: T\n---\n\
+               # A\n\npara `x` [[l]] ^a1\n\n\
+               ## B\n\n- [ ] t\n\n### C\n\n| a |\n|---|\n\n\
+               ## B\n\n%% c %%\n\n```\nf\n";
+    let nodes = project(src);
+    assert!(nodes.len() > 5, "corpus projects a non-trivial list");
+    for pair in nodes.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        let ordered = a.span.0 < b.span.0
+            || (a.span.0 == b.span.0
+                && (a.span.1 > b.span.1 || (a.span.1 == b.span.1 && a.kind <= b.kind)));
+        assert!(
+            ordered,
+            "frozen order violated: {:?}@{:?} before {:?}@{:?}",
+            a.kind, a.span, b.kind, b.span
+        );
+    }
+}
