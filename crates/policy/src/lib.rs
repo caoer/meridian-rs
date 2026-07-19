@@ -48,11 +48,25 @@ use model::{CorpusIndex, Document};
 
 mod pack;
 
-use pack::Evaluator as _;
+use pack::RuleEvaluator as _;
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
 /// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an
 /// evaluator/dialect change is a pack change, gated at load.
+///
+/// # `rulepack-api@1` — the pinned surface
+/// Rule predicates are fenced ` ```starlark ` blocks in literate rule pages, each
+/// defining `def check(doc)`, evaluated in-engine via starlark-rust under the
+/// manifest's per-eval [`EvalBudget`]. The pin names the injected world-model fact
+/// surface (§11.2 — nodes / revs / spans / hpaths only):
+/// - `doc.path` (str), `doc.nodes` (list, document order);
+/// - node fields `kind`, `level`, `text`, `span` (int tuple), `node_rev`, `hpath`;
+/// - `violation(rule, severity, span, node_rev, hpath, message)` (named args) —
+///   records one §11.1 finding; `severity` ∈ {error, warn, info}.
+///
+/// Changing this surface or the dialect bumps the pin to `rulepack-api@N` and is
+/// gated at load — never a wire change (row-13 wire-invariance: no wire crate
+/// names Starlark). The exact injected surface is documented on `pack`.
 pub const RULEPACK_API: &str = "rulepack-api@1";
 
 /// The §11.3 per-eval metering budget: `{steps, mem}` bounding one evaluation.
@@ -221,8 +235,9 @@ pub enum Severity {
 /// `files` resolves manifest-relative fixture/rule paths to their contents, so
 /// policy performs no I/O of its own.
 ///
-/// Pipeline: content-pin (sha256) → parse → api-pin → read+classify rules → run
-/// fixtures via the sealed eval bridge → admit / refuse.
+/// Pipeline: content-pin (sha256) → parse → api-pin → read+classify rules →
+/// extract+parse fenced Starlark predicates → run fixtures via the sealed
+/// Starlark eval bridge → admit / refuse.
 ///
 /// # Errors
 /// [`CompileError::PinMismatch`] (api or sha256), [`CompileError::Malformed`]
@@ -266,6 +281,11 @@ pub fn compile(
     }
     let budget_class = pack::classify_budget_class(&rule_sources);
 
+    // 4b. Extract + parse-check each rule page's fenced Starlark predicate. A rule
+    // that cannot be read (no ```starlark block, or unparseable) fails loud here,
+    // before any fixture runs.
+    let predicates = pack::extract_predicates(&rule_sources, &manifest.rules)?;
+
     // 5. Fixtures ARE the load gate: no fixtures = cannot demonstrate itself.
     if manifest.fixtures.is_empty() {
         return Err(CompileError::FixtureFailed {
@@ -275,7 +295,7 @@ pub fn compile(
                 .to_string(),
         });
     }
-    let evaluator = pack::BlurbEvaluator;
+    let evaluator = pack::StarlarkEvaluator;
     for fixture in &manifest.fixtures {
         let content = files
             .read(fixture)
@@ -284,7 +304,7 @@ pub fn compile(
                 detail: format!("unreadable: {e}"),
             })?;
         let doc = pack::parse_fixture(fixture, &content)?;
-        match evaluator.eval_fixture(&rule_sources, &doc, manifest.budgets) {
+        match evaluator.eval_fixture(&predicates, &doc, manifest.budgets) {
             Ok(violations) => {
                 let actual = if violations.is_empty() {
                     pack::Expect::Pass
@@ -301,13 +321,19 @@ pub fn compile(
                     });
                 }
             }
-            Err(exhausted) => {
+            Err(pack::EvalError::Budget(exhausted)) => {
                 return Err(CompileError::FixtureFailed {
                     fixture: fixture.clone(),
                     detail: format!(
                         "exhausted per-eval budget (steps>{} or mem>{})",
                         exhausted.steps, exhausted.mem
                     ),
+                });
+            }
+            Err(pack::EvalError::Runtime(msg)) => {
+                return Err(CompileError::FixtureFailed {
+                    fixture: fixture.clone(),
+                    detail: format!("rule evaluation error: {msg}"),
                 });
             }
         }
