@@ -66,9 +66,21 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 content: opt_bool(obj, op, "content")?,
             })
         }
+        "root" => {
+            // v2 §4.7: no parameters — the root is world-grain.
+            check_fields(obj, op, &[])?;
+            Ok(Op::Root)
+        }
+        "diff" => {
+            check_fields(obj, op, &["from_root", "to_root"])?;
+            Ok(Op::Diff {
+                from_root: wire::Root(req_str(obj, op, "from_root")?),
+                to_root: wire::Root(req_str(obj, op, "to_root")?),
+            })
+        }
         // §3.2 discovery honesty: everything else — including ops the wire
-        // vocabulary knows but this rung has not armed (splice/root/diff) —
-        // answers `unknown_op`.
+        // vocabulary knows but this rung has not armed (splice) — answers
+        // `unknown_op`.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }

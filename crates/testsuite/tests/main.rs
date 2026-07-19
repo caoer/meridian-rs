@@ -3,6 +3,7 @@
 //! and `wire_golden` (contract example exchanges verbatim) as modules here.
 
 mod charset_guard;
+mod delta_e3e4;
 mod gt_pack_smoke;
 mod gt_parse;
 mod walk_resolve;
