@@ -23,10 +23,133 @@
 /// tree to the contract's flat kinds, compute `text_prefix_16b` from the raw
 /// bytes, attach `node_rev`s, and emit in the frozen total order
 /// (span.start asc, span.end desc, kind-ordinal asc — contract §5.2).
+///
+/// Model-only structure (document root, paragraphs, lists, plain links, tags)
+/// is not wire-observable and is skipped — the four B1 superset predicates
+/// pin that nothing wire-observable is lost.
 #[must_use]
 pub fn project(doc: &model::Document) -> Vec<wire::Node> {
-    let _ = doc;
-    todo!("rung 1: tree-flatten + kind map + prefix + order")
+    let mut out = Vec::new();
+    flatten(&doc.root, doc.raw.as_bytes(), &mut out);
+    // the frozen total order: span.start asc, span.end desc, kind ordinal
+    // (wire::NodeKind derives Ord over the frozen declaration order)
+    out.sort_by(|a, b| {
+        a.span
+            .0
+            .cmp(&b.span.0)
+            .then(b.span.1.cmp(&a.span.1))
+            .then(a.kind.cmp(&b.kind))
+    });
+    out
+}
+
+fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
+    if let Some((kind, info, unterminated)) = wire_view(&node.kind) {
+        let start = node.span.start;
+        out.push(wire::Node {
+            kind,
+            span: wire::Span(node.span.start as u64, node.span.end as u64),
+            text_prefix_16b: prefix_16b(raw, start),
+            hpath: (kind == wire::NodeKind::Heading).then(|| {
+                node.hpath
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|h| wire::HpathSeg { h, n: None })
+                    .collect()
+            }),
+            unterminated: unterminated.then_some(true),
+            info,
+            node_rev: Some(wire::NodeRev(node.node_rev.0.clone())),
+        });
+    }
+    for child in &node.children {
+        flatten(child, raw, out);
+    }
+}
+
+/// The model→wire kind map: `(wire kind, per-kind info, unterminated)` for
+/// wire-observable nodes, `None` for model-only structure.
+fn wire_view(kind: &model::NodeKind) -> Option<(wire::NodeKind, Option<wire::Info>, bool)> {
+    use model::NodeKind as M;
+    use wire::{Info, NodeKind as W};
+    Some(match kind {
+        M::Frontmatter { map } => (
+            W::Frontmatter,
+            Some(Info::Frontmatter {
+                keys: map.keys().map(str::to_owned).collect(),
+            }),
+            false,
+        ),
+        // a wire "heading" is the model SECTION: heading-inclusive span to the
+        // next boundary (§1 span sub-laws), hpath chain attached
+        M::Section { .. } => (W::Heading, None, false),
+        M::CodeBlock { lang, unterminated } => (
+            W::Fence,
+            Some(Info::Fence {
+                info_string: lang.clone(),
+            }),
+            *unterminated,
+        ),
+        M::InlineCode => (W::InlineCode, None, false),
+        M::Comment => (W::Comment, None, false),
+        M::Anchor { .. } => (W::Anchor, None, false),
+        M::Wikilink {
+            target,
+            heading,
+            block,
+            alias,
+        } => (
+            W::Wikilink,
+            Some(Info::Wikilink {
+                target: target.clone(),
+                heading: heading.clone(),
+                block: block.clone(),
+                alias: alias.clone(),
+            }),
+            false,
+        ),
+        M::Embed {
+            target,
+            heading,
+            block,
+            alias,
+        } => (
+            W::Embed,
+            Some(Info::Wikilink {
+                target: target.clone(),
+                heading: heading.clone(),
+                block: block.clone(),
+                alias: alias.clone(),
+            }),
+            false,
+        ),
+        M::Callout { r#type, fold } => (
+            W::Callout,
+            Some(Info::Callout {
+                r#type: r#type.clone(),
+                fold: fold.clone(),
+            }),
+            false,
+        ),
+        M::TaskItem { checked, depth } => (
+            W::Task,
+            Some(Info::Task {
+                checked: *checked,
+                depth: *depth,
+            }),
+            false,
+        ),
+        M::Table => (W::Table, None, false),
+        // model-only structure: not wire-observable
+        M::Document { .. }
+        | M::Heading { .. }
+        | M::Paragraph
+        | M::List
+        | M::ListItem
+        | M::Link { .. }
+        | M::Tag { .. } => return None,
+    })
 }
 
 /// The frozen prefix law (contract §5.2), implemented — the seam proof, real
