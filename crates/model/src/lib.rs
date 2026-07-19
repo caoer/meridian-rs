@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+pub mod delta;
 pub mod walk;
 
 /// Half-open byte range into a file's raw bytes. Distinct from the wire's
