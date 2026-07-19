@@ -1,0 +1,138 @@
+//! B1-SUPERSET: the four wire-observable superset-by-embedding predicates
+//! (contract §15 B1, §14 wire-map row), written at the `wire_map::project`
+//! seam WHILE `project` is still `todo!()` — fail-first is the law of this
+//! unit. Divergence between model and wire vocabularies must surface here as
+//! a compile/test error, never as runtime loss.
+//!
+//! Predicates exercise REAL parsed documents (`model::build` over
+//! `syntax::parse`), never hand-constructed trees — the whole pipeline is
+//! under test, exactly as a sidecar would drive it.
+
+use wire::NodeKind as K;
+
+fn project(raw: &str) -> Vec<wire::Node> {
+    let doc = model::build(raw.to_owned(), syntax::parse(raw));
+    wire_map::project(&doc)
+}
+
+/// Predicate 1: every dialect construct is wire-representable across the
+/// 11-kind enum — including `Comment` and `InlineCode`, the two kinds the
+/// model vocabulary currently lacks (the DESIGNED fail-first surface: the
+/// gap lands here, never as silent loss).
+#[test]
+fn every_dialect_construct_is_wire_representable() {
+    let src = "---\ntitle: Superset\n---\n\
+               # Alpha\n\n\
+               Para with `inline` and [[notes/x#H|alias]] then ![[img/y.png#^blk-1]] end. ^blk-a\n\n\
+               > [!note]- folded\n> body\n\n\
+               - [x] a task\n\n\
+               | a | b |\n|---|---|\n| 1 | 2 |\n\n\
+               ```rust\nfn f() {}\n```\n\n\
+               %% a comment %%\n";
+    let nodes = project(src);
+    for kind in [
+        K::Frontmatter,
+        K::Heading,
+        K::Fence,
+        K::InlineCode,
+        K::Anchor,
+        K::Wikilink,
+        K::Embed,
+        K::Callout,
+        K::Task,
+        K::Table,
+        K::Comment,
+    ] {
+        assert!(
+            nodes.iter().any(|n| n.kind == kind),
+            "dialect construct not wire-representable: {kind:?} missing from projection"
+        );
+    }
+}
+
+/// Predicate 2: wikilink info is carried WHOLE — target, heading, block,
+/// alias all survive projection (contract §5.2 info table); the embed's
+/// block ref survives beside it.
+#[test]
+fn wikilink_info_carried_whole() {
+    let src = "# A\n\nSee [[notes/x#H|alias]] and ![[img/y.png#^blk-1]] end.\n";
+    let nodes = project(src);
+    let link = nodes
+        .iter()
+        .find(|n| n.kind == K::Wikilink)
+        .expect("wikilink node projected");
+    assert_eq!(
+        link.info,
+        Some(wire::Info::Wikilink {
+            target: "notes/x".into(),
+            heading: Some("H".into()),
+            block: None,
+            alias: Some("alias".into()),
+        }),
+        "wikilink info must be carried whole"
+    );
+    let embed = nodes
+        .iter()
+        .find(|n| n.kind == K::Embed)
+        .expect("embed node projected");
+    assert_eq!(
+        embed.info,
+        Some(wire::Info::Wikilink {
+            target: "img/y.png".into(),
+            heading: None,
+            block: Some("blk-1".into()),
+            alias: None,
+        }),
+        "embed block ref must be carried whole"
+    );
+}
+
+/// Predicate 3: fence `unterminated` rides the wire (contract §5.2 — present
+/// only when true; the honest EOF story is wire-observable).
+#[test]
+fn fence_unterminated_rides_the_wire() {
+    let terminated = project("# A\n\n```rust\nfn f() {}\n```\n");
+    let fence = terminated
+        .iter()
+        .find(|n| n.kind == K::Fence)
+        .expect("terminated fence projected");
+    assert_eq!(fence.unterminated, None, "terminated fence omits the flag");
+
+    let unterminated = project("# A\n\n```rust\nfn f() {}\n");
+    let fence = unterminated
+        .iter()
+        .find(|n| n.kind == K::Fence)
+        .expect("unterminated fence projected");
+    assert_eq!(
+        fence.unterminated,
+        Some(true),
+        "unterminated fence must say so on the wire"
+    );
+}
+
+/// Predicate 4: frontmatter key ORDER is preserved in `keys` — document
+/// order, never sorted (the model-side `YamlMap` is a `BTreeMap` today; that
+/// ordered-keys gap is DESIGNED to land on this surface and resolves in
+/// M2-PROJECT, visibly).
+#[test]
+fn frontmatter_key_order_preserved_in_keys() {
+    // deliberately non-alphabetical: a sort would betray itself
+    let src = "---\ntitle: T\nzeta: z\nalpha: a\nmiddle: m\n---\n\n# A\n";
+    let nodes = project(src);
+    let fm = nodes
+        .iter()
+        .find(|n| n.kind == K::Frontmatter)
+        .expect("frontmatter node projected");
+    assert_eq!(
+        fm.info,
+        Some(wire::Info::Frontmatter {
+            keys: vec![
+                "title".into(),
+                "zeta".into(),
+                "alpha".into(),
+                "middle".into()
+            ],
+        }),
+        "keys must preserve document order, never sorted order"
+    );
+}
