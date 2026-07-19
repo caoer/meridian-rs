@@ -5,6 +5,43 @@ carries. Pack-scoped provenance stays in each pack's own `PROVENANCE.md`
 (`data/gt/`, `data/gt/obsidian-compat/`, `data/harness/`, `data/wsfix/`,
 `data/charset-guard/`).
 
+## PF-GT-RETARGET — POST-FLIP GT convergence-confirm + demotion (2026-07-19)
+
+Contract: `wire-contract-v2.md` FROZEN (ZT, 2026-07-18, decision 014); banner
+verified directly at claim. Base: this tree @ `4d3c89d` (== main == origin;
+35/36 landed). Unit: pack §10.5 — the 36th/FINAL wire-contract-v2 flip unit +
+advisor dispositions (9074c86b). Seam: the dialect GT pack provenance
+(`data/gt/`), no engine-crate lines. Pack-scoped detail: `data/gt/PROVENANCE.md`.
+
+**Result: convergence-confirm; ZERO GT bytes changed; ZERO hand-edited GT bytes;
+lane pack demoted.** `syntax::parse` (rung-1 = frozen §2.1 ruled grammar) already
+reproduces every GT `(kind,span)` byte-exact, so no byte-rewrite is lawful or
+needed (the frozen pack forbids re-sampling) — same by-construction argument as
+PF-GOLDENS. The `Parse-projection GT` row of PF-GOLDENS' golden-surface table
+(below) is flipped from pending to demoted + convergence-confirmed, closing the
+deferred disposition.
+
+Regen-VERIFICATION command (repo-local reproducible chain) + convergence proof
+(verbatim this run):
+
+```
+cargo test -p testsuite --test main -- gt_pack
+#   gt_pack_smoke::gt_pack_loads     ... ok
+#   gt_parse::gt_pack_parse_truth    ... ok
+#   test result: ok. 2 passed; 0 failed
+```
+
+Demotion proof — lane-pack-paths-as-GT = 0 (harness reads `gt_pack_dir()` local
+path, never by pack name):
+
+```
+grep -rn 'parser-bench' crates/testsuite --include='*.rs'   # 0 matches (exit 1)
+```
+
+The remaining `parser-bench` mentions (this file's `Parse-projection GT` row;
+`data/gt/PROVENANCE.md`) are DESCRIPTIVE origin-provenance — kept by law, never
+scrubbed. Contract version: `4d3c89d` / decision-014.
+
 ## PF-FIXTURES — frozen-worked-value sweep + id-72 close (2026-07-19)
 
 Contract: `wire-contract-v2.md` FROZEN (ZT, 2026-07-18, decision 014); banner
@@ -80,7 +117,7 @@ Golden-surface classes at this regen:
 | Class | Location | Values produced by | Regen disposition |
 |---|---|---|---|
 | Worked-exchange + projection assertions | `tests/{delta_e3e4,wsfix_oracle,wire_vocab}.rs`; `sidecar/tests/dispatch_v2.rs` (worked §4.1 toc / §4.2 cat exchanges) | engine (`syntax::parse`, `model::build`, `model::merkle_root`, wire serde) at every run | computed, zero-diff by construction |
-| Parse-projection GT | `data/gt/ground-truth/` | lane0-frozen parser-bench pack (sha-manifest-pinned) | not contract-derived; PF-GT-RETARGET's demotion |
+| Parse-projection GT | `data/gt/ground-truth/` | lane0-frozen parser-bench pack (sha-manifest-pinned) | demoted + convergence-confirmed (PF-GT-RETARGET, 2026-07-19): `syntax::parse` == pack `(kind,span)` byte-exact (`gt_pack` gate, 2 passed/0 failed); testsuite `.rs` GT refs = 0 |
 | App-oracle pack | `data/gt/obsidian-compat/` | live Obsidian resolver (`generate.sh`) | app-truth; regen trigger is app-version drift (§13.3–13.4), not the flip |
 | Adversarial probe packs | `data/harness/` | vendored verbatim, sha256-pinned | provenance law: never regenerated; draft-vs-frozen deviations asserted text-lawful runner-side |
 | §0.3 fixture pack | `data/wsfix/` | `compute.py` blake3 oracle | byte-verified vs frozen §0.3 this run; oracle re-run is PF-FIXTURES' |
