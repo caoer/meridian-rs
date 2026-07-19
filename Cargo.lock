@@ -1304,6 +1304,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "starlark",
+ "syntax",
 ]
 
 [[package]]
@@ -1511,6 +1512,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "receipt"
+version = "0.0.0"
+dependencies = [
+ "wire",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1537,13 +1545,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.0",
-]
-
-[[package]]
-name = "receipt"
-version = "0.0.0"
-dependencies = [
- "wire",
 ]
 
 [[package]]
