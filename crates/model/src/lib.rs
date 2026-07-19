@@ -29,6 +29,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+pub mod walk;
+
 /// Half-open byte range into a file's raw bytes. Distinct from the wire's
 /// serializable span on purpose — converting between them is `sidecar`'s job.
 pub type ByteSpan = Range<usize>;
@@ -435,11 +437,38 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
 // resolve (rung 2)
 // ---------------------------------------------------------------------------
 
-/// A ref to resolve: `#hpath` (human `/`-joined form) or `#^anchor-id`.
+/// One hpath segment — a heading text plus an optional 1-based occurrence index
+/// among identical raw texts at that containment position (contract §2.1). The
+/// model-side twin of `wire::HpathSeg`; the crates never share a type (no-serde
+/// law), the sidecar converts between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HpathSeg {
+    /// Heading text, matched **byte-exactly** against the containment tree
+    /// (the mint plane never case-folds — that is the walk plane's job).
+    pub h: String,
+    /// 1-based occurrence among identical sibling heading texts. `None` demands
+    /// uniqueness: a duplicate with no disambiguator resolves `Ambiguous` (loud),
+    /// never silently picked (contract §2.1, the mint plane's never-silently-picks
+    /// law).
+    pub n: Option<u32>,
+}
+
+/// A mint-plane ref — the strict fleet grammar (contract §2.1). Three forms,
+/// per-segment byte-equality (`hpath`), exact block id (`anchor`), or top-level
+/// frontmatter key (`fm_key`). No join string: `#A#a/b` vs `#A#a#b` is
+/// unrepresentable here. The Obsidian walk algebra is a **separate** grammar,
+/// carried only by [`walk`] — never by this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ref {
-    Hpath(String),
+    /// `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — descend the containment tree
+    /// segment by segment, byte-exact.
+    Hpath(Vec<HpathSeg>),
+    /// `{"anchor":"r-000042"}` — a block id, exact match; mint via [`Ref::anchor`]
+    /// so the one block-id charset (§2.4) is enforced.
     Anchor(String),
+    /// `{"fm_key":"title"}` — a top-level frontmatter key; the node is the full
+    /// key line (the frontmatter plane is nodes, never ref grammar — §2.1).
+    FmKey(String),
 }
 
 /// A mint-plane anchor id outside the one block-id charset (`[A-Za-z0-9-]`,
@@ -488,15 +517,132 @@ pub enum ResolveError {
     Ambiguous(Vec<Target>),
 }
 
-/// `file#hpath` / `file#^anchor` → span + `node_rev`. Section span = heading line
-/// through end of subtree (what makes the vision's splice example coherent).
+/// The strict mint-plane lookup (contract §2.1) backing `cat`/`toc`/splice
+/// targets: an `hpath` walked byte-exactly down the containment tree, an exact
+/// block `anchor`, or a top-level `fm_key`. Section span = heading line through
+/// end of subtree (what makes the vision's splice example coherent). Never
+/// case-folds, never silently picks — that is the [`walk`] plane's job.
 ///
 /// # Errors
-/// [`ResolveError::NotFound`] for a missing ref; [`ResolveError::Ambiguous`]
-/// with the candidate list for duplicate hpaths.
+/// [`ResolveError::NotFound`] for a missing (or empty) ref; [`ResolveError::Ambiguous`]
+/// with the candidate list when a duplicate is not disambiguated (an `hpath`
+/// segment with no occurrence index, or a duplicate anchor id) → `ambiguous_ref`.
 pub fn resolve(doc: &Document, r#ref: &Ref) -> Result<Target, ResolveError> {
-    let _ = (doc, r#ref);
-    todo!("rung 2: hpath/anchor resolution over the governed tree")
+    match r#ref {
+        Ref::Hpath(segs) => resolve_hpath(&doc.root, segs),
+        Ref::Anchor(id) => resolve_anchor(doc, id),
+        Ref::FmKey(key) => resolve_fm_key(doc, key),
+    }
+}
+
+/// A node's splice target — span + CAS token.
+fn target_of(node: &Node) -> Target {
+    Target {
+        span: node.span.clone(),
+        node_rev: node.node_rev.clone(),
+    }
+}
+
+/// Descend the containment tree one hpath segment at a time, byte-exact on each
+/// heading text. A segment matching multiple sibling sections resolves by its
+/// 1-based occurrence `n`; without `n`, a duplicate is `Ambiguous` (loud).
+fn resolve_hpath(root: &Node, segs: &[HpathSeg]) -> Result<Target, ResolveError> {
+    if segs.is_empty() {
+        return Err(ResolveError::NotFound);
+    }
+    let mut current = root;
+    for seg in segs {
+        let matches: Vec<&Node> = current
+            .children
+            .iter()
+            .filter(|c| matches!(&c.kind, NodeKind::Section { heading_text, .. } if *heading_text == seg.h))
+            .collect();
+        current = match (matches.as_slice(), seg.n) {
+            ([], _) => return Err(ResolveError::NotFound),
+            (_, Some(n)) => {
+                let idx = usize::try_from(n).unwrap_or(usize::MAX);
+                match idx.checked_sub(1).and_then(|i| matches.get(i)) {
+                    Some(node) => node,
+                    None => return Err(ResolveError::NotFound),
+                }
+            }
+            ([only], None) => only,
+            (many, None) => {
+                return Err(ResolveError::Ambiguous(
+                    many.iter().map(|n| target_of(n)).collect(),
+                ));
+            }
+        };
+    }
+    Ok(target_of(current))
+}
+
+/// Exact block-id lookup over the tree's anchor nodes. A duplicate id in one
+/// file is `Ambiguous` (loud) — the mint plane never silently picks; the walk
+/// plane follows the app instead (last-wins, silent — [`walk`]).
+fn resolve_anchor(doc: &Document, id: &str) -> Result<Target, ResolveError> {
+    let mut hits: Vec<&Node> = Vec::new();
+    collect_anchors(&doc.root, id, &mut hits);
+    hits.sort_by_key(|n| n.span.start);
+    match hits.as_slice() {
+        [] => Err(ResolveError::NotFound),
+        [only] => Ok(target_of(only)),
+        many => Err(ResolveError::Ambiguous(
+            many.iter().map(|n| target_of(n)).collect(),
+        )),
+    }
+}
+
+/// Anchor nodes whose id matches `id` byte-exactly (mint plane), document order.
+fn collect_anchors<'a>(node: &'a Node, id: &str, hits: &mut Vec<&'a Node>) {
+    if matches!(&node.kind, NodeKind::Anchor { name } if name == id) {
+        hits.push(node);
+    }
+    for c in &node.children {
+        collect_anchors(c, id, hits);
+    }
+}
+
+/// A top-level frontmatter key → the full key line (span + rev). The node the
+/// contract names is the key line inside the frontmatter block, not the whole
+/// block.
+fn resolve_fm_key(doc: &Document, key: &str) -> Result<Target, ResolveError> {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return Err(ResolveError::NotFound);
+    };
+    let bytes = doc.raw.as_bytes();
+    let block = &fm.span;
+    let mut line_start = block.start;
+    while line_start < block.end {
+        let line_end = bytes[line_start..block.end]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(block.end, |p| line_start + p + 1);
+        let line = &doc.raw[line_start..line_end];
+        // top-level keys sit at column 0 (the fm-parse convention); match the
+        // key byte-exactly up to its colon.
+        if !line.starts_with([' ', '\t'])
+            && line
+                .split_once(':')
+                .is_some_and(|(k, _)| k.trim().trim_matches(['"', '\'']) == key)
+        {
+            let span = line_start..line_end;
+            return Ok(Target {
+                node_rev: node_rev(bytes, &span),
+                span,
+            });
+        }
+        line_start = line_end;
+    }
+    Err(ResolveError::NotFound)
+}
+
+/// The document's frontmatter node, if any.
+fn find_frontmatter(node: &Node) -> Option<&Node> {
+    if matches!(node.kind, NodeKind::Frontmatter { .. }) {
+        return Some(node);
+    }
+    node.children.iter().find_map(find_frontmatter)
 }
 
 // ---------------------------------------------------------------------------
@@ -561,9 +707,114 @@ pub fn merkle_root(doc: &Document) -> MerkleRoot {
 /// derived, disposable (law 2). `query` and `policy` borrow it as a capability
 /// parameter (`Option<&CorpusIndex>`); neither owns it, and there is no
 /// policy→query dependency — both are siblings over model.
+///
+/// It houses the vault name/alias index the walk plane's stage 1 needs
+/// (`getFirstLinkpathDest` parity, contract §4.5): file basename → paths and
+/// frontmatter alias → paths, both lowercased (stage 1 is case-insensitive).
 #[derive(Debug, Default)]
 pub struct CorpusIndex {
-    _names: BTreeMap<String, Vec<String>>,
+    by_basename: BTreeMap<String, Vec<String>>,
+    by_alias: BTreeMap<String, Vec<String>>,
+}
+
+impl CorpusIndex {
+    /// An empty index.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Index one document under its vault `path`: its file basename and every
+    /// frontmatter alias, both lowercased (stage-1 case-insensitivity, §4.5).
+    pub fn insert(&mut self, path: &str, doc: &Document) {
+        push_unique(self.by_basename.entry(basename_lc(path)).or_default(), path);
+        for alias in doc_aliases(doc) {
+            push_unique(self.by_alias.entry(alias).or_default(), path);
+        }
+    }
+
+    /// Stage 1 — `getFirstLinkpathDest(linkpath, from)` parity: resolve a
+    /// linkpath (a basename, optionally with subdirs and/or a `.md` suffix) to a
+    /// vault path, case-insensitively, preferring the source-relative
+    /// shortest-unambiguous match, frontmatter aliases included. An unresolved
+    /// linkpath returns `None` — unresolved is first-class (§4.5).
+    ///
+    /// The multi-candidate tie-break is a §13.4 pack-pinned unknown (harness
+    /// probe WX-3): this records a deterministic, source-relative-then-shortest
+    /// pick — it is never asserted against an assumed oracle answer.
+    #[must_use]
+    pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
+        let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
+        let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
+        let candidates = self
+            .by_basename
+            .get(&base)
+            .or_else(|| self.by_alias.get(&key))?;
+        pick_source_relative(candidates, from)
+    }
+}
+
+/// Lowercased file basename without its `.md` suffix — the stage-1 index key.
+fn basename_lc(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches(".md")
+        .to_lowercase()
+}
+
+/// Push `value` only if absent (the index is a set per key).
+fn push_unique(bucket: &mut Vec<String>, value: &str) {
+    if !bucket.iter().any(|v| v == value) {
+        bucket.push(value.to_string());
+    }
+}
+
+/// Frontmatter aliases (lowercased) for stage-1 alias resolution. The flat
+/// frontmatter parse keeps the `aliases` value as one string; parse the inline
+/// list `[a, b]` (or a bare single value) — the corpus alias forms.
+fn doc_aliases(doc: &Document) -> Vec<String> {
+    let Some(fm) = find_frontmatter(&doc.root) else {
+        return Vec::new();
+    };
+    let NodeKind::Frontmatter { map } = &fm.kind else {
+        return Vec::new();
+    };
+    map.0
+        .iter()
+        .find(|(k, _)| k == "aliases" || k == "alias")
+        .map(|(_, v)| parse_alias_list(v))
+        .unwrap_or_default()
+}
+
+/// Parse an inline frontmatter alias value: `[a, b]`, `a, b`, or a bare `a`.
+fn parse_alias_list(value: &str) -> Vec<String> {
+    value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|s| s.trim().trim_matches(['"', '\'']).to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Source-relative shortest-unambiguous pick over stage-1 candidates: prefer a
+/// match in the source's own directory, then the shortest path, then the
+/// lexicographically first — deterministic (see `resolve_linkpath`'s WX-3 note).
+fn pick_source_relative(candidates: &[String], from: &str) -> Option<String> {
+    let from_dir = from.rsplit_once('/').map(|(dir, _)| dir);
+    candidates
+        .iter()
+        .min_by(|a, b| {
+            let a_same = from_dir.is_some_and(|d| a.starts_with(d));
+            let b_same = from_dir.is_some_and(|d| b.starts_with(d));
+            b_same
+                .cmp(&a_same)
+                .then(a.len().cmp(&b.len()))
+                .then(a.cmp(b))
+        })
+        .cloned()
 }
 
 #[cfg(test)]
@@ -663,5 +914,96 @@ mod tests {
         );
         assert_eq!(Ref::anchor("a_04"), Err(BadAnchorId { id: "a_04".into() }));
         assert_eq!(Ref::anchor(""), Err(BadAnchorId { id: String::new() }));
+    }
+
+    fn seg(h: &str) -> HpathSeg {
+        HpathSeg { h: h.to_string(), n: None }
+    }
+
+    fn seg_n(h: &str, n: u32) -> HpathSeg {
+        HpathSeg { h: h.to_string(), n: Some(n) }
+    }
+
+    #[test]
+    fn resolve_hpath_descends_containment_byte_exact() {
+        let doc = build_plan();
+        let goals = resolve(&doc, &Ref::Hpath(vec![seg("Goals")])).expect("Goals");
+        assert_eq!(goals.span, 20..136);
+        assert_eq!(goals.node_rev.0, "a6665baff294bd04");
+        let q3 = resolve(&doc, &Ref::Hpath(vec![seg("Goals"), seg("Q3")])).expect("Q3");
+        assert_eq!(q3.span, 49..72);
+        assert_eq!(q3.node_rev.0, "33d5b0e1b27cb48b");
+        // byte-exact: the mint plane never case-folds (that is the walk plane).
+        assert_eq!(
+            resolve(&doc, &Ref::Hpath(vec![seg("goals")])),
+            Err(ResolveError::NotFound)
+        );
+        // a missing deeper segment, and the empty ref, both miss.
+        assert_eq!(
+            resolve(&doc, &Ref::Hpath(vec![seg("Goals"), seg("Q9")])),
+            Err(ResolveError::NotFound)
+        );
+        assert_eq!(
+            resolve(&doc, &Ref::Hpath(vec![])),
+            Err(ResolveError::NotFound)
+        );
+    }
+
+    #[test]
+    fn resolve_fm_key_targets_the_key_line() {
+        let doc = build_plan();
+        let title = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title fm_key");
+        assert_eq!(title.span, 4..16);
+        assert_eq!(&doc.raw[title.span.clone()], "title: Plan\n");
+        let independent = blake3::hash(&doc.raw.as_bytes()[4..16]).to_hex().as_str()[..16].to_string();
+        assert_eq!(title.node_rev.0, independent);
+        assert_eq!(
+            resolve(&doc, &Ref::FmKey("nope".to_string())),
+            Err(ResolveError::NotFound)
+        );
+    }
+
+    #[test]
+    fn resolve_hpath_duplicate_siblings_ambiguous_unless_occurrence_given() {
+        // Two identical `## Beta` siblings under `# A`: the mint plane refuses to
+        // silently pick (contract §2.1) — Ambiguous unless an occurrence `n`
+        // disambiguates (1-based, document order).
+        let raw = "# A\n\n## Beta\n\nfirst\n\n## Beta\n\nsecond\n".to_string();
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let ResolveError::Ambiguous(cands) =
+            resolve(&doc, &Ref::Hpath(vec![seg("A"), seg("Beta")])).expect_err("duplicate is ambiguous")
+        else {
+            panic!("duplicate sibling hpath must resolve Ambiguous");
+        };
+        assert_eq!(cands.len(), 2);
+        let first = resolve(&doc, &Ref::Hpath(vec![seg("A"), seg_n("Beta", 1)])).expect("Beta#1");
+        let second = resolve(&doc, &Ref::Hpath(vec![seg("A"), seg_n("Beta", 2)])).expect("Beta#2");
+        assert!(first.span.start < second.span.start, "n follows document order");
+        assert_eq!(cands[0].span, first.span);
+        assert_eq!(cands[1].span, second.span);
+        assert_eq!(
+            resolve(&doc, &Ref::Hpath(vec![seg("A"), seg_n("Beta", 3)])),
+            Err(ResolveError::NotFound),
+            "occurrence past the last match misses"
+        );
+    }
+
+    #[test]
+    fn resolve_anchor_duplicate_is_ambiguous_single_is_target() {
+        let raw = "para one ^dup1\n\npara two ^dup1\n\nlone ^solo\n".to_string();
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let ResolveError::Ambiguous(cands) =
+            resolve(&doc, &Ref::anchor("dup1").unwrap()).expect_err("dup anchor is ambiguous")
+        else {
+            panic!("duplicate anchor must resolve Ambiguous");
+        };
+        assert_eq!(cands.len(), 2);
+        assert!(cands[0].span.start < cands[1].span.start, "candidates in document order");
+        let solo = resolve(&doc, &Ref::anchor("solo").unwrap()).expect("solo anchor");
+        assert!(!solo.node_rev.0.is_empty());
+        assert_eq!(
+            resolve(&doc, &Ref::anchor("absent").unwrap()),
+            Err(ResolveError::NotFound)
+        );
     }
 }
