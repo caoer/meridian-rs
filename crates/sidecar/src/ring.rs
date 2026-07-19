@@ -47,6 +47,13 @@ impl RootRing {
         self.entries.front().map(|f| f.delta.seq)
     }
 
+    /// The tip's `root_after` (`None`: no batch this epoch) — the watcher's
+    /// internal-commit sync check (F5-WATCH reconcile disposition).
+    #[must_use]
+    pub fn tip_root(&self) -> Option<&Root> {
+        self.entries.back().map(|f| &f.delta.root_after)
+    }
+
     /// Frames with `delta.seq > after`, emission order — the push path's
     /// read (§7.3: the SAME stored objects `diff` replays; no second
     /// serialization site).

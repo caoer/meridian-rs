@@ -118,21 +118,44 @@ pub fn commit_batch(
         files.push(wire_map::project_file_delta(rp, &fd));
     }
 
-    // The ONE construction site: seq from this epoch's ring counter (§7.1
-    // late law — per-daemon-epoch, nothing persisted), envelope facts as
-    // given. Stored, then the clone returned — replay serves the store.
-    let frame = DeltaFrame {
+    // Assemble at the one production site, store, return the clone —
+    // replay serves the store.
+    let frame = assemble_delta(
+        ring,
+        root_before,
+        root_after,
+        req.actor.clone(),
+        req.now.clone(),
+        files,
+    );
+    ring.advance(frame.clone());
+    Ok(frame)
+}
+
+/// **The ONE production `DeltaFrame` construction site** (§7.3
+/// single-constructor law): the commit path and the watcher's external path
+/// (F5-WATCH) both assemble here — seq from this epoch's ring counter (§7.1
+/// late law, nothing persisted), envelope facts exactly as given (§9:
+/// external deltas pass `None`/`None` — absent stays absent, never
+/// invented).
+pub(crate) fn assemble_delta(
+    ring: &RootRing,
+    root_before: Root,
+    root_after: Root,
+    actor: Option<String>,
+    now: Option<String>,
+    files: Vec<wire::DeltaFile>,
+) -> DeltaFrame {
+    DeltaFrame {
         delta: Delta {
             seq: ring.seq() + 1,
             root_before,
             root_after,
-            actor: req.actor.clone(),
-            now: req.now.clone(),
+            actor,
+            now,
             files,
         },
-    };
-    ring.advance(frame.clone());
-    Ok(frame)
+    }
 }
 
 /// A pre/post receipt-file read where absence is a legal state (the first
