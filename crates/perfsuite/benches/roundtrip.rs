@@ -131,7 +131,10 @@ fn proto_frames(n: usize) -> Vec<pb::Frame> {
                             end: (k + 1) * 128,
                         }),
                         text_prefix_16b: "sixteen bytes ok".into(),
-                        hpath: vec!["section".into(), format!("h{k}")],
+                        hpath: ["section".into(), format!("h{k}")]
+                            .into_iter()
+                            .map(|h| pb::HpathSeg { h, n: None })
+                            .collect(),
                         unterminated: None,
                         info: None,
                         node_rev: Some(format!("{:016x}", rng.next_u64())),
