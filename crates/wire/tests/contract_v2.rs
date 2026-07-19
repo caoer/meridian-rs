@@ -102,13 +102,18 @@ fn recovery_bindings_match_frozen_table() {
         (C::BadRequest, R::Fix),
         (C::UnknownOp, R::Fix),
         (C::BadPath, R::Fix),
+        (C::NoMatch, R::Fix),
+        (C::NotUnique, R::Fix),
+        (C::WouldCorrupt, R::Fix),
         (C::AmbiguousRef, R::Fix),
-        (C::NotFound, R::Env), // v1 code, retired at W4-AMEND; env until then
+        (C::FileNotFound, R::Env),
+        (C::IoError, R::Env),
         (C::InvalidUtf8, R::Env),
         (C::CasMismatch, R::Refresh),
         (C::RefNotFound, R::Refresh),
         (C::RootMismatch, R::Resync), // the declared rebind (was refresh)
         (C::RootUnknown, R::Resync),
+        (C::LockTimeout, R::Retry),
         (C::BadFrame, R::Respawn),
         (C::UnsupportedProto, R::Respawn), // the declared rebind (was fix)
         (C::Internal, R::Respawn),
@@ -430,5 +435,224 @@ fn root_mismatch_scope_drop_deviation_fixture() {
     assert_eq!(
         sorted,
         ["actual", "changed", "code", "expected", "recovery"]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// W4-AMEND — §4.4 batch splice, receipts (§6), the not_found retirement
+// ---------------------------------------------------------------------------
+
+/// v2 §4.4 worked (id 42): the fully-guarded batch request and the
+/// armed-facts response — receipt-per-request (the §6.1 late qualifier:
+/// receipts are per-request, never a wire requirement), one root advance
+/// covering both files (D-C3).
+#[test]
+fn worked_splice_frames_match_contract() {
+    let request: wire::Request = serde_json::from_value(json!({
+        "id":42,"op":"splice","path":"notes/plan.md",
+        "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
+        "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},
+        "if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+        "edits":[
+            {"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
+             "edit":{"match":{"old":"ship by August","new":"ship by September"}},
+             "if_node_rev":"33d5b0e1b27cb48b"}]
+    }))
+    .unwrap();
+    let wire::Op::Splice {
+        receipt,
+        if_root,
+        edits,
+        ..
+    } = &request.op
+    else {
+        panic!("splice op")
+    };
+    assert_eq!(
+        receipt.as_ref().unwrap().anchor,
+        "r-000042",
+        "receipt named per-request"
+    );
+    assert!(if_root.is_some());
+    assert_eq!(
+        edits[0].edit,
+        wire::EditShape::Match {
+            old: "ship by August".into(),
+            new: "ship by September".into()
+        }
+    );
+
+    let frame = wire::Response {
+        id: Some(42),
+        ok: true,
+        payload: wire::ResponsePayload::Body {
+            body: wire::ResponseBody::Splice {
+                armed: wire::Armed {
+                    path: wire::Path("notes/plan.md".into()),
+                    edits: vec![wire::ArmedEdit {
+                        target: wire::SecRef::Hpath {
+                            hpath: vec![seg("Goals"), seg("Q3")],
+                        },
+                        node_rev_before: wire::NodeRev("33d5b0e1b27cb48b".into()),
+                        node_rev_after: wire::NodeRev("41f643f034e5681f".into()),
+                        span_after: wire::Span(49, 75),
+                    }],
+                },
+                receipt: Some(wire::ReceiptFact {
+                    path: wire::Path("receipts/2026-07-18.md".into()),
+                    anchor: "r-000042".into(),
+                    node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
+                    span_after: wire::Span(26, 248),
+                }),
+                root_before: wire::Root(
+                    "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+                ),
+                root_after: Some(wire::Root(
+                    "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+                )),
+                seq: Some(1),
+                dry: None,
+                verdicts: vec![],
+            },
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&frame).unwrap(),
+        json!({"id":42,"ok":true,"body":{
+            "armed":{"path":"notes/plan.md","edits":[
+                {"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
+                 "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
+                 "span_after":[49,75]}]},
+            "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042",
+                       "node_rev":"639a2dca46f6fcc8","span_after":[26,248]},
+            "root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+            "root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+            "seq":1,"verdicts":[]}})
+    );
+}
+
+/// v2 §4.4 worked (id 57), the at:end LATE LAW: the append verb is raw byte
+/// concatenation — the wire carries `text` exactly as given (`"- new item\n"`,
+/// its own separators, none synthesized), and the request is legally
+/// guardless.
+#[test]
+fn worked_append_at_end_raw_concat_matches_contract() {
+    let request: wire::Request = serde_json::from_value(json!({
+        "id":57,"op":"splice","path":"notes/plan.md",
+        "actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z",
+        "receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000043"},
+        "edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
+                  "edit":{"put":{"at":"end","text":"- new item\n"}}}]
+    }))
+    .unwrap();
+    let wire::Op::Splice { if_root, edits, .. } = &request.op else {
+        panic!("splice op")
+    };
+    assert!(if_root.is_none(), "guardless is legal at the wire forever");
+    assert_eq!(
+        edits[0].edit,
+        wire::EditShape::Put {
+            at: wire::PutAt::End,
+            text: "- new item\n".into(), // leading/trailing bytes are the caller's
+        }
+    );
+    assert!(edits[0].if_node_rev.is_none());
+    // and the round trip re-emits the text byte-for-byte
+    assert_eq!(
+        serde_json::to_value(&request).unwrap()["edits"][0]["edit"]["put"],
+        json!({"at":"end","text":"- new item\n"})
+    );
+}
+
+/// v2 §4.4 worked (id 60): dry — same response shape, `root_after` literally
+/// null (serialized, not skipped), no receipt, no seq, `dry:true`.
+#[test]
+fn worked_dry_splice_frame_matches_contract() {
+    let frame = wire::Response {
+        id: Some(60),
+        ok: true,
+        payload: wire::ResponsePayload::Body {
+            body: wire::ResponseBody::Splice {
+                armed: wire::Armed {
+                    path: wire::Path("notes/plan.md".into()),
+                    edits: vec![wire::ArmedEdit {
+                        target: wire::SecRef::FmKey {
+                            fm_key: "title".into(),
+                        },
+                        node_rev_before: wire::NodeRev("fa77480c79a853bc".into()),
+                        node_rev_after: wire::NodeRev("fb49e9df2257fab8".into()),
+                        span_after: wire::Span(4, 18),
+                    }],
+                },
+                receipt: None,
+                root_before: wire::Root(
+                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                ),
+                root_after: None,
+                seq: None,
+                dry: Some(true),
+                verdicts: vec![],
+            },
+        },
+    };
+    let v = serde_json::to_value(&frame).unwrap();
+    assert_eq!(
+        v,
+        json!({"id":60,"ok":true,"body":{
+            "armed":{"path":"notes/plan.md","edits":[
+                {"target":{"fm_key":"title"},
+                 "node_rev_before":"fa77480c79a853bc","node_rev_after":"fb49e9df2257fab8",
+                 "span_after":[4,18]}]},
+            "root_before":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+            "root_after":null,"dry":true,"verdicts":[]}})
+    );
+    assert!(
+        v["body"].as_object().unwrap().contains_key("root_after"),
+        "root_after is SERIALIZED null on dry, never skipped"
+    );
+}
+
+/// v2 §5.2 worked (ids 89/91): the failure split's fix half — guard-passed
+/// `no_match` (provably your typo) and `not_unique{matches}`.
+#[test]
+fn worked_no_match_and_not_unique_frames_match_contract() {
+    let mut e = wire::ErrorBody::new(wire::ErrorCode::NoMatch);
+    e.matches = Some(0);
+    let no_match = wire::Response {
+        id: Some(89),
+        ok: false,
+        payload: wire::ResponsePayload::Error { error: e },
+    };
+    assert_eq!(
+        serde_json::to_value(&no_match).unwrap(),
+        json!({"id":89,"ok":false,"error":{"code":"no_match","recovery":"fix","matches":0}})
+    );
+
+    let mut e = wire::ErrorBody::new(wire::ErrorCode::NotUnique);
+    e.matches = Some(2);
+    let not_unique = wire::Response {
+        id: Some(91),
+        ok: false,
+        payload: wire::ResponsePayload::Error { error: e },
+    };
+    assert_eq!(
+        serde_json::to_value(&not_unique).unwrap(),
+        json!({"id":91,"ok":false,"error":{"code":"not_unique","recovery":"fix","matches":2}})
+    );
+}
+
+/// The `not_found` retirement, EXECUTABLE (§18 row 6): the v1 code string no
+/// longer parses — a v1 dialect emitting or expecting it fails loud; the
+/// successors carry its two meanings apart.
+#[test]
+fn not_found_retirement_deviation_fixture() {
+    assert!(serde_json::from_value::<wire::ErrorCode>(json!("not_found")).is_err());
+    assert_eq!(
+        serde_json::from_value::<wire::ErrorCode>(json!("file_not_found")).unwrap(),
+        wire::ErrorCode::FileNotFound
+    );
+    assert_eq!(
+        serde_json::from_value::<wire::ErrorCode>(json!("ref_not_found")).unwrap(),
+        wire::ErrorCode::RefNotFound
     );
 }

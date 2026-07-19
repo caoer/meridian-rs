@@ -40,6 +40,92 @@ fn sec_ref_to_pb(r: wire::SecRef) -> pb::SecRef {
     pb::SecRef { form: Some(form) }
 }
 
+fn receipt_addr_to_pb(r: wire::ReceiptAddr) -> pb::ReceiptAddr {
+    let wire::ReceiptAddr { path, anchor } = r;
+    pb::ReceiptAddr {
+        path: path.0,
+        anchor,
+    }
+}
+
+fn put_at_to_pb(a: wire::PutAt) -> pb::PutAt {
+    match a {
+        wire::PutAt::All => pb::PutAt::All,
+        wire::PutAt::Content => pb::PutAt::Content,
+        wire::PutAt::End => pb::PutAt::End,
+    }
+}
+
+fn edit_shape_to_pb(e: wire::EditShape) -> pb::edit_shape::Shape {
+    match e {
+        wire::EditShape::Match { old, new } => {
+            pb::edit_shape::Shape::Match(pb::MatchEdit { old, new })
+        }
+        wire::EditShape::Put { at, text } => pb::edit_shape::Shape::Put(pb::PutEdit {
+            at: put_at_to_pb(at).into(),
+            text,
+        }),
+    }
+}
+
+fn edit_to_pb(e: wire::Edit) -> pb::Edit {
+    let wire::Edit {
+        target,
+        edit,
+        if_node_rev,
+    } = e;
+    pb::Edit {
+        target: Some(sec_ref_to_pb(target)),
+        edit: Some(pb::EditShape {
+            shape: Some(edit_shape_to_pb(edit)),
+        }),
+        if_node_rev: if_node_rev.map(|r| r.0),
+    }
+}
+
+fn armed_edit_to_pb(e: wire::ArmedEdit) -> pb::ArmedEdit {
+    let wire::ArmedEdit {
+        target,
+        node_rev_before,
+        node_rev_after,
+        span_after,
+    } = e;
+    pb::ArmedEdit {
+        target: Some(sec_ref_to_pb(target)),
+        node_rev_before: node_rev_before.0,
+        node_rev_after: node_rev_after.0,
+        span_after: Some(span_to_pb(span_after)),
+    }
+}
+
+fn armed_to_pb(a: wire::Armed) -> pb::Armed {
+    let wire::Armed { path, edits } = a;
+    pb::Armed {
+        path: path.0,
+        edits: edits.into_iter().map(armed_edit_to_pb).collect(),
+    }
+}
+
+fn receipt_fact_to_pb(r: wire::ReceiptFact) -> pb::ReceiptFact {
+    let wire::ReceiptFact {
+        path,
+        anchor,
+        node_rev,
+        span_after,
+    } = r;
+    pb::ReceiptFact {
+        path: path.0,
+        anchor,
+        node_rev: node_rev.0,
+        span_after: Some(span_to_pb(span_after)),
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)] // uninhabited: the match consumes it
+fn verdict_to_pb(v: wire::Verdict) -> pb::Verdict {
+    match v {} // uninhabited until P6-VERDICTS — verdicts are [] from birth
+}
+
 fn kind_to_pb(k: wire::NodeKind) -> pb::NodeKind {
     match k {
         wire::NodeKind::Frontmatter => pb::NodeKind::Frontmatter,
@@ -63,7 +149,12 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::UnknownOp => pb::ErrorCode::UnknownOp,
         wire::ErrorCode::UnsupportedProto => pb::ErrorCode::UnsupportedProto,
         wire::ErrorCode::BadPath => pb::ErrorCode::BadPath,
-        wire::ErrorCode::NotFound => pb::ErrorCode::NotFound,
+        wire::ErrorCode::NoMatch => pb::ErrorCode::NoMatch,
+        wire::ErrorCode::NotUnique => pb::ErrorCode::NotUnique,
+        wire::ErrorCode::WouldCorrupt => pb::ErrorCode::WouldCorrupt,
+        wire::ErrorCode::LockTimeout => pb::ErrorCode::LockTimeout,
+        wire::ErrorCode::FileNotFound => pb::ErrorCode::FileNotFound,
+        wire::ErrorCode::IoError => pb::ErrorCode::IoError,
         wire::ErrorCode::InvalidUtf8 => pb::ErrorCode::InvalidUtf8,
         wire::ErrorCode::Internal => pb::ErrorCode::Internal,
         wire::ErrorCode::CasMismatch => pb::ErrorCode::CasMismatch,
@@ -196,14 +287,20 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
         }),
         wire::Op::Splice {
             path,
-            span,
-            if_node_rev,
-            text,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            edits,
         } => pb::request::Op::Splice(pb::SpliceRequest {
             path: path.0,
-            span: Some(span_to_pb(span)),
-            if_node_rev: if_node_rev.0,
-            text,
+            actor,
+            now,
+            receipt: receipt.map(receipt_addr_to_pb),
+            if_root: if_root.map(|r| r.0),
+            dry,
+            edits: edits.into_iter().map(edit_to_pb).collect(),
         }),
         wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
         wire::Op::Diff { from_root, to_root } => pb::request::Op::Diff(pb::DiffRequest {
@@ -236,6 +333,10 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
         candidates,
         unknown_kinds,
         id_raw,
+        matches,
+        lost,
+        cause,
+        overlap,
     } = e;
     pb::ErrorBody {
         code: code_to_pb(code).into(),
@@ -262,6 +363,22 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
             .unwrap_or_default()
             .into_iter()
             .map(|p| p.0)
+            .collect(),
+        matches,
+        // empty ≡ absent: a would_corrupt names ≥1 lost hpath
+        lost: lost
+            .unwrap_or_default()
+            .into_iter()
+            .map(|segs| pb::HpathRef {
+                segs: segs.into_iter().map(hpath_seg_to_pb).collect(),
+            })
+            .collect(),
+        cause,
+        // empty ≡ absent: an overlap names ≥2 targets
+        overlap: overlap
+            .unwrap_or_default()
+            .into_iter()
+            .map(sec_ref_to_pb)
             .collect(),
     }
 }
@@ -312,12 +429,23 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             span: Some(span_to_pb(span)),
             content,
         }),
-        wire::ResponseBody::Splice { span, node_rev } => {
-            pb::response::Body::Splice(pb::SpliceResponse {
-                span: Some(span_to_pb(span)),
-                node_rev: node_rev.0,
-            })
-        }
+        wire::ResponseBody::Splice {
+            armed,
+            receipt,
+            root_before,
+            root_after,
+            seq,
+            dry,
+            verdicts,
+        } => pb::response::Body::Splice(pb::SpliceResponse {
+            armed: Some(armed_to_pb(armed)),
+            receipt: receipt.map(receipt_fact_to_pb),
+            root_before: root_before.0,
+            root_after: root_after.map(|r| r.0),
+            seq,
+            dry,
+            verdicts: verdicts.into_iter().map(verdict_to_pb).collect(),
+        }),
         wire::ResponseBody::Root { root, seq } => {
             pb::response::Body::Root(pb::RootResponse { root: root.0, seq })
         }
@@ -364,6 +492,94 @@ fn sec_ref_from_pb(r: pb::SecRef) -> wire::SecRef {
     }
 }
 
+fn receipt_addr_from_pb(r: pb::ReceiptAddr) -> wire::ReceiptAddr {
+    let pb::ReceiptAddr { path, anchor } = r;
+    wire::ReceiptAddr {
+        path: wire::Path(path),
+        anchor,
+    }
+}
+
+fn put_at_from_pb(a: pb::PutAt) -> wire::PutAt {
+    match a {
+        pb::PutAt::Unspecified => panic!("UNSPECIFIED never crosses the seam"),
+        pb::PutAt::All => wire::PutAt::All,
+        pb::PutAt::Content => wire::PutAt::Content,
+        pb::PutAt::End => wire::PutAt::End,
+    }
+}
+
+fn edit_shape_from_pb(e: pb::edit_shape::Shape) -> wire::EditShape {
+    match e {
+        pb::edit_shape::Shape::Match(pb::MatchEdit { old, new }) => {
+            wire::EditShape::Match { old, new }
+        }
+        pb::edit_shape::Shape::Put(pb::PutEdit { at, text }) => wire::EditShape::Put {
+            at: put_at_from_pb(pb::PutAt::try_from(at).expect("known position")),
+            text,
+        },
+    }
+}
+
+fn edit_from_pb(e: pb::Edit) -> wire::Edit {
+    let pb::Edit {
+        target,
+        edit,
+        if_node_rev,
+    } = e;
+    wire::Edit {
+        target: sec_ref_from_pb(target.expect("target is required")),
+        edit: edit_shape_from_pb(
+            edit.expect("edit is required")
+                .shape
+                .expect("shape oneof set"),
+        ),
+        if_node_rev: if_node_rev.map(wire::NodeRev),
+    }
+}
+
+fn armed_edit_from_pb(e: pb::ArmedEdit) -> wire::ArmedEdit {
+    let pb::ArmedEdit {
+        target,
+        node_rev_before,
+        node_rev_after,
+        span_after,
+    } = e;
+    wire::ArmedEdit {
+        target: sec_ref_from_pb(target.expect("target is required")),
+        node_rev_before: wire::NodeRev(node_rev_before),
+        node_rev_after: wire::NodeRev(node_rev_after),
+        span_after: span_from_pb(span_after.expect("span is required")),
+    }
+}
+
+fn armed_from_pb(a: pb::Armed) -> wire::Armed {
+    let pb::Armed { path, edits } = a;
+    wire::Armed {
+        path: wire::Path(path),
+        edits: edits.into_iter().map(armed_edit_from_pb).collect(),
+    }
+}
+
+fn receipt_fact_from_pb(r: pb::ReceiptFact) -> wire::ReceiptFact {
+    let pb::ReceiptFact {
+        path,
+        anchor,
+        node_rev,
+        span_after,
+    } = r;
+    wire::ReceiptFact {
+        path: wire::Path(path),
+        anchor,
+        node_rev: wire::NodeRev(node_rev),
+        span_after: span_from_pb(span_after.expect("span is required")),
+    }
+}
+
+fn verdict_from_pb(_: pb::Verdict) -> wire::Verdict {
+    panic!("verdicts are empty until rung 6 (P6-VERDICTS)")
+}
+
 fn kind_from_pb(k: pb::NodeKind) -> wire::NodeKind {
     match k {
         pb::NodeKind::Unspecified => panic!("UNSPECIFIED never crosses the seam"),
@@ -389,7 +605,12 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::UnknownOp => wire::ErrorCode::UnknownOp,
         pb::ErrorCode::UnsupportedProto => wire::ErrorCode::UnsupportedProto,
         pb::ErrorCode::BadPath => wire::ErrorCode::BadPath,
-        pb::ErrorCode::NotFound => wire::ErrorCode::NotFound,
+        pb::ErrorCode::NoMatch => wire::ErrorCode::NoMatch,
+        pb::ErrorCode::NotUnique => wire::ErrorCode::NotUnique,
+        pb::ErrorCode::WouldCorrupt => wire::ErrorCode::WouldCorrupt,
+        pb::ErrorCode::LockTimeout => wire::ErrorCode::LockTimeout,
+        pb::ErrorCode::FileNotFound => wire::ErrorCode::FileNotFound,
+        pb::ErrorCode::IoError => wire::ErrorCode::IoError,
         pb::ErrorCode::InvalidUtf8 => wire::ErrorCode::InvalidUtf8,
         pb::ErrorCode::Internal => wire::ErrorCode::Internal,
         pb::ErrorCode::CasMismatch => wire::ErrorCode::CasMismatch,
@@ -519,14 +740,20 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
         },
         pb::request::Op::Splice(pb::SpliceRequest {
             path,
-            span,
-            if_node_rev,
-            text,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            edits,
         }) => wire::Op::Splice {
             path: wire::Path(path),
-            span: span_from_pb(span.expect("span is required")),
-            if_node_rev: wire::NodeRev(if_node_rev),
-            text,
+            actor,
+            now,
+            receipt: receipt.map(receipt_addr_from_pb),
+            if_root: if_root.map(wire::Root),
+            dry,
+            edits: edits.into_iter().map(edit_from_pb).collect(),
         },
         pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
         pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
@@ -559,6 +786,10 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
         candidates,
         unknown_kinds,
         id_raw,
+        matches,
+        lost,
+        cause,
+        overlap,
     } = e;
     wire::ErrorBody {
         code: code_from_pb(pb::ErrorCode::try_from(code).expect("known code")),
@@ -589,6 +820,22 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
             None
         } else {
             Some(changed.into_iter().map(wire::Path).collect())
+        },
+        matches,
+        lost: if lost.is_empty() {
+            None
+        } else {
+            Some(
+                lost.into_iter()
+                    .map(|h| h.segs.into_iter().map(hpath_seg_from_pb).collect())
+                    .collect(),
+            )
+        },
+        cause,
+        overlap: if overlap.is_empty() {
+            None
+        } else {
+            Some(overlap.into_iter().map(sec_ref_from_pb).collect())
         },
     }
 }
@@ -650,12 +897,23 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             span: span_from_pb(span.expect("span is required")),
             content,
         },
-        pb::response::Body::Splice(pb::SpliceResponse { span, node_rev }) => {
-            wire::ResponseBody::Splice {
-                span: span_from_pb(span.expect("span is required")),
-                node_rev: wire::NodeRev(node_rev),
-            }
-        }
+        pb::response::Body::Splice(pb::SpliceResponse {
+            armed,
+            receipt,
+            root_before,
+            root_after,
+            seq,
+            dry,
+            verdicts,
+        }) => wire::ResponseBody::Splice {
+            armed: armed_from_pb(armed.expect("armed is required")),
+            receipt: receipt.map(receipt_fact_from_pb),
+            root_before: wire::Root(root_before),
+            root_after: root_after.map(wire::Root),
+            seq,
+            dry,
+            verdicts: verdicts.into_iter().map(verdict_from_pb).collect(),
+        },
         pb::response::Body::Root(pb::RootResponse { root, seq }) => wire::ResponseBody::Root {
             root: wire::Root(root),
             seq,
@@ -820,6 +1078,87 @@ fn sample_toc_nodes() -> Vec<wire::TocNode> {
     ]
 }
 
+/// The three §4.4 batch shapes: fully guarded match edit, guardless
+/// `at:end` append, dry run with `fm_key`/anchor targets.
+fn sample_splice_requests() -> Vec<wire::Op> {
+    vec![
+        // splice: the fully-guarded §4.4 worked frame (id 42 family)
+        wire::Op::Splice {
+            path: wire::Path("notes/plan.md".into()),
+            actor: Some("agent:b0864fb2".into()),
+            now: Some("2026-07-18T20:31:04Z".into()),
+            receipt: Some(wire::ReceiptAddr {
+                path: wire::Path("receipts/2026-07-18.md".into()),
+                anchor: "r-000042".into(),
+            }),
+            if_root: Some(wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            )),
+            dry: None,
+            edits: vec![wire::Edit {
+                target: wire::SecRef::Hpath {
+                    hpath: vec![seg("Goals"), seg("Q3")],
+                },
+                edit: wire::EditShape::Match {
+                    old: "ship by August".into(),
+                    new: "ship by September".into(),
+                },
+                if_node_rev: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
+            }],
+        },
+        // splice: guardless append (legal at the wire forever) — put at:end
+        wire::Op::Splice {
+            path: wire::Path("notes/plan.md".into()),
+            actor: None,
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: None,
+            edits: vec![wire::Edit {
+                target: wire::SecRef::Hpath {
+                    hpath: vec![seg("Goals"), seg("Q4")],
+                },
+                edit: wire::EditShape::Put {
+                    at: wire::PutAt::End,
+                    text: "- new item\n".into(),
+                },
+                if_node_rev: None,
+            }],
+        },
+        // splice: dry run, fm_key target, put at:all and at:content coverage
+        wire::Op::Splice {
+            path: wire::Path("notes/plan.md".into()),
+            actor: None,
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: Some(true),
+            edits: vec![
+                wire::Edit {
+                    target: wire::SecRef::FmKey {
+                        fm_key: "title".into(),
+                    },
+                    edit: wire::EditShape::Put {
+                        at: wire::PutAt::All,
+                        text: "title: Plan v2".into(),
+                    },
+                    if_node_rev: None,
+                },
+                wire::Edit {
+                    target: wire::SecRef::Anchor {
+                        anchor: "r-000042".into(),
+                    },
+                    edit: wire::EditShape::Put {
+                        at: wire::PutAt::Content,
+                        text: "replacement content\n".into(),
+                    },
+                    if_node_rev: None,
+                },
+            ],
+        },
+    ]
+}
+
 fn sample_requests() -> Vec<wire::Request> {
     let ops = vec![
         wire::Op::Hello {
@@ -870,12 +1209,6 @@ fn sample_requests() -> Vec<wire::Request> {
             r#ref: "2026-07-18".into(),
             content: Some(true),
         },
-        wire::Op::Splice {
-            path: wire::Path("notes/y.md".into()),
-            span: wire::Span(10, 90),
-            if_node_rev: wire::NodeRev("33d5b0e1b27cb48b".into()),
-            text: "replacement\n".into(),
-        },
         wire::Op::Root,
         wire::Op::Diff {
             from_root: wire::Root(
@@ -887,6 +1220,7 @@ fn sample_requests() -> Vec<wire::Request> {
         },
     ];
     ops.into_iter()
+        .chain(sample_splice_requests())
         .enumerate()
         .map(|(i, op)| wire::Request {
             id: (i > 0).then_some(i as u64),
@@ -906,7 +1240,12 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
         wire::ErrorCode::UnknownOp,
         wire::ErrorCode::UnsupportedProto,
         wire::ErrorCode::BadPath,
-        wire::ErrorCode::NotFound,
+        wire::ErrorCode::NoMatch,
+        wire::ErrorCode::NotUnique,
+        wire::ErrorCode::WouldCorrupt,
+        wire::ErrorCode::LockTimeout,
+        wire::ErrorCode::FileNotFound,
+        wire::ErrorCode::IoError,
         wire::ErrorCode::InvalidUtf8,
         wire::ErrorCode::Internal,
         wire::ErrorCode::CasMismatch,
@@ -918,8 +1257,11 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
         .map(|code| {
             let mut e = wire::ErrorBody::new(code);
             e.message = Some(format!("{code:?}"));
-            e.path = matches!(code, wire::ErrorCode::BadPath | wire::ErrorCode::NotFound)
-                .then(|| wire::Path("bad/../path".into()));
+            e.path = matches!(
+                code,
+                wire::ErrorCode::BadPath | wire::ErrorCode::FileNotFound
+            )
+            .then(|| wire::Path("bad/../path".into()));
             e.supported = matches!(code, wire::ErrorCode::UnsupportedProto).then(|| vec![1]);
             e.expected = matches!(code, wire::ErrorCode::CasMismatch)
                 .then(|| wire::NodeRev("33d5b0e1b27cb48b".into()));
@@ -947,6 +1289,25 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
             e.unknown_kinds =
                 matches!(code, wire::ErrorCode::BadRequest).then(|| vec!["headding".into()]);
             e.id_raw = matches!(code, wire::ErrorCode::BadRequest).then(|| "3e0".into());
+            e.matches = match code {
+                wire::ErrorCode::NoMatch => Some(0), // 0 is a COUNT, not absence
+                wire::ErrorCode::NotUnique => Some(2),
+                _ => None,
+            };
+            e.lost = matches!(code, wire::ErrorCode::WouldCorrupt)
+                .then(|| vec![vec![seg("Goals"), seg("Q3")]]);
+            e.cause = matches!(code, wire::ErrorCode::IoError)
+                .then(|| "EACCES: permission denied".into());
+            e.overlap = matches!(code, wire::ErrorCode::BadRequest).then(|| {
+                vec![
+                    wire::SecRef::Hpath {
+                        hpath: vec![seg("Goals")],
+                    },
+                    wire::SecRef::Hpath {
+                        hpath: vec![seg("Goals"), seg("Q3")],
+                    },
+                ]
+            });
             if matches!(code, wire::ErrorCode::RootMismatch) {
                 e.expected = Some(wire::NodeRev(
                     "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
@@ -959,6 +1320,64 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
             wire::ResponsePayload::Error { error: e }
         })
         .collect()
+}
+
+/// The two §4.4 response shapes: armed with receipt+seq, and dry
+/// (`root_after` null, no receipt, no seq).
+fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
+    vec![
+        // splice: the §4.4 worked armed response (receipt + seq)
+        wire::ResponseBody::Splice {
+            armed: wire::Armed {
+                path: wire::Path("notes/plan.md".into()),
+                edits: vec![wire::ArmedEdit {
+                    target: wire::SecRef::Hpath {
+                        hpath: vec![seg("Goals"), seg("Q3")],
+                    },
+                    node_rev_before: wire::NodeRev("33d5b0e1b27cb48b".into()),
+                    node_rev_after: wire::NodeRev("41f643f034e5681f".into()),
+                    span_after: wire::Span(49, 75),
+                }],
+            },
+            receipt: Some(wire::ReceiptFact {
+                path: wire::Path("receipts/2026-07-18.md".into()),
+                anchor: "r-000042".into(),
+                node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
+                span_after: wire::Span(26, 248),
+            }),
+            root_before: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            root_after: Some(wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            )),
+            seq: Some(1),
+            dry: None,
+            verdicts: vec![],
+        },
+        // splice: the dry shape — root_after null, no receipt, no seq
+        wire::ResponseBody::Splice {
+            armed: wire::Armed {
+                path: wire::Path("notes/plan.md".into()),
+                edits: vec![wire::ArmedEdit {
+                    target: wire::SecRef::FmKey {
+                        fm_key: "title".into(),
+                    },
+                    node_rev_before: wire::NodeRev("fa77480c79a853bc".into()),
+                    node_rev_after: wire::NodeRev("fb49e9df2257fab8".into()),
+                    span_after: wire::Span(4, 18),
+                }],
+            },
+            receipt: None,
+            root_before: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
+            root_after: None,
+            seq: None,
+            dry: Some(true),
+            verdicts: vec![],
+        },
+    ]
 }
 
 fn sample_responses() -> Vec<wire::Response> {
@@ -1007,14 +1426,11 @@ fn sample_responses() -> Vec<wire::Response> {
             span: wire::Span(0, 474),
             content: Some("…fragment bytes…".into()), // still no rev (D-C2)
         },
-        wire::ResponseBody::Splice {
-            span: wire::Span(10, 95),
-            node_rev: wire::NodeRev("41f643f034e5681f".into()),
-        },
         wire::ResponseBody::Root { root, seq: 2 },
     ];
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()
+        .chain(sample_splice_bodies())
         .map(|body| wire::ResponsePayload::Body { body })
         .collect();
     payloads.extend(sample_error_payloads());
