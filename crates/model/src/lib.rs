@@ -339,6 +339,22 @@ fn extend_terminator(bytes: &[u8], mut end: usize) -> usize {
     end
 }
 
+/// Exclude a single trailing line terminator (`\n` or the full `\r\n` pair) —
+/// the §1 leaf-block law (a leaf node excludes its final terminator). The exact
+/// inverse of [`extend_terminator`]: `extend` grows the fence-to-fence container
+/// over its terminator (§18 row 3), `trim` holds the `fm_key` leaf inside it at
+/// terminator-excluded grain (`[4,15]` = `title: Plan`, §4.4). Full terminator,
+/// never a naive `-1`: `\n` ⇒ 1, `\r\n` ⇒ 2, a terminator-less line ⇒ 0.
+fn trim_terminator(bytes: &[u8], start: usize, mut end: usize) -> usize {
+    if end > start && bytes[end - 1] == b'\n' {
+        end -= 1;
+        if end > start && bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+    }
+    end
+}
+
 /// Model's OWN flat-frontmatter parse (top-level `key: value`, column 0) — the
 /// keys authority per the R1 forward-note, NOT `syntax`'s best-effort list. No
 /// serde/YAML crate: the no-serde crate law forbids it and the corpus frontmatter
@@ -712,7 +728,13 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
                 .split_once(':')
                 .is_some_and(|(k, _)| k.trim().trim_matches(['"', '\'']) == key)
         {
-            let span = line_start..line_end;
+            // §1 leaf law: the `fm_key` LEAF span excludes its trailing
+            // terminator (`[4,15]` = `title: Plan`, §4.4). The frontmatter
+            // CONTAINER node stays fence-to-fence, terminator-inclusive
+            // (`[0,20]`, §18 row 3 — "all hashes stand") and is minted
+            // elsewhere; nothing here touches it. The loop's `line_start`
+            // advance below stays at the terminator-INCLUSIVE `line_end`.
+            let span = line_start..trim_terminator(bytes, line_start, line_end);
             return Ok(Resolved {
                 node_rev: node_rev(bytes, &span),
                 content_span: span.clone(),
@@ -1497,15 +1519,70 @@ mod tests {
     fn resolve_fm_key_targets_the_key_line() {
         let doc = build_plan();
         let title = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title fm_key");
-        assert_eq!(title.span, 4..16);
-        assert_eq!(&doc.raw[title.span.clone()], "title: Plan\n");
+        // Frozen §4.4: the fm_key LEAF span is terminator-EXCLUDED — `[4,15]` =
+        // `title: Plan` (§1 leaf law: leaf block nodes exclude the final line
+        // terminator). NOT the fence-to-fence container `[0,20]` (§18 row 3).
+        assert_eq!(title.span, 4..15);
+        assert_eq!(&doc.raw[title.span.clone()], "title: Plan");
         let independent =
-            blake3::hash(&doc.raw.as_bytes()[4..16]).to_hex().as_str()[..16].to_string();
+            blake3::hash(&doc.raw.as_bytes()[4..15]).to_hex().as_str()[..16].to_string();
         assert_eq!(title.node_rev.0, independent);
+        // Independent blake3 over the frozen leaf bytes pins the frozen §4.4
+        // `node_rev_before` verbatim — the value cannot drift silently.
+        assert_eq!(independent, "fa77480c79a853bc");
         assert_eq!(
             resolve(&doc, &Ref::FmKey("nope".to_string())),
             Err(ResolveError::NotFound)
         );
+    }
+
+    /// GATE 2 (frozen §4.4 dry example): the armed-write transition
+    /// `title: Plan` → `title: Plan v2` COMPUTED through model's own
+    /// resolve → `validate_batch` → apply, never quoted. Lands `span_after`
+    /// `[4,18]` and `node_rev_after` `fb49e9df2257fab8`, both terminator-excluded.
+    #[test]
+    fn fm_key_armed_write_lands_frozen_span_after_and_rev() {
+        let doc = build_plan(); // S0
+        // node_rev_before: the terminator-excluded leaf [4,15] = fa77480c… (§4.4).
+        let before = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title S0");
+        assert_eq!(before.span, 4..15);
+        assert_eq!(before.node_rev.0, "fa77480c79a853bc");
+        // Arm "Plan" → "Plan v2" over the fm_key leaf through model's sealed path.
+        let b = batch(vec![match_edit(
+            Ref::FmKey("title".to_string()),
+            "Plan",
+            "Plan v2",
+            None,
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("fm_key armed write must validate");
+        };
+        let s1_raw = apply_validated(&doc.raw, &vb);
+        let s1 = build(s1_raw.clone(), syntax::parse(&s1_raw));
+        // span_after [4,18] = "title: Plan v2" (14 bytes), terminator still excluded.
+        let after = resolve(&s1, &Ref::FmKey("title".to_string())).expect("title S1");
+        assert_eq!(after.span, 4..18);
+        assert_eq!(&s1.raw[after.span.clone()], "title: Plan v2");
+        let independent =
+            blake3::hash(&s1.raw.as_bytes()[4..18]).to_hex().as_str()[..16].to_string();
+        assert_eq!(after.node_rev.0, independent);
+        assert_eq!(independent, "fb49e9df2257fab8"); // frozen §4.4 node_rev_after
+    }
+
+    /// DERIVED DATA (advisor 44870138 classification): the full-terminator trim
+    /// (`\n` ⇒ 1, `\r\n` ⇒ 2, terminator-less ⇒ 0) is the correct mechanical
+    /// reading of the §1 leaf law, but NO frozen worked value exercises `\r\n` —
+    /// so these fixtures pin DATA, not law. TRIPWIRE: if any future frozen worked
+    /// value contradicts them, STOP and report (do not silently re-pin).
+    #[test]
+    fn trim_terminator_excludes_full_terminator_derived_data() {
+        let lf = b"title: Plan\n";
+        assert_eq!(trim_terminator(lf, 0, lf.len()), 11); // \n ⇒ trim 1
+        let crlf = b"title: Plan\r\n";
+        assert_eq!(trim_terminator(crlf, 0, crlf.len()), 11); // \r\n ⇒ trim 2, no dangling \r
+        let bare = b"title: Plan";
+        assert_eq!(trim_terminator(bare, 0, bare.len()), 11); // terminator-less ⇒ trim 0
+        assert_eq!(trim_terminator(b"\n", 0, 1), 0); // never underflows `start`
     }
 
     #[test]
