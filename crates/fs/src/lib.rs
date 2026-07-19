@@ -13,7 +13,7 @@
 //! thrown away, the architecture has been violated), interpreting content.
 //!
 //! # Law enforcement (candidate thesis, this crate's part)
-//! Write execution demands `model::ValidatedSplice` — a token only `model`'s CAS
+//! Write execution demands `model::ValidatedBatch` — a token only `model`'s CAS
 //! validation can mint. An unvalidated write cannot reach disk by construction;
 //! the splice pipeline (validate in `model`, execute here) is enforced by types,
 //! not review.
@@ -111,7 +111,7 @@ pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<
 pub fn apply_splice(
     root: &WorkspaceRoot,
     rel_path: &Path,
-    splice: &model::ValidatedSplice,
+    splice: &model::ValidatedBatch,
 ) -> io::Result<()> {
     let _ = (root, rel_path, splice);
     todo!("rung 2: tmp + fsync + rename")
