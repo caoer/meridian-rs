@@ -410,8 +410,6 @@ mod toc_tests {
     /// span (terminator excluded), its own `node_rev`; the lone top-level
     /// heading spans the whole file so its rev equals `file_rev`.
     #[test]
-    #[ignore = "STAGED-OPEN (D2): model Anchor nodes carry marker-grain spans; §6.3 worked facts \
-                need host-block-leaf grain — model-lane fix pending, this pin goes live with it"]
     fn worked_s1_receipts_anchor_toc_rows() {
         let raw = format!("# Receipts — 2026-07-18\n{E3_LINE}\n");
         assert_eq!(raw.len(), 249, "S1 receipts byte count (worked §0.3)");
@@ -447,7 +445,6 @@ mod toc_tests {
     /// block sharing the anchor's span echoes `task`; a bare-paragraph anchor
     /// echoes `paragraph`.
     #[test]
-    #[ignore = "STAGED-OPEN (D2): same host-block-grain dependency as the worked S1 rows above"]
     fn anchor_host_kind_task_and_paragraph() {
         let raw = "# H\n\n- [ ] do the thing ^t-1\n\nplain block ^p-1\n";
         let got = rows(raw);
