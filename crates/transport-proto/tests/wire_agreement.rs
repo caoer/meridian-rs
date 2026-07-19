@@ -312,6 +312,7 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             path: path.map(|p| p.0),
             require_root: require_root.map(|r| r.0),
         }),
+        wire::Op::Sub { from_seq } => pb::request::Op::Sub(pb::SubRequest { from_seq }),
     }
 }
 
@@ -889,6 +890,7 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             path: path.map(wire::Path),
             require_root: require_root.map(wire::Root),
         },
+        pb::request::Op::Sub(pb::SubRequest { from_seq }) => wire::Op::Sub { from_seq },
     }
 }
 
@@ -1462,6 +1464,9 @@ fn sample_requests() -> Vec<wire::Request> {
             path: None,
             require_root: None,
         },
+        // sub (§4.7 push path): live-only anchor and a catchup position
+        wire::Op::Sub { from_seq: 0 },
+        wire::Op::Sub { from_seq: 2 },
     ];
     ops.into_iter()
         .chain(sample_splice_requests())

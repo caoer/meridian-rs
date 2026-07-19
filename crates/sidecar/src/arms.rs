@@ -28,6 +28,10 @@ pub(crate) fn dispatch(
         Op::Root => root_op(root, epoch),
         Op::Diff { from_root, to_root } => diff_op(root, epoch, &from_root, &to_root),
         Op::Links { path, require_root } => links_op(root, epoch, path.as_ref(), require_root),
+        // Armed, but registered at the serve layer (the loop owns the
+        // subscription list) — unreachable through serve; answering internal
+        // (never a panic) keeps a future misroute non-fatal.
+        Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
         Op::Splice {
             path,
             actor,
