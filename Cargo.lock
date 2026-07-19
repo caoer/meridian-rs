@@ -749,6 +749,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "model",
+ "syntax",
  "tempfile",
 ]
 
@@ -1801,6 +1802,8 @@ dependencies = [
  "fs",
  "model",
  "serde_json",
+ "tempfile",
+ "testsuite",
  "transport",
  "wire",
  "wire-map",

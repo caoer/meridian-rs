@@ -25,6 +25,13 @@ pub fn wsfix_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/wsfix")
 }
 
+/// The adversarial-harness probe packs + walkvault fixture vault (provenance:
+/// `data/harness/PROVENANCE.md`).
+#[must_use]
+pub fn harness_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/harness")
+}
+
 /// Path to the CHARSET-GUARD discrimination pack (ruling 011 / §2.4; provenance
 /// `data/charset-guard/PROVENANCE.md`) — per-mint-position `_`-refusal inputs
 /// plus the pack-pinned walk answer, for downstream units to ride.

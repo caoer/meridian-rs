@@ -34,13 +34,23 @@ pub mod domain;
 pub struct WorkspaceRoot(pub PathBuf);
 
 /// Read one workspace file into a parsed document (via `syntax` + `model`).
-/// Non-UTF-8 files are refused, never lossy-decoded (wire-contract §8 row 1).
+/// Non-UTF-8 files are refused, never lossy-decoded (wire-contract §8 row 1) —
+/// the refusal is `ErrorKind::InvalidData`, distinguishable from a missing
+/// file (`NotFound`) so the dispatch boundary can split `invalid_utf8` from
+/// `file_not_found`.
 ///
 /// # Errors
 /// I/O failure reading the file, or non-UTF-8 content (refused).
 pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document> {
-    let _ = (root, rel_path);
-    todo!("rung 1: read → syntax::parse → model::build")
+    let bytes = fs::read(root.0.join(rel_path))?;
+    let raw = String::from_utf8(bytes).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("non-UTF-8 content refused: {e}"),
+        )
+    })?;
+    let nodes = syntax::parse(&raw);
+    Ok(model::build(raw, nodes))
 }
 
 /// Walk the corpus: every markdown file under the root, as root-relative paths,
