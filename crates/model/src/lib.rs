@@ -402,6 +402,36 @@ pub enum Ref {
     Anchor(String),
 }
 
+/// A mint-plane anchor id outside the one block-id charset (`[A-Za-z0-9-]`,
+/// decision 011 / contract §2.4) — e.g. a legacy `_`-bearing id. `model` is
+/// wire-blind, so this is the model-side refusal; the dispatch boundary maps it
+/// to the wire `bad_request` (§2.4). The walk plane does NOT use this — it
+/// follows the app (the pack-pinned answer), where the same id is silently
+/// dropped (decision 013 consequence 3: both dispositions conform).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadAnchorId {
+    pub id: String,
+}
+
+impl Ref {
+    /// Build a mint-plane anchor ref, enforcing the one block-id charset — the
+    /// mint-guard (CHARSET-GUARD). Every mint position that constructs an anchor
+    /// ref from untrusted input (dispatch strict-decode, splice targets, receipt
+    /// anchors) routes through here rather than `Ref::Anchor` directly.
+    ///
+    /// # Errors
+    /// [`BadAnchorId`] when `id` is empty or bears a char outside `[A-Za-z0-9-]`
+    /// (the dead `_` superset is refused here → `bad_request`).
+    pub fn anchor(id: impl Into<String>) -> Result<Self, BadAnchorId> {
+        let id = id.into();
+        if syntax::is_block_id(&id) {
+            Ok(Self::Anchor(id))
+        } else {
+            Err(BadAnchorId { id })
+        }
+    }
+}
+
 /// A resolved splice target: the section (heading line through end of subtree)
 /// or the anchor's host block, plus its CAS token.
 #[derive(Debug, Clone, PartialEq)]
@@ -565,5 +595,21 @@ mod tests {
             q3.hpath.as_deref(),
             Some(["Goals".to_string(), "Q3".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn ref_anchor_guard_refuses_underscore_ids() {
+        // CHARSET-GUARD: the mint-plane anchor constructor enforces the one
+        // block-id charset (ruling 011 / contract §2.4). Clean ids mint; a
+        // `_`-bearing (or otherwise out-of-charset) id is refused, carrying the
+        // offending lexeme for the wire `bad_request` frame downstream.
+        assert_eq!(Ref::anchor("r-000042"), Ok(Ref::Anchor("r-000042".into())));
+        assert_eq!(Ref::anchor("clean-1"), Ok(Ref::Anchor("clean-1".into())));
+        assert_eq!(
+            Ref::anchor("under-probe_x"),
+            Err(BadAnchorId { id: "under-probe_x".into() })
+        );
+        assert_eq!(Ref::anchor("a_04"), Err(BadAnchorId { id: "a_04".into() }));
+        assert_eq!(Ref::anchor(""), Err(BadAnchorId { id: String::new() }));
     }
 }
