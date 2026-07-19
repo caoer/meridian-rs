@@ -14,6 +14,7 @@ pub(crate) fn dispatch(
     epoch: &mut crate::ring::RootRing,
     id: Option<u64>,
     op: Op,
+    rulesets: &[policy::CompiledRuleset],
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     match op {
         Op::Hello { .. } => Ok(hello(root)),
@@ -53,6 +54,7 @@ pub(crate) fn dispatch(
                 dry: dry.unwrap_or(false),
                 edits,
             },
+            rulesets,
         ),
     }
 }
@@ -86,6 +88,7 @@ fn splice_op(
     root: &fs::WorkspaceRoot,
     epoch: &mut crate::ring::RootRing,
     args: &SpliceArgs,
+    rulesets: &[policy::CompiledRuleset],
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, &args.path)?;
     let root_before = ambient_root(root)?;
@@ -122,7 +125,19 @@ fn splice_op(
         model::SpliceVerdict::Validated(b) => b,
         refused => return Err(verdict_to_wire(&refused, args, &before_facts)),
     };
-    let armed_edits = simulate_armed_edits(&doc, &sealed, &args.edits, &before_facts)?;
+
+    // Build the post-batch document state ONCE, shared by BOTH the armed AFTER
+    // facts and the verdicts, for BOTH the dry and real paths — the single point
+    // that makes the dry twin incapable of diverging from the real one (§4.4
+    // one-reparse law; advisor Ruling 2). The real commit writes exactly these
+    // bytes, so evaluating this simulated doc is evaluating the committed doc.
+    let after_doc = build_after_doc(&doc, &sealed, &args.path);
+    let armed_edits = simulate_armed_edits(&after_doc, &args.edits, &before_facts)?;
+    // The ONE production `policy::evaluate` call site (advisor Ruling 3): the
+    // touched doc's post-batch state → §11.1 verdicts, filled identically on dry
+    // and real. Empty when no pack is loaded — findings from whatever packs are
+    // admitted, never decisions (§11.1).
+    let verdicts = crate::policy_bridge::evaluate_verdicts(rulesets, &after_doc);
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -137,7 +152,7 @@ fn splice_op(
             root_after: None,
             seq: None,
             dry: Some(true),
-            verdicts: vec![],
+            verdicts,
         });
     }
 
@@ -199,7 +214,7 @@ fn splice_op(
         root_after: Some(frame.delta.root_after.clone()),
         seq: Some(frame.delta.seq),
         dry: None,
-        verdicts: vec![],
+        verdicts,
     })
 }
 
@@ -246,22 +261,37 @@ fn model_edits_and_before_facts(
     Ok((model_edits, before_facts))
 }
 
-/// The armed AFTER facts from a real parse of the simulated post-batch bytes
-/// (the §4.4 one-reparse law's dry twin) — computed, never
-/// arithmetic-shifted.
-fn simulate_armed_edits(
+/// The post-batch document state, built ONCE (the §4.4 one-reparse law's dry
+/// twin): apply the sealed span edits in memory → reparse → build, stamping the
+/// document path (`model::build` is I/O-free and leaves it empty) so §11.1
+/// verdicts carry it. Both the armed AFTER facts and the verdicts read THIS doc,
+/// on both the dry and real paths — computed, never arithmetic-shifted.
+fn build_after_doc(
     doc: &model::Document,
     sealed: &model::ValidatedBatch,
+    path: &Path,
+) -> model::Document {
+    let after_raw = apply_validated(&doc.raw, sealed);
+    let after_tree = syntax::parse(&after_raw);
+    let mut after_doc = model::build(after_raw, after_tree);
+    if let model::NodeKind::Document { path: p, .. } = &mut after_doc.root.kind {
+        p.clone_from(&path.0);
+    }
+    after_doc
+}
+
+/// The armed AFTER facts, resolved against the shared post-batch state
+/// [`build_after_doc`] built — request order (§4.4: armed edits align 1:1 with
+/// request edits).
+fn simulate_armed_edits(
+    after_doc: &model::Document,
     edits: &[wire::Edit],
     before_facts: &[model::Target],
 ) -> Result<Vec<wire::ArmedEdit>, Box<ErrorBody>> {
-    let after_raw = apply_validated(&doc.raw, sealed);
-    let after_tree = syntax::parse(&after_raw);
-    let after_doc = model::build(after_raw, after_tree);
     let mut armed_edits = Vec::with_capacity(edits.len());
     for (edit, before) in edits.iter().zip(before_facts) {
         let target = to_model_ref(&edit.target)?;
-        let after = model::resolve(&after_doc, &target).map_err(|_| {
+        let after = model::resolve(after_doc, &target).map_err(|_| {
             // A target whose identity does not survive its own edit (e.g. a
             // heading rewritten by put at:all) has no worked armed shape in
             // the frozen text — refuse loud rather than invent one.

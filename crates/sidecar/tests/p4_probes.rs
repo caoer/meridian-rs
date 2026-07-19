@@ -54,7 +54,7 @@ fn probes() -> Vec<Value> {
 fn answer(root: &fs::WorkspaceRoot, request: &Value) -> Value {
     let line = format!("{request}\n");
     let mut out = Vec::new();
-    sidecar::serve(root, line.as_bytes(), &mut out).expect("serve");
+    sidecar::serve(root, line.as_bytes(), &mut out, &[]).expect("serve");
     let text = String::from_utf8(out).expect("frames are UTF-8");
     serde_json::from_str(text.lines().next().expect("one frame")).expect("frame parses")
 }

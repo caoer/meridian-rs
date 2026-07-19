@@ -106,7 +106,7 @@ fn line(s: &str) -> Step {
 
 fn serve_scripted(root: &fs::WorkspaceRoot, steps: Vec<Step>) -> Vec<(String, Value)> {
     let mut out = Vec::new();
-    sidecar::serve(root, Scripted::new(steps), &mut out).expect("serve");
+    sidecar::serve(root, Scripted::new(steps), &mut out, &[]).expect("serve");
     String::from_utf8(out)
         .expect("frames are UTF-8")
         .lines()

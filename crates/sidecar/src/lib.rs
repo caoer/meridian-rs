@@ -35,8 +35,15 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 mod arms;
 pub mod commit;
 mod decode;
+mod policy_bridge;
 pub mod ring;
 mod watch;
+
+/// Admit a rule pack sidecar-mode (P6-VERDICTS): compile through policy's load
+/// gate over the REAL parse→facts plane, refusing a corpus-class pack LOUD
+/// (`daemon_only`, §8/§11.3). The admitted [`policy::CompiledRuleset`]s are the
+/// `serve` rulesets whose findings ride splice `verdicts`.
+pub use policy_bridge::admit;
 
 /// v2 §3.2: the server name in the `hello` body.
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
@@ -78,12 +85,18 @@ pub const CAPS: [&str; 16] = [
 /// never terminates because of a bad frame. EOF: in-flight work finished,
 /// output flushed, `Ok(())`.
 ///
+/// `rulesets` are the admitted rule packs (P6-VERDICTS) whose findings ride every
+/// splice response's `verdicts` (§11.1); empty = no packs loaded, so verdicts stay
+/// `[]`. Where the daemon SOURCES packs is Go's business (§11, row 8: loaded-pack
+/// listing is a Go surface) — this loop only evaluates what it is handed.
+///
 /// # Errors
 /// I/O failure on the streams themselves — never a content condition.
 pub fn serve(
     root: &fs::WorkspaceRoot,
     mut input: impl BufRead,
     mut output: impl Write,
+    rulesets: &[policy::CompiledRuleset],
 ) -> io::Result<()> {
     // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
     // seq are born here and die here; nothing persists across restarts —
@@ -107,7 +120,7 @@ pub fn serve(
             eprintln!("watch reconcile: {e:?}");
         }
         flush_subs(&mut output, &epoch, &mut subs)?;
-        let response = respond_line(root, &mut epoch, &mut subs, &line);
+        let response = respond_line(root, &mut epoch, &mut subs, rulesets, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         // Post-dispatch reconcile: internal commits sync the baseline
@@ -191,6 +204,7 @@ fn respond_line(
     root: &fs::WorkspaceRoot,
     epoch: &mut ring::RootRing,
     subs: &mut Vec<SubState>,
+    rulesets: &[policy::CompiledRuleset],
     line: &str,
 ) -> Response {
     let id = match scan_id(line) {
@@ -227,7 +241,7 @@ fn respond_line(
             },
             Err(e) => error_frame(id, *e),
         },
-        Ok(op) => match arms::dispatch(root, epoch, id, op) {
+        Ok(op) => match arms::dispatch(root, epoch, id, op, rulesets) {
             Ok(body) => Response {
                 id,
                 ok: true,

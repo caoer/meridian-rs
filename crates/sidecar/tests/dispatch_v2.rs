@@ -44,7 +44,7 @@ fn s0() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Feed `input` through the live serve loop; one parsed frame per output line.
 fn serve(root: &fs::WorkspaceRoot, input: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    sidecar::serve(root, input.as_bytes(), &mut out).expect("serve");
+    sidecar::serve(root, input.as_bytes(), &mut out, &[]).expect("serve");
     String::from_utf8(out)
         .expect("frames are UTF-8")
         .lines()
