@@ -33,6 +33,7 @@ use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
+pub mod commit;
 mod decode;
 pub mod ring;
 
