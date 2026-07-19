@@ -206,23 +206,21 @@ fn gate2_bad_path_refused() {
 // Gate 3 — hello caps ≡ the ARMED set exactly (§3.2 discovery honesty)
 // ---------------------------------------------------------------------------
 
-/// The §3.2 caps assertion in its ADVISOR-RULED form (d4-splice gate 6):
-/// `caps ≡ the frozen §3.2 printed list − {"sub"}` — the subtraction is
-/// EXPLICIT below and is the one bounded, tracked debt: **T5-SUB arms `sub`,
-/// deletes the subtraction, and this becomes the naked full-list ≡**
-/// (P6-VERDICTS re-asserts it as its own pack acceptance row). Every other
-/// printed entry is truthfully served today, dotted field amendments
-/// included (`splice.verdicts`: the surface rides every splice response as
-/// `[]` from birth; variants are P6's).
+/// The §3.2 caps assertion, COMPLETE: T5-SUB armed `sub` and deleted the
+/// D4-SPLICE-era subtraction exactly as its closure note promised — this is
+/// now the naked frozen §3.2 full-list ≡ (P6-VERDICTS re-asserts it as its
+/// own pack acceptance row). Every printed entry is truthfully served,
+/// dotted field amendments included (`splice.verdicts`: the surface rides
+/// every splice response as `[]` from birth; variants are P6's).
 #[test]
-fn gate3_hello_caps_equal_frozen_list_minus_sub() {
+fn gate3_hello_caps_equal_frozen_full_list() {
     let (_d, root) = s0();
     let frame = one(
         &root,
         r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
     );
-    // The frozen §3.2 printed list, verbatim — the subtraction is applied
-    // structurally so the fixture READS as printed-list-minus-sub.
+    // The frozen §3.2 printed list, verbatim and COMPLETE (the T5-SUB
+    // closure: the d4-splice subtraction filter is gone).
     let frozen_printed = [
         "toc",
         "cat",
@@ -241,14 +239,10 @@ fn gate3_hello_caps_equal_frozen_list_minus_sub() {
         "diff",
         "sub",
     ];
-    let ruled: Vec<&str> = frozen_printed
-        .into_iter()
-        .filter(|c| *c != "sub") // T5-SUB deletes this filter
-        .collect();
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
-            "caps":ruled,
+            "caps":frozen_printed,
             "root":R0}
     });
     assert_eq!(frame, expected);
@@ -290,10 +284,10 @@ fn gate3_s2l22_node_rev_must_when_splice_in_caps() {
 fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
-        // splice armed at D4-SPLICE, links at Q5-LINKS — both moved into
-        // `caps`; `sub` stays here until T5-SUB arms the transport.
-        r#"{"id":1,"op":"sub","from_seq":0}"#,
+        // every §3.2 op is armed as of T5-SUB — only genuinely unknown
+        // names answer unknown_op now.
         r#"{"id":1,"op":"zap"}"#,
+        r#"{"id":1,"op":"guard"}"#, // v1 guard, DELETED (D-C8) — never a name again
     ] {
         let frame = one(&root, req);
         assert_eq!(frame["error"]["code"], "unknown_op", "{frame}");

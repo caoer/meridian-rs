@@ -41,17 +41,15 @@ pub mod ring;
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
 /// v2 §3.2: the one protocol this sidecar speaks (proto-1 retained).
 pub const PROTO: u32 = 1;
-/// The ARMED op set, exactly the frozen §3.2 printed list MINUS `"sub"`
-/// (advisor-ruled assertion form, D4-SPLICE gate 6): every entry is TRUE of
-/// this build — armed ops + dotted field amendments (`splice.verdicts` names
-/// the verdicts surface, served `[]` from birth; variants are P6's). The one
-/// subtraction is the bounded, tracked debt: **T5-SUB arms `sub` and deletes
-/// the subtraction**, making the caps fixture the naked §3.2 full-list ≡
-/// (P6-VERDICTS re-asserts it as its own acceptance row). `hello` answers
-/// but is not itself a cap. S2/L22 law is LIVE from this rung: `splice ∈
-/// caps` ⇒ `node_rev` MUST on every `toc`/`cat`/`extract` node (pinned in
-/// the caps fixture).
-pub const CAPS: [&str; 15] = [
+/// The ARMED op set — exactly the frozen §3.2 printed list, COMPLETE:
+/// T5-SUB armed `sub` and deleted the D4-SPLICE subtraction, so the caps
+/// fixture is now the naked §3.2 full-list ≡ (P6-VERDICTS re-asserts it as
+/// its own pack acceptance row). Every entry is TRUE of this build — armed
+/// ops + dotted field amendments (`splice.verdicts` names the verdicts
+/// surface, served `[]` from birth; variants are P6's). `hello` answers but
+/// is not itself a cap. S2/L22 law is LIVE: `splice ∈ caps` ⇒ `node_rev`
+/// MUST on every `toc`/`cat`/`extract` node (pinned in the caps fixture).
+pub const CAPS: [&str; 16] = [
     "toc",
     "cat",
     "extract",
@@ -67,11 +65,15 @@ pub const CAPS: [&str; 15] = [
     "splice.verdicts",
     "root",
     "diff",
+    "sub",
 ];
 
 /// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
 /// response frame, flushed per frame (shell-pipe debuggability is a contract
-/// property). Malformed input answers `bad_frame`/`bad_request`; the sidecar
+/// property) — then the push path (T5-SUB, the serve loop's ONE structural
+/// change, still wiring-only): every ring frame not yet delivered to an
+/// active subscription is written as a Notification frame after the
+/// response. Malformed input answers `bad_frame`/`bad_request`; the sidecar
 /// never terminates because of a bad frame. EOF: in-flight work finished,
 /// output flushed, `Ok(())`.
 ///
@@ -83,9 +85,10 @@ pub fn serve(
     mut output: impl Write,
 ) -> io::Result<()> {
     // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
-    // seq are born here and die here; nothing persists across restarts.
-    // Mutable: the armed splice arm advances it through the commit seam.
+    // seq are born here and die here; nothing persists across restarts —
+    // subscriptions included (a restart is a new epoch; catch up diff-by-root).
     let mut epoch = ring::RootRing::new();
+    let mut subs: Vec<SubState> = Vec::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -95,17 +98,87 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        let response = respond_line(root, &mut epoch, &line);
+        let response = respond_line(root, &mut epoch, &mut subs, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
+        // The push path: ok first, THEN Notification frames (§4.7 order) —
+        // a fresh subscription's replay and every live emission ride the
+        // same flush, so replay ≡ live holds at the transport too.
+        flush_subs(&mut output, &epoch, &mut subs)?;
         output.flush()?;
     }
+}
+
+/// One active subscription: the highest `delta.seq` already delivered.
+/// Registered by the `sub` arm at `from_seq` — the first flush replays the
+/// retained frames above it (§4.7: "ok, then Notification frames").
+struct SubState {
+    delivered: u64,
+}
+
+/// Write every undelivered ring frame to each subscription, in emission
+/// order — the frames are the STORED ring objects serialized directly
+/// (`{"delta":{…}}`, no `id` key — §3.1 classification): the d4
+/// single-constructor law extends to the push path by construction.
+fn flush_subs(
+    output: &mut impl Write,
+    epoch: &ring::RootRing,
+    subs: &mut [SubState],
+) -> io::Result<()> {
+    for sub in subs.iter_mut() {
+        for frame in epoch.frames_after(sub.delivered) {
+            serde_json::to_writer(&mut *output, &frame)?;
+            output.write_all(b"\n")?;
+            sub.delivered = frame.delta.seq;
+        }
+    }
+    Ok(())
+}
+
+/// v2 §4.7 `sub`, live at T5-SUB. The §7.1 late law's residue: `from_seq`
+/// catchup is valid only WITHIN this epoch — anchorable positions are
+/// `current` (live-only) and anything the retained ring can replay from;
+/// everything else (evicted, ahead, a prior epoch's counter) answers
+/// `root_unknown` → resync, catch up by diff-by-root (the only
+/// restart-durable handle). Never wrong data, never a cross-epoch seq
+/// comparison — the old counter died with its ring. The ack reuses the
+/// §4.7 `{root, seq}` body: the subscription's anchor tense (advisor-ruled;
+/// no frozen frame prints an ack body).
+fn subscribe(
+    root: &fs::WorkspaceRoot,
+    epoch: &ring::RootRing,
+    subs: &mut Vec<SubState>,
+    from_seq: u64,
+) -> Result<wire::ResponseBody, Box<ErrorBody>> {
+    let current = epoch.seq();
+    let anchored = from_seq == current
+        || (from_seq < current && epoch.oldest_seq().is_some_and(|o| from_seq >= o - 1));
+    if !anchored {
+        let mut e = ErrorBody::new(ErrorCode::RootUnknown);
+        e.message = Some(
+            "from_seq outside this epoch's retained history — catch up by diff-by-root (§7.1)"
+                .into(),
+        );
+        return Err(Box::new(e));
+    }
+    subs.push(SubState {
+        delivered: from_seq,
+    });
+    Ok(wire::ResponseBody::Root {
+        root: arms::ambient_root(root)?,
+        seq: current,
+    })
 }
 
 /// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
 /// corrupt frame classification.
-fn respond_line(root: &fs::WorkspaceRoot, epoch: &mut ring::RootRing, line: &str) -> Response {
+fn respond_line(
+    root: &fs::WorkspaceRoot,
+    epoch: &mut ring::RootRing,
+    subs: &mut Vec<SubState>,
+    line: &str,
+) -> Response {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
         Err(_) => return error_frame(None, ErrorBody::new(ErrorCode::BadFrame)),
@@ -130,6 +203,16 @@ fn respond_line(root: &fs::WorkspaceRoot, epoch: &mut ring::RootRing, line: &str
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     }
     match decode::decode(&obj) {
+        // The push-path op registers at the serve layer — the loop owns the
+        // subscription list; everything else routes to the arms.
+        Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
+            Ok(body) => Response {
+                id,
+                ok: true,
+                payload: ResponsePayload::Body { body },
+            },
+            Err(e) => error_frame(id, *e),
+        },
         Ok(op) => match arms::dispatch(root, epoch, id, op) {
             Ok(body) => Response {
                 id,

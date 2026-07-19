@@ -47,6 +47,7 @@ message Request {
     CatRequest cat = 9;         // v2 §4.2
     DiffRequest diff = 10;      // v2 §4.7
     LinksRequest links = 11;    // v2 §4.6 (Q5-LINKS)
+    SubRequest sub = 12;        // v2 §4.7 push path (T5-SUB)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -150,6 +151,13 @@ message DiffRequest {
 message LinksRequest {
   optional string path = 1;
   optional string require_root = 2;
+}
+
+// v2 §4.7 push path (T5-SUB): ok (Root-shaped ack, advisor-ruled), then
+// Notification frames each carrying one Delta. from_seq catchup is
+// per-daemon-epoch (§7.1); outside retained history → root_unknown.
+message SubRequest {
+  uint64 from_seq = 1;
 }
 
 // Half-open byte range [start, end) — contract v2 §1 span sub-laws.
