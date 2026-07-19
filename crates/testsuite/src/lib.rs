@@ -17,3 +17,10 @@
 pub fn gt_pack_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/gt")
 }
+
+/// Path to the §0.3 wsfix worked-fixture pack (M2-BUILD oracle; provenance
+/// `data/wsfix/PROVENANCE.md`).
+#[must_use]
+pub fn wsfix_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/wsfix")
+}
