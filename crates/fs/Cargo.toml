@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 model = { workspace = true }
+syntax = { workspace = true }
 
 [dev-dependencies]
 # test-only: blake3 recomputes the §12.1 counterfactual roots (the production
