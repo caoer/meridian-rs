@@ -61,10 +61,20 @@ fn p4_probes_applicable_at_rung_2() {
                 assert_eq!(frame["ok"], false, "{id}: {frame}");
                 assert_eq!(frame["error"]["code"], "ref_not_found", "{id}: {frame}");
             }
-            // duplicate block id: the mint plane refuses loud, never last-wins
+            // duplicate block id: the mint plane refuses loud, never last-wins.
+            // Advisor-ruled shape: `candidates` stays type-level SecRef and
+            // EMPTY (`[]` — no §2.1 spelling distinguishes two identical ids;
+            // prose in the grammar field would violate the one-grammar law),
+            // the human message carries the count.
             "MP-2" => {
                 assert_eq!(frame["ok"], false, "{id}: {frame}");
                 assert_eq!(frame["error"]["code"], "ambiguous_ref", "{id}: {frame}");
+                assert_eq!(
+                    frame["error"]["candidates"],
+                    serde_json::json!([]),
+                    "{id}: {frame}"
+                );
+                assert!(frame["error"]["message"].as_str().is_some(), "{id}: {frame}");
             }
             // occurrence index picks the SECOND '## Beta'; node_rev rides
             "MP-3" => {

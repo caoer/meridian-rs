@@ -143,8 +143,9 @@ fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
 /// `ambiguous_ref` (§2.1: the strict plane never silently picks) with
 /// `candidates` in THE grammar: hpath duplicates are nameable exactly by
 /// occurrence index on the final segment; duplicate block ids have no exact
-/// §2.1 spelling per target, so `candidates` stays absent with the message
-/// carrying the count.
+/// §2.1 spelling per target (the occurrence index is hpath-segment syntax
+/// only), so `candidates` stays type-level EMPTY — `[]`, never prose inside
+/// the grammar field — with the human message carrying the count.
 fn ambiguous(sec: &SecRef, count: usize) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
     match sec {
@@ -162,6 +163,7 @@ fn ambiguous(sec: &SecRef, count: usize) -> ErrorBody {
             );
         }
         SecRef::Anchor { .. } | SecRef::FmKey { .. } => {
+            e.candidates = Some(Vec::new());
             e.message = Some(format!("{count} duplicate targets in one file"));
         }
     }
