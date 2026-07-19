@@ -551,7 +551,9 @@ type DomainFiles = Vec<(String, Vec<u8>)>;
 /// over exactly those bytes — one read, one fold, so a consumer (the `links`
 /// fact plane) parses the same bytes its `as_of_root` describes and the
 /// answer cannot drift from its stamp.
-fn domain_snapshot(root: &fs::WorkspaceRoot) -> Result<(DomainFiles, Root), Box<ErrorBody>> {
+pub(crate) fn domain_snapshot(
+    root: &fs::WorkspaceRoot,
+) -> Result<(DomainFiles, Root), Box<ErrorBody>> {
     let io_err = |e: std::io::Error| {
         let mut err = ErrorBody::new(ErrorCode::IoError);
         err.cause = Some(e.to_string());
