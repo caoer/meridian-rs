@@ -40,7 +40,10 @@ fn expected_pairs(nodes: &[Value]) -> Vec<(String, usize, usize)> {
     nodes
         .iter()
         .map(|n| {
-            let kind = n["kind"].as_str().expect("node kind is a string").to_string();
+            let kind = n["kind"]
+                .as_str()
+                .expect("node kind is a string")
+                .to_string();
             let span = n["span"].as_array().expect("node span is an array");
             let start = usize::try_from(span[0].as_u64().expect("span start")).unwrap();
             let end = usize::try_from(span[1].as_u64().expect("span end")).unwrap();
