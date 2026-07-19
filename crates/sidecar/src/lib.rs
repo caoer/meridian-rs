@@ -34,6 +34,7 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
 mod decode;
+pub mod ring;
 
 /// v2 §3.2: the server name in the `hello` body.
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
@@ -42,8 +43,17 @@ pub const PROTO: u32 = 1;
 /// The ARMED op set at this rung, exactly (§3.2 discovery honesty: an op is in
 /// `caps` or answers `unknown_op`; the ≡-full-§3.2-list assertion lands at
 /// P6-VERDICTS). `hello` answers but is not itself a cap; `resolve.content` is
-/// the one armed dotted field amendment.
-pub const CAPS: [&str; 5] = ["toc", "cat", "extract", "resolve", "resolve.content"];
+/// the one armed dotted field amendment. D3-DELTA arms `root` + `diff` (`diff`
+/// truthfully serves empty-or-`root_unknown` until rung 4 emits).
+pub const CAPS: [&str; 7] = [
+    "toc",
+    "cat",
+    "extract",
+    "resolve",
+    "resolve.content",
+    "root",
+    "diff",
+];
 
 /// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
 /// response frame, flushed per frame (shell-pipe debuggability is a contract
@@ -58,6 +68,9 @@ pub fn serve(
     mut input: impl BufRead,
     mut output: impl Write,
 ) -> io::Result<()> {
+    // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
+    // seq are born here and die here; nothing persists across restarts.
+    let epoch = ring::RootRing::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -67,7 +80,7 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        let response = respond_line(root, &line);
+        let response = respond_line(root, &epoch, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         output.flush()?;
@@ -77,7 +90,7 @@ pub fn serve(
 /// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
 /// corrupt frame classification.
-fn respond_line(root: &fs::WorkspaceRoot, line: &str) -> Response {
+fn respond_line(root: &fs::WorkspaceRoot, epoch: &ring::RootRing, line: &str) -> Response {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
         Err(_) => return error_frame(None, ErrorBody::new(ErrorCode::BadFrame)),
@@ -102,7 +115,7 @@ fn respond_line(root: &fs::WorkspaceRoot, line: &str) -> Response {
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     }
     match decode::decode(&obj) {
-        Ok(op) => match arms::dispatch(root, op) {
+        Ok(op) => match arms::dispatch(root, epoch, op) {
             Ok(body) => Response {
                 id,
                 ok: true,

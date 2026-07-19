@@ -2061,6 +2061,7 @@ dependencies = [
  "syntax",
  "transport",
  "wire",
+ "wire-map",
 ]
 
 [[package]]
