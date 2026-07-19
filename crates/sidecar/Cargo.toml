@@ -16,6 +16,12 @@ workspace = true
 transport = { workspace = true }
 model = { workspace = true }
 fs = { workspace = true }
+# links (§4.6) parses the domain snapshot's exact bytes — the bytes the
+# as_of_root folded — rather than re-reading disk through fs::load.
+syntax = { workspace = true }
+# Rung-5 corpus reads: the §4.6 edge map is query's (the additive-crate
+# arrival — nothing reshuffles).
+query = { workspace = true }
 wire = { workspace = true }
 # Law 3 as amended (review C1): projection lives at the named wire-map seam,
 # tested there; this bin stays wiring-only.

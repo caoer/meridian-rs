@@ -35,6 +35,8 @@
 //! - Rung 4 (`splice` §4.4 batch shape, armed-facts response, receipts §6,
 //!   `no_match`/`not_unique`/`would_corrupt`/`lock_timeout`, the `not_found`
 //!   retirement §18 row 6): FROZEN.
+//! - Rung 5 (`links` §4.6 view-shaped fact op + the §10.1 staleness triple +
+//!   `stale_view` §10.2): contract v2 §4.6, §10 — FROZEN (Q5-LINKS).
 //!
 //! # Build-out obligations (contract laws the types alone cannot enforce)
 //! - **v2 §3.2 evolution, server side:** unknown request fields MUST be rejected
@@ -46,6 +48,7 @@
 //!   class alone (v2 §8) — and ignore unknown open-kind strings.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // v2 §1 wire vocabulary — the nouns
@@ -363,6 +366,17 @@ pub enum Op {
     /// batches byte-identical to the live notification frames (§7.3); the
     /// Delta-bearing response body lands with the Delta noun (D3-DELTA).
     Diff { from_root: Root, to_root: Root },
+    /// v2 §4.6 the corpus fact op (the 188-call read-as-oracle pattern, made
+    /// an op): the outgoing edge map, `resolvedLinks`/`unresolvedLinks`
+    /// shape. `path` absent → whole-corpus edge map. Corpus-wide ⇒ the
+    /// response carries the §10.1 staleness triple; `require_root` is the
+    /// opt-in strictness knob → `stale_view` refusal (§10.2), retry class.
+    Links {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<Path>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        require_root: Option<Root>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +588,29 @@ pub enum ResponseBody {
     /// consumers and live subscribers parse one shape. There is no second
     /// diff dialect.
     Diff { batches: Vec<DeltaFrame> },
+    /// v2 §4.6: the outgoing edge map under the §10.1 staleness triple —
+    /// `as_of_root` (the root the answer was computed at), `live_root` (the
+    /// root now), `changes_seq` (the Delta counter at `as_of_root`, §7.1
+    /// per-daemon-epoch semantics). **No lag bounds are promised, ever**
+    /// (§10.1 honest-tense law): `as_of_root ≠ live_root` is a legal frame,
+    /// never an error. `files` keys are corpus paths; see [`FileLinks`].
+    Links {
+        as_of_root: Root,
+        live_root: Root,
+        changes_seq: u64,
+        files: BTreeMap<String, FileLinks>,
+    },
+}
+
+/// One file's outgoing edges (v2 §4.6, the app's `resolvedLinks`/
+/// `unresolvedLinks` shape): per-edge counts, dangling refs first-class.
+/// `resolved` keys are the destination corpus paths; `unresolved` keys are
+/// the raw linkpaths as written (no vault file to name). Both maps always
+/// serialize — a link-less file is `{}`/`{}`, never absent keys.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FileLinks {
+    pub resolved: BTreeMap<String, u64>,
+    pub unresolved: BTreeMap<String, u64>,
 }
 
 /// The armed-fact set for one batch (v2 §4.4): the normative receipt content
@@ -734,8 +771,8 @@ pub enum Recovery {
 /// is that binding, verbatim from the frozen table. Clients treat unrecognized
 /// codes as `recovery`-dispatched.
 ///
-/// The two remaining v2 codes join with their ops: `stale_view` (links,
-/// Q5-LINKS) and `daemon_only` (rule packs, rung 6). v1 `not_found` is
+/// The one remaining v2 code joins with its op: `daemon_only` (rule packs,
+/// rung 6); `stale_view` joined with `links` (Q5-LINKS). v1 `not_found` is
 /// RETIRED (§18 row 6, split `file_not_found`/`ref_not_found`) — its string
 /// no longer parses, pinned by the retirement deviation fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -779,6 +816,10 @@ pub enum ErrorCode {
     RootUnknown,
     /// v2 §8: transient lock contention — same request may succeed.
     LockTimeout,
+    /// v2 §10.2: a `require_root` demand the current world does not meet —
+    /// retry class (retryable, never silent). Extras: `required` (the
+    /// demanded root) + `as_of_root`/`live_root` (the world as sampled).
+    StaleView,
 }
 
 impl ErrorCode {
@@ -800,7 +841,7 @@ impl ErrorCode {
             | ErrorCode::AmbiguousRef => Recovery::Fix,
             ErrorCode::FileNotFound | ErrorCode::IoError | ErrorCode::InvalidUtf8 => Recovery::Env,
             ErrorCode::CasMismatch | ErrorCode::RefNotFound => Recovery::Refresh,
-            ErrorCode::LockTimeout => Recovery::Retry,
+            ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
@@ -840,6 +881,15 @@ pub struct ErrorBody {
     /// re-`toc` the affected files, re-plan, re-arm with the fresh root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed: Option<Vec<Path>>,
+    /// `stale_view` (§10.2): the root the request demanded via `require_root`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required: Option<Root>,
+    /// `stale_view` (§10.2): the root the answer would have been computed at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_of_root: Option<Root>,
+    /// `stale_view` (§10.2): the root now, as sampled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_root: Option<Root>,
     /// `ref_not_found`: the failing walk stage (1 or 2), observable in every
     /// transcript (v2 §4.5).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -890,6 +940,9 @@ impl ErrorBody {
             expected: None,
             actual: None,
             changed: None,
+            required: None,
+            as_of_root: None,
+            live_root: None,
             stage: None,
             dest: None,
             candidates: None,
