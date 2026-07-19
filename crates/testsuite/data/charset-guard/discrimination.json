@@ -1,0 +1,57 @@
+{
+  "pack": "charset-guard",
+  "authored_by": "CHARSET-GUARD (worker 47c67df4)",
+  "authored_at": "2026-07-19T03:35:53Z",
+  "rule": "decision 011 + Addendum / wire-contract-v2 §2.4",
+  "charset": "[A-Za-z0-9-]",
+  "note": "The one block-id charset, BOTH planes. A `_`-bearing id is outside the strict mint grammar and is refused `bad_request`; the SAME id via the walk plane follows the app (silent drop -> ref_not_found). Decision 013 consequence 3: loud mint refusal AND the pinned app walk answer BOTH conform. Downstream units ride `input_id` at their own mint position; the rung-2 core proves the mechanism via `model::Ref::anchor`.",
+  "mint_refusals": [
+    {
+      "position": "model::Ref anchor (cat/toc/splice target)",
+      "unit": "CHARSET-GUARD core; walk-vs-mint split re-homed to M2-RESOLVE",
+      "input_id": "under-probe_x",
+      "mint_disposition": "bad_request",
+      "reason": "legacy underscore block id (the obsidian-compat WX-6 probe id)"
+    },
+    {
+      "position": "dispatch strict-decode anchor",
+      "unit": "D2-DISPATCH",
+      "input_id": "a_04",
+      "mint_disposition": "bad_request",
+      "reason": "tournament probe id, underscore"
+    },
+    {
+      "position": "splice target anchor",
+      "unit": "W4-AMEND",
+      "input_id": "my_block",
+      "mint_disposition": "bad_request",
+      "reason": "tournament fixture id, underscore"
+    },
+    {
+      "position": "receipt anchor (r-NNNNNN grammar)",
+      "unit": "RC4-RECEIPT",
+      "input_id": "r-00_042",
+      "mint_disposition": "bad_request",
+      "reason": "underscore inside the receipt anchor grammar"
+    }
+  ],
+  "clean_accepts": ["r-000042", "clean-1", "Beta2", "mixed-id-2"],
+  "walk_answer_pin": {
+    "same_id_via_walk": "under-probe_x",
+    "walk_ref": "blocks#^under-probe_x",
+    "pack": "obsidian-compat@1.12.7",
+    "probe": "WX-6",
+    "source": "data/gt/obsidian-compat/resolution.expected.json",
+    "answer": { "ok": false, "error": { "code": "ref_not_found", "stage": 2, "dest": "blocks.md" } },
+    "law": "the app silently drops `_`-bearing block ids; the same id the mint plane refuses loud, the walk plane resolves to ref_not_found — both conform (decision 013 consequence 3)"
+  },
+  "exemption": {
+    "policy": "assert-by-listing, never migrate (decision 011 § Addendum)",
+    "in_repo_fixture": "data/gt/obsidian-compat/walkvault/blocks.md line 7 `^under-probe_x` + resolution.expected.json WX-6 — kept verbatim; they pin `_`-rejection behavior and the app's legacy-`_` answer",
+    "tournament_fixtures_out_of_repo": [
+      "18-02-meridian-rs/probes/zzprobe-anchors-a.md ^a_04",
+      "18-02-meridian-rs/results/fixture-pack/inputs/underscore-anchors.md ^my_block",
+      "18-02-meridian-rs/results/contract-v2-tournament/team-f/scratch/w3.md ^ok_1"
+    ]
+  }
+}
