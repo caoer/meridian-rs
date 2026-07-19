@@ -1,0 +1,14 @@
+[package]
+name = "receipt"
+description = "The engine-side receipt renderer, a leaf crate: armed facts → the default md receipt line (contract v2 §6.3 template; D-C10 — template replaceable, facts normative)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wire = { workspace = true }
