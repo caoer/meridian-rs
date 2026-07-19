@@ -566,10 +566,58 @@ pub enum ResolveError {
 /// with the candidate list when a duplicate is not disambiguated (an `hpath`
 /// segment with no occurrence index, or a duplicate anchor id) → `ambiguous_ref`.
 pub fn resolve(doc: &Document, r#ref: &Ref) -> Result<Target, ResolveError> {
+    resolve_full(doc, r#ref).map(|r| Target {
+        span: r.span,
+        node_rev: r.node_rev,
+    })
+}
+
+/// A fully resolved target: the full node span, its content span (heading
+/// stripped for sections; == full span for headingless nodes), and the CAS
+/// token. The content span backs `put{at:"content"}` (§4.4); the full span
+/// backs `put{at:"all"}`, `put{at:"end"}` (at its end byte), and `match`
+/// (search over the full span bytes). Internal to validation — the public
+/// [`resolve`] projects it to [`Target`].
+struct Resolved {
+    span: ByteSpan,
+    content_span: ByteSpan,
+    node_rev: NodeRev,
+}
+
+/// Resolve a ref to its full validation surface (span + content span + rev).
+fn resolve_full(doc: &Document, r#ref: &Ref) -> Result<Resolved, ResolveError> {
+    let bytes = doc.raw.as_bytes();
     match r#ref {
-        Ref::Hpath(segs) => resolve_hpath(&doc.root, segs),
-        Ref::Anchor(id) => resolve_anchor(doc, id),
-        Ref::FmKey(key) => resolve_fm_key(doc, key),
+        Ref::Hpath(segs) => resolve_hpath_node(&doc.root, segs).map(|n| resolved_of(n, bytes)),
+        Ref::Anchor(id) => resolve_anchor_node(doc, id).map(|n| resolved_of(n, bytes)),
+        Ref::FmKey(key) => resolve_fm_key_resolved(doc, key),
+    }
+}
+
+/// A node's full validation surface.
+fn resolved_of(node: &Node, bytes: &[u8]) -> Resolved {
+    Resolved {
+        content_span: content_span(node, bytes),
+        span: node.span.clone(),
+        node_rev: node.node_rev.clone(),
+    }
+}
+
+/// The content span of a node (contract §1 rev sub-laws / §4.4 `put{at:"content"}`):
+/// for a `Section`, the bytes after the heading line's terminator to the section
+/// end (heading preserved). Every other node has no heading to preserve, so its
+/// content span IS its full span — rule-derived (`at:"content"` ≡ `at:"all"`
+/// where "heading preserved" is vacuous; no bytes are lost either way).
+fn content_span(node: &Node, bytes: &[u8]) -> ByteSpan {
+    match &node.kind {
+        NodeKind::Section { .. } => {
+            let start = bytes[node.span.start..node.span.end]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(node.span.end, |p| node.span.start + p + 1);
+            start..node.span.end
+        }
+        _ => node.span.clone(),
     }
 }
 
@@ -584,7 +632,7 @@ fn target_of(node: &Node) -> Target {
 /// Descend the containment tree one hpath segment at a time, byte-exact on each
 /// heading text. A segment matching multiple sibling sections resolves by its
 /// 1-based occurrence `n`; without `n`, a duplicate is `Ambiguous` (loud).
-fn resolve_hpath(root: &Node, segs: &[HpathSeg]) -> Result<Target, ResolveError> {
+fn resolve_hpath_node<'a>(root: &'a Node, segs: &[HpathSeg]) -> Result<&'a Node, ResolveError> {
     if segs.is_empty() {
         return Err(ResolveError::NotFound);
     }
@@ -612,19 +660,19 @@ fn resolve_hpath(root: &Node, segs: &[HpathSeg]) -> Result<Target, ResolveError>
             }
         };
     }
-    Ok(target_of(current))
+    Ok(current)
 }
 
 /// Exact block-id lookup over the tree's anchor nodes. A duplicate id in one
 /// file is `Ambiguous` (loud) — the mint plane never silently picks; the walk
 /// plane follows the app instead (last-wins, silent — [`walk`]).
-fn resolve_anchor(doc: &Document, id: &str) -> Result<Target, ResolveError> {
+fn resolve_anchor_node<'a>(doc: &'a Document, id: &str) -> Result<&'a Node, ResolveError> {
     let mut hits: Vec<&Node> = Vec::new();
     collect_anchors(&doc.root, id, &mut hits);
     hits.sort_by_key(|n| n.span.start);
     match hits.as_slice() {
         [] => Err(ResolveError::NotFound),
-        [only] => Ok(target_of(only)),
+        [only] => Ok(only),
         many => Err(ResolveError::Ambiguous(
             many.iter().map(|n| target_of(n)).collect(),
         )),
@@ -644,7 +692,7 @@ fn collect_anchors<'a>(node: &'a Node, id: &str, hits: &mut Vec<&'a Node>) {
 /// A top-level frontmatter key → the full key line (span + rev). The node the
 /// contract names is the key line inside the frontmatter block, not the whole
 /// block.
-fn resolve_fm_key(doc: &Document, key: &str) -> Result<Target, ResolveError> {
+fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, ResolveError> {
     let Some(fm) = find_frontmatter(&doc.root) else {
         return Err(ResolveError::NotFound);
     };
@@ -665,8 +713,9 @@ fn resolve_fm_key(doc: &Document, key: &str) -> Result<Target, ResolveError> {
                 .is_some_and(|(k, _)| k.trim().trim_matches(['"', '\'']) == key)
         {
             let span = line_start..line_end;
-            return Ok(Target {
+            return Ok(Resolved {
                 node_rev: node_rev(bytes, &span),
+                content_span: span.clone(),
                 span,
             });
         }
@@ -687,47 +736,380 @@ fn find_frontmatter(node: &Node) -> Option<&Node> {
 // CAS-splice validation (rung 2) — validation here, execution in `fs`
 // ---------------------------------------------------------------------------
 
-/// A proposed node-level CAS write: replace exactly `span`, guarded by
-/// `if_node_rev`.
-#[derive(Debug, Clone, PartialEq)]
+/// Where a `put` writes within its resolved target (contract §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PutAt {
+    /// Replace the full span, heading included.
+    All,
+    /// Replace the content span, heading preserved (§1 content-span law; ==
+    /// full span for a headingless target — see [`content_span`]).
+    Content,
+    /// Insert `text` at the span-end byte — the append verb: RAW byte
+    /// concatenation, NO synthesized separator (§4.4 `at:"end"` law). `text`
+    /// that must begin a new line carries its own leading `\n`; a result that
+    /// loses containment refuses [`SpliceVerdict::WouldCorrupt`].
+    End,
+}
+
+/// The two edit shapes (contract §4.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditKind {
+    /// Edit-exact: `old` must occur exactly ONCE in the target's full span
+    /// bytes; replaced by `new`. Zero → `no_match`, two+ → `not_unique{matches}`
+    /// (§5.2). No regex, no fuzz; matched SERVER-side.
+    Match { old: String, new: String },
+    /// Whole-slot write at a [`PutAt`] position.
+    Put { at: PutAt, text: String },
+}
+
+/// One edit in a batch: a target ref, the edit shape, an optional per-node CAS
+/// guard. There is NO span field — a client cannot supply a byte offset, so the
+/// wrong-offset write is UNREPRESENTABLE (D-C1, §4.4). The model twin of
+/// `wire::Edit`; the crates never share a type (no-serde law).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edit {
+    pub target: Ref,
+    pub edit: EditKind,
+    /// Node-grain guard (§5.1): compared against `blake3(target's full span
+    /// bytes)[:16]` re-derived from the PRE-BATCH state. `None` = unguarded (a
+    /// legal wire frame — requiredness is the Go ratchet, §5.3).
+    pub if_node_rev: Option<NodeRev>,
+}
+
+/// A batch splice request (contract §4.4 — `splice` is batch-only, one response
+/// shape). Every target and guard resolves against the PRE-BATCH state; targets
+/// must be disjoint. There is NO span field anywhere request-side (D-C1). This
+/// is the reshape of the v1 single `{span, if_node_rev, text}` splice.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpliceRequest {
+    /// World-grain guard, checked FIRST (§5.1) — a mismatch fails the WHOLE
+    /// batch (`root_mismatch` → resync). `None` = unguarded.
+    pub if_root: Option<MerkleRoot>,
+    pub edits: Vec<Edit>,
+}
+
+/// A receipt append riding INSIDE the sealed batch (§6.1, D-C3): the receipt
+/// file's append position (its EOF) and the pre-rendered line bytes. The bytes
+/// are rendered by the `receipt` crate and folded in by the caller BEFORE
+/// validation, so the append commits in the SAME batch and single root advance
+/// as the content edits. Model seals it; it never renders (body formatting is
+/// not this crate's, per charter).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptAppend {
     pub span: ByteSpan,
-    pub if_node_rev: NodeRev,
     pub text: String,
 }
 
-/// Validation verdict. `Validated` is the capability token `fs` demands for
-/// execution — an unvalidated splice cannot reach disk by construction.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SpliceVerdict {
-    Validated(ValidatedSplice),
-    /// The retryable one: re-resolve, re-derive, splice again.
-    CasMismatch {
-        expected: NodeRev,
-        actual: NodeRev,
-    },
+/// One validated edit: the exact PRE-BATCH byte span to replace and the
+/// replacement text — the write instruction `fs` executes. Spans index the
+/// pre-batch bytes; the batch's edits are disjoint (validated), so `fs` applies
+/// them in one pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedEdit {
+    pub span: ByteSpan,
+    pub text: String,
 }
 
-/// A splice that passed CAS validation against a live `Document`. Only `model`
-/// can mint one (private field), and `fs::apply_splice` only accepts one.
+/// The validation verdict for a batch (contract §5.2 failure split + §4.4 batch
+/// laws). `Validated` is the capability token `fs` demands; every other variant
+/// is a typed refusal the dispatch boundary maps to its wire error frame. Only
+/// the first failing check (in validation order) is returned — matching the
+/// single-error response shape of the §5.2 worked frames.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpliceVerdict {
+    /// All guards passed; the sealed batch is ready for `fs`.
+    Validated(ValidatedBatch),
+    /// `if_root` failed (world-grain, checked FIRST) — the whole batch is
+    /// refused, recovery `resync` (§5.1).
+    RootMismatch {
+        expected: MerkleRoot,
+        actual: MerkleRoot,
+    },
+    /// A target ref did not resolve → `ref_not_found` (refresh, §4.5).
+    RefNotFound,
+    /// A target ref was ambiguous → `ambiguous_ref` (§2.1); the candidate
+    /// targets ride along.
+    Ambiguous(Vec<Target>),
+    /// `if_node_rev` failed → `cas_mismatch` (refresh, §5.2). The retryable
+    /// one: re-`cat`, re-derive, splice again.
+    CasMismatch { expected: NodeRev, actual: NodeRev },
+    /// Guard PASSED and `old` was absent → `no_match` (fix, §5.2): provably a
+    /// typo. `matches` is 0 (carried for wire-frame parity).
+    NoMatch { matches: usize },
+    /// `old` occurred 2+ times → `not_unique{matches}` (fix, §5.2). Add context
+    /// bytes to `old`, exactly as with the Edit tool.
+    NotUnique { matches: usize },
+    /// Two edits' targets are not disjoint → `bad_request{overlap}` (§4.4). The
+    /// overlapping target spans ride along.
+    Overlap { spans: Vec<ByteSpan> },
+    /// The post-apply reparse loses containment → `would_corrupt{lost}` (§4.4).
+    /// `lost` = the hpath chains of sections destroyed OUTSIDE the edited
+    /// regions (rule-derived: a section byte-disjoint from every replaced region
+    /// that no longer resolves after reparse was corrupted, not rewritten).
+    WouldCorrupt { lost: Vec<Vec<String>> },
+    /// A replaced region would split a multi-byte UTF-8 character →
+    /// `bad_request` (§1 write-side multibyte refusal; the reparse-gate
+    /// guarantor). Unreachable through the public `match`/`put` API — valid-UTF-8
+    /// edits at char-aligned resolved spans are self-synchronizing, so a
+    /// mid-char write is unrepresentable (parallel to D-C1) — the guard is
+    /// retained so any mid-char region refuses LOUD rather than corrupting bytes.
+    MultibyteSplit,
+}
+
+/// A batch that passed validation against a live `Document`. Only `model` can
+/// mint one (the private `_sealed` field — external crates cannot name it, so
+/// cannot construct the struct even though its data fields are public), and
+/// `fs` accepts only one. An unvalidated batch cannot reach disk by
+/// construction; the pipeline (validate here, execute in `fs`) is enforced by
+/// types, not review. The receipt append rides INSIDE (§6.1).
+///
+/// The seal is a compile-level fact — no external crate can mint one:
+///
+/// ```compile_fail
+/// // `_sealed` is private, so this fails to compile outside `model`.
+/// let _ = model::ValidatedBatch { edits: Vec::new(), receipt: None };
+/// ```
 #[expect(
     clippy::manual_non_exhaustive,
     reason = "_sealed is a capability seal (only model mints), not future-proofing"
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct ValidatedSplice {
-    pub span: ByteSpan,
-    pub text: String,
+pub struct ValidatedBatch {
+    /// The content edits, sorted by span start (disjoint — validated).
+    pub edits: Vec<ValidatedEdit>,
+    /// The receipt append riding inside the same sealed commit, if the request
+    /// named a receipt (§6.1).
+    pub receipt: Option<ReceiptAppend>,
     _sealed: (),
 }
 
-/// Validate a splice against the current tree: span integrity + rev ladder
-/// (meridian I1/I2 anchor resolution + fresh/stale/omitted semantics relocate
-/// here as the validation core).
+/// Validate a batch splice against a live `Document` (contract §4.4/§5). The
+/// order (§5.1): `if_root` FIRST (world-grain, fails the whole batch), then per
+/// edit resolve → CAS → match/put, then batch-wide disjointness and one
+/// simulated reparse (`would_corrupt`). `live_root` is the caller's ambient
+/// corpus root for the `if_root` comparison (`None` = the caller is not guarding
+/// the world root — §5.3); `receipt` is a pre-rendered append the caller folds
+/// in so it rides inside the sealed batch. On success, mints the sealed
+/// [`ValidatedBatch`] — the only path to `fs`.
 #[must_use]
-pub fn validate_splice(doc: &Document, req: &SpliceRequest) -> SpliceVerdict {
-    let _ = (doc, req);
-    todo!("rung 2: CAS validation + rev ladder")
+pub fn validate_batch(
+    doc: &Document,
+    live_root: Option<&MerkleRoot>,
+    batch: &SpliceRequest,
+    receipt: Option<ReceiptAppend>,
+) -> SpliceVerdict {
+    // 1. World guard FIRST (§5.1): compared only when the client guarded AND the
+    // caller supplied the live root; a mismatch fails the whole batch.
+    if let (Some(expected), Some(actual)) = (&batch.if_root, live_root)
+        && expected != actual
+    {
+        return SpliceVerdict::RootMismatch {
+            expected: expected.clone(),
+            actual: actual.clone(),
+        };
+    }
+
+    let raw = &doc.raw;
+
+    // 2. Per edit, in order: resolve → CAS → compute the replaced region. The
+    // first failure (in edit order) is returned — the §5.2 single-error shape.
+    let mut planned: Vec<PlannedEdit> = Vec::with_capacity(batch.edits.len());
+    for edit in &batch.edits {
+        let resolved = match resolve_full(doc, &edit.target) {
+            Ok(r) => r,
+            Err(ResolveError::NotFound) => return SpliceVerdict::RefNotFound,
+            Err(ResolveError::Ambiguous(c)) => return SpliceVerdict::Ambiguous(c),
+        };
+        // CAS (§5.1): the ONE derivation — blake3 of the target's full span
+        // bytes, already minted as `node_rev`.
+        if let Some(expected) = &edit.if_node_rev
+            && *expected != resolved.node_rev
+        {
+            return SpliceVerdict::CasMismatch {
+                expected: expected.clone(),
+                actual: resolved.node_rev.clone(),
+            };
+        }
+        let (region, text) = match &edit.edit {
+            EditKind::Match { old, new } => match match_region(raw, &resolved.span, old) {
+                Ok(region) => (region, new.clone()),
+                Err(v) => return v,
+            },
+            EditKind::Put { at, text } => {
+                let region = match at {
+                    PutAt::All => resolved.span.clone(),
+                    PutAt::Content => resolved.content_span.clone(),
+                    PutAt::End => resolved.span.end..resolved.span.end,
+                };
+                (region, text.clone())
+            }
+        };
+        // Write-side multibyte guarantor (§1): the replaced region must fall on
+        // char boundaries. Char-aligned resolved spans + valid-UTF-8 edits make
+        // this hold by construction; the guard refuses loud if it ever does not.
+        if let Err(v) = guard_char_aligned(raw, &region) {
+            return v;
+        }
+        planned.push(PlannedEdit {
+            target: resolved.span,
+            region,
+            text,
+        });
+    }
+
+    // 3. Disjointness (§4.4): targets must not overlap (containment counts).
+    if let Some(spans) = first_overlap(&planned) {
+        return SpliceVerdict::Overlap { spans };
+    }
+
+    // 4. One simulated reparse (§4.4): a post-apply parse that loses containment
+    // refuses `would_corrupt`.
+    if let Some(lost) = would_corrupt(doc, &planned) {
+        return SpliceVerdict::WouldCorrupt { lost };
+    }
+
+    // Mint the sealed batch — edits in pre-batch offset order.
+    let mut edits: Vec<ValidatedEdit> = planned
+        .into_iter()
+        .map(|p| ValidatedEdit {
+            span: p.region,
+            text: p.text,
+        })
+        .collect();
+    edits.sort_by_key(|e| e.span.start);
+    SpliceVerdict::Validated(ValidatedBatch {
+        edits,
+        receipt,
+        _sealed: (),
+    })
+}
+
+/// A resolved-and-planned edit: the full target span (for disjointness), the
+/// replaced byte region, and the replacement text.
+struct PlannedEdit {
+    target: ByteSpan,
+    region: ByteSpan,
+    text: String,
+}
+
+/// Locate the exactly-one occurrence of `old` within the target's FULL span
+/// bytes (§4.4), returning the absolute replaced region. `str`-level matching is
+/// char-aligned by construction (a valid-UTF-8 needle in a valid-UTF-8 haystack
+/// is self-synchronizing), so a byte count == char-aligned occurrence count.
+///
+/// # Errors
+/// [`SpliceVerdict::NoMatch`] (count 0) or [`SpliceVerdict::NotUnique`] (2+).
+fn match_region(raw: &str, span: &ByteSpan, old: &str) -> Result<ByteSpan, SpliceVerdict> {
+    let hay = &raw[span.clone()];
+    let mut hits = hay.match_indices(old);
+    let Some((first, _)) = hits.next() else {
+        return Err(SpliceVerdict::NoMatch { matches: 0 });
+    };
+    // Count the rest without re-scanning from zero: non-overlapping, left→right
+    // (Edit-tool semantics), so 1 + the remaining tail.
+    let count = 1 + hay[first + old.len()..].matches(old).count();
+    if count > 1 {
+        return Err(SpliceVerdict::NotUnique { matches: count });
+    }
+    let start = span.start + first;
+    Ok(start..start + old.len())
+}
+
+/// The write-side multibyte guarantor (§1): both ends of a replaced region must
+/// be UTF-8 char boundaries, else the splice would split a multi-byte character.
+///
+/// # Errors
+/// [`SpliceVerdict::MultibyteSplit`] when either boundary lands mid-character.
+fn guard_char_aligned(raw: &str, region: &ByteSpan) -> Result<(), SpliceVerdict> {
+    if raw.is_char_boundary(region.start) && raw.is_char_boundary(region.end) {
+        Ok(())
+    } else {
+        Err(SpliceVerdict::MultibyteSplit)
+    }
+}
+
+/// The first pair of non-disjoint TARGET spans (§4.4), or `None`. Containment
+/// counts as overlap (a section and a section it contains are not disjoint).
+/// Touching boundaries (`[a,b)` then `[b,c)`) are disjoint.
+fn first_overlap(planned: &[PlannedEdit]) -> Option<Vec<ByteSpan>> {
+    let mut idx: Vec<usize> = (0..planned.len()).collect();
+    idx.sort_by_key(|&i| planned[i].target.start);
+    for w in idx.windows(2) {
+        let (a, b) = (&planned[w[0]].target, &planned[w[1]].target);
+        // sorted by start; a nests-or-precedes b — overlap iff a extends past
+        // b's start.
+        if a.end > b.start {
+            return Some(vec![a.clone(), b.clone()]);
+        }
+    }
+    None
+}
+
+/// Apply the planned edits to the raw bytes and reparse; report the hpath chains
+/// of any pre-batch section that was byte-DISJOINT from every replaced region
+/// yet no longer resolves — containment lost (§4.4 `would_corrupt`). A section
+/// inside an edited region is legitimately rewritten (not "lost"); one outside
+/// every edit whose heading was destroyed by a neighbouring edit bleeding into
+/// it (e.g. a separator-less `at:"end"`) is corruption. Returns `None` when
+/// containment holds.
+fn would_corrupt(doc: &Document, planned: &[PlannedEdit]) -> Option<Vec<Vec<String>>> {
+    let new_raw = apply_regions(&doc.raw, planned);
+    let new_doc = build(new_raw.clone(), syntax::parse(&new_raw));
+    let mut lost: Vec<Vec<String>> = Vec::new();
+    collect_lost(&doc.root, planned, &new_doc, &mut lost);
+    if lost.is_empty() { None } else { Some(lost) }
+}
+
+/// Recurse the pre-batch tree; for each `Section` byte-disjoint from every
+/// replaced region, require its hpath to still resolve post-reparse.
+fn collect_lost(
+    node: &Node,
+    planned: &[PlannedEdit],
+    new_doc: &Document,
+    lost: &mut Vec<Vec<String>>,
+) {
+    if let NodeKind::Section { .. } = &node.kind {
+        let disjoint = planned
+            .iter()
+            .all(|p| region_disjoint(&node.span, &p.region));
+        if disjoint && let Some(hpath) = &node.hpath {
+            let segs: Vec<HpathSeg> = hpath
+                .iter()
+                .map(|h| HpathSeg {
+                    h: h.clone(),
+                    n: None,
+                })
+                .collect();
+            if resolve_full(new_doc, &Ref::Hpath(segs)).is_err() {
+                lost.push(hpath.clone());
+            }
+        }
+    }
+    for c in &node.children {
+        collect_lost(c, planned, new_doc, lost);
+    }
+}
+
+/// Two byte ranges are disjoint (touching boundaries and zero-width inserts at a
+/// boundary count as disjoint).
+fn region_disjoint(a: &ByteSpan, b: &ByteSpan) -> bool {
+    a.end <= b.start || b.end <= a.start
+}
+
+/// Rebuild the raw string with each planned region replaced by its text
+/// (regions are disjoint — validated), copying the unedited gaps verbatim.
+fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
+    let mut regions: Vec<&PlannedEdit> = planned.iter().collect();
+    regions.sort_by_key(|p| p.region.start);
+    let mut out = String::with_capacity(raw.len());
+    let mut cursor = 0;
+    for p in regions {
+        out.push_str(&raw[cursor..p.region.start]);
+        out.push_str(&p.text);
+        cursor = p.region.end;
+    }
+    out.push_str(&raw[cursor..]);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1209,6 +1591,422 @@ mod tests {
         assert_eq!(
             t.node_rev.0, independent,
             "rev = blake3(block-leaf bytes)[:16]"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_batch (rung 4) — §4.4 batch grammar + §5 CAS/failure split
+    // -----------------------------------------------------------------------
+
+    /// S2 plan (`plan_v2`): "ship by September" at Q3, "- new item" appended to
+    /// Q4 — the state the §5.2 worked failures run against.
+    fn plan_s2() -> Document {
+        let raw = merkle_fixtures().plan_v2;
+        build(raw.clone(), syntax::parse(&raw))
+    }
+
+    /// S1 plan (`plan_v1`): "ship by September", before the E4 Q4 append.
+    fn plan_s1() -> Document {
+        let raw = merkle_fixtures().plan_v1;
+        build(raw.clone(), syntax::parse(&raw))
+    }
+
+    fn hpath(segs: &[&str]) -> Ref {
+        Ref::Hpath(segs.iter().map(|h| seg(h)).collect())
+    }
+
+    fn match_edit(target: Ref, old: &str, new: &str, guard: Option<&str>) -> Edit {
+        Edit {
+            target,
+            edit: EditKind::Match {
+                old: old.to_string(),
+                new: new.to_string(),
+            },
+            if_node_rev: guard.map(|g| NodeRev(g.to_string())),
+        }
+    }
+
+    fn put_edit(target: Ref, at: PutAt, text: &str) -> Edit {
+        Edit {
+            target,
+            edit: EditKind::Put {
+                at,
+                text: text.to_string(),
+            },
+            if_node_rev: None,
+        }
+    }
+
+    fn batch(edits: Vec<Edit>) -> SpliceRequest {
+        SpliceRequest {
+            if_root: None,
+            edits,
+        }
+    }
+
+    /// Reconstruct the applied bytes from a sealed batch's public edits — the
+    /// pass `fs` will make. Proves the sealed spans/texts are usable downstream.
+    fn apply_validated(raw: &str, vb: &ValidatedBatch) -> String {
+        let mut edits = vb.edits.clone();
+        edits.sort_by_key(|e| e.span.start);
+        let mut out = String::new();
+        let mut cursor = 0;
+        for e in &edits {
+            out.push_str(&raw[cursor..e.span.start]);
+            out.push_str(&e.text);
+            cursor = e.span.end;
+        }
+        out.push_str(&raw[cursor..]);
+        out
+    }
+
+    /// GATE 1a (§5.2 frame 88): the client holds S0's Q3 rev (33d5…) against
+    /// S2 where Q3 is 41f6… → `cas_mismatch{expected,actual}`, refresh. Actual
+    /// is RE-DERIVED with blake3 here (no reliance on model's own hashing).
+    #[test]
+    fn gate1_cas_mismatch_expected_actual() {
+        let doc = plan_s2();
+        let q3_bytes = &doc.raw.as_bytes()[49..75];
+        let actual = blake3::hash(q3_bytes).to_hex().as_str()[..16].to_string();
+        assert_eq!(actual, "41f643f034e5681f", "S2 Q3 rev, oracle-pinned");
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "ship by September",
+            "ship by October",
+            Some("33d5b0e1b27cb48b"),
+        )]);
+        assert_eq!(
+            validate_batch(&doc, None, &b, None),
+            SpliceVerdict::CasMismatch {
+                expected: NodeRev("33d5b0e1b27cb48b".to_string()),
+                actual: NodeRev("41f643f034e5681f".to_string()),
+            }
+        );
+    }
+
+    /// GATE 1b (§5.2 frame 89): guard PASSES (41f6…), old-string absent →
+    /// `no_match{matches:0}`, fix — provably a typo. Count computed.
+    #[test]
+    fn gate1_no_match_guard_passed() {
+        let doc = plan_s2();
+        assert_eq!(
+            doc.raw[49..75].matches("ship by August").count(),
+            0,
+            "old-string absent at S2 (Q3 says September)"
+        );
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "ship by August",
+            "ship by October",
+            Some("41f643f034e5681f"),
+        )]);
+        assert_eq!(
+            validate_batch(&doc, None, &b, None),
+            SpliceVerdict::NoMatch { matches: 0 }
+        );
+    }
+
+    /// GATE 1c (§5.2 frame 91): `item` occurs twice in Q4@S2 (`- item one`,
+    /// `- new item`) → `not_unique{matches:2}`, fix. Count computed.
+    #[test]
+    fn gate1_not_unique_matches_two() {
+        let doc = plan_s2();
+        assert_eq!(
+            doc.raw[75..150].matches("item").count(),
+            2,
+            "'item' twice in Q4@S2"
+        );
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q4"]),
+            "item",
+            "entry",
+            None,
+        )]);
+        assert_eq!(
+            validate_batch(&doc, None, &b, None),
+            SpliceVerdict::NotUnique { matches: 2 }
+        );
+    }
+
+    /// GATE 2 (compile-level): no request-side type carries a byte span. The
+    /// only fields are the match-based grammar; a `SpliceRequest`/`Edit` cannot
+    /// name an offset (D-C1 — the wrong-offset write is unrepresentable). This
+    /// test compiling at all IS the gate; the field-shape assert documents it.
+    #[test]
+    fn gate2_no_span_field_request_side() {
+        let e = match_edit(hpath(&["Goals", "Q3"]), "a", "b", None);
+        // Destructure every field — a `span` field would force a compile error.
+        let Edit {
+            target: _,
+            edit: _,
+            if_node_rev: _,
+        } = &e;
+        let SpliceRequest {
+            if_root: _,
+            edits: _,
+        } = batch(vec![e]);
+    }
+
+    /// GATE 3 (seal, positive): only `model` mints a `ValidatedBatch`; a valid
+    /// batch yields the capability token `fs` demands. The NEGATIVE half — that
+    /// no external crate can construct one — is the `compile_fail` doctest on
+    /// [`ValidatedBatch`] (the private `_sealed` field).
+    #[test]
+    fn gate3_seal_minted_on_success() {
+        let doc = plan_s1();
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "ship by September",
+            "ship by October",
+            Some("41f643f034e5681f"),
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("clean CAS + unique match must validate");
+        };
+        assert_eq!(vb.edits.len(), 1);
+        assert!(vb.receipt.is_none());
+    }
+
+    /// The receipt append rides INSIDE the sealed batch (§6.1): a pre-rendered
+    /// append folded into validation is carried on the sealed token, to commit
+    /// in the same batch. Model seals it; it never renders the bytes.
+    #[test]
+    fn seal_carries_receipt_append() {
+        let doc = plan_s1();
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "ship by September",
+            "ship by October",
+            None,
+        )]);
+        let receipt = ReceiptAppend {
+            span: 26..26,
+            text: "- splice notes/plan.md ^r-000099".to_string(),
+        };
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, Some(receipt.clone()))
+        else {
+            panic!("must validate");
+        };
+        assert_eq!(vb.receipt, Some(receipt), "receipt rides inside the seal");
+    }
+
+    /// A clean E3 match applies as raw replacement: Q3 August→September on S0
+    /// yields `plan_v1` byte-exact (validated span/text usable by `fs`).
+    #[test]
+    fn validated_match_applies_to_s1() {
+        let doc = build_plan(); // S0
+        let b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "ship by August",
+            "ship by September",
+            Some("33d5b0e1b27cb48b"),
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("E3 must validate");
+        };
+        assert_eq!(
+            apply_validated(&doc.raw, &vb),
+            merkle_fixtures().plan_v1,
+            "match replacement reproduces S1"
+        );
+    }
+
+    /// GATE 5 (§4.4 at:end raw-concat): E4 appends `- new item\n` at Q4's
+    /// span-end (EOF) → `plan_v2` by PURE byte concatenation, NO synthesized
+    /// separator. Verified both against the frozen S2 bytes and against
+    /// `plan_v1 + text` (the raw-concat law itself).
+    #[test]
+    fn gate5_at_end_raw_concat() {
+        let doc = plan_s1();
+        let f = merkle_fixtures();
+        let b = batch(vec![put_edit(
+            hpath(&["Goals", "Q4"]),
+            PutAt::End,
+            "- new item\n",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("at:end append must validate");
+        };
+        let applied = apply_validated(&doc.raw, &vb);
+        assert_eq!(applied, f.plan_v2, "byte-exact S2");
+        assert_eq!(
+            applied,
+            format!("{}{}", f.plan_v1, "- new item\n"),
+            "pure raw concat — no synthesized separator"
+        );
+        // the append is a zero-width insert at span-end (EOF here).
+        assert_eq!(vb.edits[0].span, 139..139, "insert at Q4 span-end");
+    }
+
+    /// GATE 4a (§4.4 disjointness): two edits whose TARGETS nest are not
+    /// disjoint → `overlap` (`bad_request`). Goals ⊃ Q3, both resolve+match, then
+    /// the batch-wide check refuses with the overlapping target spans.
+    #[test]
+    fn gate4_overlap_bad_request() {
+        let doc = plan_s2();
+        let b = batch(vec![
+            put_edit(hpath(&["Goals"]), PutAt::End, "x\n"),
+            match_edit(hpath(&["Goals", "Q3"]), "September", "October", None),
+        ]);
+        let SpliceVerdict::Overlap { spans } = validate_batch(&doc, None, &b, None) else {
+            panic!("nested targets must refuse overlap");
+        };
+        assert_eq!(spans, vec![20..150, 49..75], "Goals ⊃ Q3");
+    }
+
+    /// GATE 4b (§4.4 `would_corrupt`): a separator-less `at:"end"` on a NON-final
+    /// section bleeds into the next heading and destroys it — the reparse loses
+    /// containment → `would_corrupt{lost}`. RULE-DERIVED DATA: a section
+    /// byte-disjoint from every replaced region that no longer resolves was
+    /// corrupted, not rewritten (the at:end law's own warning, §4.4).
+    #[test]
+    fn gate4_would_corrupt_lost() {
+        let doc = plan_s2();
+        // `MORE` (no leading \n) inserted at Q3's span-end (= Q4's heading start)
+        // yields `…September\n\nMORE## Q4…` — `## Q4` is no longer at line start.
+        let b = batch(vec![put_edit(hpath(&["Goals", "Q3"]), PutAt::End, "MORE")]);
+        let SpliceVerdict::WouldCorrupt { lost } = validate_batch(&doc, None, &b, None) else {
+            panic!("heading-destroying append must refuse would_corrupt");
+        };
+        assert_eq!(
+            lost,
+            vec![vec!["Goals".to_string(), "Q4".to_string()]],
+            "Q4 (disjoint from the edit) was destroyed"
+        );
+    }
+
+    /// A well-formed `at:"end"` on the same non-final section (leading `\n`
+    /// carried by the caller) preserves containment → validates. The mirror of
+    /// gate 4b: the raw-concat law puts the separator on the caller, and getting
+    /// it right keeps `## Q4` at line start.
+    #[test]
+    fn at_end_with_separator_preserves_containment() {
+        let doc = plan_s2();
+        let b = batch(vec![put_edit(
+            hpath(&["Goals", "Q3"]),
+            PutAt::End,
+            "extra\n",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("separator-carrying append must validate");
+        };
+        let applied = apply_validated(&doc.raw, &vb);
+        assert!(
+            applied.contains("\n\nextra\n## Q4\n"),
+            "Q4 heading survives"
+        );
+    }
+
+    /// `put{at:"content"}` replaces the content span, heading PRESERVED (§4.4);
+    /// `put{at:"all"}` replaces the full span, heading included. The content
+    /// span begins after the heading line's terminator.
+    #[test]
+    fn put_content_preserves_heading_all_replaces_it() {
+        let doc = plan_s2();
+        let content = batch(vec![put_edit(
+            hpath(&["Goals", "Q3"]),
+            PutAt::Content,
+            "REPLACED\n",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &content, None) else {
+            panic!("put:content must validate");
+        };
+        assert_eq!(vb.edits[0].span, 55..75, "content span: after `## Q3\\n`");
+        assert!(apply_validated(&doc.raw, &vb).contains("## Q3\nREPLACED\n## Q4"));
+
+        let all = batch(vec![put_edit(
+            hpath(&["Goals", "Q3"]),
+            PutAt::All,
+            "## Q3\ndone\n",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &all, None) else {
+            panic!("put:all must validate");
+        };
+        assert_eq!(vb.edits[0].span, 49..75, "full span, heading included");
+    }
+
+    /// `if_root` is the world guard, checked FIRST (§5.1): a mismatch fails the
+    /// whole batch (`root_mismatch` → resync); an equal guard proceeds.
+    #[test]
+    fn if_root_world_guard_checked_first() {
+        let doc = plan_s2();
+        let live = MerkleRoot("b3:aaaa".to_string());
+        let mut b = batch(vec![match_edit(
+            hpath(&["Goals", "Q3"]),
+            "September",
+            "October",
+            None,
+        )]);
+        b.if_root = Some(MerkleRoot("b3:bbbb".to_string()));
+        assert_eq!(
+            validate_batch(&doc, Some(&live), &b, None),
+            SpliceVerdict::RootMismatch {
+                expected: MerkleRoot("b3:bbbb".to_string()),
+                actual: live.clone(),
+            }
+        );
+        // equal guard → proceeds past the world check to a clean validation.
+        b.if_root = Some(live.clone());
+        assert!(matches!(
+            validate_batch(&doc, Some(&live), &b, None),
+            SpliceVerdict::Validated(_)
+        ));
+    }
+
+    /// A missing target → `ref_not_found` (refresh, §4.5).
+    #[test]
+    fn missing_target_ref_not_found() {
+        let doc = plan_s2();
+        let b = batch(vec![match_edit(hpath(&["Goals", "Q9"]), "a", "b", None)]);
+        assert_eq!(
+            validate_batch(&doc, None, &b, None),
+            SpliceVerdict::RefNotFound
+        );
+    }
+
+    /// GATE 6 (§1 write-side multibyte refusal). The guarantor: a replaced
+    /// region off a UTF-8 char boundary refuses `bad_request`. This is exercised
+    /// WHITE-BOX because the wrong state is unrepresentable through the public
+    /// `match`/`put` API — valid-UTF-8 edits at char-aligned resolved spans are
+    /// self-synchronizing, so a mid-char region cannot arise from a batch
+    /// (parallel to D-C1). Design, not dodge: the guard exists so any mid-char
+    /// region refuses loud; the black-box half proves legitimate multibyte
+    /// content splices cleanly.
+    #[test]
+    fn gate6_multibyte_split_guarantor() {
+        // `日` = E6 97 A5 (bytes 0..3); byte 1 and 2 are mid-character.
+        assert_eq!(
+            guard_char_aligned("日本", &(1..3)),
+            Err(SpliceVerdict::MultibyteSplit),
+            "region starting mid-`日` refuses"
+        );
+        assert_eq!(
+            guard_char_aligned("日本", &(0..3)),
+            Ok(()),
+            "aligned region (whole `日`) passes"
+        );
+        assert_eq!(guard_char_aligned("café", &(3..5)), Ok(()), "`é` is [3,5)");
+    }
+
+    /// GATE 6 black-box: a `match` over multibyte content validates and applies
+    /// cleanly — the self-synchronizing property in action (the refusal above is
+    /// for the unrepresentable case, not legitimate non-ASCII edits).
+    #[test]
+    fn gate6_multibyte_match_validates() {
+        let raw = "# Café ☕\n\ncafé ☕ 日本語 tea\n".to_string();
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let b = batch(vec![match_edit(
+            hpath(&["Café ☕"]),
+            "日本語",
+            "コーヒー",
+            None,
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("legitimate multibyte match must validate");
+        };
+        assert_eq!(
+            apply_validated(&doc.raw, &vb),
+            "# Café ☕\n\ncafé ☕ コーヒー tea\n"
         );
     }
 
