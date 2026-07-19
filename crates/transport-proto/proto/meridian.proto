@@ -43,10 +43,11 @@ message Request {
     ExtractRequest extract = 4; // v2 §4.3 (+ D-C5)
     ResolveRequest resolve = 5; // v2 §4.5 walk plane
     SpliceRequest splice = 6;   // v1 §6.2 sketch until W4-AMEND
-    RootRequest root = 7;       // v1 §6.4 sketch until W3-AMEND
-    GuardRequest guard = 8;     // DROPPED by v2; deleted at W3-AMEND
+    RootRequest root = 7;       // v2 §4.7
     CatRequest cat = 9;         // v2 §4.2
+    DiffRequest diff = 10;      // v2 §4.7
   }
+  reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
 
 message HelloRequest {
@@ -90,13 +91,13 @@ message SpliceRequest {
   string text = 4;
 }
 
-message RootRequest {
-  optional string path = 1;
-}
+// v2 §4.7: no parameters — the root is world-grain (the only root guard is
+// splice.if_root; the v1 scoped/path variant went with guard).
+message RootRequest {}
 
-message GuardRequest {
-  string root = 1;
-  optional string path = 2;
+message DiffRequest {
+  string from_root = 1;
+  string to_root = 2;
 }
 
 // Half-open byte range [start, end) — contract v2 §1 span sub-laws.
@@ -239,11 +240,11 @@ message Response {
     ResolveResponse resolve = 5;
     SpliceResponse splice = 6;
     RootResponse root = 7;
-    GuardResponse guard = 8; // deleted at W3-AMEND
     ErrorBody error = 9;
     TocResponse toc = 10; // v2 §4.1
     CatResponse cat = 11; // v2 §4.2
   }
+  reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
 
 message HelloResponse {
@@ -285,12 +286,10 @@ message SpliceResponse {
   string node_rev = 2;
 }
 
+// v2 §4.7: root + seq (monotone per-workspace batch counter, per-daemon-epoch).
 message RootResponse {
   string root = 1;
-}
-
-message GuardResponse {
-  string root = 1;
+  uint64 seq = 2;
 }
 
 // v2 §8 error codes present at this rung. Remaining v2 codes join via the
@@ -309,6 +308,8 @@ enum ErrorCode {
   ERROR_CODE_CAS_MISMATCH = 9;
   ERROR_CODE_REF_NOT_FOUND = 10;
   ERROR_CODE_AMBIGUOUS_REF = 11;
+  ERROR_CODE_ROOT_MISMATCH = 12;
+  ERROR_CODE_ROOT_UNKNOWN = 13;
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.
@@ -333,7 +334,8 @@ message ErrorBody {
   // unsupported_proto: protos this sidecar speaks; non-empty when present
   // (a sidecar always speaks ≥1), so empty ≡ absent needs no wrapper.
   repeated uint32 supported = 5;
-  // cas_mismatch: pinned rev vs current rev.
+  // Pinned vs current token — cas_mismatch: node revs; root_mismatch:
+  // full-width roots (code discriminates the grain).
   optional string expected = 6;
   optional string actual = 7;
   // ref_not_found: failing walk stage (1|2); stage 2 carries dest (v2 §4.5).
@@ -348,4 +350,8 @@ message ErrorBody {
   // bad_request on a non-conforming raw id lexeme (B2 law, v2 §3.1): the
   // offending lexeme verbatim, beside id absence.
   optional string id_raw = 12;
+  // root_mismatch: the drifted files; ≥1 when present (a mismatch names its
+  // drift), so empty ≡ absent needs no wrapper. NO scope field: §18 row 2,
+  // WAIVED — no scoped-root construct exists for it to describe.
+  repeated string changed = 13;
 }

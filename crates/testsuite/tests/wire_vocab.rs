@@ -18,6 +18,8 @@ fn error_codes_match_contract_v2() {
         (ErrorCode::CasMismatch, "cas_mismatch"),
         (ErrorCode::RefNotFound, "ref_not_found"),
         (ErrorCode::AmbiguousRef, "ambiguous_ref"),
+        (ErrorCode::RootMismatch, "root_mismatch"),
+        (ErrorCode::RootUnknown, "root_unknown"),
     ];
     for (code, wire_str) in codes {
         assert_eq!(

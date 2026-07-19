@@ -28,8 +28,9 @@
 //!   error envelope is the nested `{code, recovery, …}` object (v2 §8).
 //! - Rung 2 (`toc` v2 response, `cat`, `extract` + D-C5, `resolve` walk plane,
 //!   `SecRef` mint grammar): contract v2 §4.1–§4.5, §2.1 — FROZEN.
-//! - Rung 3 (`root`/`guard`): v1 §6.4 reserved sketches; reshaped/deleted by
-//!   the rung-3 amendment (W3-AMEND), not yet landed here.
+//! - Rung 3 (`root` reshape, `diff` request, `root_mismatch`/`root_unknown`,
+//!   `guard` DELETED per D-C8): contract v2 §4.7, §8 — FROZEN. The
+//!   Delta-bearing `diff` response body lands with the Delta noun (D3-DELTA).
 //! - Rung 4 (`splice`): v1 §6.2 NON-FROZEN sketch; the §4.4 batch shape lands
 //!   with the rung-4 amendment (W4-AMEND).
 //!
@@ -201,20 +202,16 @@ pub enum Op {
         if_node_rev: NodeRev,
         text: String,
     },
-    /// Rung 3 integrity read, v1 §6.4 reserved sketch; the v2 §4.7 reshape
-    /// (no `path`, response gains `seq`) lands with W3-AMEND.
-    Root {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<Path>,
-    },
-    /// v1 §6.4 reserved sketch. DROPPED by contract v2 (§4 op table — the
-    /// integrity surface is `root` + `splice.if_root` + `diff`); deleted by
-    /// W3-AMEND (D-C8).
-    Guard {
-        root: Root,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<Path>,
-    },
+    /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
+    /// No parameters — the root is world-grain (the only root guard is
+    /// `splice.if_root`, §5.1; the v1 scoped/`path` variant is gone with
+    /// `guard`).
+    Root,
+    /// v2 §4.7 replay, reserved AT the integrity rung with its shape frozen
+    /// now (A6/L55 — the compound front door). The response carries Delta
+    /// batches byte-identical to the live notification frames (§7.3); the
+    /// Delta-bearing response body lands with the Delta noun (D3-DELTA).
+    Diff { from_root: Root, to_root: Root },
 }
 
 // ---------------------------------------------------------------------------
@@ -396,11 +393,10 @@ pub enum ResponseBody {
     },
     /// v1 §6.2 sketch; the v2 §4.4 armed-facts shape lands with W4-AMEND.
     Splice { span: Span, node_rev: NodeRev },
-    /// v1 §6.4 reserved sketch; the v2 §4.7 reshape (gains `seq`) lands with
-    /// W3-AMEND.
-    Root { root: Root },
-    /// v1 §6.4 reserved sketch; DELETED by W3-AMEND with `Op::Guard` (D-C8).
-    Guard { root: Root },
+    /// v2 §4.7: the current root at world grain + `seq`, the monotone
+    /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
+    /// cross-epoch catchup is diff-by-root, §7.1 laws).
+    Root { root: Root, seq: u64 },
 }
 
 // ---------------------------------------------------------------------------
@@ -457,14 +453,23 @@ pub enum ErrorCode {
     /// v2 §8: the strict plane refuses to pick where the walk would silently
     /// choose. Extras: `candidates` (§2.1 refs naming each target exactly).
     AmbiguousRef,
+    /// v2 §8/§5.1: a failed world guard (`if_root`) — the plan is invalid,
+    /// not one node's picture. Extras: `expected`/`actual` (roots) +
+    /// `changed`. Ships WITHOUT the repo-reserved `scope` field (§18 row 2,
+    /// WAIVED: no scoped-root construct exists for it to describe).
+    RootMismatch,
+    /// v2 §4.7: a root range outside the retained history — full resync; the
+    /// root is the only restart-durable handle. No extras.
+    RootUnknown,
 }
 
 impl ErrorCode {
     /// The static code→class binding, v2 §8 verbatim — including the two
     /// declared rebinds (`unsupported_proto` fix→`respawn`: a protocol
-    /// mismatch is a channel property; `root_mismatch`→`resync` joins with
-    /// W3-AMEND) and `bad_id` absent (folded into `bad_request` + `id:null`/
-    /// `id_raw`, v2 §3.1).
+    /// mismatch is a channel property; `root_mismatch` refresh→`resync`: a
+    /// failed world guard invalidates the plan, not one node's picture) and
+    /// `bad_id` absent (folded into `bad_request` + `id:null`/`id_raw`,
+    /// v2 §3.1).
     #[must_use]
     pub const fn recovery(self) -> Recovery {
         match self {
@@ -474,6 +479,7 @@ impl ErrorCode {
             | ErrorCode::AmbiguousRef => Recovery::Fix,
             ErrorCode::NotFound | ErrorCode::InvalidUtf8 => Recovery::Env,
             ErrorCode::CasMismatch | ErrorCode::RefNotFound => Recovery::Refresh,
+            ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
             }
@@ -500,11 +506,18 @@ pub struct ErrorBody {
     /// `unsupported_proto`: protos this sidecar speaks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supported: Option<Vec<u32>>,
-    /// `cas_mismatch`: the rev the client pinned vs the rev that is.
+    /// The pinned vs current comparison token — `cas_mismatch`: node revs;
+    /// `root_mismatch`: full-width roots. One wire key per the frozen §8
+    /// table; `code` discriminates the grain (both tokens are opaque,
+    /// equality-only — the newtype names the slot, not the algebra).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<NodeRev>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actual: Option<NodeRev>,
+    /// `root_mismatch`: the files that drifted under the plan — read it,
+    /// re-`toc` the affected files, re-plan, re-arm with the fresh root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<Path>>,
     /// `ref_not_found`: the failing walk stage (1 or 2), observable in every
     /// transcript (v2 §4.5).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -539,6 +552,7 @@ impl ErrorBody {
             supported: None,
             expected: None,
             actual: None,
+            changed: None,
             stage: None,
             dest: None,
             candidates: None,
