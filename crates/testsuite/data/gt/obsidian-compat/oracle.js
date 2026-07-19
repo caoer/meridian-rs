@@ -12,8 +12,16 @@
 // Probe set (FIXED by gate-1 ruling 4 + decision 013): ZT's six walk-law probes
 // (WL-1..WL-6, the WL-6a/WL-6b hpath-join pair is one probe) + the `_`-bearing
 // anchor probe (WX-6). Corpus: fixtures/walkvault/ (walk.md + blocks.md),
-// byte-identical to gate-3 adversarial-harness. Spans are the app's UTF-8 byte
-// offsets (the corpus is ASCII, so UTF-16 Loc.offset == UTF-8 offset).
+// byte-identical to gate-3 adversarial-harness.
+//
+// SPAN UNITS — true UTF-8 byte offsets. The app's `Loc.offset` is UTF-16 code
+// units (the corpus is NOT ASCII: walk.md carries U+2014 x5 + U+2192 x1, each a
+// 3-byte / 1-UTF-16-unit char). We transcode each offset to a UTF-8 byte offset
+// against the file's own bytes — TextEncoder.encode(content.slice(0, off)).length
+// (content.slice indexes in UTF-16 code units, matching Loc.offset). The span
+// VALUE still originates from the live resolver; only its unit is normalized,
+// the same UTF-16->UTF-8 transcode the parity ruling assigns to the harness,
+// performed once at generation so the recorded offsets are byte-coherent.
 (function () {
   // Live-vault path to the pack corpus. The pack's own walkvault/ copy is
   // byte-identical; answers are recorded pack-corpus-relative (WV stripped).
@@ -30,6 +38,13 @@
     { id: "WX-6", from: "walk.md", ref: "blocks#^under-probe_x", law: "decision-011 `_` probe: pin what the app DOES with a legacy `_` block id" }
   ];
 
+  // UTF-16 code-unit offset (Loc.offset) -> UTF-8 byte offset, against `content`.
+  // content.slice(0, o) indexes in UTF-16 code units, so it selects exactly the
+  // prefix the app measured; its UTF-8 encoding length is the byte offset.
+  function utf16ToByte(content, o) {
+    return new TextEncoder().encode(content.slice(0, o)).length;
+  }
+
   function answer(p) {
     var fromPath = WV + p.from;
     var parsed = window.__ob.parseLinktext(p.ref); // { path, subpath }
@@ -42,7 +57,7 @@
       : app.metadataCache.getFirstLinkpathDest(linkpath, fromPath);
 
     if (!dest) {
-      return { ok: false, error: { code: "ref_not_found", stage: 1, dest: null } };
+      return Promise.resolve({ ok: false, error: { code: "ref_not_found", stage: 1, dest: null } });
     }
 
     var destRel = dest.path.indexOf(WV) === 0 ? dest.path.slice(WV.length) : dest.path;
@@ -50,20 +65,27 @@
     // Stage 2: subpath walk (heading path / block / footnote).
     var r = window.__ob.resolveSubpath(app.metadataCache.getCache(dest.path), subpath);
     if (!r) {
-      return { ok: false, error: { code: "ref_not_found", stage: 2, dest: destRel } };
+      return Promise.resolve({ ok: false, error: { code: "ref_not_found", stage: 2, dest: destRel } });
     }
-    // The app returns end === null when the section runs to EOF (no later
-    // heading at same-or-lower level). Span end is then the file's byte size
-    // (app-sourced, not hand-computed). Corpus is ASCII, so byte == UTF-16 == UTF-8.
-    var endOffset = r.end === null ? dest.stat.size : r.end.offset;
-    var out = { ok: true, dest: destRel, span: [r.start.offset, endOffset], resolved_type: r.type };
-    if (r.end === null) { out.span_end_is_eof = true; }
-    return out;
+
+    // Read the dest's own bytes to transcode the resolver's UTF-16 offsets to
+    // UTF-8 byte offsets. The app returns end === null when the section runs to
+    // EOF (no later heading at same-or-lower level); the span end is then the
+    // file's byte size (dest.stat.size, already UTF-8 bytes, == encode(content)).
+    return app.vault.cachedRead(dest).then(function (content) {
+      var startByte = utf16ToByte(content, r.start.offset);
+      var endByte = r.end === null ? dest.stat.size : utf16ToByte(content, r.end.offset);
+      var out = { ok: true, dest: destRel, span: [startByte, endByte], resolved_type: r.type };
+      if (r.end === null) { out.span_end_is_eof = true; }
+      return out;
+    });
   }
 
-  var out = probes.map(function (p) {
-    return { id: p.id, from: p.from, ref: p.ref, parsed: window.__ob.parseLinktext(p.ref), law: p.law, answer: answer(p) };
+  return Promise.all(probes.map(function (p) {
+    return answer(p).then(function (a) {
+      return { id: p.id, from: p.from, ref: p.ref, parsed: window.__ob.parseLinktext(p.ref), law: p.law, answer: a };
+    });
+  })).then(function (out) {
+    return JSON.stringify(out, null, 2);
   });
-
-  return JSON.stringify(out, null, 2);
 })();
