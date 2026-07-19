@@ -142,7 +142,7 @@ fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
 /// The ambient workspace root (v2 §4.1/§12): the §12 hash domain's file
 /// bytes folded through `model::merkle_root` — the one blake3 home — with the
 /// domain config's prefix version.
-fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
+pub(crate) fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
     Ok(domain_snapshot(root)?.1)
 }
 
