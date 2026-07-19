@@ -1,0 +1,29 @@
+
+> my-evidence-project@0.0.1 sources
+> evidence sources
+
+- Loading plugins & sources
+✔ Loading plugins & sources
+-----
+  [Processing] meridian
+- Processing...
+  as_of_root ✔ Finished, wrote 1 rows.
+- Processing...
+  batches ✔ Finished, wrote 1 rows.
+- Processing...
+  changes ✔ Finished, wrote 10002 rows.
+- Processing...
+  extract_manifest ✔ Finished, wrote 6 rows.
+- Processing...
+  files ✔ Finished, wrote 22343 rows.
+- Processing...
+  frontmatter ✔ Finished, wrote 188401 rows.
+- Processing...
+  links ✔ Finished, wrote 26642 rows.
+- Processing...
+  roots ✔ Finished, wrote 2 rows.
+- Processing...
+  snap ⚠ No results returned.
+-----
+[INFO]:    Evaluated sources, saving manifest
+[INFO]:    ✅ Done!

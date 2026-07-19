@@ -87,10 +87,173 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 to_root: wire::Root(req_str(obj, op, "to_root")?),
             })
         }
-        // §3.2 discovery honesty: everything else — including ops the wire
-        // vocabulary knows but this rung has not armed (splice) — answers
-        // `unknown_op`.
+        "sub" => {
+            // v2 §4.7 push path: the reserved shape, live at T5-SUB.
+            check_fields(obj, op, &["from_seq"])?;
+            Ok(Op::Sub {
+                from_seq: req_u64(obj, op, "from_seq")?,
+            })
+        }
+        "splice" => decode_splice(obj),
+        // §3.2 discovery honesty: every op is armed as of T5-SUB — only
+        // genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+    }
+}
+
+/// v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,
+/// format-VALIDATED never generated — a malformed `now` is the server's
+/// `bad_request` (the pass W4 left to this build-out).
+fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "splice";
+    check_fields(
+        obj,
+        op,
+        &["path", "actor", "now", "receipt", "if_root", "dry", "edits"],
+    )?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    let Some(edits_v) = obj.get("edits") else {
+        return Err(bad_request("missing `edits` on `splice`"));
+    };
+    Ok(Op::Splice {
+        path: req_path(obj, op, "path")?,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        receipt: obj.get("receipt").map(decode_receipt).transpose()?,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+        edits: decode_edits(edits_v)?,
+    })
+}
+
+/// §6.1 receipt address: `{path, anchor}` exactly — path law on `path`, the
+/// mint-guard charset on `anchor` (a receipt anchor is a mint position).
+fn decode_receipt(v: &Value) -> Result<wire::ReceiptAddr, Box<ErrorBody>> {
+    let Value::Object(r) = v else {
+        return Err(bad_request("`receipt` must be an object"));
+    };
+    for key in r.keys() {
+        if !["path", "anchor"].contains(&key.as_str()) {
+            return Err(bad_request(format!("unknown field `{key}` in `receipt`")));
+        }
+    }
+    let path = req_path(r, "receipt", "path")?;
+    let anchor = match r.get("anchor") {
+        Some(Value::String(id)) => match model::Ref::anchor(id.clone()) {
+            Ok(_) => id.clone(),
+            Err(bad) => {
+                return Err(bad_request(format!(
+                    "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
+                    id = bad.id
+                )));
+            }
+        },
+        Some(_) => return Err(bad_request("`anchor` must be a string")),
+        None => return Err(bad_request("missing `anchor` on `receipt`")),
+    };
+    Ok(wire::ReceiptAddr { path, anchor })
+}
+
+/// §4.4 batch edits: each `{target, edit, if_node_rev?}`, the target in THE
+/// §2.1 grammar (mint-guarded), the edit exactly one of the two shapes.
+fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
+    let Value::Array(items) = v else {
+        return Err(bad_request("`edits` must be an array"));
+    };
+    if items.is_empty() {
+        // Derived reading (no frozen empty-batch form exists): a batch IS
+        // its edits, and an edit-less commit would mint a Delta with no
+        // root advance — unrepresentable under §7.1 "one Delta = one batch
+        // = one root advance". Refused loud, recorded as derived-data.
+        return Err(bad_request("`edits` must carry at least one edit"));
+    }
+    let mut edits = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::Object(e) = item else {
+            return Err(bad_request("each edit must be an object"));
+        };
+        for key in e.keys() {
+            if !["target", "edit", "if_node_rev"].contains(&key.as_str()) {
+                return Err(bad_request(format!("unknown field `{key}` in edit")));
+            }
+        }
+        let Some(target_v) = e.get("target") else {
+            return Err(bad_request("missing `target` in edit"));
+        };
+        let Some(shape_v) = e.get("edit") else {
+            return Err(bad_request("missing `edit` in edit"));
+        };
+        let if_node_rev = match e.get("if_node_rev") {
+            None => None,
+            Some(Value::String(s)) => Some(wire::NodeRev(s.clone())),
+            Some(_) => return Err(bad_request("`if_node_rev` must be a string")),
+        };
+        edits.push(wire::Edit {
+            target: decode_sec(target_v)?,
+            edit: decode_edit_shape(shape_v)?,
+            if_node_rev,
+        });
+    }
+    Ok(edits)
+}
+
+/// Exactly two edit shapes (§4.4): externally tagged `{"match":{…}}` /
+/// `{"put":{…}}`, exactly one tag, each shape's fields validated by hand.
+fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
+    let Value::Object(shape) = v else {
+        return Err(bad_request("`edit` must be an object"));
+    };
+    for key in shape.keys() {
+        if !["match", "put"].contains(&key.as_str()) {
+            return Err(bad_request(format!("unknown field `{key}` in `edit`")));
+        }
+    }
+    match (shape.get("match"), shape.get("put")) {
+        (Some(Value::Object(m)), None) => {
+            for key in m.keys() {
+                if !["old", "new"].contains(&key.as_str()) {
+                    return Err(bad_request(format!("unknown field `{key}` in `match`")));
+                }
+            }
+            Ok(wire::EditShape::Match {
+                old: req_str(m, "match", "old")?,
+                new: req_str(m, "match", "new")?,
+            })
+        }
+        (None, Some(Value::Object(p))) => {
+            for key in p.keys() {
+                if !["at", "text"].contains(&key.as_str()) {
+                    return Err(bad_request(format!("unknown field `{key}` in `put`")));
+                }
+            }
+            let at = match p.get("at") {
+                Some(Value::String(s)) => match s.as_str() {
+                    "all" => wire::PutAt::All,
+                    "content" => wire::PutAt::Content,
+                    "end" => wire::PutAt::End,
+                    other => {
+                        return Err(bad_request(format!(
+                            "`at` must be one of all/content/end: `{other}`"
+                        )));
+                    }
+                },
+                _ => return Err(bad_request("`at` must be a string")),
+            };
+            Ok(wire::EditShape::Put {
+                at,
+                text: req_str(p, "put", "text")?,
+            })
+        }
+        _ => Err(bad_request(
+            "`edit` must carry exactly one of `match`/`put` as an object",
+        )),
     }
 }
 

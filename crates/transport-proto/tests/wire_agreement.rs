@@ -121,9 +121,39 @@ fn receipt_fact_to_pb(r: wire::ReceiptFact) -> pb::ReceiptFact {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)] // uninhabited: the match consumes it
 fn verdict_to_pb(v: wire::Verdict) -> pb::Verdict {
-    match v {} // uninhabited until P6-VERDICTS — verdicts are [] from birth
+    let wire::Verdict {
+        rule,
+        severity,
+        path,
+        hpath,
+        span,
+        node_rev,
+        message,
+    } = v;
+    pb::Verdict {
+        rule,
+        severity: severity_to_pb(severity).into(),
+        path: path.0,
+        // `hpath` empty ≡ a rule-level finding (wire `None`); proto3 repeated
+        // carries no optional, so absence maps to the empty list (round-trips).
+        hpath: hpath
+            .unwrap_or_default()
+            .into_iter()
+            .map(hpath_seg_to_pb)
+            .collect(),
+        span: Some(span_to_pb(span)),
+        node_rev: node_rev.0,
+        message,
+    }
+}
+
+fn severity_to_pb(s: wire::Severity) -> pb::Severity {
+    match s {
+        wire::Severity::Error => pb::Severity::Error,
+        wire::Severity::Warn => pb::Severity::Warn,
+        wire::Severity::Info => pb::Severity::Info,
+    }
 }
 
 fn kind_to_pb(k: wire::NodeKind) -> pb::NodeKind {
@@ -163,6 +193,7 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::RootMismatch => pb::ErrorCode::RootMismatch,
         wire::ErrorCode::RootUnknown => pb::ErrorCode::RootUnknown,
         wire::ErrorCode::StaleView => pb::ErrorCode::StaleView,
+        wire::ErrorCode::DaemonOnly => pb::ErrorCode::DaemonOnly,
     }
 }
 
@@ -312,6 +343,7 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             path: path.map(|p| p.0),
             require_root: require_root.map(|r| r.0),
         }),
+        wire::Op::Sub { from_seq } => pb::request::Op::Sub(pb::SubRequest { from_seq }),
     }
 }
 
@@ -700,8 +732,43 @@ fn receipt_fact_from_pb(r: pb::ReceiptFact) -> wire::ReceiptFact {
     }
 }
 
-fn verdict_from_pb(_: pb::Verdict) -> wire::Verdict {
-    panic!("verdicts are empty until rung 6 (P6-VERDICTS)")
+fn verdict_from_pb(v: pb::Verdict) -> wire::Verdict {
+    let pb::Verdict {
+        rule,
+        severity,
+        path,
+        hpath,
+        span,
+        node_rev,
+        message,
+    } = v;
+    wire::Verdict {
+        rule,
+        severity: severity_from_pb(pb::Severity::try_from(severity).expect("known severity")),
+        path: wire::Path(path),
+        hpath: if hpath.is_empty() {
+            None
+        } else {
+            Some(hpath.into_iter().map(hpath_seg_from_pb).collect())
+        },
+        span: span
+            .map(span_from_pb)
+            .expect("a verdict carries a span (§11.1)"),
+        node_rev: wire::NodeRev(node_rev),
+        message,
+    }
+}
+
+fn severity_from_pb(s: pb::Severity) -> wire::Severity {
+    match s {
+        // proto3 zero-value convention only — no wire counterpart; the strict
+        // seam refuses it LOUD rather than silently defaulting (P6-VERDICTS
+        // precision). Pinned by `unspecified_severity_refuses_loud`.
+        pb::Severity::Unspecified => panic!("SEVERITY_UNSPECIFIED never crosses the seam"),
+        pb::Severity::Error => wire::Severity::Error,
+        pb::Severity::Warn => wire::Severity::Warn,
+        pb::Severity::Info => wire::Severity::Info,
+    }
 }
 
 fn kind_from_pb(k: pb::NodeKind) -> wire::NodeKind {
@@ -743,6 +810,7 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::RootMismatch => wire::ErrorCode::RootMismatch,
         pb::ErrorCode::RootUnknown => wire::ErrorCode::RootUnknown,
         pb::ErrorCode::StaleView => wire::ErrorCode::StaleView,
+        pb::ErrorCode::DaemonOnly => wire::ErrorCode::DaemonOnly,
     }
 }
 
@@ -889,6 +957,7 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             path: path.map(wire::Path),
             require_root: require_root.map(wire::Root),
         },
+        pb::request::Op::Sub(pb::SubRequest { from_seq }) => wire::Op::Sub { from_seq },
     }
 }
 
@@ -1462,6 +1531,9 @@ fn sample_requests() -> Vec<wire::Request> {
             path: None,
             require_root: None,
         },
+        // sub (§4.7 push path): live-only anchor and a catchup position
+        wire::Op::Sub { from_seq: 0 },
+        wire::Op::Sub { from_seq: 2 },
     ];
     ops.into_iter()
         .chain(sample_splice_requests())
@@ -1511,6 +1583,7 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
         wire::ErrorCode::RefNotFound,
         wire::ErrorCode::AmbiguousRef,
         wire::ErrorCode::StaleView,
+        wire::ErrorCode::DaemonOnly,
     ];
     codes
         .into_iter()
@@ -1616,7 +1689,17 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
             )),
             seq: Some(1),
             dry: None,
-            verdicts: vec![],
+            // the frozen §11.1 worked verdict rides the roundtrip — proves the
+            // inhabited shape crosses the seam byte-identically (P6-VERDICTS).
+            verdicts: vec![wire::Verdict {
+                rule: "blurb-required".into(),
+                severity: wire::Severity::Warn,
+                path: wire::Path("notes/plan.md".into()),
+                hpath: Some(vec![seg("Goals")]),
+                span: wire::Span(20, 150),
+                node_rev: wire::NodeRev("5a8faa717fbcdb04".into()),
+                message: "section has no blurb line".into(),
+            }],
         },
         // splice: the dry shape — root_after null, no receipt, no seq
         wire::ResponseBody::Splice {
@@ -1873,4 +1956,26 @@ fn every_response_body_and_error_code_survives_wire_proto_wire() {
         };
         assert_eq!(response_from_pb(back), resp);
     }
+}
+
+/// P6-VERDICTS strict-decode precision: a proto `Verdict` whose `severity` is the
+/// proto3 zero-value (`SEVERITY_UNSPECIFIED` — no `wire::Severity` counterpart) is
+/// REFUSED loud at the seam, never silently defaulted to a real severity. The
+/// negative twin of the §11.1 worked-shape roundtrip sample above.
+#[test]
+#[should_panic(expected = "SEVERITY_UNSPECIFIED never crosses the seam")]
+fn unspecified_severity_refuses_loud() {
+    let v = pb::Verdict {
+        rule: "blurb-required".into(),
+        severity: pb::Severity::Unspecified.into(),
+        path: "notes/plan.md".into(),
+        hpath: vec![],
+        span: Some(pb::Span {
+            start: 20,
+            end: 150,
+        }),
+        node_rev: "5a8faa717fbcdb04".into(),
+        message: "section has no blurb line".into(),
+    };
+    let _ = verdict_from_pb(v);
 }

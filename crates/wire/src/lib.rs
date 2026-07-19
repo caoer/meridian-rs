@@ -377,6 +377,13 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         require_root: Option<Root>,
     },
+    /// v2 §4.7 the push path, live at T5-SUB: `{"op":"sub","from_seq":N}` →
+    /// ok (the ack reuses the `{root, seq}` body — the subscription's anchor
+    /// tense; advisor-ruled, no frozen frame prints one), then Notification
+    /// frames each carrying one Delta batch — the §7.1 noun, transport only
+    /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
+    /// law); outside the retained history → `root_unknown` → diff-by-root.
+    Sub { from_seq: u64 },
 }
 
 // ---------------------------------------------------------------------------
@@ -642,11 +649,40 @@ pub struct ReceiptFact {
     pub span_after: Span,
 }
 
-/// A rules-as-data verdict (v2 §11.1). UNINHABITED at this rung: `verdicts`
-/// rides every splice response from birth but can only be `[]` until
-/// P6-VERDICTS lands the variants (the shape-never-changes gate, type-level).
+/// A rules-as-data verdict (v2 §11.1): a typed FINDING from a loaded rule pack,
+/// never a decision (T1 — whether an `error` blocks is Go's action mapping, not
+/// engine behavior). The shape rode every splice response as `[]` from birth
+/// (D4-SPLICE); P6-VERDICTS inhabits it without changing that shape. The field
+/// set is `crates/policy`'s `Violation` verbatim, projected into THE grammar
+/// (§2.1): `hpath` segments carry `{h, n?}`, not bare strings. Worked (§11.1):
+/// `{rule:"blurb-required", severity:"warn", path:"notes/plan.md",
+/// hpath:[{"h":"Goals"}], span:[20,150], node_rev:"5a8faa717fbcdb04",
+/// message:"section has no blurb line"}`. `budget_exceeded` is a finding in this
+/// array (§8), never a wire error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Verdict {}
+pub struct Verdict {
+    pub rule: String,
+    pub severity: Severity,
+    pub path: Path,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpath: Option<Vec<HpathSeg>>,
+    pub span: Span,
+    pub node_rev: NodeRev,
+    pub message: String,
+}
+
+/// Verdict severity (v2 §11.1): descriptive policy data — how bad, per the pack's
+/// convention — never what to DO about it (Go's action mapping). Serialized flat
+/// lowercase (`"error"`/`"warn"`/`"info"`). Independent of `policy::Severity` by
+/// construction: the sidecar projects one to the other, so no wire→policy edge
+/// exists (the fence holds at the type level, not just cargo tree).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warn,
+    Info,
+}
 
 // ---------------------------------------------------------------------------
 // v2 §7 the Delta noun — the fifth noun, born frozen (A6)
@@ -771,10 +807,10 @@ pub enum Recovery {
 /// is that binding, verbatim from the frozen table. Clients treat unrecognized
 /// codes as `recovery`-dispatched.
 ///
-/// The one remaining v2 code joins with its op: `daemon_only` (rule packs,
-/// rung 6); `stale_view` joined with `links` (Q5-LINKS). v1 `not_found` is
-/// RETIRED (§18 row 6, split `file_not_found`/`ref_not_found`) — its string
-/// no longer parses, pinned by the retirement deviation fixture.
+/// `daemon_only` (rule packs, rung 6) lands with P6-VERDICTS — the last v2 code;
+/// `stale_view` joined with `links` (Q5-LINKS). v1 `not_found` is RETIRED (§18
+/// row 6, split `file_not_found`/`ref_not_found`) — its string no longer parses,
+/// pinned by the retirement deviation fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -798,6 +834,13 @@ pub enum ErrorCode {
     /// v2 §8: I/O failure with its `cause` — the other retirement half.
     IoError,
     InvalidUtf8,
+    /// v2 §8/§11.3: the env code that names the engine's own deployment — a
+    /// corpus-class rule pack (its WHEN needs the resident corpus name index,
+    /// e.g. `link_resolves` §11.2) loaded against a sidecar-mode engine that has
+    /// no resident index cannot run, so it is refused LOUD at admission
+    /// (`BudgetClass::Corpus` law). A single-file op never raises it (every §4
+    /// op is served from disk bytes alone, §10.3).
+    DaemonOnly,
     Internal,
     CasMismatch,
     /// v2 §8: the name dangles — refresh one thing. Extras: `stage` (1 =
@@ -839,7 +882,10 @@ impl ErrorCode {
             | ErrorCode::NotUnique
             | ErrorCode::WouldCorrupt
             | ErrorCode::AmbiguousRef => Recovery::Fix,
-            ErrorCode::FileNotFound | ErrorCode::IoError | ErrorCode::InvalidUtf8 => Recovery::Env,
+            ErrorCode::FileNotFound
+            | ErrorCode::IoError
+            | ErrorCode::InvalidUtf8
+            | ErrorCode::DaemonOnly => Recovery::Env,
             ErrorCode::CasMismatch | ErrorCode::RefNotFound => Recovery::Refresh,
             ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,

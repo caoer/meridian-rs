@@ -13,7 +13,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use model::NodeKind;
-use policy::{CompileError, PackFiles, RulesetPin, Severity, compile, evaluate};
+use policy::{CompileError, CompiledRuleset, PackFiles, RulesetPin, Severity, evaluate};
+
+/// `policy::compile` with the real parse→facts builder injected — the load gate
+/// demonstrates its fixtures over the SAME plane `evaluate` runs (P6-VERDICTS
+/// unification). `build_doc` is the real AST path the sidecar composes; the
+/// retired synthetic per-line builder is gone from production admission.
+fn compile(
+    pin: &RulesetPin,
+    source: &str,
+    files: &dyn PackFiles,
+) -> Result<CompiledRuleset, CompileError> {
+    policy::compile(pin, source, files, &|path, body| {
+        policy::facts_from_document(&build_doc(body.to_string(), path))
+    })
+}
 
 // ── shared harness ───────────────────────────────────────────────────────────
 
@@ -111,10 +125,15 @@ fixtures: [fixtures/blurb-pass.md, fixtures/blurb-fail.md]
 rules: [rules/blurb-required.md]
 ";
 
-// Load-gate fixtures (synthetic per-line facts): a heading whose next node is a
-// deeper heading demonstrates the violation; a heading followed by content does not.
-const BLURB_FX_PASS: &str =
-    "---\nexpect: pass\n---\n# Goals\n\nA blurb line.\n\n## Sub\n\nmore text\n";
+// Load-gate fixtures demonstrated over the REAL fact plane (P6-VERDICTS
+// unification): the world model is paragraph-blind (and list-blind), so the
+// "blurb" between a heading and its deeper subsection must be a real dialect node
+// — a wikilink is. PASS: `Goals` is followed by a `wikilink` before `Sub`, so no
+// heading opens directly onto a deeper heading (rule satisfied). FAIL: `Goals`
+// opens directly onto the deeper `Sub` with no intervening node (the violation).
+// The retired synthetic per-line builder faked a paragraph node for the pass case
+// — see fail-first artifact.
+const BLURB_FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n\n## Sub\n\n[[more]]\n";
 const BLURB_FX_FAIL: &str = "---\nexpect: fail\n---\n# Goals\n## Sub\nmore\n";
 
 fn blurb_pack() -> MemFiles {

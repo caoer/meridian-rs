@@ -1,6 +1,6 @@
 # meridian-rs bench results
 
-Run 2026-07-18 17:43 UTC · `zmax` (aarch64 macos, Apple M4 Max, 16 cores) · git `35ac2b7` · rustc 1.96.0 (ac68faa20 2026-05-25) · report schema v1
+Run 2026-07-18 17:44 UTC · `zmax` (aarch64 macos, Apple M4 Max, 16 cores) · git `9338e3e` · rustc 1.96.0 (ac68faa20 2026-05-25) · report schema v1
 
 ## Claim verdicts
 

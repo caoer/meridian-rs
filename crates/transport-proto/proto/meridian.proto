@@ -47,6 +47,7 @@ message Request {
     CatRequest cat = 9;         // v2 §4.2
     DiffRequest diff = 10;      // v2 §4.7
     LinksRequest links = 11;    // v2 §4.6 (Q5-LINKS)
+    SubRequest sub = 12;        // v2 §4.7 push path (T5-SUB)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -150,6 +151,13 @@ message DiffRequest {
 message LinksRequest {
   optional string path = 1;
   optional string require_root = 2;
+}
+
+// v2 §4.7 push path (T5-SUB): ok (Root-shaped ack, advisor-ruled), then
+// Notification frames each carrying one Delta. from_seq catchup is
+// per-daemon-epoch (§7.1); outside retained history → root_unknown.
+message SubRequest {
+  uint64 from_seq = 1;
 }
 
 // Half-open byte range [start, end) — contract v2 §1 span sub-laws.
@@ -368,9 +376,28 @@ message ReceiptFact {
   Span span_after = 4;
 }
 
-// v2 §11.1 verdict — fields land with P6-VERDICTS; the array rides splice
-// responses from birth (shape never changes at rung 6).
-message Verdict {}
+// v2 §11.1 verdict — a typed FINDING from a loaded rule pack, never a decision
+// (T1). Fields land with P6-VERDICTS; the array rode splice responses from birth
+// (shape never changes at rung 6). `crates/policy`'s Violation, in THE grammar
+// (hpath as segments, §2.1). `hpath` empty ≡ a rule-level finding (JSON absent).
+message Verdict {
+  string rule = 1;
+  Severity severity = 2;
+  string path = 3;
+  repeated HpathSeg hpath = 4;
+  Span span = 5;
+  string node_rev = 6;
+  string message = 7;
+}
+
+// v2 §11.1 severity — descriptive policy data (how bad, per the pack), never the
+// action (Go's mapping). Mirrors `wire::Severity`.
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_ERROR = 1;
+  SEVERITY_WARN = 2;
+  SEVERITY_INFO = 3;
+}
 
 // v2 §4.7: root + seq (monotone per-workspace batch counter, per-daemon-epoch).
 message RootResponse {
@@ -472,10 +499,11 @@ enum NodeChange {
   NODE_CHANGE_REMOVED = 3;
 }
 
-// v2 §8 error codes present at this rung. The two remaining v2 codes join
-// with their ops (stale_view, daemon_only) — mirror `wire::ErrorCode`
-// exactly, never lead it. v1 NOT_FOUND is RETIRED (§18 row 6): ordinal 6
-// reserved, never reused.
+// v2 §8 error codes present at this rung — mirror `wire::ErrorCode` exactly,
+// never lead it. Both formerly-remaining v2 codes have now joined with their
+// ops: stale_view with links (Q5-LINKS), daemon_only with rule packs
+// (P6-VERDICTS). v1 NOT_FOUND is RETIRED (§18 row 6): ordinal 6 reserved,
+// never reused.
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_BAD_FRAME = 1;
@@ -498,6 +526,7 @@ enum ErrorCode {
   ERROR_CODE_FILE_NOT_FOUND = 18;
   ERROR_CODE_IO_ERROR = 19;
   ERROR_CODE_STALE_VIEW = 20; // joined with links (Q5-LINKS), v2 §10.2
+  ERROR_CODE_DAEMON_ONLY = 21; // joined with rule packs (P6-VERDICTS), v2 §8/§11.3
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.

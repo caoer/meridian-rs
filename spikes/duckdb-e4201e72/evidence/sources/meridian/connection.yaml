@@ -1,0 +1,6 @@
+name: meridian
+type: duckdb
+options:
+  # CoW APFS snapshot of the round-3 spike DB (cp -c). NEVER the live wiki.duckdb.
+  # Disposable by construction: delete = re-clone from live.
+  filename: snap.duckdb

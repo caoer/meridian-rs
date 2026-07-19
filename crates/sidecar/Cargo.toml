@@ -22,6 +22,14 @@ syntax = { workspace = true }
 # Rung-5 corpus reads: the §4.6 edge map is query's (the additive-crate
 # arrival — nothing reshuffles).
 query = { workspace = true }
+# CALL-ONLY (advisor ruling, d4-splice): the splice arm renders receipt
+# lines through it; edits to the crate itself need an ownership ruling.
+receipt = { workspace = true }
+# The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the sidecar
+# composes policy + the real parse pipeline in-process — the splice arm evaluates
+# loaded rule packs and fills verdicts:[]. Zero edges run the OTHER way: nothing
+# depends INTO policy that did not before (policy consumes supplied facts).
+policy = { workspace = true }
 wire = { workspace = true }
 # Law 3 as amended (review C1): projection lives at the named wire-map seam,
 # tested there; this bin stays wiring-only.
