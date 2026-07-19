@@ -36,9 +36,10 @@ fn frontmatter(root: &Node) -> &Node {
 }
 
 fn section<'a>(root: &'a Node, heading: &str) -> &'a Node {
-    find(root, &|n| {
-        matches!(&n.kind, NodeKind::Section { heading_text, .. } if heading_text == heading)
-    })
+    find(
+        root,
+        &|n| matches!(&n.kind, NodeKind::Section { heading_text, .. } if heading_text == heading),
+    )
     .unwrap_or_else(|| panic!("section {heading:?}"))
 }
 
@@ -66,7 +67,12 @@ fn wsfix_s0_plan_node_and_file_revs_match_oracle() {
     let NodeKind::Frontmatter { map } = &fm.kind else {
         unreachable!()
     };
-    assert_eq!(map.0.get("title").map(String::as_str), Some("Plan"));
+    assert_eq!(
+        map.0
+            .iter()
+            .find_map(|(k, v)| (k == "title").then_some(v.as_str())),
+        Some("Plan")
+    );
 
     // sections (toc_s0): Goals(L1) governs Q3/Q4(L2).
     assert_node(section(&root, "Goals"), 20..136, "a6665baff294bd04");
