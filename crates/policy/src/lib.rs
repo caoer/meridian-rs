@@ -46,6 +46,41 @@
 
 use model::{CorpusIndex, Document};
 
+mod pack;
+
+use pack::Evaluator as _;
+
+/// The rule-language / injected-fact-API pin this engine implements (§11.4,
+/// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an
+/// evaluator/dialect change is a pack change, gated at load.
+pub const RULEPACK_API: &str = "rulepack-api@1";
+
+/// The §11.3 per-eval metering budget: `{steps, mem}` bounding one evaluation.
+///
+/// Distinct from [`Budget`] (`{class, p99_us}`, the per-assertion cost
+/// declaration for `vocab`) — do not conflate. Exhaustion of *this* budget is
+/// metered: at the load gate it refuses the pack; on the wire (P6-EVAL) it
+/// surfaces as the `budget_exceeded` FINDING, never an error frame (§8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalBudget {
+    pub steps: u64,
+    pub mem: u64,
+}
+
+/// Caller-provided resolver for manifest-relative pack files (fixtures, rules).
+///
+/// Policy stays I/O-free (as `model` is): the caller — `fs`/`sidecar` at the
+/// §6.1 "reads path from disk" edge — injects file access, and tests inject an
+/// in-memory map. Paths are exactly the manifest's relative strings.
+pub trait PackFiles {
+    /// Read a pack file's UTF-8 contents, or fail (missing/unreadable/non-UTF-8).
+    ///
+    /// # Errors
+    /// Any I/O or decode failure from the underlying source.
+    fn read(&self, rel_path: &str) -> std::io::Result<String>;
+}
+
 /// Per-assertion cost declaration, surfaced verbatim by `policy_vocab` and
 /// enforced by the bench suite against the frozen GT corpus (a release
 /// exceeding a declared p99 fails CI).
@@ -74,11 +109,53 @@ pub struct RulesetPin {
     pub sha256: Option<String>,
 }
 
-/// A compiled ruleset, cached by content hash — the one in-memory cache the
-/// laws permit (content-addressed, disposable, re-derived from disk).
+/// A compiled ruleset — admitted only after its fixtures demonstrated
+/// themselves under budget (§11.3 load gate). Private fields seal construction
+/// to `policy::compile` (the capability seal); the eval bridge lives behind
+/// this type, so P6-STARLARK/P6-EVAL add no public surface here.
 #[derive(Debug)]
 pub struct CompiledRuleset {
-    _sealed: (),
+    id: String,
+    content_hash: String,
+    budget: EvalBudget,
+    budget_class: BudgetClass,
+    rules: Vec<String>,
+}
+
+impl CompiledRuleset {
+    /// The pack's declared `id` (echoed into violations for provenance).
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// sha256 (hex) of the manifest source — the content-hash cache key. The
+    /// cache itself is caller/daemon state (law 2, disposable), not held here.
+    #[must_use]
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// The §11.3 per-eval metering budget the fixtures passed under.
+    #[must_use]
+    pub fn budget(&self) -> EvalBudget {
+        self.budget
+    }
+
+    /// Ruleset-level budget class = max class over used assertions (schema doc
+    /// L188). The P6-VERDICTS seam: a `Corpus` result means the pack needs the
+    /// resident corpus index, so loading it sidecar-mode is later refused
+    /// `daemon_only` (that error is NOT defined in this unit).
+    #[must_use]
+    pub fn budget_class(&self) -> BudgetClass {
+        self.budget_class
+    }
+
+    /// Number of rule pages the pack declares.
+    #[must_use]
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
 }
 
 /// Compile errors per the schema doc's error taxonomy (`ruleset_not_found`,
@@ -97,6 +174,20 @@ pub enum CompileError {
     UnsupportedVocab {
         requires: u32,
         engine: u32,
+    },
+    /// Manifest unparseable or failing schema validation (bad YAML, missing or
+    /// unknown keys, an unreadable rule page). The taxonomy's `compile_error`
+    /// class — fails loud, never evaluates.
+    Malformed {
+        reason: String,
+    },
+    /// The §11.3 load gate: a fixture failed to demonstrate the pack — its actual
+    /// verdict disagreed with its declared `expect`, it exhausted the per-eval
+    /// budget, or it was unreadable/undeclared. A pack that cannot demonstrate
+    /// itself is never admitted.
+    FixtureFailed {
+        fixture: String,
+        detail: String,
     },
 }
 
@@ -122,14 +213,126 @@ pub enum Severity {
     Info,
 }
 
-/// Read + verify pin + compile + cache. YAML enters the engine here and
-/// nowhere else.
+/// Parse the §11.3 manifest, verify the pin, and RUN the pack's fixtures under
+/// its declared budgets as the load gate — a pack whose fixtures fail is never
+/// admitted. YAML enters the engine here and nowhere else.
+///
+/// `source` is the manifest text (the caller pre-reads it from `pin.path`);
+/// `files` resolves manifest-relative fixture/rule paths to their contents, so
+/// policy performs no I/O of its own.
+///
+/// Pipeline: content-pin (sha256) → parse → api-pin → read+classify rules → run
+/// fixtures via the sealed eval bridge → admit / refuse.
 ///
 /// # Errors
-/// Pin mismatch, unparseable YAML, or a ruleset failing schema validation.
-pub fn compile(pin: &RulesetPin, source: &str) -> Result<CompiledRuleset, CompileError> {
-    let _ = (pin, source);
-    todo!("rung 6: parse → validate schema → compile; cache by content sha256")
+/// [`CompileError::PinMismatch`] (api or sha256), [`CompileError::Malformed`]
+/// (bad manifest / unreadable rule), or [`CompileError::FixtureFailed`] (the
+/// load gate).
+pub fn compile(
+    pin: &RulesetPin,
+    source: &str,
+    files: &dyn PackFiles,
+) -> Result<CompiledRuleset, CompileError> {
+    // 1. Content pin — integrity before trust; fails loud, never evaluates.
+    let content_hash = sha256_hex(source);
+    if let Some(expected) = &pin.sha256 {
+        let want = expected.strip_prefix("sha256:").unwrap_or(expected);
+        if !content_hash.eq_ignore_ascii_case(want) {
+            return Err(CompileError::PinMismatch {
+                expected: expected.clone(),
+                actual: format!("sha256:{content_hash}"),
+            });
+        }
+    }
+
+    // 2. Parse the generic manifest.
+    let manifest = pack::parse_manifest(source)?;
+
+    // 3. api pin — an evaluator/dialect mismatch is gated at load.
+    if manifest.api != RULEPACK_API {
+        return Err(CompileError::PinMismatch {
+            expected: RULEPACK_API.to_string(),
+            actual: manifest.api,
+        });
+    }
+
+    // 4. Read rule pages (must resolve) and classify the ruleset budget class.
+    let mut rule_sources = Vec::with_capacity(manifest.rules.len());
+    for rule in &manifest.rules {
+        let text = files.read(rule).map_err(|e| CompileError::Malformed {
+            reason: format!("rule '{rule}' unreadable: {e}"),
+        })?;
+        rule_sources.push(text);
+    }
+    let budget_class = pack::classify_budget_class(&rule_sources);
+
+    // 5. Fixtures ARE the load gate: no fixtures = cannot demonstrate itself.
+    if manifest.fixtures.is_empty() {
+        return Err(CompileError::FixtureFailed {
+            fixture: String::new(),
+            detail: "pack declares no fixtures — a rule that cannot demonstrate itself \
+                     does not run"
+                .to_string(),
+        });
+    }
+    let evaluator = pack::BlurbEvaluator;
+    for fixture in &manifest.fixtures {
+        let content = files
+            .read(fixture)
+            .map_err(|e| CompileError::FixtureFailed {
+                fixture: fixture.clone(),
+                detail: format!("unreadable: {e}"),
+            })?;
+        let doc = pack::parse_fixture(fixture, &content)?;
+        match evaluator.eval_fixture(&rule_sources, &doc, manifest.budgets) {
+            Ok(violations) => {
+                let actual = if violations.is_empty() {
+                    pack::Expect::Pass
+                } else {
+                    pack::Expect::Fail
+                };
+                if actual != doc.expect {
+                    return Err(CompileError::FixtureFailed {
+                        fixture: fixture.clone(),
+                        detail: format!(
+                            "declared expect:{} but demonstrated:{}",
+                            doc.expect, actual
+                        ),
+                    });
+                }
+            }
+            Err(exhausted) => {
+                return Err(CompileError::FixtureFailed {
+                    fixture: fixture.clone(),
+                    detail: format!(
+                        "exhausted per-eval budget (steps>{} or mem>{})",
+                        exhausted.steps, exhausted.mem
+                    ),
+                });
+            }
+        }
+    }
+
+    // 6. Admitted.
+    Ok(CompiledRuleset {
+        id: manifest.id,
+        content_hash,
+        budget: manifest.budgets,
+        budget_class,
+        rules: rule_sources,
+    })
+}
+
+/// sha256 of `s` as lowercase hex — the content-pin check and cache key.
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(s.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 /// Evaluate a ruleset over documents (gate and diagnostic modes share this
