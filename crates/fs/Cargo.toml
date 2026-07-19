@@ -12,3 +12,9 @@ workspace = true
 
 [dependencies]
 model = { workspace = true }
+
+[dev-dependencies]
+# test-only: blake3 recomputes the §12.1 counterfactual roots (the production
+# merkle_root lives in `model`, M3-MERKLE); tempfile builds on-disk corpora.
+blake3 = "1"
+tempfile = "3"

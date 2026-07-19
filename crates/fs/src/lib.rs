@@ -22,8 +22,11 @@
 //! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds
 //! the daemon's change feed.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+pub mod domain;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed
 /// once at process start; path-escape rejection (`bad_path`) anchors here.
@@ -40,14 +43,53 @@ pub fn load(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<model::Document
     todo!("rung 1: read → syntax::parse → model::build")
 }
 
-/// Walk the corpus (markdown files under the root). Cold rebuild of the whole
-/// world model from this walk is the recovery path — measured 2.16 s.
+/// Walk the corpus: every markdown file under the root, as root-relative paths,
+/// sorted. This is the ADDRESSABLE set — dot-dir md files (`.github/README.md`)
+/// are included, since they stay `load`-able even when ignored for hashing
+/// (§12.1). Cold rebuild of the whole world model from this walk is the
+/// recovery path — measured 2.16 s. Symlinks are not followed.
 ///
 /// # Errors
 /// I/O failure traversing the root.
 pub fn walk(root: &WorkspaceRoot) -> io::Result<Vec<PathBuf>> {
-    let _ = root;
-    todo!("rung 1: corpus walk")
+    let mut out = Vec::new();
+    walk_dir(&root.0, &PathBuf::new(), &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let rel = rel_dir.join(&name);
+        if file_type.is_dir() {
+            walk_dir(&entry.path(), &rel, out)?;
+        } else if file_type.is_file()
+            && Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// The §12 hash domain: [`walk`] narrowed to the files whose bytes enter the
+/// merkle root — md-only, dot-segment-ignored, and custom-ignored removed. This
+/// is where `walk` gains the [`domain`] filter; the filter gates HASHING, never
+/// `load` — an ignored md file is absent here yet still addressable by path
+/// (`hash ⊂ addressable`, §12.1).
+///
+/// # Errors
+/// I/O failure traversing the root.
+pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<Vec<PathBuf>> {
+    Ok(walk(root)?
+        .into_iter()
+        .filter(|rel| domain.contains(rel))
+        .collect())
 }
 
 /// Execute a validated splice atomically: write the spliced content to a temp
