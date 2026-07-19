@@ -206,20 +206,82 @@ fn gate2_bad_path_refused() {
 // Gate 3 — hello caps ≡ the ARMED set exactly (§3.2 discovery honesty)
 // ---------------------------------------------------------------------------
 
+/// The §3.2 caps assertion in its ADVISOR-RULED form (d4-splice gate 6):
+/// `caps ≡ the frozen §3.2 printed list − {"sub"}` — the subtraction is
+/// EXPLICIT below and is the one bounded, tracked debt: **T5-SUB arms `sub`,
+/// deletes the subtraction, and this becomes the naked full-list ≡**
+/// (P6-VERDICTS re-asserts it as its own pack acceptance row). Every other
+/// printed entry is truthfully served today, dotted field amendments
+/// included (`splice.verdicts`: the surface rides every splice response as
+/// `[]` from birth; variants are P6's).
 #[test]
-fn gate3_hello_caps_equal_armed_set_exactly() {
+fn gate3_hello_caps_equal_frozen_list_minus_sub() {
     let (_d, root) = s0();
     let frame = one(
         &root,
         r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
     );
+    // The frozen §3.2 printed list, verbatim — the subtraction is applied
+    // structurally so the fixture READS as printed-list-minus-sub.
+    let frozen_printed = [
+        "toc",
+        "cat",
+        "extract",
+        "resolve",
+        "resolve.content",
+        "links",
+        "links.require_root",
+        "splice",
+        "splice.if_node_rev",
+        "splice.if_root",
+        "splice.dry",
+        "splice.receipt",
+        "splice.verdicts",
+        "root",
+        "diff",
+        "sub",
+    ];
+    let ruled: Vec<&str> = frozen_printed
+        .into_iter()
+        .filter(|c| *c != "sub") // T5-SUB deletes this filter
+        .collect();
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
-            "caps":["toc","cat","extract","resolve","resolve.content","root","diff","links"],
+            "caps":ruled,
             "root":R0}
     });
     assert_eq!(frame, expected);
+}
+
+/// S2/L22 law, LIVE from this rung (frozen §3.2): "`node_rev` is MUST on
+/// every `toc`/`cat`/`extract` node whenever `splice ∈ caps`." Pinned in the
+/// caps fixture's own served world: the same sidecar that advertises
+/// `splice` serves `node_rev` on every node. (Advisor rider, d4-splice.)
+#[test]
+fn gate3_s2l22_node_rev_must_when_splice_in_caps() {
+    let (_d, root) = s0();
+    let hello = one(&root, r#"{"id":1,"op":"hello","proto":1}"#);
+    let caps = hello["body"]["caps"].as_array().expect("caps");
+    assert!(caps.contains(&json!("splice")), "the law's trigger holds");
+    let toc = one(&root, r#"{"id":2,"op":"toc","path":"notes/plan.md"}"#);
+    let extract = one(&root, r#"{"id":3,"op":"extract","path":"notes/plan.md"}"#);
+    for node in toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .chain(extract["body"]["nodes"].as_array().expect("extract nodes"))
+    {
+        assert!(
+            node["node_rev"].as_str().is_some_and(|r| r.len() == 16),
+            "S2/L22: node_rev MUST ride every node while splice ∈ caps: {node}"
+        );
+    }
+    let cat = one(&root, r#"{"id":4,"op":"cat","path":"notes/plan.md"}"#);
+    assert!(
+        cat["body"]["node_rev"].as_str().is_some(),
+        "cat rev (S2/L22)"
+    );
 }
 
 /// An op is in `caps` or answers `unknown_op` — including ops the wire
@@ -228,8 +290,8 @@ fn gate3_hello_caps_equal_armed_set_exactly() {
 fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
-        r#"{"id":1,"op":"splice","path":"notes/plan.md","edits":[]}"#,
-        // links armed at Q5-LINKS — it moved from this list into `caps`
+        // splice armed at D4-SPLICE, links at Q5-LINKS — both moved into
+        // `caps`; `sub` stays here until T5-SUB arms the transport.
         r#"{"id":1,"op":"sub","from_seq":0}"#,
         r#"{"id":1,"op":"zap"}"#,
     ] {

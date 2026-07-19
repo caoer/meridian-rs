@@ -1805,6 +1805,7 @@ dependencies = [
  "fs",
  "model",
  "query",
+ "receipt",
  "serde_json",
  "syntax",
  "tempfile",
