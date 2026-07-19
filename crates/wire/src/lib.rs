@@ -29,8 +29,9 @@
 //! - Rung 2 (`toc` v2 response, `cat`, `extract` + D-C5, `resolve` walk plane,
 //!   `SecRef` mint grammar): contract v2 §4.1–§4.5, §2.1 — FROZEN.
 //! - Rung 3 (`root` reshape, `diff` request, `root_mismatch`/`root_unknown`,
-//!   `guard` DELETED per D-C8): contract v2 §4.7, §8 — FROZEN. The
-//!   Delta-bearing `diff` response body lands with the Delta noun (D3-DELTA).
+//!   `guard` DELETED per D-C8): contract v2 §4.7, §8 — FROZEN. The Delta
+//!   noun + the Delta-bearing `diff` response body: contract v2 §7 — FROZEN
+//!   (D3-DELTA; node-grain at birth per decision 012, §7.4).
 //! - Rung 4 (`splice` §4.4 batch shape, armed-facts response, receipts §6,
 //!   `no_match`/`not_unique`/`would_corrupt`/`lock_timeout`, the `not_found`
 //!   retirement §18 row 6): FROZEN.
@@ -567,6 +568,12 @@ pub enum ResponseBody {
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
     /// cross-epoch catchup is diff-by-root, §7.1 laws).
     Root { root: Root, seq: u64 },
+    /// v2 §4.7/§7.3 replay: the byte-identical Delta objects that were (or
+    /// would have been) emitted as live notifications between the two roots —
+    /// each batch IS a notification frame body ([`DeltaFrame`]), so catchup
+    /// consumers and live subscribers parse one shape. There is no second
+    /// diff dialect.
+    Diff { batches: Vec<DeltaFrame> },
 }
 
 /// The armed-fact set for one batch (v2 §4.4): the normative receipt content
@@ -603,6 +610,101 @@ pub struct ReceiptFact {
 /// P6-VERDICTS lands the variants (the shape-never-changes gate, type-level).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Verdict {}
+
+// ---------------------------------------------------------------------------
+// v2 §7 the Delta noun — the fifth noun, born frozen (A6)
+// ---------------------------------------------------------------------------
+
+/// One live notification frame body: `{"delta":{…}}` (v2 §7.1 worked frames —
+/// events carry no `id`, §3.1 classification). `diff.batches` elements are
+/// exactly this shape, byte-identical to the live emission (§7.3 replay ≡
+/// live).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeltaFrame {
+    pub delta: Delta,
+}
+
+/// The fifth wire noun (v2 §7.1, frozen at contract birth): one Delta = one
+/// batch = one root advance. `seq` is the monotone per-workspace batch
+/// counter, **per-daemon-epoch** — a daemon restart resets it (no counter
+/// survives on disk, §14), so `from_seq` catchup is valid only within one
+/// epoch and cross-epoch catchup is diff-by-root (§4.7), the root being the
+/// only restart-durable handle. External changes carry `actor`/`now` ABSENT —
+/// the engine never invents identity or time it wasn't given (A8/§9).
+///
+/// Node-grain at birth (decision 012, v2 §7.4): the grain is exactly
+/// [`DeltaNode`]. Key-grain arrives later, if ever, ONLY via the additive
+/// amendment path named in the contract prose — no such code path exists
+/// here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delta {
+    pub seq: u64,
+    pub root_before: Root,
+    pub root_after: Root,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<String>,
+    pub files: Vec<DeltaFile>,
+}
+
+/// One changed file in a Delta (v2 §7.1): change class, rev transition
+/// (`file_rev_before` absent on `created`, `file_rev_after` absent on
+/// `deleted`), node-grain entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeltaFile {
+    pub path: Path,
+    pub change: FileChange,
+    /// `renamed` carries the origin path (v2 §7.1 law).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_path: Option<Path>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rev_before: Option<NodeRev>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rev_after: Option<NodeRev>,
+    pub nodes: Vec<DeltaNode>,
+}
+
+/// v2 §7.1: `change ∈ {created, modified, deleted, renamed}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileChange {
+    Created,
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+/// One node-grain change entry (v2 §7.1/§7.2): identity echoed in THE §2.1
+/// grammar (flattened [`SecRef`] — same vocabulary as toc rows and armed
+/// facts: one projection, three tenses), rev transition, span after. Entries
+/// name the DEEPEST section containing each changed byte range — ancestor
+/// revs change implicitly and are re-readable via `toc`, never duplicated
+/// into the delta.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeltaNode {
+    #[serde(flatten)]
+    pub target: SecRef,
+    pub change: NodeChange,
+    /// Absent on `added` (v2 §7.1 worked anchor entry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_rev_before: Option<NodeRev>,
+    /// Absent on `removed` (no post-state exists to hash).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_rev_after: Option<NodeRev>,
+    /// Absent on `removed` (no post-state span exists).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_after: Option<Span>,
+}
+
+/// v2 §7.1: node `change ∈ {added, edited, removed}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeChange {
+    Added,
+    Edited,
+    Removed,
+}
 
 // ---------------------------------------------------------------------------
 // v2 §8 error taxonomy — six recovery classes

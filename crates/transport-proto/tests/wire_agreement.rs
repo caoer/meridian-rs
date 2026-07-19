@@ -449,6 +449,83 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
         wire::ResponseBody::Root { root, seq } => {
             pb::response::Body::Root(pb::RootResponse { root: root.0, seq })
         }
+        wire::ResponseBody::Diff { batches } => pb::response::Body::Diff(pb::DiffResponse {
+            batches: batches.into_iter().map(delta_frame_to_pb).collect(),
+        }),
+    }
+}
+
+fn file_change_to_pb(c: wire::FileChange) -> pb::FileChange {
+    match c {
+        wire::FileChange::Created => pb::FileChange::Created,
+        wire::FileChange::Modified => pb::FileChange::Modified,
+        wire::FileChange::Deleted => pb::FileChange::Deleted,
+        wire::FileChange::Renamed => pb::FileChange::Renamed,
+    }
+}
+
+fn node_change_to_pb(c: wire::NodeChange) -> pb::NodeChange {
+    match c {
+        wire::NodeChange::Added => pb::NodeChange::Added,
+        wire::NodeChange::Edited => pb::NodeChange::Edited,
+        wire::NodeChange::Removed => pb::NodeChange::Removed,
+    }
+}
+
+fn delta_node_to_pb(n: wire::DeltaNode) -> pb::DeltaNode {
+    let wire::DeltaNode {
+        target,
+        change,
+        node_rev_before,
+        node_rev_after,
+        span_after,
+    } = n;
+    pb::DeltaNode {
+        target: Some(sec_ref_to_pb(target)),
+        change: node_change_to_pb(change) as i32,
+        node_rev_before: node_rev_before.map(|r| r.0),
+        node_rev_after: node_rev_after.map(|r| r.0),
+        span_after: span_after.map(span_to_pb),
+    }
+}
+
+fn delta_file_to_pb(f: wire::DeltaFile) -> pb::DeltaFile {
+    let wire::DeltaFile {
+        path,
+        change,
+        from_path,
+        file_rev_before,
+        file_rev_after,
+        nodes,
+    } = f;
+    pb::DeltaFile {
+        path: path.0,
+        change: file_change_to_pb(change) as i32,
+        from_path: from_path.map(|p| p.0),
+        file_rev_before: file_rev_before.map(|r| r.0),
+        file_rev_after: file_rev_after.map(|r| r.0),
+        nodes: nodes.into_iter().map(delta_node_to_pb).collect(),
+    }
+}
+
+fn delta_frame_to_pb(f: wire::DeltaFrame) -> pb::DeltaFrame {
+    let wire::Delta {
+        seq,
+        root_before,
+        root_after,
+        actor,
+        now,
+        files,
+    } = f.delta;
+    pb::DeltaFrame {
+        delta: Some(pb::Delta {
+            seq,
+            root_before: root_before.0,
+            root_after: root_after.0,
+            actor,
+            now,
+            files: files.into_iter().map(delta_file_to_pb).collect(),
+        }),
     }
 }
 
@@ -918,7 +995,86 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             root: wire::Root(root),
             seq,
         },
+        pb::response::Body::Diff(pb::DiffResponse { batches }) => wire::ResponseBody::Diff {
+            batches: batches.into_iter().map(delta_frame_from_pb).collect(),
+        },
         pb::response::Body::Error(_) => unreachable!("payload_from_pb routes the error arm"),
+    }
+}
+
+fn file_change_from_pb(c: i32) -> wire::FileChange {
+    match pb::FileChange::try_from(c).expect("known file change") {
+        pb::FileChange::Created => wire::FileChange::Created,
+        pb::FileChange::Modified => wire::FileChange::Modified,
+        pb::FileChange::Deleted => wire::FileChange::Deleted,
+        pb::FileChange::Renamed => wire::FileChange::Renamed,
+        pb::FileChange::Unspecified => panic!("unspecified file change"),
+    }
+}
+
+fn node_change_from_pb(c: i32) -> wire::NodeChange {
+    match pb::NodeChange::try_from(c).expect("known node change") {
+        pb::NodeChange::Added => wire::NodeChange::Added,
+        pb::NodeChange::Edited => wire::NodeChange::Edited,
+        pb::NodeChange::Removed => wire::NodeChange::Removed,
+        pb::NodeChange::Unspecified => panic!("unspecified node change"),
+    }
+}
+
+fn delta_node_from_pb(n: pb::DeltaNode) -> wire::DeltaNode {
+    let pb::DeltaNode {
+        target,
+        change,
+        node_rev_before,
+        node_rev_after,
+        span_after,
+    } = n;
+    wire::DeltaNode {
+        target: sec_ref_from_pb(target.expect("target is required")),
+        change: node_change_from_pb(change),
+        node_rev_before: node_rev_before.map(wire::NodeRev),
+        node_rev_after: node_rev_after.map(wire::NodeRev),
+        span_after: span_after.map(span_from_pb),
+    }
+}
+
+fn delta_file_from_pb(f: pb::DeltaFile) -> wire::DeltaFile {
+    let pb::DeltaFile {
+        path,
+        change,
+        from_path,
+        file_rev_before,
+        file_rev_after,
+        nodes,
+    } = f;
+    wire::DeltaFile {
+        path: wire::Path(path),
+        change: file_change_from_pb(change),
+        from_path: from_path.map(wire::Path),
+        file_rev_before: file_rev_before.map(wire::NodeRev),
+        file_rev_after: file_rev_after.map(wire::NodeRev),
+        nodes: nodes.into_iter().map(delta_node_from_pb).collect(),
+    }
+}
+
+fn delta_frame_from_pb(f: pb::DeltaFrame) -> wire::DeltaFrame {
+    let pb::Delta {
+        seq,
+        root_before,
+        root_after,
+        actor,
+        now,
+        files,
+    } = f.delta.expect("delta is required");
+    wire::DeltaFrame {
+        delta: wire::Delta {
+            seq,
+            root_before: wire::Root(root_before),
+            root_after: wire::Root(root_after),
+            actor,
+            now,
+            files: files.into_iter().map(delta_file_from_pb).collect(),
+        },
     }
 }
 
@@ -1380,6 +1536,102 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
     ]
 }
 
+/// D3-DELTA: the diff arm — batches over the full §7.1 surface (both
+/// §2.1 identities, absent-vs-present optionals, every change class, an
+/// external delta with `actor`/`now` absent, renamed with `from_path`).
+fn sample_diff_body() -> wire::ResponseBody {
+    wire::ResponseBody::Diff {
+        batches: vec![
+            wire::DeltaFrame {
+                delta: wire::Delta {
+                    seq: 1,
+                    root_before: wire::Root("b3:aa".into()),
+                    root_after: wire::Root("b3:bb".into()),
+                    actor: Some("agent:b0864fb2".into()),
+                    now: Some("2026-07-18T20:31:04Z".into()),
+                    files: vec![wire::DeltaFile {
+                        path: wire::Path("notes/plan.md".into()),
+                        change: wire::FileChange::Modified,
+                        from_path: None,
+                        file_rev_before: Some(wire::NodeRev("e3c4acaceb75b907".into())),
+                        file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
+                        nodes: vec![
+                            wire::DeltaNode {
+                                target: wire::SecRef::Hpath {
+                                    hpath: vec![wire::HpathSeg {
+                                        h: "Goals".into(),
+                                        n: Some(2),
+                                    }],
+                                },
+                                change: wire::NodeChange::Edited,
+                                node_rev_before: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
+                                node_rev_after: Some(wire::NodeRev("41f643f034e5681f".into())),
+                                span_after: Some(wire::Span(49, 75)),
+                            },
+                            wire::DeltaNode {
+                                target: wire::SecRef::Anchor {
+                                    anchor: "r-000042".into(),
+                                },
+                                change: wire::NodeChange::Added,
+                                node_rev_before: None,
+                                node_rev_after: Some(wire::NodeRev("639a2dca46f6fcc8".into())),
+                                span_after: Some(wire::Span(26, 248)),
+                            },
+                            wire::DeltaNode {
+                                target: wire::SecRef::FmKey {
+                                    fm_key: "title".into(),
+                                },
+                                change: wire::NodeChange::Removed,
+                                node_rev_before: Some(wire::NodeRev("fa77480c79a853bc".into())),
+                                node_rev_after: None,
+                                span_after: None,
+                            },
+                        ],
+                    }],
+                },
+            },
+            wire::DeltaFrame {
+                // external change: actor/now ABSENT (§7.1 law, A8)
+                delta: wire::Delta {
+                    seq: 2,
+                    root_before: wire::Root("b3:bb".into()),
+                    root_after: wire::Root("b3:cc".into()),
+                    actor: None,
+                    now: None,
+                    files: vec![
+                        wire::DeltaFile {
+                            path: wire::Path("notes/renamed.md".into()),
+                            change: wire::FileChange::Renamed,
+                            from_path: Some(wire::Path("notes/old.md".into())),
+                            file_rev_before: Some(wire::NodeRev("aaaaaaaaaaaaaaaa".into())),
+                            file_rev_after: Some(wire::NodeRev("bbbbbbbbbbbbbbbb".into())),
+                            nodes: vec![],
+                        },
+                        wire::DeltaFile {
+                            path: wire::Path("notes/new.md".into()),
+                            change: wire::FileChange::Created,
+                            from_path: None,
+                            file_rev_before: None,
+                            file_rev_after: Some(wire::NodeRev("cccccccccccccccc".into())),
+                            nodes: vec![],
+                        },
+                        wire::DeltaFile {
+                            path: wire::Path("notes/gone.md".into()),
+                            change: wire::FileChange::Deleted,
+                            from_path: None,
+                            file_rev_before: Some(wire::NodeRev("dddddddddddddddd".into())),
+                            file_rev_after: None,
+                            nodes: vec![],
+                        },
+                    ],
+                },
+            },
+            // empty-batches twin lives implicitly: Diff{batches:[]} is
+            // the truthful rung-3 answer — pinned in the sidecar suite.
+        ],
+    }
+}
+
 fn sample_responses() -> Vec<wire::Response> {
     let root =
         wire::Root("b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into());
@@ -1427,6 +1679,7 @@ fn sample_responses() -> Vec<wire::Response> {
             content: Some("…fragment bytes…".into()), // still no rev (D-C2)
         },
         wire::ResponseBody::Root { root, seq: 2 },
+        sample_diff_body(),
     ];
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()
