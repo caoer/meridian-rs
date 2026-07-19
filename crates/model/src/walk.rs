@@ -282,4 +282,51 @@ mod tests {
             })
         );
     }
+
+    /// The §0.3/§6.3 S1 receipts state (249 B): the `# Receipts` heading + the E3
+    /// receipt list item carrying `^r-000042` at end-of-block (Form A). Built the
+    /// way the contract's verify.py builds it — heading bytes + the receipt line
+    /// interpolating R0 — with a 249-byte transcription guard (no S1 fixture is on
+    /// disk; wsfix carries only s0/s2).
+    fn receipts_s1() -> String {
+        const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
+        let receipts_v0 = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
+        let receipt_42 = format!(
+            "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z \
+             root_before=b3:{R0_HEX} edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042\n"
+        );
+        let raw = format!("{receipts_v0}{receipt_42}");
+        assert_eq!(raw.len(), 249, "S1 receipts fixture is 249 bytes (§0.3)");
+        raw
+    }
+
+    /// GATE 2 (ANCHOR-GRAIN walk plane): block lookup for `^r-000042` over the S1
+    /// receipts state returns the anchor's HOST BLOCK-LEAF span (`[26,248]` — the
+    /// list-item line, terminator excluded, §1/§4.1/§6.3), NOT the 9-byte
+    /// `[239,248]` inline marker. The walk plane shares the model `Anchor` node
+    /// span with the mint plane, so the one build-side fix corrects both.
+    ///
+    /// APP-ORACLE grain note (Gate 4, DATA not contract law): the Obsidian app
+    /// resolves a `#^id` block ref to the whole host block, never the bare marker;
+    /// `block_span` mirrors that grain. The only `^id` app-oracle probe pinned in
+    /// the pack is WX-6 (`^under-probe_x` → `ref_not_found`, grain-independent).
+    #[test]
+    fn block_span_serves_host_block_leaf_s1_receipts() {
+        let raw = receipts_s1();
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let mut index = CorpusIndex::new();
+        let mut docs = BTreeMap::new();
+        index.insert("receipts/2026-07-18.md", &doc);
+        docs.insert("receipts/2026-07-18.md".to_string(), doc);
+        // empty linkpath ⇒ the source file itself; subpath `^r-000042` ⇒ block lookup.
+        let loc = walk(&index, &docs, "receipts/2026-07-18.md", "#^r-000042")
+            .expect("walk resolves the ^r-000042 block anchor");
+        assert_eq!(loc.dest, "receipts/2026-07-18.md");
+        assert_eq!(
+            loc.span,
+            26..248,
+            "host block-leaf span, not the [239,248] marker"
+        );
+        assert_ne!(loc.span, 239..248, "marker-grain defect must not resurface");
+    }
 }
