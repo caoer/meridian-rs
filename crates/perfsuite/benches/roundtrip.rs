@@ -285,6 +285,57 @@ fn record_proto_codec_claim() {
     }
 }
 
+/// D-C1 (risk R2): the server-side `match{old,new}` scan p99 per edit, measured on
+/// the REAL `model::validate_batch` path. The row was UNTESTED-BY-DESIGN while
+/// `model::validate_splice` was `todo!()`; M4-VALIDATE landed `validate_batch`, which
+/// arms the scan on the splice path this bench drives. One large section, one match
+/// edit whose `old` sits at the section tail so the scan walks the full span — the
+/// bounded cost D-C1 describes. Measured, never asserted (`threshold_source =
+/// ruleset`): a local number renders MEASURED, never a false PASS/FAIL.
+fn record_match_scan_claim() {
+    // A single large section (fence-bomb / vault-1gb section-span shape): a heading
+    // plus ~800 body lines, the unique `old` marker at the tail.
+    let mut body = String::from("# Section\n\n");
+    for i in 0..800u32 {
+        body.push_str("padding paragraph line ");
+        body.push_str(&i.to_string());
+        body.push('\n');
+    }
+    body.push_str("the-unique-old-marker\n");
+    let doc = model::build(body.clone(), syntax::parse(&body));
+    let batch = model::SpliceRequest {
+        if_root: None,
+        edits: vec![model::Edit {
+            target: model::Ref::Hpath(vec![model::HpathSeg {
+                h: "Section".into(),
+                n: None,
+            }]),
+            edit: model::EditKind::Match {
+                old: "the-unique-old-marker".into(),
+                new: "the-new-marker".into(),
+            },
+            if_node_rev: None,
+        }],
+    };
+    let run = LatencyRun::run(500, 8_000, || {
+        let v = model::validate_batch(&doc, None, &batch, None);
+        black_box(&v);
+    });
+    let measurement = run.to_p99_measurement("policy.splice.match_scan.p99", "us");
+    match record_measurement(&measurement) {
+        Ok(path) => {
+            let _ = writeln!(
+                std::io::stderr(),
+                "claim policy.splice.match_scan.p99: p99 {:.2} µs over {} samples → {}",
+                measurement.value,
+                measurement.samples,
+                path.display()
+            );
+        }
+        Err(e) => eprintln!("claim staging failed: {e}"),
+    }
+}
+
 criterion_group!(benches, bench_codec);
 
 fn main() {
@@ -292,4 +343,5 @@ fn main() {
     Criterion::default().configure_from_args().final_summary();
     record_codec_claim();
     record_proto_codec_claim();
+    record_match_scan_claim();
 }

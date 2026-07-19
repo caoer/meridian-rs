@@ -95,8 +95,11 @@ rules:
   - rules/blurb-required.md
 ";
 
-/// The load-gate fixture: a conforming doc (heading → blurb line) declared `pass`.
-const PASS_FIXTURE: &str = "---\nexpect: pass\n---\n# Goals\nA blurb line.\n";
+/// The load-gate fixture: a conforming doc declared `pass`. The blurb is a real
+/// dialect node (a wikilink) — the world model is paragraph-blind, so a bare prose
+/// line would not be a node and the heading would fire (P6-VERDICTS load-gate
+/// unification: fixtures demonstrate over the SAME plane `evaluate` runs).
+const PASS_FIXTURE: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n";
 
 /// In-memory pack-file resolver — policy stays I/O-free; the caller injects file
 /// access (here, the two manifest-relative pack files).
@@ -109,6 +112,17 @@ impl PackFiles for MemFiles {
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, rel_path.to_owned()))
     }
+}
+
+/// The real parse→facts builder the sidecar injects into the load gate — fixtures
+/// demonstrate over the SAME fact plane `evaluate` runs (P6-VERDICTS unification);
+/// the signature stays in policy vocabulary (no `syntax::`/`model::` type crosses it).
+fn real_facts(path: &str, body: &str) -> policy::FactDoc {
+    let mut doc = model::build(body.to_string(), syntax::parse(body));
+    if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
+        *p = path.to_string();
+    }
+    policy::facts_from_document(&doc)
 }
 
 /// Compile the blurb pack through the real `policy::compile` load gate (fixtures run
@@ -126,7 +140,8 @@ fn compiled_pack() -> CompiledRuleset {
         path: "perf-blurb.md".to_owned(),
         sha256: None,
     };
-    compile(&pin, MANIFEST, &files).expect("perf blurb pack compiles under its load gate")
+    compile(&pin, MANIFEST, &files, &real_facts)
+        .expect("perf blurb pack compiles under its load gate")
 }
 
 /// Generate-or-reuse a bounded sample from a profile's SHAPE (per-document eval
