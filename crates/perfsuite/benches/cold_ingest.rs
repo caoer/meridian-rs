@@ -152,12 +152,28 @@ fn proto_pass(loaded: &[(String, String)]) -> (f64, u64, usize) {
                 id: Some(i as u64),
                 op: Some(pb::request::Op::Splice(pb::SpliceRequest {
                     path: path.clone(),
-                    span: Some(pb::Span {
-                        start: 0,
-                        end: text.len() as u64,
-                    }),
-                    if_node_rev: "0000000000000000".to_owned(),
-                    text: text.clone(),
+                    actor: None,
+                    now: None,
+                    receipt: None,
+                    if_root: None,
+                    dry: None,
+                    edits: vec![pb::Edit {
+                        target: Some(pb::SecRef {
+                            form: Some(pb::sec_ref::Form::Hpath(pb::HpathRef {
+                                segs: vec![pb::HpathSeg {
+                                    h: "ingest".to_owned(),
+                                    n: None,
+                                }],
+                            })),
+                        }),
+                        edit: Some(pb::EditShape {
+                            shape: Some(pb::edit_shape::Shape::Put(pb::PutEdit {
+                                at: pb::PutAt::All.into(),
+                                text: text.clone(),
+                            })),
+                        }),
+                        if_node_rev: Some("0000000000000000".to_owned()),
+                    }],
                 })),
             })),
         })

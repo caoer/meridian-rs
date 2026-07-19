@@ -31,8 +31,9 @@
 //! - Rung 3 (`root` reshape, `diff` request, `root_mismatch`/`root_unknown`,
 //!   `guard` DELETED per D-C8): contract v2 §4.7, §8 — FROZEN. The
 //!   Delta-bearing `diff` response body lands with the Delta noun (D3-DELTA).
-//! - Rung 4 (`splice`): v1 §6.2 NON-FROZEN sketch; the §4.4 batch shape lands
-//!   with the rung-4 amendment (W4-AMEND).
+//! - Rung 4 (`splice` §4.4 batch shape, armed-facts response, receipts §6,
+//!   `no_match`/`not_unique`/`would_corrupt`/`lock_timeout`, the `not_found`
+//!   retirement §18 row 6): FROZEN.
 //!
 //! # Build-out obligations (contract laws the types alone cannot enforce)
 //! - **v2 §3.2 evolution, server side:** unknown request fields MUST be rejected
@@ -141,6 +142,62 @@ pub enum SecRef {
 }
 
 // ---------------------------------------------------------------------------
+// v2 §4.4 the write grammar (batch splice)
+// ---------------------------------------------------------------------------
+
+/// One batch edit (v2 §4.4): a §2.1 target + one of exactly two edit shapes +
+/// the optional node-grain CAS guard. All targets and guards resolve against
+/// the PRE-batch state; targets must be disjoint (`bad_request{overlap}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Edit {
+    pub target: SecRef,
+    pub edit: EditShape,
+    /// Node-grain guard (§5.1): compared against blake3 of the target's full
+    /// span bytes re-derived at execution time — mismatch is `cas_mismatch`
+    /// → refresh one thing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub if_node_rev: Option<NodeRev>,
+}
+
+/// Exactly two edit shapes (v2 §4.4) — externally tagged on the wire
+/// (`{"match":{…}}` / `{"put":{…}}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditShape {
+    /// Edit-exact: `old` must occur exactly once in the target's full span
+    /// bytes; zero → `no_match`, two+ → `not_unique{matches}`. No regex, no
+    /// fuzz; matched SERVER-side.
+    Match { old: String, new: String },
+    /// Whole-slot write at a [`PutAt`] position.
+    Put { at: PutAt, text: String },
+}
+
+/// The three put positions (v2 §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PutAt {
+    /// Replace the full span, heading included.
+    All,
+    /// Replace the content span, heading preserved.
+    Content,
+    /// Insert `text` at the span-end byte — the append verb. RAW byte
+    /// concatenation, NO synthesized separator (Edit-model exact): `text`
+    /// that must begin a new line carries its own leading `\n`; against a
+    /// terminator-less final line a separator-less `text` is the caller's to
+    /// get right, and a result that loses containment refuses
+    /// `would_corrupt`.
+    End,
+}
+
+/// A receipt address (v2 §6.1): ordinary markdown inside the hash domain —
+/// any md path + block anchor. Per-request, never a wire requirement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptAddr {
+    pub path: Path,
+    pub anchor: String,
+}
+
+// ---------------------------------------------------------------------------
 // v2 §4 requests — the op vocabulary
 // ---------------------------------------------------------------------------
 
@@ -194,13 +251,33 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<bool>,
     },
-    /// v1 §6.2 node-level CAS write, NON-FROZEN sketch. The v2 §4.4 batch
-    /// shape lands with the rung-4 amendment (W4-AMEND).
+    /// v2 §4.4 the ONLY write op, batch-only: the Edit-tool semantic model IS
+    /// the wire write grammar (D-C1). No client span field exists anywhere in
+    /// a request — the class of wrong-offset writes is unrepresentable.
+    /// Guardless, actor-less, receipt-less frames are legal at the wire
+    /// forever; whether a scope REQUIRES them is the Go ratchet (§5.3).
+    /// `actor`/`now` are wire inputs, never ambient (§9): opaque string and
+    /// RFC 3339 string, recorded into receipts and Deltas, never generated.
     Splice {
         path: Path,
-        span: Span,
-        if_node_rev: NodeRev,
-        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        /// Receipts are per-request, never a wire requirement (§6.1): when
+        /// named, the receipt append commits in the SAME batch as the content
+        /// edit — one exchange, one reparse, ONE root advance (D-C3).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptAddr>,
+        /// World-grain guard, checked FIRST (§5.1): mismatch fails the whole
+        /// batch `root_mismatch` → re-plan.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        /// §4.4 batch law: everything except disk — same response shape,
+        /// `root_after:null`, no receipt written.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        edits: Vec<Edit>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
@@ -391,13 +468,68 @@ pub enum ResponseBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<String>,
     },
-    /// v1 §6.2 sketch; the v2 §4.4 armed-facts shape lands with W4-AMEND.
-    Splice { span: Span, node_rev: NodeRev },
+    /// v2 §4.4: what the write ARMED — target identities, rev transitions,
+    /// spans after, the receipt fact, the root transition — never delivery
+    /// claims (A7). ONE response shape for every batch, dry included.
+    Splice {
+        armed: Armed,
+        /// Present iff the request named a receipt (§6.1) and the batch hit
+        /// disk (a dry run writes none).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<ReceiptFact>,
+        root_before: Root,
+        /// ALWAYS serialized — `null` on a dry run (§4.4 worked dry frame),
+        /// the one place absence-vs-null is contractual on this shape.
+        root_after: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        /// The rules-as-data surface (§11): shape present from birth, empty
+        /// until rung 6 — [`Verdict`] is uninhabited until P6-VERDICTS, so
+        /// the type ADMITS only `[]` today and the shape never changes.
+        verdicts: Vec<Verdict>,
+    },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
     /// cross-epoch catchup is diff-by-root, §7.1 laws).
     Root { root: Root, seq: u64 },
 }
+
+/// The armed-fact set for one batch (v2 §4.4): the normative receipt content
+/// is exactly this, rendered (§6.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Armed {
+    pub path: Path,
+    pub edits: Vec<ArmedEdit>,
+}
+
+/// One armed edit: target identity echoed in THE grammar (§2.1), rev
+/// transition, span after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArmedEdit {
+    pub target: SecRef,
+    pub node_rev_before: NodeRev,
+    pub node_rev_after: NodeRev,
+    pub span_after: Span,
+}
+
+/// The receipt fact armed with the batch (v2 §4.4/§6.3): address + the
+/// receipt block's own computed node facts. Receipts carry `root_before`
+/// only — a receipt cannot contain the root it produces (§6.2, honest limit).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReceiptFact {
+    pub path: Path,
+    pub anchor: String,
+    pub node_rev: NodeRev,
+    pub span_after: Span,
+}
+
+/// A rules-as-data verdict (v2 §11.1). UNINHABITED at this rung: `verdicts`
+/// rides every splice response from birth but can only be `[]` until
+/// P6-VERDICTS lands the variants (the shape-never-changes gate, type-level).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Verdict {}
 
 // ---------------------------------------------------------------------------
 // v2 §8 error taxonomy — six recovery classes
@@ -427,11 +559,10 @@ pub enum Recovery {
 /// is that binding, verbatim from the frozen table. Clients treat unrecognized
 /// codes as `recovery`-dispatched.
 ///
-/// Remaining v2 codes join via the amendments that freeze their rungs:
-/// `root_mismatch`/`root_unknown` (W3-AMEND); `no_match`/`not_unique`/
-/// `would_corrupt`/`lock_timeout` + the `not_found` retirement into
-/// `file_not_found`/`io_error` (W4-AMEND); `stale_view`/`daemon_only` with
-/// their ops.
+/// The two remaining v2 codes join with their ops: `stale_view` (links,
+/// Q5-LINKS) and `daemon_only` (rule packs, rung 6). v1 `not_found` is
+/// RETIRED (§18 row 6, split `file_not_found`/`ref_not_found`) — its string
+/// no longer parses, pinned by the retirement deviation fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -440,10 +571,20 @@ pub enum ErrorCode {
     UnknownOp,
     UnsupportedProto,
     BadPath,
-    /// v1 code, RETIRED by v2 §8 (split `file_not_found` env / `ref_not_found`
-    /// refresh); the retirement lands with W4-AMEND. Until then it binds `env`
-    /// (its file-gone successor's class).
-    NotFound,
+    /// v2 §8/§4.4: guard-passed zero occurrences of `old` in the target —
+    /// provably your typo (the diagnosis `--if` buys).
+    NoMatch,
+    /// v2 §8/§4.4: `old` occurs 2+ times. Extras: `matches` (the count) —
+    /// add context bytes to `old`.
+    NotUnique,
+    /// v2 §8/§4.4: the post-apply reparse would lose containment. Extras:
+    /// `lost` (the hpaths that would vanish).
+    WouldCorrupt,
+    /// v2 §8: the world outside the workspace — the file is gone. Half of the
+    /// v1 `not_found` retirement (§18 row 6); echoes `path`.
+    FileNotFound,
+    /// v2 §8: I/O failure with its `cause` — the other retirement half.
+    IoError,
     InvalidUtf8,
     Internal,
     CasMismatch,
@@ -461,6 +602,8 @@ pub enum ErrorCode {
     /// v2 §4.7: a root range outside the retained history — full resync; the
     /// root is the only restart-durable handle. No extras.
     RootUnknown,
+    /// v2 §8: transient lock contention — same request may succeed.
+    LockTimeout,
 }
 
 impl ErrorCode {
@@ -476,9 +619,13 @@ impl ErrorCode {
             ErrorCode::BadRequest
             | ErrorCode::UnknownOp
             | ErrorCode::BadPath
+            | ErrorCode::NoMatch
+            | ErrorCode::NotUnique
+            | ErrorCode::WouldCorrupt
             | ErrorCode::AmbiguousRef => Recovery::Fix,
-            ErrorCode::NotFound | ErrorCode::InvalidUtf8 => Recovery::Env,
+            ErrorCode::FileNotFound | ErrorCode::IoError | ErrorCode::InvalidUtf8 => Recovery::Env,
             ErrorCode::CasMismatch | ErrorCode::RefNotFound => Recovery::Refresh,
+            ErrorCode::LockTimeout => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
@@ -500,7 +647,7 @@ pub struct ErrorBody {
     pub recovery: Recovery,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// `bad_path` / v1 `not_found`: the offending/requested path, echoed.
+    /// `bad_path` / `file_not_found`: the offending/requested path, echoed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<Path>,
     /// `unsupported_proto`: protos this sidecar speaks.
@@ -538,6 +685,21 @@ pub struct ErrorBody {
     /// the offending lexeme verbatim, beside `id:null`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_raw: Option<String>,
+    /// `no_match` (0) / `not_unique` (2+): the occurrence count of `old` in
+    /// the target's full span bytes (v2 §5.2 worked frames).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<u32>,
+    /// `would_corrupt`: the hpaths the post-apply parse would lose (v2 §4.4
+    /// batch laws) — identities in THE grammar's segments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lost: Option<Vec<Vec<HpathSeg>>>,
+    /// `io_error`: the underlying cause, carried (v2 §8).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+    /// `bad_request` on non-disjoint batch targets (v2 §4.4): the offending
+    /// targets echoed in the §2.1 grammar (a ref-carrying surface).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlap: Option<Vec<SecRef>>,
 }
 
 impl ErrorBody {
@@ -558,6 +720,10 @@ impl ErrorBody {
             candidates: None,
             unknown_kinds: None,
             id_raw: None,
+            matches: None,
+            lost: None,
+            cause: None,
+            overlap: None,
         }
     }
 }
