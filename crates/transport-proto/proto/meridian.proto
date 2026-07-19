@@ -46,6 +46,7 @@ message Request {
     RootRequest root = 7;       // v2 §4.7
     CatRequest cat = 9;         // v2 §4.2
     DiffRequest diff = 10;      // v2 §4.7
+    LinksRequest links = 11;    // v2 §4.6 (Q5-LINKS)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -142,6 +143,13 @@ message RootRequest {}
 message DiffRequest {
   string from_root = 1;
   string to_root = 2;
+}
+
+// v2 §4.6: both optional — path absent ⇒ whole-corpus edge map;
+// require_root is the §10.2 opt-in strictness knob (stale_view refusal).
+message LinksRequest {
+  optional string path = 1;
+  optional string require_root = 2;
 }
 
 // Half-open byte range [start, end) — contract v2 §1 span sub-laws.
@@ -288,6 +296,7 @@ message Response {
     TocResponse toc = 10;   // v2 §4.1
     CatResponse cat = 11;   // v2 §4.2
     DiffResponse diff = 12; // v2 §4.7/§7.3 (D3-DELTA)
+    LinksResponse links = 13; // v2 §4.6 + §10.1 triple (Q5-LINKS)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -367,6 +376,27 @@ message Verdict {}
 message RootResponse {
   string root = 1;
   uint64 seq = 2;
+}
+
+// v2 §4.6 under the §10.1 staleness triple. No lag bounds are promised, ever
+// (honest-tense law): as_of_root ≠ live_root is a legal frame, never an error.
+message LinksResponse {
+  string as_of_root = 1;
+  string live_root = 2;
+  // The Delta counter at as_of_root — §7.1 per-daemon-epoch semantics.
+  uint64 changes_seq = 3;
+  // Keyed by corpus path. JSON serializes every corpus file's entry
+  // (empty maps included); proto map absence of an entry never occurs on
+  // the emit side, so no wrapper is needed.
+  map<string, FileLinks> files = 4;
+}
+
+// One file's outgoing edges (the app's resolvedLinks/unresolvedLinks shape):
+// per-edge counts. resolved keys are destination corpus paths; unresolved
+// keys are the raw linkpaths as written.
+message FileLinks {
+  map<string, uint64> resolved = 1;
+  map<string, uint64> unresolved = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +497,7 @@ enum ErrorCode {
   ERROR_CODE_LOCK_TIMEOUT = 17;
   ERROR_CODE_FILE_NOT_FOUND = 18;
   ERROR_CODE_IO_ERROR = 19;
+  ERROR_CODE_STALE_VIEW = 20; // joined with links (Q5-LINKS), v2 §10.2
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.
@@ -521,4 +552,8 @@ message ErrorBody {
   optional string cause = 16;
   // bad_request on non-disjoint batch targets: ≥2 when present.
   repeated SecRef overlap = 17;
+  // stale_view (v2 §10.2): the demanded root + the world as sampled.
+  optional string required = 18;
+  optional string as_of_root = 19;
+  optional string live_root = 20;
 }

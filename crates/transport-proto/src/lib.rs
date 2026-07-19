@@ -37,7 +37,11 @@ use prost::Message as _;
     unreachable_pub,
     unused_qualifications,
     rust_2018_idioms,
-    clippy::pedantic
+    clippy::pedantic,
+    // generated code: the Frame oneof's request/response size skew mirrors
+    // the contract (responses carry bodies); boxing is prost's codegen
+    // choice, not this crate's to make.
+    clippy::large_enum_variant
 )]
 pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/meridian.v1.rs"));
