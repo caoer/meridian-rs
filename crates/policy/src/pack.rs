@@ -298,8 +298,10 @@ fn extract_fenced_starlark(page: &str) -> Option<String> {
             buf.push_str(line);
             buf.push('\n');
         } else if let Some(info) = trimmed.strip_prefix("```")
-            && info.trim() == "starlark"
+            && info.split_whitespace().next() == Some("starlark")
         {
+            // The CommonMark info string's first token is the language; a trailing
+            // string (```starlark title=…) still names a Starlark predicate block.
             collecting = true;
         }
     }
@@ -398,20 +400,38 @@ fn rulepack_globals() -> Globals {
     GlobalsBuilder::standard().with(rulepack_api).build()
 }
 
-/// Heap arena bytes as `u64` (saturating) — the memory meter reads.
+/// Peak heap-arena bytes as `u64` (saturating) — the memory meter reads. Peak
+/// (not current) is monotonic and matches the quantity starlark's own
+/// `set_max_heap_size` guard checks, so an abort by that guard and the post-eval
+/// accounting agree, and a post-eval GC cannot deflate the reading.
 fn heap_bytes(heap: Heap<'_>) -> u64 {
-    u64::try_from(heap.allocated_bytes()).unwrap_or(u64::MAX)
+    u64::try_from(heap.peak_allocated_bytes()).unwrap_or(u64::MAX)
 }
 
 /// Evaluate one predicate over the injected facts, metered.
 ///
-/// starlark-rust enforces its `set_max_*` limits only at coarse (~1000-tick)
-/// boundaries, so those are best-effort *runaway* guards (they stop an infinite
-/// loop at the load gate); the load gate's real bound is the EXACT post-eval
-/// accounting — `get_total_tick_count()` for steps, total heap-arena bytes for
-/// mem (the arena grows in chunks, so a delta rounds to zero; the total is the
-/// honest coarse bound, and counts the injected facts as working set) — which the
-/// caller compares against the declared budget.
+/// starlark-rust enforces its `set_max_*` limits only at coarse (~1000-event)
+/// boundaries — checked on loop backedges and call boundaries — so those are
+/// best-effort *runaway* guards (they stop an infinite loop, and bound a growing
+/// allocation to roughly one over-budget chunk), NOT a hard wall-time/RSS bound:
+/// a single non-looping allocating expression (`"x" * n`, `list(range(n))`) runs
+/// to completion before any guard fires. starlark's own docs say as much and
+/// point at OS-level subprocess limits for a true bound (a P6-EVAL / daemon
+/// concern, not this load gate's). This unit makes exhaustion *loud and safe*:
+///
+/// - The load gate's real verdict bound is the EXACT post-eval accounting —
+///   `get_total_tick_count()` for steps, PEAK heap-arena bytes for mem — compared
+///   to the declared budget by the caller. Over-budget ⇒ the pack is refused; the
+///   direction is conservative (it never falsely admits an over-budget pack).
+/// - Mem counts the whole eval arena's high-water mark (injected facts + engine
+///   working set + the arena's minimum chunk), not just the predicate's own bytes
+///   — so set realistic budgets (the shipped fixtures use 4 MiB; a sub-chunk budget
+///   refuses even a no-op). The arena grows in chunks, so a before/after delta
+///   rounds to zero; the peak is the honest coarse meter (and matches the guard).
+/// - A pathological overrun (a multi-GiB allocation) trips a `len overflow` assert
+///   INSIDE the engine; [`std::panic::catch_unwind`] converts that panic into a
+///   clean [`EvalError::Runtime`] (⇒ `FixtureFailed`) so it can never escape
+///   `compile()` and crash the loader.
 fn run_predicate(
     globals: &Globals,
     predicate: &Predicate,
@@ -425,73 +445,86 @@ fn run_predicate(
     let step_guard = budget.steps.max(1);
     let mem_guard = usize::try_from(budget.mem).unwrap_or(usize::MAX).max(1);
 
-    Module::with_temp_heap(|module| {
-        let heap = module.heap();
-        let doc_value = alloc_doc(heap, facts);
+    // AssertUnwindSafe: on panic we discard `store` unread and return a fault, so
+    // its interior mutability cannot leak an inconsistent value across the boundary.
+    let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Module::with_temp_heap(|module| {
+            let heap = module.heap();
+            let doc_value = alloc_doc(heap, facts);
 
-        let mut eval = Evaluator::new(&module);
-        eval.set_max_tick_count(step_guard)
-            .map_err(|e| EvalError::Runtime(e.to_string()))?;
-        eval.set_max_heap_size(mem_guard)
-            .map_err(|e| EvalError::Runtime(e.to_string()))?;
-        eval.extra = Some(&store);
+            let mut eval = Evaluator::new(&module);
+            eval.set_max_tick_count(step_guard)
+                .map_err(|e| EvalError::Runtime(e.to_string()))?;
+            eval.set_max_heap_size(mem_guard)
+                .map_err(|e| EvalError::Runtime(e.to_string()))?;
+            eval.extra = Some(&store);
 
-        let ast = AstModule::parse(
-            &predicate.origin,
-            predicate.source.clone(),
-            &Dialect::Standard,
-        )
-        .map_err(|e| EvalError::Runtime(format!("{}: {e}", predicate.origin)))?;
+            let ast = AstModule::parse(
+                &predicate.origin,
+                predicate.source.clone(),
+                &Dialect::Standard,
+            )
+            .map_err(|e| EvalError::Runtime(format!("{}: {e}", predicate.origin)))?;
 
-        // Define `check`, fetch it, call it with the injected doc.
-        let mut aborted = false;
-        let mut fault: Option<String> = None;
-        match eval.eval_module(ast, globals) {
-            Ok(_) => match module.get("check") {
-                Some(check) => {
-                    if let Err(e) = eval.eval_function(check, &[doc_value], &[]) {
-                        aborted = true;
-                        fault = Some(e.to_string());
+            // Define `check`, fetch it, call it with the injected doc.
+            let mut aborted = false;
+            let mut fault: Option<String> = None;
+            match eval.eval_module(ast, globals) {
+                Ok(_) => match module.get("check") {
+                    Some(check) => {
+                        if let Err(e) = eval.eval_function(check, &[doc_value], &[]) {
+                            aborted = true;
+                            fault = Some(e.to_string());
+                        }
                     }
+                    None => {
+                        fault = Some(format!(
+                            "rule '{}' defines no `check(doc)` predicate",
+                            predicate.origin
+                        ));
+                    }
+                },
+                Err(e) => {
+                    aborted = true;
+                    fault = Some(e.to_string());
                 }
-                None => {
-                    fault = Some(format!(
-                        "rule '{}' defines no `check(doc)` predicate",
-                        predicate.origin
-                    ));
+            }
+
+            let used_steps = eval.get_total_tick_count();
+            let used_mem = heap_bytes(module.heap());
+            drop(eval);
+            let violations = store.out.take();
+
+            if aborted {
+                // The eval errored: was it the runaway guard tripping (⇒ budget) or a
+                // genuine fault? Exact accounting decides.
+                if used_steps > budget.steps || used_mem > budget.mem {
+                    return Err(EvalError::Budget(BudgetExhausted {
+                        steps: budget.steps,
+                        mem: budget.mem,
+                    }));
                 }
-            },
-            Err(e) => {
-                aborted = true;
-                fault = Some(e.to_string());
+                return Err(EvalError::Runtime(fault.unwrap_or_default()));
             }
-        }
-
-        let used_steps = eval.get_total_tick_count();
-        let used_mem = heap_bytes(module.heap());
-        drop(eval);
-        let violations = store.out.take();
-
-        if aborted {
-            // The eval errored: was it the runaway guard tripping (⇒ budget) or a
-            // genuine fault? Exact accounting decides.
-            if used_steps > budget.steps || used_mem > budget.mem {
-                return Err(EvalError::Budget(BudgetExhausted {
-                    steps: budget.steps,
-                    mem: budget.mem,
-                }));
+            if let Some(msg) = fault {
+                return Err(EvalError::Runtime(msg));
             }
-            return Err(EvalError::Runtime(fault.unwrap_or_default()));
-        }
-        if let Some(msg) = fault {
-            return Err(EvalError::Runtime(msg));
-        }
-        Ok(PredicateRun {
-            violations,
-            used_steps,
-            used_mem,
+            Ok(PredicateRun {
+                violations,
+                used_steps,
+                used_mem,
+            })
         })
-    })
+    }));
+
+    match evaluated {
+        Ok(inner) => inner,
+        Err(_panic) => Err(EvalError::Runtime(format!(
+            "rule '{}' panicked inside the Starlark engine (resource overflow — an \
+             allocation that outran the best-effort budget guards)",
+            predicate.origin
+        ))),
+    }
 }
 
 /// The store the injected `violation()` builtin records findings into, reached via
@@ -527,6 +560,16 @@ fn rulepack_api(builder: &mut GlobalsBuilder) {
         let severity = severity_from_str(&severity).ok_or_else(|| {
             anyhow::anyhow!("rulepack-api: severity must be error|warn|info, got '{severity}'")
         })?;
+        // A finding coordinate must be a well-formed byte range: reject start > end
+        // loudly (⇒ FixtureFailed), consistent with how out-of-domain span ints
+        // (negative / > usize) already fail at the (usize, usize) unpack.
+        if span.0 > span.1 {
+            return Err(anyhow::anyhow!(
+                "rulepack-api: violation span start ({}) exceeds end ({})",
+                span.0,
+                span.1
+            ));
+        }
         store.out.borrow_mut().push(Violation {
             rule,
             severity,
@@ -784,5 +827,56 @@ def check(doc):
             eval_over_facts(&preds, &facts, budget()),
             Err(EvalError::Runtime(_))
         ));
+    }
+
+    #[test]
+    fn violation_with_reversed_span_is_loud() {
+        // A finding whose span start > end is a malformed coordinate; the injected
+        // builtin rejects it (⇒ Runtime ⇒ FixtureFailed), just like an out-of-range
+        // int would — the injection surface is consistent.
+        let preds = extract_predicates(
+            &["# r\n\n```starlark\ndef check(doc):\n    violation(rule=\"r\", severity=\"warn\", span=(100, 3), node_rev=\"\", hpath=[], message=\"m\")\n```\n".to_string()],
+            &["rules/r.md".to_string()],
+        )
+        .unwrap();
+        let facts = facts_from_markdown("f.md", "# A\nb\n");
+        assert!(matches!(
+            eval_over_facts(&preds, &facts, budget()),
+            Err(EvalError::Runtime(_))
+        ));
+    }
+
+    #[test]
+    fn single_expression_allocation_is_metered_not_admitted() {
+        // A non-looping allocation defeats the coarse runaway guard (no backedge),
+        // but the EXACT post-eval mem accounting still catches it: refused as
+        // Budget, never falsely admitted.
+        let preds = extract_predicates(
+            &["# big\n\n```starlark\ndef check(doc):\n    s = \"x\" * 100000\n    _ = len(s)\n```\n".to_string()],
+            &["rules/big.md".to_string()],
+        )
+        .unwrap();
+        let facts = facts_from_markdown("f.md", "# A\nb\n");
+        let out = eval_over_facts(
+            &preds,
+            &facts,
+            EvalBudget {
+                steps: 10_000,
+                mem: 4096,
+            },
+        );
+        assert!(matches!(out, Err(EvalError::Budget(_))), "got {out:?}");
+    }
+
+    #[test]
+    fn extract_accepts_starlark_fence_with_trailing_info() {
+        // A CommonMark info string beyond the `starlark` lang token is still a
+        // predicate block (```starlark title=demo).
+        let preds = extract_predicates(
+            &["# r\n\n```starlark title=demo\ndef check(doc):\n    pass\n```\n".to_string()],
+            &["rules/r.md".to_string()],
+        )
+        .expect("```starlark with trailing info extracts");
+        assert_eq!(preds.len(), 1);
     }
 }
