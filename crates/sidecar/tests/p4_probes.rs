@@ -2,13 +2,17 @@
 //! vendored: `testsuite/data/harness/PROVENANCE.md`) against the LIVE
 //! dispatch — the D2 harness-conformance law from the unit card.
 //!
-//! Rung disposition (recorded in the provenance note): MP-1..4 + MP-8 bind
-//! this rung's armed ops; MP-5..7 are `splice` probes — unarmed at rung 2,
-//! they answer `unknown_op` here and bind D4-SPLICE; MP-9 is a GT-provenance
-//! check, not a wire frame. MP-8's recorded `expect.ok:true` predates the
-//! frozen D-C5 law — the runner asserts the TEXT-lawful answer
-//! (`bad_request{unknown_kinds:["block_anchor"]}`; the closed §4.3 enum
-//! spells the kind `anchor`) and the deviation stays loud in the provenance.
+//! Rung disposition (recorded in the provenance note): MP-1..4 + MP-8 bound
+//! at rung 2; MP-5..7 are `splice` probes — they answered `unknown_op` while
+//! splice was unarmed and are BOUND since D4-SPLICE: MP-5 (raw linktext as a
+//! write target — W2 kill), MP-6 (client span field — decision-007 kill)
+//! refuse at the strict decode; MP-7 (guardless splice, "state s0") must
+//! SUCCEED at the wire — served against the wsfix S0 workspace the probe
+//! assumes. MP-9 is a GT-provenance check, not a wire frame. MP-8's recorded
+//! `expect.ok:true` predates the frozen D-C5 law — the runner asserts the
+//! TEXT-lawful answer (`bad_request{unknown_kinds:["block_anchor"]}`; the
+//! closed §4.3 enum spells the kind `anchor`) and the deviation stays loud
+//! in the provenance.
 
 use serde_json::Value;
 
@@ -20,6 +24,18 @@ fn walkvault() -> (tempfile::TempDir, fs::WorkspaceRoot) {
         let to = dir.path().join(rel);
         std::fs::create_dir_all(to.parent().expect("parent")).expect("mkdir");
         std::fs::copy(src.join(rel), &to).expect("copy fixture");
+    }
+    let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+    (dir, root)
+}
+
+/// The wsfix S0 workspace MP-7 assumes ("state s0" in its expect note).
+fn s0_workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for rel in ["s0/notes/plan.md", "s0/receipts/2026-07-18.md"] {
+        let to = dir.path().join(rel.strip_prefix("s0/").expect("s0 prefix"));
+        std::fs::create_dir_all(to.parent().expect("parent")).expect("mkdir");
+        std::fs::copy(testsuite::wsfix_dir().join(rel), &to).expect("copy fixture");
     }
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     (dir, root)
@@ -41,6 +57,24 @@ fn answer(root: &fs::WorkspaceRoot, request: &Value) -> Value {
     sidecar::serve(root, line.as_bytes(), &mut out).expect("serve");
     let text = String::from_utf8(out).expect("frames are UTF-8");
     serde_json::from_str(text.lines().next().expect("one frame")).expect("frame parses")
+}
+
+/// MP-5 (raw linktext as a write target — W2 kill) and MP-6 (client span
+/// field — decision-007 kill) refuse at the strict decode, the refusal
+/// naming the alien field (`ref` / `span`).
+fn assert_splice_decode_kill(id: &str, frame: &Value) {
+    assert_eq!(frame["ok"], false, "{id}: {frame}");
+    assert_eq!(frame["error"]["code"], "bad_request", "{id}: {frame}");
+    let named = match id {
+        "MP-5" => "`ref`",
+        _ => "`span`",
+    };
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains(named)),
+        "{id}: the refusal names the alien field {named}: {frame}"
+    );
 }
 
 #[test]
@@ -109,11 +143,25 @@ fn p4_probes_applicable_at_rung_2() {
                     assert!(!body.contains_key(key), "{id}: no `{key}`: {frame}");
                 }
             }
-            // splice is unarmed at rung 2: in caps or unknown_op (§3.2);
-            // these probes bind D4-SPLICE
-            "MP-5" | "MP-6" | "MP-7" => {
-                assert_eq!(frame["ok"], false, "{id}: {frame}");
-                assert_eq!(frame["error"]["code"], "unknown_op", "{id}: {frame}");
+            // splice probes, BOUND at D4-SPLICE — split runner below.
+            "MP-5" | "MP-6" => assert_splice_decode_kill(id, &frame),
+            // decision 007, BOUND at D4-SPLICE: guardless/actor-less splices
+            // are legal wire frames forever — this probe assumes "state s0",
+            // so it runs against the wsfix S0 workspace and must SUCCEED.
+            "MP-7" => {
+                let (_d, s0_root) = s0_workspace();
+                let frame = answer(&s0_root, &probe["request"]);
+                assert_eq!(frame["ok"], true, "{id}: {frame}");
+                assert!(
+                    frame["body"]["armed"]["edits"]
+                        .as_array()
+                        .is_some_and(|e| e.len() == 1),
+                    "{id}: guardless splice arms: {frame}"
+                );
+                assert!(
+                    frame["body"]["root_after"].as_str().is_some(),
+                    "{id}: a real commit advances the root: {frame}"
+                );
             }
             // TEXT-LAWFUL answer (D-C5) — deviation from the probe file's
             // recorded expect, documented in the provenance note

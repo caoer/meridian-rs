@@ -27,9 +27,11 @@ the rung-applicable subset (MP-1..4, MP-8) against the LIVE dispatch.
 - sha256 walkvault/walk.md: `9cefbba3df8ded74a583342eaf5aab4a3cebb1ba866a4470cb54fa4a22bf0cf0`
 - sha256 walkvault/sub/walk.md: `92e6e0153b60d9d5981e10ac3a310ec3a9de9a18c6349a419b3dd6bfaa9b5c4a`
 - Vendored: 2026-07-19 (D2-DISPATCH, leader e2138ec2)
-- Rung disposition: MP-5..7 are `splice`-op probes — unarmed at rung 2, they
-  answer `unknown_op` and bind D4-SPLICE; MP-9 is a GT-provenance check, not a
-  wire frame. MP-8's recorded `expect.ok:true` predates the frozen D-C5 law
+- Rung disposition: MP-5..7 are `splice`-op probes — they answered
+  `unknown_op` while splice was unarmed (rungs 2–3) and are BOUND since
+  D4-SPLICE (MP-5/MP-6 refuse `bad_request` at the strict decode; MP-7 runs
+  against the wsfix S0 state its expect note names and succeeds guardless);
+  MP-9 is a GT-provenance check, not a wire frame. MP-8's recorded `expect.ok:true` predates the frozen D-C5 law
   (unknown `kinds` value → `bad_request{unknown_kinds}`; `block_anchor` is not
   in the closed §4.3 kind enum — the spelling is `anchor`): the runner asserts
   the TEXT-lawful answer and records the probe-file deviation loudly.
