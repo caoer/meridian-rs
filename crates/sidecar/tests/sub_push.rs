@@ -67,13 +67,12 @@ fn is_notification(v: &Value) -> bool {
 fn sub_then_splice_pushed_frames_byte_identical_to_diff() {
     let (_d, root) = s0();
     let session = format!(
-        "{sub}\n{E3_REQ}\n{E4_REQ}\n{diff}\n",
+        "{sub}\n{E3_REQ}\n{E4_REQ}\n{{\"id\":95,\"op\":\"diff\",\"from_root\":\"{R0}\",\"to_root\":\"{R2}\"}}\n",
         sub = r#"{"id":100,"op":"sub","from_seq":0}"#,
-        diff = format!(r#"{{"id":95,"op":"diff","from_root":"{R0}","to_root":"{R2}"}}"#),
     );
     let frames = serve_raw(&root, &session);
     // ack, E3-resp, notif-1, E4-resp, notif-2, diff-resp — six frames
-    assert_eq!(frames.len(), 6, "six frames: {:?}", frames);
+    assert_eq!(frames.len(), 6, "six frames: {frames:?}");
     let (ref _ack_raw, ref ack) = frames[0];
     assert_eq!(
         *ack,
