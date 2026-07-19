@@ -35,34 +35,60 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 mod arms;
 pub mod commit;
 mod decode;
+mod policy_bridge;
 pub mod ring;
+mod watch;
+
+/// Admit a rule pack sidecar-mode (P6-VERDICTS): compile through policy's load
+/// gate over the REAL parse→facts plane, refusing a corpus-class pack LOUD
+/// (`daemon_only`, §8/§11.3). The admitted [`policy::CompiledRuleset`]s are the
+/// `serve` rulesets whose findings ride splice `verdicts`.
+pub use policy_bridge::admit;
 
 /// v2 §3.2: the server name in the `hello` body.
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
 /// v2 §3.2: the one protocol this sidecar speaks (proto-1 retained).
 pub const PROTO: u32 = 1;
-/// The ARMED op set at this rung, exactly (§3.2 discovery honesty: an op is in
-/// `caps` or answers `unknown_op`; the ≡-full-§3.2-list assertion lands at
-/// P6-VERDICTS). `hello` answers but is not itself a cap; `resolve.content` is
-/// the one armed dotted field amendment. D3-DELTA arms `root` + `diff` (`diff`
-/// truthfully serves empty-or-`root_unknown` until rung 4 emits). Q5-LINKS
-/// arms `links` (§4.6 edge map + the §10.1 triple).
-pub const CAPS: [&str; 8] = [
+/// The ARMED op set — exactly the frozen §3.2 printed list, COMPLETE:
+/// T5-SUB armed `sub` and deleted the D4-SPLICE subtraction, so the caps
+/// fixture is now the naked §3.2 full-list ≡ (P6-VERDICTS re-asserts it as
+/// its own pack acceptance row). Every entry is TRUE of this build — armed
+/// ops + dotted field amendments (`splice.verdicts` names the verdicts
+/// surface, served `[]` from birth; variants are P6's). `hello` answers but
+/// is not itself a cap. S2/L22 law is LIVE: `splice ∈ caps` ⇒ `node_rev`
+/// MUST on every `toc`/`cat`/`extract` node (pinned in the caps fixture).
+pub const CAPS: [&str; 16] = [
     "toc",
     "cat",
     "extract",
     "resolve",
     "resolve.content",
+    "links",
+    "links.require_root",
+    "splice",
+    "splice.if_node_rev",
+    "splice.if_root",
+    "splice.dry",
+    "splice.receipt",
+    "splice.verdicts",
     "root",
     "diff",
-    "links",
+    "sub",
 ];
 
 /// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
 /// response frame, flushed per frame (shell-pipe debuggability is a contract
-/// property). Malformed input answers `bad_frame`/`bad_request`; the sidecar
+/// property) — then the push path (T5-SUB, the serve loop's ONE structural
+/// change, still wiring-only): every ring frame not yet delivered to an
+/// active subscription is written as a Notification frame after the
+/// response. Malformed input answers `bad_frame`/`bad_request`; the sidecar
 /// never terminates because of a bad frame. EOF: in-flight work finished,
 /// output flushed, `Ok(())`.
+///
+/// `rulesets` are the admitted rule packs (P6-VERDICTS) whose findings ride every
+/// splice response's `verdicts` (§11.1); empty = no packs loaded, so verdicts stay
+/// `[]`. Where the daemon SOURCES packs is Go's business (§11, row 8: loaded-pack
+/// listing is a Go surface) — this loop only evaluates what it is handed.
 ///
 /// # Errors
 /// I/O failure on the streams themselves — never a content condition.
@@ -70,10 +96,14 @@ pub fn serve(
     root: &fs::WorkspaceRoot,
     mut input: impl BufRead,
     mut output: impl Write,
+    rulesets: &[policy::CompiledRuleset],
 ) -> io::Result<()> {
     // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
-    // seq are born here and die here; nothing persists across restarts.
-    let epoch = ring::RootRing::new();
+    // seq are born here and die here; nothing persists across restarts —
+    // subscriptions included (a restart is a new epoch; catch up diff-by-root).
+    let mut epoch = ring::RootRing::new();
+    let mut subs: Vec<SubState> = Vec::new();
+    let mut watch = watch::WatchState::new(root);
     let mut line = String::new();
     loop {
         line.clear();
@@ -83,17 +113,100 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        let response = respond_line(root, &epoch, &line);
+        // F5-WATCH reconcile BEFORE dispatch: an external change is emitted
+        // (and pushed) before this request's answer reads the world. A
+        // reconcile error never fails the request — stderr, retry next cycle.
+        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+            eprintln!("watch reconcile: {e:?}");
+        }
+        flush_subs(&mut output, &epoch, &mut subs)?;
+        let response = respond_line(root, &mut epoch, &mut subs, rulesets, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
+        // Post-dispatch reconcile: internal commits sync the baseline
+        // silently; an external landing mid-dispatch is emitted here.
+        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+            eprintln!("watch reconcile: {e:?}");
+        }
+        // The push path: ok first, THEN Notification frames (§4.7 order) —
+        // a fresh subscription's replay and every live emission ride the
+        // same flush, so replay ≡ live holds at the transport too.
+        flush_subs(&mut output, &epoch, &mut subs)?;
         output.flush()?;
     }
+}
+
+/// One active subscription: the highest `delta.seq` already delivered.
+/// Registered by the `sub` arm at `from_seq` — the first flush replays the
+/// retained frames above it (§4.7: "ok, then Notification frames").
+struct SubState {
+    delivered: u64,
+}
+
+/// Write every undelivered ring frame to each subscription, in emission
+/// order — the frames are the STORED ring objects serialized directly
+/// (`{"delta":{…}}`, no `id` key — §3.1 classification): the d4
+/// single-constructor law extends to the push path by construction.
+fn flush_subs(
+    output: &mut impl Write,
+    epoch: &ring::RootRing,
+    subs: &mut [SubState],
+) -> io::Result<()> {
+    for sub in subs.iter_mut() {
+        for frame in epoch.frames_after(sub.delivered) {
+            serde_json::to_writer(&mut *output, &frame)?;
+            output.write_all(b"\n")?;
+            sub.delivered = frame.delta.seq;
+        }
+    }
+    Ok(())
+}
+
+/// v2 §4.7 `sub`, live at T5-SUB. The §7.1 late law's residue: `from_seq`
+/// catchup is valid only WITHIN this epoch — anchorable positions are
+/// `current` (live-only) and anything the retained ring can replay from;
+/// everything else (evicted, ahead, a prior epoch's counter) answers
+/// `root_unknown` → resync, catch up by diff-by-root (the only
+/// restart-durable handle). Never wrong data, never a cross-epoch seq
+/// comparison — the old counter died with its ring. The ack reuses the
+/// §4.7 `{root, seq}` body: the subscription's anchor tense (advisor-ruled;
+/// no frozen frame prints an ack body).
+fn subscribe(
+    root: &fs::WorkspaceRoot,
+    epoch: &ring::RootRing,
+    subs: &mut Vec<SubState>,
+    from_seq: u64,
+) -> Result<wire::ResponseBody, Box<ErrorBody>> {
+    let current = epoch.seq();
+    let anchored = from_seq == current
+        || (from_seq < current && epoch.oldest_seq().is_some_and(|o| from_seq >= o - 1));
+    if !anchored {
+        let mut e = ErrorBody::new(ErrorCode::RootUnknown);
+        e.message = Some(
+            "from_seq outside this epoch's retained history — catch up by diff-by-root (§7.1)"
+                .into(),
+        );
+        return Err(Box::new(e));
+    }
+    subs.push(SubState {
+        delivered: from_seq,
+    });
+    Ok(wire::ResponseBody::Root {
+        root: arms::ambient_root(root)?,
+        seq: current,
+    })
 }
 
 /// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
 /// corrupt frame classification.
-fn respond_line(root: &fs::WorkspaceRoot, epoch: &ring::RootRing, line: &str) -> Response {
+fn respond_line(
+    root: &fs::WorkspaceRoot,
+    epoch: &mut ring::RootRing,
+    subs: &mut Vec<SubState>,
+    rulesets: &[policy::CompiledRuleset],
+    line: &str,
+) -> Response {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
         Err(_) => return error_frame(None, ErrorBody::new(ErrorCode::BadFrame)),
@@ -118,7 +231,17 @@ fn respond_line(root: &fs::WorkspaceRoot, epoch: &ring::RootRing, line: &str) ->
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     }
     match decode::decode(&obj) {
-        Ok(op) => match arms::dispatch(root, epoch, op) {
+        // The push-path op registers at the serve layer — the loop owns the
+        // subscription list; everything else routes to the arms.
+        Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
+            Ok(body) => Response {
+                id,
+                ok: true,
+                payload: ResponsePayload::Body { body },
+            },
+            Err(e) => error_frame(id, *e),
+        },
+        Ok(op) => match arms::dispatch(root, epoch, id, op, rulesets) {
             Ok(body) => Response {
                 id,
                 ok: true,

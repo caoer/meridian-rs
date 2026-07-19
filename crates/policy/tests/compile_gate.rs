@@ -4,7 +4,31 @@
 
 use std::collections::HashMap;
 
-use policy::{BudgetClass, CompileError, PackFiles, RulesetPin, compile};
+use policy::{BudgetClass, CompileError, CompiledRuleset, PackFiles, RulesetPin};
+
+/// The real parse→facts builder the composition layer (sidecar) injects into the
+/// load gate — fixtures demonstrate over the SAME fact plane production `evaluate`
+/// runs (P6-VERDICTS load-gate unification), NOT the retired synthetic per-line
+/// stand-in. Every `compile` call below routes through the thin wrapper so the
+/// gates read unchanged while running on real facts.
+fn real_facts(path: &str, body: &str) -> policy::FactDoc {
+    let mut doc = model::build(body.to_string(), syntax::parse(body));
+    if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
+        *p = path.to_string();
+    }
+    policy::facts_from_document(&doc)
+}
+
+/// `policy::compile` with `real_facts` injected — the signature adaptation the
+/// unification forces on every call site (behaviour unchanged; the fact plane is
+/// now the production one).
+fn compile(
+    pin: &RulesetPin,
+    source: &str,
+    files: &dyn PackFiles,
+) -> Result<CompiledRuleset, CompileError> {
+    policy::compile(pin, source, files, &real_facts)
+}
 
 /// In-memory pack file resolver — the test-side stand-in for the disk reads
 /// `fs`/`sidecar` inject in production.
@@ -73,8 +97,16 @@ def check(doc):
             )
 ```
 "#;
-const FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\nA blurb line.\n";
-// A heading immediately followed by another heading demonstrates the violation.
+// PASS demonstrated over the REAL fact plane (P6-VERDICTS load-gate unification):
+// the world model is paragraph-blind (and list-blind — `DialectKind` mints no
+// bare prose or list node), so the heading's blurb must be a real dialect node. A
+// wikilink is: `Goals` is followed by a `wikilink` (non-heading) node, so
+// `has_blurb` holds and the rule is satisfied. (The retired synthetic per-line
+// builder faked a paragraph node here; that drift is exactly what this unit kills
+// — see the fail-first artifact.)
+const FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n";
+// FAIL under real facts: a heading immediately followed by another heading (no
+// intervening node) demonstrates the violation.
 const FX_FAIL: &str = "---\nexpect: fail\n---\n# Goals\n## Sub\nbody\n";
 
 fn conforming_pack() -> MemFiles {
@@ -105,6 +137,37 @@ fn load_gate_refuses_pack_with_failing_fixture() {
             assert_eq!(fixture, "fixtures/blurb-pass.md");
         }
         other => panic!("expected FixtureFailed, got {other:?}"),
+    }
+}
+
+/// STANDING TRIPWIRE (P6-VERDICTS load-gate unification, fail-first pin): the
+/// synthetic-only blurb-pass fixture — `# Goals` + a bare prose line, which the
+/// RETIRED per-line builder faked as a paragraph node so the fixture "passed" — is
+/// REFUSED by the real load gate. The real world model is paragraph-blind: no
+/// paragraph node exists, so `Goals` opens directly onto EOF and `blurb-required`
+/// fires (demonstrated:fail ≠ declared:pass). This IS the synthetic-pass/real-fail
+/// drift the unification kills; a frozen worked value can never show paragraph-grain
+/// facts. If this ever passes, the synthetic plane leaked back into admission — STOP.
+#[test]
+fn synthetic_only_pass_fixture_is_refused_by_real_load_gate() {
+    let files = MemFiles::new(&[
+        ("rules/blurb-required.md", RULE),
+        // the OLD synthetic-only pass fixture bytes, verbatim (the retired shape)
+        (
+            "fixtures/blurb-pass.md",
+            "---\nexpect: pass\n---\n# Goals\nA blurb line.\n",
+        ),
+        ("fixtures/blurb-fail.md", FX_FAIL),
+    ]);
+    match compile(&pin(), MANIFEST, &files).unwrap_err() {
+        CompileError::FixtureFailed { fixture, detail } => {
+            assert_eq!(fixture, "fixtures/blurb-pass.md");
+            assert!(
+                detail.contains("demonstrated:fail"),
+                "paragraph-blind: the bare prose line is not a node, so Goals fires; detail: {detail}"
+            );
+        }
+        other => panic!("expected FixtureFailed (paragraph-blind drift), got {other:?}"),
     }
 }
 

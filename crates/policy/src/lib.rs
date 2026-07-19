@@ -48,7 +48,12 @@ use model::{CorpusIndex, Document};
 
 mod pack;
 
-use pack::RuleEvaluator as _;
+/// The load gate's injected fact plane, in policy vocabulary: the composition
+/// layer builds [`FactDoc`]s from fixture bytes through the real parse→facts path
+/// ([`facts_from_document`] over a real AST) and hands them to [`compile`] — no
+/// `syntax::`/`model::` type crosses the `build_facts` signature (the fence holds
+/// at the type level, P6-VERDICTS load-gate unification).
+pub use pack::{FactDoc, facts_from_document};
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
 /// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an
@@ -236,11 +241,15 @@ pub enum Severity {
 ///
 /// `source` is the manifest text (the caller pre-reads it from `pin.path`);
 /// `files` resolves manifest-relative fixture/rule paths to their contents, so
-/// policy performs no I/O of its own.
+/// policy performs no I/O of its own. `build_facts` turns a fixture's `(path,
+/// body)` into the injected fact plane — the load gate's demonstration runs over
+/// the SAME facts production `evaluate` sees (the composition layer injects the
+/// real parse→facts path; policy names no parser). Kept in policy vocabulary
+/// (`&str`s in, [`FactDoc`] out) so the fence holds at the type level.
 ///
 /// Pipeline: content-pin (sha256) → parse → api-pin → read+classify rules →
-/// extract+parse fenced Starlark predicates → run fixtures via the sealed
-/// Starlark eval bridge → admit / refuse.
+/// extract+parse fenced Starlark predicates → run fixtures over `build_facts`'s
+/// facts through the metered Starlark core → admit / refuse.
 ///
 /// # Errors
 /// [`CompileError::PinMismatch`] (api or sha256), [`CompileError::Malformed`]
@@ -250,6 +259,7 @@ pub fn compile(
     pin: &RulesetPin,
     source: &str,
     files: &dyn PackFiles,
+    build_facts: &dyn Fn(&str, &str) -> FactDoc,
 ) -> Result<CompiledRuleset, CompileError> {
     // 1. Content pin — integrity before trust; fails loud, never evaluates.
     let content_hash = sha256_hex(source);
@@ -302,7 +312,6 @@ pub fn compile(
                 .to_string(),
         });
     }
-    let evaluator = pack::StarlarkEvaluator;
     for fixture in &manifest.fixtures {
         let content = files
             .read(fixture)
@@ -310,20 +319,29 @@ pub fn compile(
                 fixture: fixture.clone(),
                 detail: format!("unreadable: {e}"),
             })?;
-        let doc = pack::parse_fixture(fixture, &content)?;
-        match evaluator.eval_fixture(&predicates, &doc, manifest.budgets) {
+        let fx = pack::parse_fixture(fixture, &content)?;
+        // Load-gate unification (P6-VERDICTS): the fixture demonstrates over the
+        // SAME fact plane production `evaluate` uses — `build_facts` is the real
+        // parse→facts path the composition layer injects (`facts_from_document`
+        // over a real AST), so a fixture cannot pass on a plane the wire never
+        // reproduces. The signature stays in POLICY vocabulary (`&str`s in,
+        // `FactDoc` out) — no `syntax::`/`model::` type crosses it, the fence
+        // holds at the type level. The retired synthetic per-line builder lives
+        // test-only now.
+        let facts = build_facts(&fx.path, &fx.body);
+        match pack::eval_over_facts(&predicates, &facts, manifest.budgets) {
             Ok(violations) => {
                 let actual = if violations.is_empty() {
                     pack::Expect::Pass
                 } else {
                     pack::Expect::Fail
                 };
-                if actual != doc.expect {
+                if actual != fx.expect {
                     return Err(CompileError::FixtureFailed {
                         fixture: fixture.clone(),
                         detail: format!(
                             "declared expect:{} but demonstrated:{}",
-                            doc.expect, actual
+                            fx.expect, actual
                         ),
                     });
                 }
@@ -391,7 +409,7 @@ pub fn evaluate(
     let _ = corpus;
     let mut out = Vec::new();
     for doc in docs {
-        let facts = pack::facts_from_document(doc);
+        let facts = facts_from_document(doc);
         out.extend(pack::eval_document(
             &ruleset.predicates,
             &facts,

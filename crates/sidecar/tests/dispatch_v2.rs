@@ -44,7 +44,7 @@ fn s0() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// Feed `input` through the live serve loop; one parsed frame per output line.
 fn serve(root: &fs::WorkspaceRoot, input: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    sidecar::serve(root, input.as_bytes(), &mut out).expect("serve");
+    sidecar::serve(root, input.as_bytes(), &mut out, &[]).expect("serve");
     String::from_utf8(out)
         .expect("frames are UTF-8")
         .lines()
@@ -206,20 +206,76 @@ fn gate2_bad_path_refused() {
 // Gate 3 — hello caps ≡ the ARMED set exactly (§3.2 discovery honesty)
 // ---------------------------------------------------------------------------
 
+/// The §3.2 caps assertion, COMPLETE: T5-SUB armed `sub` and deleted the
+/// D4-SPLICE-era subtraction exactly as its closure note promised — this is
+/// now the naked frozen §3.2 full-list ≡ (P6-VERDICTS re-asserts it as its
+/// own pack acceptance row). Every printed entry is truthfully served,
+/// dotted field amendments included (`splice.verdicts`: the surface rides
+/// every splice response as `[]` from birth; variants are P6's).
 #[test]
-fn gate3_hello_caps_equal_armed_set_exactly() {
+fn gate3_hello_caps_equal_frozen_full_list() {
     let (_d, root) = s0();
     let frame = one(
         &root,
         r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
     );
+    // The frozen §3.2 printed list, verbatim and COMPLETE (the T5-SUB
+    // closure: the d4-splice subtraction filter is gone).
+    let frozen_printed = [
+        "toc",
+        "cat",
+        "extract",
+        "resolve",
+        "resolve.content",
+        "links",
+        "links.require_root",
+        "splice",
+        "splice.if_node_rev",
+        "splice.if_root",
+        "splice.dry",
+        "splice.receipt",
+        "splice.verdicts",
+        "root",
+        "diff",
+        "sub",
+    ];
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
-            "caps":["toc","cat","extract","resolve","resolve.content","root","diff","links"],
+            "caps":frozen_printed,
             "root":R0}
     });
     assert_eq!(frame, expected);
+}
+
+/// S2/L22 law, LIVE from this rung (frozen §3.2): "`node_rev` is MUST on
+/// every `toc`/`cat`/`extract` node whenever `splice ∈ caps`." Pinned in the
+/// caps fixture's own served world: the same sidecar that advertises
+/// `splice` serves `node_rev` on every node. (Advisor rider, d4-splice.)
+#[test]
+fn gate3_s2l22_node_rev_must_when_splice_in_caps() {
+    let (_d, root) = s0();
+    let hello = one(&root, r#"{"id":1,"op":"hello","proto":1}"#);
+    let caps = hello["body"]["caps"].as_array().expect("caps");
+    assert!(caps.contains(&json!("splice")), "the law's trigger holds");
+    let toc = one(&root, r#"{"id":2,"op":"toc","path":"notes/plan.md"}"#);
+    let extract = one(&root, r#"{"id":3,"op":"extract","path":"notes/plan.md"}"#);
+    for node in toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .chain(extract["body"]["nodes"].as_array().expect("extract nodes"))
+    {
+        assert!(
+            node["node_rev"].as_str().is_some_and(|r| r.len() == 16),
+            "S2/L22: node_rev MUST ride every node while splice ∈ caps: {node}"
+        );
+    }
+    let cat = one(&root, r#"{"id":4,"op":"cat","path":"notes/plan.md"}"#);
+    assert!(
+        cat["body"]["node_rev"].as_str().is_some(),
+        "cat rev (S2/L22)"
+    );
 }
 
 /// An op is in `caps` or answers `unknown_op` — including ops the wire
@@ -228,10 +284,10 @@ fn gate3_hello_caps_equal_armed_set_exactly() {
 fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
-        r#"{"id":1,"op":"splice","path":"notes/plan.md","edits":[]}"#,
-        // links armed at Q5-LINKS — it moved from this list into `caps`
-        r#"{"id":1,"op":"sub","from_seq":0}"#,
+        // every §3.2 op is armed as of T5-SUB — only genuinely unknown
+        // names answer unknown_op now.
         r#"{"id":1,"op":"zap"}"#,
+        r#"{"id":1,"op":"guard"}"#, // v1 guard, DELETED (D-C8) — never a name again
     ] {
         let frame = one(&root, req);
         assert_eq!(frame["error"]["code"], "unknown_op", "{frame}");
