@@ -114,12 +114,28 @@ fn proto_frames(n: usize) -> Vec<pb::Frame> {
                 id: Some(i as u64),
                 op: Some(pb::request::Op::Splice(pb::SpliceRequest {
                     path: format!("notes/f{i:05}.md"),
-                    span: Some(pb::Span {
-                        start: rng.next_u64() % 4096,
-                        end: 4096 + rng.next_u64() % 4096,
-                    }),
-                    if_node_rev: format!("{:016x}", rng.next_u64()),
-                    text: "replacement body text\nsecond line\n".into(),
+                    actor: None,
+                    now: None,
+                    receipt: None,
+                    if_root: None,
+                    dry: None,
+                    edits: vec![pb::Edit {
+                        target: Some(pb::SecRef {
+                            form: Some(pb::sec_ref::Form::Hpath(pb::HpathRef {
+                                segs: vec![pb::HpathSeg {
+                                    h: format!("h{}", i % 16),
+                                    n: None,
+                                }],
+                            })),
+                        }),
+                        edit: Some(pb::EditShape {
+                            shape: Some(pb::edit_shape::Shape::Match(pb::MatchEdit {
+                                old: "replacement body text\nsecond line\n".into(),
+                                new: "replacement body text\nsecond line\n".into(),
+                            })),
+                        }),
+                        if_node_rev: Some(format!("{:016x}", rng.next_u64())),
+                    }],
                 })),
             }),
             _ => {
@@ -131,7 +147,10 @@ fn proto_frames(n: usize) -> Vec<pb::Frame> {
                             end: (k + 1) * 128,
                         }),
                         text_prefix_16b: "sixteen bytes ok".into(),
-                        hpath: vec!["section".into(), format!("h{k}")],
+                        hpath: ["section".into(), format!("h{k}")]
+                            .into_iter()
+                            .map(|h| pb::HpathSeg { h, n: None })
+                            .collect(),
                         unterminated: None,
                         info: None,
                         node_rev: Some(format!("{:016x}", rng.next_u64())),

@@ -14,3 +14,15 @@ workspace = true
 model = { workspace = true }
 # Ruleset YAML parsing is in-charter; the YAML library choice is a rung-6
 # implementation decision — deliberately not pinned by the skeleton (see README).
+# DECIDED (P6-COMPILE): serde + serde_yaml. Rationale: the §11.3 manifest is a
+# tiny, rigid, well-typed schema — serde-derived deserialization is the fewest
+# lines that can be wrong; serde_yaml is stable, ubiquitous, and offline-present;
+# the wire boundary is trusted-local (§13), so YAML-parser CVE surface is bounded.
+# This dependency (and its libyaml transitive) must appear under `policy` ONLY in
+# `cargo tree` production edges — the workspace's single YAML decision (F3-DOMAIN
+# hand-parses mdfs_config.yaml precisely to keep it here).
+serde = { workspace = true }
+serde_yaml = "0.9"
+# Content pin (§6.1 effect-style sha256): verify RulesetPin.sha256 over the
+# manifest bytes before compile; mismatch fails loud, never evaluates.
+sha2 = "0.10"

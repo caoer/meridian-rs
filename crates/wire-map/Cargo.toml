@@ -13,3 +13,6 @@ workspace = true
 [dependencies]
 model = { workspace = true }
 wire = { workspace = true }
+
+[dev-dependencies]
+syntax = { workspace = true }
