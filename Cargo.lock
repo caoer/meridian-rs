@@ -1274,6 +1274,8 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hdrhistogram",
+ "model",
+ "policy",
  "rand_chacha",
  "serde",
  "serde_json",

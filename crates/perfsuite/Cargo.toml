@@ -22,6 +22,8 @@ criterion = { workspace = true }
 # seam crates appear as dev-deps only: benches and the dormant ≥-planted
 # assertion consume them; the harness library itself is parser-agnostic.
 syntax = { workspace = true }
+model = { workspace = true }
+policy = { workspace = true }
 transport = { workspace = true }
 transport-proto = { workspace = true }
 
