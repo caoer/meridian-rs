@@ -5,5 +5,6 @@
 mod charset_guard;
 mod gt_pack_smoke;
 mod gt_parse;
+mod walk_resolve;
 mod wire_vocab;
 mod wsfix_oracle;
