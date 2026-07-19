@@ -41,21 +41,32 @@ pub mod ring;
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
 /// v2 §3.2: the one protocol this sidecar speaks (proto-1 retained).
 pub const PROTO: u32 = 1;
-/// The ARMED op set at this rung, exactly (§3.2 discovery honesty: an op is in
-/// `caps` or answers `unknown_op`; the ≡-full-§3.2-list assertion lands at
-/// P6-VERDICTS). `hello` answers but is not itself a cap; `resolve.content` is
-/// the one armed dotted field amendment. D3-DELTA arms `root` + `diff` (`diff`
-/// truthfully serves empty-or-`root_unknown` until rung 4 emits). Q5-LINKS
-/// arms `links` (§4.6 edge map + the §10.1 triple).
-pub const CAPS: [&str; 8] = [
+/// The ARMED op set, exactly the frozen §3.2 printed list MINUS `"sub"`
+/// (advisor-ruled assertion form, D4-SPLICE gate 6): every entry is TRUE of
+/// this build — armed ops + dotted field amendments (`splice.verdicts` names
+/// the verdicts surface, served `[]` from birth; variants are P6's). The one
+/// subtraction is the bounded, tracked debt: **T5-SUB arms `sub` and deletes
+/// the subtraction**, making the caps fixture the naked §3.2 full-list ≡
+/// (P6-VERDICTS re-asserts it as its own acceptance row). `hello` answers
+/// but is not itself a cap. S2/L22 law is LIVE from this rung: `splice ∈
+/// caps` ⇒ `node_rev` MUST on every `toc`/`cat`/`extract` node (pinned in
+/// the caps fixture).
+pub const CAPS: [&str; 15] = [
     "toc",
     "cat",
     "extract",
     "resolve",
     "resolve.content",
+    "links",
+    "links.require_root",
+    "splice",
+    "splice.if_node_rev",
+    "splice.if_root",
+    "splice.dry",
+    "splice.receipt",
+    "splice.verdicts",
     "root",
     "diff",
-    "links",
 ];
 
 /// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
@@ -73,7 +84,8 @@ pub fn serve(
 ) -> io::Result<()> {
     // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
     // seq are born here and die here; nothing persists across restarts.
-    let epoch = ring::RootRing::new();
+    // Mutable: the armed splice arm advances it through the commit seam.
+    let mut epoch = ring::RootRing::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -83,7 +95,7 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        let response = respond_line(root, &epoch, &line);
+        let response = respond_line(root, &mut epoch, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
         output.flush()?;
@@ -93,7 +105,7 @@ pub fn serve(
 /// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
 /// corrupt frame classification.
-fn respond_line(root: &fs::WorkspaceRoot, epoch: &ring::RootRing, line: &str) -> Response {
+fn respond_line(root: &fs::WorkspaceRoot, epoch: &mut ring::RootRing, line: &str) -> Response {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
         Err(_) => return error_frame(None, ErrorBody::new(ErrorCode::BadFrame)),
@@ -118,7 +130,7 @@ fn respond_line(root: &fs::WorkspaceRoot, epoch: &ring::RootRing, line: &str) ->
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     }
     match decode::decode(&obj) {
-        Ok(op) => match arms::dispatch(root, epoch, op) {
+        Ok(op) => match arms::dispatch(root, epoch, id, op) {
             Ok(body) => Response {
                 id,
                 ok: true,
