@@ -133,7 +133,10 @@ pub struct CompiledRuleset {
     content_hash: String,
     budget: EvalBudget,
     budget_class: BudgetClass,
-    rules: Vec<String>,
+    /// The extracted, parse-checked, vocabulary-validated predicates — held so
+    /// `evaluate` reuses the compile-time work rather than re-parsing every rule
+    /// page per document.
+    predicates: Vec<pack::Predicate>,
 }
 
 impl CompiledRuleset {
@@ -168,7 +171,7 @@ impl CompiledRuleset {
     /// Number of rule pages the pack declares.
     #[must_use]
     pub fn rule_count(&self) -> usize {
-        self.rules.len()
+        self.predicates.len()
     }
 }
 
@@ -286,6 +289,10 @@ pub fn compile(
     // before any fixture runs.
     let predicates = pack::extract_predicates(&rule_sources, &manifest.rules)?;
 
+    // 4c. §11.2 WHEN/HOW partition: a WHEN referencing anything outside the closed
+    // fact vocabulary is refused at COMPILE, before any fixture runs.
+    pack::check_when_vocab(&predicates)?;
+
     // 5. Fixtures ARE the load gate: no fixtures = cannot demonstrate itself.
     if manifest.fixtures.is_empty() {
         return Err(CompileError::FixtureFailed {
@@ -345,7 +352,7 @@ pub fn compile(
         content_hash,
         budget: manifest.budgets,
         budget_class,
-        rules: rule_sources,
+        predicates,
     })
 }
 
@@ -362,16 +369,37 @@ fn sha256_hex(s: &str) -> String {
 }
 
 /// Evaluate a ruleset over documents (gate and diagnostic modes share this
-/// path; mode/limit shaping is `sidecar`'s wire concern). `corpus` is the
-/// capability parameter: `None` in sidecar mode.
+/// path; mode/limit shaping is `sidecar`'s wire concern) and return the §11.1
+/// findings. Facts are derived from each real `Document` AST (`model::build` →
+/// `FactDoc`); the WHEN vocabulary was closed at compile (§11.2), so every
+/// predicate here reads world-model facts only.
+///
+/// Per-eval `{steps, mem}` budget is metered per document; exhaustion appends the
+/// `budget_exceeded` FINDING to the returned verdicts and never surfaces as an
+/// error or panic (frozen §8). The verdict order is document order, then
+/// per-document rule order.
+///
+/// `corpus` is the capability parameter: `None` in sidecar mode. File/node-class
+/// rules need no index; corpus-class refusal (`daemon_only`) is a load-time
+/// concern owned by P6-VERDICTS, not evaluated here.
 #[must_use]
 pub fn evaluate(
     ruleset: &CompiledRuleset,
     docs: &[&Document],
     corpus: Option<&CorpusIndex>,
 ) -> Vec<Violation> {
-    let _ = (ruleset, docs, corpus);
-    todo!("rung 6: selector engine + assertion vocabulary over resident ASTs")
+    let _ = corpus;
+    let mut out = Vec::new();
+    for doc in docs {
+        let facts = pack::facts_from_document(doc);
+        out.extend(pack::eval_document(
+            &ruleset.predicates,
+            &facts,
+            ruleset.budget,
+            &doc.root.node_rev.0,
+        ));
+    }
+    out
 }
 
 /// Axis-E entry point: may this splice stand, per the I3-shaped rules in

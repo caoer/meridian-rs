@@ -30,7 +30,7 @@
 
 use std::cell::RefCell;
 
-use model::NodeRev;
+use model::{Document, Node, NodeKind, NodeRev};
 use starlark::environment::{Globals, GlobalsBuilder, Module};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
@@ -247,6 +247,98 @@ fn heading_level(line: &str) -> Option<u8> {
     }
 }
 
+/// Derive the injected fact surface from a REAL `model::Document` AST (P6-EVAL) —
+/// the production replacement for [`facts_from_markdown`]'s synthetic stand-in,
+/// feeding the SAME [`FactDoc`] / [`FactNode`] shape from real nodes so no
+/// predicate, and no public type, changes.
+///
+/// The world-model tree flattens to `doc.nodes` in document order (a preorder walk
+/// of the already span-sorted tree, §1 total order). The root `Document` node is
+/// NOT emitted — it *is* `doc` (its `path` + `nodes` surface). A model `Section`
+/// injects as a `"heading"` fact carrying the section's real coordinates: its
+/// heading-through-subtree `span`, its content-addressed `node_rev`, and its
+/// `hpath` — so a §11.1 finding a predicate emits off a section fact carries the
+/// section's wire coordinates verbatim (the §11.1 worked verdict: `Goals` → span
+/// `[20,150]`, `node_rev 5a8faa717fbcdb04`).
+///
+/// The model is paragraph-blind (no `Paragraph` node is minted from the dialect
+/// stream today), so a section that opens directly onto a subsection has no
+/// intervening content fact — exactly what makes `blurb-required` fire on `Goals`
+/// (its first following node is the deeper `Q3` heading) but not on `Q3` (its next
+/// heading `Q4` is a same-level sibling).
+pub(crate) fn facts_from_document(doc: &Document) -> FactDoc {
+    let path = match &doc.root.kind {
+        NodeKind::Document { path, .. } => path.clone(),
+        _ => String::new(),
+    };
+    let mut nodes = Vec::new();
+    for child in &doc.root.children {
+        push_facts(&doc.raw, child, &mut nodes);
+    }
+    FactDoc { path, nodes }
+}
+
+/// Preorder emit: the node itself, then its children in span order.
+fn push_facts(raw: &str, node: &Node, out: &mut Vec<FactNode>) {
+    out.push(fact_node(raw, node));
+    for child in &node.children {
+        push_facts(raw, child, out);
+    }
+}
+
+/// One model node → one injected [`FactNode`] (span/rev/hpath carried verbatim).
+fn fact_node(raw: &str, node: &Node) -> FactNode {
+    let (kind, level, text) = classify_fact(raw, node);
+    FactNode {
+        kind,
+        level,
+        text,
+        span: (node.span.start, node.span.end),
+        node_rev: node.node_rev.0.clone(),
+        hpath: node.hpath.clone().unwrap_or_default(),
+    }
+}
+
+/// Map a model [`NodeKind`] to the injected `(kind, level, text)` triple. Sections
+/// and headings inject as `"heading"` (§11.2 node vocabulary); the rest carry their
+/// world-model kind so a predicate can distinguish content from structure.
+fn classify_fact(raw: &str, node: &Node) -> (&'static str, u32, String) {
+    use NodeKind as K;
+    match &node.kind {
+        K::Document { .. } => ("document", 0, String::new()),
+        K::Frontmatter { .. } => ("frontmatter", 0, String::new()),
+        K::Section {
+            heading_text,
+            level,
+        } => ("heading", u32::from(*level), heading_text.clone()),
+        K::Heading { text, level } => ("heading", u32::from(*level), text.clone()),
+        K::Paragraph => ("paragraph", 0, span_text(raw, node)),
+        K::List => ("list", 0, String::new()),
+        K::ListItem => ("list_item", 0, span_text(raw, node)),
+        K::TaskItem { .. } => ("task", 0, span_text(raw, node)),
+        K::CodeBlock { .. } => ("code_block", 0, span_text(raw, node)),
+        K::Callout { .. } => ("callout", 0, span_text(raw, node)),
+        K::Table => ("table", 0, span_text(raw, node)),
+        K::Wikilink { target, .. } => ("wikilink", 0, target.clone()),
+        K::Link { target } => ("link", 0, target.clone()),
+        K::Embed { target, .. } => ("embed", 0, target.clone()),
+        K::Anchor { name } => ("anchor", 0, name.clone()),
+        K::Tag { name } => ("tag", 0, name.clone()),
+        K::InlineCode => ("inline_code", 0, span_text(raw, node)),
+        K::Comment => ("comment", 0, span_text(raw, node)),
+    }
+}
+
+/// The node's raw bytes as trimmed text (a best-effort content fact for non-heading
+/// nodes); an out-of-range or non-char-boundary span yields the empty string rather
+/// than panicking.
+fn span_text(raw: &str, node: &Node) -> String {
+    raw.get(node.span.clone())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
 // ── Fenced-predicate extraction ──────────────────────────────────────────────
 
 /// One rule page's extracted, parse-checked Starlark predicate.
@@ -306,6 +398,64 @@ fn extract_fenced_starlark(page: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ── The closed WHEN vocabulary (§11.2, compile-enforced) ─────────────────────
+
+/// The fact-vocabulary version this engine implements — tied to the `rulepack-api@1`
+/// pin: version 1 injects the world-model node surface (`doc.path`, `doc.nodes`, and
+/// each node's `kind`/`level`/`text`/`span`/`node_rev`/`hpath`) plus the `violation()`
+/// builtin, over the Starlark standard library. A WHEN that references any name
+/// outside that surface presumes a fact the engine does not provide — a *later*
+/// vocabulary — and is refused at compile ([`check_when_vocab`]).
+pub(crate) const FACT_VOCAB_VERSION: u32 = 1;
+
+/// §11.2 WHEN/HOW partition, compile-enforced: a rule's WHEN sees world-model facts
+/// ONLY. Statically resolve each predicate's free names against the closed injected
+/// vocabulary (the `rulepack-api@1` globals — Starlark stdlib + `violation()`); a
+/// reference to any *other* global (`now`, `actor`, `link_resolves`, a stray helper)
+/// is a fact the engine does not inject, so the WHEN references outside the
+/// vocabulary and is refused loud with [`CompileError::UnsupportedVocab`] — at COMPILE
+/// time, before any fixture runs, never at eval time.
+///
+/// Node/doc FIELD access (`node.kind`, `doc.nodes`) is attribute access, not a name,
+/// so it is out of this check's scope by construction — the vocabulary boundary this
+/// enforces is the set of *global names* a predicate may reach for, which is exactly
+/// where the §11.2 line lives (the injected fact surface vs. everything else). The
+/// check leans on starlark's own name resolution (`AstModuleLint`), so it tracks the
+/// real binding rules (params, comprehensions, locals) rather than a hand-rolled scan.
+pub(crate) fn check_when_vocab(predicates: &[Predicate]) -> Result<(), CompileError> {
+    use starlark::analysis::AstModuleLint;
+    use std::collections::HashSet;
+
+    let allowed: HashSet<String> = rulepack_globals()
+        .names()
+        .map(|n| n.as_str().to_owned())
+        .collect();
+
+    for predicate in predicates {
+        let ast = AstModule::parse(
+            &predicate.origin,
+            predicate.source.clone(),
+            &Dialect::Standard,
+        )
+        .map_err(|e| CompileError::Malformed {
+            reason: format!("rule '{}' starlark parse error: {e}", predicate.origin),
+        })?;
+        // `using-undefined` = a name used that is neither a local binding nor one of
+        // the injected globals: the WHEN reaches outside the fact vocabulary.
+        if ast
+            .lint(Some(&allowed))
+            .iter()
+            .any(|l| l.short_name == "using-undefined")
+        {
+            return Err(CompileError::UnsupportedVocab {
+                requires: FACT_VOCAB_VERSION + 1,
+                engine: FACT_VOCAB_VERSION,
+            });
+        }
+    }
+    Ok(())
 }
 
 // ── The sealed evaluation bridge ─────────────────────────────────────────────
@@ -385,6 +535,85 @@ pub(crate) fn eval_over_facts(
         all.extend(run.violations);
     }
     Ok(all)
+}
+
+/// Evaluate a ruleset over one REAL document's facts (P6-EVAL), metering the
+/// per-eval `{steps, mem}` budget cumulatively across predicates. This is the wire
+/// path (`policy::evaluate`): budget exhaustion becomes the `budget_exceeded`
+/// FINDING appended to the returned verdicts — NEVER an error or panic (frozen §8:
+/// `budget_exceeded` is a typed finding inside `verdicts`, not a wire error class).
+///
+/// Distinct from [`eval_over_facts`] (the load gate), which returns `Err(Budget)` so
+/// a pack that cannot demonstrate itself under budget is refused at compile. Here the
+/// pack is already admitted; exhaustion on a real doc is reported, not refused.
+///
+/// `doc_root_rev` anchors the budget finding to the document version it was metered
+/// against (the root node's rev = the file rev).
+pub(crate) fn eval_document(
+    predicates: &[Predicate],
+    facts: &FactDoc,
+    budget: EvalBudget,
+    doc_root_rev: &str,
+) -> Vec<Violation> {
+    let globals = rulepack_globals();
+    let mut out = Vec::new();
+    let mut total_steps: u64 = 0;
+    let mut peak_mem: u64 = 0;
+    for predicate in predicates {
+        match run_predicate(&globals, predicate, facts, budget) {
+            Ok(run) => {
+                total_steps = total_steps.saturating_add(run.used_steps);
+                peak_mem = peak_mem.max(run.used_mem);
+                // Cumulative post-eval accounting — the exact bound (per-predicate
+                // guards are best-effort, see `run_predicate`). Over budget ⇒ the
+                // finding, and evaluation stops (the verdict set is truncated).
+                if total_steps > budget.steps || peak_mem > budget.mem {
+                    out.push(budget_finding(predicate, facts, doc_root_rev, budget));
+                    break;
+                }
+                out.extend(run.violations);
+            }
+            Err(EvalError::Budget(_)) => {
+                out.push(budget_finding(predicate, facts, doc_root_rev, budget));
+                break;
+            }
+            Err(EvalError::Runtime(_)) => {
+                // A post-admission runtime fault (the load gate already ran this
+                // predicate over its fixtures): the rule contributes no findings for
+                // this doc. Only budget exhaustion is a typed wire finding (§8) — a
+                // runtime fault is not, so it is not fabricated into one here.
+            }
+        }
+    }
+    out
+}
+
+/// The `budget_exceeded` finding (frozen §8): rule = the busted rule PAGE (the
+/// predicate origin — a predicate that exhausts its budget may never reach its own
+/// `violation(rule=…)` call, so the page path is the only honest identifier of the
+/// rule that overran); severity = `Error` (the doc could harbor violations this rule
+/// never got to check — a truncated evaluation is a correctness gap Go should see,
+/// though whether an `error` blocks stays Go's call, §11.1); span `0..0` and no hpath
+/// (the finding is rule-level, not node-anchored), `node_rev` = the document version.
+fn budget_finding(
+    predicate: &Predicate,
+    facts: &FactDoc,
+    doc_root_rev: &str,
+    budget: EvalBudget,
+) -> Violation {
+    Violation {
+        rule: predicate.origin.clone(),
+        severity: Severity::Error,
+        path: facts.path.clone(),
+        span: 0..0,
+        node_rev: NodeRev(doc_root_rev.to_owned()),
+        hpath: None,
+        message: format!(
+            "budget_exceeded: rule evaluation exceeded the per-eval budget \
+             (steps>{} or mem>{} bytes) — evaluation truncated",
+            budget.steps, budget.mem
+        ),
+    }
 }
 
 /// One predicate's evaluation outcome: findings plus the exact resources it drew.
@@ -878,5 +1107,114 @@ def check(doc):
         )
         .expect("```starlark with trailing info extracts");
         assert_eq!(preds.len(), 1);
+    }
+
+    // ── P6-EVAL: real-AST facts + WHEN vocabulary + budget finding ───────────
+
+    /// A real `model::Document` for the given markdown (the caller's build step).
+    fn doc_of(md: &str) -> Document {
+        model::build(md.to_string(), syntax::parse(md))
+    }
+
+    #[test]
+    fn facts_from_document_injects_sections_as_heading_facts_with_real_revs() {
+        // Sections inject as `"heading"` facts in document order, carrying the
+        // section's real span/rev/hpath (the surface a §11.1 finding rides).
+        let doc = doc_of("# A\n\nbody\n\n## B\n\nmore\n");
+        let facts = facts_from_document(&doc);
+        let headings: Vec<&FactNode> = facts.nodes.iter().filter(|n| n.kind == "heading").collect();
+        assert_eq!(headings.len(), 2, "two sections → two heading facts");
+
+        assert_eq!(headings[0].text, "A");
+        assert_eq!(headings[0].level, 1);
+        assert_eq!(headings[0].hpath, vec!["A".to_string()]);
+        assert_eq!(headings[0].span.0, 0, "the A section opens at byte 0");
+        assert_eq!(
+            headings[0].node_rev.len(),
+            16,
+            "real 16-hex rev from the AST"
+        );
+
+        assert_eq!(headings[1].text, "B");
+        assert_eq!(headings[1].level, 2);
+        assert_eq!(headings[1].hpath, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn check_when_vocab_refuses_free_global_reference() {
+        // `actor` is not injected by rulepack-api@1 → the WHEN reaches outside the
+        // fact vocabulary → UnsupportedVocab, at compile.
+        let preds = extract_predicates(
+            &[
+                "# t\n\n```starlark\ndef check(doc):\n    if actor:\n        pass\n```\n"
+                    .to_string(),
+            ],
+            &["rules/t.md".to_string()],
+        )
+        .unwrap();
+        assert!(matches!(
+            check_when_vocab(&preds),
+            Err(CompileError::UnsupportedVocab {
+                requires: 2,
+                engine: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn check_when_vocab_accepts_in_vocab_predicate() {
+        // The blurb predicate touches only doc/node facts + stdlib + violation().
+        assert!(check_when_vocab(&blurb_predicates()).is_ok());
+    }
+
+    #[test]
+    fn eval_document_budget_exhaustion_is_a_finding() {
+        // A cheap predicate under a steps:1 budget over a real doc: exhaustion lands
+        // as the budget_exceeded finding (rule = the busted page), never an error.
+        let doc = doc_of("# A\n\nb\n\n# B\n\nc\n");
+        let facts = facts_from_document(&doc);
+        let out = eval_document(
+            &blurb_predicates(),
+            &facts,
+            EvalBudget {
+                steps: 1,
+                mem: 1 << 20,
+            },
+            "rootrev",
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule, "rules/blurb-required.md");
+        assert_eq!(out[0].severity, Severity::Error);
+        assert!(out[0].message.starts_with("budget_exceeded:"));
+        assert_eq!(out[0].node_rev, NodeRev("rootrev".into()));
+    }
+
+    #[test]
+    fn eval_document_drops_runtime_faulting_predicate_without_panic() {
+        // A predicate that faults at eval (index past the end) contributes no
+        // findings and does not panic — only budget exhaustion is a typed finding.
+        let preds = extract_predicates(
+            &[
+                "# bad\n\n```starlark\ndef check(doc):\n    x = doc.nodes[999]\n    _ = x\n```\n"
+                    .to_string(),
+            ],
+            &["rules/bad.md".to_string()],
+        )
+        .unwrap();
+        let doc = doc_of("# A\n\nb\n");
+        let facts = facts_from_document(&doc);
+        let out = eval_document(
+            &preds,
+            &facts,
+            EvalBudget {
+                steps: 10_000,
+                mem: 1 << 20,
+            },
+            "rootrev",
+        );
+        assert!(
+            out.is_empty(),
+            "a runtime-faulting rule drops out; no finding fabricated: {out:?}"
+        );
     }
 }
