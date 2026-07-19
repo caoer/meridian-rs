@@ -657,7 +657,9 @@ mod tests {
         assert_eq!(Ref::anchor("clean-1"), Ok(Ref::Anchor("clean-1".into())));
         assert_eq!(
             Ref::anchor("under-probe_x"),
-            Err(BadAnchorId { id: "under-probe_x".into() })
+            Err(BadAnchorId {
+                id: "under-probe_x".into()
+            })
         );
         assert_eq!(Ref::anchor("a_04"), Err(BadAnchorId { id: "a_04".into() }));
         assert_eq!(Ref::anchor(""), Err(BadAnchorId { id: String::new() }));

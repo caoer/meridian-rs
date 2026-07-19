@@ -21,7 +21,9 @@ fn pack() -> Value {
 #[test]
 fn every_mint_refusal_input_is_refused_by_the_guard() {
     let pack = pack();
-    let refusals = pack["mint_refusals"].as_array().expect("mint_refusals array");
+    let refusals = pack["mint_refusals"]
+        .as_array()
+        .expect("mint_refusals array");
     assert!(!refusals.is_empty(), "pack carries mint-refusal inputs");
     for entry in refusals {
         let id = entry["input_id"].as_str().expect("input_id string");
@@ -45,7 +47,9 @@ fn every_mint_refusal_input_is_refused_by_the_guard() {
 #[test]
 fn every_clean_id_mints() {
     let pack = pack();
-    let clean = pack["clean_accepts"].as_array().expect("clean_accepts array");
+    let clean = pack["clean_accepts"]
+        .as_array()
+        .expect("clean_accepts array");
     for id in clean {
         let id = id.as_str().expect("clean id string");
         assert_eq!(
@@ -113,4 +117,67 @@ fn underscore_exemption_fixtures_are_present_unmigrated() {
         !text.contains("^under-probe-x"),
         "it was NOT re-minted to a dash form"
     );
+}
+
+/// W4-AMEND gate 4 (re-homed CHARSET-GUARD splice-target position, the
+/// STAGED-OPEN follow-up): a `_`-bearing SPLICE-TARGET anchor is refused
+/// `bad_request`. The wire type admits the bytes (newtypes name, never
+/// validate — the frame must DECODE so the refusal can be loud, not a parse
+/// mystery); the mint-guard refuses them; the answer is the fix-class §8
+/// envelope. Rides the pack's per-position refusal inputs.
+#[test]
+fn underscore_splice_target_anchor_is_bad_request() {
+    let pack = pack();
+    let refusals = pack["mint_refusals"]
+        .as_array()
+        .expect("mint_refusals array");
+    let splice_targets: Vec<&str> = refusals
+        .iter()
+        .filter(|e| e["position"].as_str() == Some("splice target anchor"))
+        .map(|e| e["input_id"].as_str().expect("input_id string"))
+        .collect();
+    assert!(
+        !splice_targets.is_empty(),
+        "pack carries the splice-target position"
+    );
+    for id in splice_targets {
+        // 1. the frame decodes: the wire type admits the bytes
+        let frame = serde_json::json!({
+            "id": 9, "op": "splice", "path": "notes/plan.md",
+            "edits": [{
+                "target": {"anchor": id},
+                "edit": {"match": {"old": "a", "new": "b"}}
+            }]
+        });
+        let req: wire::Request = serde_json::from_value(frame).expect("wire admits the bytes");
+        let wire::Op::Splice { edits, .. } = &req.op else {
+            panic!("splice op")
+        };
+        assert_eq!(
+            edits[0].target,
+            wire::SecRef::Anchor { anchor: id.into() },
+            "target decodes verbatim"
+        );
+
+        // 2. the mint-guard refuses the id at the target position
+        assert_eq!(
+            Ref::anchor(id),
+            Err(BadAnchorId { id: id.to_string() }),
+            "mint-guard refuses splice-target {id:?}"
+        );
+
+        // 3. the refusal on the wire: bad_request, fix class (§8)
+        let refusal = wire::ErrorBody::new(wire::ErrorCode::BadRequest);
+        assert_eq!(refusal.recovery, wire::Recovery::Fix);
+        assert_eq!(
+            serde_json::to_value(wire::Response {
+                id: req.id,
+                ok: false,
+                payload: wire::ResponsePayload::Error { error: refusal },
+            })
+            .unwrap(),
+            serde_json::json!({"id":9,"ok":false,
+                "error":{"code":"bad_request","recovery":"fix"}})
+        );
+    }
 }
