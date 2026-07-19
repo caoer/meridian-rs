@@ -43,7 +43,7 @@ jq -n \
     generated_at: $generated_at,
     corpus: "walkvault/ (walk.md + blocks.md), byte-identical to the gate-3 adversarial-harness walkvault",
     corpus_sha256: { "walkvault/walk.md": $walk_sha, "walkvault/blocks.md": $blocks_sha },
-    span_units: "UTF-8 byte offsets (corpus is ASCII: UTF-16 Loc.offset == UTF-8 offset)",
+    span_units: "UTF-8 byte offsets (transcoded from the app Loc.offset, which is UTF-16 code units; corpus is NOT ASCII — walk.md carries U+2014 x5 + U+2192 x1)",
     probe_count: { walk_law: 6, underscore: 1, note: "WL-6 realized as the WL-6a/WL-6b divergence pair (2 entries, 1 walk law)" },
     drift_posture: "app bump => re-run generate.sh; answers are never assumed to carry (contract §13.3-§13.4, gate-1 ruling 7)",
     probes: $probes

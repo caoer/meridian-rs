@@ -3,13 +3,13 @@
   "app_version": "1.12.7",
   "oracle": "live Obsidian resolver via probe-bridge — parseLinktext -> getFirstLinkpathDest (stage 1) -> resolveSubpath (stage 2)",
   "generation_command": "obsidian eval code=\"$(cat oracle.js)\"  (driven by ./generate.sh)",
-  "generated_at": "2026-07-19T02:11:24Z",
+  "generated_at": "2026-07-19T05:18:59Z",
   "corpus": "walkvault/ (walk.md + blocks.md), byte-identical to the gate-3 adversarial-harness walkvault",
   "corpus_sha256": {
     "walkvault/walk.md": "9cefbba3df8ded74a583342eaf5aab4a3cebb1ba866a4470cb54fa4a22bf0cf0",
     "walkvault/blocks.md": "b2a3e96a976c6270dad3ae79753b1655cb64e2115b9a2fde69be4b7272d83652"
   },
-  "span_units": "UTF-8 byte offsets (corpus is ASCII: UTF-16 Loc.offset == UTF-8 offset)",
+  "span_units": "UTF-8 byte offsets (transcoded from the app Loc.offset, which is UTF-16 code units; corpus is NOT ASCII — walk.md carries U+2014 x5 + U+2192 x1)",
   "probe_count": {
     "walk_law": 6,
     "underscore": 1,
@@ -30,8 +30,8 @@
         "ok": true,
         "dest": "walk.md",
         "span": [
-          183,
-          204
+          189,
+          210
         ],
         "resolved_type": "heading"
       }
@@ -50,7 +50,7 @@
         "dest": "walk.md",
         "span": [
           31,
-          102
+          106
         ],
         "resolved_type": "heading"
       }
@@ -86,8 +86,8 @@
         "ok": true,
         "dest": "walk.md",
         "span": [
-          183,
-          204
+          189,
+          210
         ],
         "resolved_type": "heading"
       }
@@ -105,8 +105,8 @@
         "ok": true,
         "dest": "walk.md",
         "span": [
-          183,
-          204
+          189,
+          210
         ],
         "resolved_type": "heading"
       }
@@ -124,7 +124,7 @@
         "ok": true,
         "dest": "walk.md",
         "span": [
-          329,
+          339,
           393
         ],
         "resolved_type": "heading",
@@ -144,8 +144,8 @@
         "ok": true,
         "dest": "walk.md",
         "span": [
-          282,
-          329
+          290,
+          339
         ],
         "resolved_type": "heading"
       }
