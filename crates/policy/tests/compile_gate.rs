@@ -46,7 +46,33 @@ fixtures: [fixtures/blurb-pass.md, fixtures/blurb-fail.md]
 rules: [rules/blurb-required.md]
 ";
 
-const RULE: &str = "# blurb-required\n\nEvery section must open with a blurb line.\n";
+// A literate rule page: prose + a fenced Starlark predicate (rulepack-api@1). The
+// predicate reads the injected `doc.nodes` and emits a §11.1 finding per blurbless
+// heading — a heading immediately followed by another heading (or EOF).
+const RULE: &str = r#"# blurb-required
+
+Every section must open with a blurb line.
+
+```starlark
+def check(doc):
+    nodes = doc.nodes
+    count = len(nodes)
+    for i in range(count):
+        node = nodes[i]
+        if node.kind != "heading":
+            continue
+        has_blurb = i + 1 < count and nodes[i + 1].kind != "heading"
+        if not has_blurb:
+            violation(
+                rule = "blurb-required",
+                severity = "warn",
+                span = node.span,
+                node_rev = node.node_rev,
+                hpath = node.hpath,
+                message = "section has no blurb line",
+            )
+```
+"#;
 const FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\nA blurb line.\n";
 // A heading immediately followed by another heading demonstrates the violation.
 const FX_FAIL: &str = "---\nexpect: fail\n---\n# Goals\n## Sub\nbody\n";
@@ -160,10 +186,14 @@ fn conforming_pack_is_admitted() {
 /// — the seam P6-VERDICTS reads to refuse it sidecar-mode (`daemon_only`).
 #[test]
 fn corpus_class_rule_surfaces_corpus_budget_class() {
+    // A corpus-class rule page: its prose names the `link_resolves` assertion
+    // (§4 #13), which the stand-in classifier reads to mark the pack corpus-class.
+    // The fenced predicate is valid Starlark whose fixture demonstrates cleanly
+    // (the link fact surface itself is P6-EVAL's, not this unit's).
     let files = MemFiles::new(&[
         (
             "rules/link-check.md",
-            "# link-check\n\n```\nassert:\n  - link_resolves\n```\n",
+            "# link-check\n\nCorpus-class: resolves cross-document links via the `link_resolves`\nassertion (§4 #13), so the pack runs daemon-only.\n\n```starlark\ndef check(doc):\n    pass\n```\n",
         ),
         ("fixtures/blurb-pass.md", FX_PASS),
     ]);
@@ -200,4 +230,55 @@ fn unreadable_rule_is_malformed() {
         compile(&pin(), MANIFEST, &files),
         Err(CompileError::Malformed { .. })
     ));
+}
+
+// ── P6-STARLARK pack-verbatim gates (impl-taskpack §9 gates 1 & 3) ───────────
+// Gate 2 (`grep -rn 'starlark' crates/wire crates/transport-proto` = 0) is a
+// wire-invariance grep gate, evidenced in the task card — not a Rust test.
+
+/// Gate 1 — a real fenced Starlark block from a rule page, evaluated over the
+/// injected `doc` facts, produces the expected verdict. The conforming pack's
+/// `blurb-fail` fixture (heading→heading) must DEMONSTRATE as `fail`: flipping its
+/// declared `expect` to `pass` makes the load gate catch the disagreement — proof
+/// the predicate actually ran and produced a violation from the injected facts.
+#[test]
+fn p6_starlark_gate1_fenced_predicate_evaluates_over_injected_facts() {
+    assert!(
+        compile(&pin(), MANIFEST, &conforming_pack()).is_ok(),
+        "conforming pack (predicate demonstrates pass + fail) is admitted"
+    );
+
+    let mislabeled = MemFiles::new(&[
+        ("rules/blurb-required.md", RULE),
+        ("fixtures/blurb-pass.md", FX_PASS),
+        // heading→heading body — the predicate yields a violation ⇒ verdict `fail`
+        // — but the fixture now (wrongly) declares `expect: pass`.
+        (
+            "fixtures/blurb-fail.md",
+            "---\nexpect: pass\n---\n# Goals\n## Sub\nbody\n",
+        ),
+    ]);
+    match compile(&pin(), MANIFEST, &mislabeled).unwrap_err() {
+        CompileError::FixtureFailed { fixture, detail } => {
+            assert_eq!(fixture, "fixtures/blurb-fail.md");
+            assert!(
+                detail.contains("demonstrated:fail"),
+                "predicate must have produced the `fail` verdict; detail: {detail}"
+            );
+        }
+        other => panic!("expected FixtureFailed, got {other:?}"),
+    }
+}
+
+/// Gate 3 — the `rulepack-api@1` pin string is verified in the manifest fixture:
+/// the public pin const is exactly `rulepack-api@1`, the manifest fixture declares
+/// it, and that pin is honored end-to-end (the pack compiles).
+#[test]
+fn p6_starlark_gate3_pin_string_rulepack_api_1_in_manifest() {
+    assert_eq!(policy::RULEPACK_API, "rulepack-api@1");
+    assert!(
+        MANIFEST.contains("api: rulepack-api@1"),
+        "manifest fixture pins rulepack-api@1"
+    );
+    assert!(compile(&pin(), MANIFEST, &conforming_pack()).is_ok());
 }
