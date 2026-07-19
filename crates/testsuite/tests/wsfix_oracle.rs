@@ -36,9 +36,10 @@ fn frontmatter(root: &Node) -> &Node {
 }
 
 fn section<'a>(root: &'a Node, heading: &str) -> &'a Node {
-    find(root, &|n| {
-        matches!(&n.kind, NodeKind::Section { heading_text, .. } if heading_text == heading)
-    })
+    find(
+        root,
+        &|n| matches!(&n.kind, NodeKind::Section { heading_text, .. } if heading_text == heading),
+    )
     .unwrap_or_else(|| panic!("section {heading:?}"))
 }
 

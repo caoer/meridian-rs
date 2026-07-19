@@ -232,11 +232,9 @@ fn nest_by_containment(mut items: Vec<Node>) -> Vec<Node> {
     items.sort_by(span_order);
     let mut stack: Vec<Node> = Vec::new();
     let mut forest: Vec<Node> = Vec::new();
-    let close = |done: Node, stack: &mut Vec<Node>, forest: &mut Vec<Node>| {
-        match stack.last_mut() {
-            Some(parent) => parent.children.push(done),
-            None => forest.push(done),
-        }
+    let close = |done: Node, stack: &mut Vec<Node>, forest: &mut Vec<Node>| match stack.last_mut() {
+        Some(parent) => parent.children.push(done),
+        None => forest.push(done),
     };
     for item in items {
         while let Some(top) = stack.last() {
@@ -306,7 +304,8 @@ fn parse_frontmatter(raw: &str, span: &ByteSpan) -> YamlMap {
             if key.is_empty() {
                 continue;
             }
-            map.entry(key).or_insert_with(|| line[colon + 1..].trim().to_string());
+            map.entry(key)
+                .or_insert_with(|| line[colon + 1..].trim().to_string());
         }
     }
     YamlMap(map)
@@ -521,8 +520,10 @@ mod tests {
         // (newline-inclusive) family — [0,20], NOT syntax's trimmed [0,19).
         assert_eq!(PLAN_S0.len(), 136);
         let doc = build_plan();
-        let fm = find(&doc.root, &|n| matches!(n.kind, NodeKind::Frontmatter { .. }))
-            .expect("frontmatter node");
+        let fm = find(&doc.root, &|n| {
+            matches!(n.kind, NodeKind::Frontmatter { .. })
+        })
+        .expect("frontmatter node");
         assert_eq!(fm.span, 0..20, "fence-to-fence, terminator-inclusive");
         assert_eq!(&doc.raw[fm.span.clone()], "---\ntitle: Plan\n---\n");
         assert_eq!(fm.node_rev.0, "26796ebec5d0bf1a");
@@ -552,7 +553,10 @@ mod tests {
         .expect("Goals section");
         assert_eq!(goals.span, 20..136, "L1 section runs to EOF (Q3/Q4 deeper)");
         assert_eq!(goals.node_rev.0, "a6665baff294bd04");
-        assert_eq!(goals.hpath.as_deref(), Some(["Goals".to_string()].as_slice()));
+        assert_eq!(
+            goals.hpath.as_deref(),
+            Some(["Goals".to_string()].as_slice())
+        );
         // Q3 and Q4 are children of Goals (level nesting), not siblings.
         let q3 = goals
             .children
