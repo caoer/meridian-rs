@@ -1035,11 +1035,17 @@ mod tests {
     }
 
     fn seg(h: &str) -> HpathSeg {
-        HpathSeg { h: h.to_string(), n: None }
+        HpathSeg {
+            h: h.to_string(),
+            n: None,
+        }
     }
 
     fn seg_n(h: &str, n: u32) -> HpathSeg {
-        HpathSeg { h: h.to_string(), n: Some(n) }
+        HpathSeg {
+            h: h.to_string(),
+            n: Some(n),
+        }
     }
 
     #[test]
@@ -1073,7 +1079,8 @@ mod tests {
         let title = resolve(&doc, &Ref::FmKey("title".to_string())).expect("title fm_key");
         assert_eq!(title.span, 4..16);
         assert_eq!(&doc.raw[title.span.clone()], "title: Plan\n");
-        let independent = blake3::hash(&doc.raw.as_bytes()[4..16]).to_hex().as_str()[..16].to_string();
+        let independent =
+            blake3::hash(&doc.raw.as_bytes()[4..16]).to_hex().as_str()[..16].to_string();
         assert_eq!(title.node_rev.0, independent);
         assert_eq!(
             resolve(&doc, &Ref::FmKey("nope".to_string())),
@@ -1089,14 +1096,18 @@ mod tests {
         let raw = "# A\n\n## Beta\n\nfirst\n\n## Beta\n\nsecond\n".to_string();
         let doc = build(raw.clone(), syntax::parse(&raw));
         let ResolveError::Ambiguous(cands) =
-            resolve(&doc, &Ref::Hpath(vec![seg("A"), seg("Beta")])).expect_err("duplicate is ambiguous")
+            resolve(&doc, &Ref::Hpath(vec![seg("A"), seg("Beta")]))
+                .expect_err("duplicate is ambiguous")
         else {
             panic!("duplicate sibling hpath must resolve Ambiguous");
         };
         assert_eq!(cands.len(), 2);
         let first = resolve(&doc, &Ref::Hpath(vec![seg("A"), seg_n("Beta", 1)])).expect("Beta#1");
         let second = resolve(&doc, &Ref::Hpath(vec![seg("A"), seg_n("Beta", 2)])).expect("Beta#2");
-        assert!(first.span.start < second.span.start, "n follows document order");
+        assert!(
+            first.span.start < second.span.start,
+            "n follows document order"
+        );
         assert_eq!(cands[0].span, first.span);
         assert_eq!(cands[1].span, second.span);
         assert_eq!(
@@ -1116,7 +1127,10 @@ mod tests {
             panic!("duplicate anchor must resolve Ambiguous");
         };
         assert_eq!(cands.len(), 2);
-        assert!(cands[0].span.start < cands[1].span.start, "candidates in document order");
+        assert!(
+            cands[0].span.start < cands[1].span.start,
+            "candidates in document order"
+        );
         let solo = resolve(&doc, &Ref::anchor("solo").unwrap()).expect("solo anchor");
         assert!(!solo.node_rev.0.is_empty());
         assert_eq!(
@@ -1134,7 +1148,8 @@ mod tests {
     const R1_HEX: &str = "10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
     const R2_HEX: &str = "83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
     const R0_WRONG_HEX: &str = "75a61c883e372102cfe7d75e94992b9be65e33fbe95956897a4cf2ea45bb8f1b";
-    const R_V0_DRAFTS_HEX: &str = "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
+    const R_V0_DRAFTS_HEX: &str =
+        "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
 
     // Non-plan fixture bytes, verbatim from `wire-contract-v2-verify.py` §0.3.
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
@@ -1253,7 +1268,10 @@ mod tests {
         let plan = ("notes/plan.md", f.plan_v2.as_bytes());
         let receipts = ("receipts/2026-07-18.md", f.receipts_v2.as_bytes());
 
-        let bump_v0 = merkle_root(&[plan, receipts, ("drafts/tmp.md", DRAFT_TMP.as_bytes())], 0);
+        let bump_v0 = merkle_root(
+            &[plan, receipts, ("drafts/tmp.md", DRAFT_TMP.as_bytes())],
+            0,
+        );
         assert_eq!(bump_v0.0, format!("b3:{R_V0_DRAFTS_HEX}"));
 
         let bump_v1 = merkle_root(&[plan, receipts], 1);
@@ -1300,7 +1318,11 @@ mod tests {
         with_empty
             .entries
             .insert("empty".to_string(), MerkleEntry::Dir(MerkleDir::default()));
-        assert_eq!(base.fold(), with_empty.fold(), "empty dir contributes nothing");
+        assert_eq!(
+            base.fold(),
+            with_empty.fold(),
+            "empty dir contributes nothing"
+        );
     }
 
     /// The §12.2 varint is unsigned LEB128 (single byte below 128).

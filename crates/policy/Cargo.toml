@@ -39,3 +39,11 @@ starlark = "0.14.2"
 # `violation()` fact-API builtin (rulepack-api@1) uses it. Already in the lock via
 # starlark's own tree — zero marginal build cost.
 anyhow = "1"
+
+[dev-dependencies]
+# TEST-ONLY: the §11.1 worked-verdict gate builds a real `model::Document` from the
+# frozen wsfix fixture bytes (`model::build(raw, syntax::parse(raw))`) and feeds it to
+# `evaluate` — the same pipeline the caller (`fs`/`sidecar`) runs. `evaluate` itself
+# takes pre-built `&Document`s, so `syntax` stays OUT of the production dependency edge
+# (`model` is the only production dep); it enters here for tests only.
+syntax = { workspace = true }
