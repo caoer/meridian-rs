@@ -3,4 +3,5 @@
 //! and `wire_golden` (contract example exchanges verbatim) as modules here.
 
 mod gt_pack_smoke;
+mod gt_parse;
 mod wire_vocab;
