@@ -168,9 +168,10 @@ fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
 // ── Injected world-model facts (rulepack-api@1) ──────────────────────────────
 
 /// One world-model node exposed to a predicate as a Starlark struct. This is the
-/// fact-injection surface: the load gate builds it synthetically from fixture
-/// markdown ([`facts_from_markdown`]); P6-EVAL builds it from a real
-/// `model::Document` AST — the *source* of the facts changes, this shape does not.
+/// fact-injection surface: production (load gate AND `evaluate`) builds it from a
+/// real `model::Document` AST via [`facts_from_document`]; the synthetic per-line
+/// `facts_from_markdown` builder survives test-only — the *source* of the facts
+/// changes, this shape does not.
 pub(crate) struct FactNode {
     /// `"heading"` / `"paragraph"` / … — the world-model node kind.
     pub kind: &'static str,
@@ -188,16 +189,28 @@ pub(crate) struct FactNode {
 
 /// The document a predicate evaluates over: path + nodes in document order. The
 /// injected `doc` value (see module docs) is this, allocated as a Starlark struct.
-pub(crate) struct FactDoc {
-    pub path: String,
-    pub nodes: Vec<FactNode>,
+///
+/// PUBLIC but OPAQUE (fields `pub(crate)`): it is the return type of the load
+/// gate's injected fact builder (`compile`'s `build_facts` closure) and of
+/// [`crate::facts_from_document`], so the composition layer (sidecar) can hand
+/// policy facts through the SAME plane production evaluation uses — WITHOUT the
+/// closure signature naming `syntax::`/`model::` types (the fence holds at the
+/// type level). Consumers pass it; only policy reads it.
+pub struct FactDoc {
+    pub(crate) path: String,
+    pub(crate) nodes: Vec<FactNode>,
 }
 
-/// Build the injected fact surface synthetically from a fixture's markdown body —
-/// the load-gate stand-in for a real `model::Document` (`model::build` is still a
-/// `todo!()`). Each non-blank line becomes one node: headings carry their level +
-/// hpath, everything else is a paragraph. P6-EVAL replaces this builder with real
-/// AST facts without reshaping [`FactDoc`] / [`FactNode`].
+/// Build the injected fact surface synthetically from a fixture's markdown body,
+/// one node per non-blank line (headings carry level + hpath, else paragraph).
+///
+/// TEST-ONLY: retired from the production admission path at P6-VERDICTS (the
+/// load-gate unification) — its per-line paragraph fabrication demonstrates
+/// fixtures on a fact plane production NEVER reproduces (the real world model is
+/// paragraph-blind), which is exactly the synthetic-pass/real-fail drift the load
+/// gate exists to kill. Kept only as an in-crate test helper for the unit tests
+/// that still exercise the synthetic shape directly.
+#[cfg(test)]
 pub(crate) fn facts_from_markdown(path: &str, body: &str) -> FactDoc {
     let mut nodes = Vec::new();
     let mut offset = 0usize;
@@ -236,7 +249,9 @@ pub(crate) fn facts_from_markdown(path: &str, body: &str) -> FactDoc {
     }
 }
 
-/// ATX heading level (1..=6) if `line` is a heading, else `None`.
+/// ATX heading level (1..=6) if `line` is a heading, else `None`. Test-only: the
+/// only caller is the retired synthetic `facts_from_markdown` builder.
+#[cfg(test)]
 fn heading_level(line: &str) -> Option<u8> {
     let trimmed = line.trim_start();
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
@@ -247,10 +262,14 @@ fn heading_level(line: &str) -> Option<u8> {
     }
 }
 
-/// Derive the injected fact surface from a REAL `model::Document` AST (P6-EVAL) —
-/// the production replacement for [`facts_from_markdown`]'s synthetic stand-in,
-/// feeding the SAME [`FactDoc`] / [`FactNode`] shape from real nodes so no
-/// predicate, and no public type, changes.
+/// Derive the injected fact surface from a REAL `model::Document` AST — the
+/// production fact plane, feeding the [`FactDoc`] / [`FactNode`] shape from real
+/// nodes so no predicate changes. PUBLIC (like `evaluate`, it names
+/// `model::Document` — no NEW dep edge, `model` is already a `policy` dep): the
+/// composition layer (sidecar) calls it inside the load gate's injected builder
+/// so fixtures demonstrate over the same plane `evaluate` runs (P6-VERDICTS
+/// load-gate unification). The synthetic per-line stand-in (`facts_from_markdown`)
+/// is retired from the production path — test-only now.
 ///
 /// The world-model tree flattens to `doc.nodes` in document order (a preorder walk
 /// of the already span-sorted tree, §1 total order). The root `Document` node is
@@ -266,7 +285,8 @@ fn heading_level(line: &str) -> Option<u8> {
 /// intervening content fact — exactly what makes `blurb-required` fire on `Goals`
 /// (its first following node is the deeper `Q3` heading) but not on `Q3` (its next
 /// heading `Q4` is a same-level sibling).
-pub(crate) fn facts_from_document(doc: &Document) -> FactDoc {
+#[must_use]
+pub fn facts_from_document(doc: &Document) -> FactDoc {
     let path = match &doc.root.kind {
         NodeKind::Document { path, .. } => path.clone(),
         _ => String::new(),
@@ -477,37 +497,6 @@ pub(crate) struct BudgetExhausted {
 pub(crate) enum EvalError {
     Budget(BudgetExhausted),
     Runtime(String),
-}
-
-/// The sealed evaluation bridge. `StarlarkEvaluator` is the real impl; the load
-/// gate (and, later, `evaluate`) call through this trait, so the evaluator never
-/// touches the public API. P6-EVAL grows the fact surface / WHEN-vocabulary
-/// enforcement behind this same seam.
-pub(crate) trait RuleEvaluator {
-    /// Evaluate the pack's predicates over one fixture's body, metered under
-    /// `budget`. `Ok(violations)` (empty = the fixture passes) or [`EvalError`].
-    fn eval_fixture(
-        &self,
-        predicates: &[Predicate],
-        fixture: &FixtureDoc,
-        budget: EvalBudget,
-    ) -> Result<Vec<Violation>, EvalError>;
-}
-
-/// The ruling-008 evaluator: fenced Starlark predicates over injected world-model
-/// facts, in-engine via starlark-rust, metered per-eval by `{steps, mem}`.
-pub(crate) struct StarlarkEvaluator;
-
-impl RuleEvaluator for StarlarkEvaluator {
-    fn eval_fixture(
-        &self,
-        predicates: &[Predicate],
-        fixture: &FixtureDoc,
-        budget: EvalBudget,
-    ) -> Result<Vec<Violation>, EvalError> {
-        let facts = facts_from_markdown(&fixture.path, &fixture.body);
-        eval_over_facts(predicates, &facts, budget)
-    }
 }
 
 /// The evaluation core: run every predicate over one injected [`FactDoc`], metered
