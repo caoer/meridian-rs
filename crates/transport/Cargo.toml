@@ -12,7 +12,10 @@ workspace = true
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value: the B2 id-scan reads the VERBATIM `id` lexeme before typed decode
+# (contract §3.1) — `RawValue` preserves `3e0`/`"7"`/`2^64` byte-for-byte where
+# a parsed `Value` would normalize or overflow them.
+serde_json = { workspace = true, features = ["raw_value"] }
 
 [dev-dependencies]
 # lsp-server keeps lsp-types as a dev-dependency only; same discipline here —
