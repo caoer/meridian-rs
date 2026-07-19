@@ -27,8 +27,74 @@ pub(crate) fn dispatch(
         } => resolve(root, &from, &r#ref, content.unwrap_or(false)),
         Op::Root => root_op(root, epoch),
         Op::Diff { from_root, to_root } => diff_op(root, epoch, &from_root, &to_root),
+        Op::Links { path, require_root } => links_op(root, epoch, path.as_ref(), require_root),
         Op::Splice { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// v2 §4.6 the edge map under the §10.1 triple, served from `query` over the
+/// domain snapshot (§10.3: facts come from the world model — the §12 hash
+/// domain, not the walk plane's addressable superset). `as_of_root` folds the
+/// EXACT bytes the answer parses; `live_root` is a fresh fold after the
+/// computation — under a concurrent splice the two may differ, which is a
+/// legal frame, never an error (§10.1: no lag bounds are promised, ever).
+fn links_op(
+    root: &fs::WorkspaceRoot,
+    epoch: &crate::ring::RootRing,
+    path: Option<&Path>,
+    require_root: Option<Root>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let (files, as_of_root) = domain_snapshot(root)?;
+    // The Delta counter at as_of_root (§10.1) — sampled with the snapshot;
+    // §7.1 per-daemon-epoch semantics ride along unchanged.
+    let changes_seq = epoch.seq();
+    if let Some(required) = require_root
+        && required != as_of_root
+    {
+        // §10.2: the opt-in strictness refusal — retryable, never silent.
+        let mut e = ErrorBody::new(ErrorCode::StaleView);
+        e.required = Some(required);
+        e.as_of_root = Some(as_of_root.clone());
+        e.live_root = Some(as_of_root);
+        return Err(Box::new(e));
+    }
+    let mut index = model::CorpusIndex::new();
+    let mut docs = std::collections::BTreeMap::new();
+    for (rel, bytes) in files {
+        // The fact plane refuses what it cannot parse — loud, never skipped
+        // (the walk plane's skip-broken-files posture is resolve's, §4.5).
+        let text = String::from_utf8(bytes)
+            .map_err(|_| Box::new(ErrorBody::new(ErrorCode::InvalidUtf8)))?;
+        let doc = model::build(text.clone(), syntax::parse(&text));
+        index.insert(&rel, &doc);
+        docs.insert(rel, doc);
+    }
+    if let Some(p) = path
+        && !docs.contains_key(&p.0)
+    {
+        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
+        e.path = Some(p.clone());
+        return Err(Box::new(e));
+    }
+    let map = query::links(&index, &docs, path.map(|p| p.0.as_str()));
+    let live_root = domain_snapshot(root)?.1;
+    Ok(ResponseBody::Links {
+        as_of_root,
+        live_root,
+        changes_seq,
+        files: map
+            .into_iter()
+            .map(|(p, e)| {
+                (
+                    p,
+                    wire::FileLinks {
+                        resolved: e.resolved,
+                        unresolved: e.unresolved,
+                    },
+                )
+            })
+            .collect(),
+    })
 }
 
 /// v2 §4.7: the current workspace root cursor (computed fresh from disk —
@@ -77,6 +143,17 @@ fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
 /// bytes folded through `model::merkle_root` — the one blake3 home — with the
 /// domain config's prefix version.
 fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
+    Ok(domain_snapshot(root)?.1)
+}
+
+/// The domain files as `(workspace-relative path, raw bytes)` pairs.
+type DomainFiles = Vec<(String, Vec<u8>)>;
+
+/// The §12 hash-domain snapshot: every domain file's bytes + the root folded
+/// over exactly those bytes — one read, one fold, so a consumer (the `links`
+/// fact plane) parses the same bytes its `as_of_root` describes and the
+/// answer cannot drift from its stamp.
+fn domain_snapshot(root: &fs::WorkspaceRoot) -> Result<(DomainFiles, Root), Box<ErrorBody>> {
     let io_err = |e: std::io::Error| {
         let mut err = ErrorBody::new(ErrorCode::IoError);
         err.cause = Some(e.to_string());
@@ -93,7 +170,8 @@ fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
         .iter()
         .map(|(p, b)| (p.as_str(), b.as_slice()))
         .collect();
-    Ok(Root(model::merkle_root(&entries, domain.version()).0))
+    let folded = Root(model::merkle_root(&entries, domain.version()).0);
+    Ok((files, folded))
 }
 
 /// `fs::load` with the §8 error split: `file_not_found` (env — the file is

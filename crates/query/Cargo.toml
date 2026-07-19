@@ -1,6 +1,6 @@
 [package]
 name = "query"
-description = "Rung-5 corpus reads stub: backlinks, board queries, span-exact rename planning — borrows the model's index, applies nothing"
+description = "Rung-5 corpus reads: backlinks, the §4.6 edge map, span-exact rename planning — borrows the model's index, applies nothing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 model = { workspace = true }
+
+[dev-dependencies]
+# test-only: building in-memory corpora for the edge-map fixtures
+syntax = { workspace = true }

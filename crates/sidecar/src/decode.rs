@@ -71,6 +71,15 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             check_fields(obj, op, &[])?;
             Ok(Op::Root)
         }
+        "links" => {
+            // v2 §4.6: both fields optional — `path` absent is the
+            // whole-corpus edge map; `require_root` is the §10.2 opt-in.
+            check_fields(obj, op, &["path", "require_root"])?;
+            Ok(Op::Links {
+                path: opt_path(obj, op, "path")?,
+                require_root: opt_str(obj, op, "require_root")?.map(wire::Root),
+            })
+        }
         "diff" => {
             check_fields(obj, op, &["from_root", "to_root"])?;
             Ok(Op::Diff {
@@ -140,6 +149,12 @@ fn req_u64(obj: &Map<String, Value>, op: &str, key: &str) -> Result<u64, Box<Err
         ))),
         None => Err(bad_request(format!("missing `{key}` on `{op}`"))),
     }
+}
+
+/// [`req_path`]'s optional twin: absent is `None`, present is path-law
+/// validated.
+fn opt_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Option<Path>, Box<ErrorBody>> {
+    obj.get(key).map(|_| req_path(obj, op, key)).transpose()
 }
 
 /// v2 §1 path law: workspace-relative, `/`-separated, never absolute, no
