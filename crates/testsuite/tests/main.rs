@@ -6,6 +6,7 @@ mod charset_guard;
 mod delta_e3e4;
 mod gt_pack_smoke;
 mod gt_parse;
+mod pf_frozen_sweep;
 mod walk_resolve;
 mod wire_vocab;
 mod wsfix_oracle;
