@@ -656,3 +656,80 @@ fn not_found_retirement_deviation_fixture() {
         wire::ErrorCode::RefNotFound
     );
 }
+
+// ---------------------------------------------------------------------------
+// W4-ACTOR — §9 actor/now as wire inputs, never ambient
+// ---------------------------------------------------------------------------
+
+/// Gate 2: malformed `now` → `bad_request`. The §9 format law is the
+/// [`wire::now_is_rfc3339`] predicate; a dispatcher answers every rejection
+/// with the fix-class envelope asserted here.
+#[test]
+fn malformed_now_is_bad_request() {
+    // the contract's own worked values pass
+    for valid in [
+        "2026-07-18T20:31:04Z",
+        "2026-07-18T20:33:41Z",
+        "2026-07-18t20:31:04z",
+        "2026-07-18T20:31:04.250Z",
+        "2026-07-18T20:31:04+08:00",
+        "2026-12-31T23:59:60-05:30", // leap second, negative offset
+        "2028-02-29T00:00:00Z",      // leap day
+    ] {
+        assert!(wire::now_is_rfc3339(valid), "{valid} must validate");
+    }
+    for malformed in [
+        "yesterday",
+        "2026-07-18 20:31:04Z",     // space, not T
+        "2026-07-18T20:31:04",      // no offset
+        "2026-13-01T00:00:00Z",     // month 13
+        "2026-02-30T00:00:00Z",     // Feb 30
+        "2027-02-29T00:00:00Z",     // non-leap Feb 29
+        "2026-07-18T24:00:00Z",     // hour 24
+        "2026-07-18T20:31:04.Z",    // empty fraction
+        "2026-07-18T20:31:04+8:00", // one-digit offset hour
+        "2026-07-18T20:31:04Z extra",
+        "1721334664", // unix seconds
+    ] {
+        assert!(!wire::now_is_rfc3339(malformed), "{malformed} must refuse");
+        // the refusal a dispatcher answers with: bad_request, fix class
+        let e = wire::ErrorBody::new(wire::ErrorCode::BadRequest);
+        assert_eq!(e.recovery, wire::Recovery::Fix);
+    }
+}
+
+/// Gate 3 (wire side): absent inputs produce absent FACTS — a splice frame
+/// without `actor`/`now` serializes without those keys and reads back to
+/// `None`; the engine records nothing it wasn't told (§9). Receipt-side
+/// twin: `receipt` crate's `absent_inputs_render_absent_facts`; the full
+/// external-change proof lands in F5-WATCH.
+#[test]
+fn absent_actor_now_absent_on_the_wire() {
+    let request = wire::Request {
+        id: Some(7),
+        op: wire::Op::Splice {
+            path: wire::Path("notes/plan.md".into()),
+            actor: None,
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: None,
+            edits: vec![wire::Edit {
+                target: wire::SecRef::FmKey {
+                    fm_key: "title".into(),
+                },
+                edit: wire::EditShape::Match {
+                    old: "Plan".into(),
+                    new: "Plan v2".into(),
+                },
+                if_node_rev: None,
+            }],
+        },
+    };
+    let v = serde_json::to_value(&request).unwrap();
+    let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(!keys.contains(&"actor"), "absent actor: no key on the wire");
+    assert!(!keys.contains(&"now"), "absent now: no key on the wire");
+    let back: wire::Request = serde_json::from_value(v).unwrap();
+    assert_eq!(back, request);
+}
