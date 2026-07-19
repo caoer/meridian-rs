@@ -285,8 +285,9 @@ message Response {
     SpliceResponse splice = 6;
     RootResponse root = 7;
     ErrorBody error = 9;
-    TocResponse toc = 10; // v2 §4.1
-    CatResponse cat = 11; // v2 §4.2
+    TocResponse toc = 10;   // v2 §4.1
+    CatResponse cat = 11;   // v2 §4.2
+    DiffResponse diff = 12; // v2 §4.7/§7.3 (D3-DELTA)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -366,6 +367,79 @@ message Verdict {}
 message RootResponse {
   string root = 1;
   uint64 seq = 2;
+}
+
+// ---------------------------------------------------------------------------
+// contract v2 §7 the Delta noun — the fifth noun, born frozen (D3-DELTA)
+// ---------------------------------------------------------------------------
+
+// v2 §4.7/§7.3 replay ≡ live: batches are the byte-identical live
+// notification frames — catchup consumers and subscribers parse ONE shape;
+// there is no second diff dialect.
+message DiffResponse {
+  repeated DeltaFrame batches = 1;
+}
+
+// One live notification frame body: `{"delta":{…}}` (v2 §7.1 worked frames;
+// events carry no id, §3.1 classification).
+message DeltaFrame {
+  Delta delta = 1;
+}
+
+// The fifth wire noun (v2 §7.1, frozen at birth): one Delta = one batch =
+// one root advance. `seq` is per-daemon-epoch (§7.1 law — no counter
+// survives on disk; cross-epoch catchup is diff-by-root). actor/now absent
+// on external changes (A8/§9). Node-grain at birth (decision 012, §7.4) —
+// no key-grain slot exists on any message here.
+message Delta {
+  uint64 seq = 1;
+  string root_before = 2;
+  string root_after = 3;
+  optional string actor = 4;
+  optional string now = 5;
+  repeated DeltaFile files = 6;
+}
+
+message DeltaFile {
+  string path = 1;
+  FileChange change = 2;
+  // renamed carries the origin path (v2 §7.1 law).
+  optional string from_path = 3;
+  // Absent on created (no pre-state exists to hash).
+  optional string file_rev_before = 4;
+  // Absent on deleted (no post-state exists to hash).
+  optional string file_rev_after = 5;
+  repeated DeltaNode nodes = 6;
+}
+
+// v2 §7.1: file change ∈ {created, modified, deleted, renamed}.
+enum FileChange {
+  FILE_CHANGE_UNSPECIFIED = 0;
+  FILE_CHANGE_CREATED = 1;
+  FILE_CHANGE_MODIFIED = 2;
+  FILE_CHANGE_DELETED = 3;
+  FILE_CHANGE_RENAMED = 4;
+}
+
+// v2 §7.1/§7.2 node-grain entry: identity echoed in THE §2.1 grammar (same
+// vocabulary as toc rows and armed facts — one projection, three tenses),
+// rev transition, span after. Deepest-changed-node law (D-C7).
+message DeltaNode {
+  SecRef target = 1;
+  NodeChange change = 2;
+  // Absent on added (no pre-state exists).
+  optional string node_rev_before = 3;
+  // Absent on removed (no post-state exists).
+  optional string node_rev_after = 4;
+  optional Span span_after = 5;
+}
+
+// v2 §7.1: node change ∈ {added, edited, removed}.
+enum NodeChange {
+  NODE_CHANGE_UNSPECIFIED = 0;
+  NODE_CHANGE_ADDED = 1;
+  NODE_CHANGE_EDITED = 2;
+  NODE_CHANGE_REMOVED = 3;
 }
 
 // v2 §8 error codes present at this rung. The two remaining v2 codes join
