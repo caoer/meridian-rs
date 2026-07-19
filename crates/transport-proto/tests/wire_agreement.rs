@@ -6,8 +6,9 @@
 //! (and vice versa: a proto-only oneof arm breaks the reverse match).
 //!
 //! The runtime half proves the schema loses nothing: samples covering every
-//! op, node kind, info shape, response body, and error code round-trip
-//! wire → proto → encoded frame → proto → wire, `assert_eq` with the original.
+//! op, node kind, info shape, toc row shape, `SecRef` form, response body, and
+//! error code round-trip wire → proto → encoded frame → proto → wire,
+//! `assert_eq` with the original.
 //!
 //! These conversion fns are test-local on purpose: the lib-level seam joins
 //! with sidecar proto negotiation, and this file is its reference when it does.
@@ -21,6 +22,22 @@ use transport_proto::pb;
 fn span_to_pb(s: wire::Span) -> pb::Span {
     let wire::Span(start, end) = s;
     pb::Span { start, end }
+}
+
+fn hpath_seg_to_pb(s: wire::HpathSeg) -> pb::HpathSeg {
+    let wire::HpathSeg { h, n } = s;
+    pb::HpathSeg { h, n }
+}
+
+fn sec_ref_to_pb(r: wire::SecRef) -> pb::SecRef {
+    let form = match r {
+        wire::SecRef::Hpath { hpath } => pb::sec_ref::Form::Hpath(pb::HpathRef {
+            segs: hpath.into_iter().map(hpath_seg_to_pb).collect(),
+        }),
+        wire::SecRef::Anchor { anchor } => pb::sec_ref::Form::Anchor(anchor),
+        wire::SecRef::FmKey { fm_key } => pb::sec_ref::Form::FmKey(fm_key),
+    };
+    pb::SecRef { form: Some(form) }
 }
 
 fn kind_to_pb(k: wire::NodeKind) -> pb::NodeKind {
@@ -50,6 +67,21 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::InvalidUtf8 => pb::ErrorCode::InvalidUtf8,
         wire::ErrorCode::Internal => pb::ErrorCode::Internal,
         wire::ErrorCode::CasMismatch => pb::ErrorCode::CasMismatch,
+        wire::ErrorCode::RefNotFound => pb::ErrorCode::RefNotFound,
+        wire::ErrorCode::AmbiguousRef => pb::ErrorCode::AmbiguousRef,
+        wire::ErrorCode::RootMismatch => pb::ErrorCode::RootMismatch,
+        wire::ErrorCode::RootUnknown => pb::ErrorCode::RootUnknown,
+    }
+}
+
+fn recovery_to_pb(r: wire::Recovery) -> pb::Recovery {
+    match r {
+        wire::Recovery::Fix => pb::Recovery::Fix,
+        wire::Recovery::Env => pb::Recovery::Env,
+        wire::Recovery::Refresh => pb::Recovery::Refresh,
+        wire::Recovery::Retry => pb::Recovery::Retry,
+        wire::Recovery::Resync => pb::Recovery::Resync,
+        wire::Recovery::Respawn => pb::Recovery::Respawn,
     }
 }
 
@@ -93,13 +125,49 @@ fn node_to_pb(n: wire::Node) -> pb::Node {
         kind: kind_to_pb(kind).into(),
         span: Some(span_to_pb(span)),
         text_prefix_16b,
-        // empty ≡ absent: a heading always carries ≥1 segment (contract §5.2)
-        hpath: hpath.unwrap_or_default(),
+        // empty ≡ absent: a heading always carries ≥1 segment (contract §2.1)
+        hpath: hpath
+            .unwrap_or_default()
+            .into_iter()
+            .map(hpath_seg_to_pb)
+            .collect(),
         unterminated,
         info: info.map(|i| pb::Info {
             info: Some(info_to_pb(i)),
         }),
         node_rev: node_rev.map(|r| r.0),
+    }
+}
+
+fn toc_node_to_pb(n: wire::TocNode) -> pb::TocNode {
+    let wire::TocNode {
+        kind,
+        level,
+        hpath,
+        anchor,
+        span,
+        content_span,
+        node_rev,
+        text_prefix_16b,
+        keys,
+    } = n;
+    pb::TocNode {
+        kind,
+        level,
+        // empty ≡ absent: a heading row always carries ≥1 segment
+        hpath: hpath
+            .unwrap_or_default()
+            .into_iter()
+            .map(hpath_seg_to_pb)
+            .collect(),
+        anchor,
+        span: Some(span_to_pb(span)),
+        content_span: content_span.map(span_to_pb),
+        node_rev: node_rev.0,
+        text_prefix_16b,
+        // wrapper: present-but-empty vs absent is contractual (fm rows carry
+        // keys even when empty)
+        keys: keys.map(|keys| pb::KeyList { keys }),
     }
 }
 
@@ -109,13 +177,22 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             pb::request::Op::Hello(pb::HelloRequest { proto, client })
         }
         wire::Op::Toc { path } => pb::request::Op::Toc(pb::TocRequest { path: path.0 }),
+        wire::Op::Cat { path, sec } => pb::request::Op::Cat(pb::CatRequest {
+            path: path.0,
+            sec: sec.map(sec_ref_to_pb),
+        }),
         wire::Op::Extract { path, kinds } => pb::request::Op::Extract(pb::ExtractRequest {
             path: path.0,
             kinds: kinds.map(|kinds| pb::KindFilter { kinds }),
         }),
-        wire::Op::Resolve { path, r#ref } => pb::request::Op::Resolve(pb::ResolveRequest {
-            path: path.0,
+        wire::Op::Resolve {
+            from,
             r#ref,
+            content,
+        } => pb::request::Op::Resolve(pb::ResolveRequest {
+            from: from.0,
+            r#ref,
+            content,
         }),
         wire::Op::Splice {
             path,
@@ -128,12 +205,10 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             if_node_rev: if_node_rev.0,
             text,
         }),
-        wire::Op::Root { path } => pb::request::Op::Root(pb::RootRequest {
-            path: path.map(|p| p.0),
-        }),
-        wire::Op::Guard { root, path } => pb::request::Op::Guard(pb::GuardRequest {
-            root: root.0,
-            path: path.map(|p| p.0),
+        wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
+        wire::Op::Diff { from_root, to_root } => pb::request::Op::Diff(pb::DiffRequest {
+            from_root: from_root.0,
+            to_root: to_root.0,
         }),
     }
 }
@@ -148,21 +223,46 @@ fn request_to_pb(r: wire::Request) -> pb::Request {
 
 fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
     let wire::ErrorBody {
-        error,
+        code,
+        recovery,
         message,
         path,
         supported,
         expected,
         actual,
+        changed,
+        stage,
+        dest,
+        candidates,
+        unknown_kinds,
+        id_raw,
     } = e;
     pb::ErrorBody {
-        error: code_to_pb(error).into(),
+        code: code_to_pb(code).into(),
+        recovery: recovery_to_pb(recovery).into(),
         message,
         path: path.map(|p| p.0),
-        // empty ≡ absent: a sidecar always speaks ≥1 proto (contract §4)
+        // empty ≡ absent: a sidecar always speaks ≥1 proto
         supported: supported.unwrap_or_default(),
         expected: expected.map(|r| r.0),
         actual: actual.map(|r| r.0),
+        stage,
+        dest: dest.map(|p| p.0),
+        // empty ≡ absent: ambiguity means ≥2 candidates
+        candidates: candidates
+            .unwrap_or_default()
+            .into_iter()
+            .map(sec_ref_to_pb)
+            .collect(),
+        // empty ≡ absent: a D-C5 refusal names ≥1 unknown kind
+        unknown_kinds: unknown_kinds.unwrap_or_default(),
+        id_raw,
+        // empty ≡ absent: a root_mismatch names its drift
+        changed: changed
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.0)
+            .collect(),
     }
 }
 
@@ -172,25 +272,45 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             proto,
             server,
             caps,
+            root,
         } => pb::response::Body::Hello(pb::HelloResponse {
             proto,
             server,
             caps,
+            root: root.map(|r| r.0),
+        }),
+        wire::ResponseBody::Toc {
+            path,
+            file_rev,
+            root,
+            nodes,
+        } => pb::response::Body::Toc(pb::TocResponse {
+            path: path.0,
+            file_rev: file_rev.0,
+            root: root.0,
+            nodes: nodes.into_iter().map(toc_node_to_pb).collect(),
         }),
         wire::ResponseBody::Nodes { path, nodes } => pb::response::Body::Nodes(pb::NodesResponse {
             path: path.0,
             nodes: nodes.into_iter().map(node_to_pb).collect(),
         }),
-        wire::ResponseBody::Resolve {
-            path,
+        wire::ResponseBody::Cat {
             span,
             node_rev,
-            content_span,
-        } => pb::response::Body::Resolve(pb::ResolveResponse {
-            path: path.0,
+            content,
+        } => pb::response::Body::Cat(pb::CatResponse {
             span: Some(span_to_pb(span)),
             node_rev: node_rev.0,
-            content_span: content_span.map(span_to_pb),
+            content,
+        }),
+        wire::ResponseBody::Resolve {
+            dest,
+            span,
+            content,
+        } => pb::response::Body::Resolve(pb::ResolveResponse {
+            dest: dest.0,
+            span: Some(span_to_pb(span)),
+            content,
         }),
         wire::ResponseBody::Splice { span, node_rev } => {
             pb::response::Body::Splice(pb::SpliceResponse {
@@ -198,22 +318,25 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
                 node_rev: node_rev.0,
             })
         }
-        wire::ResponseBody::Root { root } => {
-            pb::response::Body::Root(pb::RootResponse { root: root.0 })
+        wire::ResponseBody::Root { root, seq } => {
+            pb::response::Body::Root(pb::RootResponse { root: root.0, seq })
         }
-        wire::ResponseBody::Guard { root } => {
-            pb::response::Body::Guard(pb::GuardResponse { root: root.0 })
-        }
-        wire::ResponseBody::Error(e) => pb::response::Body::Error(error_to_pb(e)),
+    }
+}
+
+fn payload_to_pb(p: wire::ResponsePayload) -> pb::response::Body {
+    match p {
+        wire::ResponsePayload::Body { body } => body_to_pb(body),
+        wire::ResponsePayload::Error { error } => pb::response::Body::Error(error_to_pb(error)),
     }
 }
 
 fn response_to_pb(r: wire::Response) -> pb::Response {
-    let wire::Response { id, ok, body } = r;
+    let wire::Response { id, ok, payload } = r;
     pb::Response {
         id,
         ok,
-        body: Some(body_to_pb(body)),
+        body: Some(payload_to_pb(payload)),
     }
 }
 
@@ -224,6 +347,21 @@ fn response_to_pb(r: wire::Response) -> pb::Response {
 fn span_from_pb(s: pb::Span) -> wire::Span {
     let pb::Span { start, end } = s;
     wire::Span(start, end)
+}
+
+fn hpath_seg_from_pb(s: pb::HpathSeg) -> wire::HpathSeg {
+    let pb::HpathSeg { h, n } = s;
+    wire::HpathSeg { h, n }
+}
+
+fn sec_ref_from_pb(r: pb::SecRef) -> wire::SecRef {
+    match r.form.expect("form oneof set") {
+        pb::sec_ref::Form::Hpath(pb::HpathRef { segs }) => wire::SecRef::Hpath {
+            hpath: segs.into_iter().map(hpath_seg_from_pb).collect(),
+        },
+        pb::sec_ref::Form::Anchor(anchor) => wire::SecRef::Anchor { anchor },
+        pb::sec_ref::Form::FmKey(fm_key) => wire::SecRef::FmKey { fm_key },
+    }
 }
 
 fn kind_from_pb(k: pb::NodeKind) -> wire::NodeKind {
@@ -255,6 +393,22 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::InvalidUtf8 => wire::ErrorCode::InvalidUtf8,
         pb::ErrorCode::Internal => wire::ErrorCode::Internal,
         pb::ErrorCode::CasMismatch => wire::ErrorCode::CasMismatch,
+        pb::ErrorCode::RefNotFound => wire::ErrorCode::RefNotFound,
+        pb::ErrorCode::AmbiguousRef => wire::ErrorCode::AmbiguousRef,
+        pb::ErrorCode::RootMismatch => wire::ErrorCode::RootMismatch,
+        pb::ErrorCode::RootUnknown => wire::ErrorCode::RootUnknown,
+    }
+}
+
+fn recovery_from_pb(r: pb::Recovery) -> wire::Recovery {
+    match r {
+        pb::Recovery::Unspecified => panic!("UNSPECIFIED never crosses the seam"),
+        pb::Recovery::Fix => wire::Recovery::Fix,
+        pb::Recovery::Env => wire::Recovery::Env,
+        pb::Recovery::Refresh => wire::Recovery::Refresh,
+        pb::Recovery::Retry => wire::Recovery::Retry,
+        pb::Recovery::Resync => wire::Recovery::Resync,
+        pb::Recovery::Respawn => wire::Recovery::Respawn,
     }
 }
 
@@ -298,10 +452,43 @@ fn node_from_pb(n: pb::Node) -> wire::Node {
         kind: kind_from_pb(pb::NodeKind::try_from(kind).expect("known kind")),
         span: span_from_pb(span.expect("span is required")),
         text_prefix_16b,
-        hpath: if hpath.is_empty() { None } else { Some(hpath) },
+        hpath: if hpath.is_empty() {
+            None
+        } else {
+            Some(hpath.into_iter().map(hpath_seg_from_pb).collect())
+        },
         unterminated,
         info: info.map(|i| info_from_pb(i.info.expect("info oneof set"))),
         node_rev: node_rev.map(wire::NodeRev),
+    }
+}
+
+fn toc_node_from_pb(n: pb::TocNode) -> wire::TocNode {
+    let pb::TocNode {
+        kind,
+        level,
+        hpath,
+        anchor,
+        span,
+        content_span,
+        node_rev,
+        text_prefix_16b,
+        keys,
+    } = n;
+    wire::TocNode {
+        kind,
+        level,
+        hpath: if hpath.is_empty() {
+            None
+        } else {
+            Some(hpath.into_iter().map(hpath_seg_from_pb).collect())
+        },
+        anchor,
+        span: span_from_pb(span.expect("span is required")),
+        content_span: content_span.map(span_from_pb),
+        node_rev: wire::NodeRev(node_rev),
+        text_prefix_16b,
+        keys: keys.map(|k| k.keys),
     }
 }
 
@@ -313,13 +500,22 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
         pb::request::Op::Toc(pb::TocRequest { path }) => wire::Op::Toc {
             path: wire::Path(path),
         },
+        pb::request::Op::Cat(pb::CatRequest { path, sec }) => wire::Op::Cat {
+            path: wire::Path(path),
+            sec: sec.map(sec_ref_from_pb),
+        },
         pb::request::Op::Extract(pb::ExtractRequest { path, kinds }) => wire::Op::Extract {
             path: wire::Path(path),
             kinds: kinds.map(|f| f.kinds),
         },
-        pb::request::Op::Resolve(pb::ResolveRequest { path, r#ref }) => wire::Op::Resolve {
-            path: wire::Path(path),
+        pb::request::Op::Resolve(pb::ResolveRequest {
+            from,
             r#ref,
+            content,
+        }) => wire::Op::Resolve {
+            from: wire::Path(from),
+            r#ref,
+            content,
         },
         pb::request::Op::Splice(pb::SpliceRequest {
             path,
@@ -332,12 +528,10 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             if_node_rev: wire::NodeRev(if_node_rev),
             text,
         },
-        pb::request::Op::Root(pb::RootRequest { path }) => wire::Op::Root {
-            path: path.map(wire::Path),
-        },
-        pb::request::Op::Guard(pb::GuardRequest { root, path }) => wire::Op::Guard {
-            root: wire::Root(root),
-            path: path.map(wire::Path),
+        pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
+        pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
+            from_root: wire::Root(from_root),
+            to_root: wire::Root(to_root),
         },
     }
 }
@@ -352,15 +546,23 @@ fn request_from_pb(r: pb::Request) -> wire::Request {
 
 fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
     let pb::ErrorBody {
-        error,
+        code,
+        recovery,
         message,
         path,
         supported,
         expected,
         actual,
+        changed,
+        stage,
+        dest,
+        candidates,
+        unknown_kinds,
+        id_raw,
     } = e;
     wire::ErrorBody {
-        error: code_from_pb(pb::ErrorCode::try_from(error).expect("known code")),
+        code: code_from_pb(pb::ErrorCode::try_from(code).expect("known code")),
+        recovery: recovery_from_pb(pb::Recovery::try_from(recovery).expect("known class")),
         message,
         path: path.map(wire::Path),
         supported: if supported.is_empty() {
@@ -370,6 +572,35 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
         },
         expected: expected.map(wire::NodeRev),
         actual: actual.map(wire::NodeRev),
+        stage,
+        dest: dest.map(wire::Path),
+        candidates: if candidates.is_empty() {
+            None
+        } else {
+            Some(candidates.into_iter().map(sec_ref_from_pb).collect())
+        },
+        unknown_kinds: if unknown_kinds.is_empty() {
+            None
+        } else {
+            Some(unknown_kinds)
+        },
+        id_raw,
+        changed: if changed.is_empty() {
+            None
+        } else {
+            Some(changed.into_iter().map(wire::Path).collect())
+        },
+    }
+}
+
+fn payload_from_pb(b: pb::response::Body) -> wire::ResponsePayload {
+    match b {
+        pb::response::Body::Error(e) => wire::ResponsePayload::Error {
+            error: error_from_pb(e),
+        },
+        success => wire::ResponsePayload::Body {
+            body: body_from_pb(success),
+        },
     }
 }
 
@@ -379,25 +610,45 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             proto,
             server,
             caps,
+            root,
         }) => wire::ResponseBody::Hello {
             proto,
             server,
             caps,
+            root: root.map(wire::Root),
+        },
+        pb::response::Body::Toc(pb::TocResponse {
+            path,
+            file_rev,
+            root,
+            nodes,
+        }) => wire::ResponseBody::Toc {
+            path: wire::Path(path),
+            file_rev: wire::NodeRev(file_rev),
+            root: wire::Root(root),
+            nodes: nodes.into_iter().map(toc_node_from_pb).collect(),
         },
         pb::response::Body::Nodes(pb::NodesResponse { path, nodes }) => wire::ResponseBody::Nodes {
             path: wire::Path(path),
             nodes: nodes.into_iter().map(node_from_pb).collect(),
         },
-        pb::response::Body::Resolve(pb::ResolveResponse {
-            path,
+        pb::response::Body::Cat(pb::CatResponse {
             span,
             node_rev,
-            content_span,
-        }) => wire::ResponseBody::Resolve {
-            path: wire::Path(path),
+            content,
+        }) => wire::ResponseBody::Cat {
             span: span_from_pb(span.expect("span is required")),
             node_rev: wire::NodeRev(node_rev),
-            content_span: content_span.map(span_from_pb),
+            content,
+        },
+        pb::response::Body::Resolve(pb::ResolveResponse {
+            dest,
+            span,
+            content,
+        }) => wire::ResponseBody::Resolve {
+            dest: wire::Path(dest),
+            span: span_from_pb(span.expect("span is required")),
+            content,
         },
         pb::response::Body::Splice(pb::SpliceResponse { span, node_rev }) => {
             wire::ResponseBody::Splice {
@@ -405,13 +656,11 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
                 node_rev: wire::NodeRev(node_rev),
             }
         }
-        pb::response::Body::Root(pb::RootResponse { root }) => wire::ResponseBody::Root {
+        pb::response::Body::Root(pb::RootResponse { root, seq }) => wire::ResponseBody::Root {
             root: wire::Root(root),
+            seq,
         },
-        pb::response::Body::Guard(pb::GuardResponse { root }) => wire::ResponseBody::Guard {
-            root: wire::Root(root),
-        },
-        pb::response::Body::Error(e) => wire::ResponseBody::Error(error_from_pb(e)),
+        pb::response::Body::Error(_) => unreachable!("payload_from_pb routes the error arm"),
     }
 }
 
@@ -420,24 +669,32 @@ fn response_from_pb(r: pb::Response) -> wire::Response {
     wire::Response {
         id,
         ok,
-        body: body_from_pb(body.expect("body oneof set")),
+        payload: payload_from_pb(body.expect("body oneof set")),
     }
 }
 
 // ---------------------------------------------------------------------------
-// samples — every op, every node kind + info shape, every body, every code
+// samples — every op, node kind + info shape, toc row shape, SecRef form,
+// body, and code
 // ---------------------------------------------------------------------------
+
+fn seg(h: &str) -> wire::HpathSeg {
+    wire::HpathSeg {
+        h: h.into(),
+        n: None,
+    }
+}
 
 fn sample_nodes() -> Vec<wire::Node> {
     use wire::{Info, NodeKind};
-    let mk = |kind: NodeKind, hpath: Option<Vec<&str>>, info: Option<Info>| wire::Node {
+    let mk = |kind: NodeKind, hpath: Option<Vec<wire::HpathSeg>>, info: Option<Info>| wire::Node {
         kind,
         span: wire::Span(0, 128),
         text_prefix_16b: "sixteen bytes ok".into(),
-        hpath: hpath.map(|h| h.into_iter().map(String::from).collect()),
+        hpath,
         unterminated: None,
         info,
-        node_rev: Some(wire::NodeRev("b3:00ff".into())),
+        node_rev: Some(wire::NodeRev("26796ebec5d0bf1a".into())),
     };
     vec![
         mk(
@@ -447,7 +704,17 @@ fn sample_nodes() -> Vec<wire::Node> {
                 keys: vec!["title".into(), "tags".into()],
             }),
         ),
-        mk(NodeKind::Heading, Some(vec!["Section", "Sub"]), None),
+        mk(
+            NodeKind::Heading,
+            Some(vec![
+                seg("Section"),
+                wire::HpathSeg {
+                    h: "Beta".into(),
+                    n: Some(2), // occurrence index survives the seam
+                },
+            ]),
+            None,
+        ),
         mk(
             NodeKind::Fence,
             None,
@@ -501,6 +768,58 @@ fn sample_nodes() -> Vec<wire::Node> {
     ]
 }
 
+/// The three §4.1 row shapes: frontmatter (keys — incl. the present-but-empty
+/// case the `KeyList` wrapper exists for), heading (level/hpath/`content_span`),
+/// and the anchor-bearing host-block row (open kind string).
+fn sample_toc_nodes() -> Vec<wire::TocNode> {
+    vec![
+        wire::TocNode {
+            kind: "frontmatter".into(),
+            level: None,
+            hpath: None,
+            anchor: None,
+            span: wire::Span(0, 20),
+            content_span: None,
+            node_rev: wire::NodeRev("26796ebec5d0bf1a".into()),
+            text_prefix_16b: "---\ntitle: Plan\n".into(),
+            keys: Some(vec!["title".into()]),
+        },
+        wire::TocNode {
+            kind: "frontmatter".into(),
+            level: None,
+            hpath: None,
+            anchor: None,
+            span: wire::Span(0, 8),
+            content_span: None,
+            node_rev: wire::NodeRev("ffffffffffffffff".into()),
+            text_prefix_16b: "---\n---\n".into(),
+            keys: Some(vec![]), // present-but-empty ≠ absent
+        },
+        wire::TocNode {
+            kind: "heading".into(),
+            level: Some(2),
+            hpath: Some(vec![seg("Goals"), seg("Q3")]),
+            anchor: None,
+            span: wire::Span(49, 72),
+            content_span: Some(wire::Span(55, 72)),
+            node_rev: wire::NodeRev("33d5b0e1b27cb48b".into()),
+            text_prefix_16b: "## Q3\n\nship by A".into(),
+            keys: None,
+        },
+        wire::TocNode {
+            kind: "list_item".into(), // the §4.1 worked anchor row: open kind
+            level: None,
+            hpath: None,
+            anchor: Some("r-000042".into()),
+            span: wire::Span(26, 248),
+            content_span: None,
+            node_rev: wire::NodeRev("639a2dca46f6fcc8".into()),
+            text_prefix_16b: "- splice notes/p".into(),
+            keys: None,
+        },
+    ]
+}
+
 fn sample_requests() -> Vec<wire::Request> {
     let ops = vec![
         wire::Op::Hello {
@@ -509,6 +828,29 @@ fn sample_requests() -> Vec<wire::Request> {
         },
         wire::Op::Toc {
             path: wire::Path("tasks/x.md".into()),
+        },
+        // cat: all three SecRef forms + the whole-file case
+        wire::Op::Cat {
+            path: wire::Path("notes/plan.md".into()),
+            sec: Some(wire::SecRef::Hpath {
+                hpath: vec![seg("Goals"), seg("Q3")],
+            }),
+        },
+        wire::Op::Cat {
+            path: wire::Path("receipts/2026-07-18.md".into()),
+            sec: Some(wire::SecRef::Anchor {
+                anchor: "r-000042".into(),
+            }),
+        },
+        wire::Op::Cat {
+            path: wire::Path("notes/plan.md".into()),
+            sec: Some(wire::SecRef::FmKey {
+                fm_key: "title".into(),
+            }),
+        },
+        wire::Op::Cat {
+            path: wire::Path("notes/plan.md".into()),
+            sec: None, // whole file + file_rev
         },
         wire::Op::Extract {
             path: wire::Path("notes/y.md".into()),
@@ -519,19 +861,29 @@ fn sample_requests() -> Vec<wire::Request> {
             kinds: None, // absent ≠ empty — the KindFilter wrapper's reason to exist
         },
         wire::Op::Resolve {
-            path: wire::Path("notes/y.md".into()),
-            r#ref: "#Section".into(),
+            from: wire::Path("notes/plan.md".into()),
+            r#ref: "plan#Goals#Q3".into(),
+            content: None,
+        },
+        wire::Op::Resolve {
+            from: wire::Path("notes/plan.md".into()),
+            r#ref: "2026-07-18".into(),
+            content: Some(true),
         },
         wire::Op::Splice {
             path: wire::Path("notes/y.md".into()),
             span: wire::Span(10, 90),
-            if_node_rev: wire::NodeRev("b3:aa11".into()),
+            if_node_rev: wire::NodeRev("33d5b0e1b27cb48b".into()),
             text: "replacement\n".into(),
         },
-        wire::Op::Root { path: None },
-        wire::Op::Guard {
-            root: wire::Root("b3:88d2aa".into()),
-            path: Some(wire::Path("notes".into())),
+        wire::Op::Root,
+        wire::Op::Diff {
+            from_root: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            to_root: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
         },
     ];
     ops.into_iter()
@@ -543,36 +895,12 @@ fn sample_requests() -> Vec<wire::Request> {
         .collect()
 }
 
-fn sample_responses() -> Vec<wire::Response> {
-    let mut bodies = vec![
-        wire::ResponseBody::Hello {
-            proto: 1,
-            server: "meridian-sidecar".into(),
-            caps: vec!["hello".into(), "toc".into(), "extract".into()],
-        },
-        wire::ResponseBody::Nodes {
-            path: wire::Path("notes/y.md".into()),
-            nodes: sample_nodes(),
-        },
-        wire::ResponseBody::Resolve {
-            path: wire::Path("notes/y.md".into()),
-            span: wire::Span(10, 90),
-            node_rev: wire::NodeRev("b3:aa11".into()),
-            content_span: Some(wire::Span(20, 90)),
-        },
-        wire::ResponseBody::Splice {
-            span: wire::Span(10, 95),
-            node_rev: wire::NodeRev("b3:bb22".into()),
-        },
-        wire::ResponseBody::Root {
-            root: wire::Root("b3:88d2aa".into()),
-        },
-        wire::ResponseBody::Guard {
-            root: wire::Root("b3:88d2aa".into()),
-        },
-    ];
-    // every error code crosses the seam once; unsupported_proto carries extras
-    for code in [
+/// Every error code crosses the seam once, recovery bound per §8;
+/// code-specific extras ride their codes.
+fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
+    let codes = [
+        wire::ErrorCode::RootMismatch,
+        wire::ErrorCode::RootUnknown,
         wire::ErrorCode::BadFrame,
         wire::ErrorCode::BadRequest,
         wire::ErrorCode::UnknownOp,
@@ -582,26 +910,121 @@ fn sample_responses() -> Vec<wire::Response> {
         wire::ErrorCode::InvalidUtf8,
         wire::ErrorCode::Internal,
         wire::ErrorCode::CasMismatch,
-    ] {
-        bodies.push(wire::ResponseBody::Error(wire::ErrorBody {
-            error: code,
-            message: Some(format!("{code:?}")),
-            path: matches!(code, wire::ErrorCode::BadPath | wire::ErrorCode::NotFound)
-                .then(|| wire::Path("bad/../path".into())),
-            supported: matches!(code, wire::ErrorCode::UnsupportedProto).then(|| vec![1]),
-            expected: matches!(code, wire::ErrorCode::CasMismatch)
-                .then(|| wire::NodeRev("b3:aa11".into())),
-            actual: matches!(code, wire::ErrorCode::CasMismatch)
-                .then(|| wire::NodeRev("b3:cc33".into())),
-        }));
-    }
-    bodies
+        wire::ErrorCode::RefNotFound,
+        wire::ErrorCode::AmbiguousRef,
+    ];
+    codes
+        .into_iter()
+        .map(|code| {
+            let mut e = wire::ErrorBody::new(code);
+            e.message = Some(format!("{code:?}"));
+            e.path = matches!(code, wire::ErrorCode::BadPath | wire::ErrorCode::NotFound)
+                .then(|| wire::Path("bad/../path".into()));
+            e.supported = matches!(code, wire::ErrorCode::UnsupportedProto).then(|| vec![1]);
+            e.expected = matches!(code, wire::ErrorCode::CasMismatch)
+                .then(|| wire::NodeRev("33d5b0e1b27cb48b".into()));
+            e.actual = matches!(code, wire::ErrorCode::CasMismatch)
+                .then(|| wire::NodeRev("41f643f034e5681f".into()));
+            e.stage = matches!(code, wire::ErrorCode::RefNotFound).then_some(2);
+            e.dest = matches!(code, wire::ErrorCode::RefNotFound)
+                .then(|| wire::Path("notes/plan.md".into()));
+            e.candidates = matches!(code, wire::ErrorCode::AmbiguousRef).then(|| {
+                vec![
+                    wire::SecRef::Hpath {
+                        hpath: vec![wire::HpathSeg {
+                            h: "Beta".into(),
+                            n: Some(1),
+                        }],
+                    },
+                    wire::SecRef::Hpath {
+                        hpath: vec![wire::HpathSeg {
+                            h: "Beta".into(),
+                            n: Some(2),
+                        }],
+                    },
+                ]
+            });
+            e.unknown_kinds =
+                matches!(code, wire::ErrorCode::BadRequest).then(|| vec!["headding".into()]);
+            e.id_raw = matches!(code, wire::ErrorCode::BadRequest).then(|| "3e0".into());
+            if matches!(code, wire::ErrorCode::RootMismatch) {
+                e.expected = Some(wire::NodeRev(
+                    "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+                ));
+                e.actual = Some(wire::NodeRev(
+                    "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+                ));
+                e.changed = Some(vec![wire::Path("notes/plan.md".into())]);
+            }
+            wire::ResponsePayload::Error { error: e }
+        })
+        .collect()
+}
+
+fn sample_responses() -> Vec<wire::Response> {
+    let root =
+        wire::Root("b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into());
+    let bodies = vec![
+        wire::ResponseBody::Hello {
+            proto: 1,
+            server: "meridian-sidecar".into(),
+            caps: vec![
+                "hello".into(),
+                "toc".into(),
+                "cat".into(),
+                "resolve.content".into(),
+            ],
+            root: Some(root.clone()),
+        },
+        wire::ResponseBody::Hello {
+            proto: 1,
+            server: "meridian-sidecar".into(),
+            caps: vec!["hello".into()],
+            root: None, // the engine may not have walked yet
+        },
+        wire::ResponseBody::Toc {
+            path: wire::Path("notes/plan.md".into()),
+            file_rev: wire::NodeRev("e3c4acaceb75b907".into()),
+            root: root.clone(),
+            nodes: sample_toc_nodes(),
+        },
+        wire::ResponseBody::Nodes {
+            path: wire::Path("notes/y.md".into()),
+            nodes: sample_nodes(),
+        },
+        wire::ResponseBody::Cat {
+            span: wire::Span(49, 72),
+            node_rev: wire::NodeRev("33d5b0e1b27cb48b".into()),
+            content: "## Q3\n\nship by August\n\n".into(),
+        },
+        wire::ResponseBody::Resolve {
+            dest: wire::Path("notes/plan.md".into()),
+            span: wire::Span(49, 75),
+            content: None,
+        },
+        wire::ResponseBody::Resolve {
+            dest: wire::Path("receipts/2026-07-18.md".into()),
+            span: wire::Span(0, 474),
+            content: Some("…fragment bytes…".into()), // still no rev (D-C2)
+        },
+        wire::ResponseBody::Splice {
+            span: wire::Span(10, 95),
+            node_rev: wire::NodeRev("41f643f034e5681f".into()),
+        },
+        wire::ResponseBody::Root { root, seq: 2 },
+    ];
+    let mut payloads: Vec<wire::ResponsePayload> = bodies
+        .into_iter()
+        .map(|body| wire::ResponsePayload::Body { body })
+        .collect();
+    payloads.extend(sample_error_payloads());
+    payloads
         .into_iter()
         .enumerate()
-        .map(|(i, body)| wire::Response {
+        .map(|(i, payload)| wire::Response {
             id: (i > 0).then_some(i as u64), // id:0 case → "id":null twin: absence
-            ok: !matches!(body, wire::ResponseBody::Error(_)),
-            body,
+            ok: !matches!(payload, wire::ResponsePayload::Error { .. }),
+            payload,
         })
         .collect()
 }

@@ -1,20 +1,25 @@
 //! The wire-contract vocabulary gate, executable: error codes and node kinds
 //! serialize to the contract's exact strings, in the frozen ordinal order.
+//! Contract v2 (FROZEN 2026-07-18, decision 014) as of W2-AMEND.
 
 use wire::{ErrorCode, NodeKind};
 
 #[test]
-fn error_codes_match_contract_v1() {
+fn error_codes_match_contract_v2() {
     let codes = [
         (ErrorCode::BadFrame, "bad_frame"),
         (ErrorCode::BadRequest, "bad_request"),
         (ErrorCode::UnknownOp, "unknown_op"),
         (ErrorCode::UnsupportedProto, "unsupported_proto"),
         (ErrorCode::BadPath, "bad_path"),
-        (ErrorCode::NotFound, "not_found"),
+        (ErrorCode::NotFound, "not_found"), // v1 code; retired at W4-AMEND
         (ErrorCode::InvalidUtf8, "invalid_utf8"),
         (ErrorCode::Internal, "internal"),
         (ErrorCode::CasMismatch, "cas_mismatch"),
+        (ErrorCode::RefNotFound, "ref_not_found"),
+        (ErrorCode::AmbiguousRef, "ambiguous_ref"),
+        (ErrorCode::RootMismatch, "root_mismatch"),
+        (ErrorCode::RootUnknown, "root_unknown"),
     ];
     for (code, wire_str) in codes {
         assert_eq!(
@@ -25,9 +30,29 @@ fn error_codes_match_contract_v1() {
 }
 
 #[test]
-fn node_kinds_match_contract_v1_in_ordinal_order() {
-    // Contract §5.2: sort tiebreak is kind-enum ordinal, the order listed
-    // (frontmatter = 0 … comment = 10). Rust discriminant order must agree.
+fn recovery_classes_match_contract_v2() {
+    use wire::Recovery;
+    let classes = [
+        (Recovery::Fix, "fix"),
+        (Recovery::Env, "env"),
+        (Recovery::Refresh, "refresh"),
+        (Recovery::Retry, "retry"),
+        (Recovery::Resync, "resync"),
+        (Recovery::Respawn, "respawn"),
+    ];
+    for (class, wire_str) in classes {
+        assert_eq!(
+            serde_json::to_value(class).unwrap(),
+            serde_json::Value::String(wire_str.into())
+        );
+    }
+}
+
+#[test]
+fn node_kinds_match_contract_in_ordinal_order() {
+    // v2 §4.3 carries the v1 §5.2 order: sort tiebreak is kind-enum ordinal,
+    // the order listed (frontmatter = 0 … comment = 10). Rust discriminant
+    // order must agree.
     let kinds = [
         (NodeKind::Frontmatter, "frontmatter"),
         (NodeKind::Heading, "heading"),
@@ -52,17 +77,18 @@ fn node_kinds_match_contract_v1_in_ordinal_order() {
 
 #[test]
 fn contract_example_error_envelope_roundtrips() {
-    // The vision's canonical cas_mismatch line, verbatim from contract §4.
-    let line =
-        r#"{"id":3,"ok":false,"error":"cas_mismatch","expected":"c71d09","actual":"5e2f77"}"#;
+    // The v2 §5.2 worked cas_mismatch frame: nested envelope, code +
+    // REQUIRED recovery + code-specific extras beside them.
+    let line = r#"{"id":88,"ok":false,"error":{"code":"cas_mismatch","recovery":"refresh","expected":"33d5b0e1b27cb48b","actual":"41f643f034e5681f"}}"#;
     let resp: wire::Response = serde_json::from_str(line).unwrap();
     assert!(!resp.ok);
-    assert_eq!(resp.id, Some(3));
-    let wire::ResponseBody::Error(err) = &resp.body else {
+    assert_eq!(resp.id, Some(88));
+    let wire::ResponsePayload::Error { error: err } = &resp.payload else {
         panic!("classifies as error envelope")
     };
-    assert_eq!(err.error, ErrorCode::CasMismatch);
-    assert_eq!(err.expected, Some(wire::NodeRev("c71d09".into())));
+    assert_eq!(err.code, ErrorCode::CasMismatch);
+    assert_eq!(err.recovery, wire::Recovery::Refresh);
+    assert_eq!(err.expected, Some(wire::NodeRev("33d5b0e1b27cb48b".into())));
     assert_eq!(
         serde_json::to_value(&resp).unwrap(),
         serde_json::from_str::<serde_json::Value>(line).unwrap()
