@@ -389,7 +389,7 @@ fn callout_head(head: &str) -> Option<(String, String)> {
     }
     i += 2;
     let type_start = i;
-    while i < b.len() && is_id_char(b[i]) {
+    while i < b.len() && is_callout_type_char(b[i]) {
         i += 1;
     }
     if i == type_start {
@@ -442,9 +442,28 @@ fn split_wikilink_target(dest: &str) -> (String, Option<String>, Option<String>)
     }
 }
 
-/// ASCII block-id charset `[A-Za-z0-9_-]` (carried v1; CHARSET-GUARD retargets
-/// it to the app-exact set later, per ruling 011).
-fn is_id_char(b: u8) -> bool {
+/// The one block-id charset (decision 011 / contract §2.4): `[A-Za-z0-9-]` —
+/// Obsidian app-exact (Latin letters, digits, dash), on BOTH the mint and walk
+/// planes. THE single normative definition in code; `model::Ref` anchor
+/// validation and every downstream mint position route through it. No `_` — the
+/// dead two-plane superset is gone.
+#[must_use]
+pub fn is_block_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-'
+}
+
+/// Is `s` a well-formed block id — non-empty and every char in the one charset
+/// ([`is_block_id_char`])? A legacy `_`-bearing id is NOT (ruling 011): outside
+/// the strict-plane grammar, refused `bad_request` at the mint boundary.
+#[must_use]
+pub fn is_block_id(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(is_block_id_char)
+}
+
+/// Callout-type identifier bytes (`> [!note]`): ASCII alphanumerics plus dash
+/// and the legacy underscore. A callout type is not an address — distinct from
+/// the block-id charset and untouched by ruling 011.
+fn is_callout_type_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
@@ -472,9 +491,11 @@ fn scan_anchors(
         while end > line_start && matches!(bytes[end - 1], b' ' | b'\t' | b'\r') {
             end -= 1;
         }
-        // collect the id run ending at the (trimmed) line tail
+        // collect the block-id run ending at the (trimmed) line tail — app-exact
+        // charset (ruling 011); a `_` stops the run, so a `_`-bearing id fails
+        // the `^`-delimiter check below and is silently dropped, as the app does.
         let mut i = end;
-        while i > line_start && is_id_char(bytes[i - 1]) {
+        while i > line_start && is_block_id_char(char::from(bytes[i - 1])) {
             i -= 1;
         }
         // need ≥1 id char, a `^` delimiter, then start-of-line or space/tab
@@ -791,18 +812,32 @@ mod tests {
     }
 
     #[test]
-    fn anchor_underscore_charset_carried() {
-        // R1 relocates the donor charset `[A-Za-z0-9_-]` verbatim; CHARSET-GUARD
-        // retargets it to app-exact later (ruling 011).
-        let src = "line tail ^b_1\nalso ^mixed-id_2\n";
+    fn anchor_underscore_rejected_app_exact() {
+        // CHARSET-GUARD (ruling 011 / contract §2.4): block ids are app-exact
+        // `[A-Za-z0-9-]`. A `_`-bearing id is outside the charset, so the lexer
+        // — matching the app's silent drop — does not scan it as an anchor; a
+        // clean dash-bearing id still scans.
+        let src = "dropped ^b_1\nalso dropped ^mixed-id_2\nkept ^mixed-id-2\n";
         assert_eq!(
             slices(src)
                 .into_iter()
                 .filter(|(k, _)| *k == 4)
                 .map(|(_, s)| s)
                 .collect::<Vec<_>>(),
-            vec!["^b_1", "^mixed-id_2"]
+            vec!["^mixed-id-2"]
         );
+    }
+
+    #[test]
+    fn is_block_id_enforces_one_charset() {
+        // The single normative predicate: app-exact, both planes (ruling 011).
+        assert!(is_block_id("r-000042"));
+        assert!(is_block_id("clean-1"));
+        assert!(is_block_id("Beta2"));
+        assert!(!is_block_id("under-probe_x")); // `_` outside the charset
+        assert!(!is_block_id("a_04"));
+        assert!(!is_block_id("")); // empty is not an id
+        assert!(!is_block_id("has space"));
     }
 
     #[test]
