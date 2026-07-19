@@ -37,7 +37,7 @@ fn s0() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 /// bytes, not parsed values) plus their parsed forms.
 fn serve_raw(root: &fs::WorkspaceRoot, input: &str) -> Vec<(String, Value)> {
     let mut out = Vec::new();
-    sidecar::serve(root, input.as_bytes(), &mut out).expect("serve");
+    sidecar::serve(root, input.as_bytes(), &mut out, &[]).expect("serve");
     String::from_utf8(out)
         .expect("frames are UTF-8")
         .lines()
@@ -229,7 +229,7 @@ fn sub_strict_decode_rejections() {
         r#"{"id":4,"op":"sub","from_seq":0,"filter":"deltas"}"#,
         "\n",
     );
-    sidecar::serve(&root, input.as_bytes(), &mut out).expect("serve");
+    sidecar::serve(&root, input.as_bytes(), &mut out, &[]).expect("serve");
     let frames: Vec<Value> = String::from_utf8(out)
         .unwrap()
         .lines()

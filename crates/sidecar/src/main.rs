@@ -15,7 +15,11 @@ fn main() -> ExitCode {
 
     let stdin = io::stdin().lock();
     let stdout = io::stdout().lock();
-    match sidecar::serve(&root, stdin, stdout) {
+    // No rule packs are sourced here: where the daemon loads packs from is Go's
+    // business (§11, row 8 — loaded-pack listing is a Go surface). Until that
+    // surface lands, the sidecar evaluates an empty set — splice `verdicts` stay
+    // `[]`, the §11.1 shape rides every response regardless (P6-VERDICTS).
+    match sidecar::serve(&root, stdin, stdout, &[]) {
         // stdin EOF: in-flight work finished, stdout flushed, exit 0.
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
