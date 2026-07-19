@@ -75,7 +75,11 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 
 /// The strict-server field wall: any key outside the op's declared set (and
 /// the envelope) is rejected loudly, by name.
-fn check_fields(obj: &Map<String, Value>, op: &str, allowed: &[&str]) -> Result<(), Box<ErrorBody>> {
+fn check_fields(
+    obj: &Map<String, Value>,
+    op: &str,
+    allowed: &[&str],
+) -> Result<(), Box<ErrorBody>> {
     for key in obj.keys() {
         if !ENVELOPE.contains(&key.as_str()) && !allowed.contains(&key.as_str()) {
             return Err(bad_request(format!(
@@ -94,7 +98,11 @@ fn req_str(obj: &Map<String, Value>, op: &str, key: &str) -> Result<String, Box<
     }
 }
 
-fn opt_str(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Option<String>, Box<ErrorBody>> {
+fn opt_str(
+    obj: &Map<String, Value>,
+    op: &str,
+    key: &str,
+) -> Result<Option<String>, Box<ErrorBody>> {
     obj.get(key)
         .map(|v| match v {
             Value::String(s) => Ok(s.clone()),
@@ -128,7 +136,8 @@ fn req_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Path, Box<E
     let s = req_str(obj, op, key)?;
     let violates = s.is_empty()
         || s.starts_with('/')
-        || s.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..");
+        || s.split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..");
     if violates {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
         e.path = Some(Path(s));

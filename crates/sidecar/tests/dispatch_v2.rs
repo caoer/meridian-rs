@@ -7,7 +7,7 @@
 //! `model::merkle_root` corpus fold (M3-MERKLE surface — the D2 staged-item-1
 //! closer, LIVE).
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::Write as _;
 
 /// Materialize a workspace from `(rel-path, bytes)` pairs.
@@ -110,10 +110,7 @@ fn gate1_cat_whole_file_serves_file_rev() {
     let got = one(&root, r#"{"id":9,"op":"cat","path":"notes/plan.md"}"#);
     assert_eq!(got["body"]["span"], json!([0, 136]));
     assert_eq!(got["body"]["node_rev"], "e3c4acaceb75b907");
-    assert_eq!(
-        got["body"]["content"].as_str().expect("content").len(),
-        136
-    );
+    assert_eq!(got["body"]["content"].as_str().expect("content").len(), 136);
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +209,10 @@ fn gate2_bad_path_refused() {
 #[test]
 fn gate3_hello_caps_equal_armed_set_exactly() {
     let (_d, root) = s0();
-    let frame = one(&root, r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#);
+    let frame = one(
+        &root,
+        r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
+    );
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
