@@ -1,0 +1,172 @@
+{
+  "pack": "obsidian-compat",
+  "app_version": "1.12.7",
+  "oracle": "live Obsidian resolver via probe-bridge — parseLinktext -> getFirstLinkpathDest (stage 1) -> resolveSubpath (stage 2)",
+  "generation_command": "obsidian eval code=\"$(cat oracle.js)\"  (driven by ./generate.sh)",
+  "generated_at": "2026-07-19T02:11:24Z",
+  "corpus": "walkvault/ (walk.md + blocks.md), byte-identical to the gate-3 adversarial-harness walkvault",
+  "corpus_sha256": {
+    "walkvault/walk.md": "9cefbba3df8ded74a583342eaf5aab4a3cebb1ba866a4470cb54fa4a22bf0cf0",
+    "walkvault/blocks.md": "b2a3e96a976c6270dad3ae79753b1655cb64e2115b9a2fde69be4b7272d83652"
+  },
+  "span_units": "UTF-8 byte offsets (corpus is ASCII: UTF-16 Loc.offset == UTF-8 offset)",
+  "probe_count": {
+    "walk_law": 6,
+    "underscore": 1,
+    "note": "WL-6 realized as the WL-6a/WL-6b divergence pair (2 entries, 1 walk law)"
+  },
+  "drift_posture": "app bump => re-run generate.sh; answers are never assumed to carry (contract §13.3-§13.4, gate-1 ruling 7)",
+  "probes": [
+    {
+      "id": "WL-1",
+      "from": "walk.md",
+      "ref": "#B#Beta",
+      "parsed": {
+        "path": "",
+        "subpath": "#B#Beta"
+      },
+      "law": "anywhere-after: closed B/C/A boundaries never stop the walk",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          183,
+          204
+        ],
+        "resolved_type": "heading"
+      }
+    },
+    {
+      "id": "WL-2",
+      "from": "walk.md",
+      "ref": "#B#b",
+      "parsed": {
+        "path": "",
+        "subpath": "#B#b"
+      },
+      "law": "generation-skipping: level 1->3 without naming intermediate X",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          31,
+          102
+        ],
+        "resolved_type": "heading"
+      }
+    },
+    {
+      "id": "WL-3",
+      "from": "walk.md",
+      "ref": "#B#C",
+      "parsed": {
+        "path": "",
+        "subpath": "#B#C"
+      },
+      "law": "strictly-deeper-level required: C is level 1, same as B",
+      "answer": {
+        "ok": false,
+        "error": {
+          "code": "ref_not_found",
+          "stage": 2,
+          "dest": "walk.md"
+        }
+      }
+    },
+    {
+      "id": "WL-4",
+      "from": "walk.md",
+      "ref": "#A#Beta",
+      "parsed": {
+        "path": "",
+        "subpath": "#A#Beta"
+      },
+      "law": "first-match-wins on duplicates, SILENT on the walk plane",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          183,
+          204
+        ],
+        "resolved_type": "heading"
+      }
+    },
+    {
+      "id": "WL-5",
+      "from": "walk.md",
+      "ref": "#b#beta",
+      "parsed": {
+        "path": "",
+        "subpath": "#b#beta"
+      },
+      "law": "case-insensitive walk, both segments",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          183,
+          204
+        ],
+        "resolved_type": "heading"
+      }
+    },
+    {
+      "id": "WL-6a",
+      "from": "walk.md",
+      "ref": "#A#a/b",
+      "parsed": {
+        "path": "",
+        "subpath": "#A#a/b"
+      },
+      "law": "subpath splits on '#' only: 'a/b' is ONE literal-heading segment",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          329,
+          393
+        ],
+        "resolved_type": "heading",
+        "span_end_is_eof": true
+      }
+    },
+    {
+      "id": "WL-6b",
+      "from": "walk.md",
+      "ref": "#A#a#b",
+      "parsed": {
+        "path": "",
+        "subpath": "#A#a#b"
+      },
+      "law": "same chars + one more '#' -> a DIFFERENT node; the pair must diverge",
+      "answer": {
+        "ok": true,
+        "dest": "walk.md",
+        "span": [
+          282,
+          329
+        ],
+        "resolved_type": "heading"
+      }
+    },
+    {
+      "id": "WX-6",
+      "from": "walk.md",
+      "ref": "blocks#^under-probe_x",
+      "parsed": {
+        "path": "blocks",
+        "subpath": "#^under-probe_x"
+      },
+      "law": "decision-011 `_` probe: pin what the app DOES with a legacy `_` block id",
+      "answer": {
+        "ok": false,
+        "error": {
+          "code": "ref_not_found",
+          "stage": 2,
+          "dest": "blocks.md"
+        }
+      }
+    }
+  ]
+}
