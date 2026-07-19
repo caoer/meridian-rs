@@ -12,7 +12,12 @@ fn error_codes_match_contract_v2() {
         (ErrorCode::UnknownOp, "unknown_op"),
         (ErrorCode::UnsupportedProto, "unsupported_proto"),
         (ErrorCode::BadPath, "bad_path"),
-        (ErrorCode::NotFound, "not_found"), // v1 code; retired at W4-AMEND
+        (ErrorCode::NoMatch, "no_match"),
+        (ErrorCode::NotUnique, "not_unique"),
+        (ErrorCode::WouldCorrupt, "would_corrupt"),
+        (ErrorCode::LockTimeout, "lock_timeout"),
+        (ErrorCode::FileNotFound, "file_not_found"),
+        (ErrorCode::IoError, "io_error"),
         (ErrorCode::InvalidUtf8, "invalid_utf8"),
         (ErrorCode::Internal, "internal"),
         (ErrorCode::CasMismatch, "cas_mismatch"),

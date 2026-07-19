@@ -84,11 +84,55 @@ message ResolveRequest {
   optional bool content = 3;
 }
 
+// v2 §4.4: batch-only; no client span field exists anywhere in a request.
+// Guardless/actor-less/receipt-less frames are legal at the wire forever;
+// requirement is the Go ratchet (§5.3), never wire law.
 message SpliceRequest {
   string path = 1;
-  Span span = 2;
-  string if_node_rev = 3;
-  string text = 4;
+  optional string actor = 2;   // opaque; wire input, never ambient (§9)
+  optional string now = 3;     // RFC 3339; validated, never generated (§9)
+  optional ReceiptAddr receipt = 4;
+  optional string if_root = 5; // world-grain guard, checked FIRST (§5.1)
+  optional bool dry = 6;
+  repeated Edit edits = 7;
+}
+
+message ReceiptAddr {
+  string path = 1;
+  string anchor = 2;
+}
+
+message Edit {
+  SecRef target = 1;
+  EditShape edit = 2;
+  optional string if_node_rev = 3; // node-grain guard (§5.1)
+}
+
+// Exactly two edit shapes (v2 §4.4).
+message EditShape {
+  oneof shape {
+    MatchEdit match = 1;
+    PutEdit put = 2;
+  }
+}
+
+message MatchEdit {
+  string old = 1;
+  string new = 2;
+}
+
+message PutEdit {
+  PutAt at = 1;
+  string text = 2;
+}
+
+// at:"end" is RAW byte concatenation, no synthesized separator (§4.4) —
+// text carries its own leading newline when it must begin a line.
+enum PutAt {
+  PUT_AT_UNSPECIFIED = 0;
+  PUT_AT_ALL = 1;
+  PUT_AT_CONTENT = 2;
+  PUT_AT_END = 3;
 }
 
 // v2 §4.7: no parameters — the root is world-grain (the only root guard is
@@ -281,10 +325,42 @@ message ResolveResponse {
   optional string content = 3;
 }
 
+// v2 §4.4: the armed-facts shape — ONE response shape for every batch, dry
+// included; never delivery claims (A7).
 message SpliceResponse {
-  Span span = 1;
-  string node_rev = 2;
+  Armed armed = 1;
+  optional ReceiptFact receipt = 2;
+  string root_before = 3;
+  // JSON serializes root_after ALWAYS, null on dry; proto absence carries
+  // the dry-null (the one contractual absence-vs-null on this shape).
+  optional string root_after = 4;
+  optional uint64 seq = 5;
+  optional bool dry = 6;
+  repeated Verdict verdicts = 7; // empty until rung 6 (P6-VERDICTS)
 }
+
+message Armed {
+  string path = 1;
+  repeated ArmedEdit edits = 2;
+}
+
+message ArmedEdit {
+  SecRef target = 1;
+  string node_rev_before = 2;
+  string node_rev_after = 3;
+  Span span_after = 4;
+}
+
+message ReceiptFact {
+  string path = 1;
+  string anchor = 2;
+  string node_rev = 3;
+  Span span_after = 4;
+}
+
+// v2 §11.1 verdict — fields land with P6-VERDICTS; the array rides splice
+// responses from birth (shape never changes at rung 6).
+message Verdict {}
 
 // v2 §4.7: root + seq (monotone per-workspace batch counter, per-daemon-epoch).
 message RootResponse {
@@ -292,9 +368,10 @@ message RootResponse {
   uint64 seq = 2;
 }
 
-// v2 §8 error codes present at this rung. Remaining v2 codes join via the
-// amendments that freeze their rungs — mirror `wire::ErrorCode` exactly,
-// never lead it. NOT_FOUND is v1, retired at W4-AMEND.
+// v2 §8 error codes present at this rung. The two remaining v2 codes join
+// with their ops (stale_view, daemon_only) — mirror `wire::ErrorCode`
+// exactly, never lead it. v1 NOT_FOUND is RETIRED (§18 row 6): ordinal 6
+// reserved, never reused.
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_BAD_FRAME = 1;
@@ -302,7 +379,7 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_OP = 3;
   ERROR_CODE_UNSUPPORTED_PROTO = 4;
   ERROR_CODE_BAD_PATH = 5;
-  ERROR_CODE_NOT_FOUND = 6;
+  reserved 6; // v1 not_found, retired
   ERROR_CODE_INVALID_UTF8 = 7;
   ERROR_CODE_INTERNAL = 8;
   ERROR_CODE_CAS_MISMATCH = 9;
@@ -310,6 +387,12 @@ enum ErrorCode {
   ERROR_CODE_AMBIGUOUS_REF = 11;
   ERROR_CODE_ROOT_MISMATCH = 12;
   ERROR_CODE_ROOT_UNKNOWN = 13;
+  ERROR_CODE_NO_MATCH = 14;
+  ERROR_CODE_NOT_UNIQUE = 15;
+  ERROR_CODE_WOULD_CORRUPT = 16;
+  ERROR_CODE_LOCK_TIMEOUT = 17;
+  ERROR_CODE_FILE_NOT_FOUND = 18;
+  ERROR_CODE_IO_ERROR = 19;
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.
@@ -329,7 +412,7 @@ message ErrorBody {
   ErrorCode code = 1;
   Recovery recovery = 2;
   optional string message = 3;
-  // bad_path / v1 not_found: the offending path, echoed.
+  // bad_path / file_not_found: the offending path, echoed.
   optional string path = 4;
   // unsupported_proto: protos this sidecar speaks; non-empty when present
   // (a sidecar always speaks ≥1), so empty ≡ absent needs no wrapper.
@@ -354,4 +437,14 @@ message ErrorBody {
   // drift), so empty ≡ absent needs no wrapper. NO scope field: §18 row 2,
   // WAIVED — no scoped-root construct exists for it to describe.
   repeated string changed = 13;
+  // no_match (0) / not_unique (2+): occurrence count of `old` in the target.
+  // Wrapper-free would conflate 0-count with absence, and no_match's count
+  // IS 0 — so the optional scalar carries it.
+  optional uint32 matches = 14;
+  // would_corrupt: hpaths the post-apply parse would lose; ≥1 when present.
+  repeated HpathRef lost = 15;
+  // io_error: the underlying cause.
+  optional string cause = 16;
+  // bad_request on non-disjoint batch targets: ≥2 when present.
+  repeated SecRef overlap = 17;
 }
