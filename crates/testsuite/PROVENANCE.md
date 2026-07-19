@@ -5,6 +5,45 @@ carries. Pack-scoped provenance stays in each pack's own `PROVENANCE.md`
 (`data/gt/`, `data/gt/obsidian-compat/`, `data/harness/`, `data/wsfix/`,
 `data/charset-guard/`).
 
+## PF-FIXTURES — frozen-worked-value sweep + id-72 close (2026-07-19)
+
+Contract: `wire-contract-v2.md` FROZEN (ZT, 2026-07-18, decision 014); banner
+verified directly at claim (frontmatter `status: frozen`; `> [!important] FROZEN`).
+Base: this tree @ `379f63b` (PF-GOLDENS landed). Unit: pack §10.5 + advisor
+dispositions (9074c86b). Oracle-of-record (PACK ERRATA — `scratch/compute.py`
+does not exist): `wire-contract-v2-verify.py::root_of` (frozen §12.2).
+
+**What landed:**
+
+- **`data/wsfix/s2/receipts/2026-07-18.md` (474 B, COMPUTED)** — the id-72
+  closure. S0 receipts + frozen §6.3 E3/E4 receipt lines; `file_rev
+  9167b12b0eb13be6` (§7.1). Never hand-written; re-derived + byte-checked in the
+  sweep. Provenance: `data/wsfix/PROVENANCE.md`.
+- **`tests/pf_frozen_sweep.rs`** — the frozen-worked-value SWEEP (gate 4): every
+  distinct worked value the frozen text prints (6 roots + 17 revs + 17 span
+  literals + 8 §3.1 id lexemes) pinned by an engine-recomputed assertion
+  (`model::build`, `wire_map::project_toc`, `model::merkle_root`, `model::walk`,
+  `transport::scan_id`) over the committed `wsfix/` S0 bytes + frozen §4.4 edits.
+  Includes the §4.5 worked resolve fixture (id-72 closure). Grain discipline
+  pinned explicit: **A4/A5** distinct terminator families (248↔249, 473↔474
+  as-is, never normalized), **A7** full-token root compare (`b3:` vs `b3a:`,
+  hex-tails equal / tokens not), **A3** by-design `2731acfa…` equality named,
+  **A2/A6** single-sourced values re-derived not copied.
+
+**Result: sweep GREEN (14 tests), workspace 285/0. Zero engine-crate lines
+(boundary diff: `crates/testsuite` + `data/` only). No wrong-grain value found —
+no grain-defect-#3.** The completeness proof (grep frozen → pin map, zero
+unmapped) and the deviation-row enumeration (gate 2) are session artifacts under
+`results/pf-fixtures/`.
+
+Gate commands (this run, verbatim, &&-chained):
+
+```
+cargo fmt --all -- --check && cargo test --workspace \
+  && cargo clippy --workspace --all-targets -- -D warnings
+uvx --from blake3 python3 .../wire-contract-v2-verify.py   # 69/69, exit 0
+```
+
 ## PF-GOLDENS — POST-FLIP goldens regen (2026-07-19)
 
 Contract: `wire-contract-v2.md` FROZEN (ZT, 2026-07-18, decision 014); banner
