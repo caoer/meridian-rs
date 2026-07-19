@@ -114,6 +114,7 @@ fn recovery_bindings_match_frozen_table() {
         (C::RootMismatch, R::Resync), // the declared rebind (was refresh)
         (C::RootUnknown, R::Resync),
         (C::LockTimeout, R::Retry),
+        (C::StaleView, R::Retry), // §10.2: retryable, never silent (Q5-LINKS)
         (C::BadFrame, R::Respawn),
         (C::UnsupportedProto, R::Respawn), // the declared rebind (was fix)
         (C::Internal, R::Respawn),
@@ -943,4 +944,93 @@ fn external_delta_absent_actor_now_and_no_keys_slot() {
     }
     let back: wire::DeltaFrame = serde_json::from_value(v).unwrap();
     assert_eq!(back, frame);
+}
+
+// ---------------------------------------------------------------------------
+// Q5-LINKS: §4.6 worked exchange + §10.2 worked refusal + §10.1 honest tense
+// ---------------------------------------------------------------------------
+
+const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
+const R2: &str = "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
+
+/// v2 §4.6, the worked exchange verbatim — id 80, the printed triple
+/// (`changes_seq:2` is the contract world's epoch counter) + the
+/// resolved/unresolved per-edge counts — round-tripped through the typed
+/// vocabulary both directions.
+#[test]
+fn worked_links_frame_matches_contract() {
+    let printed = json!({
+        "id":80,"ok":true,"body":{
+         "as_of_root":R2,
+         "live_root":R2,
+         "changes_seq":2,
+         "files":{"notes/plan.md":{
+           "resolved":{"receipts/2026-07-18.md":1},
+           "unresolved":{"roadmap":1}}}}
+    });
+    let typed: wire::Response = serde_json::from_value(printed.clone()).unwrap();
+    let wire::ResponsePayload::Body {
+        body: wire::ResponseBody::Links { ref files, .. },
+    } = typed.payload
+    else {
+        panic!("worked §4.6 frame decodes as the Links body")
+    };
+    assert_eq!(files["notes/plan.md"].resolved["receipts/2026-07-18.md"], 1);
+    assert_eq!(files["notes/plan.md"].unresolved["roadmap"], 1);
+    assert_eq!(serde_json::to_value(&typed).unwrap(), printed);
+}
+
+/// v2 §10.2, the worked refusal verbatim — id 81: the client demanded R0, the
+/// world is at R2 — `stale_view`, retry class, `required` + the sampled world
+/// beside it, NO message (the extras carry the whole diagnosis).
+#[test]
+fn worked_stale_view_refusal_matches_contract() {
+    let printed = json!({
+        "id":81,"ok":false,"error":{"code":"stale_view","recovery":"retry",
+         "required":R0,
+         "as_of_root":R2,
+         "live_root":R2}
+    });
+    let typed: wire::Response = serde_json::from_value(printed.clone()).unwrap();
+    let wire::ResponsePayload::Error { ref error } = typed.payload else {
+        panic!("refusal decodes as the error envelope")
+    };
+    assert_eq!(error.code, wire::ErrorCode::StaleView);
+    assert_eq!(error.recovery, wire::Recovery::Retry);
+    assert_eq!(error.required.as_ref().unwrap().0, R0);
+    assert_eq!(serde_json::to_value(&typed).unwrap(), printed);
+}
+
+/// §10.1 honest-tense law, type-level (pack §8 gate 2): a frame where
+/// `as_of_root ≠ live_root` — the corpus moved while the answer was computed
+/// — is a LEGAL success frame. It parses, round-trips, and nothing anywhere
+/// in the vocabulary asserts the roots equal or bounds their distance; no
+/// lag bounds are promised, ever. The values are the computed R0/R2 pair
+/// (two real corpus states), not invented bytes.
+#[test]
+fn honest_tense_divergent_triple_is_permitted_never_bounded() {
+    let divergent = json!({
+        "id":86,"ok":true,"body":{
+         "as_of_root":R0,
+         "live_root":R2,
+         "changes_seq":1,
+         "files":{"notes/plan.md":{"resolved":{},"unresolved":{"roadmap":2}}}}
+    });
+    let typed: wire::Response = serde_json::from_value(divergent.clone()).unwrap();
+    assert!(typed.ok, "a stale view is a view, not an error");
+    let wire::ResponsePayload::Body {
+        body:
+            wire::ResponseBody::Links {
+                ref as_of_root,
+                ref live_root,
+                ..
+            },
+    } = typed.payload
+    else {
+        panic!("divergent triple decodes as the Links body")
+    };
+    assert_ne!(as_of_root, live_root, "the divergence under test");
+    // PERMITTED is the whole assertion: the frame round-trips unchanged and
+    // no bound exists to violate — the absent assertion IS the §10.1 law.
+    assert_eq!(serde_json::to_value(&typed).unwrap(), divergent);
 }
