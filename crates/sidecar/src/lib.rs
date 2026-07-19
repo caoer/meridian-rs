@@ -36,6 +36,7 @@ mod arms;
 pub mod commit;
 mod decode;
 pub mod ring;
+mod watch;
 
 /// v2 §3.2: the server name in the `hello` body.
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
@@ -89,6 +90,7 @@ pub fn serve(
     // subscriptions included (a restart is a new epoch; catch up diff-by-root).
     let mut epoch = ring::RootRing::new();
     let mut subs: Vec<SubState> = Vec::new();
+    let mut watch = watch::WatchState::new(root);
     let mut line = String::new();
     loop {
         line.clear();
@@ -98,9 +100,21 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
+        // F5-WATCH reconcile BEFORE dispatch: an external change is emitted
+        // (and pushed) before this request's answer reads the world. A
+        // reconcile error never fails the request — stderr, retry next cycle.
+        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+            eprintln!("watch reconcile: {e:?}");
+        }
+        flush_subs(&mut output, &epoch, &mut subs)?;
         let response = respond_line(root, &mut epoch, &mut subs, &line);
         serde_json::to_writer(&mut output, &response)?;
         output.write_all(b"\n")?;
+        // Post-dispatch reconcile: internal commits sync the baseline
+        // silently; an external landing mid-dispatch is emitted here.
+        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+            eprintln!("watch reconcile: {e:?}");
+        }
         // The push path: ok first, THEN Notification frames (§4.7 order) —
         // a fresh subscription's replay and every live emission ride the
         // same flush, so replay ≡ live holds at the transport too.
