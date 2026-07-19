@@ -22,6 +22,7 @@ path = "tests/main.rs"
 syntax = { workspace = true }
 model = { workspace = true }
 wire = { workspace = true }
+wire-map = { workspace = true }
 transport = { workspace = true }
 
 [dev-dependencies]
