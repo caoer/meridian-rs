@@ -10,7 +10,11 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Op, Path, ResponseBody, Root, SecRef, 
 /// the wire vocabulary but unarmed at this rung — the strict decode already
 /// answers `unknown_op` before construction; the arms here are unreachable
 /// mirrors kept for match exhaustiveness.
-pub(crate) fn dispatch(root: &fs::WorkspaceRoot, op: Op) -> Result<ResponseBody, Box<ErrorBody>> {
+pub(crate) fn dispatch(
+    root: &fs::WorkspaceRoot,
+    epoch: &crate::ring::RootRing,
+    op: Op,
+) -> Result<ResponseBody, Box<ErrorBody>> {
     match op {
         Op::Hello { .. } => Ok(hello(root)),
         Op::Toc { path } => toc(root, &path),
@@ -21,9 +25,39 @@ pub(crate) fn dispatch(root: &fs::WorkspaceRoot, op: Op) -> Result<ResponseBody,
             r#ref,
             content,
         } => resolve(root, &from, &r#ref, content.unwrap_or(false)),
-        Op::Splice { .. } | Op::Root | Op::Diff { .. } => {
-            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
-        }
+        Op::Root => root_op(root, epoch),
+        Op::Diff { from_root, to_root } => diff_op(root, epoch, &from_root, &to_root),
+        Op::Splice { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+    }
+}
+
+/// v2 §4.7: the current workspace root cursor (computed fresh from disk —
+/// truth over cache while no watcher runs) + this epoch's `seq`.
+fn root_op(
+    root: &fs::WorkspaceRoot,
+    epoch: &crate::ring::RootRing,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    Ok(ResponseBody::Root {
+        root: ambient_root(root)?,
+        seq: epoch.seq(),
+    })
+}
+
+/// v2 §4.7/§7.3 replay over this epoch's retained history. Until rung 4
+/// emits batches the history is exactly the current root: same-root diff is
+/// truthfully empty, anything else — stale, evicted, previous-epoch,
+/// backwards — is `root_unknown` → full resync (degrade to re-derive, never
+/// to wrong data).
+fn diff_op(
+    root: &fs::WorkspaceRoot,
+    epoch: &crate::ring::RootRing,
+    from: &Root,
+    to: &Root,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let current = ambient_root(root)?;
+    match epoch.batches_between(from, to, &current) {
+        Some(batches) => Ok(ResponseBody::Diff { batches }),
+        None => Err(Box::new(ErrorBody::new(ErrorCode::RootUnknown))),
     }
 }
 

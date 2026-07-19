@@ -298,6 +298,77 @@ fn return_kind(kind: &model::NodeKind) -> String {
     }
 }
 
+/// Project one file's computed change facts onto the wire Delta file entry
+/// (v2 §7.1). `renamed`/`from_path` are the caller's — cross-file knowledge
+/// the per-path computation doesn't have (model `delta` module doc).
+#[must_use]
+pub fn project_file_delta(path: &str, fd: &model::delta::FileDelta) -> wire::DeltaFile {
+    use model::delta::FileChangeKind as M;
+    wire::DeltaFile {
+        path: wire::Path(path.to_owned()),
+        change: match fd.change {
+            M::Created => wire::FileChange::Created,
+            M::Modified => wire::FileChange::Modified,
+            M::Deleted => wire::FileChange::Deleted,
+        },
+        from_path: None,
+        file_rev_before: fd
+            .file_rev_before
+            .as_ref()
+            .map(|r| wire::NodeRev(r.0.clone())),
+        file_rev_after: fd
+            .file_rev_after
+            .as_ref()
+            .map(|r| wire::NodeRev(r.0.clone())),
+        nodes: fd.nodes.iter().map(project_node_delta).collect(),
+    }
+}
+
+/// One node-grain entry: identity re-spelled from the model [`model::Ref`]
+/// into THE wire grammar (`SecRef`) — same vocabulary as toc rows and armed
+/// facts (one projection, three tenses, §7.2).
+fn project_node_delta(d: &model::delta::NodeDelta) -> wire::DeltaNode {
+    use model::delta::NodeChangeKind as M;
+    wire::DeltaNode {
+        target: ref_to_sec_ref(&d.target),
+        change: match d.change {
+            M::Added => wire::NodeChange::Added,
+            M::Edited => wire::NodeChange::Edited,
+            M::Removed => wire::NodeChange::Removed,
+        },
+        node_rev_before: d
+            .node_rev_before
+            .as_ref()
+            .map(|r| wire::NodeRev(r.0.clone())),
+        node_rev_after: d
+            .node_rev_after
+            .as_ref()
+            .map(|r| wire::NodeRev(r.0.clone())),
+        span_after: d
+            .span_after
+            .as_ref()
+            .map(|s| wire::Span(s.start as u64, s.end as u64)),
+    }
+}
+
+fn ref_to_sec_ref(r: &model::Ref) -> wire::SecRef {
+    match r {
+        model::Ref::Hpath(segs) => wire::SecRef::Hpath {
+            hpath: segs
+                .iter()
+                .map(|s| wire::HpathSeg {
+                    h: s.h.clone(),
+                    n: s.n,
+                })
+                .collect(),
+        },
+        model::Ref::Anchor(id) => wire::SecRef::Anchor { anchor: id.clone() },
+        model::Ref::FmKey(key) => wire::SecRef::FmKey {
+            fm_key: key.clone(),
+        },
+    }
+}
+
 /// The frozen prefix law (contract §5.2), implemented — the seam proof, real
 /// code with the contract's worked examples as tests.
 ///
@@ -410,8 +481,6 @@ mod toc_tests {
     /// span (terminator excluded), its own `node_rev`; the lone top-level
     /// heading spans the whole file so its rev equals `file_rev`.
     #[test]
-    #[ignore = "STAGED-OPEN (D2): model Anchor nodes carry marker-grain spans; §6.3 worked facts \
-                need host-block-leaf grain — model-lane fix pending, this pin goes live with it"]
     fn worked_s1_receipts_anchor_toc_rows() {
         let raw = format!("# Receipts — 2026-07-18\n{E3_LINE}\n");
         assert_eq!(raw.len(), 249, "S1 receipts byte count (worked §0.3)");
@@ -447,7 +516,6 @@ mod toc_tests {
     /// block sharing the anchor's span echoes `task`; a bare-paragraph anchor
     /// echoes `paragraph`.
     #[test]
-    #[ignore = "STAGED-OPEN (D2): same host-block-grain dependency as the worked S1 rows above"]
     fn anchor_host_kind_task_and_paragraph() {
         let raw = "# H\n\n- [ ] do the thing ^t-1\n\nplain block ^p-1\n";
         let got = rows(raw);

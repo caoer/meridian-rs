@@ -216,7 +216,7 @@ fn gate3_hello_caps_equal_armed_set_exactly() {
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
-            "caps":["toc","cat","extract","resolve","resolve.content"],
+            "caps":["toc","cat","extract","resolve","resolve.content","root","diff"],
             "root":R0}
     });
     assert_eq!(frame, expected);
@@ -228,8 +228,6 @@ fn gate3_hello_caps_equal_armed_set_exactly() {
 fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
-        r#"{"id":1,"op":"root"}"#,
-        r#"{"id":1,"op":"diff","from_root":"b3:00","to_root":"b3:00"}"#,
         r#"{"id":1,"op":"splice","path":"notes/plan.md","edits":[]}"#,
         r#"{"id":1,"op":"links","path":"notes/plan.md"}"#,
         r#"{"id":1,"op":"sub","from_seq":0}"#,
@@ -486,5 +484,88 @@ fn resolve_content_true_returns_bytes_and_never_a_rev() {
     let body = frame["body"].as_object().expect("body");
     for key in ["node_rev", "file_rev", "rev"] {
         assert!(!body.contains_key(key), "mint partition: no `{key}`");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D3-DELTA — root/diff arms + §7.1 per-daemon-epoch law through the LIVE loop
+// ---------------------------------------------------------------------------
+
+/// v2 §4.7 root: the current computed root + this epoch's seq (0 — no batch
+/// has been emitted this epoch; rung 4 moves it).
+#[test]
+fn d3_root_op_serves_current_root_and_epoch_seq() {
+    let (_d, root) = s0();
+    let got = one(&root, r#"{"id":90,"op":"root"}"#);
+    assert_eq!(got, json!({"id":90,"ok":true,"body":{"root":R0,"seq":0}}));
+}
+
+/// §7.3 truthfulness until rung 4 emits: same-root diff is EMPTY batches
+/// (nothing happened between R0 and R0); any other range is outside this
+/// epoch's retained history → `root_unknown` → resync.
+#[test]
+fn d3_diff_empty_or_root_unknown_truthfully() {
+    let (_d, root) = s0();
+    let same = one(
+        &root,
+        &format!(r#"{{"id":95,"op":"diff","from_root":"{R0}","to_root":"{R0}"}}"#),
+    );
+    assert_eq!(same, json!({"id":95,"ok":true,"body":{"batches":[]}}));
+
+    let r1 = "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
+    let stale = one(
+        &root,
+        &format!(r#"{{"id":96,"op":"diff","from_root":"{R0}","to_root":"{r1}"}}"#),
+    );
+    assert_eq!(stale["ok"], false);
+    assert_eq!(stale["error"]["code"], "root_unknown");
+    assert_eq!(stale["error"]["recovery"], "resync");
+}
+
+/// Gate 6 (§7.1 late law): a restart opens a NEW epoch — two serve lifetimes
+/// over the same workspace never correlate: seq is 0 again and the fresh
+/// epoch retains only the current root; no cross-epoch seq comparison is
+/// representable, no epoch fact persists anywhere.
+#[test]
+fn d3_restart_boundary_never_correlates_epochs() {
+    let (_d, root) = s0();
+    // epoch 1
+    let e1 = one(&root, r#"{"id":1,"op":"root"}"#);
+    assert_eq!(e1["body"]["seq"], 0);
+    // the restart: epoch 1's serve loop is gone; epoch 2 is a fresh call
+    let e2 = one(&root, r#"{"id":2,"op":"root"}"#);
+    assert_eq!(e2["body"]["seq"], 0, "seq is born 0 in every epoch");
+    let same = one(
+        &root,
+        &format!(r#"{{"id":3,"op":"diff","from_root":"{R0}","to_root":"{R0}"}}"#),
+    );
+    assert_eq!(same["body"]["batches"], json!([]));
+}
+
+/// Gate 5 (every op ships rejection fixtures): strict decode on the newly
+/// armed ops — root takes NO fields; diff requires string roots and rejects
+/// unknown fields loudly.
+#[test]
+fn d3_gate5_root_diff_strict_decode_rejections() {
+    let (_d, root) = s0();
+    for req in [
+        r#"{"id":1,"op":"root","path":"notes/plan.md"}"#,
+        r#"{"id":1,"op":"diff","from_root":"b3:00","to_root":"b3:00","seq":1}"#,
+    ] {
+        let frame = one(&root, req);
+        assert_bad_request(&frame);
+        assert!(
+            frame["error"]["message"]
+                .as_str()
+                .expect("strict decode names the field")
+                .contains("unknown request field"),
+            "{frame}"
+        );
+    }
+    for req in [
+        r#"{"id":1,"op":"diff","from_root":"b3:00"}"#,
+        r#"{"id":1,"op":"diff","from_root":7,"to_root":"b3:00"}"#,
+    ] {
+        assert_bad_request(&one(&root, req));
     }
 }

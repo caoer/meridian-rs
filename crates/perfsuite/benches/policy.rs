@@ -1,38 +1,252 @@
-//! Seam bench: `policy::evaluate` — rung-6 per-assertion p99 enforcement.
+//! Seam bench: `policy::evaluate` — rung-6 per-eval wall-time p99 + declared budgets.
 //!
-//! # Engine shape (ZT ruling 2026-07-18): declarative spine, Lua predicates
-//! Rules are two-layer — a declarative manifest (id, scope selector, severity,
-//! budget, fixtures) and an mlua predicate `check(node, facts) → verdict`,
-//! sandboxed Redis-style (no io/os/clock/random, fuel-limited, memory-capped,
-//! ordered fact arrays only). That splits budget enforcement in two, mirroring
-//! this harness's criterion-vs-hdr split:
+//! # Engine shape (ruling 008): fenced Starlark predicates, EvalBudget{steps,mem}
+//! A rule page is literate markdown whose predicate is a fenced ` ```starlark `
+//! `def check(doc)` block, evaluated in-engine via starlark-rust over the injected
+//! world-model fact surface, metered per-eval by `EvalBudget{steps, mem}`. That
+//! splits budget enforcement in two, mirroring this harness's criterion-vs-hdr split:
 //!
-//! - **Fuel budgets** — deterministic instruction counts, engine-enforced at
-//!   eval time: same bytes + same facts ⇒ same fuel, forever. Platform-free,
-//!   so fuel checks are *tests* (testsuite territory), not benches.
-//! - **Wall-time p99** — `Budget{class, p99_us}` per rule, real latency on
-//!   real hardware: THIS bench's job, via the hdr path on the fleet runner.
+//! - **Step/mem budgets** — deterministic post-eval accounting (`get_total_tick_count()`
+//!   for steps, PEAK heap-arena bytes for mem): same bytes + same facts ⇒ same
+//!   count, forever. Platform-free, so the budget *envelope* is data (staged as a
+//!   claim value), and budget *conformance* is a test/finding, not a wall-time bench.
+//! - **Wall-time p99** — real latency of one `policy::evaluate` call on real hardware:
+//!   THIS bench's hdr job, on the fleet runner.
 //!
 //! # Metric contract (claims.toml)
-//! - `policy.assertion.p99` — µs per predicate evaluation, p99.
-//!   `threshold_source = "ruleset"`: gates come from each rule's manifest
-//!   budget, never from claims.toml. Enforcement shape when rung 6 lands: one
-//!   hdr run per rule id over corpus-derived facts, each asserted against its
-//!   own declared `p99_us`; any overrun is a FAIL verdict.
-//! - `policy.pack_load.fixtures` — ms to load a pack and run every rule's
-//!   fixtures (a rule whose fixtures fail doesn't load). This is the
-//!   "rule iteration in milliseconds" promise, held as a perf claim.
+//! - `policy.evaluate.p99.{vault_1gb,fence_bomb}` — µs per `policy::evaluate` over one
+//!   real `model::build` AST, p99 via the hdr path. `threshold_source = "ruleset"`:
+//!   gates come from each rule's manifest budget once `policy::vocab()` lands, never
+//!   from claims.toml — so a local number renders MEASURED, never a false PASS/FAIL
+//!   (risk R2's "measured not asserted").
+//! - `policy.eval.budget.{steps,mem}.vault_1gb` — the `EvalBudget` the compiled pack
+//!   was admitted under (`CompiledRuleset::budget()`), staged as data; runtime
+//!   grounding logged: how many of the sample's evals emitted a `budget_exceeded`
+//!   finding (0 ⇒ the declared envelope holds at scale).
+//! - `policy.assertion.p99` / `policy.pack_load.fixtures` — the generic per-rule and
+//!   pack-load claims; their gates land with `policy::vocab()`.
 //!
-//! Dormant until rung 6 (`policy::compile`/`evaluate`/`vocab` are `todo!()`).
+//! Carry-forward: the in-process Starlark step/heap guards are BEST-EFFORT (they stop
+//! a runaway, not a single allocating expression); the exact post-eval accounting is
+//! the metering layer; the HARD bound is subprocess/OS limits — a daemon concern.
+//! Nothing here (row, note, or code) asserts a hard in-process bound.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "budget values (10k steps, 4 MiB) stage as f64 Measurement.value; exact in f64 — same latitude the perfsuite lib takes for stats plumbing"
+)]
+
+use std::collections::BTreeMap;
 use std::hint::black_box;
+use std::io;
+use std::io::Write as _;
 
-fn bench_policy(c: &mut Criterion) {
-    c.bench_function("policy/noop_until_rung_6", |b| {
-        b.iter(|| black_box(1u64).wrapping_add(1));
+use criterion::{Criterion, criterion_group};
+
+use model::Document;
+use policy::{CompiledRuleset, PackFiles, RulesetPin, compile, evaluate};
+
+use perfsuite::corpus;
+use perfsuite::measure::{LatencyRun, Measurement, record_measurement};
+use perfsuite::profile::{Profile, Recipe};
+
+/// The canonical `blurb-required` rule page (a literate page whose predicate is a
+/// fenced Starlark `def check(doc)`), matching the policy crate's own unit fixture —
+/// so this bench evaluates the exact predicate the load gate admits.
+const BLURB_RULE_PAGE: &str = "\
+# blurb-required
+
+Every section must open with a blurb line: a heading immediately followed by
+another heading (or the end of the document) has no blurb and is a violation.
+
+```starlark
+def check(doc):
+    nodes = doc.nodes
+    count = len(nodes)
+    for i in range(count):
+        node = nodes[i]
+        if node.kind != \"heading\":
+            continue
+        has_blurb = i + 1 < count and nodes[i + 1].kind != \"heading\"
+        if not has_blurb:
+            violation(
+                rule = \"blurb-required\",
+                severity = \"warn\",
+                span = node.span,
+                node_rev = node.node_rev,
+                hpath = node.hpath,
+                message = \"section has no blurb line\",
+            )
+```
+";
+
+/// The §11.3 manifest: `rulepack-api@1`, the shipped `{steps, mem}` envelope
+/// (10k steps, 4 MiB — same as the policy crate's shipped fixtures), one fixture
+/// (the load gate) and the one rule page.
+const MANIFEST: &str = "\
+id: perf-blurb
+api: rulepack-api@1
+budgets:
+  steps: 10000
+  mem: 4194304
+fixtures:
+  - fixtures/pass.md
+rules:
+  - rules/blurb-required.md
+";
+
+/// The load-gate fixture: a conforming doc (heading → blurb line) declared `pass`.
+const PASS_FIXTURE: &str = "---\nexpect: pass\n---\n# Goals\nA blurb line.\n";
+
+/// In-memory pack-file resolver — policy stays I/O-free; the caller injects file
+/// access (here, the two manifest-relative pack files).
+struct MemFiles(BTreeMap<String, String>);
+
+impl PackFiles for MemFiles {
+    fn read(&self, rel_path: &str) -> io::Result<String> {
+        self.0
+            .get(rel_path)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, rel_path.to_owned()))
+    }
+}
+
+/// Compile the blurb pack through the real `policy::compile` load gate (fixtures run
+/// under the declared budget) — the admitted `CompiledRuleset` this bench evaluates.
+fn compiled_pack() -> CompiledRuleset {
+    let files = MemFiles(BTreeMap::from([
+        (
+            "rules/blurb-required.md".to_owned(),
+            BLURB_RULE_PAGE.to_owned(),
+        ),
+        ("fixtures/pass.md".to_owned(), PASS_FIXTURE.to_owned()),
+    ]));
+    let pin = RulesetPin {
+        id: "perf-blurb".to_owned(),
+        path: "perf-blurb.md".to_owned(),
+        sha256: None,
+    };
+    compile(&pin, MANIFEST, &files).expect("perf blurb pack compiles under its load gate")
+}
+
+/// Generate-or-reuse a bounded sample from a profile's SHAPE (per-document eval
+/// latency depends on document shape, not corpus size), then build a real
+/// `model::Document` AST per file via `syntax::parse` → `model::build`.
+fn sample_docs(profile_name: &str, files: u32, seed: u64) -> Vec<Document> {
+    let profile = Profile::resolve(profile_name).unwrap_or_else(|e| panic!("{profile_name}: {e}"));
+    let recipe = Recipe::new(profile, seed, Some(files));
+    let dir = corpus::ensure(&recipe).expect("corpus generate-or-reuse");
+    corpus::load_files(&dir)
+        .expect("load corpus files")
+        .into_iter()
+        .map(|(_rel, content)| model::build(content.clone(), syntax::parse(&content)))
+        .collect()
+}
+
+/// Criterion seam: batch `policy::evaluate` over a real vault-1gb-shaped sample —
+/// the mean-estimate companion to the hdr p99 claim below.
+fn bench_policy_eval(c: &mut Criterion) {
+    let pack = compiled_pack();
+    let docs = sample_docs("vault-1gb", 200, 1);
+    let refs: Vec<&Document> = docs.iter().collect();
+    c.bench_function("policy/evaluate_vault1gb_batch", |b| {
+        b.iter(|| {
+            let mut n = 0usize;
+            for doc in &refs {
+                n += evaluate(&pack, std::slice::from_ref(doc), None).len();
+            }
+            black_box(n)
+        });
     });
 }
 
-criterion_group!(benches, bench_policy);
-criterion_main!(benches);
+/// hdr p99 of one `policy::evaluate` call, cycling through the sample docs.
+fn eval_p99_measurement(pack: &CompiledRuleset, docs: &[Document], id: &str) -> Measurement {
+    let refs: Vec<&Document> = docs.iter().collect();
+    let mut i = 0usize;
+    let run = LatencyRun::run(500, 8_000, || {
+        let doc = refs[i % refs.len()];
+        i += 1;
+        let v = evaluate(pack, std::slice::from_ref(&doc), None);
+        black_box(&v);
+    });
+    run.to_p99_measurement(id, "us")
+}
+
+/// Stage one eval-p99 claim and log the headline.
+fn record_eval_p99(pack: &CompiledRuleset, docs: &[Document], id: &str) {
+    let m = eval_p99_measurement(pack, docs, id);
+    match record_measurement(&m) {
+        Ok(path) => {
+            let _ = writeln!(
+                io::stderr(),
+                "claim {id}: p99 {:.2} µs over {} samples ({} docs) → {}",
+                m.value,
+                m.samples,
+                docs.len(),
+                path.display()
+            );
+        }
+        Err(e) => eprintln!("claim {id} staging failed: {e}"),
+    }
+}
+
+/// Stage the declared per-eval budget as data (`EvalBudget{steps,mem}` the pack was
+/// admitted under), with the runtime grounding: how many of the sample's evals
+/// emitted a `budget_exceeded` finding (0 ⇒ the declared envelope holds at scale).
+fn record_budget(pack: &CompiledRuleset, docs: &[Document], steps_id: &str, mem_id: &str) {
+    let budget = pack.budget();
+    let refs: Vec<&Document> = docs.iter().collect();
+    let exhausted = refs
+        .iter()
+        .filter(|doc| {
+            evaluate(pack, std::slice::from_ref(*doc), None)
+                .iter()
+                .any(|v| v.message.starts_with("budget_exceeded:"))
+        })
+        .count();
+
+    for (id, value, unit) in [
+        (steps_id, budget.steps as f64, "steps"),
+        (mem_id, budget.mem as f64, "bytes"),
+    ] {
+        let m = Measurement {
+            id: id.to_owned(),
+            value,
+            unit: unit.to_owned(),
+            samples: refs.len() as u64,
+            dist: None,
+        };
+        match record_measurement(&m) {
+            Ok(path) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "claim {id}: declared {value:.0} {unit}; {exhausted}/{} evals exhausted → {}",
+                    refs.len(),
+                    path.display()
+                );
+            }
+            Err(e) => eprintln!("claim {id} staging failed: {e}"),
+        }
+    }
+}
+
+criterion_group!(benches, bench_policy_eval);
+
+fn main() {
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+
+    let pack = compiled_pack();
+    let vault = sample_docs("vault-1gb", 200, 1);
+    let fence = sample_docs("fence-bomb", 100, 1);
+
+    record_eval_p99(&pack, &vault, "policy.evaluate.p99.vault_1gb");
+    record_eval_p99(&pack, &fence, "policy.evaluate.p99.fence_bomb");
+    record_budget(
+        &pack,
+        &vault,
+        "policy.eval.budget.steps.vault_1gb",
+        "policy.eval.budget.mem.vault_1gb",
+    );
+}

@@ -733,3 +733,214 @@ fn absent_actor_now_absent_on_the_wire() {
     let back: wire::Request = serde_json::from_value(v).unwrap();
     assert_eq!(back, request);
 }
+
+// ---------------------------------------------------------------------------
+// D3-DELTA — the §7.1 worked delta frames + §4.7/§7.3 replay ≡ live
+// ---------------------------------------------------------------------------
+
+/// E3's delta, every value from the frozen §7.1 frame (node-grain at birth,
+/// decision 012 — no `keys` slot exists to serialize).
+fn e3_delta() -> wire::DeltaFrame {
+    wire::DeltaFrame {
+        delta: wire::Delta {
+            seq: 1,
+            root_before: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            root_after: wire::Root(
+                "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+            ),
+            actor: Some("agent:b0864fb2".into()),
+            now: Some("2026-07-18T20:31:04Z".into()),
+            files: vec![
+                wire::DeltaFile {
+                    path: wire::Path("notes/plan.md".into()),
+                    change: wire::FileChange::Modified,
+                    from_path: None,
+                    file_rev_before: Some(wire::NodeRev("e3c4acaceb75b907".into())),
+                    file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
+                    nodes: vec![wire::DeltaNode {
+                        target: wire::SecRef::Hpath {
+                            hpath: vec![seg("Goals"), seg("Q3")],
+                        },
+                        change: wire::NodeChange::Edited,
+                        node_rev_before: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
+                        node_rev_after: Some(wire::NodeRev("41f643f034e5681f".into())),
+                        span_after: Some(wire::Span(49, 75)),
+                    }],
+                },
+                wire::DeltaFile {
+                    path: wire::Path("receipts/2026-07-18.md".into()),
+                    change: wire::FileChange::Modified,
+                    from_path: None,
+                    file_rev_before: Some(wire::NodeRev("920a40c4ee23d37c".into())),
+                    file_rev_after: Some(wire::NodeRev("2731acfa39bbb92c".into())),
+                    nodes: vec![wire::DeltaNode {
+                        target: wire::SecRef::Anchor {
+                            anchor: "r-000042".into(),
+                        },
+                        change: wire::NodeChange::Added,
+                        node_rev_before: None,
+                        node_rev_after: Some(wire::NodeRev("639a2dca46f6fcc8".into())),
+                        span_after: Some(wire::Span(26, 248)),
+                    }],
+                },
+            ],
+        },
+    }
+}
+
+fn e3_delta_json() -> Value {
+    json!({"delta":{
+     "seq":1,
+     "root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9",
+     "root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+     "actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z",
+     "files":[
+      {"path":"notes/plan.md","change":"modified",
+       "file_rev_before":"e3c4acaceb75b907","file_rev_after":"a9794a262e67ed02",
+       "nodes":[{"hpath":[{"h":"Goals"},{"h":"Q3"}],"change":"edited",
+                 "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
+                 "span_after":[49,75]}]},
+      {"path":"receipts/2026-07-18.md","change":"modified",
+       "file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c",
+       "nodes":[{"anchor":"r-000042","change":"added",
+                 "node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}})
+}
+
+/// E4's delta, every value from the frozen §7.1 frame.
+fn e4_delta() -> wire::DeltaFrame {
+    wire::DeltaFrame {
+        delta: wire::Delta {
+            seq: 2,
+            root_before: wire::Root(
+                "b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7".into(),
+            ),
+            root_after: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
+            actor: Some("agent:b0864fb2".into()),
+            now: Some("2026-07-18T20:33:41Z".into()),
+            files: vec![
+                wire::DeltaFile {
+                    path: wire::Path("notes/plan.md".into()),
+                    change: wire::FileChange::Modified,
+                    from_path: None,
+                    file_rev_before: Some(wire::NodeRev("a9794a262e67ed02".into())),
+                    file_rev_after: Some(wire::NodeRev("5f27a2814b517680".into())),
+                    nodes: vec![wire::DeltaNode {
+                        target: wire::SecRef::Hpath {
+                            hpath: vec![seg("Goals"), seg("Q4")],
+                        },
+                        change: wire::NodeChange::Edited,
+                        node_rev_before: Some(wire::NodeRev("4b8bc385a58da0e0".into())),
+                        node_rev_after: Some(wire::NodeRev("f43203a1f0b4c9a3".into())),
+                        span_after: Some(wire::Span(75, 150)),
+                    }],
+                },
+                wire::DeltaFile {
+                    path: wire::Path("receipts/2026-07-18.md".into()),
+                    change: wire::FileChange::Modified,
+                    from_path: None,
+                    file_rev_before: Some(wire::NodeRev("2731acfa39bbb92c".into())),
+                    file_rev_after: Some(wire::NodeRev("9167b12b0eb13be6".into())),
+                    nodes: vec![wire::DeltaNode {
+                        target: wire::SecRef::Anchor {
+                            anchor: "r-000043".into(),
+                        },
+                        change: wire::NodeChange::Added,
+                        node_rev_before: None,
+                        node_rev_after: Some(wire::NodeRev("c912d4578883f288".into())),
+                        span_after: Some(wire::Span(249, 473)),
+                    }],
+                },
+            ],
+        },
+    }
+}
+
+fn e4_delta_json() -> Value {
+    json!({"delta":{
+     "seq":2,
+     "root_before":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7",
+     "root_after":"b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68",
+     "actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z",
+     "files":[
+      {"path":"notes/plan.md","change":"modified",
+       "file_rev_before":"a9794a262e67ed02","file_rev_after":"5f27a2814b517680",
+       "nodes":[{"hpath":[{"h":"Goals"},{"h":"Q4"}],"change":"edited",
+                 "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
+                 "span_after":[75,150]}]},
+      {"path":"receipts/2026-07-18.md","change":"modified",
+       "file_rev_before":"2731acfa39bbb92c","file_rev_after":"9167b12b0eb13be6",
+       "nodes":[{"anchor":"r-000043","change":"added",
+                 "node_rev_after":"c912d4578883f288","span_after":[249,473]}]}]}})
+}
+
+/// The two §7.1 worked delta notification frames, value-for-value, both
+/// directions (serialize + read back).
+#[test]
+fn worked_e3_e4_delta_frames_match_contract() {
+    for (frame, expected) in [(e3_delta(), e3_delta_json()), (e4_delta(), e4_delta_json())] {
+        assert_eq!(serde_json::to_value(&frame).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<wire::DeltaFrame>(expected).unwrap(),
+            frame
+        );
+    }
+}
+
+/// §4.7/§7.3 replay ≡ live: the diff response body carries the SAME frame
+/// objects as the live notifications — `diff(R0,R2)` is the two worked
+/// deltas, byte-identical, in one `batches` array. No second diff dialect.
+#[test]
+fn worked_diff_response_batches_are_the_live_frames() {
+    let response = wire::Response {
+        id: Some(95),
+        ok: true,
+        payload: wire::ResponsePayload::Body {
+            body: wire::ResponseBody::Diff {
+                batches: vec![e3_delta(), e4_delta()],
+            },
+        },
+    };
+    let expected = json!({"id":95,"ok":true,"body":{
+        "batches":[e3_delta_json(), e4_delta_json()]}});
+    assert_eq!(serde_json::to_value(&response).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_value::<wire::Response>(expected).unwrap(),
+        response
+    );
+}
+
+/// External changes produce deltas with `actor`/`now` ABSENT (§7.1 law) —
+/// no key on the wire, reading back to `None`; and the row-12 purge at the
+/// type level: a `DeltaNode` serializes NO `keys` key (decision 012 —
+/// node-grain frozen at birth, the amendment slot is prose only).
+#[test]
+fn external_delta_absent_actor_now_and_no_keys_slot() {
+    let frame = wire::DeltaFrame {
+        delta: wire::Delta {
+            seq: 3,
+            root_before: e4_delta().delta.root_after.clone(),
+            root_after: e4_delta().delta.root_before.clone(),
+            actor: None,
+            now: None,
+            files: e3_delta().delta.files.clone(),
+        },
+    };
+    let v = serde_json::to_value(&frame).unwrap();
+    let delta = v["delta"].as_object().unwrap();
+    assert!(!delta.contains_key("actor"));
+    assert!(!delta.contains_key("now"));
+    for file in v["delta"]["files"].as_array().unwrap() {
+        for node in file["nodes"].as_array().unwrap() {
+            assert!(
+                !node.as_object().unwrap().contains_key("keys"),
+                "row-12 purge: node-grain at birth, no keys slot"
+            );
+        }
+    }
+    let back: wire::DeltaFrame = serde_json::from_value(v).unwrap();
+    assert_eq!(back, frame);
+}
