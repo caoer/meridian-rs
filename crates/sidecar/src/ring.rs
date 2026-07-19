@@ -40,6 +40,25 @@ impl RootRing {
         self.entries.back().map_or(0, |f| f.delta.seq)
     }
 
+    /// The oldest retained frame's seq (`None`: empty ring) — the push
+    /// path's catchup boundary (T5-SUB).
+    #[must_use]
+    pub fn oldest_seq(&self) -> Option<u64> {
+        self.entries.front().map(|f| f.delta.seq)
+    }
+
+    /// Frames with `delta.seq > after`, emission order — the push path's
+    /// read (§7.3: the SAME stored objects `diff` replays; no second
+    /// serialization site).
+    #[must_use]
+    pub fn frames_after(&self, after: u64) -> Vec<DeltaFrame> {
+        self.entries
+            .iter()
+            .filter(|f| f.delta.seq > after)
+            .cloned()
+            .collect()
+    }
+
     /// Record one emitted batch (D4 write path / F5 external detection).
     /// Contiguity is the caller's: `frame.delta.root_before` extends the
     /// chain, `frame.delta.seq` is this epoch's next seq.

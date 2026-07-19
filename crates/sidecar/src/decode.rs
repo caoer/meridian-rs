@@ -87,41 +87,50 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 to_root: wire::Root(req_str(obj, op, "to_root")?),
             })
         }
-        "splice" => {
-            // v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,
-            // format-VALIDATED never generated — a malformed `now` is the
-            // server's bad_request (the pass W4 left to this build-out).
-            check_fields(
-                obj,
-                op,
-                &["path", "actor", "now", "receipt", "if_root", "dry", "edits"],
-            )?;
-            let now = opt_str(obj, op, "now")?;
-            if let Some(n) = &now
-                && !wire::now_is_rfc3339(n)
-            {
-                return Err(bad_request(format!(
-                    "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
-                )));
-            }
-            let Some(edits_v) = obj.get("edits") else {
-                return Err(bad_request("missing `edits` on `splice`"));
-            };
-            Ok(Op::Splice {
-                path: req_path(obj, op, "path")?,
-                actor: opt_str(obj, op, "actor")?,
-                now,
-                receipt: obj.get("receipt").map(decode_receipt).transpose()?,
-                if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
-                dry: opt_bool(obj, op, "dry")?,
-                edits: decode_edits(edits_v)?,
+        "sub" => {
+            // v2 §4.7 push path: the reserved shape, live at T5-SUB.
+            check_fields(obj, op, &["from_seq"])?;
+            Ok(Op::Sub {
+                from_seq: req_u64(obj, op, "from_seq")?,
             })
         }
-        // §3.2 discovery honesty: everything else — including ops the wire
-        // vocabulary knows but this rung has not armed (`sub`, T5) — answers
-        // `unknown_op`.
+        "splice" => decode_splice(obj),
+        // §3.2 discovery honesty: every op is armed as of T5-SUB — only
+        // genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,
+/// format-VALIDATED never generated — a malformed `now` is the server's
+/// `bad_request` (the pass W4 left to this build-out).
+fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "splice";
+    check_fields(
+        obj,
+        op,
+        &["path", "actor", "now", "receipt", "if_root", "dry", "edits"],
+    )?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    let Some(edits_v) = obj.get("edits") else {
+        return Err(bad_request("missing `edits` on `splice`"));
+    };
+    Ok(Op::Splice {
+        path: req_path(obj, op, "path")?,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        receipt: obj.get("receipt").map(decode_receipt).transpose()?,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+        edits: decode_edits(edits_v)?,
+    })
 }
 
 /// §6.1 receipt address: `{path, anchor}` exactly — path law on `path`, the

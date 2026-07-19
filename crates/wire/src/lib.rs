@@ -377,6 +377,13 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         require_root: Option<Root>,
     },
+    /// v2 §4.7 the push path, live at T5-SUB: `{"op":"sub","from_seq":N}` →
+    /// ok (the ack reuses the `{root, seq}` body — the subscription's anchor
+    /// tense; advisor-ruled, no frozen frame prints one), then Notification
+    /// frames each carrying one Delta batch — the §7.1 noun, transport only
+    /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
+    /// law); outside the retained history → `root_unknown` → diff-by-root.
+    Sub { from_seq: u64 },
 }
 
 // ---------------------------------------------------------------------------
