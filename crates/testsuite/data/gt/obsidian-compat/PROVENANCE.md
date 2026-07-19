@@ -19,7 +19,23 @@ regression fixture set that pins the app's actual walk against version drift.
   `generate.sh` (which stamps the app version + timestamp + corpus checksums).
 - **App version (this pack):** `1.12.7` (from
   `/Applications/Obsidian.app/Contents/Info.plist` `CFBundleShortVersionString`).
-- **Generated:** `2026-07-19T02:11:24Z`.
+- **Generated:** `2026-07-19T05:18:59Z`.
+- **Span units:** true **UTF-8 byte offsets**. The app's `Loc.offset` is UTF-16
+  code units and the corpus is **not** ASCII (walk.md carries U+2014 ×5 +
+  U+2192 ×1), so `oracle.js` transcodes each resolver offset to a UTF-8 byte
+  offset against the file's own bytes
+  (`TextEncoder.encode(content.slice(0, off)).length` — `slice` indexes in
+  UTF-16 units, matching `Loc.offset`). The span *value* is still the live
+  resolver's; only its unit is normalized. EOF ends use `dest.stat.size`
+  (already bytes).
+- **Regen 2026-07-19 (b3-pack-respan):** re-ran `./generate.sh` after fixing the
+  `oracle.js` UTF-16→UTF-8 transcode. **Reason:** the prior pack labelled spans
+  "UTF-8 byte offsets (corpus is ASCII…)" but recorded the app's raw UTF-16
+  `Loc.offset` (e.g. WL-1 `[183,204]`), and WL-6a mixed a UTF-16 start with a
+  byte-size EOF end — the corpus is not ASCII. Corpus left as-is
+  (`corpus_sha256` identical); only span units + the `span_units` label were
+  corrected. Per decision 013 the pack is regenerable regression data — no
+  contract-text change, no deviation-ledger row.
 - **Zero hand-written answers:** every `answer` in `resolution.expected.json`
   is the resolver's own output (heading/block span, or `ref_not_found` + stage),
   captured by the script. Editing an answer by hand voids the pack.
@@ -42,15 +58,17 @@ ZT's **six walk-law probes** (WL-6 is the `#A#a/b` vs `#A#a#b` hpath-join
 divergence pair, realized as entries WL-6a/WL-6b) plus the **`_`-bearing anchor
 probe** (WX-6). All `from: walk.md`; refs are raw linktext (wire form).
 
+Spans below are **UTF-8 byte offsets** (see § Generation → Span units).
+
 | id | ref | walk law | live-app answer (1.12.7) |
 |---|---|---|---|
-| WL-1 | `#B#Beta` | anywhere-after (closed B/C/A never stop the walk) | `walk.md` span `[183,204]` — A's first `## Beta` |
-| WL-2 | `#B#b` | generation-skipping (level 1→3, X unnamed) | `walk.md` span `[31,102]` — `### b` under B›X |
+| WL-1 | `#B#Beta` | anywhere-after (closed B/C/A never stop the walk) | `walk.md` span `[189,210]` — A's first `## Beta` |
+| WL-2 | `#B#b` | generation-skipping (level 1→3, X unnamed) | `walk.md` span `[31,106]` — `### b` under B›X |
 | WL-3 | `#B#C` | strictly-deeper-level (C is level 1, = B) | `ref_not_found` stage 2 |
-| WL-4 | `#A#Beta` | first-match-wins on duplicates, **silent** | `walk.md` span `[183,204]` — first `## Beta` |
-| WL-5 | `#b#beta` | case-insensitive, both segments | `walk.md` span `[183,204]` |
-| WL-6a | `#A#a/b` | `/` is not a path join — one literal-heading segment | `walk.md` span `[329,393]` (EOF) — `## a/b` |
-| WL-6b | `#A#a#b` | one more `#` → a different node; the pair must diverge | `walk.md` span `[282,329]` — `### b` under `## a` |
+| WL-4 | `#A#Beta` | first-match-wins on duplicates, **silent** | `walk.md` span `[189,210]` — first `## Beta` |
+| WL-5 | `#b#beta` | case-insensitive, both segments | `walk.md` span `[189,210]` |
+| WL-6a | `#A#a/b` | `/` is not a path join — one literal-heading segment | `walk.md` span `[339,393]` (EOF) — `## a/b` |
+| WL-6b | `#A#a#b` | one more `#` → a different node; the pair must diverge | `walk.md` span `[290,339]` — `### b` under `## a` |
 | WX-6 | `blocks#^under-probe_x` | decision-011 `_` probe: what the app DOES with a legacy `_` id | `ref_not_found` stage 2 |
 
 **WX-6 finding (the point of the `_` probe):** the app **silently drops** the
