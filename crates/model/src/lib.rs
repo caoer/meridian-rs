@@ -696,11 +696,129 @@ pub fn validate_splice(doc: &Document, req: &SpliceRequest) -> SpliceVerdict {
 // integrity (rung 3) + corpus index (rung 5 borrow surface)
 // ---------------------------------------------------------------------------
 
-/// Current root over one document (rung 3); corpus root composes over these.
+/// The corpus Merkle root over the hash domain (contract §12.2), minted as the
+/// prefixed `Root` token (§12.3). `files` is the domain-filtered set — each
+/// entry a vault-relative path and the file's **raw bytes**. The leaf hashes
+/// raw bytes, so the parse tree plays no part in the root; membership (which
+/// files are in the domain) is `fs`'s call — F3-DOMAIN's `Domain::contains` —
+/// and this crate hashes exactly the set it is handed.
+///
+/// `version` is the domain's prefix counter (`Domain::version()`, riding
+/// `mdfs_config.yaml`, §12.3): `0` ⇒ `b3:`, `1` ⇒ `b3a:`, … A domain-rule
+/// change bumps it so a `b3:` cursor can never silently match a `b3a:` world —
+/// the token carries the prefix even when the hex repeats. Taking the version
+/// as a plain integer keeps `model` blind to `fs` (no dependency inversion:
+/// the caller reads `Domain::version()` and passes the number).
+///
+/// Encoding (§12.2, verbatim): leaf = `blake3(raw file)` full 32 B; interior =
+/// `blake3` over children sorted by raw name bytes, each
+/// `uleb128(len(name)) ‖ name ‖ type_byte (0x00 file / 0x01 dir) ‖ hash32`;
+/// empty dirs pruned; the workspace root's own name is never hashed.
 #[must_use]
-pub fn merkle_root(doc: &Document) -> MerkleRoot {
-    let _ = doc;
-    todo!("rung 3: per-node hash fold")
+pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
+    let mut tree = MerkleDir::default();
+    for (path, bytes) in files {
+        tree.insert(path, bytes);
+    }
+    let hex = blake3::Hash::from_bytes(tree.fold()).to_hex().to_string();
+    MerkleRoot(format!("{}{hex}", root_prefix(version)))
+}
+
+/// A directory in the merkle tree — named entries, each a file (raw bytes,
+/// leaf-hashed on fold) or a subdirectory. Built from file paths alone, so a
+/// directory carries ≥1 descendant unless explicitly emptied.
+#[derive(Default)]
+struct MerkleDir {
+    entries: BTreeMap<String, MerkleEntry>,
+}
+
+enum MerkleEntry {
+    File(Vec<u8>),
+    Dir(MerkleDir),
+}
+
+impl MerkleDir {
+    /// Insert one file at its `/`-split path (last write wins on a duplicate
+    /// path, matching the oracle's dict). Empty segments are dropped; a
+    /// path that collides with an existing file prefix is ignored (a real hash
+    /// domain never mixes a file and a directory at one name).
+    fn insert(&mut self, path: &str, bytes: &[u8]) {
+        let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let Some((file_name, dirs)) = segs.split_last() else {
+            return;
+        };
+        let mut dir = self;
+        for seg in dirs {
+            let entry = dir
+                .entries
+                .entry((*seg).to_string())
+                .or_insert_with(|| MerkleEntry::Dir(MerkleDir::default()));
+            match entry {
+                MerkleEntry::Dir(sub) => dir = sub,
+                MerkleEntry::File(_) => return,
+            }
+        }
+        dir.entries
+            .insert((*file_name).to_string(), MerkleEntry::File(bytes.to_vec()));
+    }
+
+    /// Fold this directory to its 32-byte node hash (§12.2): children ordered by
+    /// raw name bytes, encoded `uleb128(len) ‖ name ‖ type ‖ hash32`, then
+    /// `blake3` of the buffer. Empty subdirs contribute nothing.
+    fn fold(&self) -> [u8; 32] {
+        let mut children: Vec<(&str, bool, [u8; 32])> = Vec::new();
+        for (name, entry) in &self.entries {
+            match entry {
+                MerkleEntry::File(bytes) => {
+                    children.push((name, false, *blake3::hash(bytes).as_bytes()));
+                }
+                MerkleEntry::Dir(dir) if !dir.entries.is_empty() => {
+                    children.push((name, true, dir.fold()));
+                }
+                MerkleEntry::Dir(_) => {} // empty dir pruned (§12.2)
+            }
+        }
+        children.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
+        let mut enc: Vec<u8> = Vec::new();
+        for (name, is_dir, hash) in children {
+            let name = name.as_bytes();
+            write_uleb128(&mut enc, name.len());
+            enc.extend_from_slice(name);
+            enc.push(u8::from(is_dir));
+            enc.extend_from_slice(&hash);
+        }
+        *blake3::hash(&enc).as_bytes()
+    }
+}
+
+/// Unsigned LEB128 (the §12.2 varint): low 7 bits per byte, high bit = "more".
+/// A value below 128 emits a single byte — the fixture case the contract notes.
+fn write_uleb128(out: &mut Vec<u8>, mut value: usize) {
+    loop {
+        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// The §12.3 `Root`-token prefix for a domain `version`: `0` ⇒ `b3:`,
+/// `1` ⇒ `b3a:`, `26` ⇒ `b3z:`, `27` ⇒ `b3aa:` — `b3` followed by a bijective
+/// base-26 suffix (`a` = 1, no zero digit), advancing on each domain-rule
+/// change so cross-domain roots never collide in the token space.
+fn root_prefix(version: u32) -> String {
+    let mut n = version;
+    let mut suffix = String::new();
+    while n > 0 {
+        n -= 1;
+        suffix.push(char::from(b'a' + u8::try_from(n % 26).unwrap_or(0)));
+        n /= 26;
+    }
+    let suffix: String = suffix.chars().rev().collect();
+    format!("b3{suffix}:")
 }
 
 /// The resident corpus name index (rung 4+ daemon state). Model state —
@@ -1005,5 +1123,200 @@ mod tests {
             resolve(&doc, &Ref::anchor("absent").unwrap()),
             Err(ResolveError::NotFound)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // merkle_root (rung 3) — §12.2 encoding + §12.3 prefix bump
+    // -----------------------------------------------------------------------
+
+    // Frozen hex ground truth (`wire-contract-v2-verify.py::root_of`, 69/69).
+    const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
+    const R1_HEX: &str = "10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
+    const R2_HEX: &str = "83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
+    const R0_WRONG_HEX: &str = "75a61c883e372102cfe7d75e94992b9be65e33fbe95956897a4cf2ea45bb8f1b";
+    const R_V0_DRAFTS_HEX: &str = "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
+
+    // Non-plan fixture bytes, verbatim from `wire-contract-v2-verify.py` §0.3.
+    const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
+    const GH_README: &str = "# CI notes\n";
+    const DRAFT_TMP: &str = "scratch\n";
+
+    /// The six-root corpus fixtures, built the way the oracle builds them: raw
+    /// plan/receipts bytes across S0→S2, each receipts file interpolating the
+    /// prior root token + the Q3/Q4 section revs (every value pinned in
+    /// `wire-contract-v2-verify.py`). Byte-length asserts guard the
+    /// transcription; the roots themselves are the ultimate check.
+    struct MerkleFixtures {
+        plan_v0: String,
+        plan_v1: String,
+        plan_v2: String,
+        receipts_v0: String,
+        receipts_v1: String,
+        receipts_v2: String,
+    }
+
+    fn merkle_fixtures() -> MerkleFixtures {
+        let plan_v0 = PLAN_S0.to_string();
+        let plan_v1 = plan_v0.replace("ship by August", "ship by September");
+        let plan_v2 = format!("{plan_v1}- new item\n");
+
+        let receipts_v0 = RECEIPTS_V0.to_string();
+        // Receipt lines exactly as §6.3 prints them (root_before + section revs).
+        let receipt_42 = format!(
+            "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z \
+             root_before=b3:{R0_HEX} edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042\n"
+        );
+        let receipts_v1 = format!("{receipts_v0}{receipt_42}");
+        let receipt_43 = format!(
+            "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z \
+             root_before=b3:{R1_HEX} edits=1 Goals>Q4 put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043\n"
+        );
+        let receipts_v2 = format!("{receipts_v1}{receipt_43}");
+
+        // Transcription guards (contract §0.3 sizes + §6.3 receipt-line bytes).
+        assert_eq!(plan_v0.len(), 136);
+        assert_eq!(plan_v1.len(), 139);
+        assert_eq!(plan_v2.len(), 150);
+        assert_eq!(receipts_v0.len(), 26);
+        assert_eq!(receipt_42.len(), 223);
+        assert_eq!(receipt_43.len(), 225);
+        assert_eq!(receipts_v1.len(), 249);
+        assert_eq!(receipts_v2.len(), 474);
+
+        MerkleFixtures {
+            plan_v0,
+            plan_v1,
+            plan_v2,
+            receipts_v0,
+            receipts_v1,
+            receipts_v2,
+        }
+    }
+
+    /// Gate root 1–3: R0/R1/R2, the corpus root at S0/S1/S2 (version 0 ⇒ `b3:`).
+    #[test]
+    fn merkle_root_r0_r1_r2() {
+        let f = merkle_fixtures();
+        let r0 = merkle_root(
+            &[
+                ("notes/plan.md", f.plan_v0.as_bytes()),
+                ("receipts/2026-07-18.md", f.receipts_v0.as_bytes()),
+            ],
+            0,
+        );
+        assert_eq!(r0.0, format!("b3:{R0_HEX}"));
+        let r1 = merkle_root(
+            &[
+                ("notes/plan.md", f.plan_v1.as_bytes()),
+                ("receipts/2026-07-18.md", f.receipts_v1.as_bytes()),
+            ],
+            0,
+        );
+        assert_eq!(r1.0, format!("b3:{R1_HEX}"));
+        let r2 = merkle_root(
+            &[
+                ("notes/plan.md", f.plan_v2.as_bytes()),
+                ("receipts/2026-07-18.md", f.receipts_v2.as_bytes()),
+            ],
+            0,
+        );
+        assert_eq!(r2.0, format!("b3:{R2_HEX}"));
+    }
+
+    /// Gate root 4: the §12.1 wrong-ignore counterfactual. The correct domain
+    /// (`.github/` dropped) computes R0; a broken ignore that lets
+    /// `.github/README.md` in computes a different root — it cannot pass both.
+    #[test]
+    fn merkle_root_counterfactual_12_1() {
+        let f = merkle_fixtures();
+        assert_eq!(GH_README.len(), 11);
+        let plan = ("notes/plan.md", f.plan_v0.as_bytes());
+        let receipts = ("receipts/2026-07-18.md", f.receipts_v0.as_bytes());
+        let correct = merkle_root(&[plan, receipts], 0);
+        assert_eq!(correct.0, format!("b3:{R0_HEX}"));
+        let wrong = merkle_root(
+            &[plan, receipts, (".github/README.md", GH_README.as_bytes())],
+            0,
+        );
+        assert_eq!(wrong.0, format!("b3:{R0_WRONG_HEX}"));
+        assert_ne!(correct, wrong, "the ignore decision is load-bearing");
+    }
+
+    /// Gate roots 5–6: the §12.3 domain bump pair. v0 keeps `drafts/tmp.md`
+    /// (version 0 ⇒ `b3:`); v1 ignores it and bumps the version (⇒ `b3a:`).
+    /// v1's surviving set equals R2's, so the HEX repeats — yet the tokens never
+    /// compare equal, a foreign `b3:` cursor can't silently match a `b3a:` world.
+    #[test]
+    fn merkle_root_domain_bump_12_3() {
+        let f = merkle_fixtures();
+        assert_eq!(DRAFT_TMP.len(), 8);
+        let plan = ("notes/plan.md", f.plan_v2.as_bytes());
+        let receipts = ("receipts/2026-07-18.md", f.receipts_v2.as_bytes());
+
+        let bump_v0 = merkle_root(&[plan, receipts, ("drafts/tmp.md", DRAFT_TMP.as_bytes())], 0);
+        assert_eq!(bump_v0.0, format!("b3:{R_V0_DRAFTS_HEX}"));
+
+        let bump_v1 = merkle_root(&[plan, receipts], 1);
+        assert_eq!(bump_v1.0, format!("b3a:{R2_HEX}"));
+
+        let r2 = merkle_root(&[plan, receipts], 0);
+        // bump_hex_equals_R2: identical hex …
+        assert_eq!(
+            bump_v1.0.strip_prefix("b3a:"),
+            r2.0.strip_prefix("b3:"),
+            "bump_hex_equals_R2",
+        );
+        // … yet the tokens never compare equal (the entire point of the bump).
+        assert_ne!(bump_v1, r2, "different prefix ⇒ tokens never equal");
+        assert_ne!(bump_v0, bump_v1);
+    }
+
+    /// §12.3 prefix mapping — the bijective base-26 suffix after `b3`.
+    #[test]
+    fn root_prefix_bijective_base26() {
+        assert_eq!(root_prefix(0), "b3:");
+        assert_eq!(root_prefix(1), "b3a:");
+        assert_eq!(root_prefix(2), "b3b:");
+        assert_eq!(root_prefix(26), "b3z:");
+        assert_eq!(root_prefix(27), "b3aa:");
+        assert_eq!(root_prefix(28), "b3ab:");
+        assert_eq!(root_prefix(52), "b3az:");
+        assert_eq!(root_prefix(53), "b3ba:");
+        assert_eq!(root_prefix(702), "b3zz:");
+        assert_eq!(root_prefix(703), "b3aaa:");
+    }
+
+    /// §12.2 "empty dirs pruned": a directory carrying only an empty subdir
+    /// folds identically to one that never had it (white-box on the fold).
+    #[test]
+    fn empty_dir_is_pruned_12_2() {
+        let mut base = MerkleDir::default();
+        base.entries
+            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+        let mut with_empty = MerkleDir::default();
+        with_empty
+            .entries
+            .insert("a.md".to_string(), MerkleEntry::File(b"x".to_vec()));
+        with_empty
+            .entries
+            .insert("empty".to_string(), MerkleEntry::Dir(MerkleDir::default()));
+        assert_eq!(base.fold(), with_empty.fold(), "empty dir contributes nothing");
+    }
+
+    /// The §12.2 varint is unsigned LEB128 (single byte below 128).
+    #[test]
+    fn write_uleb128_matches_spec() {
+        let cases: &[(usize, &[u8])] = &[
+            (0, &[0x00]),
+            (7, &[0x07]),
+            (127, &[0x7f]),
+            (128, &[0x80, 0x01]),
+            (300, &[0xac, 0x02]),
+        ];
+        for (value, want) in cases {
+            let mut out = Vec::new();
+            write_uleb128(&mut out, *value);
+            assert_eq!(&out, want, "uleb128({value})");
+        }
     }
 }
