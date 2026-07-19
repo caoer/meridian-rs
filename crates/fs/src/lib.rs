@@ -22,6 +22,7 @@
 //! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds
 //! the daemon's change feed.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -347,18 +348,74 @@ fn fsync_dir(dir: &Path) -> io::Result<()> {
     File::open(dir)?.sync_all()
 }
 
-/// Filesystem watcher (rung 4): feeds model diffs to the daemon's change feed.
-/// Hook *dispatch* (running agent work on change) stays Go — Rust never
-/// executes agent work.
+/// Filesystem watcher (rung 5, F5-WATCH): the DETECTION primitive — a §12
+/// domain baseline plus byte-level change classification against a fresh
+/// snapshot. The watcher detects; root folding is `model`'s, Delta emission
+/// is the sidecar's, and hook *dispatch* (running agent work on change)
+/// stays Go — Rust never executes agent work.
 #[derive(Debug)]
 pub struct Watcher {
     _root: WorkspaceRoot,
+    baseline: Option<BTreeMap<String, Vec<u8>>>,
+}
+
+/// One detection cycle's byte-level classification: paths gone from the
+/// baseline, paths new on disk, and paths whose bytes moved — each with the
+/// bytes both tenses need. Classification only; meaning (rename ruling,
+/// Delta facts) is the caller's.
+#[derive(Debug, Default)]
+pub struct WatchChanges {
+    /// `(path, baseline bytes)` — in the baseline, absent from the snapshot.
+    pub removed: Vec<(String, Vec<u8>)>,
+    /// `(path, snapshot bytes)` — on disk, absent from the baseline.
+    pub added: Vec<(String, Vec<u8>)>,
+    /// `(path, baseline bytes, snapshot bytes)` — present in both, bytes differ.
+    pub modified: Vec<(String, Vec<u8>, Vec<u8>)>,
 }
 
 impl Watcher {
     #[must_use]
     pub fn new(root: WorkspaceRoot) -> Self {
-        Watcher { _root: root }
+        Watcher {
+            _root: root,
+            baseline: None,
+        }
+    }
+
+    /// Adopt a snapshot as the new baseline (priming, post-emission, or the
+    /// silent internal-commit sync — the caller's disposition).
+    pub fn rebase(&mut self, snapshot: &[(String, Vec<u8>)]) {
+        self.baseline = Some(snapshot.iter().cloned().collect());
+    }
+
+    /// Classify a snapshot against the baseline. `None` until primed — the
+    /// epoch's baseline is the first successful snapshot; earlier external
+    /// changes are unobservable by construction.
+    #[must_use]
+    pub fn classify(&self, snapshot: &[(String, Vec<u8>)]) -> Option<WatchChanges> {
+        let baseline = self.baseline.as_ref()?;
+        let disk: BTreeMap<&str, &[u8]> = snapshot
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .collect();
+        let mut changes = WatchChanges::default();
+        for (path, before) in baseline {
+            match disk.get(path.as_str()) {
+                None => changes.removed.push((path.clone(), before.clone())),
+                Some(after) if *after != before.as_slice() => {
+                    changes
+                        .modified
+                        .push((path.clone(), before.clone(), after.to_vec()));
+                }
+                Some(_) => {}
+            }
+        }
+        for (path, bytes) in snapshot {
+            if !baseline.contains_key(path) {
+                changes.added.push((path.clone(), bytes.clone()));
+            }
+        }
+        Some(changes)
     }
 }
 
