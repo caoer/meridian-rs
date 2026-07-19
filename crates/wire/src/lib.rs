@@ -142,6 +142,79 @@ pub enum SecRef {
 }
 
 // ---------------------------------------------------------------------------
+// v2 §9 actor and now — wire inputs, never ambient
+// ---------------------------------------------------------------------------
+
+/// The §9 `now` format law, transcribed: RFC 3339 date-time —
+/// `YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)` — format-VALIDATED, never
+/// generated (the engine reads no wall clock; a malformed `now` is the
+/// server's `bad_request`). Pure predicate, zero dependencies — a law
+/// transcription like [`ErrorCode::recovery`], not business logic; the
+/// dispatch strict-decode pass is its caller (W4-ACTOR / D4-SPLICE).
+#[must_use]
+pub fn now_is_rfc3339(s: &str) -> bool {
+    let b = s.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    let num = |r: std::ops::Range<usize>| -> u32 {
+        b[r].iter().fold(0, |a, d| a * 10 + u32::from(d - b'0'))
+    };
+    // date-time head: YYYY-MM-DDTHH:MM:SS (T or t per RFC 3339)
+    if b.len() < 20
+        || !digits(0..4)
+        || b[4] != b'-'
+        || !digits(5..7)
+        || b[7] != b'-'
+        || !digits(8..10)
+        || !(b[10] == b'T' || b[10] == b't')
+        || !digits(11..13)
+        || b[13] != b':'
+        || !digits(14..16)
+        || b[16] != b':'
+        || !digits(17..19)
+    {
+        return false;
+    }
+    let (year, month, day) = (num(0..4), num(5..7), num(8..10));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_len = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    // sec 60 admitted: RFC 3339 leap second
+    if day == 0 || day > month_len || num(11..13) > 23 || num(14..16) > 59 || num(17..19) > 60 {
+        return false;
+    }
+    // optional fraction: '.' 1*DIGIT
+    let mut i = 19;
+    if b[i] == b'.' {
+        let frac_start = i + 1;
+        i += 1;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == frac_start {
+            return false;
+        }
+    }
+    // offset: Z/z or ±HH:MM
+    match b.get(i) {
+        Some(b'Z' | b'z') => i + 1 == b.len(),
+        Some(b'+' | b'-') => {
+            i + 6 == b.len()
+                && digits(i + 1..i + 3)
+                && b[i + 3] == b':'
+                && digits(i + 4..i + 6)
+                && num(i + 1..i + 3) <= 23
+                && num(i + 4..i + 6) <= 59
+        }
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // v2 §4.4 the write grammar (batch splice)
 // ---------------------------------------------------------------------------
 
