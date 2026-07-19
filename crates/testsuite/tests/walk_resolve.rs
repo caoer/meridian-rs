@@ -9,8 +9,8 @@
 //! silent-drop) on the walk. Plus the gate-3 adversarial harness `p2-walk-probes`
 //! run against `walk.rs` over the walkvault corpus.
 
-use model::walk::{walk, Location, Miss, Stage};
-use model::{build, BadAnchorId, CorpusIndex, Document, Ref, ResolveError};
+use model::walk::{Location, Miss, Stage, walk};
+use model::{BadAnchorId, CorpusIndex, Document, Ref, ResolveError, build};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
@@ -22,8 +22,7 @@ fn walkvault() -> (CorpusIndex, BTreeMap<String, Document>) {
     let mut index = CorpusIndex::new();
     let mut docs = BTreeMap::new();
     for name in ["walk.md", "blocks.md"] {
-        let raw = fs::read_to_string(dir.join(name))
-            .unwrap_or_else(|e| panic!("read {name}: {e}"));
+        let raw = fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("read {name}: {e}"));
         let doc = build(raw.clone(), syntax::parse(&raw));
         index.insert(name, &doc);
         docs.insert(name.to_string(), doc);
@@ -134,8 +133,14 @@ fn duplicate_anchor_split_mint_loud_walk_silent() {
     let loc = walk(&index, &docs, "blocks.md", "blocks#^dup1")
         .expect("walk plane resolves the duplicate silently");
     assert_eq!(loc.dest, "blocks.md");
-    let last = cands.iter().max_by_key(|t| t.span.start).expect("a candidate");
-    assert_eq!(loc.span, last.span, "walk silently picks the LAST ^dup1 (app-exact)");
+    let last = cands
+        .iter()
+        .max_by_key(|t| t.span.start)
+        .expect("a candidate");
+    assert_eq!(
+        loc.span, last.span,
+        "walk silently picks the LAST ^dup1 (app-exact)"
+    );
 }
 
 /// GATE 4 — the re-homed CHARSET-GUARD walk-vs-mint split: a `_`-bearing id is
@@ -147,13 +152,18 @@ fn charset_walk_vs_mint_split_underscore() {
     let (index, docs) = walkvault();
     assert_eq!(
         Ref::anchor("under-probe_x"),
-        Err(BadAnchorId { id: "under-probe_x".to_string() }),
+        Err(BadAnchorId {
+            id: "under-probe_x".to_string()
+        }),
         "mint plane refuses the `_` id → bad_request"
     );
     let got = walk(&index, &docs, "walk.md", "blocks#^under-probe_x");
     assert_eq!(
         got,
-        Err(Miss { stage: Stage::Two, dest: Some("blocks.md".to_string()) }),
+        Err(Miss {
+            stage: Stage::Two,
+            dest: Some("blocks.md".to_string())
+        }),
         "walk plane follows the app: ref_not_found stage 2, dest observable"
     );
 }
@@ -168,8 +178,8 @@ fn charset_walk_vs_mint_split_underscore() {
 fn harness_p2_walk_probes_green_over_walkvault() {
     let (index, docs) = walkvault();
     let gt = oracle_answers(&oracle_json(), &docs);
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("data/harness/p2-walk-probes.json");
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/harness/p2-walk-probes.json");
     let probes: Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap_or_else(|e| panic!("read p2: {e}")))
             .expect("p2 json");
@@ -195,7 +205,10 @@ fn harness_p2_walk_probes_green_over_walkvault() {
                 // stage-1 miss: no dest (unresolved first-class).
                 "WX-4" => assert_eq!(
                     got,
-                    Err(Miss { stage: Stage::One, dest: None }),
+                    Err(Miss {
+                        stage: Stage::One,
+                        dest: None
+                    }),
                     "WX-4 stage-1 miss carries no dest"
                 ),
                 // duplicate block id: walk follows the app — last-wins, silent.
@@ -208,7 +221,10 @@ fn harness_p2_walk_probes_green_over_walkvault() {
                     else {
                         panic!("mint dup1 must be Ambiguous");
                     };
-                    let last = cands.iter().max_by_key(|t| t.span.start).expect("candidate");
+                    let last = cands
+                        .iter()
+                        .max_by_key(|t| t.span.start)
+                        .expect("candidate");
                     assert_eq!(loc.span, last.span, "WX-5 walk picks the LAST ^dup1");
                 }
                 other => panic!("unhandled runnable harness probe {other}"),
@@ -216,5 +232,8 @@ fn harness_p2_walk_probes_green_over_walkvault() {
         }
         checked += 1;
     }
-    assert!(checked >= 11, "ran the walkvault-answerable harness probes (got {checked})");
+    assert!(
+        checked >= 11,
+        "ran the walkvault-answerable harness probes (got {checked})"
+    );
 }

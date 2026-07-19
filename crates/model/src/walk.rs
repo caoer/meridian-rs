@@ -87,18 +87,25 @@ pub fn walk(
     let dest = if path.is_empty() {
         from.to_string()
     } else {
-        index
-            .resolve_linkpath(path, from)
-            .ok_or(Miss { stage: Stage::One, dest: None })?
+        index.resolve_linkpath(path, from).ok_or(Miss {
+            stage: Stage::One,
+            dest: None,
+        })?
     };
     let Some(doc) = docs.get(&dest) else {
-        return Err(Miss { stage: Stage::One, dest: None });
+        return Err(Miss {
+            stage: Stage::One,
+            dest: None,
+        });
     };
 
     // Stage 2: subpath walk over the resolved file.
     match stage2(doc, subpath) {
         Some(span) => Ok(Location { dest, span }),
-        None => Err(Miss { stage: Stage::Two, dest: Some(dest) }),
+        None => Err(Miss {
+            stage: Stage::Two,
+            dest: Some(dest),
+        }),
     }
 }
 
@@ -134,7 +141,11 @@ fn headings(doc: &Document) -> Vec<(u8, &str, ByteSpan)> {
 }
 
 fn collect_headings<'a>(node: &'a Node, out: &mut Vec<(u8, &'a str, ByteSpan)>) {
-    if let NodeKind::Section { heading_text, level } = &node.kind {
+    if let NodeKind::Section {
+        heading_text,
+        level,
+    } = &node.kind
+    {
         out.push((*level, heading_text.as_str(), node.span.clone()));
     }
     for c in &node.children {
@@ -153,9 +164,14 @@ fn walk_headings(heads: &[(u8, &str, ByteSpan)], segs: &[&str]) -> Option<ByteSp
     let mut matched = None;
     for seg in segs {
         let want = seg.to_lowercase();
-        let (i, level, span) = heads[pos..].iter().enumerate().find_map(|(off, (level, text, span))| {
-            (*level > prev_level && text.to_lowercase() == want).then(|| (pos + off, *level, span.clone()))
-        })?;
+        let (i, level, span) =
+            heads[pos..]
+                .iter()
+                .enumerate()
+                .find_map(|(off, (level, text, span))| {
+                    (*level > prev_level && text.to_lowercase() == want)
+                        .then(|| (pos + off, *level, span.clone()))
+                })?;
         prev_level = level;
         pos = i + 1;
         matched = Some(span);
@@ -187,7 +203,7 @@ fn collect_block(node: &Node, want: &str, hits: &mut Vec<ByteSpan>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{build, NodeRev};
+    use crate::{NodeRev, build};
 
     /// D-C2 (frozen §4.5): the walk return type has NO rev field — a type-level
     /// fact, not a discipline. The exhaustive destructure (no `..`) binds every
@@ -248,7 +264,10 @@ mod tests {
         let (index, docs) = corpus(&[("walk.md", "# H\n")]);
         assert_eq!(
             walk(&index, &docs, "walk.md", "nosuchfile#H"),
-            Err(Miss { stage: Stage::One, dest: None })
+            Err(Miss {
+                stage: Stage::One,
+                dest: None
+            })
         );
     }
 
