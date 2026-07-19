@@ -725,6 +725,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "receipt"
+version = "0.0.0"
+dependencies = [
+ "wire",
+]
+
+[[package]]
 name = "regex"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
