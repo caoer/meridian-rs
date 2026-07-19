@@ -22,9 +22,7 @@
 //! extraction core relocates here); later rungs add dialect events, never
 //! callers.
 
-use pulldown_cmark::{
-    CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
 /// A dialect event with its byte-exact span. Kinds mirror the fork's event
@@ -186,7 +184,10 @@ pub fn parse(input: &str) -> Vec<DialectNode> {
                     }
                     if let Some((ctype, fold)) = callout_head(&input[range.start..probe_end]) {
                         nodes.push(DialectNode {
-                            kind: DialectKind::Callout { r#type: ctype, fold },
+                            kind: DialectKind::Callout {
+                                r#type: ctype,
+                                fold,
+                            },
                             span: trim_block(input, &range),
                         });
                     }
@@ -224,17 +225,30 @@ pub fn parse(input: &str) -> Vec<DialectNode> {
                 dest_url,
                 ..
             }) => {
-                cur_wikilink = Some((false, range, dest_url.to_string(), String::new(), has_pothole));
+                cur_wikilink = Some((
+                    false,
+                    range,
+                    dest_url.to_string(),
+                    String::new(),
+                    has_pothole,
+                ));
             }
             Event::Start(Tag::Image {
                 link_type: LinkType::WikiLink { has_pothole, .. },
                 dest_url,
                 ..
             }) => {
-                cur_wikilink = Some((true, range, dest_url.to_string(), String::new(), has_pothole));
+                cur_wikilink = Some((
+                    true,
+                    range,
+                    dest_url.to_string(),
+                    String::new(),
+                    has_pothole,
+                ));
             }
             Event::End(TagEnd::Link | TagEnd::Image) => {
-                if let Some((is_image, mut wrange, dest, alias, has_pothole)) = cur_wikilink.take() {
+                if let Some((is_image, mut wrange, dest, alias, has_pothole)) = cur_wikilink.take()
+                {
                     // no newline inside a wikilink
                     if input[wrange.clone()].contains('\n') {
                         continue;
@@ -588,8 +602,16 @@ mod tests {
         let faults = span_faults(src, &nodes);
         assert!(faults.is_empty(), "char-splitting spans: {faults:?}");
         // and the doc genuinely exercised multi-byte-bearing constructs
-        assert!(nodes.iter().any(|n| matches!(n.kind, DialectKind::Heading { .. })));
-        assert!(nodes.iter().any(|n| matches!(n.kind, DialectKind::Callout { .. })));
+        assert!(
+            nodes
+                .iter()
+                .any(|n| matches!(n.kind, DialectKind::Heading { .. }))
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|n| matches!(n.kind, DialectKind::Callout { .. }))
+        );
         assert!(nodes.iter().any(|n| matches!(n.kind, DialectKind::Comment)));
     }
 
@@ -602,8 +624,14 @@ mod tests {
             "---\ntitle: hi\ntags: [a]\n---"
         );
         assert_eq!(first_span("# Heading here\n", 1), "# Heading here");
-        assert_eq!(first_span("```rust\nfn x() {}\n```\n", 2), "```rust\nfn x() {}\n```");
-        assert_eq!(first_span("> [!note] Title\n> body\n\n", 7), "> [!note] Title\n> body");
+        assert_eq!(
+            first_span("```rust\nfn x() {}\n```\n", 2),
+            "```rust\nfn x() {}\n```"
+        );
+        assert_eq!(
+            first_span("> [!note] Title\n> body\n\n", 7),
+            "> [!note] Title\n> body"
+        );
         assert_eq!(first_span("- [ ] do the thing\n", 8), "- [ ] do the thing");
         assert_eq!(
             first_span("| a | b |\n|---|---|\n| 1 | 2 |\n", 9),
@@ -657,9 +685,11 @@ mod tests {
     #[test]
     fn bom_prefixed_dashes_not_frontmatter() {
         let src = "\u{feff}---\ntitle: hi\n---\nbody\n";
-        assert!(parse(src)
-            .iter()
-            .all(|n| !matches!(n.kind, DialectKind::Frontmatter { .. })));
+        assert!(
+            parse(src)
+                .iter()
+                .all(|n| !matches!(n.kind, DialectKind::Frontmatter { .. }))
+        );
     }
 
     #[test]
@@ -694,21 +724,38 @@ mod tests {
                 .filter(|(k, _)| *k == 5 || *k == 6)
                 .map(|(_, s)| s)
                 .collect::<Vec<_>>(),
-            vec!["[[Page One|alias]]", "[[Other#Head]]", "[[X#^blk]]", "![[img.png]]"]
+            vec![
+                "[[Page One|alias]]",
+                "[[Other#Head]]",
+                "[[X#^blk]]",
+                "![[img.png]]"
+            ]
         );
         let wl: Vec<_> = nodes
             .iter()
             .filter_map(|n| match &n.kind {
-                DialectKind::Wikilink { target, heading, block, alias } => {
-                    Some((target.clone(), heading.clone(), block.clone(), alias.clone()))
-                }
+                DialectKind::Wikilink {
+                    target,
+                    heading,
+                    block,
+                    alias,
+                } => Some((
+                    target.clone(),
+                    heading.clone(),
+                    block.clone(),
+                    alias.clone(),
+                )),
                 _ => None,
             })
             .collect();
         assert_eq!(wl[0], ("Page One".into(), None, None, Some("alias".into())));
         assert_eq!(wl[1], ("Other".into(), Some("Head".into()), None, None));
         assert_eq!(wl[2], ("X".into(), None, Some("blk".into()), None));
-        assert!(nodes.iter().any(|n| matches!(&n.kind, DialectKind::Embed { target, .. } if target == "img.png")));
+        assert!(
+            nodes.iter().any(
+                |n| matches!(&n.kind, DialectKind::Embed { target, .. } if target == "img.png")
+            )
+        );
     }
 
     #[test]
@@ -769,7 +816,10 @@ mod tests {
         let src = "%% one %%\ntext\n%% unclosed\n";
         assert_eq!(first_span(src, 10), "%% one %%");
         assert_eq!(
-            parse(src).iter().filter(|n| matches!(n.kind, DialectKind::Comment)).count(),
+            parse(src)
+                .iter()
+                .filter(|n| matches!(n.kind, DialectKind::Comment))
+                .count(),
             1
         );
     }
@@ -786,7 +836,10 @@ mod tests {
             .zip(["- [ ] todo line", "- [x] done"])
             .map(|((checked, _), slice)| (checked, slice))
             .collect();
-        assert_eq!(tasks, vec![(false, "- [ ] todo line"), (true, "- [x] done")]);
+        assert_eq!(
+            tasks,
+            vec![(false, "- [ ] todo line"), (true, "- [x] done")]
+        );
         assert_eq!(first_span(src, 8), "- [ ] todo line");
         assert_eq!(first_span(src, 9), "| a | b |\n|---|---|\n| 1 | 2 |");
     }
@@ -801,7 +854,10 @@ mod tests {
         let closed = parse("```\nok\n```\n");
         assert!(closed.iter().any(|n| matches!(
             n.kind,
-            DialectKind::Fence { unterminated: false, .. }
+            DialectKind::Fence {
+                unterminated: false,
+                ..
+            }
         )));
     }
 
@@ -810,10 +866,17 @@ mod tests {
         // the 256-byte callout-head probe must clamp to a char boundary
         let body = "什么这是一个很长的中文引用块".repeat(20);
         let plain = parse(&format!("> {body}\n"));
-        assert!(plain.iter().all(|n| !matches!(n.kind, DialectKind::Callout { .. })));
+        assert!(
+            plain
+                .iter()
+                .all(|n| !matches!(n.kind, DialectKind::Callout { .. }))
+        );
         let callout = parse(&format!("> [!note] 标题\n> {body}\n"));
         assert_eq!(
-            callout.iter().filter(|n| matches!(n.kind, DialectKind::Callout { .. })).count(),
+            callout
+                .iter()
+                .filter(|n| matches!(n.kind, DialectKind::Callout { .. }))
+                .count(),
             1
         );
     }
