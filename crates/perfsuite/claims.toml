@@ -138,12 +138,12 @@ note = "the typed path's real bulk cost on identical content — codec-to-codec 
 
 [[claim]]
 id = "policy.assertion.p99"
-title = "Per-rule Lua predicate evaluation p99 vs declared budget"
+title = "Per-rule Starlark predicate evaluation p99 vs declared budget"
 metric = "us"
 direction = "lower"
 threshold_source = "ruleset"
 harness = "benches/policy.rs"
-note = "rung 6: thresholds are product data — Budget{class, p99_us} per rule manifest (policy-schema T2; mlua predicates, fuel-limited). Fuel budgets are deterministic and enforced as tests, not benched; this claim is the wall-time half"
+note = "rung 6: thresholds are product data — Budget{class, p99_us} per rule manifest (policy-schema T2; fenced Starlark predicates, ruling 008, metered under EvalBudget{steps,mem}). Step/mem budgets are deterministic (post-eval tick-count + peak heap) and enforced as tests, not benched; this claim is the wall-time half"
 
 [[claim]]
 id = "policy.pack_load.fixtures"
@@ -151,4 +151,59 @@ title = "Pack load incl. full fixture suite (rule iteration promise)"
 metric = "ms"
 direction = "lower"
 harness = "benches/policy.rs"
-note = "rung 6: every rule ships pass/fail fixtures run at pack load — edit .lua → fixtures → done must stay in milliseconds; baseline TBD on first fleet run"
+note = "rung 6: every rule ships pass/fail fixtures run at pack load — edit the fenced Starlark predicate → fixtures → done must stay in milliseconds; baseline TBD on first fleet run"
+
+# --- P6-PERF (pack §9): the declared-p99 story becomes measured. policy::evaluate
+# over REAL model ASTs (P6-EVAL landed), sampled from the vault-1gb + fence-bomb
+# profile shapes; D-C1's server-side match scan cost (risk R2) lands as a data row.
+# Carry-forward: in-process Starlark step/heap guards are BEST-EFFORT; exact
+# post-eval accounting is the metering layer; the HARD bound is subprocess/OS
+# limits (a daemon concern). No row here asserts a hard in-process bound.
+
+[[claim]]
+id = "policy.evaluate.p99.vault_1gb"
+title = "policy::evaluate p99 per document (real AST, vault-1gb shape)"
+metric = "us"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/policy.rs"
+recipe = "vault-1gb shape, 200-file sample seed=1"
+note = "P6-EVAL wall-time: p99 of one policy::evaluate call over a real model::build AST (blurb-required Starlark pack). Measured not asserted (risk R2 posture); gate arrives from policy vocab() Budget{p99_us} when it lands — ruleset-sourced so a local number never falsely PASS/FAILs"
+
+[[claim]]
+id = "policy.evaluate.p99.fence_bomb"
+title = "policy::evaluate p99 per document (real AST, fence-bomb shape)"
+metric = "us"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/policy.rs"
+recipe = "fence-bomb shape, 100-file sample seed=1"
+note = "P6-EVAL wall-time on the adversarial fence-saturated shape: p99 of one policy::evaluate call over a real AST. Measured not asserted (risk R2); ruleset-sourced gate pending vocab()"
+
+[[claim]]
+id = "policy.eval.budget.steps.vault_1gb"
+title = "Declared per-eval step budget the admitted pack runs within (EvalBudget.steps)"
+metric = "steps"
+direction = "lower"
+harness = "benches/policy.rs"
+recipe = "vault-1gb shape, 200-file sample seed=1"
+note = "P6-EVAL eval budget as data: the EvalBudget.steps the compiled blurb pack was admitted under (CompiledRuleset::budget()), deterministic/platform-free (post-eval tick-count). Runtime grounding: 0 of the sample's evals emitted a budget_exceeded finding (logged at run) — the declared envelope holds at scale. Best-effort in-process guard; the hard bound is OS/subprocess (daemon), never asserted here"
+
+[[claim]]
+id = "policy.eval.budget.mem.vault_1gb"
+title = "Declared per-eval heap budget the admitted pack runs within (EvalBudget.mem)"
+metric = "bytes"
+direction = "lower"
+harness = "benches/policy.rs"
+recipe = "vault-1gb shape, 200-file sample seed=1"
+note = "P6-EVAL eval budget as data: the EvalBudget.mem (peak heap-arena bytes) the compiled blurb pack was admitted under (CompiledRuleset::budget()). Runtime grounding: 0 of the sample's evals emitted a budget_exceeded finding. Best-effort in-process guard; the hard bound is OS/subprocess (daemon), never asserted here"
+
+[[claim]]
+id = "policy.splice.match_scan.p99"
+title = "D-C1 server-side old/new match scan p99 per edit (risk R2)"
+metric = "us"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/roundtrip.rs"
+recipe = "vault-1gb / fence-bomb section spans"
+note = "D-C1 (risk R2): match{old,new} resolved server-side by scanning target span bytes per edit, bounded by section size (the bytes just reparsed), measured not asserted. UNTESTED (perf mirror of a todo!() body): model::validate_splice is todo!() today — the match scan is landed by M4-VALIDATE (validate_batch), which arms it on the splice path this bench drives end-to-end. VERDICT FLIPS WHEN M4-VALIDATE LANDS"
