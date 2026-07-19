@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+pub mod delta;
 pub mod walk;
 
 /// Half-open byte range into a file's raw bytes. Distinct from the wire's
@@ -179,6 +180,14 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
             D::Heading { level, text } => headings.push((span.start, level, text)),
             other => {
                 if let Some(kind) = leaf_kind(other) {
+                    // An anchor's model node carries its HOST BLOCK-LEAF span, not
+                    // the inline `^id` marker span `syntax` emits (§2.1 write-target
+                    // / §4.1 / §6.3): mint `resolve_anchor` + walk `block_span` read
+                    // block grain from one node. Every other leaf keeps its span.
+                    let span = match kind {
+                        NodeKind::Anchor { .. } => anchor_host_span(raw.as_bytes(), &span),
+                        _ => span,
+                    };
                     leaves.push(leaf_node(&raw, kind, span));
                 }
             }
@@ -206,6 +215,35 @@ pub fn build(raw: String, nodes: Vec<syntax::DialectNode>) -> Document {
     fill_hpath(&mut root, &mut Vec::new());
 
     Document { raw, root }
+}
+
+/// The host block-leaf span for an anchor whose inline `^id` marker occupies
+/// `marker`: the marker's own line, start-of-line → line end with the final
+/// terminator excluded (contract §1 leaf-block law; §2.1 write-target; the §4.1 /
+/// §6.3 worked `^r-000042` → `[26,248]`). `syntax` emits the inline marker span
+/// (delimiter-included — a legitimate §1 inline fact, untouched); the model
+/// write-target is the host block the anchor keys, so mint `resolve_anchor` and
+/// walk `block_span` read block grain from one node, no per-consumer derivation.
+///
+/// A heading-line anchor keys the heading LINE leaf (terminator excluded),
+/// distinct from the newline-inclusive heading SECTION span — a rule-derived
+/// consequence of the same line rule + §1 leaf law, not new law.
+fn anchor_host_span(bytes: &[u8], marker: &ByteSpan) -> ByteSpan {
+    // start of the marker's line: the byte after the previous `\n`, or 0.
+    let start = bytes[..marker.start]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |p| p + 1);
+    // line end, final terminator excluded: the next `\n` at/after the marker end
+    // (EOF if none), dropping a preceding `\r` of a CRLF pair.
+    let mut end = bytes[marker.end..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(bytes.len(), |p| marker.end + p);
+    if end > start && bytes[end - 1] == b'\r' {
+        end -= 1;
+    }
+    start..end
 }
 
 /// A leaf/standalone node with its span-derived `node_rev` and no children yet.
@@ -1136,6 +1174,41 @@ mod tests {
         assert_eq!(
             resolve(&doc, &Ref::anchor("absent").unwrap()),
             Err(ResolveError::NotFound)
+        );
+    }
+
+    /// GATE 1 (ANCHOR-GRAIN mint plane): on the §6.3 worked S1 receipts fixture,
+    /// `resolve_anchor` serves the anchor's HOST BLOCK-LEAF — the `^r-000042`
+    /// list-item line, terminator excluded (`[26,248]`, rev `639a2dca46f6fcc8`) —
+    /// NOT the 9-byte `[239,248]` inline `^id` marker span. §2.1: "an anchor
+    /// becomes a write target by the same one-hop path as a section"; §4.1/§6.3
+    /// pin the worked span/rev; §1: "leaf block nodes exclude the final line
+    /// terminator". The marker span stays a legitimate `syntax` §1 inline fact
+    /// (untouched); the model re-derives the write-target grain at `build`.
+    #[test]
+    fn resolve_anchor_serves_host_block_leaf_s1_receipts() {
+        let raw = merkle_fixtures().receipts_v1;
+        assert_eq!(raw.len(), 249, "S1 receipts fixture is 249 bytes (§0.3)");
+        let doc = build(raw.clone(), syntax::parse(&raw));
+        let t = resolve(&doc, &Ref::anchor("r-000042").unwrap()).expect("mint resolves ^r-000042");
+        assert_eq!(
+            t.span,
+            26..248,
+            "host block-leaf span, not the [239,248] marker"
+        );
+        assert_eq!(
+            t.node_rev.0, "639a2dca46f6fcc8",
+            "§6.3 rev over the block-leaf bytes"
+        );
+        // the 9-byte inline marker grain must never be the mint write-target.
+        assert_ne!(t.span, 239..248, "marker-grain defect must not resurface");
+        // independent rev check over exactly the block-leaf bytes (no reliance on
+        // model's own hashing for the ground truth).
+        let independent =
+            blake3::hash(&raw.as_bytes()[26..248]).to_hex().as_str()[..16].to_string();
+        assert_eq!(
+            t.node_rev.0, independent,
+            "rev = blake3(block-leaf bytes)[:16]"
         );
     }
 
