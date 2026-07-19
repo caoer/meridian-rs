@@ -5,3 +5,4 @@
 mod gt_pack_smoke;
 mod gt_parse;
 mod wire_vocab;
+mod wsfix_oracle;

@@ -26,3 +26,6 @@ transport = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# test-only: recompute file_rev independently of the model tree for the M2-BUILD
+# oracle gate (conforming per gate 3 — blake3 stays a dev-edge outside `model`).
+blake3 = "1"
