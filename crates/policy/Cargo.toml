@@ -26,3 +26,16 @@ serde_yaml = "0.9"
 # Content pin (§6.1 effect-style sha256): verify RulesetPin.sha256 over the
 # manifest bytes before compile; mismatch fails loud, never evaluates.
 sha2 = "0.10"
+# DECIDED (P6-STARLARK, ruling 008): rule predicates are fenced Starlark evaluated
+# in-engine via starlark-rust. Version 0.14.2 = latest at land; it is the reference
+# Starlark implementation (Meta's, drives Buck2), edition-2024-clean under rustc
+# 1.96, and — decisively for the §11.3 load gate — exposes deterministic per-eval
+# metering (`set_max_tick_count` = steps, `set_max_heap_size` = mem, both queryable
+# post-eval for exact accounting) which the manifest's `EvalBudget{steps,mem}` binds
+# to. PACK-level dependency, sealed behind the `rulepack-api@1` pin under
+# `CompiledRuleset` — no wire crate may name it (row-13 wire-invariance, grep gate).
+starlark = "0.14.2"
+# starlark's `#[starlark_module]` builtins return `anyhow::Result`; the injected
+# `violation()` fact-API builtin (rulepack-api@1) uses it. Already in the lock via
+# starlark's own tree — zero marginal build cost.
+anyhow = "1"
