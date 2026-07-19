@@ -66,19 +66,21 @@ fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
 /// gone, path echoed), `invalid_utf8` (refused, never lossy-decoded),
 /// `io_error{cause}` otherwise.
 fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document, Box<ErrorBody>> {
-    fs::load(root, std::path::Path::new(&path.0)).map_err(|e| Box::new(match e.kind() {
-        ErrorKind::NotFound => {
-            let mut err = ErrorBody::new(ErrorCode::FileNotFound);
-            err.path = Some(path.clone());
-            err
-        }
-        ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
-        _ => {
-            let mut err = ErrorBody::new(ErrorCode::IoError);
-            err.cause = Some(e.to_string());
-            err
-        }
-    }))
+    fs::load(root, std::path::Path::new(&path.0)).map_err(|e| {
+        Box::new(match e.kind() {
+            ErrorKind::NotFound => {
+                let mut err = ErrorBody::new(ErrorCode::FileNotFound);
+                err.path = Some(path.clone());
+                err
+            }
+            ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
+            _ => {
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                err
+            }
+        })
+    })
 }
 
 /// v2 §4.1: the map — header `file_rev` (the document root's rev, same family,
@@ -95,7 +97,11 @@ fn toc(root: &fs::WorkspaceRoot, path: &Path) -> Result<ResponseBody, Box<ErrorB
 
 /// v2 §4.2: full span bytes (heading-inclusive), rev over precisely those
 /// bytes. `sec` absent → whole file + `file_rev` riding the `node_rev` slot.
-fn cat(root: &fs::WorkspaceRoot, path: &Path, sec: Option<SecRef>) -> Result<ResponseBody, Box<ErrorBody>> {
+fn cat(
+    root: &fs::WorkspaceRoot,
+    path: &Path,
+    sec: Option<SecRef>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
     let Some(sec) = sec else {
         return Ok(ResponseBody::Cat {
@@ -131,11 +137,12 @@ fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
                 })
                 .collect(),
         ),
-        SecRef::Anchor { anchor } => model::Ref::anchor(anchor.clone())
-            .map_err(|bad| crate::bad_request(format!(
+        SecRef::Anchor { anchor } => model::Ref::anchor(anchor.clone()).map_err(|bad| {
+            crate::bad_request(format!(
                 "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
                 id = bad.id
-            )))?,
+            ))
+        })?,
         SecRef::FmKey { fm_key } => model::Ref::FmKey(fm_key.clone()),
     })
 }

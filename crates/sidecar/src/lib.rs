@@ -29,7 +29,7 @@
 use std::io::{self, BufRead, Write};
 
 use serde_json::{Map, Value};
-use transport::{scan_id, IdScan};
+use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;

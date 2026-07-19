@@ -26,10 +26,8 @@ fn walkvault() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 }
 
 fn probes() -> Vec<Value> {
-    let raw = std::fs::read_to_string(
-        testsuite::harness_dir().join("p4-regression-probes.json"),
-    )
-    .expect("vendored probe pack");
+    let raw = std::fs::read_to_string(testsuite::harness_dir().join("p4-regression-probes.json"))
+        .expect("vendored probe pack");
     serde_json::from_str::<Value>(&raw).expect("probe pack parses")["probes"]
         .as_array()
         .expect("probes array")
@@ -74,7 +72,10 @@ fn p4_probes_applicable_at_rung_2() {
                     serde_json::json!([]),
                     "{id}: {frame}"
                 );
-                assert!(frame["error"]["message"].as_str().is_some(), "{id}: {frame}");
+                assert!(
+                    frame["error"]["message"].as_str().is_some(),
+                    "{id}: {frame}"
+                );
             }
             // occurrence index picks the SECOND '## Beta'; node_rev rides
             "MP-3" => {
@@ -83,10 +84,9 @@ fn p4_probes_applicable_at_rung_2() {
                     frame["body"]["node_rev"].as_str().is_some(),
                     "{id}: response must carry node_rev: {frame}"
                 );
-                let raw = std::fs::read_to_string(
-                    testsuite::harness_dir().join("walkvault/walk.md"),
-                )
-                .expect("walk.md");
+                let raw =
+                    std::fs::read_to_string(testsuite::harness_dir().join("walkvault/walk.md"))
+                        .expect("walk.md");
                 let second_beta = {
                     let first = raw.find("## Beta").expect("first Beta");
                     raw[first + 1..].find("## Beta").expect("second Beta") + first + 1
@@ -132,7 +132,9 @@ fn p4_probes_applicable_at_rung_2() {
     }
     assert_eq!(
         seen,
-        ["MP-1", "MP-2", "MP-3", "MP-4", "MP-5", "MP-6", "MP-7", "MP-8"],
+        [
+            "MP-1", "MP-2", "MP-3", "MP-4", "MP-5", "MP-6", "MP-7", "MP-8"
+        ],
         "every wire probe ran"
     );
 }

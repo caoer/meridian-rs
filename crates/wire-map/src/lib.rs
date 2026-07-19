@@ -282,9 +282,7 @@ fn same_span_block(node: &model::Node, span: &std::ops::Range<usize>) -> Option<
             _ => {}
         }
     }
-    node.children
-        .iter()
-        .find_map(|c| same_span_block(c, span))
+    node.children.iter().find_map(|c| same_span_block(c, span))
 }
 
 /// Open-string kind names for host blocks (kebab/snake per the wire's kind
@@ -346,7 +344,10 @@ mod toc_tests {
     }
 
     fn seg(h: &str) -> wire::HpathSeg {
-        wire::HpathSeg { h: h.into(), n: None }
+        wire::HpathSeg {
+            h: h.into(),
+            n: None,
+        }
     }
 
     /// Contract §4.1 worked S0 toc rows, value-for-value (`root`/`file_rev` are
