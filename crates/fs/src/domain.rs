@@ -340,7 +340,10 @@ mod tests {
                 Node::File(_) => panic!("file/dir name clash at {seg}"),
             };
         }
-        cur.insert(parts[parts.len() - 1].to_string(), Node::File(data.to_vec()));
+        cur.insert(
+            parts[parts.len() - 1].to_string(),
+            Node::File(data.to_vec()),
+        );
     }
 
     fn fold(dir: &BTreeMap<String, Node>) -> [u8; 32] {
@@ -361,7 +364,10 @@ mod tests {
         let mut enc: Vec<u8> = Vec::new();
         for (name, is_dir, h) in &children {
             let nb = name.as_bytes();
-            assert!(nb.len() < 128, "single-byte varint suffices for the fixture");
+            assert!(
+                nb.len() < 128,
+                "single-byte varint suffices for the fixture"
+            );
             enc.push(u8::try_from(nb.len()).unwrap());
             enc.extend_from_slice(nb);
             enc.push(u8::from(*is_dir));
