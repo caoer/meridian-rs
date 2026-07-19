@@ -162,6 +162,7 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::AmbiguousRef => pb::ErrorCode::AmbiguousRef,
         wire::ErrorCode::RootMismatch => pb::ErrorCode::RootMismatch,
         wire::ErrorCode::RootUnknown => pb::ErrorCode::RootUnknown,
+        wire::ErrorCode::StaleView => pb::ErrorCode::StaleView,
     }
 }
 
@@ -307,6 +308,10 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             from_root: from_root.0,
             to_root: to_root.0,
         }),
+        wire::Op::Links { path, require_root } => pb::request::Op::Links(pb::LinksRequest {
+            path: path.map(|p| p.0),
+            require_root: require_root.map(|r| r.0),
+        }),
     }
 }
 
@@ -337,6 +342,9 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
         lost,
         cause,
         overlap,
+        required,
+        as_of_root,
+        live_root,
     } = e;
     pb::ErrorBody {
         code: code_to_pb(code).into(),
@@ -380,6 +388,9 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
             .into_iter()
             .map(sec_ref_to_pb)
             .collect(),
+        required: required.map(|r| r.0),
+        as_of_root: as_of_root.map(|r| r.0),
+        live_root: live_root.map(|r| r.0),
     }
 }
 
@@ -452,6 +463,42 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
         wire::ResponseBody::Diff { batches } => pb::response::Body::Diff(pb::DiffResponse {
             batches: batches.into_iter().map(delta_frame_to_pb).collect(),
         }),
+        wire::ResponseBody::Links {
+            as_of_root,
+            live_root,
+            changes_seq,
+            files,
+        } => pb::response::Body::Links(pb::LinksResponse {
+            as_of_root: as_of_root.0,
+            live_root: live_root.0,
+            changes_seq,
+            files: files
+                .into_iter()
+                .map(|(p, f)| (p, file_links_to_pb(f)))
+                .collect(),
+        }),
+    }
+}
+
+fn file_links_to_pb(f: wire::FileLinks) -> pb::FileLinks {
+    let wire::FileLinks {
+        resolved,
+        unresolved,
+    } = f;
+    pb::FileLinks {
+        resolved: resolved.into_iter().collect(),
+        unresolved: unresolved.into_iter().collect(),
+    }
+}
+
+fn file_links_from_pb(f: pb::FileLinks) -> wire::FileLinks {
+    let pb::FileLinks {
+        resolved,
+        unresolved,
+    } = f;
+    wire::FileLinks {
+        resolved: resolved.into_iter().collect(),
+        unresolved: unresolved.into_iter().collect(),
     }
 }
 
@@ -695,6 +742,7 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::AmbiguousRef => wire::ErrorCode::AmbiguousRef,
         pb::ErrorCode::RootMismatch => wire::ErrorCode::RootMismatch,
         pb::ErrorCode::RootUnknown => wire::ErrorCode::RootUnknown,
+        pb::ErrorCode::StaleView => wire::ErrorCode::StaleView,
     }
 }
 
@@ -837,6 +885,10 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             from_root: wire::Root(from_root),
             to_root: wire::Root(to_root),
         },
+        pb::request::Op::Links(pb::LinksRequest { path, require_root }) => wire::Op::Links {
+            path: path.map(wire::Path),
+            require_root: require_root.map(wire::Root),
+        },
     }
 }
 
@@ -867,6 +919,9 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
         lost,
         cause,
         overlap,
+        required,
+        as_of_root,
+        live_root,
     } = e;
     wire::ErrorBody {
         code: code_from_pb(pb::ErrorCode::try_from(code).expect("known code")),
@@ -914,6 +969,9 @@ fn error_from_pb(e: pb::ErrorBody) -> wire::ErrorBody {
         } else {
             Some(overlap.into_iter().map(sec_ref_from_pb).collect())
         },
+        required: required.map(wire::Root),
+        as_of_root: as_of_root.map(wire::Root),
+        live_root: live_root.map(wire::Root),
     }
 }
 
@@ -997,6 +1055,20 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
         },
         pb::response::Body::Diff(pb::DiffResponse { batches }) => wire::ResponseBody::Diff {
             batches: batches.into_iter().map(delta_frame_from_pb).collect(),
+        },
+        pb::response::Body::Links(pb::LinksResponse {
+            as_of_root,
+            live_root,
+            changes_seq,
+            files,
+        }) => wire::ResponseBody::Links {
+            as_of_root: wire::Root(as_of_root),
+            live_root: wire::Root(live_root),
+            changes_seq,
+            files: files
+                .into_iter()
+                .map(|(p, f)| (p, file_links_from_pb(f)))
+                .collect(),
         },
         pb::response::Body::Error(_) => unreachable!("payload_from_pb routes the error arm"),
     }
@@ -1374,6 +1446,22 @@ fn sample_requests() -> Vec<wire::Request> {
                 "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
             ),
         },
+        // links: the §4.6 worked request (path), the §10.2 strict form
+        // (require_root), and the whole-corpus form (both absent)
+        wire::Op::Links {
+            path: Some(wire::Path("notes/plan.md".into())),
+            require_root: None,
+        },
+        wire::Op::Links {
+            path: Some(wire::Path("notes/plan.md".into())),
+            require_root: Some(wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            )),
+        },
+        wire::Op::Links {
+            path: None,
+            require_root: None,
+        },
     ];
     ops.into_iter()
         .chain(sample_splice_requests())
@@ -1383,6 +1471,21 @@ fn sample_requests() -> Vec<wire::Request> {
             op,
         })
         .collect()
+}
+
+/// The §10.2 worked extras: the demanded root + the world as sampled (no
+/// message — the extras carry the whole diagnosis).
+fn stale_view_extras(e: &mut wire::ErrorBody) {
+    e.message = None;
+    e.required = Some(wire::Root(
+        "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+    ));
+    e.as_of_root = Some(wire::Root(
+        "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+    ));
+    e.live_root = Some(wire::Root(
+        "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+    ));
 }
 
 /// Every error code crosses the seam once, recovery bound per §8;
@@ -1407,6 +1510,7 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
         wire::ErrorCode::CasMismatch,
         wire::ErrorCode::RefNotFound,
         wire::ErrorCode::AmbiguousRef,
+        wire::ErrorCode::StaleView,
     ];
     codes
         .into_iter()
@@ -1464,6 +1568,9 @@ fn sample_error_payloads() -> Vec<wire::ResponsePayload> {
                     },
                 ]
             });
+            if matches!(code, wire::ErrorCode::StaleView) {
+                stale_view_extras(&mut e);
+            }
             if matches!(code, wire::ErrorCode::RootMismatch) {
                 e.expected = Some(wire::NodeRev(
                     "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
@@ -1680,6 +1787,32 @@ fn sample_responses() -> Vec<wire::Response> {
         },
         wire::ResponseBody::Root { root, seq: 2 },
         sample_diff_body(),
+        // links (§4.6 + the §10.1 triple): a resolving edge, a dangling edge,
+        // an empty entry (link-less files never vanish), and an honest-tense
+        // divergence (as_of_root ≠ live_root — legal, never an error)
+        wire::ResponseBody::Links {
+            as_of_root: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            live_root: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
+            changes_seq: 2,
+            files: [
+                (
+                    "notes/plan.md".to_string(),
+                    wire::FileLinks {
+                        resolved: [("receipts/2026-07-18.md".to_string(), 1)].into(),
+                        unresolved: [("roadmap".to_string(), 1)].into(),
+                    },
+                ),
+                (
+                    "receipts/2026-07-18.md".to_string(),
+                    wire::FileLinks::default(),
+                ),
+            ]
+            .into(),
+        },
     ];
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()

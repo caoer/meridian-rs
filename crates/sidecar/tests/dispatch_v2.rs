@@ -216,7 +216,7 @@ fn gate3_hello_caps_equal_armed_set_exactly() {
     let expected = json!({
         "id":1,"ok":true,"body":{
             "proto":1,"server":"meridian-sidecar/2.0",
-            "caps":["toc","cat","extract","resolve","resolve.content","root","diff"],
+            "caps":["toc","cat","extract","resolve","resolve.content","root","diff","links"],
             "root":R0}
     });
     assert_eq!(frame, expected);
@@ -229,7 +229,7 @@ fn gate3_unarmed_and_unknown_ops_answer_unknown_op() {
     let (_d, root) = s0();
     for req in [
         r#"{"id":1,"op":"splice","path":"notes/plan.md","edits":[]}"#,
-        r#"{"id":1,"op":"links","path":"notes/plan.md"}"#,
+        // links armed at Q5-LINKS — it moved from this list into `caps`
         r#"{"id":1,"op":"sub","from_seq":0}"#,
         r#"{"id":1,"op":"zap"}"#,
     ] {
@@ -567,5 +567,187 @@ fn d3_gate5_root_diff_strict_decode_rejections() {
         r#"{"id":1,"op":"diff","from_root":7,"to_root":"b3:00"}"#,
     ] {
         assert_bad_request(&one(&root, req));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Q5-LINKS — §4.6 edge map + §10.1 triple + §10.2 refusal (pack §8 gates),
+// all through the live serve loop over the §0.3 S2 world
+// ---------------------------------------------------------------------------
+
+const R2: &str = "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
+
+/// §6.3 frozen receipt lines (also pinned in `crates/receipt` and
+/// `testsuite/tests/delta_e3e4.rs`) — the S2 receipts state derives from the
+/// committed S0 bytes + these, never hand-tuned.
+const E3_LINE: &str = "- splice notes/plan.md id=42 actor=agent:b0864fb2 now=2026-07-18T20:31:04Z root_before=b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9 edits=1 Goals>Q3 match 33d5b0e1b27cb48b->41f643f034e5681f ^r-000042";
+const E4_LINE: &str = "- splice notes/plan.md id=57 actor=agent:b0864fb2 now=2026-07-18T20:33:41Z root_before=b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7 edits=1 Goals>Q4 put:end 4b8bc385a58da0e0->f43203a1f0b4c9a3 ^r-000043";
+
+/// The §0.3 S2 workspace: committed s2 plan + derived S2 receipts (byte-count
+/// guarded) + the dot-ignored md (addressable, never hashed — its absence
+/// from the edge map proves the §12 domain filter feeds the fact plane).
+fn s2() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+    let plan = wsfix("s2/notes/plan.md");
+    let receipts = format!(
+        "{}{E3_LINE}\n{E4_LINE}\n",
+        wsfix("s0/receipts/2026-07-18.md")
+    );
+    assert_eq!(receipts.len(), 474, "S2 receipts bytes (§0.3)");
+    workspace(&[
+        ("notes/plan.md", &plan),
+        ("receipts/2026-07-18.md", &receipts),
+        (".github/README.md", "# CI notes\n\nsee [[plan]]\n"),
+    ])
+}
+
+/// Gate 1 (pack §8): the §10.2 worked refusal, byte-exact through the live
+/// loop — the client demands R0, the world is at R2. `required` echoes the
+/// demand; `as_of_root`/`live_root` are COMPUTED by the real corpus fold and
+/// must land on the frozen R2. Retry class, no message.
+#[test]
+fn q5_gate1_worked_stale_view_refusal_computed() {
+    let (_d, root) = s2();
+    let got = one(
+        &root,
+        &format!(r#"{{"id":81,"op":"links","path":"notes/plan.md","require_root":"{R0}"}}"#),
+    );
+    let expected = json!({
+        "id":81,"ok":false,"error":{"code":"stale_view","recovery":"retry",
+         "required":R0,
+         "as_of_root":R2,
+         "live_root":R2}
+    });
+    assert_eq!(got, expected);
+}
+
+/// The §4.6 worked exchange through the live loop: the edge map value-for-
+/// value (resolved basename edge + dangling ref, per-edge counts) with the
+/// triple's roots COMPUTED onto the frozen R2. `changes_seq` is this serve
+/// epoch's truthful counter — 0, no batch emitted yet (emission lands at
+/// D4-DELTAS-LIVE; the printed frame's `changes_seq:2` is its epoch's
+/// counter, pinned at the wire level in `contract_v2.rs`).
+#[test]
+fn q5_worked_links_exchange_computed() {
+    let (_d, root) = s2();
+    let got = one(&root, r#"{"id":80,"op":"links","path":"notes/plan.md"}"#);
+    let expected = json!({
+        "id":80,"ok":true,"body":{
+         "as_of_root":R2,
+         "live_root":R2,
+         "changes_seq":0,
+         "files":{"notes/plan.md":{
+           "resolved":{"receipts/2026-07-18.md":1},
+           "unresolved":{"roadmap":1}}}}
+    });
+    assert_eq!(got, expected);
+}
+
+/// Gate 3 (pack §8): the whole-corpus edge map — `path` absent. Exactly the
+/// two §12-domain files: link-less files carry empty maps (never vanish);
+/// the dot-ignored md never edges and is never a destination (the domain
+/// filter feeds the fact plane, §10.3).
+#[test]
+fn q5_gate3_whole_corpus_edge_map() {
+    let (_d, root) = s2();
+    let got = one(&root, r#"{"id":82,"op":"links"}"#);
+    let expected = json!({
+        "id":82,"ok":true,"body":{
+         "as_of_root":R2,
+         "live_root":R2,
+         "changes_seq":0,
+         "files":{
+           "notes/plan.md":{
+             "resolved":{"receipts/2026-07-18.md":1},
+             "unresolved":{"roadmap":1}},
+           "receipts/2026-07-18.md":{"resolved":{},"unresolved":{}}}}
+    });
+    assert_eq!(got, expected);
+}
+
+/// Gate 2 (pack §8), dispatch side of the honest-tense law: the corpus
+/// mutates between reads and the UN-strict read never refuses — it serves
+/// the new world's triple. Staleness becomes an error ONLY through the
+/// `require_root` opt-in. No assertion anywhere relates the two roots'
+/// distance or freshness: PERMITTED, never bounded (the wire-level divergent
+/// -triple pin is `contract_v2.rs`).
+#[test]
+fn q5_gate2_honest_tense_unstrict_read_never_refuses() {
+    let (dir, root) = s2();
+    let before = one(&root, r#"{"id":83,"op":"links","path":"notes/plan.md"}"#);
+    assert_eq!(before["body"]["as_of_root"], R2);
+    // the concurrent splice, simulated at the disk seam
+    std::fs::write(
+        dir.path().join("notes/plan.md"),
+        "# Goals\n\n- blocked on [[roadmap]] and [[roadmap]]\n",
+    )
+    .expect("mutate corpus");
+    let after = one(&root, r#"{"id":84,"op":"links","path":"notes/plan.md"}"#);
+    assert_eq!(after["ok"], true, "drift never errors un-strictly: {after}");
+    assert_ne!(after["body"]["as_of_root"], json!(R2), "the world moved");
+    assert_eq!(
+        after["body"]["files"]["notes/plan.md"]["unresolved"]["roadmap"], 2,
+        "per-edge counts over the moved world"
+    );
+}
+
+/// `require_root` naming the CURRENT root is the strict read succeeding —
+/// the knob demands a tense, it does not forbid reading.
+#[test]
+fn q5_require_root_current_succeeds() {
+    let (_d, root) = s2();
+    let got = one(
+        &root,
+        &format!(r#"{{"id":85,"op":"links","path":"notes/plan.md","require_root":"{R2}"}}"#),
+    );
+    assert_eq!(got["ok"], true, "{got}");
+    assert_eq!(got["body"]["as_of_root"], R2);
+}
+
+/// Gate 4 (pack §8): strict-decode rejection fixtures for the newly armed op
+/// — unknown field (named loud), mistyped values, and the §1 path law on the
+/// optional `path`. Every op ships them.
+#[test]
+fn q5_gate4_links_strict_decode_rejections() {
+    let (_d, root) = s2();
+    for req in [
+        r#"{"id":1,"op":"links","path":"notes/plan.md","from":"x.md"}"#,
+        r#"{"id":1,"op":"links","require":"b3:00"}"#,
+    ] {
+        let frame = one(&root, req);
+        assert_bad_request(&frame);
+        assert!(
+            frame["error"]["message"]
+                .as_str()
+                .expect("strict decode names the field")
+                .contains("unknown request field"),
+            "{frame}"
+        );
+    }
+    for req in [
+        r#"{"id":1,"op":"links","path":7}"#,
+        r#"{"id":1,"op":"links","require_root":5}"#,
+    ] {
+        assert_bad_request(&one(&root, req));
+    }
+    let frame = one(&root, r#"{"id":1,"op":"links","path":"../outside.md"}"#);
+    assert_eq!(frame["error"]["code"], "bad_path", "{frame}");
+}
+
+/// A `path` outside the corpus the fact op serves — a missing file, or an
+/// on-disk file outside the §12 hash domain — is `file_not_found`, path
+/// echoed (env class). The fact plane answers for the domain its root
+/// stamps; the wider addressable set is the walk plane's (`resolve`,
+/// §4.5/§10.3 — derived reading, recorded in the unit's PROVENANCE).
+#[test]
+fn q5_links_path_outside_domain_is_file_not_found() {
+    let (_d, root) = s2();
+    for path in [".github/README.md", "notes/missing.md"] {
+        let frame = one(
+            &root,
+            &format!(r#"{{"id":1,"op":"links","path":"{path}"}}"#),
+        );
+        assert_eq!(frame["error"]["code"], "file_not_found", "{frame}");
+        assert_eq!(frame["error"]["recovery"], "env");
+        assert_eq!(frame["error"]["path"], path);
     }
 }

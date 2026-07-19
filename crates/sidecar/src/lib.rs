@@ -44,8 +44,9 @@ pub const PROTO: u32 = 1;
 /// `caps` or answers `unknown_op`; the ≡-full-§3.2-list assertion lands at
 /// P6-VERDICTS). `hello` answers but is not itself a cap; `resolve.content` is
 /// the one armed dotted field amendment. D3-DELTA arms `root` + `diff` (`diff`
-/// truthfully serves empty-or-`root_unknown` until rung 4 emits).
-pub const CAPS: [&str; 7] = [
+/// truthfully serves empty-or-`root_unknown` until rung 4 emits). Q5-LINKS
+/// arms `links` (§4.6 edge map + the §10.1 triple).
+pub const CAPS: [&str; 8] = [
     "toc",
     "cat",
     "extract",
@@ -53,6 +54,7 @@ pub const CAPS: [&str; 7] = [
     "resolve.content",
     "root",
     "diff",
+    "links",
 ];
 
 /// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
