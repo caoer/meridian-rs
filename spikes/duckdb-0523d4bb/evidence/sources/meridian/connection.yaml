@@ -1,4 +1,0 @@
-name: meridian
-type: duckdb
-options:
-  filename: ../../../snap.duckdb
