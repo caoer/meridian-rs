@@ -2091,7 +2091,7 @@ mod tests {
     // merkle_root (rung 3) — §12.2 encoding + §12.3 prefix bump
     // -----------------------------------------------------------------------
 
-    // Frozen hex ground truth (`wire-contract-v2-verify.py::root_of`, 69/69).
+    // Frozen hex ground truth (independently recomputed, 69/69).
     const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
     const R1_HEX: &str = "10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
     const R2_HEX: &str = "83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
@@ -2099,7 +2099,7 @@ mod tests {
     const R_V0_DRAFTS_HEX: &str =
         "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
 
-    // Non-plan fixture bytes, verbatim from `wire-contract-v2-verify.py` §0.3.
+    // Non-plan fixture bytes, verbatim from the contract §0.3 fixture bytes (docs/wire-contract-v2.md).
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
     const GH_README: &str = "# CI notes\n";
     const DRAFT_TMP: &str = "scratch\n";
@@ -2107,7 +2107,7 @@ mod tests {
     /// The six-root corpus fixtures, built the way the oracle builds them: raw
     /// plan/receipts bytes across S0→S2, each receipts file interpolating the
     /// prior root token + the Q3/Q4 section revs (every value pinned in
-    /// `wire-contract-v2-verify.py`). Byte-length asserts guard the
+    /// an independent oracle). Byte-length asserts guard the
     /// transcription; the roots themselves are the ultimate check.
     struct MerkleFixtures {
         plan_v0: String,

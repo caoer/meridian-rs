@@ -5,9 +5,8 @@
 //! **Owns:** executing rulesets — YAML parse/compile (content-hash cache, pin
 //! verify), the 14-assertion vocabulary with declared `Budget { class, p99_us }`,
 //! and the `policy` / `policy_compile` / `policy_vocab` evaluation entry points.
-//! The complete contract — schema, semantics, error taxonomy, versioning axes —
-//! is `policy-schema-design.md` (session `18-02-meridian-rs/results/`); it is
-//! cited, never restated: this crate implements that document.
+//! The complete contract — schema, semantics, error taxonomy, versioning —
+//! is implemented here; this crate is that contract's implementation.
 //!
 //! **Never does:** decide what a violation *means* (block/annotate/page is Go's
 //! action mapping), own a corpus index (borrows `model`'s, capability-gated:

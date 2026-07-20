@@ -2,7 +2,7 @@
 //!
 //! # Metric contract (claims.toml)
 //! - `parse.throughput.corpus` — MB/s over `vault-2026 seed=1 files=2000`;
-//!   baseline 103 MB/s, gate ≥ 82 (parser-bench rust-pulldown lane).
+//!   baseline 103 MB/s, gate ≥ 82 (the prior rust-pulldown parse baseline).
 //! - `parse.p99.file` — per-file latency p99 via the hdr path; baseline 3.2 ms.
 //! - `parse.p99.monster_10mb` — recipe `monster-10mb`; baseline 473 ms.
 //! - `parse.reparse.full_46kb` — single-file reparse; baseline 0.22 ms.

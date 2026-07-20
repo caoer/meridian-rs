@@ -1,8 +1,8 @@
 //! Adversarial-harness Class-4 wire probes (`p4-regression-probes.json`,
-//! vendored: `testsuite/data/harness/PROVENANCE.md`) against the LIVE
+//! vendored under `testsuite/data/harness/`) against the LIVE
 //! dispatch — the D2 harness-conformance law from the unit card.
 //!
-//! Rung disposition (recorded in the provenance note): MP-1..4 + MP-8 bound
+//! Rung disposition: MP-1..4 + MP-8 bound
 //! at rung 2; MP-5..7 are `splice` probes — they answered `unknown_op` while
 //! splice was unarmed and are BOUND since D4-SPLICE: MP-5 (raw linktext as a
 //! write target — W2 kill), MP-6 (client span field — decision-007 kill)

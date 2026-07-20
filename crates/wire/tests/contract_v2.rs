@@ -1,7 +1,7 @@
-//! W2-AMEND contract fixtures, executable against the FROZEN text
-//! (`18-02-meridian-rs/results/wire-contract-v2.md`, decision 014):
-//! hpath dual-serialization + deviation row, the D-C5 discrimination fixture,
-//! the §8 recovery-binding table, and the worked §4.1/§4.2/§4.5/§5.2 frames
+//! Contract fixtures, executable against the frozen text
+//! (`docs/wire-contract-v2.md`):
+//! hpath dual-serialization + deviation row, the unknown-kinds discrimination
+//! fixture, the §8 recovery-binding table, and the worked §4.1/§4.2/§4.5/§5.2 frames
 //! asserted value-for-value (byte-exact dispatch fixtures are D2-DISPATCH's;
 //! this file pins the SHAPES the types serialize to).
 

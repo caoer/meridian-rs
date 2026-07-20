@@ -4,7 +4,7 @@
 //! # Charter
 //! **Owns:** the workspace's integration tests, as ONE test binary
 //! (`tests/main.rs`, modules per concern — the matklad consolidation doctrine),
-//! and the frozen GT pack under `data/gt/` (provenance: `data/gt/PROVENANCE.md`).
+//! and the frozen GT pack under `data/gt/`.
 //! Rung 1's parse-truth gate (every lane node reproduced byte-for-byte) runs
 //! here against that pack.
 //!
@@ -18,23 +18,21 @@ pub fn gt_pack_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/gt")
 }
 
-/// Path to the §0.3 wsfix worked-fixture pack (M2-BUILD oracle; provenance
-/// `data/wsfix/PROVENANCE.md`).
+/// Path to the §0.3 wsfix worked-fixture pack (the build oracle).
 #[must_use]
 pub fn wsfix_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/wsfix")
 }
 
-/// The adversarial-harness probe packs + walkvault fixture vault (provenance:
-/// `data/harness/PROVENANCE.md`).
+/// The adversarial-harness probe packs + walkvault fixture vault.
 #[must_use]
 pub fn harness_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/harness")
 }
 
-/// Path to the CHARSET-GUARD discrimination pack (ruling 011 / §2.4; provenance
-/// `data/charset-guard/PROVENANCE.md`) — per-mint-position `_`-refusal inputs
-/// plus the pack-pinned walk answer, for downstream units to ride.
+/// Path to the CHARSET-GUARD discrimination pack (the single block-id charset,
+/// §2.4) — per-mint-position `_`-refusal inputs plus the pack-pinned walk
+/// answer, for downstream units to ride.
 #[must_use]
 pub fn charset_guard_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/charset-guard")

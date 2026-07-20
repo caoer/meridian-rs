@@ -9,8 +9,8 @@
 //! (`model::build` revs/spans, `wire_map::project_toc` `content_span`/`prefix16`,
 //! `model::merkle_root` roots, `model::walk` resolve, `transport::scan_id`
 //! lexemes) from the COMMITTED `wsfix/` S0 bytes + the frozen §4.4 edits, never
-//! transcribed. The independent python oracle (`wire-contract-v2-verify.py`,
-//! §12.2 `root_of`) recomputes the same values green — two derivations that must
+//! transcribed. The independent Python oracle (§12.2 `root_of`) recomputes
+//! the same values green — two derivations that must
 //! agree. Any mismatch is grain-defect-#3: STOP + card via the Leader, never an
 //! in-unit engine fix.
 //!

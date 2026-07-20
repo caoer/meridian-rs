@@ -1,11 +1,11 @@
 # The empirical profile: hand-seeded from the lane0-corpus survey of 21,856
-# real vault files (parser-bench RESULTS.md, frozen 2026-07-17T23:48Z).
+# real vault files (a prior benchmark run, frozen 2026-07-17T23:48Z).
 # File-incidence rates are survey numbers; per_file intensities and size shape
 # are fitted to the survey aggregate (104.2 MB / 21,856 files ≈ 4.8 KB mean).
 # Refine by re-deriving against the real vault: `corpusgen fit <vault-path>`.
 
 name = "vault-2026"
-provenance = "lane0-corpus survey, 21,856 files, frozen 2026-07-17T23:48Z (parser-bench RESULTS.md): fm 97.6%, wikilink 21.8%, callout 9.6%, anchor 5.3%, 12 real unterminated fences; other rates estimated pending corpusgen fit"
+provenance = "lane0-corpus survey, 21,856 files, frozen 2026-07-17T23:48Z (a prior benchmark run): fm 97.6%, wikilink 21.8%, callout 9.6%, anchor 5.3%, 12 real unterminated fences; other rates estimated pending corpusgen fit"
 files = 2000
 
 [size]

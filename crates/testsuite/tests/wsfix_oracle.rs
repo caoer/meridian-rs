@@ -3,7 +3,7 @@
 //! frontmatter node span obeys the frozen §18 row 3 fence-to-fence law.
 //!
 //! Expected values are the `compute.py` output verbatim (S0 `toc`, S2 `toc_s2`,
-//! `file_revs`) — see `data/wsfix/PROVENANCE.md`. `file_rev` is recomputed here
+//! `file_revs`). `file_rev` is recomputed here
 //! independently with blake3 (a test-only dev-dependency) so the assertion does
 //! not lean on `model`'s own hashing, and the whole-file-node identity
 //! (`node_rev(root) == file_rev`) is proven, not assumed.
