@@ -31,8 +31,11 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          # Pinned stable toolchain (satisfies rust-version 1.96 / edition 2024).
-          toolchain = fenix.packages.${system}.stable.toolchain;
+          # Pinned stable MINIMAL toolchain — cargo + rustc + rust-std only
+          # (satisfies rust-version 1.96 / edition 2024). No rust-docs / rust-src
+          # / rust-analyzer / clippy / rustfmt: a binary build needs none of them,
+          # and dropping them keeps the CI build + the cache closure lean.
+          toolchain = fenix.packages.${system}.stable.minimalToolchain;
           rustPlatform = pkgs.makeRustPlatform {
             cargo = toolchain;
             rustc = toolchain;
