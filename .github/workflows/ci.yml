@@ -28,6 +28,13 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: tests (all members incl. perfsuite harness)
         run: cargo test --workspace
+      - name: mrd demo lane (every subcommand against the S0 fixture, raw results)
+        run: crates/cli/demo/run.sh target/mrd-demo
+      - name: upload mrd demo report (results.json + report.html)
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrd-demo-report
+          path: target/mrd-demo
       - name: cargo-deny (fork one-copy law, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
       - name: bench smoke (one iteration per target — catches harness bit-rot)
