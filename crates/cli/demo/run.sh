@@ -16,6 +16,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../../.." && pwd)"
 out="${1:-$repo/target/mrd-demo}"
 raw="$out/raw"
+rm -rf "$raw"          # idempotent: stale cases from a prior run never linger
 mkdir -p "$raw"
 
 cargo build -p mrd-cli --quiet
