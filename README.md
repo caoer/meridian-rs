@@ -3,8 +3,9 @@
 A Rust engine for a governed Markdown workspace. `meridian-rs` reads an
 Obsidian-flavored Markdown vault into an in-memory world model, serves
 byte-exact section reads and CAS-guarded batch edits, and emits change deltas
-— all over a frozen NDJSON wire contract. It ships as one binary, `sidecar`,
-the stdin/stdout process a host daemon speaks to.
+— all over a frozen NDJSON wire contract. It ships as two binaries: `sidecar`,
+the stdin/stdout process a host daemon speaks to, and `mrd`, a one-shot CLI
+over the same engine.
 
 ## What it is
 
@@ -34,6 +35,7 @@ the stdin/stdout process a host daemon speaks to.
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
 | `sidecar` (bin) | The thin NDJSON stdin/stdout binary — the only place wire and model meet |
+| `mrd-cli` (bin `mrd`) | One-shot CLI: pure wire client driving the sidecar library in-process, one subcommand per wire op |
 | `testsuite` | Consolidated integration-test member carrying the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness: deterministic corpora, a claims registry, and criterion benches (out of default-members) |
 
@@ -54,6 +56,8 @@ graph TD
     WIRE --> SC
     WMAP --> SC
     POL --> SC
+    SC --> MRD((mrd bin))
+    WIRE --> MRD
 ```
 
 The dependency edges enforce three laws — see `docs/laws.md`.
@@ -72,6 +76,13 @@ line out. A minimal exchange:
 ```
 {"id":1,"op":"hello","proto":1}
 {"id":2,"op":"toc","path":"notes/plan.md"}
+```
+
+The same exchange without a daemon, via the one-shot CLI (`--root` defaults
+to the current directory; `--json` emits the raw wire frame):
+
+```sh
+cargo run -p mrd-cli -- --root <vault> toc notes/plan.md
 ```
 
 ## Documentation
