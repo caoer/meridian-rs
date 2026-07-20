@@ -6,10 +6,8 @@
 //! **Owns:** the wire nouns (`path`/`span`/`node_rev`/`root`), the §2.1 mint
 //! address grammar, the op request/response shapes, the node object, and the
 //! error envelope — everything that crosses the process boundary, exactly as
-//! `wire-contract-v2.md` states it (session
-//! `18-02-meridian-rs/results/wire-contract-v2.md`, FROZEN 2026-07-18,
-//! decision 014; contract text is normative, this crate transcribes it and
-//! never restates its rules).
+//! the frozen contract states it (`docs/wire-contract-v2.md`; the contract
+//! text is normative, this crate transcribes it and never restates its rules).
 //!
 //! **Never does:** framing, transport, I/O, business logic. Dependencies are serde
 //! only, by law — this crate must be consumable by any future client (tests, Go

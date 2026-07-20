@@ -1,5 +1,5 @@
-# meridian-rs workspace — candidate/laws-as-crates
-# Conventions per design-doc axis D (non-negotiable): resolver 2, publish=false,
+# meridian-rs workspace.
+# Workspace conventions (non-negotiable): resolver 2, publish=false,
 # internals 0.0.0, {path, version="0.0.0"} deps, [patch.crates-io] fork pin.
 
 [workspace]
@@ -29,7 +29,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-# internal crates: path + version 0.0.0 — mechanical publish retrofit later (axis D)
+# internal crates: path + version 0.0.0 — mechanical publish retrofit later
 syntax = { path = "crates/syntax", version = "0.0.0" }
 model = { path = "crates/model", version = "0.0.0" }
 fs = { path = "crates/fs", version = "0.0.0" }
@@ -64,7 +64,7 @@ unused_qualifications = "warn"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 
-# Fork consumption, axis B resolution (Zed/lsp-types mode): [patch.crates-io] at the
+# Fork consumption: [patch.crates-io] at the
 # workspace root guarantees ONE pulldown-cmark copy graph-wide, including transitive
 # edges. Fork version stays equal to upstream's; merge-from-upstream on branch
 # `obsidian`; each rev bump gets a comment naming its upstream PR.

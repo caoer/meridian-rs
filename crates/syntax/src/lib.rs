@@ -18,7 +18,7 @@
 //! never a pulldown type, so a fork API change is a one-crate event.
 //!
 //! # Rungs
-//! Rung 1 lands `parse` complete (the parser-bench `rust-pulldown` lane's
+//! Rung 1 lands `parse` complete (the the prior `rust-pulldown` parse baseline's
 //! extraction core relocates here); later rungs add dialect events, never
 //! callers.
 
@@ -687,7 +687,7 @@ mod tests {
         assert_eq!(first_span("paragraph tail ^my-anchor\n", 4), "^my-anchor");
     }
 
-    // ---- Relocation behaviour (adapted from the parser-bench donor tests) ----
+    // ---- Relocation behaviour (adapted from prior donor tests) ----
 
     #[test]
     fn frontmatter_span_and_keys() {

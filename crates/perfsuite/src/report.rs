@@ -289,7 +289,7 @@ pub fn render_markdown(report: &RunReport, claims: &[Claim]) -> String {
     }
     let _ = writeln!(
         md,
-        "\nBaseline provenance: parser-bench tournament (RESULTS.md, frozen 2026-07-17). \
+        "\nBaseline provenance: a prior benchmark run (frozen 2026-07-17). \
          Corpora are recipe-generated (`corpusgen`), never committed; claims are data in \
          `claims.toml`; UNTESTED is the perf mirror of a `todo!()` body."
     );

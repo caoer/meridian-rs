@@ -1,9 +1,9 @@
 # Adversarial: one 10 MB file, every construct at high intensity — mirrors the
-# parser-bench adversarial monster's envelope (rust-pulldown lane: p99 473 ms).
+# the prior adversarial monster's envelope (rust-pulldown lane: p99 473 ms).
 # sigma = 0 ⇒ size is exactly median_bytes.
 
 name = "monster-10mb"
-provenance = "shape approximates parser-bench adversarial 10MB monster (RESULTS.md); size exact, construct mix synthetic-heavy"
+provenance = "shape approximates the prior adversarial 10MB monster (RESULTS.md); size exact, construct mix synthetic-heavy"
 files = 1
 
 [size]

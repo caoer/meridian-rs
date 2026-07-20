@@ -1,8 +1,8 @@
-# ground-truth law (lane 0 owns corrections)
+# ground-truth law
 
-10 files: 8 corpus (named in `gen_ground_truth.py` FILES list) + 2 adversarial
-(`anchor-edge-cases.md`, `callout-vs-quote.md`). Structure per CONTRACT:
-`{"file": <fixture-relpath>, "nodes": [{kind, hpath?, span:[start,end), text_prefix_16b}]}`.
+10 files: 8 corpus (each `*.expected.json`'s `file` field names its fixture
+under `corpus/`) + 2 adversarial (`anchor-edge-cases.md`, `callout-vs-quote.md`).
+Structure: `{"file": <fixture-relpath>, "nodes": [{kind, hpath?, span:[start,end), text_prefix_16b}]}`.
 
 ## Span convention (uniform, bytes)
 

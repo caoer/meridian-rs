@@ -2,7 +2,7 @@
 # `cargo run -p perfsuite --bin bench-report` joins staged measurements against
 # this file into PASS/FAIL/MEASURED/UNTESTED verdicts. UNTESTED is the perf
 # mirror of a todo!() body: the claim exists from day 1, the verdict flips
-# when the rung lands. Baselines: parser-bench rust-pulldown lane
+# when the rung lands. Baselines: the prior rust-pulldown parse baseline
 # (RESULTS.md, frozen 2026-07-17, arm64 Mac, release+lto, GT 145/145).
 
 [[claim]]
@@ -12,7 +12,7 @@ metric = "MB/s"
 direction = "higher"
 baseline = 103.0
 threshold = 82.0 # 0.8× baseline; regression gate arms when rung 1 lands
-baseline_provenance = "parser-bench rust-pulldown lane: 103.0 MB/s, 18,891 files/s"
+baseline_provenance = "the prior rust-pulldown parse baseline: 103.0 MB/s, 18,891 files/s"
 harness = "benches/parse.rs"
 recipe = "vault-2026 seed=1 files=2000"
 note = "rung 1 (syntax::parse)"
@@ -24,7 +24,7 @@ metric = "ms"
 direction = "lower"
 baseline = 3.2
 threshold = 5.0
-baseline_provenance = "parser-bench rust-pulldown lane: p99 3.2 ms over corpus sweep"
+baseline_provenance = "the prior rust-pulldown parse baseline: p99 3.2 ms over corpus sweep"
 harness = "benches/parse.rs"
 recipe = "vault-2026 seed=1 files=2000"
 note = "rung 1"
@@ -36,7 +36,7 @@ metric = "ms"
 direction = "lower"
 baseline = 473.0
 threshold = 600.0
-baseline_provenance = "parser-bench rust-pulldown lane: 10MB adversarial p99 473 ms"
+baseline_provenance = "the prior rust-pulldown parse baseline: 10MB adversarial p99 473 ms"
 harness = "benches/parse.rs"
 recipe = "monster-10mb seed=1"
 note = "rung 1"
@@ -48,7 +48,7 @@ metric = "ms"
 direction = "lower"
 baseline = 0.22
 threshold = 0.5
-baseline_provenance = "parser-bench rust-pulldown lane: full reparse 0.22 ms / 46 KB"
+baseline_provenance = "the prior rust-pulldown parse baseline: full reparse 0.22 ms / 46 KB"
 harness = "benches/parse.rs"
 note = "rung 1; the cold-edit path Go feels per keystroke-scale change"
 

@@ -21,7 +21,7 @@
 //! # Rungs
 //! Day 1: harness + placeholder seam benches; `transport.codec` claims measure
 //! live (`NdjsonCodec` is implemented). Rung 1 flips the four parse claims from
-//! UNTESTED (baselines: parser-bench `rust-pulldown` lane — 103 MB/s corpus,
+//! UNTESTED (baselines: the prior `rust-pulldown` parse baseline — 103 MB/s corpus,
 //! 3.2 ms p99/file, 473 ms monster p99, 0.22 ms reparse). Rung 6 wires policy
 //! per-assertion budgets from ruleset data (`threshold_source = "ruleset"`).
 
