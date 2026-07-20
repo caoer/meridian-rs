@@ -18,6 +18,7 @@ default-members = [
     "crates/policy",
     "crates/query",
     "crates/sidecar",
+    "crates/cli",
     "crates/testsuite",
 ]
 
