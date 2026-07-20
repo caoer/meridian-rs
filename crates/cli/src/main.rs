@@ -133,10 +133,7 @@ enum Cmd {
     /// Integrity: current workspace root + seq (§4.7)
     Root,
     /// Replay the deltas between two roots (§4.7/§7.3)
-    Diff {
-        from_root: String,
-        to_root: String,
-    },
+    Diff { from_root: String, to_root: String },
     /// Subscribe ack (§4.7). One-shot honesty: this process's engine epoch is
     /// born empty, so only `from_seq 0` acks and nothing replays; live delta
     /// streaming needs a resident daemon (not in v1)
@@ -182,9 +179,9 @@ impl SecFlags {
                 anchor: anchor.clone(),
             });
         }
-        self.fm_key.as_ref().map(|k| wire::SecRef::FmKey {
-            fm_key: k.clone(),
-        })
+        self.fm_key
+            .as_ref()
+            .map(|k| wire::SecRef::FmKey { fm_key: k.clone() })
     }
 }
 
@@ -240,9 +237,7 @@ fn main() -> ExitCode {
         let stdout = std::io::stdout();
         let mut w = stdout.lock();
         let ok = writeln!(w, "{raw}").is_ok()
-            && notifications
-                .iter()
-                .all(|n| writeln!(w, "{n}").is_ok());
+            && notifications.iter().all(|n| writeln!(w, "{n}").is_ok());
         if !ok {
             return ExitCode::from(3);
         }
@@ -305,7 +300,11 @@ fn typed_op(cmd: &Cmd) -> wire::Op {
             path: wire::Path(path.clone()),
             kinds: kinds.clone(),
         },
-        Cmd::Resolve { from, r#ref, content } => wire::Op::Resolve {
+        Cmd::Resolve {
+            from,
+            r#ref,
+            content,
+        } => wire::Op::Resolve {
             from: wire::Path(from.clone()),
             r#ref: r#ref.clone(),
             content: content.then_some(true),

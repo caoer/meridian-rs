@@ -69,10 +69,16 @@ fn toc_human_shows_hpath_rows_and_frozen_revs() {
     let out = mrd(vault.path(), &["toc", "notes/plan.md"]);
     assert!(out.status.success(), "exit 0: {}", stderr(&out));
     let text = stdout(&out);
-    assert!(text.contains("file_rev=e3c4acaceb75b907"), "frozen file_rev: {text}");
+    assert!(
+        text.contains("file_rev=e3c4acaceb75b907"),
+        "frozen file_rev: {text}"
+    );
     assert!(text.contains(R0), "frozen ambient root: {text}");
     assert!(text.contains("Goals > Q3"), "hpath row: {text}");
-    assert!(text.contains("rev=33d5b0e1b27cb48b"), "frozen Q3 rev: {text}");
+    assert!(
+        text.contains("rev=33d5b0e1b27cb48b"),
+        "frozen Q3 rev: {text}"
+    );
 }
 
 #[test]
@@ -106,13 +112,21 @@ fn json_toc_is_one_wire_frame_with_frozen_values() {
     assert!(out.status.success());
     let text = stdout(&out);
     let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.len(), 1, "one-shot toc emits exactly one frame: {text}");
+    assert_eq!(
+        lines.len(),
+        1,
+        "one-shot toc emits exactly one frame: {text}"
+    );
     let frame: Value = serde_json::from_str(lines[0]).expect("frame parses");
     assert_eq!(frame["ok"], Value::Bool(true));
     assert!(frame["id"].is_u64(), "response frame carries the id key");
     assert_eq!(frame["body"]["file_rev"], "e3c4acaceb75b907");
     assert_eq!(frame["body"]["root"], R0);
-    assert!(frame["body"]["nodes"].as_array().is_some_and(|n| !n.is_empty()));
+    assert!(
+        frame["body"]["nodes"]
+            .as_array()
+            .is_some_and(|n| !n.is_empty())
+    );
 }
 
 #[test]
@@ -146,7 +160,10 @@ fn usage_error_exits_2() {
     let out = mrd(vault.path(), &["no-such-op"]);
     assert_eq!(out.status.code(), Some(2), "clap usage error");
     // malformed --edits JSON is a usage error too, same class
-    let out = mrd(vault.path(), &["splice", "notes/plan.md", "--edits", "not json"]);
+    let out = mrd(
+        vault.path(),
+        &["splice", "notes/plan.md", "--edits", "not json"],
+    );
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("--edits"), "{}", stderr(&out));
 }
@@ -163,7 +180,14 @@ fn splice_dry_leaves_disk_untouched() {
     let vault = s0_vault();
     let out = mrd(
         vault.path(),
-        &["--json", "splice", "notes/plan.md", "--dry", "--edits", Q3_EDIT],
+        &[
+            "--json",
+            "splice",
+            "notes/plan.md",
+            "--dry",
+            "--edits",
+            Q3_EDIT,
+        ],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     let frame: Value = serde_json::from_str(stdout(&out).trim()).expect("frame parses");
@@ -177,11 +201,17 @@ fn splice_dry_leaves_disk_untouched() {
 #[test]
 fn splice_then_cat_roundtrips_across_processes() {
     let vault = s0_vault();
-    let out = mrd(vault.path(), &["splice", "notes/plan.md", "--edits", Q3_EDIT]);
+    let out = mrd(
+        vault.path(),
+        &["splice", "notes/plan.md", "--edits", Q3_EDIT],
+    );
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     // the armed rev transition, frozen §4.4 worked values
-    assert!(text.contains("33d5b0e1b27cb48b -> 41f643f034e5681f"), "{text}");
+    assert!(
+        text.contains("33d5b0e1b27cb48b -> 41f643f034e5681f"),
+        "{text}"
+    );
     // a SECOND process sees the committed write — one-shot persistence proof
     let out = mrd(
         vault.path(),
@@ -222,11 +252,17 @@ fn splice_edits_from_file_and_unknown_edit_field_refuses_loud() {
 #[test]
 fn extract_lists_nodes_and_unknown_kind_refuses_loud() {
     let vault = s0_vault();
-    let out = mrd(vault.path(), &["extract", "notes/plan.md", "--kinds", "wikilink"]);
+    let out = mrd(
+        vault.path(),
+        &["extract", "notes/plan.md", "--kinds", "wikilink"],
+    );
     assert!(out.status.success());
     assert!(stdout(&out).contains("wikilink"), "{}", stdout(&out));
     // §4.3 D-C5: unknown kinds refuse loud, never silently match nothing
-    let out = mrd(vault.path(), &["extract", "notes/plan.md", "--kinds", "bogus"]);
+    let out = mrd(
+        vault.path(),
+        &["extract", "notes/plan.md", "--kinds", "bogus"],
+    );
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("unknown_kinds"), "{}", stderr(&out));
 }
@@ -251,7 +287,10 @@ fn links_reports_resolved_and_unresolved_edges() {
     let out = mrd(vault.path(), &["links", "notes/plan.md"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
-    assert!(text.contains("receipts/2026-07-18.md"), "resolved edge: {text}");
+    assert!(
+        text.contains("receipts/2026-07-18.md"),
+        "resolved edge: {text}"
+    );
     assert!(text.contains("roadmap"), "unresolved edge: {text}");
 }
 
