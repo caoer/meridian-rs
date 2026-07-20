@@ -115,7 +115,15 @@ fn body_human(body: &ResponseBody) {
             seq,
             dry,
             verdicts,
-        } => splice_human(armed, receipt.as_ref(), root_before, root_after.as_ref(), *seq, *dry, verdicts),
+        } => splice_human(
+            armed,
+            receipt.as_ref(),
+            root_before,
+            root_after.as_ref(),
+            *seq,
+            *dry,
+            verdicts,
+        ),
         ResponseBody::Root { root, seq } => {
             println!("root: {}", root.0);
             println!("seq:  {seq}");
@@ -246,7 +254,11 @@ fn toc_row(node: &TocNode) -> String {
     if let Some(keys) = &node.keys {
         let _ = write!(row, " keys={}", keys.join(","));
     }
-    let _ = write!(row, " [{},{}) rev={}", node.span.0, node.span.1, node.node_rev.0);
+    let _ = write!(
+        row,
+        " [{},{}) rev={}",
+        node.span.0, node.span.1, node.node_rev.0
+    );
     row
 }
 
