@@ -30,5 +30,11 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build sidecar
         run: nix build .#sidecar -L
+      # Fleet-portable STATIC musl linux binary (x86_64-linux only) — the
+      # installer/R2 delivery pulls THIS for foreign-Debian hosts. cachix-action
+      # pushes it to ccc.cachix.org alongside the dynamic sidecar.
+      - name: Build sidecar-static (musl, linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: nix build .#sidecar-static -L
       - name: Flake check
         run: nix flake check -L

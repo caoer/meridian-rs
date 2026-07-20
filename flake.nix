@@ -73,12 +73,73 @@
             license = with nixpkgs.lib.licenses; [ mit asl20 ];
           };
         };
+
+      # Fully-STATIC musl sidecar for x86_64-linux — the FLEET-portable binary.
+      # The default `sidecar` above is nix-DYNAMIC (PT_INTERP=/nix/store/…-glibc/
+      # ld-linux + /nix/store lib refs) so it only runs on nix hosts / with nix-ld;
+      # foreign-Debian prod (glibc, no nix-ld) can't exec it. A musl static build
+      # has NO interpreter and links libc statically → runs on any linux. The
+      # sidecar dep tree is 0 blocking C-FFI (blake3's cc-asm builds via the musl
+      # cc below), so it links fully static clean. decisions/0006 (ZT).
+      mkSidecarStatic =
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          rustTarget = "x86_64-unknown-linux-musl";
+          # Fenix host toolchain (rust-version 1.96 — nixpkgs' own rustc is 1.95,
+          # too old) PLUS the musl target's rust-std.
+          toolchain = fenix.packages.${system}.combine [
+            fenix.packages.${system}.stable.minimalToolchain
+            fenix.packages.${system}.targets.${rustTarget}.stable.rust-std
+          ];
+          # Build from the pkgsStatic (musl-static) stdenv: its
+          # hostPlatform.rust.rustcTarget = x86_64-unknown-linux-musl, so
+          # buildRustPackage targets musl AND links static via the stdenv (the
+          # musl cc/linker for blake3's cc-asm comes from pkgsStatic too). Passing
+          # a target only via env was IGNORED — buildRustPackage's --target comes
+          # from the stdenv, so the stdenv MUST be the musl-static one.
+          rustPlatform = pkgs.pkgsStatic.makeRustPlatform {
+            cargo = toolchain;
+            rustc = toolchain;
+          };
+        in
+        rustPlatform.buildRustPackage {
+          pname = "sidecar-static";
+          version = "0.1.0";
+          src = self;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            outputHashes = {
+              "pulldown-cmark-0.13.1" = "sha256-TDd0Mzm1zgAiSXMAHbsfbTLuq7+//C2ypQqnvbqdm1U=";
+              "pulldown-cmark-escape-0.11.0" = "sha256-TDd0Mzm1zgAiSXMAHbsfbTLuq7+//C2ypQqnvbqdm1U=";
+            };
+          };
+
+          cargoBuildFlags = [ "-p" "sidecar" ];
+          doCheck = false;
+
+          meta = {
+            description = "meridian-rs sidecar — fully-static musl build (fleet-portable, runs on non-nix glibc hosts)";
+            mainProgram = "sidecar";
+            license = with nixpkgs.lib.licenses; [ mit asl20 ];
+            platforms = [ "x86_64-linux" ];
+          };
+        };
     in
     {
-      packages = forAllSystems (system: rec {
-        sidecar = mkSidecar system;
-        default = sidecar;
-      });
+      packages = forAllSystems (
+        system:
+        rec {
+          sidecar = mkSidecar system;
+          default = sidecar;
+        }
+        # The static musl build only targets x86_64-linux (the fleet-portable
+        # linux binary the installer/R2 delivery ships to foreign Debian).
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          sidecar-static = mkSidecarStatic system;
+        }
+      );
 
       # `nix flake check` builds the delivered binary on the host system.
       checks = forAllSystems (system: {
