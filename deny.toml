@@ -12,6 +12,23 @@ allow = [
     # foldhash (via prost-build → petgraph → hashbrown, build-dep only);
     # zlib/libpng-family permissive
     "Zlib",
+    # Permissive OSI-approved family riding in via starlark (Inflector,
+    # clipboard-win, error-code) and blake3 (arrayref, subtle) — all
+    # transitive, none copyleft.
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+]
+
+[advisories]
+# Unmaintained-crate notices (no vulnerabilities): all four ride in through
+# the starlark dependency tree, which we consume as-is; revisit on the next
+# starlark bump.
+ignore = [
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill via starlark; unmaintained only" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative via starlark; unmaintained only" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash via starlark; unmaintained only" },
+    { id = "RUSTSEC-2024-0436", reason = "paste via starlark; unmaintained only" },
 ]
 
 [bans]
