@@ -208,6 +208,25 @@ impl Registry {
         Ok(WarmOutcome::Built { docs: parsed })
     }
 
+    /// Borrow the warm engine for `canonical` (an already-canonical workspace
+    /// path) under the read lock, running `f` on it — `None` when no engine is
+    /// resident. The daemon's read path calls [`warm_or_build`](Self::warm_or_build)
+    /// first (ensuring the engine reflects current disk and is warm), then serves
+    /// the borrowed state through this accessor — so the read never parses when
+    /// the corpus is unchanged (U2, served from U1's resident state).
+    ///
+    /// The closure runs UNDER the read lock; keep it to a borrow-and-project (no
+    /// blocking, no re-entrancy into the engines lock), so concurrent reads of
+    /// other workspaces never wait on it.
+    pub fn with_engine<R>(
+        &self,
+        canonical: &Path,
+        f: impl FnOnce(Option<&WorkspaceEngine>) -> R,
+    ) -> R {
+        let engines = self.engines.read().unwrap_or_else(PoisonError::into_inner);
+        f(engines.get(canonical))
+    }
+
     /// Unregister `path`, dropping it from memory and the state file. The
     /// drawer is left for `cache::gc`. Returns `true` when an entry was
     /// removed.

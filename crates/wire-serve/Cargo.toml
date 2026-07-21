@@ -1,0 +1,25 @@
+[package]
+name = "wire-serve"
+description = "The shared typed edge: the hand-rolled strict-decode pass (wire §3.2 server law) plus the read-op arms served over BORROWED parsed state. One implementation for both hosts — the per-workspace sidecar (which builds the corpus per request) and the resident registry daemon (which serves from its warm engine). Wiring only: parsing is fs/syntax's, tree law is model's, projection is wire-map's, edges are query's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The frozen wire vocabulary this crate decodes into and answers with.
+wire = { workspace = true }
+# The named wire<->model projection seam (toc/extract node rows).
+wire-map = { workspace = true }
+# Tree law + resolution: the read arms operate on borrowed `model::Document`s
+# and the `CorpusIndex`; `model::resolve`/`model::walk` back cat/resolve.
+model = { workspace = true }
+# The corpus edge map (§4.6 links), read over the borrowed index + docs.
+query = { workspace = true }
+# Decode-time JSON: the strict-decode pass validates the raw request object by
+# hand (serde's `deny_unknown_fields` does not compose with `flatten`).
+serde_json = { workspace = true }

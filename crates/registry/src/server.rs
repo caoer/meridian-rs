@@ -15,6 +15,7 @@
 //! acquire it and refuses to start, so there is only ever one writer of the
 //! state file — the single-writer invariant the atomic state write assumes.
 
+use std::collections::BTreeMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -25,7 +26,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use cache::DrawerLock;
+use serde::Serialize;
+use serde_json::{Map, Value};
+use wire::{ErrorBody, ErrorCode, Op, ResponseBody, ResponsePayload, Root};
 
+use crate::engine::{WarmOutcome, WorkspaceEngine};
 use crate::protocol::{Request, Response};
 use crate::registry::{RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
@@ -310,32 +315,81 @@ fn spawn_reaper(
     })
 }
 
-/// Serve one connection: read NDJSON requests until EOF, dispatching each and
-/// writing one NDJSON response per line.
+/// Serve one connection: read NDJSON frames until EOF, routing each to the
+/// unified daemon surface and writing one NDJSON response per line (R1: ONE
+/// vocabulary on the socket).
+///
+/// Three verb families share the socket, disambiguated by the `op` tag:
+/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — the
+///   workspace-registry verbs the `Client` drives, daemon-internal and absent
+///   from any wire `caps` (so the 108da20a v3 proxy sees no change);
+/// - **`attach`** — daemon-internal: bind this connection to a workspace and
+///   warm its resident engine, so the wire read ops know which corpus to serve
+///   (U3 FOLDS this into `hello` and DELETES the standalone op — no parallel
+///   paths; see the task Gate Results);
+/// - **wire read ops** (`toc`/`cat`/`extract`/`links`/`root`/`diff`/`resolve`)
+///   — the frozen contract, strict-decoded and served from the attached
+///   workspace's warm engine.
 fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
+    // The connection's attached workspace (canonical path), set by `attach`.
+    // Per-connection, so concurrent clients target different workspaces.
+    let mut attached: Option<PathBuf> = None;
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => dispatch(registry, request),
-            Err(e) => Response::Error {
-                message: format!("malformed request ({e})"),
-            },
-        };
-        let mut out = serde_json::to_string(&response).map_err(io::Error::other)?;
-        out.push('\n');
+        let out = handle_line(registry, &mut attached, &line);
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
     }
     Ok(())
 }
 
-/// Map one request onto a registry operation and its response.
-fn dispatch(registry: &Registry, request: Request) -> Response {
+/// Route one frame by its `op` tag and render its response line (`\n`-terminated).
+fn handle_line(registry: &Registry, attached: &mut Option<PathBuf>, line: &str) -> String {
+    let value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(e) => {
+            return to_line(&Response::Error {
+                message: format!("malformed request ({e})"),
+            });
+        }
+    };
+    let Value::Object(obj) = value else {
+        return to_line(&Response::Error {
+            message: "request must be a JSON object".into(),
+        });
+    };
+    // Read the tag as owned so the borrow of `obj` is dropped before the admin
+    // arm consumes it.
+    let op = obj.get("op").and_then(Value::as_str).map(str::to_string);
+    match op.as_deref() {
+        Some("ping" | "register" | "unregister" | "resolve_ws" | "list") => {
+            match serde_json::from_value::<Request>(Value::Object(obj)) {
+                Ok(request) => to_line(&dispatch_admin(registry, request)),
+                Err(e) => to_line(&Response::Error {
+                    message: format!("malformed request ({e})"),
+                }),
+            }
+        }
+        Some("attach") => to_line(&attach(registry, attached, &obj)),
+        _ => to_line(&serve_wire(registry, attached.as_deref(), &obj)),
+    }
+}
+
+/// Serialize a response value to one NDJSON line. The response types are plain
+/// serde structs with no failible shapes, so serialization is an invariant.
+fn to_line<T: Serialize>(value: &T) -> String {
+    let mut out = serde_json::to_string(value).expect("daemon response serializes");
+    out.push('\n');
+    out
+}
+
+/// Map one admin request onto a registry operation and its response.
+fn dispatch_admin(registry: &Registry, request: Request) -> Response {
     match request {
         Request::Ping => Response::Pong,
         Request::Resolve { cwd } => match registry.resolve(&cwd) {
@@ -364,4 +418,239 @@ fn dispatch(registry: &Registry, request: Request) -> Response {
             entries: registry.entries(),
         },
     }
+}
+
+/// The `attach` ack (daemon-internal). Binds the connection to a workspace and
+/// warms its resident engine; `outcome` is the warm-vs-cold trace — a second
+/// `attach` at an unchanged corpus answers `reused`, proving no reparse.
+#[derive(Debug, Serialize)]
+struct AttachAck {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attached: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<WarmOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Bind the connection to `workspace` and warm its resident engine. Canonicalizes
+/// first (the engine key and the wire read ops share the canonical path), then
+/// `warm_or_build`. A failure is reported in the ack's `error` and leaves the
+/// connection unattached.
+fn attach(
+    registry: &Registry,
+    attached: &mut Option<PathBuf>,
+    obj: &Map<String, Value>,
+) -> AttachAck {
+    let Some(ws) = obj.get("workspace").and_then(Value::as_str) else {
+        return AttachAck {
+            ok: false,
+            attached: None,
+            outcome: None,
+            error: Some("`attach` requires a `workspace` string".into()),
+        };
+    };
+    let canonical = match workspace::canonicalize(Path::new(ws)) {
+        Ok(canonical) => canonical,
+        Err(e) => {
+            return AttachAck {
+                ok: false,
+                attached: None,
+                outcome: None,
+                error: Some(format!("cannot canonicalize {ws} ({e})")),
+            };
+        }
+    };
+    match registry.warm_or_build(&canonical) {
+        Ok(outcome) => {
+            *attached = Some(canonical.clone());
+            AttachAck {
+                ok: true,
+                attached: Some(canonical),
+                outcome: Some(outcome),
+                error: None,
+            }
+        }
+        Err(e) => AttachAck {
+            ok: false,
+            attached: None,
+            outcome: None,
+            error: Some(format!("cannot warm {} ({e})", canonical.display())),
+        },
+    }
+}
+
+/// Strict-decode one wire read op and serve it from the attached workspace's
+/// resident engine, rendering the frozen `wire::Response` frame (echoing `id`).
+fn serve_wire(
+    registry: &Registry,
+    attached: Option<&Path>,
+    obj: &Map<String, Value>,
+) -> wire::Response {
+    let id = obj.get("id").and_then(Value::as_u64);
+    let body = wire_serve::decode::decode(obj).and_then(|op| dispatch_read(registry, attached, op));
+    match body {
+        Ok(body) => wire::Response {
+            id,
+            ok: true,
+            payload: ResponsePayload::Body { body },
+        },
+        Err(error) => wire::Response {
+            id,
+            ok: false,
+            payload: ResponsePayload::Error { error: *error },
+        },
+    }
+}
+
+/// Route one decoded wire read op to its arm, served from the attached
+/// workspace's resident engine. `resolve` (§4.5 walk plane) is served COLD from
+/// a per-request walk corpus — a different corpus from the hash-domain warm
+/// engine. The write path (`splice`), `hello` (U3), and `sub` (P2) are not
+/// served here yet and answer `unknown_op` (§3.2 discovery honesty).
+fn dispatch_read(
+    registry: &Registry,
+    attached: Option<&Path>,
+    op: Op,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let Some(ws) = attached else {
+        return Err(wire_serve::bad_request(
+            "no workspace attached — send `attach` first",
+        ));
+    };
+    match op {
+        Op::Toc { path } => warm_engine_read(registry, ws, |engine| {
+            let doc = engine
+                .docs
+                .get(&path.0)
+                .ok_or_else(|| file_not_found(&path))?;
+            Ok(wire_serve::read::toc(doc, &path, &engine_root(engine)))
+        }),
+        Op::Cat { path, sec } => warm_engine_read(registry, ws, |engine| {
+            let doc = engine
+                .docs
+                .get(&path.0)
+                .ok_or_else(|| file_not_found(&path))?;
+            wire_serve::read::cat(doc, sec)
+        }),
+        Op::Extract { path, kinds } => warm_engine_read(registry, ws, |engine| {
+            let doc = engine
+                .docs
+                .get(&path.0)
+                .ok_or_else(|| file_not_found(&path))?;
+            Ok(wire_serve::read::extract(doc, &path, kinds))
+        }),
+        Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
+            let as_of = engine_root(engine);
+            wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
+            let live = as_of.clone();
+            wire_serve::read::links(&engine.index, &engine.docs, path.as_ref(), as_of, 0, || {
+                Ok(live)
+            })
+        }),
+        Op::Root => warm_engine_read(registry, ws, |engine| {
+            Ok(ResponseBody::Root {
+                root: engine_root(engine),
+                seq: 0,
+            })
+        }),
+        Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
+            // The resident daemon holds no delta ring yet (the watcher is P2):
+            // a same-root diff is truthfully empty; any other range is
+            // `root_unknown` → full resync (degrade to re-derive, never to
+            // wrong data).
+            let current = engine_root(engine);
+            if from_root == current && to_root == current {
+                Ok(ResponseBody::Diff {
+                    batches: Vec::new(),
+                })
+            } else {
+                Err(Box::new(ErrorBody::new(ErrorCode::RootUnknown)))
+            }
+        }),
+        Op::Resolve {
+            from,
+            r#ref,
+            content,
+        } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
+        // Not served by the resident daemon at U2: hello = U3, splice = W1,
+        // sub = P2. §3.2 discovery honesty — an op is served or answers
+        // `unknown_op`.
+        Op::Hello { .. } | Op::Splice { .. } | Op::Sub { .. } => {
+            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        }
+    }
+}
+
+/// The workspace's ambient root cursor = its warm engine's corpus content hash
+/// (the reuse key), re-homed into the wire `Root` token.
+fn engine_root(engine: &WorkspaceEngine) -> Root {
+    Root(engine.at_fingerprint.0.clone())
+}
+
+/// Warm the resident engine for `canonical` (idempotent — reflects current disk,
+/// reuses the warm corpus when unchanged), then serve the borrowed engine
+/// through `f`. `None` engine after a successful warm means an idle-reap evicted
+/// it in the gap between warm and borrow — a transient the client retries.
+fn warm_engine_read<R>(
+    registry: &Registry,
+    canonical: &Path,
+    f: impl FnOnce(&WorkspaceEngine) -> Result<R, Box<ErrorBody>>,
+) -> Result<R, Box<ErrorBody>> {
+    registry
+        .warm_or_build(canonical)
+        .map_err(|e| warm_err_to_wire(&e))?;
+    registry.with_engine(canonical, |engine| match engine {
+        Some(engine) => f(engine),
+        None => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
+    })
+}
+
+/// wire §4.5 the walk plane, served COLD: build the walk-plane corpus (the
+/// addressable SUPERSET, skip-broken — the app indexes nothing it cannot read)
+/// from the attached workspace, then resolve. A different corpus from the
+/// hash-domain warm engine, so it is never served from resident state.
+fn resolve_cold(
+    ws: &Path,
+    from: &wire::Path,
+    link: &str,
+    want_content: bool,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let root = fs::WorkspaceRoot(ws.to_path_buf());
+    let rels = fs::walk(&root).map_err(|e| {
+        let mut err = ErrorBody::new(ErrorCode::IoError);
+        err.cause = Some(e.to_string());
+        Box::new(err)
+    })?;
+    let mut index = model::CorpusIndex::new();
+    let mut docs = BTreeMap::new();
+    for rel in rels {
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        if let Ok(doc) = fs::load(&root, &rel) {
+            index.insert(&rel_str, &doc);
+            docs.insert(rel_str, doc);
+        }
+    }
+    wire_serve::read::resolve(&index, &docs, from, link, want_content)
+}
+
+/// `file_not_found` for a wire read op whose `path` is not in the resident
+/// corpus (the daemon's single-file reads are hash-domain-scoped).
+fn file_not_found(path: &wire::Path) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::FileNotFound);
+    e.path = Some(path.clone());
+    Box::new(e)
+}
+
+/// Map a `warm_or_build` I/O failure onto its wire frame: a non-UTF-8 corpus
+/// file is `invalid_utf8` (refused, never lossy-decoded); anything else (the
+/// workspace is gone, an I/O error) carries its cause on `io_error`.
+fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
+    if e.kind() == io::ErrorKind::InvalidData {
+        return Box::new(ErrorBody::new(ErrorCode::InvalidUtf8));
+    }
+    let mut err = ErrorBody::new(ErrorCode::IoError);
+    err.cause = Some(e.to_string());
+    Box::new(err)
 }

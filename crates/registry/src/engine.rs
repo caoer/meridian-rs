@@ -22,6 +22,8 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 /// The warm per-workspace engine state: the parsed corpus that `query` reads
 /// (U2), plus the corpus content hash it was built at (the reuse key).
 ///
@@ -43,7 +45,13 @@ pub struct WorkspaceEngine {
 /// reports the number of documents parsed (one `syntax::parse` per doc), and
 /// `Reused` PROVES zero parses ran — the parse-heavy `fs::build_corpus` is only
 /// reached on the rebuild branch, so a `Reused` result cannot have parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializes (`snake_case`, externally tagged) so the daemon's `attach` ack can
+/// carry the warm-vs-cold trace over the socket: `"reused"` or
+/// `{"built":{"docs":N}}` (U2 gate — the second attach at an unchanged
+/// fingerprint answers `reused`, proving the corpus was not reparsed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WarmOutcome {
     /// The corpus content hash was unchanged; the warm engine was reused and
     /// nothing was parsed.

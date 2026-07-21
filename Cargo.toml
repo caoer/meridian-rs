@@ -17,6 +17,7 @@ default-members = [
     "crates/transport-proto",
     "crates/policy",
     "crates/query",
+    "crates/wire-serve",
     "crates/sidecar",
     "crates/testsuite",
     "crates/workspace",
@@ -39,6 +40,7 @@ model = { path = "crates/model", version = "0.0.0" }
 fs = { path = "crates/fs", version = "0.0.0" }
 wire = { path = "crates/wire", version = "0.0.0" }
 wire-map = { path = "crates/wire-map", version = "0.0.0" }
+wire-serve = { path = "crates/wire-serve", version = "0.0.0" }
 receipt = { path = "crates/receipt", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
 transport-proto = { path = "crates/transport-proto", version = "0.0.0" }

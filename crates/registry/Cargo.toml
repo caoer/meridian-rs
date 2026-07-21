@@ -33,6 +33,12 @@ model = { workspace = true }
 # warm engine to prove the resident state answers real queries.
 query = { workspace = true }
 syntax = { workspace = true }
+# The wire contract (U2): the daemon socket now answers the frozen wire read ops
+# (toc/cat/extract/links/root/diff/resolve). `wire` is the request/response
+# vocabulary; `wire-serve` is the shared strict-decode + read-op arms, served
+# from the resident engine's borrowed state (one implementation with the sidecar).
+wire = { workspace = true }
+wire-serve = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

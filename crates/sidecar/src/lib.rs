@@ -34,7 +34,6 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
 pub mod commit;
-mod decode;
 mod policy_bridge;
 pub(crate) mod rev;
 pub mod ring;
@@ -266,7 +265,7 @@ fn respond_line(
     if *rev == rev::Rev::V3 {
         rev::rename_request(&mut obj);
     }
-    match decode::decode(&obj) {
+    match wire_serve::decode::decode(&obj) {
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
         Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
@@ -304,9 +303,8 @@ fn error_frame(id: Option<u64>, error: ErrorBody) -> Response {
     }
 }
 
-/// A `bad_request` with a human message — the strict-decode workhorse.
+/// A `bad_request` with a human message — re-homed to `wire-serve` so the write
+/// path (splice) and the shared strict decode raise the identical frame.
 pub(crate) fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
-    let mut e = ErrorBody::new(ErrorCode::BadRequest);
-    e.message = Some(message.into());
-    Box::new(e)
+    wire_serve::bad_request(message)
 }
