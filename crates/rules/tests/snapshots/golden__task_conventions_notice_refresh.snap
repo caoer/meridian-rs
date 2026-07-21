@@ -1,0 +1,28 @@
+---
+source: crates/rules/tests/golden.rs
+expression: effects
+---
+[
+  {
+    "kind": "proto.notice",
+    "rule_id": "task_conventions",
+    "seq": 0,
+    "depth": 0,
+    "fingerprint_before": "aaa",
+    "fingerprint_after": "bbb",
+    "args": {
+      "message": "`status` changed — valid values: todo, in-progress, blocked, review, done."
+    }
+  },
+  {
+    "kind": "daemon.refresh_view",
+    "rule_id": "task_conventions",
+    "seq": 1,
+    "depth": 0,
+    "fingerprint_before": "aaa",
+    "fingerprint_after": "bbb",
+    "args": {
+      "view": "tasks"
+    }
+  }
+]

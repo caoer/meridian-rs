@@ -40,6 +40,13 @@ pub enum Request {
     /// Ancestor lookup: canonicalize `cwd`, then walk it and its ancestors
     /// against the registry. The nearest registered ancestor is adopted; no
     /// match is a [`Response::Miss`]. Never registers.
+    ///
+    /// The wire tag is `resolve_ws`, NOT `resolve`: the unified daemon socket
+    /// also answers the frozen wire `resolve` op (the §4.5 walk plane), a
+    /// different verb entirely. This admin verb (workspace ancestor lookup) is
+    /// daemon-internal, so its tag is disambiguated here rather than touching the
+    /// frozen `wire` vocabulary (U3 folds this into `hello`).
+    #[serde(rename = "resolve_ws")]
     Resolve {
         /// The working directory to resolve.
         cwd: PathBuf,

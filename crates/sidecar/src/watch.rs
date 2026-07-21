@@ -56,7 +56,7 @@ pub(crate) fn reconcile(
     ring: &mut RootRing,
     watch: &mut WatchState,
 ) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
-    let (files, disk_root) = crate::arms::domain_snapshot(ws_root)?;
+    let (files, disk_root) = wire_serve::domain_snapshot(ws_root)?;
     match &watch.root {
         // Priming: the epoch's baseline is the first successful snapshot.
         None => {
@@ -77,8 +77,11 @@ pub(crate) fn reconcile(
                 .classify(&files)
                 .expect("primed: watch.root is Some");
             let delta_files = classify_to_wire(&changes)?;
-            let frame = crate::commit::assemble_delta(
-                ring,
+            // The ONE production DeltaFrame constructor (§7.3), shared with the
+            // commit path in `wire-serve` — `seq` is this epoch ring's current
+            // counter, so the frame carries `seq + 1`; the caller advances.
+            let frame = wire_serve::write::assemble_delta(
+                ring.seq(),
                 watch_root.clone(),
                 disk_root.clone(),
                 None, // §7.1: actor ABSENT — never invented

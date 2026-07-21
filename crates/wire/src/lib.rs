@@ -298,12 +298,23 @@ pub enum Op {
     /// the hello response onward. A DECLARED rev is not the §3.2-forbidden
     /// version sniffing (the client states its rev; the server never guesses).
     /// Absent ⇒ serialized away, so the v2 request stays byte-identical.
+    ///
+    /// `workspace` is the resident-engine handshake's workspace-target
+    /// (`[[0002-resident-daemon]]` §4): the host path the client binds this
+    /// connection to. The daemon resolves it (the ancestor walk), pins its
+    /// storage drawer, warms its resident engine, and serves subsequent read ops
+    /// from that binding — one round trip. Absent ⇒ a pure version handshake
+    /// that binds nothing (the sidecar's per-process stdio hello never sends it,
+    /// so the v2 request stays byte-identical). An OPTIONAL additive field on the
+    /// frozen shape, exactly like `contract`.
     Hello {
         proto: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         client: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         contract: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
     /// v2 §4.1 the map: complete write kit (hpath + rev per section, anchors
     /// with revs, fm keys), header `file_rev` + ambient `root` in the response.
@@ -534,12 +545,21 @@ pub enum ResponseBody {
     /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
     /// optional first ambient `root`.
+    ///
+    /// `storage` is the pinned storage drawer (`[[0002-resident-daemon]]` §4
+    /// storage pin): the cache drawer directory the daemon pinned for the
+    /// hello'd workspace, via the canonicalize → deny-ceiling → sentinel path.
+    /// Absent on a workspace-less handshake (nothing to pin) and on the sidecar
+    /// (which opens its drawer client-side). An OPTIONAL additive field on the
+    /// frozen shape.
     Hello {
         proto: u32,
         server: String,
         caps: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         root: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        storage: Option<String>,
     },
     /// v2 §4.1: the map — header `file_rev` + ambient `root` (the commit-guard
     /// idiom made ambient: read a toc, later pass `if_root`), rows in frozen

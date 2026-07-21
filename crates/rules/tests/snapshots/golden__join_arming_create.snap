@@ -1,0 +1,31 @@
+---
+source: crates/rules/tests/golden.rs
+expression: effects
+---
+[
+  {
+    "kind": "proto.send",
+    "rule_id": "join_arming",
+    "seq": 0,
+    "depth": 0,
+    "fingerprint_before": "",
+    "fingerprint_after": "born",
+    "args": {
+      "message": "Welcome. Conventions: claim tasks atomically; move your card as you go; keep your agent status current.",
+      "to": [
+        "agents/abcd1234.md"
+      ]
+    }
+  },
+  {
+    "kind": "proto.remind",
+    "rule_id": "join_arming",
+    "seq": 1,
+    "depth": 0,
+    "fingerprint_before": "",
+    "fingerprint_after": "born",
+    "args": {
+      "message": "Set your manifest + status one-liners before your first report."
+    }
+  }
+]

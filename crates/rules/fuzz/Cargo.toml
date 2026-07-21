@@ -1,0 +1,37 @@
+# cargo-fuzz targets for the extension kernel (decisions/0003 § Testing
+# methodology). Detached sub-workspace (`[workspace]` below) so the main
+# `cargo build` / `cargo test` never pulls in libfuzzer (nightly + sanitizer).
+#
+# Run (nightly + `cargo install cargo-fuzz`):
+#   cargo +nightly fuzz run eval_source
+#   cargo +nightly fuzz run eval_input
+[package]
+name = "rules-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+rules = { path = ".." }
+
+[[bin]]
+name = "eval_source"
+path = "fuzz_targets/eval_source.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eval_input"
+path = "fuzz_targets/eval_input.rs"
+test = false
+doc = false
+bench = false
+
+# Detach from the meridian-rs workspace: this crate builds only under cargo-fuzz.
+[workspace]

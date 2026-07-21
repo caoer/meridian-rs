@@ -34,11 +34,12 @@ sha2 = "0.10"
 # post-eval for exact accounting) which the manifest's `EvalBudget{steps,mem}` binds
 # to. PACK-level dependency, sealed behind the `rulepack-api@1` pin under
 # `CompiledRuleset` — no wire crate may name it (row-13 wire-invariance, grep gate).
-starlark = "0.14.2"
+# Pin lives at the workspace root (=0.14.2, shared with `rules`) — one graph copy.
+starlark = { workspace = true }
 # starlark's `#[starlark_module]` builtins return `anyhow::Result`; the injected
 # `violation()` fact-API builtin (rulepack-api@1) uses it. Already in the lock via
 # starlark's own tree — zero marginal build cost.
-anyhow = "1"
+anyhow = { workspace = true }
 
 [dev-dependencies]
 # TEST-ONLY: the §11.1 worked-verdict gate builds a real `model::Document` from the

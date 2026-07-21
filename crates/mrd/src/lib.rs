@@ -3,27 +3,32 @@
 //!
 //! # Charter
 //! **Owns:** hand-rolled subcommand parsing (no clap — dependency discipline),
-//! the per-invocation resolution flow ([`resolve`]), and the verbs `init`,
-//! `unregister`, `resolve`, `cache ls`, `cache clean`, and `daemon`. Output is
-//! the house grammar: a human table by default, JSON under `--json`, and the
-//! exit codes 0 (clean) / 1 (findings) / 2 (tool failure). Errors and logs use
-//! the settled vocabulary — workspace / fingerprint / cache key — never bare
-//! "root".
+//! the per-invocation resolution flow ([`resolve`]), the client side of the
+//! resident-daemon inversion ([`engine`]: auto-spawn the daemon on first use,
+//! degrade to an in-process ephemeral engine — decision 0002 §3), and the verbs
+//! `init`, `unregister`, `resolve`, `links`, `cache ls`, `cache clean`, and
+//! `daemon`. Output is the house grammar: a human table by default, JSON under
+//! `--json`, and the exit codes 0 (clean) / 1 (findings) / 2 (tool failure).
+//! Errors and logs use the settled vocabulary — workspace / fingerprint /
+//! cache key — never bare "root".
 //!
 //! **Never does:** name a workspace (that is `workspace`), own the drawer
-//! payload lifecycle (`cache`), or hold the registry map (`registry`). It wires
-//! those crates; it re-implements none of them. Out of scope this iteration:
-//! the `DuckDB` view organ, a resident-daemon inversion, serve-mode changes, and
-//! any v2 `root` removal.
+//! payload lifecycle (`cache`), or hold the registry map + resident engine
+//! (`registry`). It wires those crates and dials the daemon socket; it
+//! re-implements none of them. Out of scope this iteration: the `DuckDB` view
+//! organ, the daemon-side engine internals, serve-mode changes, and any v2
+//! `root` removal.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod cache_cmd;
 mod daemon;
+mod engine;
 mod gc;
 mod init;
 mod resolve;
+mod rules_cmd;
 mod unregister;
 
 /// Exit code: a clean success.
@@ -41,13 +46,22 @@ usage:
   mrd unregister [PATH]    drop the daemon entry (if a daemon answers) and the
                            workspace's drawer
   mrd resolve [PATH]       report how a path resolves (read-only, writes nothing)
+  mrd links [PATH]         the corpus edge map (whole corpus, or one file),
+                           answered by the daemon (auto-spawned) or in-process
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
   mrd daemon               run the registry daemon in the foreground
+  mrd rules replay [PATH]  replay a workspace's history (git commits, or an
+                           ordered --snapshots corpus) through a --rules set and
+                           report dead rules, fire counts, effect-kind
+                           distribution, and the fuel profile (markdown)
 
 options:
   --json                   emit JSON instead of a human table
+  --rules DIR              (rules replay) the .star rule set to replay
+  --snapshots DIR          (rules replay) an ordered snapshot corpus instead of git
+  --out FILE               (rules replay) write the report to FILE instead of stdout
   -h, --help               print this help
 ";
 
@@ -114,7 +128,12 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
             resolve::run_command(p.positional.as_deref(), p.format())
         }
+        "links" => {
+            let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
+            engine::run_command(p.positional.as_deref(), p.format())
+        }
         "cache" => dispatch_cache(&args[1..]),
+        "rules" => rules_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
