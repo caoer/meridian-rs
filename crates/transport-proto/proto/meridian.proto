@@ -377,6 +377,10 @@ message SpliceResponse {
 message Armed {
   string path = 1;
   repeated ArmedEdit edits = 2;
+  // The whole-file rev AFTER the batch commits — a consumer learns the new
+  // file rev without a follow-up toc (latency fact). Absent on dry (nothing
+  // written), mirroring root_after's dry-null at file grain.
+  optional string file_rev_after = 3;
 }
 
 message ArmedEdit {
