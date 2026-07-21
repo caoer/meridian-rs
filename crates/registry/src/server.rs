@@ -524,7 +524,7 @@ const SERVER_NAME: &str = "meridian-daemon/0.1";
 /// the §11.1 surface, served `[]` (the daemon loads no pack yet). The S2/L22 law
 /// holds: `splice ∈ caps` ⇒ `node_rev` rides every `toc`/`cat`/`extract` node,
 /// which the shared read arms already emit.
-const CAPS: [&str; 15] = [
+const CAPS: [&str; 16] = [
     "toc",
     "cat",
     "extract",
@@ -540,6 +540,11 @@ const CAPS: [&str; 15] = [
     "splice.dry",
     "splice.receipt",
     "splice.verdicts",
+    // V2 §Q2 the view-organ path forwarder (daemon-exclusive: the daemon is the
+    // sole persistent builder, OD6). §3.2 discovery honesty — the daemon serves
+    // it, so it advertises it; a sidecar neither advertises it nor serves it
+    // (answers `daemon_only`).
+    "view_path",
 ];
 
 /// The resident-engine handshake (§4, U3): strict-decode the `hello` (asserting
@@ -671,6 +676,14 @@ fn dispatch_read(
     id: Option<u64>,
     op: Op,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
+    // V2 §Q2: `view_path` carries its own `cwd`, so it self-resolves the
+    // workspace + drawer and needs NO `hello`-bound workspace — it is routed
+    // before the bound-workspace guard. The daemon is the sole persistent
+    // builder (OD6); `Registry::view_path` publishes under the per-workspace
+    // publish mutex.
+    if let Op::ViewPath { cwd, fresh } = &op {
+        return registry.view_path(cwd, (*fresh).unwrap_or(false));
+    }
     let Some(ws) = attached else {
         return Err(wire_serve::bad_request(
             "no workspace bound — send `hello` with a `workspace` first",
@@ -732,6 +745,10 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
+        // Routed before the bound-workspace guard above (it self-resolves `cwd`).
+        Op::ViewPath { .. } => {
+            unreachable!("view_path is handled before the bound-workspace guard")
+        }
         // W1: the resident WRITE path — a BARE meridian-fs commit through the ONE
         // shared `splice → commit` choke-point (`wire_serve::write::splice`). The
         // daemon holds no rule packs (`&[]` ⇒ `verdicts: []`; pack admission is a

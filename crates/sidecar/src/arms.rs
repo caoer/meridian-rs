@@ -39,6 +39,13 @@ pub(crate) fn dispatch(
         // subscription list) — unreachable through serve; answering internal
         // (never a panic) keeps a future misroute non-fatal.
         Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
+        // V2 §Q2 the view-organ path forwarder is DAEMON-ONLY: the daemon is
+        // the sole persistent builder (OD6), and this per-process sidecar
+        // cannot publish — C2 forbids `sidecar`→`view`, and an in-memory
+        // `:memory:` build has no filesystem path to forward. So `view_path`
+        // is refused LOUD with `daemon_only` (the wire code's own sidecar-mode
+        // carve-out), never advertised in the sidecar's caps.
+        Op::ViewPath { .. } => Err(Box::new(ErrorBody::new(ErrorCode::DaemonOnly))),
         // v2 §4.4 the only write op (D4-SPLICE), driven through the ONE shared
         // `splice → commit` choke-point (`wire_serve::write::splice`, W1): load
         // → §5.1 guard → validate → verdicts → commit, one exchange, one Delta.
