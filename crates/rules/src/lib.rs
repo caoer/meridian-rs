@@ -47,6 +47,67 @@ mod kernel;
 
 pub use kernel::validate;
 
+/// One rule's metered outcome over a single event: its typed result plus the
+/// EXACT fuel (Starlark ticks) and peak-heap bytes it spent. The corpus-replay
+/// harness reads these for its per-rule consumption profile and dead-rule
+/// detection. A rule that never reached eval (unparseable source, over the
+/// source cap) reports `fuel_used`/`mem_used` of `0` and the typed authoring
+/// fault; a bomb terminated at the ceiling reports the ceiling it hit.
+#[derive(Debug, Clone)]
+pub struct RuleTelemetry {
+    /// The rule this run measured — its `id`.
+    pub rule_id: String,
+    /// Exact Starlark ticks spent (`0` if eval was never reached).
+    pub fuel_used: u64,
+    /// Peak eval-heap bytes (`0` if eval was never reached).
+    pub mem_used: u64,
+    /// The rule's typed result: the effects it emitted, or why it faulted.
+    pub outcome: Result<Vec<Effect>, EvalError>,
+}
+
+/// Evaluate each rule INDEPENDENTLY over one `event` under explicit `limits`,
+/// returning a metered outcome per rule (in slice order).
+///
+/// Unlike [`eval_with_limits`], this NEVER aborts the batch on the first
+/// offending rule — every rule runs and reports its own typed outcome plus the
+/// exact fuel/mem it spent. This is the corpus-replay contract: one bad rule
+/// must not hide the fire counts of the rest, and the fuel profile needs
+/// per-rule accounting the batch path discards. Determinism is unchanged (the
+/// kernel is a pure function of `(rule, event, limits)`), so replaying the same
+/// history twice yields byte-identical telemetry.
+///
+/// The cascade depth cap matches [`eval_with_limits`]: when
+/// `event.depth >= limits.max_depth`, a rule's cascading `md.*` effects are
+/// suppressed (only its terminal `daemon.*` / `proto.*` effects survive).
+#[must_use]
+pub fn eval_telemetry(
+    rules: &[Rule],
+    event: &ChangeEvent,
+    limits: EvalLimits,
+) -> Vec<RuleTelemetry> {
+    kernel::on_eval_stack(|| {
+        let globals = kernel::effect_globals();
+        rules
+            .iter()
+            .map(|rule| {
+                let run = kernel::run_rule_metered(&globals, rule, event, limits);
+                let outcome = run.outcome.map(|mut effects| {
+                    if event.depth >= limits.max_depth {
+                        effects.retain(|e| e.kind.domain() != Domain::Md);
+                    }
+                    effects
+                });
+                RuleTelemetry {
+                    rule_id: rule.id.clone(),
+                    fuel_used: run.fuel_used,
+                    mem_used: run.mem_used,
+                    outcome,
+                }
+            })
+            .collect()
+    })
+}
+
 /// The executor domain that applies an effect (0003 §5). New domains are new
 /// consumers with zero core changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -512,7 +573,11 @@ mod tests {
     fn kind_strings_are_unique() {
         let mut seen = BTreeSet::new();
         for kind in EffectKind::ALL {
-            assert!(seen.insert(kind.as_str()), "duplicate kind string {}", kind.as_str());
+            assert!(
+                seen.insert(kind.as_str()),
+                "duplicate kind string {}",
+                kind.as_str()
+            );
         }
         assert_eq!(seen.len(), EffectKind::ALL.len());
     }
@@ -549,7 +614,11 @@ mod tests {
     fn all_capability_covers_every_kind() {
         let caps = CapabilitySet::all();
         for kind in EffectKind::ALL {
-            assert!(caps.admits(&effect(kind, "r", "f", 0)), "{} not admitted", kind.as_str());
+            assert!(
+                caps.admits(&effect(kind, "r", "f", 0)),
+                "{} not admitted",
+                kind.as_str()
+            );
         }
     }
 
@@ -600,5 +669,72 @@ mod tests {
         assert!(e.fields_changed.is_empty());
         assert_eq!(e.fingerprint_before, "a");
         assert_eq!(e.fingerprint_after, "b");
+    }
+
+    #[test]
+    fn telemetry_reports_positive_fuel_for_a_firing_rule() {
+        let rule = Rule::new(
+            "fires",
+            "def on_change(event):\n    notice(message = \"hi\")\n",
+        );
+        let event = ChangeEvent::new("f.md", "a", "b");
+        let tel = eval_telemetry(&[rule], &event, EvalLimits::default());
+        assert_eq!(tel.len(), 1);
+        assert_eq!(tel[0].rule_id, "fires");
+        assert!(tel[0].fuel_used > 0, "a rule that ran spent fuel");
+        let effects = tel[0].outcome.as_ref().expect("ok");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].kind, EffectKind::Notice);
+    }
+
+    #[test]
+    fn telemetry_marks_a_never_firing_rule_as_ok_empty() {
+        // A rule that runs on every event but emits nothing is DEAD (never fired)
+        // — the corpus-replay dead-rule signal is `Ok(vec![])`.
+        let rule = Rule::new(
+            "dead",
+            "def on_change(event):\n    if \"nope\" in event.fields_changed:\n        notice(message = \"x\")\n",
+        );
+        let event = ChangeEvent::new("f.md", "a", "b");
+        let tel = eval_telemetry(&[rule], &event, EvalLimits::default());
+        // The dead-rule signal is `Ok(vec![])` — the rule ran without faulting
+        // and emitted nothing. (Fuel is not the signal: Starlark's tick
+        // accounting is coarse, so a cheap false branch can legitimately read 0.)
+        assert!(tel[0].outcome.as_ref().expect("ok").is_empty());
+    }
+
+    #[test]
+    fn telemetry_isolates_a_faulting_rule_from_the_rest() {
+        // The batch path aborts on the first bad rule; telemetry must NOT — a
+        // faulting rule reports its own error while the others still report their
+        // effects (replay needs every rule's outcome).
+        let good = Rule::new("good", "def on_change(event):\n    warn(message = \"w\")\n");
+        let bad = Rule::new("bad", "def on_change(event):\n    fail(\"boom\")\n");
+        let good2 = Rule::new(
+            "good2",
+            "def on_change(event):\n    notice(message = \"n\")\n",
+        );
+        let event = ChangeEvent::new("f.md", "a", "b");
+        let tel = eval_telemetry(&[good, bad, good2], &event, EvalLimits::default());
+        assert_eq!(tel.len(), 3);
+        assert_eq!(tel[0].outcome.as_ref().expect("good ok").len(), 1);
+        assert!(matches!(tel[1].outcome, Err(EvalError::Runtime { .. })));
+        assert_eq!(tel[2].outcome.as_ref().expect("good2 ok").len(), 1);
+    }
+
+    #[test]
+    fn telemetry_is_deterministic_across_runs() {
+        let rule = Rule::new(
+            "r",
+            "def on_change(event):\n    send(to = [\"a\", \"b\"], message = event.file)\n",
+        );
+        let event = ChangeEvent::new("doc.md", "before", "after");
+        let a = eval_telemetry(std::slice::from_ref(&rule), &event, EvalLimits::default());
+        let b = eval_telemetry(std::slice::from_ref(&rule), &event, EvalLimits::default());
+        assert_eq!(a[0].fuel_used, b[0].fuel_used);
+        assert_eq!(
+            a[0].outcome.as_ref().expect("ok"),
+            b[0].outcome.as_ref().expect("ok")
+        );
     }
 }
