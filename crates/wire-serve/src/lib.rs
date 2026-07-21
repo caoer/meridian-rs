@@ -35,6 +35,7 @@
 
 pub mod decode;
 pub mod read;
+pub mod rev;
 pub mod write;
 
 use wire::{ErrorBody, ErrorCode, Path, Root};

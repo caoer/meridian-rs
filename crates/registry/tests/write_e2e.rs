@@ -109,12 +109,13 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // hello binds the workspace, warming the resident engine; capture its root.
+    // hello binds the workspace, warming the resident engine; capture its cursor.
+    // This is a v3 session, so the cursor is spelled `fingerprint`.
     let ack = conn.hello(&ws);
     assert_eq!(ack["ok"], json!(true), "hello ok: {ack}");
-    let root_before_hello = ack["body"]["root"]
+    let fingerprint_before_hello = ack["body"]["fingerprint"]
         .as_str()
-        .expect("hello root")
+        .expect("hello fingerprint")
         .to_string();
 
     // splice: the edit commits through the shared choke-point.
@@ -127,17 +128,17 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     );
     let body = &splice["body"];
     assert_eq!(
-        body["root_before"],
-        json!(root_before_hello),
-        "root_before is the pre-commit ambient root: {splice}"
+        body["fingerprint_before"],
+        json!(fingerprint_before_hello),
+        "fingerprint_before is the pre-commit ambient cursor: {splice}"
     );
     assert!(
-        body["root_after"].is_string(),
-        "a real commit advances the root: {splice}"
+        body["fingerprint_after"].is_string(),
+        "a real commit advances the fingerprint: {splice}"
     );
     assert_ne!(
-        body["root_after"], body["root_before"],
-        "the root actually moved: {splice}"
+        body["fingerprint_after"], body["fingerprint_before"],
+        "the fingerprint actually moved: {splice}"
     );
     assert_eq!(body["seq"], json!(1), "first commit this epoch: {splice}");
     assert_eq!(
@@ -191,10 +192,11 @@ fn dry_splice_writes_nothing() {
     let splice = conn.call(&frame);
     assert_eq!(splice["ok"], json!(true), "dry splice ok: {splice}");
     assert_eq!(splice["body"]["dry"], json!(true), "dry flagged: {splice}");
+    // v3 session: the null transition slot is spelled `fingerprint_after`.
     assert_eq!(
-        splice["body"]["root_after"],
+        splice["body"]["fingerprint_after"],
         Value::Null,
-        "a dry run advances no root: {splice}"
+        "a dry run advances no fingerprint: {splice}"
     );
     assert_eq!(
         splice["body"]["verdicts"],
@@ -254,10 +256,11 @@ fn hello_advertises_the_splice_caps() {
         .iter()
         .map(|c| c.as_str().unwrap())
         .collect();
+    // v3 session: the root-guard amendment cap is spelled `splice.if_fingerprint`.
     for cap in [
         "splice",
         "splice.if_node_rev",
-        "splice.if_root",
+        "splice.if_fingerprint",
         "splice.dry",
         "splice.receipt",
         "splice.verdicts",
