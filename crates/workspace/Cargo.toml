@@ -1,0 +1,16 @@
+[package]
+name = "workspace"
+description = "Workspace identity: the discovery ladder (env override → .meridian.toml marker → git root → bare) as pure filesystem functions, canonicalization with on-disk case resolution, and the deny-ceiling predicate. A leaf crate that writes nothing to disk."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# test-only: tempfile builds on-disk fixtures (marker/git trees, symlinks,
+# case-variant dirs). Already in the graph (fs, sidecar); no new dependency.
+tempfile = "3"
