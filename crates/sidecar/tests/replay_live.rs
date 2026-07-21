@@ -59,8 +59,8 @@ fn hpath(segs: &[&str]) -> model::Ref {
 /// The frozen §4.4 E3 worked request: guarded match edit inside Goals>Q3 +
 /// the §6.3 receipt append riding the same sealed batch (receipt file at S0
 /// is 26 bytes; the append lands at its EOF).
-fn e3_request() -> sidecar::commit::CommitRequest {
-    sidecar::commit::CommitRequest {
+fn e3_request() -> wire_serve::write::CommitRequest {
+    wire_serve::write::CommitRequest {
         content_path: "notes/plan.md".into(),
         batch: model::SpliceRequest {
             if_root: Some(model::MerkleRoot(R0.into())),
@@ -89,8 +89,8 @@ fn e3_request() -> sidecar::commit::CommitRequest {
 /// (the append carries its own leading `\n`? No — S1 plan ends in a
 /// terminator, so the appended item is exactly `- new item\n`) + the E4
 /// receipt append at the S1 receipt file's EOF (249 bytes).
-fn e4_request() -> sidecar::commit::CommitRequest {
-    sidecar::commit::CommitRequest {
+fn e4_request() -> wire_serve::write::CommitRequest {
+    wire_serve::write::CommitRequest {
         content_path: "notes/plan.md".into(),
         batch: model::SpliceRequest {
             if_root: None,
@@ -161,11 +161,15 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
     let (_d, root) = s0();
     let mut ring = sidecar::ring::RootRing::new();
 
-    // LIVE: two batches through validate → apply_batch → emit.
-    let live_e3 = sidecar::commit::commit_batch(&root, &mut ring, &e3_request())
+    // LIVE: two batches through validate → apply_batch → emit. `commit_batch`
+    // returns the frame (seq = the passed ring seq + 1); the CALLER advances its
+    // epoch ring — the seam holds no ring, so the daemon commits without one.
+    let live_e3 = wire_serve::write::commit_batch(&root, ring.seq(), &e3_request())
         .expect("E3 commits: frozen worked request against committed S0 bytes");
-    let live_e4 = sidecar::commit::commit_batch(&root, &mut ring, &e4_request())
+    ring.advance(live_e3.clone());
+    let live_e4 = wire_serve::write::commit_batch(&root, ring.seq(), &e4_request())
         .expect("E4 commits: frozen worked request against derived S1");
+    ring.advance(live_e4.clone());
 
     // Gate 1a (Flag-A): the DERIVED frames equal the printed §7.1 frames
     // value-for-value — roots via the real fold, revs/spans via the real
@@ -212,8 +216,8 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
 #[test]
 fn receipt_node_rides_its_files_delta_entry_computed() {
     let (_d, root) = s0();
-    let mut ring = sidecar::ring::RootRing::new();
-    let live = sidecar::commit::commit_batch(&root, &mut ring, &e3_request()).expect("E3");
+    // A fresh epoch's seq is 0; this test inspects the returned frame only.
+    let live = wire_serve::write::commit_batch(&root, 0, &e3_request()).expect("E3");
     let receipts_entry = live
         .delta
         .files
@@ -244,8 +248,7 @@ fn receipt_node_rides_its_files_delta_entry_computed() {
 #[test]
 fn deepest_changed_node_never_duplicates_ancestors() {
     let (_d, root) = s0();
-    let mut ring = sidecar::ring::RootRing::new();
-    let live = sidecar::commit::commit_batch(&root, &mut ring, &e3_request()).expect("E3");
+    let live = wire_serve::write::commit_batch(&root, 0, &e3_request()).expect("E3");
     let plan_entry = live
         .delta
         .files
@@ -270,19 +273,21 @@ fn deepest_changed_node_never_duplicates_ancestors() {
 #[test]
 fn refused_batch_emits_no_delta() {
     let (_d, root) = s0();
-    let mut ring = sidecar::ring::RootRing::new();
+    let ring = sidecar::ring::RootRing::new();
     let mut req = e3_request();
     req.batch.if_root = Some(model::MerkleRoot(R2.into())); // wrong world
-    let err = sidecar::commit::commit_batch(&root, &mut ring, &req);
+    let err = wire_serve::write::commit_batch(&root, ring.seq(), &req);
     assert!(
         matches!(
             err,
-            Err(sidecar::commit::CommitError::Refused(
+            Err(wire_serve::write::CommitError::Refused(
                 model::SpliceVerdict::RootMismatch { .. }
             ))
         ),
         "world guard refuses before any byte"
     );
+    // A refused commit returns Err — no frame to advance the ring with, so the
+    // caller's epoch seq stays unconsumed (§7.1: one Delta = one COMMITTED batch).
     assert_eq!(ring.seq(), 0, "no emission, no seq consumption");
     let plan = std::fs::read_to_string(root.0.join("notes/plan.md")).unwrap();
     assert_eq!(plan, wsfix("s0/notes/plan.md"), "no byte reached disk");

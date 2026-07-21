@@ -425,11 +425,15 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
 const SERVER_NAME: &str = "meridian-daemon/0.1";
 
 /// The capability set the resident daemon serves (v2 §3.2 discovery honesty):
-/// exactly the wire read ops answered from the resident engine. NOT `splice`
-/// (W1), NOT `sub` (P2), and `hello` itself is answered but is not a cap — an op
-/// is in `caps` or answers `unknown_op`, never both. Field-only caps
-/// (`resolve.content`, `links.require_root`) name the amendments the arms honor.
-const CAPS: [&str; 9] = [
+/// the wire read ops answered from the resident engine PLUS the write op
+/// (`splice`, W1 — a BARE meridian-fs commit). NOT `sub` (P2), and `hello` itself
+/// is answered but is not a cap — an op is in `caps` or answers `unknown_op`,
+/// never both. Field-only caps (`resolve.content`, `links.require_root`, the
+/// `splice.*` amendments) name the surfaces the arms honor; `splice.verdicts` is
+/// the §11.1 surface, served `[]` (the daemon loads no pack yet). The S2/L22 law
+/// holds: `splice ∈ caps` ⇒ `node_rev` rides every `toc`/`cat`/`extract` node,
+/// which the shared read arms already emit.
+const CAPS: [&str; 15] = [
     "toc",
     "cat",
     "extract",
@@ -439,6 +443,12 @@ const CAPS: [&str; 9] = [
     "links.require_root",
     "root",
     "diff",
+    "splice",
+    "splice.if_node_rev",
+    "splice.if_root",
+    "splice.dry",
+    "splice.receipt",
+    "splice.verdicts",
 ];
 
 /// The resident-engine handshake (§4, U3): strict-decode the `hello` (asserting
@@ -526,7 +536,8 @@ fn serve_wire(
     obj: &Map<String, Value>,
 ) -> wire::Response {
     let id = obj.get("id").and_then(Value::as_u64);
-    let body = wire_serve::decode::decode(obj).and_then(|op| dispatch_read(registry, attached, op));
+    let body =
+        wire_serve::decode::decode(obj).and_then(|op| dispatch_read(registry, attached, id, op));
     match body {
         Ok(body) => wire::Response {
             id,
@@ -541,14 +552,19 @@ fn serve_wire(
     }
 }
 
-/// Route one decoded wire read op to its arm, served from the attached
-/// workspace's resident engine. `resolve` (§4.5 walk plane) is served COLD from
-/// a per-request walk corpus — a different corpus from the hash-domain warm
-/// engine. The write path (`splice`), `hello` (U3), and `sub` (P2) are not
-/// served here yet and answer `unknown_op` (§3.2 discovery honesty).
+/// Route one decoded wire op to its arm against the attached workspace. Reads
+/// (`toc`/`cat`/`extract`/`links`/`root`/`diff`) serve from the resident engine;
+/// `resolve` (§4.5 walk plane) is served COLD from a per-request walk corpus — a
+/// different corpus from the hash-domain warm engine. `splice` (W1) is the
+/// resident WRITE path — a BARE meridian-fs commit through the shared choke-point,
+/// reading + writing disk directly (independent of the warm engine; the next read
+/// rebuilds). `hello` is intercepted upstream (the handshake binds the
+/// connection); `sub` (P2) is not served yet and answers `unknown_op` (§3.2
+/// discovery honesty). `id` rides only into the splice receipt line (§6.1).
 fn dispatch_read(
     registry: &Registry,
     attached: Option<&Path>,
+    id: Option<u64>,
     op: Op,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let Some(ws) = attached else {
@@ -611,13 +627,40 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
-        // `hello` is intercepted upstream in `handle_line` (the handshake binds
-        // the connection), so it never reaches here. `splice` = W1, `sub` = P2
-        // are not served yet — §3.2 discovery honesty: an op is served or
-        // answers `unknown_op`.
-        Op::Hello { .. } | Op::Splice { .. } | Op::Sub { .. } => {
-            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        // W1: the resident WRITE path — a BARE meridian-fs commit through the ONE
+        // shared `splice → commit` choke-point (`wire_serve::write::splice`). The
+        // daemon holds no rule packs (`&[]` ⇒ `verdicts: []`; pack admission is a
+        // reserved, later unit) and no delta ring (`seq` 0; the emitted frame is
+        // discarded — P2 watcher owns the ring). The commit reads + writes disk
+        // directly, so the warm engine is untouched here; the change is durable in
+        // the disk bytes, and the next read's `warm_or_build` rebuilds from them
+        // (fingerprint moved), reflecting the write.
+        Op::Splice {
+            path,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            edits,
+        } => {
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let args = wire_serve::write::SpliceArgs {
+                id,
+                path,
+                actor,
+                now,
+                receipt,
+                if_root,
+                dry: dry.unwrap_or(false),
+                edits,
+            };
+            wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
         }
+        // `hello` is intercepted upstream in `handle_line` (the handshake binds
+        // the connection), so it never reaches here. `sub` = P2 is not served yet
+        // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
+        Op::Hello { .. } | Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }
 

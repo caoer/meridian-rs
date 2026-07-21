@@ -33,7 +33,6 @@ use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
-pub mod commit;
 mod policy_bridge;
 pub(crate) mod rev;
 pub mod ring;
@@ -219,7 +218,7 @@ fn subscribe(
         delivered: from_seq,
     });
     Ok(wire::ResponseBody::Root {
-        root: arms::ambient_root(root)?,
+        root: wire_serve::ambient_root(root)?,
         seq: current,
     })
 }
@@ -301,10 +300,4 @@ fn error_frame(id: Option<u64>, error: ErrorBody) -> Response {
         ok: false,
         payload: ResponsePayload::Error { error },
     }
-}
-
-/// A `bad_request` with a human message — re-homed to `wire-serve` so the write
-/// path (splice) and the shared strict decode raise the identical frame.
-pub(crate) fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
-    wire_serve::bad_request(message)
 }
