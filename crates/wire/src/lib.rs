@@ -262,6 +262,15 @@ pub enum PutAt {
     /// get right, and a result that loses containment refuses
     /// `would_corrupt`.
     End,
+    /// Set a frontmatter key (create-or-replace) — the property UPSERT verb,
+    /// valid ONLY on an `fm_key` target. `text` is the VALUE (not the whole
+    /// line): the server composes `{key}: {value}` from the target key, so the
+    /// `fm_key` is the single source of truth. Replaces the key's line when it
+    /// exists; creates it (synthesizing the `---` frontmatter block when the
+    /// file has none) when absent. The insertion offset is SERVER-derived from
+    /// the document structure — no client byte offset (D-C1). A NON-`fm_key`
+    /// target or a multi-line value is `bad_request`.
+    Upsert,
 }
 
 /// A receipt address (v2 §6.1): ordinary markdown inside the hash domain —
