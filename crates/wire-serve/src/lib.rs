@@ -6,16 +6,25 @@
 //! # Charter
 //! **Owns:** the hand-rolled strict-decode pass ([`decode`] — wire §3.2 server
 //! law: unknown request fields and unknown enum values are rejected loudly,
-//! because serde's `deny_unknown_fields` does not compose with `flatten`) and
-//! the read-op arms ([`read`] — `toc`/`cat`/`extract`/`links`/`resolve`)
-//! served over BORROWED parsed state.
+//! because serde's `deny_unknown_fields` does not compose with `flatten`), the
+//! read-op arms ([`read`] — `toc`/`cat`/`extract`/`links`/`resolve`) served over
+//! BORROWED parsed state, and the WRITE choke-point ([`write::splice`] — the
+//! `splice → commit` seam both hosts commit through, W1).
 //!
-//! **Never does:** own the corpus, read disk, parse, or hold a serve loop.
-//! Every read arm takes already-built `model` state (`&Document`, or the
+//! **The read arms never** own the corpus, read disk, parse, or hold a serve
+//! loop: each takes already-built `model` state (`&Document`, or the
 //! `&CorpusIndex` + document map) and the ambient root as data; the CALLER
-//! obtains that state — the sidecar builds it per request, the daemon reuses
-//! its warm engine. That split is the whole point: one projection, two state
+//! obtains that state — the sidecar builds it per request, the daemon reuses its
+//! warm engine. That split is the whole point: one projection, two state
 //! sources, no drift.
+//!
+//! **The write choke-point is inherently stateful** — a commit IS disk I/O — so
+//! [`write`] necessarily reads + writes disk (`fs`), reparses the after-state
+//! (`syntax`), renders receipts (`receipt`), and evaluates verdicts (`policy`).
+//! It is still ONE implementation both hosts share; the delta ring stays with the
+//! caller (see [`write`]). The disk-load + fold helpers the read arms and the
+//! write path both use — [`load_doc`], [`ambient_root`], [`domain_snapshot`] —
+//! live here too, so there is one fs→wire mapper, not two.
 //!
 //! # Root / diff live with the caller
 //! `root` and `diff` are cursor/history plumbing whose source genuinely differs
@@ -26,8 +35,9 @@
 
 pub mod decode;
 pub mod read;
+pub mod write;
 
-use wire::{ErrorBody, ErrorCode};
+use wire::{ErrorBody, ErrorCode, Path, Root};
 
 /// The one protocol both hosts speak (wire §3.2, proto-1). The strict decode
 /// validates a `hello`'s `proto` against this.
@@ -49,6 +59,61 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::BadRequest);
     e.message = Some(message.into());
     Box::new(e)
+}
+
+/// `fs::load` with the §8 error split: `file_not_found` (env — the file is gone,
+/// path echoed), `invalid_utf8` (refused, never lossy-decoded), `io_error{cause}`
+/// otherwise. Shared by both hosts' single-file reads and the write path (which
+/// loads fresh disk before validating) — one fs→wire mapper, not two.
+///
+/// # Errors
+/// The wire envelope for a missing file, a non-UTF-8 file, or an I/O failure.
+pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document, Box<ErrorBody>> {
+    fs::load(root, std::path::Path::new(&path.0)).map_err(|e| {
+        Box::new(match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                let mut err = ErrorBody::new(ErrorCode::FileNotFound);
+                err.path = Some(path.clone());
+                err
+            }
+            std::io::ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
+            _ => {
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                err
+            }
+        })
+    })
+}
+
+/// The ambient workspace root (v2 §4.1/§12): the §12 hash domain's file bytes
+/// folded through `model::merkle_root` — the one blake3 home. A fresh disk fold
+/// shared by the sidecar read arms and the write path's `root_before`/`root_after`
+/// (the resident daemon's warm engine carries the same fold as `at_fingerprint`).
+///
+/// # Errors
+/// The wire `io_error` envelope when the domain snapshot read/fold fails.
+pub fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
+    Ok(domain_snapshot(root)?.1)
+}
+
+/// The §12 hash-domain snapshot: every domain file's bytes + the root folded over
+/// exactly those bytes — one read, one fold, so a consumer parses the same bytes
+/// its `as_of_root` describes and the answer cannot drift from its stamp. The
+/// shared `fs::domain_snapshot` primitive re-homed into the wire `Root` token and
+/// the `io::Error` into the wire `io_error` frame.
+///
+/// # Errors
+/// The wire `io_error` envelope when the domain snapshot read/fold fails.
+pub fn domain_snapshot(
+    root: &fs::WorkspaceRoot,
+) -> Result<(fs::DomainFiles, Root), Box<ErrorBody>> {
+    let (files, folded) = fs::domain_snapshot(root).map_err(|e| {
+        let mut err = ErrorBody::new(ErrorCode::IoError);
+        err.cause = Some(e.to_string());
+        Box::new(err)
+    })?;
+    Ok((files, Root(folded.0)))
 }
 
 #[cfg(test)]

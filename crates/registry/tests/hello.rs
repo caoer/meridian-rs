@@ -103,21 +103,24 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
     assert_eq!(body["proto"], json!(1), "hello negotiates proto 1: {hi}");
     assert!(body["server"].is_string(), "hello names the server: {hi}");
 
-    // Caps listed — and honest: the served read ops are present, the unserved
-    // write/push ops (splice/sub) and `hello` itself are absent (§3.2).
+    // Caps listed — and honest: the served read ops AND the served write op
+    // (splice, W1) are present; the unserved push op (sub, P2) and `hello` itself
+    // are absent (§3.2 discovery honesty).
     let caps: Vec<String> = body["caps"]
         .as_array()
         .expect("caps array")
         .iter()
         .map(|c| c.as_str().unwrap().to_string())
         .collect();
-    for served in ["toc", "cat", "extract", "resolve", "links", "root", "diff"] {
+    for served in [
+        "toc", "cat", "extract", "resolve", "links", "root", "diff", "splice",
+    ] {
         assert!(
             caps.contains(&served.to_string()),
             "caps list `{served}`: {hi}"
         );
     }
-    for absent in ["hello", "splice", "sub"] {
+    for absent in ["hello", "sub"] {
         assert!(
             !caps.contains(&absent.to_string()),
             "caps must not list `{absent}` (§3.2 discovery honesty): {hi}"
