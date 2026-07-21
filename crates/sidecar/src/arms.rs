@@ -486,17 +486,22 @@ fn links_op(
         e.live_root = Some(as_of_root);
         return Err(Box::new(e));
     }
-    let mut index = model::CorpusIndex::new();
-    let mut docs = std::collections::BTreeMap::new();
-    for (rel, bytes) in files {
-        // The fact plane refuses what it cannot parse — loud, never skipped
-        // (the walk plane's skip-broken-files posture is resolve's, §4.5).
-        let text = String::from_utf8(bytes)
-            .map_err(|_| Box::new(ErrorBody::new(ErrorCode::InvalidUtf8)))?;
-        let doc = model::build(text.clone(), syntax::parse(&text));
-        index.insert(&rel, &doc);
-        docs.insert(rel, doc);
-    }
+    // The fact plane refuses what it cannot parse — loud, never skipped (the
+    // walk plane's skip-broken-files posture is resolve's, §4.5). Parse + build
+    // + index is the shared [`fs::build_corpus`] primitive (the daemon's
+    // resident builder parses the identical bytes — one implementation, no
+    // drift); `invalid_data` is the shared UTF-8 refusal, re-homed to the wire
+    // `invalid_utf8` frame.
+    let (index, docs) = fs::build_corpus(files).map_err(|e| {
+        Box::new(match e.kind() {
+            ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
+            _ => {
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                err
+            }
+        })
+    })?;
     if let Some(p) = path
         && !docs.contains_key(&p.0)
     {
@@ -574,34 +579,24 @@ pub(crate) fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBo
     Ok(domain_snapshot(root)?.1)
 }
 
-/// The domain files as `(workspace-relative path, raw bytes)` pairs.
-type DomainFiles = Vec<(String, Vec<u8>)>;
-
 /// The §12 hash-domain snapshot: every domain file's bytes + the root folded
 /// over exactly those bytes — one read, one fold, so a consumer (the `links`
 /// fact plane) parses the same bytes its `as_of_root` describes and the
 /// answer cannot drift from its stamp.
+///
+/// The read + fold is the shared [`fs::domain_snapshot`] primitive (the daemon's
+/// resident builder folds the identical bytes — one implementation, no drift);
+/// this arm only re-homes the model `MerkleRoot` into the wire `Root` token and
+/// the `io::Error` into the wire `io_error` frame.
 pub(crate) fn domain_snapshot(
     root: &fs::WorkspaceRoot,
-) -> Result<(DomainFiles, Root), Box<ErrorBody>> {
-    let io_err = |e: std::io::Error| {
+) -> Result<(fs::DomainFiles, Root), Box<ErrorBody>> {
+    let (files, folded) = fs::domain_snapshot(root).map_err(|e| {
         let mut err = ErrorBody::new(ErrorCode::IoError);
         err.cause = Some(e.to_string());
         Box::new(err)
-    };
-    let domain = fs::domain::Domain::load(root).map_err(io_err)?;
-    let rels = fs::hash_domain(root, &domain).map_err(io_err)?;
-    let mut files = Vec::with_capacity(rels.len());
-    for rel in rels {
-        let bytes = std::fs::read(root.0.join(&rel)).map_err(io_err)?;
-        files.push((rel.to_string_lossy().replace('\\', "/"), bytes));
-    }
-    let entries: Vec<(&str, &[u8])> = files
-        .iter()
-        .map(|(p, b)| (p.as_str(), b.as_slice()))
-        .collect();
-    let folded = Root(model::merkle_root(&entries, domain.version()).0);
-    Ok((files, folded))
+    })?;
+    Ok((files, Root(folded.0)))
 }
 
 /// `fs::load` with the §8 error split: `file_not_found` (env — the file is

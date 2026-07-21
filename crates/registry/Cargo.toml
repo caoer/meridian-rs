@@ -20,6 +20,19 @@ workspace = { workspace = true }
 # successful register (the single warm-registration writer). Leaf crate; its
 # DrawerLock also serves as the daemon-singleton flock (no libc edge needed).
 cache = { workspace = true }
+# The resident query engine (decision 0002 spine root U1): the daemon holds a
+# warm CorpusIndex + document map per workspace, rebuilt only when the corpus
+# content hash changes. `fs` reads + folds the snapshot and parses it into the
+# engine (the shared build primitives — one implementation with the sidecar);
+# `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
+fs = { workspace = true }
+model = { workspace = true }
+# The spine's read surface (U2): `query` serves toc/links over the resident
+# index; `syntax` is the parser the resident build folds in (via `fs`). Declared
+# here as the U1 engine's read/parse edges; the U1 gate exercises `query` over a
+# warm engine to prove the resident state answers real queries.
+query = { workspace = true }
+syntax = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
