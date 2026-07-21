@@ -221,6 +221,35 @@ pub fn stamp_last_use(drawer_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Stamp a drawer's `superseded_by` under the per-drawer lock (amendment M2):
+/// `mrd init` calls this to retire a tier-4 descendant drawer whose workspace
+/// is now inside a newer marker root, recording the superseding workspace path.
+///
+/// A no-op when the drawer has no valid current-schema sentinel — a
+/// half-created, corrupt, or future-schema drawer is left untouched (never
+/// heal a downgrade). Returns whether the sentinel was stamped. The atomic
+/// tmp+rename replacement under the held lock is the single writer.
+///
+/// # Errors
+///
+/// Propagates I/O failures from the sentinel rewrite.
+pub fn supersede(drawer_dir: &Path, superseded_by: &str) -> io::Result<bool> {
+    if !drawer_dir.exists() {
+        return Ok(false);
+    }
+    let _lock = DrawerLock::acquire(drawer_dir)?;
+    let sentinel_path = drawer_dir.join(SENTINEL);
+    let SentinelState::Valid(mut sentinel) = classify(&sentinel_path) else {
+        return Ok(false);
+    };
+    sentinel.superseded_by = Some(superseded_by.to_owned());
+    let bytes = to_bytes(&sentinel)?;
+    let tmp = write_tmp(drawer_dir, &bytes)?;
+    fs::rename(&tmp, &sentinel_path)?;
+    fsync_dir(drawer_dir);
+    Ok(true)
+}
+
 fn to_bytes(sentinel: &Sentinel) -> io::Result<Vec<u8>> {
     serde_json::to_vec_pretty(sentinel).map_err(io::Error::other)
 }
@@ -277,5 +306,49 @@ impl SystemTimeNanos {
 impl std::fmt::Display for SystemTimeNanos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supersede_stamps_a_valid_sentinel_and_keeps_it_a_hit() {
+        let dir = tempfile::tempdir().unwrap();
+        let drawer = dir.path().join("drawer");
+        register(&drawer, Path::new("/ws/leaf")).unwrap();
+
+        assert!(supersede(&drawer, "/ws/marker-root").unwrap(), "stamped");
+        let Probe::Hit(s) = probe(&drawer) else {
+            panic!("a retired drawer stays a valid Hit, just marked superseded");
+        };
+        assert_eq!(s.superseded_by.as_deref(), Some("/ws/marker-root"));
+        assert_eq!(s.workspace, "/ws/leaf", "identity unchanged by retirement");
+    }
+
+    #[test]
+    fn supersede_never_clobbers_a_future_schema_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let drawer = dir.path().join("drawer");
+        fs::create_dir_all(&drawer).unwrap();
+        let future = drawer.join(SENTINEL);
+        fs::write(&future, br#"{"schema":999,"workspace":"/ws/new"}"#).unwrap();
+
+        assert!(
+            !supersede(&drawer, "/ws/marker-root").unwrap(),
+            "a downgrade must never rewrite a newer-schema sentinel"
+        );
+        // The future sentinel is left byte-identical.
+        assert_eq!(
+            fs::read_to_string(&future).unwrap(),
+            r#"{"schema":999,"workspace":"/ws/new"}"#
+        );
+    }
+
+    #[test]
+    fn supersede_missing_drawer_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!supersede(&dir.path().join("absent"), "/ws/x").unwrap());
     }
 }

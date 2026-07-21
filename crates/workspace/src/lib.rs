@@ -16,8 +16,10 @@
 //! auto-registers. Warming a bare tree is an explicit `init` or the
 //! daemon's job (decision 0001, round 5), not this crate's.
 //!
-//! **Dependencies:** `std` only — no `wire`, `model`, or `sidecar` edge
-//! (a leaf crate, Law 3 corollary).
+//! **Dependencies:** `std` plus a single edge to `cache` for the one owner of
+//! cache-root resolution (the deny ceiling must name the same root the drawer
+//! addressing uses). No `wire`, `model`, or `sidecar` edge — Law 3 corollary
+//! holds; `cache` is a leaf utility, not a Go-facing crate.
 //!
 //! # Identity is [`canonicalize`]
 //! Every path comparison and (later) fingerprint hash runs over the
@@ -322,11 +324,13 @@ pub fn deny_reason(path: &Path) -> Option<DenyReason> {
 /// The meridian cache root: `${XDG_CACHE_HOME:-$HOME/.cache}/meridian`.
 /// Returns `None` when neither `XDG_CACHE_HOME` nor `HOME` is set. This
 /// only NAMES the root (for the deny ceiling); it creates nothing.
+///
+/// The resolution logic has ONE owner — [`cache::cache_root`] — so the deny
+/// ceiling refuses exactly the directory the drawer addressing uses; this is a
+/// thin delegation, never a second copy (leader reconciliation memo).
 #[must_use]
 pub fn cache_root() -> Option<PathBuf> {
-    let base =
-        env_dir("XDG_CACHE_HOME").or_else(|| env_dir("HOME").map(|home| home.join(".cache")))?;
-    Some(base.join("meridian"))
+    cache::cache_root().ok()
 }
 
 /// Canonicalize a reference path, falling back to the path as-given when it

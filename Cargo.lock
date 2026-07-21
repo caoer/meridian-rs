@@ -1127,6 +1127,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mrd"
+version = "0.0.0"
+dependencies = [
+ "cache",
+ "libc",
+ "registry",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "workspace",
+]
+
+[[package]]
 name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2426,6 +2439,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "workspace"
 version = "0.0.0"
 dependencies = [
+ "cache",
  "tempfile",
 ]
 

@@ -58,5 +58,9 @@ which laws it carries. In one line each:
 | `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
 | `sidecar` | The NDJSON binary — the one place wire and model meet (Law 3) |
+| `workspace` | Workspace identity: the discovery ladder, canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only) |
+| `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
+| `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
+| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`; sees no `wire` or `model` |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |
