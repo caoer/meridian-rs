@@ -16,6 +16,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Reclaim disk before the toolchain/cache/build steps. The `view` crate
+      # pulls duckdb with the `bundled` feature, which compiles the full DuckDB
+      # C++ amalgamation from source; combined with a full `cargo test
+      # --workspace` target/ and the rust-cache restore this exhausts the
+      # ~14 GB free on ubuntu-latest (No space left on device). Dropping the
+      # preinstalled SDKs/toolchains + Docker images frees ~20-25 GB.
+      - name: reclaim disk (bundled libduckdb-sys needs headroom on ubuntu-latest)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
