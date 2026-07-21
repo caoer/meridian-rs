@@ -104,6 +104,66 @@ pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<
         .collect())
 }
 
+/// The domain files of a workspace as `(workspace-relative path, raw bytes)`
+/// pairs — the shape [`domain_snapshot`] returns and [`build_corpus`] consumes.
+pub type DomainFiles = Vec<(String, Vec<u8>)>;
+
+/// The §12 hash-domain snapshot: every domain file's bytes (as
+/// `(workspace-relative path, raw bytes)`) plus the corpus [`model::MerkleRoot`]
+/// folded over exactly those bytes — one read, one fold, so a consumer parses
+/// the same bytes the root describes and the answer cannot drift from its stamp.
+///
+/// This is the CHEAP half of a resident rebuild: it reads and folds but does not
+/// parse. The daemon uses the returned root as the corpus content hash — the
+/// warm-engine reuse key (decision 0002 risk R5: the corpus content hash, not
+/// the workspace-identity Merkle). Pass the returned files to [`build_corpus`]
+/// for the parse (they are the same bytes the root folded — no second read).
+///
+/// # Errors
+/// I/O failure loading the domain config, traversing the root, or reading a file.
+pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
+    let domain = domain::Domain::load(root)?;
+    let rels = hash_domain(root, &domain)?;
+    let mut files = Vec::with_capacity(rels.len());
+    for rel in rels {
+        let bytes = fs::read(root.0.join(&rel))?;
+        files.push((rel.to_string_lossy().replace('\\', "/"), bytes));
+    }
+    let entries: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    let folded = model::merkle_root(&entries, domain.version());
+    Ok((files, folded))
+}
+
+/// Parse a [`domain_snapshot`] into the corpus name index + document map — the
+/// EXPENSIVE half of a resident rebuild, and the only parser. Non-UTF-8 content
+/// is refused, never lossy-decoded (§8 row 1 — the same refusal [`load`] makes):
+/// the error is `ErrorKind::InvalidData`, so a caller can split `invalid_utf8`
+/// from other I/O. `files` is consumed (the bytes become the documents' `raw`).
+///
+/// # Errors
+/// Non-UTF-8 content in any file (refused).
+pub fn build_corpus(
+    files: DomainFiles,
+) -> io::Result<(model::CorpusIndex, BTreeMap<String, model::Document>)> {
+    let mut index = model::CorpusIndex::new();
+    let mut docs = BTreeMap::new();
+    for (rel, bytes) in files {
+        let text = String::from_utf8(bytes).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("non-UTF-8 content refused: {e}"),
+            )
+        })?;
+        let doc = model::build(text.clone(), syntax::parse(&text));
+        index.insert(&rel, &doc);
+        docs.insert(rel, doc);
+    }
+    Ok((index, docs))
+}
+
 /// A process-unique suffix source for staging paths (combined with the pid and
 /// a nanosecond stamp) so concurrent or retried commits never collide on a temp
 /// file name.

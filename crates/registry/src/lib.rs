@@ -38,6 +38,7 @@
 //! own horizon. Never conflate the two.
 
 mod client;
+mod engine;
 mod protocol;
 mod registry;
 mod server;
@@ -46,6 +47,7 @@ mod state;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use client::Client;
+pub use engine::{WarmOutcome, WorkspaceEngine};
 pub use protocol::{DenyKind, Request, Response, WorkspaceEntry};
 pub use registry::{RegisterOutcome, Registry, ResolveOutcome};
 pub use server::{Config, RunningServer, default_socket_path};
