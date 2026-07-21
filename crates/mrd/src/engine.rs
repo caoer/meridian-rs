@@ -9,9 +9,11 @@
 //! refused handshake, or a daemon-side op error — falls through to
 //! [`in_process_links`], which builds the corpus from disk with U1's builder
 //! ([`fs::build_corpus`]) and answers through the SAME shared read arm the
-//! daemon serves ([`wire_serve::read::links`]). One projection, two state
-//! sources, so the warm answer and the degrade answer never drift; only the
-//! reported [`EngineSource`] differs.
+//! daemon serves ([`wire_serve::read::links`]), then applies the SAME v3
+//! vocabulary projection ([`wire_serve::rev`]) the daemon applies for a
+//! `contract:v3` session. One read projection + one rev projection, two state
+//! sources, so the warm answer and the degrade answer never drift (both speak
+//! `fingerprint`); only the reported [`EngineSource`] differs.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -246,8 +248,10 @@ fn call(
 }
 
 /// The degrade: build the corpus in-process with U1's builder and answer through
-/// the shared `links` read arm — the SAME projection the daemon serves, so the
-/// answer is byte-identical to the warm one for the same corpus.
+/// the shared `links` read arm — the SAME read projection the daemon serves — then
+/// re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`] sends
+/// `contract:v3`), so the answer is byte-identical to the warm one for the same
+/// corpus (`fingerprint`, never `root`).
 ///
 /// # Errors
 /// The workspace cannot be canonicalized (gone), the corpus cannot be read, a
@@ -273,7 +277,18 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     let live = as_of.clone();
     let body = wire_serve::read::links(&index, &docs, wpath.as_ref(), as_of, 0, || Ok(live))
         .map_err(|e| Fail::tool(render_wire_error(&e)))?;
-    serde_json::to_value(&body).map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))
+    let body = serde_json::to_value(&body)
+        .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
+    // The CLI negotiated `contract:v3` on the warm path, so the degrade answer
+    // must speak the same vocabulary — run the SAME lifted projection the daemon
+    // runs (`root` → `fingerprint`) so warm and degrade never drift. The
+    // projection re-keys under `body`, so wrap, project, and unwrap.
+    let mut frame = json!({ "body": body });
+    wire_serve::rev::project_response(&mut frame);
+    Ok(frame
+        .as_object_mut()
+        .and_then(|obj| obj.remove("body"))
+        .unwrap_or(Value::Null))
 }
 
 /// Render a wire error body as a one-line diagnostic (the code plus its message

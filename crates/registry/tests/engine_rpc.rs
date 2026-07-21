@@ -148,9 +148,10 @@ fn corpus_change_rebuilds_once_then_reuses() {
     let mut conn = Conn::open(server.socket_path());
 
     // Hello binds + warms; its response carries the warm engine's ambient root.
-    let before = conn.hello(&ws)["body"]["root"]
+    // This is a v3 session, so the cursor is spelled `fingerprint`.
+    let before = conn.hello(&ws)["body"]["fingerprint"]
         .as_str()
-        .expect("hello carries the warm root")
+        .expect("hello carries the warm fingerprint")
         .to_string();
     assert_eq!(
         server.registry().warm_or_build(&ws).unwrap(),
@@ -162,9 +163,9 @@ fn corpus_change_rebuilds_once_then_reuses() {
     fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
     // The next hello re-reads disk: its ambient root moves to the new fingerprint.
-    let after = conn.hello(&ws)["body"]["root"]
+    let after = conn.hello(&ws)["body"]["fingerprint"]
         .as_str()
-        .expect("hello carries the warm root")
+        .expect("hello carries the warm fingerprint")
         .to_string();
     assert_ne!(
         before, after,
@@ -200,9 +201,12 @@ fn read_op_without_hello_is_refused() {
     );
 }
 
-/// `resolve` (walk plane), `root`, and `diff` answer over the socket. `resolve`
-/// is served cold from the walk-plane corpus; `root`/`diff` come from the warm
-/// engine's fingerprint (no delta ring yet → same-root diff empty, else resync).
+/// `resolve` (walk plane), `fingerprint`, and `diff` answer over the socket.
+/// `resolve` is served cold from the walk-plane corpus; `fingerprint`/`diff` come
+/// from the warm engine's fingerprint (no delta ring yet → same-cursor diff
+/// empty, else resync). This is a v3 session, so the cursor op is `fingerprint`,
+/// the request/response fields are the `fingerprint` spelling, and the stale-range
+/// error is `fingerprint_unknown`.
 #[test]
 fn resolve_root_and_diff_answer_over_the_socket() {
     let tmp = TempDir::new().unwrap();
@@ -220,30 +224,38 @@ fn resolve_root_and_diff_answer_over_the_socket() {
         "resolve walks [[b]] → b.md: {resolved}"
     );
 
-    // root: the world-grain cursor + seq (0 — no batches in this daemon epoch).
-    let root = conn.call(&json!({"op": "root"}));
-    assert_eq!(root["ok"], json!(true), "root ok: {root}");
+    // fingerprint: the world-grain cursor + seq (0 — no batches in this epoch).
+    let cursor_frame = conn.call(&json!({"op": "fingerprint"}));
     assert_eq!(
-        root["body"]["seq"],
-        json!(0),
-        "no batches emitted yet: {root}"
+        cursor_frame["ok"],
+        json!(true),
+        "fingerprint ok: {cursor_frame}"
     );
-    let cursor = root["body"]["root"]
+    assert_eq!(
+        cursor_frame["body"]["seq"],
+        json!(0),
+        "no batches emitted yet: {cursor_frame}"
+    );
+    let cursor = cursor_frame["body"]["fingerprint"]
         .as_str()
-        .expect("root cursor")
+        .expect("fingerprint cursor")
         .to_string();
 
-    // diff over the same root is truthfully empty.
-    let same = conn.call(&json!({"op": "diff", "from_root": cursor, "to_root": cursor}));
-    assert_eq!(same["ok"], json!(true), "same-root diff ok: {same}");
+    // diff over the same cursor is truthfully empty.
+    let same = conn.call(&json!({
+        "op": "diff", "from_fingerprint": cursor, "to_fingerprint": cursor,
+    }));
+    assert_eq!(same["ok"], json!(true), "same-cursor diff ok: {same}");
     assert_eq!(
         same["body"]["batches"],
         json!([]),
-        "same-root diff replays nothing: {same}"
+        "same-cursor diff replays nothing: {same}"
     );
 
-    // diff over an unknown range degrades to full resync (root_unknown).
-    let unknown = conn.call(&json!({"op": "diff", "from_root": "b3:deadbeef", "to_root": cursor}));
+    // diff over an unknown range degrades to full resync (fingerprint_unknown).
+    let unknown = conn.call(&json!({
+        "op": "diff", "from_fingerprint": "b3:deadbeef", "to_fingerprint": cursor,
+    }));
     assert_eq!(
         unknown["ok"],
         json!(false),
@@ -251,8 +263,8 @@ fn resolve_root_and_diff_answer_over_the_socket() {
     );
     assert_eq!(
         unknown["error"]["code"],
-        json!("root_unknown"),
-        "an unknown root range is root_unknown → resync: {unknown}"
+        json!("fingerprint_unknown"),
+        "an unknown range is fingerprint_unknown → resync: {unknown}"
     );
 
     server.shutdown();

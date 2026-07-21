@@ -29,6 +29,7 @@ use cache::DrawerLock;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use wire::{ErrorBody, ErrorCode, Op, ResponseBody, ResponsePayload, Root};
+use wire_serve::rev::Rev;
 
 use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
@@ -382,12 +383,16 @@ fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
     // The connection's bound workspace (canonical path), set by `hello`.
     // Per-connection, so concurrent clients target different workspaces.
     let mut attached: Option<PathBuf> = None;
+    // The connection's negotiated contract rev (one epoch, one rev), set by
+    // `hello` (docs/wire-contract-v3-amendment.md). Defaults to v2 so an
+    // un-negotiated connection is byte-for-byte the frozen contract.
+    let mut rev = Rev::V2;
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let out = handle_line(registry, &mut attached, &line);
+        let out = handle_line(registry, &mut attached, &mut rev, &line);
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
     }
@@ -395,7 +400,20 @@ fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
 }
 
 /// Route one frame by its `op` tag and render its response line (`\n`-terminated).
-fn handle_line(registry: &Registry, attached: &mut Option<PathBuf>, line: &str) -> String {
+///
+/// The wire classes (`hello` + the read/write ops) carry the v3 vocabulary
+/// projection per the connection's negotiated `rev`: a v3 request is re-keyed to
+/// its v2 form BEFORE decode, and the answer is re-shaped `root` → `fingerprint`
+/// on the way out (`hello` caps + every frame class). A v2 connection serializes
+/// the typed `wire::Response` directly — the frozen path, byte-identical. The
+/// admin verbs are daemon-internal, absent from any wire `caps`, and NEVER
+/// projected (the 108da20a v3 proxy sees no change on them).
+fn handle_line(
+    registry: &Registry,
+    attached: &mut Option<PathBuf>,
+    rev: &mut Rev,
+    line: &str,
+) -> String {
     let value: Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(e) => {
@@ -404,13 +422,15 @@ fn handle_line(registry: &Registry, attached: &mut Option<PathBuf>, line: &str) 
             });
         }
     };
-    let Value::Object(obj) = value else {
+    let Value::Object(mut obj) = value else {
         return to_line(&Response::Error {
             message: "request must be a JSON object".into(),
         });
     };
     // Read the tag as owned so the borrow of `obj` is dropped before the admin
-    // arm consumes it.
+    // arm consumes it. The tag is read in the base vocabulary: `hello` and the
+    // admin verbs never carry a v3 spelling, and the v3 read/write ops route
+    // through the `_` arm regardless (the `fingerprint` op tag included).
     let op = obj.get("op").and_then(Value::as_str).map(str::to_string);
     match op.as_deref() {
         Some("ping" | "register" | "unregister" | "resolve_ws" | "list") => {
@@ -421,9 +441,35 @@ fn handle_line(registry: &Registry, attached: &mut Option<PathBuf>, line: &str) 
                 }),
             }
         }
-        Some("hello") => to_line(&hello(registry, attached, &obj)),
-        _ => to_line(&serve_wire(registry, attached.as_deref(), &obj)),
+        // `hello` negotiates the rev; its OWN response is then shaped for it (the
+        // caps + binding follow the negotiated vocabulary immediately).
+        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev),
+        _ => {
+            // v3 connection: re-key the request into its v2 form so the strict
+            // decoder + arms stay v2-only. A v2 spelling passes through untouched
+            // (input leniency); a v2 connection is never re-keyed at all.
+            if *rev == Rev::V3 {
+                wire_serve::rev::rename_request(&mut obj);
+            }
+            wire_line(&serve_wire(registry, attached.as_deref(), &obj), *rev)
+        }
     }
+}
+
+/// Render one wire response line (`\n`-terminated), shaped per the negotiated
+/// rev. v2 serializes the typed `wire::Response` directly — the frozen path,
+/// byte-identical. v3 projects the serialized frame `root` → `fingerprint` at the
+/// envelope layer (the typed layer never changes).
+fn wire_line(response: &wire::Response, rev: Rev) -> String {
+    let mut out = if rev == Rev::V3 {
+        let mut v = serde_json::to_value(response).expect("wire response serializes");
+        wire_serve::rev::project_response(&mut v);
+        serde_json::to_string(&v).expect("wire response serializes")
+    } else {
+        serde_json::to_string(response).expect("wire response serializes")
+    };
+    out.push('\n');
+    out
 }
 
 /// Serialize a response value to one NDJSON line. The response types are plain
@@ -505,11 +551,24 @@ const CAPS: [&str; 15] = [
 fn hello(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
+    rev: &mut Rev,
     obj: &Map<String, Value>,
 ) -> wire::Response {
     let id = obj.get("id").and_then(Value::as_u64);
     let body = match wire_serve::decode::decode(obj) {
-        Ok(Op::Hello { workspace, .. }) => hello_body(registry, attached, workspace),
+        Ok(Op::Hello {
+            contract,
+            workspace,
+            ..
+        }) => {
+            // Negotiate the connection rev from the DECODED contract (decode
+            // already refused an unknown rev loudly), so this hello response and
+            // every frame after ride the negotiated vocabulary. A failed decode
+            // never negotiates — the connection stays v2, its error serializes
+            // on the frozen path.
+            *rev = Rev::from_contract(contract.as_deref());
+            hello_body(registry, attached, workspace)
+        }
         // Only `op == "hello"` frames route here, and their decode is a
         // `Hello`; any other decoded op is a routing invariant break.
         Ok(_) => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),

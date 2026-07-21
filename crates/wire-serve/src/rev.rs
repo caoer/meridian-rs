@@ -1,20 +1,23 @@
 //! The contract-rev negotiation state + the v3 vocabulary projection
-//! (`docs/wire-contract-v3-amendment.md`).
+//! (`docs/wire-contract-v3-amendment.md`), lifted here so BOTH hosts — the
+//! per-workspace sidecar and the resident registry daemon — project v3 through
+//! ONE implementation (arch map A6: "lift, don't duplicate", mirroring the
+//! read/write-arm lifts).
 //!
 //! The frozen v2 `wire` types serialize BYTE-FOR-BYTE as contract v2 forever —
 //! nothing in this module touches them. v3 is expressed as a pure projection at
 //! the envelope layer: outgoing v2-shaped frames are re-keyed `root` →
 //! `fingerprint` on the way out, and incoming v3 requests are re-keyed
-//! `fingerprint` → `root` on the way in, so the strict decoder and every arm
-//! stay v2-only. One rename table, applied in two directions.
+//! `fingerprint` → `root` on the way in, so the strict decoder ([`super::decode`])
+//! and every arm stay v2-only. One rename table, applied in two directions.
 //!
 //! # Why a projection, not a serde rename
 //! A serde attribute change on the `wire` types would break the frozen v2
 //! goldens (`crates/wire/tests/contract_v2.rs`, `crates/testsuite/tests/
 //! wire_vocab.rs`) and the byte-identical guarantee live v2 consumers pin via
-//! `hello`. The projection keeps v2 emission on the untouched typed path (the
-//! serve loop serializes `wire::Response` directly for v2) and only re-shapes
-//! when the session negotiated v3.
+//! `hello`. The projection keeps v2 emission on the untouched typed path (each
+//! host serializes `wire::Response` directly for v2) and only re-shapes when the
+//! session negotiated v3.
 //!
 //! # No dual-emit (the amendment's hard rule)
 //! A v2 session emits `root` and never `fingerprint`; a v3 session emits
@@ -22,10 +25,10 @@
 
 use serde_json::{Map, Value};
 
-/// The negotiated contract rev — per-process serve-session state (one epoch,
-/// one rev). Defaults to [`Rev::V2`] until a `hello` declares otherwise.
+/// The negotiated contract rev — per-serve-session state (one epoch, one rev).
+/// Defaults to [`Rev::V2`] until a `hello` declares otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum Rev {
+pub enum Rev {
     /// The frozen contract v2 vocabulary (`root`), byte-for-byte.
     #[default]
     V2,
@@ -36,8 +39,9 @@ pub(crate) enum Rev {
 impl Rev {
     /// Map the `hello` `contract` declaration to the negotiated rev. Absent or
     /// `"v2"` is v2 (today's behavior); `"v3"` is v3. Any other value never
-    /// reaches here — the decoder rejected it (`is_known`).
-    pub(crate) fn from_contract(contract: Option<&str>) -> Rev {
+    /// reaches here — the decoder rejected it (`is_known_rev`).
+    #[must_use]
+    pub fn from_contract(contract: Option<&str>) -> Rev {
         match contract {
             Some("v3") => Rev::V3,
             _ => Rev::V2,
@@ -103,7 +107,7 @@ fn rename_key(obj: &mut Map<String, Value>, from: &str, to: &str) {
 /// `root` names. A no-op for keys the frame does not carry, so a request that
 /// happens to use the v2 spelling passes through untouched (input leniency,
 /// amendment §"Input acceptance"). Never called for a v2 session.
-pub(crate) fn rename_request(obj: &mut Map<String, Value>) {
+pub fn rename_request(obj: &mut Map<String, Value>) {
     if obj.get("op").and_then(Value::as_str) == Some("fingerprint") {
         obj.insert("op".to_string(), Value::String("root".to_string()));
     }
@@ -120,7 +124,7 @@ pub(crate) fn rename_request(obj: &mut Map<String, Value>) {
 /// only the known fingerprint slots under `body`/`error` — never descends into
 /// the arbitrary-key maps (`files`, `resolved`, `unresolved`), where a corpus
 /// path or raw linkpath could legitimately be the string `"root"`.
-pub(crate) fn project_response(frame: &mut Value) {
+pub fn project_response(frame: &mut Value) {
     let Some(obj) = frame.as_object_mut() else {
         return;
     };
@@ -162,7 +166,7 @@ pub(crate) fn project_response(frame: &mut Value) {
 
 /// Re-shape one live notification frame (`{"delta":{…}}`) into v3 in place:
 /// the two Delta fingerprint slots only, never the `files` array beneath.
-pub(crate) fn project_delta_frame(frame: &mut Value) {
+pub fn project_delta_frame(frame: &mut Value) {
     if let Some(delta) = frame
         .as_object_mut()
         .and_then(|o| o.get_mut("delta"))

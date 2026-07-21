@@ -34,9 +34,13 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
 mod policy_bridge;
-pub(crate) mod rev;
 pub mod ring;
 mod watch;
+
+// The v3 vocabulary projection lives in `wire-serve`, the shared typed-edge home
+// both hosts project through (arch map A6: "lift, don't duplicate"). Imported as
+// `rev` so the serve loop reads the same as before.
+use wire_serve::rev;
 
 /// Admit a rule pack sidecar-mode (P6-VERDICTS): compile through policy's load
 /// gate over the REAL parse→facts plane, refusing a corpus-class pack LOUD
