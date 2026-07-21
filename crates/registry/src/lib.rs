@@ -40,6 +40,7 @@
 mod client;
 mod engine;
 mod protocol;
+mod refresh;
 mod registry;
 mod server;
 mod state;

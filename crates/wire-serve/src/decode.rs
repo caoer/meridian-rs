@@ -117,6 +117,18 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 from_seq: req_u64(obj, op, "from_seq")?,
             })
         }
+        "view_path" => {
+            // V2 §Q2 the view-organ path forwarder. `cwd` is a RAW host path
+            // (absolute) the daemon resolves to a workspace — NOT a
+            // workspace-relative wire path, so it takes `req_str`, never
+            // `req_path` (path-law would reject a leading `/`). `fresh` is the
+            // optional bounded-rebuild knob (§Q3).
+            check_fields(obj, op, &["cwd", "fresh"])?;
+            Ok(Op::ViewPath {
+                cwd: req_str(obj, op, "cwd")?,
+                fresh: opt_bool(obj, op, "fresh")?,
+            })
+        }
         "splice" => decode_splice(obj),
         // §3.2 discovery honesty: every op is armed as of T5-SUB — only
         // genuinely unknown names land here.

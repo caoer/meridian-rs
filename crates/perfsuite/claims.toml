@@ -207,3 +207,60 @@ threshold_source = "ruleset"
 harness = "benches/roundtrip.rs"
 recipe = "vault-1gb / fence-bomb section spans"
 note = "D-C1 (risk R2): match{old,new} resolved server-side by scanning target span bytes per edit, bounded by section size (the bytes just reparsed), measured not asserted (threshold_source=ruleset). MEASURED on the real model::validate_batch path: M4-VALIDATE landed validate_batch (validate_splice todo!() retired) and P6-VERDICTS armed it end-to-end on the splice arm; benches/roundtrip.rs::record_match_scan_claim times one match edit whose old sits at the tail of a large section so the scan walks the full span. A local number renders MEASURED, never a false PASS/FAIL (gate owned by the ruleset budget, not claims.toml)."
+
+# --- OD8: DuckDB view-organ gate (design tournament-duckdb/team-a §Perfsuite gate).
+# These rows REGISTER the gate that must arm before the O(file_count + corpus_bytes)
+# per-query fold is the default freshness path. V1 ships no bench harness, so every
+# row is UNTESTED (the perf mirror of a todo!() body) — never a fabricated PASS. The
+# ruleset-sourced rows stay MEASURED even once measured: no PASS until the named
+# ruleset interactive bound is materialized into a concrete threshold. Until a
+# measured PASS exists, fold-per-query is opt-in and the default returns
+# live_source=none, stale=null (state=UNVERIFIED).
+
+[[claim]]
+id = "view.build.p99.vault_2026"
+title = "V1 projector build p99 (warm docs -> DuckDB tables)"
+metric = "ms"
+direction = "lower"
+harness = "benches/view.rs"
+recipe = "vault-2026 seed=1 files=2000"
+note = "OD8: view::build_memory/publish over the warm parsed corpus; baseline TBD on the first fleet run. No harness in V1 — this row registers the gate (UNTESTED until benches/view.rs lands)."
+
+[[claim]]
+id = "view.freshfold.p99.vault_1gb"
+title = "Per-query live fingerprint fold p99 (fs::domain_snapshot, full corpus)"
+metric = "ms"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/view.rs"
+recipe = "vault-1gb seed=1 files=180000"
+note = "OD8: the O(file_count + corpus_bytes) post-result fold (no stat short-circuit). Gated against the perf ruleset's NAMED interactive-latency bound, not an invented literal. Stays MEASURED (never PASS) until that named rule is resolved to a concrete threshold — resolving it is itself part of arming fold-by-default. Landed cold-ingest measured 22.2 s / 1 GB / 180k files, so fold-per-query at that scale is not an interactive default."
+
+[[claim]]
+id = "view.freshfold.envelope.filecount"
+title = "Freshfold cost envelope — file-count term (walk + per-file open)"
+metric = "files"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/view.rs"
+recipe = "tiny-file profile: high file count, low bytes, seed=1"
+note = "OD8: one of the fold's TWO independent cost terms. A single MB/s throughput number must NOT arm fold-by-default — it collapses the per-file term and lets a tiny-file corpus (high count, low bytes) falsely pass. Eligibility needs a passing envelope bounding BOTH file count and bytes, measured across a tiny-file AND a large-byte profile. Ruleset-sourced; UNTESTED until benches/view.rs lands."
+
+[[claim]]
+id = "view.freshfold.envelope.bytes"
+title = "Freshfold cost envelope — bytes term (read + blake3 fold)"
+metric = "bytes"
+direction = "lower"
+threshold_source = "ruleset"
+harness = "benches/view.rs"
+recipe = "large-byte profile: low file count, high bytes, seed=1"
+note = "OD8: the second independent fold cost term, paired with view.freshfold.envelope.filecount. Both must pass across the tiny-file and large-byte profiles so neither term is extrapolated away. Ruleset-sourced; UNTESTED until benches/view.rs lands."
+
+[[claim]]
+id = "view.sql.roundtrip.p99.vault_2026"
+title = "V3 mrd sql end-to-end p99 (open RO + stamp read + query + post-result fold)"
+metric = "ms"
+direction = "lower"
+harness = "benches/view.rs"
+recipe = "vault-2026 seed=1 files=2000"
+note = "OD8: the number an agent feels for `mrd sql` — open the RO view, read the _meridian_view stamp as authoritative as_of, run the query client-side, fold live AFTER the result. Baseline TBD on the first fleet run. UNTESTED in V1 (registers the gate)."
