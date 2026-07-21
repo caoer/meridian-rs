@@ -1,0 +1,27 @@
+# TEMPORARY D0 gate — prove packages.aarch64-linux.sidecar-static LINKS on a
+# real native arm runner (ubuntu-24.04-arm). BUILD-ONLY: NO cachix push (the
+# push is D2, trust-gated on a write-only token + audit hardening). This job
+# never touches secrets. Fold into nix.yml's build-sidecar matrix at D2, then
+# delete this file.
+name: d0-arm-linkspike
+
+on:
+  push:
+    branches: ["infra/nix-sidecar-aarch64"]
+  workflow_dispatch:
+
+jobs:
+  linkspike:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - name: Build aarch64 sidecar-static (native, no push)
+        run: nix build .#packages.aarch64-linux.sidecar-static -L --print-out-paths
+      - name: Verify static-pie ELF, no interpreter (D1)
+        run: |
+          BIN="$(readlink -f result)/bin/sidecar"
+          echo "=== file ==="; file "$BIN"
+          echo "=== ELF header ==="; readelf -h "$BIN" | grep -E "Type:|Machine:|Class:"
+          echo "=== PT_INTERP (must be ABSENT) ==="; readelf -l "$BIN" | grep -i interp || echo "NO INTERP (good)"
+          echo "=== dynamic NEEDED (must be none) ==="; readelf -d "$BIN" | grep -i needed || echo "NO NEEDED libs (good)"
