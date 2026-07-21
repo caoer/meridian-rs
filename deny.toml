@@ -13,6 +13,30 @@ allow = [
     # zlib/libpng-family permissive
     "Zlib",
 ]
+# Per-crate scoped exceptions (strict default stays). All OSI-permissive;
+# pre-existing on branch, surfaced during ws-foundation gating.
+exceptions = [
+    # via policy → starlark → debugserver-types → schemafy
+    { crate = "Inflector", allow = ["BSD-2-Clause"] },
+    # via model → blake3
+    { crate = "arrayref", allow = ["BSD-2-Clause"] },
+    # via policy → starlark (BSL-1.0 = Boost, not Business-Source)
+    { crate = "clipboard-win", allow = ["BSL-1.0"] },
+    # via policy → starlark → clipboard-win
+    { crate = "error-code", allow = ["BSL-1.0"] },
+    # via blake3/sha2 → digest
+    { crate = "subtle", allow = ["BSD-3-Clause"] },
+]
+
+[advisories]
+# Unmaintained-only advisories, all transitive via policy → starlark 0.14.2
+# (the pinned reference interpreter). Revisit at any starlark bump.
+ignore = [
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill unmaintained; via starlark → pagable → postcard → heapless" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained; via starlark proc-macros" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained; via starlark_map" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; via starlark proc-macros" },
+]
 
 [bans]
 # Benign transitive duplicates warn; the fork law is the hard gate below.
