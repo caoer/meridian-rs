@@ -23,6 +23,7 @@ default-members = [
     "crates/workspace",
     "crates/cache",
     "crates/registry",
+    "crates/rules",
     "crates/mrd",
 ]
 
@@ -49,9 +50,20 @@ query = { path = "crates/query", version = "0.0.0" }
 workspace = { path = "crates/workspace", version = "0.0.0" }
 cache = { path = "crates/cache", version = "0.0.0" }
 registry = { path = "crates/registry", version = "0.0.0" }
+rules = { path = "crates/rules", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Fenced-Starlark evaluation, shared by `policy` (rung-6 predicates) and `rules`
+# (the extension kernel). Pinned EXACT (=0.14.2): starlark-rust disclaims API
+# stability and 0.14 introduced the per-eval resource meters (tick/heap) both
+# crates rely on — a silent minor bump could move that surface. One workspace
+# pin keeps a single copy in the graph (row-13 wire-invariance holds: no wire
+# crate names it).
+starlark = "=0.14.2"
+# starlark `#[starlark_module]` builtins return `anyhow::Result`; both starlark
+# consumers surface it. Already in the lock via starlark's own tree.
+anyhow = "1"
 # sha256 over canonical-path bytes = the cache drawer key (crates/cache).
 sha2 = "0.10"
 pulldown-cmark = "0.13"
@@ -64,6 +76,12 @@ hdrhistogram = "7"
 # typed proto transport: prost pair pinned together; build needs `protoc`
 prost = "0.14"
 prost-build = "0.14"
+# Kernel test stack (decisions/0003 § Testing methodology): insta = golden
+# descriptor snapshots; proptest = invariants (determinism, fuel bounds, no
+# panic on any event). Dev-only; the plain `cargo test` path drives both (no
+# extra cargo subcommand needed — cargo-insta is optional review sugar).
+insta = { version = "1", features = ["json"] }
+proptest = "1"
 
 # One lint policy for the whole workspace; every crate opts in via
 # `[lints] workspace = true`. Warn-level locally; CI escalates with -Dwarnings.

@@ -1,0 +1,18 @@
+---
+source: crates/rules/tests/golden.rs
+expression: effects
+---
+[
+  {
+    "kind": "proto.warn",
+    "rule_id": "status_binding",
+    "seq": 0,
+    "depth": 0,
+    "fingerprint_before": "aaa",
+    "fingerprint_after": "bbb",
+    "args": {
+      "message": "The Status section changed but the frontmatter `status` field did not — they may be out of sync.",
+      "section": "Status"
+    }
+  }
+]
