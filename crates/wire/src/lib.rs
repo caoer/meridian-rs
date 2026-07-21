@@ -661,6 +661,14 @@ pub struct FileLinks {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Armed {
     pub path: Path,
+    /// The whole-file rev AFTER the batch commits — same family/width as
+    /// [`DeltaFile::file_rev_after`] and a subsequent `toc`'s `file_rev`, so a
+    /// consumer learns the new file rev WITHOUT a follow-up `toc`. A latency
+    /// fact only; correctness stays the fingerprint/`root_after` world grain.
+    /// Absent on a dry run — nothing was written, so the post-write rev does
+    /// not exist yet (mirrors `root_after`'s dry-null at file grain).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rev_after: Option<NodeRev>,
     pub edits: Vec<ArmedEdit>,
 }
 

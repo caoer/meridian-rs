@@ -100,10 +100,15 @@ fn armed_edit_to_pb(e: wire::ArmedEdit) -> pb::ArmedEdit {
 }
 
 fn armed_to_pb(a: wire::Armed) -> pb::Armed {
-    let wire::Armed { path, edits } = a;
+    let wire::Armed {
+        path,
+        edits,
+        file_rev_after,
+    } = a;
     pb::Armed {
         path: path.0,
         edits: edits.into_iter().map(armed_edit_to_pb).collect(),
+        file_rev_after: file_rev_after.map(|r| r.0),
     }
 }
 
@@ -722,10 +727,15 @@ fn armed_edit_from_pb(e: pb::ArmedEdit) -> wire::ArmedEdit {
 }
 
 fn armed_from_pb(a: pb::Armed) -> wire::Armed {
-    let pb::Armed { path, edits } = a;
+    let pb::Armed {
+        path,
+        edits,
+        file_rev_after,
+    } = a;
     wire::Armed {
         path: wire::Path(path),
         edits: edits.into_iter().map(armed_edit_from_pb).collect(),
+        file_rev_after: file_rev_after.map(wire::NodeRev),
     }
 }
 
@@ -1702,6 +1712,7 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
         wire::ResponseBody::Splice {
             armed: wire::Armed {
                 path: wire::Path("notes/plan.md".into()),
+                file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
                 edits: vec![wire::ArmedEdit {
                     target: wire::SecRef::Hpath {
                         hpath: vec![seg("Goals"), seg("Q3")],
@@ -1741,6 +1752,8 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
         wire::ResponseBody::Splice {
             armed: wire::Armed {
                 path: wire::Path("notes/plan.md".into()),
+                // dry — nothing written, so no post-write file rev
+                file_rev_after: None,
                 edits: vec![wire::ArmedEdit {
                     target: wire::SecRef::FmKey {
                         fm_key: "title".into(),

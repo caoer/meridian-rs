@@ -160,6 +160,9 @@ pub fn splice(
             body: ResponseBody::Splice {
                 armed: Armed {
                     path: args.path.clone(),
+                    // Dry writes nothing, so there is no post-write file rev to
+                    // report (mirrors `root_after: None` at file grain).
+                    file_rev_after: None,
                     edits: armed_edits,
                 },
                 receipt: None,
@@ -208,6 +211,12 @@ pub fn splice(
         body: ResponseBody::Splice {
             armed: Armed {
                 path: args.path.clone(),
+                // The post-write whole-file rev, read from the SAME simulated
+                // after-doc as the armed edits (§4.4 one-reparse law): the real
+                // commit writes exactly these bytes, so this equals the
+                // committed file's rev and a subsequent `toc`'s `file_rev` — no
+                // drift. Latency only; correctness stays `root_after`.
+                file_rev_after: Some(NodeRev(after_doc.root.node_rev.0.clone())),
                 edits: armed_edits,
             },
             receipt: receipt_fact,
