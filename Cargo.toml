@@ -25,6 +25,7 @@ default-members = [
     "crates/registry",
     "crates/rules",
     "crates/mrd",
+    "crates/view",
 ]
 
 [workspace.package]
@@ -51,6 +52,7 @@ workspace = { path = "crates/workspace", version = "0.0.0" }
 cache = { path = "crates/cache", version = "0.0.0" }
 registry = { path = "crates/registry", version = "0.0.0" }
 rules = { path = "crates/rules", version = "0.0.0" }
+view = { path = "crates/view", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -67,6 +69,12 @@ anyhow = "1"
 # sha256 over canonical-path bytes = the cache drawer key (crates/cache).
 sha2 = "0.10"
 pulldown-cmark = "0.13"
+# The DuckDB view-organ sink (crates/view, a write-only C2 leaf). `bundled`
+# compiles the vendored amalgamation so the gate SQL is pinned to one DuckDB
+# version, never the host's libduckdb. Design validated on v1.5.2 (Variegata);
+# the crate's gate tests re-confirm the SQL behaviors against whatever the
+# resolved crate bundles.
+duckdb = { version = "1", features = ["bundled"] }
 # criterion without plotters/html: critcmp reads estimates.json, reports come
 # from bench-report — the plotting stack is pure build-time cost here.
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

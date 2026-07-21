@@ -26,6 +26,14 @@ exceptions = [
     { crate = "error-code", allow = ["BSL-1.0"] },
     # via blake3/sha2 → digest
     { crate = "subtle", allow = ["BSD-3-Clause"] },
+    # duckdb `bundled` view-organ compiler: libduckdb-sys pulls a BUILD-ONLY
+    # reqwest/rustls stack (non-optional build-dependency; never linked into the
+    # shipped binary). All OSI-permissive / public-domain, scoped per-crate.
+    { crate = "ring", allow = ["ISC"] }, # ring = "Apache-2.0 AND ISC" (Apache allowed globally)
+    { crate = "rustls-webpki", allow = ["ISC"] },
+    { crate = "untrusted", allow = ["ISC"] },
+    { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "tiny-keccak", allow = ["CC0-1.0"] },
 ]
 
 [advisories]
