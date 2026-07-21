@@ -291,10 +291,19 @@ pub struct Request {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     /// v2 §3.2 version handshake; `caps` discovery, never version sniffing.
+    ///
+    /// `contract` is the v3-amendment negotiation knob (`docs/wire-contract-v3-amendment.md`):
+    /// an OPTIONAL client-DECLARED contract rev, absent or `"v2"` ⇒ the frozen
+    /// v2 vocabulary (byte-for-byte), `"v3"` ⇒ the `fingerprint` vocabulary from
+    /// the hello response onward. A DECLARED rev is not the §3.2-forbidden
+    /// version sniffing (the client states its rev; the server never guesses).
+    /// Absent ⇒ serialized away, so the v2 request stays byte-identical.
     Hello {
         proto: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         client: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        contract: Option<String>,
     },
     /// v2 §4.1 the map: complete write kit (hpath + rev per section, anchors
     /// with revs, fm keys), header `file_rev` + ambient `root` in the response.
