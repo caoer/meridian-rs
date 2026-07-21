@@ -29,7 +29,9 @@ mod gc;
 mod init;
 mod resolve;
 mod rules_cmd;
+mod sql;
 mod unregister;
+mod view_status;
 
 /// Exit code: a clean success.
 const EXIT_OK: u8 = 0;
@@ -51,6 +53,9 @@ usage:
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
+  mrd sql <query>          run SQL client-side over the daemon-published DuckDB
+                           view, with the honest-tense freshness frame
+  mrd view status          per-workspace view freshness + refresh telemetry (OD7)
   mrd daemon               run the registry daemon in the foreground
   mrd rules replay [PATH]  replay a workspace's history (git commits, or an
                            ordered --snapshots corpus) through a --rules set and
@@ -66,6 +71,7 @@ options:
 ";
 
 /// A command failure: the process exit code plus a diagnostic for stderr.
+#[derive(Debug)]
 pub(crate) struct Fail {
     pub(crate) code: u8,
     pub(crate) message: String,
@@ -133,6 +139,8 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::run_command(p.positional.as_deref(), p.format())
         }
         "cache" => dispatch_cache(&args[1..]),
+        "sql" => sql::run(&args[1..]),
+        "view" => dispatch_view(&args[1..]),
         "rules" => rules_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
@@ -164,6 +172,20 @@ fn dispatch_cache(args: &[String]) -> Result<(), Fail> {
         other => {
             eprint!("{USAGE}");
             Err(Fail::tool(format!("unknown cache subcommand: {other}")))
+        }
+    }
+}
+
+fn dispatch_view(args: &[String]) -> Result<(), Fail> {
+    let Some(sub) = args.first() else {
+        eprint!("{USAGE}");
+        return Err(Fail::tool("view needs a subcommand (status)".to_owned()));
+    };
+    match sub.as_str() {
+        "status" => view_status::run(&args[1..]),
+        other => {
+            eprint!("{USAGE}");
+            Err(Fail::tool(format!("unknown view subcommand: {other}")))
         }
     }
 }

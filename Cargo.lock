@@ -2054,6 +2054,7 @@ name = "mrd"
 version = "0.0.0"
 dependencies = [
  "cache",
+ "duckdb",
  "fs",
  "libc",
  "model",
@@ -2063,6 +2064,7 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
+ "view",
  "wire",
  "wire-serve",
  "workspace",
