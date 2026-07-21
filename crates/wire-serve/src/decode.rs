@@ -33,10 +33,11 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     };
     match op {
         "hello" => {
-            check_fields(obj, op, &["proto", "client", "contract"])?;
+            check_fields(obj, op, &["proto", "client", "contract", "workspace"])?;
             let proto = req_u64(obj, op, "proto")?;
             let client = opt_str(obj, op, "client")?;
             let contract = opt_str(obj, op, "contract")?;
+            let workspace = opt_str(obj, op, "workspace")?;
             if proto != u64::from(crate::PROTO) {
                 let mut e = ErrorBody::new(ErrorCode::UnsupportedProto);
                 e.supported = Some(vec![crate::PROTO]);
@@ -48,13 +49,14 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 && !crate::is_known_rev(rev)
             {
                 return Err(bad_request(format!(
-                    "unknown contract rev `{rev}`: this sidecar speaks v2, v3"
+                    "unknown contract rev `{rev}`: this server speaks v2, v3"
                 )));
             }
             Ok(Op::Hello {
                 proto: crate::PROTO,
                 client,
                 contract,
+                workspace,
             })
         }
         "toc" => {

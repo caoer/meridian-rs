@@ -544,6 +544,9 @@ fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
         server: crate::SERVER_NAME.to_string(),
         caps: crate::CAPS.iter().map(ToString::to_string).collect(),
         root: ambient_root(root).ok(),
+        // The sidecar runs one workspace per process and opens its drawer
+        // client-side; the resident daemon is the one that pins storage (§4).
+        storage: None,
     }
 }
 

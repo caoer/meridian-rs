@@ -1,9 +1,10 @@
 //! E2E gates for the resident daemon's wire read ops over the unified socket
-//! (decision 0002, U2). A real client `attach`es a workspace — warming its
-//! resident engine — then gets correct `toc`/`links`/`resolve`/`root`/`diff`
-//! answers from that warm state. A second `attach` at an unchanged corpus
-//! answers `reused`: the warm-vs-cold trace that PROVES the corpus was not
-//! reparsed (U1's residency, served over the socket).
+//! (decision 0002, U2 — the binding folded onto `hello` at U3). A real client
+//! `hello`s a workspace — resolving, pinning, and warming its resident engine —
+//! then gets correct `toc`/`links`/`resolve`/`root`/`diff` answers from that
+//! warm state, all on the SAME connection. Warm reuse (no reparse) is proven via
+//! the in-process handle: after the socket reads, `warm_or_build` answers
+//! `Reused` (U1's residency, served over the socket).
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -45,9 +46,9 @@ fn write_ws(tmp: &TempDir, files: &[(&str, &str)]) -> PathBuf {
     ws
 }
 
-/// A persistent connection speaking raw NDJSON: `attach` binds the workspace,
+/// A persistent connection speaking raw NDJSON: `hello` binds the workspace,
 /// then the wire read ops ride the SAME connection (the per-connection binding
-/// U3 folds into `hello`).
+/// the handshake sets up).
 struct Conn {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -73,28 +74,34 @@ impl Conn {
         serde_json::from_str(&response).unwrap()
     }
 
-    fn attach(&mut self, ws: &Path) -> Value {
-        self.call(&json!({"op": "attach", "workspace": ws.to_str().unwrap()}))
+    /// The resident-engine handshake: bind `ws`, warming its engine, over v3.
+    fn hello(&mut self, ws: &Path) -> Value {
+        self.call(&json!({
+            "op": "hello",
+            "proto": 1,
+            "contract": "v3",
+            "workspace": ws.to_str().unwrap(),
+        }))
     }
 }
 
-/// The spine gate: attach warms the resident engine, `toc`/`links` answer
-/// correctly from that warm state, and a second attach at the unchanged corpus
-/// answers `reused` — the warm-vs-cold trace (no reparse).
+/// The spine gate: `hello` binds + warms the resident engine, `toc`/`links`
+/// answer correctly from that warm state, and warm reuse (no reparse) is proven
+/// via the in-process handle after the socket reads.
 #[test]
-fn attach_warms_then_toc_and_links_serve_from_the_resident_engine() {
+fn hello_binds_then_toc_and_links_serve_from_the_resident_engine() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(&tmp, &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // Cold attach → Built{docs:2} (one parse per doc).
-    let ack = conn.attach(&ws);
-    assert_eq!(ack["ok"], json!(true), "attach ok: {ack}");
-    assert_eq!(
-        ack["outcome"]["built"]["docs"],
-        json!(2),
-        "cold attach builds the corpus (2 docs): {ack}"
+    // Hello binds the workspace, pins storage, warms the engine, negotiates v3.
+    let ack = conn.hello(&ws);
+    assert_eq!(ack["ok"], json!(true), "hello ok: {ack}");
+    assert_eq!(ack["body"]["proto"], json!(1), "v3 speaks proto 1: {ack}");
+    assert!(
+        ack["body"]["storage"].is_string(),
+        "hello pins a storage drawer: {ack}"
     );
 
     // toc a.md — served from the resident engine, correct shape.
@@ -116,17 +123,12 @@ fn attach_warms_then_toc_and_links_serve_from_the_resident_engine() {
         "the resident index resolves [[b]] → b.md: {links}"
     );
 
-    // Second attach at the unchanged corpus → reused: PROOF the second query
-    // path skips the re-parse (the parse-heavy build ran only on the cold attach).
-    let ack2 = conn.attach(&ws);
-    assert_eq!(
-        ack2["outcome"],
-        json!("reused"),
-        "the warm engine is reused — no reparse: {ack2}"
-    );
+    // A second hello at the unchanged corpus stays ok (idempotent bind).
+    assert_eq!(conn.hello(&ws)["ok"], json!(true), "re-hello ok");
 
-    // Independent confirmation over the in-process handle: after the socket
-    // reads, warming again parses nothing.
+    // The no-reparse proof rides the in-process handle: after the socket reads
+    // and the second hello, warming again parses NOTHING (the warm engine is
+    // reused — `Reused` reaches no parse site).
     assert_eq!(
         server.registry().warm_or_build(&ws).unwrap(),
         registry::WarmOutcome::Reused,
@@ -144,43 +146,56 @@ fn corpus_change_rebuilds_once_then_reuses() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    assert_eq!(conn.attach(&ws)["outcome"]["built"]["docs"], json!(2));
-    assert_eq!(conn.attach(&ws)["outcome"], json!("reused"));
+    // Hello binds + warms; its response carries the warm engine's ambient root.
+    let before = conn.hello(&ws)["body"]["root"]
+        .as_str()
+        .expect("hello carries the warm root")
+        .to_string();
+    assert_eq!(
+        server.registry().warm_or_build(&ws).unwrap(),
+        registry::WarmOutcome::Reused,
+        "unchanged corpus reuses the warm engine (zero parses)"
+    );
 
     // Mutate a file → the corpus content hash changes.
     fs::write(ws.join("a.md"), "# A changed\n\nnew body\n").unwrap();
 
-    // Exactly one rebuild on the next attach, then warm reuse resumes.
-    assert_eq!(
-        conn.attach(&ws)["outcome"]["built"]["docs"],
-        json!(2),
-        "a corpus change rebuilds once"
+    // The next hello re-reads disk: its ambient root moves to the new fingerprint.
+    let after = conn.hello(&ws)["body"]["root"]
+        .as_str()
+        .expect("hello carries the warm root")
+        .to_string();
+    assert_ne!(
+        before, after,
+        "a corpus change moves the warm engine's root"
     );
+
+    // The rebuild was once, not a storm: warm reuse resumes at the new fingerprint.
     assert_eq!(
-        conn.attach(&ws)["outcome"],
-        json!("reused"),
-        "the rebuild is once, not a storm"
+        server.registry().warm_or_build(&ws).unwrap(),
+        registry::WarmOutcome::Reused,
+        "the rebuild is once — reuse resumes at the new fingerprint"
     );
 
     server.shutdown();
 }
 
-/// A wire read op before any `attach` is refused loudly — the connection has no
-/// workspace to serve from.
+/// A wire read op before any `hello` is refused loudly — the connection has no
+/// workspace bound to serve from.
 #[test]
-fn read_op_without_attach_is_refused() {
+fn read_op_without_hello_is_refused() {
     let tmp = TempDir::new().unwrap();
     write_ws(&tmp, &[("a.md", "# A\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
     let toc = conn.call(&json!({"op": "toc", "path": "a.md"}));
-    assert_eq!(toc["ok"], json!(false), "unattached read is refused: {toc}");
+    assert_eq!(toc["ok"], json!(false), "unbound read is refused: {toc}");
     assert!(
         toc["error"]["message"]
             .as_str()
-            .is_some_and(|m| m.contains("attach")),
-        "the refusal names the missing attach: {toc}"
+            .is_some_and(|m| m.contains("hello")),
+        "the refusal names the missing hello: {toc}"
     );
 }
 
@@ -193,7 +208,7 @@ fn resolve_root_and_diff_answer_over_the_socket() {
     let ws = write_ws(&tmp, &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
-    conn.attach(&ws);
+    conn.hello(&ws);
 
     // resolve the raw linktext `b` from a.md → b.md (the app-compatible walk).
     let resolved = conn.call(&json!({"op": "resolve", "from": "a.md", "ref": "b"}));

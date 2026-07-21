@@ -59,6 +59,11 @@ message HelloRequest {
   // client-DECLARED contract rev. Additive field, never renumbered — absent
   // or "v2" is the frozen v2 vocabulary, "v3" the fingerprint vocabulary.
   optional string contract = 3;
+  // Resident-engine handshake ([[0002-resident-daemon]] §4): the host path the
+  // client binds this connection to — the daemon resolves it (ancestor walk),
+  // pins its storage drawer, and warms its resident engine. Additive, never
+  // renumbered; absent ⇒ a pure version handshake that binds nothing.
+  optional string workspace = 4;
 }
 
 message TocRequest {
@@ -319,6 +324,11 @@ message HelloResponse {
   repeated string caps = 3;
   // Optional first ambient root (the engine may not have walked yet) — v2 §3.2.
   optional string root = 4;
+  // The pinned storage drawer ([[0002-resident-daemon]] §4 storage pin): the
+  // cache drawer directory the daemon pinned for the hello'd workspace, via the
+  // canonicalize → deny-ceiling → sentinel path. Additive, never renumbered;
+  // absent on a workspace-less handshake and on the sidecar.
+  optional string storage = 5;
 }
 
 message TocResponse {
