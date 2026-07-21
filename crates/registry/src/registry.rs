@@ -42,6 +42,24 @@ pub enum ResolveOutcome {
     Miss,
 }
 
+/// The outcome of a [`Registry::pin`] call (decision 0002 §4, U3 hello).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinOutcome {
+    /// The workspace resolved (ancestor walk) or was pinned fresh: the canonical
+    /// workspace root plus its storage drawer directory (the storage pin the
+    /// hello response reports).
+    Pinned {
+        /// The canonical workspace root — the same key `inner` and `engines` use.
+        workspace: PathBuf,
+        /// The pinned drawer directory ([`cache::drawer_dir`]).
+        drawer: PathBuf,
+    },
+    /// The deny ceiling refused the workspace-target.
+    Denied(DenyKind),
+    /// The target could not be canonicalized, or the sentinel write failed.
+    Error(String),
+}
+
 /// The daemon's workspace registry: the guarded map plus the state store and
 /// the drawer cache root.
 ///
@@ -146,6 +164,35 @@ impl Registry {
             }
         }
         ResolveOutcome::Miss
+    }
+
+    /// Resolve + pin storage for a hello workspace-target (decision 0002 §4, U3).
+    ///
+    /// Folds the ancestor-walk resolve and the storage pin into one step:
+    /// - [`resolve`](Self::resolve) walks `target` and its ancestors for a
+    ///   registered workspace; a hit is already pinned, so its canonical path is
+    ///   used directly (no second registration under an already-registered root);
+    /// - a miss pins `target` fresh via [`register`](Self::register) — the SAME
+    ///   canonicalize → deny-ceiling → drawer-sentinel path (risk R2: reuse the
+    ///   one registration path, never a second copy).
+    ///
+    /// Returns the canonical workspace root and its drawer directory
+    /// ([`cache::drawer_dir`]) — the storage pin the hello response reports. Does
+    /// NOT warm the engine; the caller warms and binds the connection
+    /// ([`warm_or_build`](Self::warm_or_build)).
+    pub fn pin(&self, target: &Path) -> PinOutcome {
+        let workspace = match self.resolve(target) {
+            ResolveOutcome::Adopted(entry) => entry.workspace,
+            ResolveOutcome::Miss => match self.register(target) {
+                RegisterOutcome::Registered(entry) | RegisterOutcome::Adopted(entry) => {
+                    entry.workspace
+                }
+                RegisterOutcome::Denied(reason) => return PinOutcome::Denied(reason),
+                RegisterOutcome::Error(message) => return PinOutcome::Error(message),
+            },
+        };
+        let drawer = cache::drawer_dir(&self.cache_root, &workspace);
+        PinOutcome::Pinned { workspace, drawer }
     }
 
     /// Warm the resident query engine for `workspace`, rebuilding it ONLY when

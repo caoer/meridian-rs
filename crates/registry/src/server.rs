@@ -30,9 +30,9 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use wire::{ErrorBody, ErrorCode, Op, ResponseBody, ResponsePayload, Root};
 
-use crate::engine::{WarmOutcome, WorkspaceEngine};
+use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
-use crate::registry::{RegisterOutcome, Registry, ResolveOutcome};
+use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
 use crate::{DEFAULT_IDLE_REAP, DEFAULT_REAP_INTERVAL, now_secs};
 
@@ -323,17 +323,18 @@ fn spawn_reaper(
 /// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — the
 ///   workspace-registry verbs the `Client` drives, daemon-internal and absent
 ///   from any wire `caps` (so the 108da20a v3 proxy sees no change);
-/// - **`attach`** — daemon-internal: bind this connection to a workspace and
-///   warm its resident engine, so the wire read ops know which corpus to serve
-///   (U3 FOLDS this into `hello` and DELETES the standalone op — no parallel
-///   paths; see the task Gate Results);
+/// - **`hello`** — the resident-engine handshake (§4): assert the contract rev,
+///   resolve the workspace-target, pin its storage, warm its resident engine,
+///   and BIND this connection to it, so the wire read ops know which corpus to
+///   serve. This is the U3 fold — `hello` subsumes the old daemon-internal
+///   `attach` op, which is deleted (§5, no parallel paths);
 /// - **wire read ops** (`toc`/`cat`/`extract`/`links`/`root`/`diff`/`resolve`)
-///   — the frozen contract, strict-decoded and served from the attached
+///   — the frozen contract, strict-decoded and served from the bound
 ///   workspace's warm engine.
 fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
-    // The connection's attached workspace (canonical path), set by `attach`.
+    // The connection's bound workspace (canonical path), set by `hello`.
     // Per-connection, so concurrent clients target different workspaces.
     let mut attached: Option<PathBuf> = None;
     for line in reader.lines() {
@@ -375,7 +376,7 @@ fn handle_line(registry: &Registry, attached: &mut Option<PathBuf>, line: &str) 
                 }),
             }
         }
-        Some("attach") => to_line(&attach(registry, attached, &obj)),
+        Some("hello") => to_line(&hello(registry, attached, &obj)),
         _ => to_line(&serve_wire(registry, attached.as_deref(), &obj)),
     }
 }
@@ -420,65 +421,101 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
     }
 }
 
-/// The `attach` ack (daemon-internal). Binds the connection to a workspace and
-/// warms its resident engine; `outcome` is the warm-vs-cold trace — a second
-/// `attach` at an unchanged corpus answers `reused`, proving no reparse.
-#[derive(Debug, Serialize)]
-struct AttachAck {
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    attached: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome: Option<WarmOutcome>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
+/// The resident daemon's `hello` server identity (v2 §3.2 server name).
+const SERVER_NAME: &str = "meridian-daemon/0.1";
 
-/// Bind the connection to `workspace` and warm its resident engine. Canonicalizes
-/// first (the engine key and the wire read ops share the canonical path), then
-/// `warm_or_build`. A failure is reported in the ack's `error` and leaves the
-/// connection unattached.
-fn attach(
+/// The capability set the resident daemon serves (v2 §3.2 discovery honesty):
+/// exactly the wire read ops answered from the resident engine. NOT `splice`
+/// (W1), NOT `sub` (P2), and `hello` itself is answered but is not a cap — an op
+/// is in `caps` or answers `unknown_op`, never both. Field-only caps
+/// (`resolve.content`, `links.require_root`) name the amendments the arms honor.
+const CAPS: [&str; 9] = [
+    "toc",
+    "cat",
+    "extract",
+    "resolve",
+    "resolve.content",
+    "links",
+    "links.require_root",
+    "root",
+    "diff",
+];
+
+/// The resident-engine handshake (§4, U3): strict-decode the `hello` (asserting
+/// the contract rev — an unknown declared rev is `bad_request` at decode), then
+/// resolve the workspace-target, pin its storage, warm its resident engine, and
+/// BIND this connection to it — one round trip. This is the fold that subsumes
+/// the deleted `attach` op (bind + warm) and adds resolve + pin. Renders the
+/// frozen wire `hello` body (echoing `id`).
+fn hello(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
     obj: &Map<String, Value>,
-) -> AttachAck {
-    let Some(ws) = obj.get("workspace").and_then(Value::as_str) else {
-        return AttachAck {
-            ok: false,
-            attached: None,
-            outcome: None,
-            error: Some("`attach` requires a `workspace` string".into()),
-        };
+) -> wire::Response {
+    let id = obj.get("id").and_then(Value::as_u64);
+    let body = match wire_serve::decode::decode(obj) {
+        Ok(Op::Hello { workspace, .. }) => hello_body(registry, attached, workspace),
+        // Only `op == "hello"` frames route here, and their decode is a
+        // `Hello`; any other decoded op is a routing invariant break.
+        Ok(_) => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
+        Err(error) => Err(error),
     };
-    let canonical = match workspace::canonicalize(Path::new(ws)) {
-        Ok(canonical) => canonical,
-        Err(e) => {
-            return AttachAck {
-                ok: false,
-                attached: None,
-                outcome: None,
-                error: Some(format!("cannot canonicalize {ws} ({e})")),
-            };
-        }
-    };
-    match registry.warm_or_build(&canonical) {
-        Ok(outcome) => {
-            *attached = Some(canonical.clone());
-            AttachAck {
-                ok: true,
-                attached: Some(canonical),
-                outcome: Some(outcome),
-                error: None,
-            }
-        }
-        Err(e) => AttachAck {
+    match body {
+        Ok(body) => wire::Response {
+            id,
+            ok: true,
+            payload: ResponsePayload::Body { body },
+        },
+        Err(error) => wire::Response {
+            id,
             ok: false,
-            attached: None,
-            outcome: None,
-            error: Some(format!("cannot warm {} ({e})", canonical.display())),
+            payload: ResponsePayload::Error { error: *error },
         },
     }
+}
+
+/// Resolve + pin + warm + bind the connection for a `hello`'s workspace-target.
+///
+/// A workspace-less hello is a pure version handshake: negotiate `proto` + list
+/// `caps`, bind and pin nothing. With a target, the storage pin reuses the
+/// registry's one canonicalize → deny-ceiling → sentinel path (risk R2, via
+/// [`Registry::pin`]); the warm reflects current disk (U1 residency); the bind
+/// swaps the read ops' corpus source from the deleted `attach` to `hello`.
+fn hello_body(
+    registry: &Registry,
+    attached: &mut Option<PathBuf>,
+    workspace: Option<String>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let (root, storage) = match workspace {
+        None => (None, None),
+        Some(target) => match registry.pin(Path::new(&target)) {
+            PinOutcome::Pinned { workspace, drawer } => {
+                registry
+                    .warm_or_build(&workspace)
+                    .map_err(|e| warm_err_to_wire(&e))?;
+                let root = registry.with_engine(&workspace, |engine| engine.map(engine_root));
+                *attached = Some(workspace);
+                (root, Some(drawer.to_string_lossy().into_owned()))
+            }
+            PinOutcome::Denied(reason) => {
+                return Err(wire_serve::bad_request(format!(
+                    "cannot pin `{target}` as a workspace: it is the {reason} (deny ceiling)"
+                )));
+            }
+            PinOutcome::Error(message) => {
+                let mut e = ErrorBody::new(ErrorCode::IoError);
+                e.cause = Some(message);
+                return Err(Box::new(e));
+            }
+        },
+    };
+    Ok(ResponseBody::Hello {
+        proto: wire_serve::PROTO,
+        server: SERVER_NAME.to_string(),
+        caps: CAPS.iter().map(ToString::to_string).collect(),
+        root,
+        storage,
+    })
 }
 
 /// Strict-decode one wire read op and serve it from the attached workspace's
@@ -516,7 +553,7 @@ fn dispatch_read(
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let Some(ws) = attached else {
         return Err(wire_serve::bad_request(
-            "no workspace attached — send `attach` first",
+            "no workspace bound — send `hello` with a `workspace` first",
         ));
     };
     match op {
@@ -574,9 +611,10 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
-        // Not served by the resident daemon at U2: hello = U3, splice = W1,
-        // sub = P2. §3.2 discovery honesty — an op is served or answers
-        // `unknown_op`.
+        // `hello` is intercepted upstream in `handle_line` (the handshake binds
+        // the connection), so it never reaches here. `splice` = W1, `sub` = P2
+        // are not served yet — §3.2 discovery honesty: an op is served or
+        // answers `unknown_op`.
         Op::Hello { .. } | Op::Splice { .. } | Op::Sub { .. } => {
             Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
         }
