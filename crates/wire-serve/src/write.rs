@@ -259,13 +259,39 @@ fn model_edits_and_before_facts(
     let mut before_facts = Vec::with_capacity(edits.len());
     for edit in edits {
         let target = to_model_ref(&edit.target)?;
-        let resolved = model::resolve(doc, &target).map_err(|e| {
-            Box::new(match e {
-                model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
-                model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, c.len()),
-            })
-        })?;
-        before_facts.push(resolved);
+        // `put at:upsert` is the ONE create-or-replace shape: the `fm_key` may
+        // not exist yet, so its BEFORE fact is SYNTHESIZED (`fm_upsert_before` —
+        // the existing line's rev, or the empty insertion point's rev for a
+        // create) rather than resolved; a plain `resolve` would `ref_not_found`
+        // on the very key the upsert is about to create. Two guards fence the
+        // verb to its domain (design): the target MUST be an `fm_key`, and the
+        // value MUST be single-line — the server composes `{key}: {value}`, so a
+        // newline in the value would forge extra frontmatter lines.
+        let before = if let EditShape::Put {
+            at: PutAt::Upsert,
+            text,
+        } = &edit.edit
+        {
+            let model::Ref::FmKey(key) = &target else {
+                return Err(bad_request(
+                    "put at:upsert is valid only on an fm_key target",
+                ));
+            };
+            if text.contains(['\n', '\r']) {
+                return Err(bad_request(
+                    "put at:upsert value must be single-line (no newline)",
+                ));
+            }
+            model::fm_upsert_before(doc, key)
+        } else {
+            model::resolve(doc, &target).map_err(|e| {
+                Box::new(match e {
+                    model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
+                    model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, c.len()),
+                })
+            })?
+        };
+        before_facts.push(before);
         model_edits.push(model::Edit {
             target,
             edit: match &edit.edit {
@@ -278,6 +304,7 @@ fn model_edits_and_before_facts(
                         PutAt::All => model::PutAt::All,
                         PutAt::Content => model::PutAt::Content,
                         PutAt::End => model::PutAt::End,
+                        PutAt::Upsert => model::PutAt::Upsert,
                     },
                     text: text.clone(),
                 },

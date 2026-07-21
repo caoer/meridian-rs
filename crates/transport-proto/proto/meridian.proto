@@ -144,6 +144,9 @@ enum PutAt {
   PUT_AT_ALL = 1;
   PUT_AT_CONTENT = 2;
   PUT_AT_END = 3;
+  // upsert: set a frontmatter key (create-or-replace) — valid only on an
+  // fm_key target; text is the VALUE, the server composes `{key}: {value}`.
+  PUT_AT_UPSERT = 4;
 }
 
 // v2 §4.7: no parameters — the root is world-grain (the only root guard is

@@ -1027,8 +1027,13 @@ pub fn validate_batch(
         // before-rev (§5.1) — the existing line's rev, or the empty insertion
         // point's rev for a create. Non-`fm_key` upserts fall through to the
         // normal path (the dispatch write path refuses them first).
-        if let (EditKind::Put { at: PutAt::Upsert, text: value }, Ref::FmKey(key)) =
-            (&edit.edit, &edit.target)
+        if let (
+            EditKind::Put {
+                at: PutAt::Upsert,
+                text: value,
+            },
+            Ref::FmKey(key),
+        ) = (&edit.edit, &edit.target)
         {
             let plan = plan_fm_upsert(doc, key, value);
             if let Some(expected) = &edit.if_node_rev
