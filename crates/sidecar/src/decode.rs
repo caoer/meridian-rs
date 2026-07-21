@@ -23,17 +23,28 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     };
     match op {
         "hello" => {
-            check_fields(obj, op, &["proto", "client"])?;
+            check_fields(obj, op, &["proto", "client", "contract"])?;
             let proto = req_u64(obj, op, "proto")?;
             let client = opt_str(obj, op, "client")?;
+            let contract = opt_str(obj, op, "contract")?;
             if proto != u64::from(crate::PROTO) {
                 let mut e = ErrorBody::new(ErrorCode::UnsupportedProto);
                 e.supported = Some(vec![crate::PROTO]);
                 return Err(Box::new(e));
             }
+            // v3-amendment negotiation: an unknown DECLARED rev is refused LOUD,
+            // never a silent fallback (docs/wire-contract-v3-amendment.md).
+            if let Some(rev) = &contract
+                && !crate::rev::Rev::is_known(rev)
+            {
+                return Err(bad_request(format!(
+                    "unknown contract rev `{rev}`: this sidecar speaks v2, v3"
+                )));
+            }
             Ok(Op::Hello {
                 proto: crate::PROTO,
                 client,
+                contract,
             })
         }
         "toc" => {

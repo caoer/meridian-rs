@@ -55,6 +55,10 @@ message Request {
 message HelloRequest {
   uint32 proto = 1;
   optional string client = 2;
+  // v3-amendment negotiation (docs/wire-contract-v3-amendment.md): the
+  // client-DECLARED contract rev. Additive field, never renumbered — absent
+  // or "v2" is the frozen v2 vocabulary, "v3" the fingerprint vocabulary.
+  optional string contract = 3;
 }
 
 message TocRequest {

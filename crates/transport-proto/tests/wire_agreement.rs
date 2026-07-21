@@ -296,9 +296,15 @@ fn toc_node_to_pb(n: wire::TocNode) -> pb::TocNode {
 
 fn op_to_pb(op: wire::Op) -> pb::request::Op {
     match op {
-        wire::Op::Hello { proto, client } => {
-            pb::request::Op::Hello(pb::HelloRequest { proto, client })
-        }
+        wire::Op::Hello {
+            proto,
+            client,
+            contract,
+        } => pb::request::Op::Hello(pb::HelloRequest {
+            proto,
+            client,
+            contract,
+        }),
         wire::Op::Toc { path } => pb::request::Op::Toc(pb::TocRequest { path: path.0 }),
         wire::Op::Cat { path, sec } => pb::request::Op::Cat(pb::CatRequest {
             path: path.0,
@@ -908,9 +914,15 @@ fn toc_node_from_pb(n: pb::TocNode) -> wire::TocNode {
 
 fn op_from_pb(op: pb::request::Op) -> wire::Op {
     match op {
-        pb::request::Op::Hello(pb::HelloRequest { proto, client }) => {
-            wire::Op::Hello { proto, client }
-        }
+        pb::request::Op::Hello(pb::HelloRequest {
+            proto,
+            client,
+            contract,
+        }) => wire::Op::Hello {
+            proto,
+            client,
+            contract,
+        },
         pb::request::Op::Toc(pb::TocRequest { path }) => wire::Op::Toc {
             path: wire::Path(path),
         },
@@ -1461,6 +1473,7 @@ fn sample_requests() -> Vec<wire::Request> {
         wire::Op::Hello {
             proto: 1,
             client: Some("agreement-test".into()),
+            contract: Some("v3".into()),
         },
         wire::Op::Toc {
             path: wire::Path("tasks/x.md".into()),
