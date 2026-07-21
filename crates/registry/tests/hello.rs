@@ -106,7 +106,8 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
 
     // Caps listed — and honest: the served read ops AND the served write op
     // (splice, W1) are present; the unserved push op (sub, P2) and `hello` itself
-    // are absent (§3.2 discovery honesty).
+    // are absent (§3.2 discovery honesty). This is a v3 session, so the root
+    // capability is spelled `fingerprint` (never `root` — the amendment's rule).
     let caps: Vec<String> = body["caps"]
         .as_array()
         .expect("caps array")
@@ -114,17 +115,24 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         .map(|c| c.as_str().unwrap().to_string())
         .collect();
     for served in [
-        "toc", "cat", "extract", "resolve", "links", "root", "diff", "splice",
+        "toc",
+        "cat",
+        "extract",
+        "resolve",
+        "links",
+        "fingerprint",
+        "diff",
+        "splice",
     ] {
         assert!(
             caps.contains(&served.to_string()),
             "caps list `{served}`: {hi}"
         );
     }
-    for absent in ["hello", "sub"] {
+    for absent in ["hello", "sub", "root"] {
         assert!(
             !caps.contains(&absent.to_string()),
-            "caps must not list `{absent}` (§3.2 discovery honesty): {hi}"
+            "caps must not list `{absent}` (§3.2 discovery honesty; v3 hides `root`): {hi}"
         );
     }
 
@@ -266,9 +274,15 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
         hi["body"]["storage"].is_null(),
         "a workspace-less hello pins nothing: {hi}"
     );
+    // v3 session: the binding cursor is spelled `fingerprint`, and it is absent
+    // (nothing bound) — never `root`.
+    assert!(
+        hi["body"]["fingerprint"].is_null(),
+        "a workspace-less hello binds nothing: {hi}"
+    );
     assert!(
         hi["body"]["root"].is_null(),
-        "a workspace-less hello binds nothing: {hi}"
+        "a v3 hello never spells `root`: {hi}"
     );
 
     // Nothing bound → a read op is refused loudly.
