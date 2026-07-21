@@ -6,12 +6,13 @@
 # The cargo correctness lane lives in ci.yml (fmt/clippy/test/deny); this lane
 # is delivery only — it proves the flake builds AND seeds the cache.
 #
-# AUDIT BOUNDARY (D2 security-F1): the cachix PUSH is gated to tag events +
-# manual workflow_dispatch — the controlled/audited delivery events. Branch and
-# PR runs BUILD (flake-builds coverage) but push NOTHING, so a dev-branch push
-# can neither seed nor poison ccc.cachix.org. ccc-statusd's release stays
+# AUDIT BOUNDARY (D2 security-F1): cachix PUSH is allowed on main, tags, and
+# manual workflow_dispatch — the controlled delivery events. Branch (infra/**)
+# and PR runs BUILD (flake-builds coverage) but push NOTHING, so a dev-branch
+# push can neither seed nor poison ccc.cachix.org. ccc-statusd's release stays
 # pull-only (--max-jobs 0) and ships the exact bytes pushed here. Action refs are
 # SHA-pinned (a moved tag can't swap the action under a write token).
+# Push to main always triggers this workflow (build + cache seed).
 name: nix
 
 on:
@@ -38,8 +39,8 @@ jobs:
         with:
           name: ccc
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          # Push only on tag events or manual dispatch (see AUDIT BOUNDARY above).
-          skipPush: ${{ github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}
+          # Push on main / tags / workflow_dispatch only (see AUDIT BOUNDARY).
+          skipPush: ${{ github.ref != 'refs/heads/main' && github.ref_type != 'tag' && github.event_name != 'workflow_dispatch' }}
       - name: Build sidecar (dynamic)
         run: nix build .#sidecar -L
       # Fleet-portable STATIC musl linux binary — the installer/R2 delivery pulls
