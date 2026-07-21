@@ -12,7 +12,7 @@
 //! surface), so round-1 reports them as `n/a (round-2 async executor)`.
 //!
 //! Daemon absent ⇒ no daemon-memory telemetry exists; the command reports the
-//! last-built stamp from the cold `view.duckdb` if present, else NO_VIEW.
+//! last-built stamp from the cold `view.duckdb` if present, else `NO_VIEW`.
 
 use std::path::{Path, PathBuf};
 
@@ -65,14 +65,13 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
         match flag {
             "--json" => json = true,
             "--cwd" => {
-                let v = match inline {
-                    Some(v) => v,
-                    None => {
-                        i += 1;
-                        tail.get(i)
-                            .cloned()
-                            .ok_or_else(|| Fail::tool("--cwd needs a value".to_owned()))?
-                    }
+                let v = if let Some(v) = inline {
+                    v
+                } else {
+                    i += 1;
+                    tail.get(i)
+                        .cloned()
+                        .ok_or_else(|| Fail::tool("--cwd needs a value".to_owned()))?
                 };
                 cwd = Some(PathBuf::from(v));
             }
@@ -88,7 +87,7 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
 /// cold stamp read (daemon absent).
 struct Status {
     workspace: String,
-    /// `daemon` (warm) or `cold` (daemon absent) or `absent` (NO_VIEW).
+    /// `daemon` (warm) or `cold` (daemon absent) or `absent` (`NO_VIEW`).
     source: &'static str,
     as_of: Option<String>,
     state: String,
@@ -128,7 +127,7 @@ impl Status {
     }
 
     /// Build from a cold `view.duckdb` stamp (daemon absent): read the stamp's
-    /// `as_of` READ_ONLY if the file is present, else NO_VIEW. Liveness is not
+    /// `as_of` `READ_ONLY` if the file is present, else `NO_VIEW`. Liveness is not
     /// folded here (that is `mrd sql`'s job), so `state` is `UNKNOWN`.
     fn from_cold(workspace: &Path, drawer_dir: Option<&Path>) -> Self {
         let dest = drawer_dir.map(|d| d.join("view.duckdb"));
@@ -195,9 +194,9 @@ impl Status {
     }
 }
 
-/// Read a cold `view.duckdb`'s `_meridian_view.as_of_fingerprint` READ_ONLY. A
+/// Read a cold `view.duckdb`'s `_meridian_view.as_of_fingerprint` `READ_ONLY`. A
 /// present `.wal` sidecar OR a non-read-only file ⇒ do NOT open (B1 reader-side)
-/// → `None` (reported as NO_VIEW / absent stamp).
+/// → `None` (reported as `NO_VIEW` / absent stamp).
 fn cold_as_of(path: &Path) -> Option<String> {
     if crate::sql::wal_present(path) || !crate::sql::is_read_only(path) {
         return None;

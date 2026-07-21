@@ -47,8 +47,8 @@ use crate::{Fail, current_dir};
 /// The buffered top-level JSON document's schema version (OD9).
 const JSON_SCHEMA_VERSION: u32 = 1;
 
-/// The `local` (trusted) profile RAM cap — generous, only to avoid OOMing the
-/// box; the user already has a shell (B5).
+/// The `local` (trusted) profile RAM cap — generous, only to avoid exhausting
+/// host RAM; the user already has a shell (B5).
 const LOCAL_MEMORY_LIMIT: &str = "4GB";
 /// The `agent` (untrusted) profile RAM cap (B5).
 const AGENT_MEMORY_LIMIT: &str = "512MB";
@@ -252,7 +252,7 @@ struct Frame {
 }
 
 impl Frame {
-    /// The empty NO_VIEW frame (§Q3 — loud, never empty-as-if-fresh).
+    /// The empty `NO_VIEW` frame (§Q3 — loud, never empty-as-if-fresh).
     fn no_view(profile: ExecProfile, message: String) -> Self {
         Frame {
             as_of: None,
@@ -279,8 +279,8 @@ impl Frame {
 ///
 /// # Errors
 /// The cwd/workspace cannot be resolved, the view cannot be opened, or (in human
-/// mode) the SQL fails. A NO_VIEW/STALE/UNVERIFIED frame is a success, not an
-/// error — the frame is the honest report.
+/// mode) the SQL fails. A `NO_VIEW`/`STALE`/`UNVERIFIED` frame is a success, not
+/// an error — the frame is the honest report.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
     let frame = execute(&args)?;
@@ -484,6 +484,7 @@ fn wal_path(path: &Path) -> PathBuf {
 /// Query a published `view.duckdb` under the §Q3 buffered order. On a B1 refusal
 /// the file is NOT opened — degrade to an ephemeral build (a managed reader never
 /// replays a dead generation or reads a half-written file).
+#[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
 fn query_published(
     path: &Path,
     workspace: &Path,
@@ -659,6 +660,7 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
 
 /// Assemble an ephemeral-build frame (always `live_source=fold`; daemonless, so
 /// `changes_seq` is omitted).
+#[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
 fn ephemeral_frame(
     as_of: String,
     live: String,
@@ -692,7 +694,7 @@ struct EphemeralRun {
     error: Option<String>,
 }
 
-/// An ephemeral-build failure: a genuinely absent corpus (NO_VIEW) vs a real
+/// An ephemeral-build failure: a genuinely absent corpus (`NO_VIEW`) vs a real
 /// tool failure.
 enum EphemeralError {
     NoCorpus(String),
@@ -745,7 +747,7 @@ fn read_as_of(conn: &Connection) -> Result<String, Fail> {
 }
 
 /// Apply the `--execution-profile` resource limits (B5). Order is load-bearing
-/// for `agent`: the view is already ATTACHed (external access still on), then set
+/// for `agent`: the view is already attached `READ_ONLY` (external access still on), then set
 /// the caps, then disable external access, then LOCK the configuration so
 /// untrusted SQL cannot re-raise any of it. There is **no** `statement_timeout`
 /// pragma — a wall-clock cap is the parent's process kill (OD9).
@@ -785,8 +787,7 @@ fn run_user_query(
         for i in 0..n {
             let name = stmt_ref
                 .column_name(i)
-                .map(String::clone)
-                .unwrap_or_else(|_| format!("col{i}"));
+                .map_or_else(|_| format!("col{i}"), String::clone);
             let ty = arrow_type_name(&stmt_ref.column_type(i));
             cols.push(ColMeta { name, ty });
         }
@@ -877,9 +878,10 @@ fn json_f64(f: f64) -> Value {
 
 /// Lowercase hex of a byte slice (BLOB rendering).
 fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -1069,6 +1071,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)] // `stale` and `state` are both design vocabulary
     fn freshness_maps_states() {
         let (src, stale, state, live) = freshness("b3:x", "b3:x", false);
         assert!(matches!(src, LiveSource::Fold));
@@ -1135,7 +1138,7 @@ mod tests {
     /// Gate 15 (B5): the `agent` sandbox blocks file reads
     /// (`enable_external_access=false`), freezes settings
     /// (`lock_configuration=true`), and there is NO `statement_timeout` pragma on
-    /// this DuckDB — a wall-clock cap is the parent's process kill (OD9).
+    /// this `DuckDB` — a wall-clock cap is the parent's process kill (OD9).
     #[test]
     fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
         let conn = Connection::open_in_memory().unwrap();

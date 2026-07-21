@@ -1,4 +1,4 @@
-//! V3 gates for `mrd sql` / `mrd view status` — the client side of the DuckDB
+//! V3 gates for `mrd sql` / `mrd view status` — the client side of the `DuckDB`
 //! view-organ (design `tournament-duckdb/team-a` §Q5). The real binary
 //! (`CARGO_BIN_EXE_mrd`) is driven over its process boundary with an isolated
 //! cache root (`XDG_CACHE_HOME`) + `HOME`; `MERIDIAN_DAEMON_BIN=/nonexistent`
@@ -27,7 +27,7 @@ fn mrd_bin() -> &'static str {
 
 /// An isolated cache root + HOME under one tempdir.
 struct Sandbox {
-    _tmp: tempfile::TempDir,
+    tmp: tempfile::TempDir,
     cache_home: PathBuf,
     home: PathBuf,
     cache_root: PathBuf,
@@ -40,7 +40,7 @@ fn sandbox() -> Sandbox {
     std::fs::create_dir_all(&home).expect("home");
     let cache_root = cache_home.join("meridian");
     Sandbox {
-        _tmp: tmp,
+        tmp,
         cache_home,
         home,
         cache_root,
@@ -85,7 +85,7 @@ impl Sandbox {
 /// A tier-2 (marker) workspace `ws` seeded with `files` — both `mrd` and the
 /// daemon resolve it to the same canonical directory (marker-anchored).
 fn write_marker_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
-    let ws = sb._tmp.path().join(name);
+    let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
     std::fs::write(ws.join(".meridian.toml"), "# marker\n").expect("marker");
     for (rel, content) in files {
@@ -101,7 +101,7 @@ fn write_marker_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathBuf
 
 /// A bare tier-4 workspace (no marker, no git) seeded with `files`.
 fn write_bare_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> PathBuf {
-    let ws = sb._tmp.path().join(name);
+    let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
     for (rel, content) in files {
         std::fs::write(ws.join(rel), content).expect("write");
@@ -292,7 +292,7 @@ fn q5_stale_surfaces_after_mutation_both_fingerprints_travel() {
     );
 }
 
-/// Read `_meridian_view.as_of_fingerprint` from a published file (READ_ONLY).
+/// Read `_meridian_view.as_of_fingerprint` from a published file (`READ_ONLY`).
 fn read_stamp_as_of(path: &Path) -> String {
     let conn = duckdb::Connection::open_in_memory().unwrap();
     let escaped = path.to_string_lossy().replace('\'', "''");
