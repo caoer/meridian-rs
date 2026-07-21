@@ -165,7 +165,7 @@ fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Option<Value> {
 /// # Errors
 /// The daemon could not be spawned (spawn-impossible), or it was spawned but
 /// never became ready within [`SPAWN_READY_TIMEOUT`].
-fn ensure_daemon(client: &Client) -> io::Result<()> {
+pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
     }

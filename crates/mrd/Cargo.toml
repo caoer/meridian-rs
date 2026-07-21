@@ -46,6 +46,15 @@ wire-serve = { workspace = true }
 rules = { workspace = true }
 model = { workspace = true }
 syntax = { workspace = true }
+# The view-organ (V3, design tournament-duckdb/team-a §Q5). `mrd sql` links DuckDB
+# client-side: it calls the daemon's `view_path` op, opens the published RO file,
+# and for the daemon-absent degrade builds an ephemeral `:memory:` view. mrd calls
+# ONLY `view::build_memory` (never `publish` — the daemon is the sole persistent
+# writer, OD6); the C2 topology test allows `view -> mrd` (mrd is not a forbidden
+# depender). `duckdb` (bundled) is already in the graph via `view`, so no new
+# external crate enters and `cargo deny` is unchanged.
+view = { workspace = true }
+duckdb = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
