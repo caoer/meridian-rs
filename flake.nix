@@ -74,18 +74,27 @@
           };
         };
 
-      # Fully-STATIC musl sidecar for x86_64-linux — the FLEET-portable binary.
-      # The default `sidecar` above is nix-DYNAMIC (PT_INTERP=/nix/store/…-glibc/
-      # ld-linux + /nix/store lib refs) so it only runs on nix hosts / with nix-ld;
-      # foreign-Debian prod (glibc, no nix-ld) can't exec it. A musl static build
-      # has NO interpreter and links libc statically → runs on any linux. The
-      # sidecar dep tree is 0 blocking C-FFI (blake3's cc-asm builds via the musl
-      # cc below), so it links fully static clean. decisions/0006 (ZT).
+      # Fully-STATIC musl sidecar for linux (x86_64 + aarch64) — the
+      # FLEET-portable binaries. The default `sidecar` above is nix-DYNAMIC
+      # (PT_INTERP=/nix/store/…-glibc/ld-linux + /nix/store lib refs) so it only
+      # runs on nix hosts / with nix-ld; foreign-Debian prod (glibc, no nix-ld)
+      # can't exec it. A musl static build has NO interpreter and links libc
+      # statically → runs on any linux (glibc OR musl). The sidecar dep tree is 0
+      # blocking C-FFI (blake3's cc-asm builds via the musl cc below), so it links
+      # fully static clean. decisions/0006 (ZT).
       mkSidecarStatic =
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          rustTarget = "x86_64-unknown-linux-musl";
+          # musl target triple per arch; drives the fenix rust-std selection. The
+          # actual --target comes from the pkgsStatic stdenv (see below), so this
+          # MUST match pkgsStatic.stdenv.hostPlatform.rust.rustcTarget for `system`.
+          rustTarget =
+            {
+              "x86_64-linux" = "x86_64-unknown-linux-musl";
+              "aarch64-linux" = "aarch64-unknown-linux-musl";
+            }
+            .${system};
           # Fenix host toolchain (rust-version 1.96 — nixpkgs' own rustc is 1.95,
           # too old) PLUS the musl target's rust-std.
           toolchain = fenix.packages.${system}.combine [
@@ -123,7 +132,7 @@
             description = "meridian-rs sidecar — fully-static musl build (fleet-portable, runs on non-nix glibc hosts)";
             mainProgram = "sidecar";
             license = with nixpkgs.lib.licenses; [ mit asl20 ];
-            platforms = [ "x86_64-linux" ];
+            platforms = [ "x86_64-linux" "aarch64-linux" ];
           };
         };
     in
@@ -134,9 +143,10 @@
           sidecar = mkSidecar system;
           default = sidecar;
         }
-        # The static musl build only targets x86_64-linux (the fleet-portable
-        # linux binary the installer/R2 delivery ships to foreign Debian).
-        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+        # The static musl build targets linux only (x86_64 + aarch64) — the
+        # fleet-portable binaries the installer/R2 delivery ships to foreign
+        # Debian/glibc AND musl arm hosts alike.
+        // nixpkgs.lib.optionalAttrs (builtins.elem system [ "x86_64-linux" "aarch64-linux" ]) {
           sidecar-static = mkSidecarStatic system;
         }
       );
