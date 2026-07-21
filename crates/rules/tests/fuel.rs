@@ -4,7 +4,7 @@
 //! guard: if any of these hung, the suite would hang, so their passing IS the
 //! "never hangs" proof.
 
-use rules::{eval_with_limits, EvalError, EvalLimits, Rule};
+use rules::{EvalError, EvalLimits, Rule, eval_with_limits};
 
 fn tight() -> EvalLimits {
     EvalLimits {
@@ -26,7 +26,8 @@ fn run(src: &str, limits: EvalLimits) -> Result<Vec<rules::Effect>, EvalError> {
 
 #[test]
 fn runaway_while_loop_terminates_as_budget() {
-    let src = "def on_change(event):\n    x = 0\n    for _ in range(100000000):\n        x = x + 1\n";
+    let src =
+        "def on_change(event):\n    x = 0\n    for _ in range(100000000):\n        x = x + 1\n";
     assert!(matches!(run(src, tight()), Err(EvalError::Budget { .. })));
 }
 
@@ -146,7 +147,10 @@ fn source_exactly_at_cap_is_admitted() {
         max_source_bytes: src.len(),
         ..tight()
     };
-    assert!(run(src, limits).is_ok(), "a rule exactly at the cap must be admitted");
+    assert!(
+        run(src, limits).is_ok(),
+        "a rule exactly at the cap must be admitted"
+    );
     // One byte over the same cap IS refused.
     let over = format!("{src} ");
     assert!(matches!(

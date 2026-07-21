@@ -6,7 +6,7 @@
 //! panicked, proptest would fail — so a green run IS the liveness proof.
 
 use proptest::prelude::*;
-use rules::{eval_with_limits, ChangeEvent, EvalLimits, Rule};
+use rules::{ChangeEvent, EvalLimits, Rule, eval_with_limits};
 
 /// Tight limits keep each fuzz case fast (a valid infinite loop still terminates
 /// at the fuel bound, just sooner).
@@ -29,14 +29,16 @@ fn any_event() -> impl Strategy<Value = ChangeEvent> {
         ".*",
         0u32..12,
     )
-        .prop_map(|(file, sections, fields, before, after, depth)| ChangeEvent {
-            file,
-            sections_changed: sections,
-            fields_changed: fields,
-            fingerprint_before: before,
-            fingerprint_after: after,
-            depth,
-        })
+        .prop_map(
+            |(file, sections, fields, before, after, depth)| ChangeEvent {
+                file,
+                sections_changed: sections,
+                fields_changed: fields,
+                fingerprint_before: before,
+                fingerprint_after: after,
+                depth,
+            },
+        )
 }
 
 /// A vocabulary of Starlark-ish fragments, so a meaningful fraction of generated

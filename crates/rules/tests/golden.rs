@@ -5,7 +5,7 @@
 
 mod support;
 
-use rules::{eval, EffectKind};
+use rules::{EffectKind, eval};
 use support::{all_rules, event, rule};
 
 // status_binding fires when the Status section moved but the frontmatter status
@@ -28,7 +28,10 @@ fn golden_status_binding_in_sync_is_silent() {
         &event("tasks/t.md", &["Status"], &["status"], "aaa", "bbb"),
     )
     .unwrap();
-    assert!(effects.is_empty(), "in-sync change teaches nothing: {effects:?}");
+    assert!(
+        effects.is_empty(),
+        "in-sync change teaches nothing: {effects:?}"
+    );
 }
 
 // broadcast_outbox sends a fleet re-read anchored to the post-change fingerprint.
@@ -78,7 +81,10 @@ fn golden_join_arming_skips_update() {
         &event("agents/abcd1234.md", &["Notes"], &[], "old", "new"),
     )
     .unwrap();
-    assert!(effects.is_empty(), "existing-file update does not re-arm: {effects:?}");
+    assert!(
+        effects.is_empty(),
+        "existing-file update does not re-arm: {effects:?}"
+    );
 }
 
 // status_log writes a durable log line INTO the tree (the cursor-replay escape).

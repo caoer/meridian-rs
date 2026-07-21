@@ -6,7 +6,7 @@
 mod support;
 
 use proptest::prelude::*;
-use rules::{eval, ChangeEvent, Effect};
+use rules::{ChangeEvent, Effect, eval};
 use support::all_rules;
 
 /// An arbitrary change event — arbitrary paths, changed sections/fields, and
@@ -20,14 +20,16 @@ fn any_event() -> impl Strategy<Value = ChangeEvent> {
         ".*",
         0u32..12,
     )
-        .prop_map(|(file, sections, fields, before, after, depth)| ChangeEvent {
-            file,
-            sections_changed: sections,
-            fields_changed: fields,
-            fingerprint_before: before,
-            fingerprint_after: after,
-            depth,
-        })
+        .prop_map(
+            |(file, sections, fields, before, after, depth)| ChangeEvent {
+                file,
+                sections_changed: sections,
+                fields_changed: fields,
+                fingerprint_before: before,
+                fingerprint_after: after,
+                depth,
+            },
+        )
 }
 
 fn json(effects: &[Effect]) -> String {

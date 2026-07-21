@@ -2,7 +2,7 @@
 //! and descriptor-forgery attempts all resolve to TYPED errors — never a panic,
 //! never a silent wrong effect.
 
-use rules::{eval, EvalError, Rule};
+use rules::{EvalError, Rule, eval};
 
 fn ev() -> rules::ChangeEvent {
     rules::ChangeEvent::new("f.md", "a", "b")
@@ -23,10 +23,7 @@ fn malformed_syntax_is_parse_error() {
 #[test]
 fn missing_on_change_hook_is_runtime_error() {
     // Parses fine, defines no `on_change` — a rule defect, surfaced loud.
-    assert!(matches!(
-        run("x = 1\n"),
-        Err(EvalError::Runtime { .. })
-    ));
+    assert!(matches!(run("x = 1\n"), Err(EvalError::Runtime { .. })));
 }
 
 #[test]
@@ -122,7 +119,10 @@ fn first_failing_rule_fails_the_batch_loudly() {
     // A good rule then a malformed one: the batch surfaces the malformed rule's
     // typed error naming it (callers validate() at load to separate authoring
     // faults from per-event faults).
-    let good = Rule::new("good", "def on_change(event):\n    notice(message = \"ok\")\n");
+    let good = Rule::new(
+        "good",
+        "def on_change(event):\n    notice(message = \"ok\")\n",
+    );
     let bad = Rule::new("bad", "def on_change(event:\n");
     let err = eval(&[good, bad], &ev()).unwrap_err();
     assert!(matches!(err, EvalError::Parse { rule_id, .. } if rule_id == "bad"));
