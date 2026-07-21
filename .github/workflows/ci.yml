@@ -21,12 +21,14 @@ jobs:
       # C++ amalgamation from source; combined with a full `cargo test
       # --workspace` target/ and the rust-cache restore this exhausts the
       # ~14 GB free on ubuntu-latest (No space left on device). Dropping the
-      # preinstalled SDKs/toolchains + Docker images frees ~20-25 GB.
+      # preinstalled SDKs/toolchains frees ~17 GB (14 GB -> ~31 GB free).
+      # Do NOT `docker image prune` here: the cargo-deny step runs as a Docker
+      # action whose image is pre-built at job setup; pruning deletes it and
+      # the later cargo-deny step fails with "pull access denied".
       - name: reclaim disk (bundled libduckdb-sys needs headroom on ubuntu-latest)
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
           df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:

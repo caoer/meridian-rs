@@ -32,13 +32,13 @@ jobs:
       # pulls mrd -> registry -> view -> duckdb (bundled), which compiles the
       # full DuckDB C++ amalgamation from source. On ubuntu-latest (~14 GB free)
       # that plus the rust-cache restore can exhaust the disk mid-build, same as
-      # the ci lane. Dropping the preinstalled SDKs/toolchains + Docker images
-      # frees ~20-25 GB.
+      # the ci lane. Dropping the preinstalled SDKs/toolchains frees ~17 GB
+      # (14 GB -> ~31 GB free). Do NOT `docker image prune` here — it deletes
+      # pre-built Docker-action images (see the ci lane note).
       - name: reclaim disk (bundled libduckdb-sys needs headroom on ubuntu-latest)
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
-          sudo docker image prune -af
           df -h /
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
