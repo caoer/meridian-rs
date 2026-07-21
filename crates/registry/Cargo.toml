@@ -1,0 +1,51 @@
+[package]
+name = "registry"
+description = "The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server plus client library. The daemon is the sole writer of warm tier-4 registrations — canonicalize, deny-ceiling enforce, first-writer-wins insert, drawer sentinel via cache, atomic state file, idle-reap (decision 0001 round 5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The identity + safety layer: canonicalize (drawer-key input) and the
+# deny-ceiling predicate the daemon enforces on every register. Leaf crate.
+workspace = { workspace = true }
+# The hashed drawer + sentinel: the daemon writes the drawer sentinel on a
+# successful register (the single warm-registration writer). Leaf crate; its
+# DrawerLock also serves as the daemon-singleton flock (no libc edge needed).
+cache = { workspace = true }
+# The resident query engine (decision 0002 spine root U1): the daemon holds a
+# warm CorpusIndex + document map per workspace, rebuilt only when the corpus
+# content hash changes. `fs` reads + folds the snapshot and parses it into the
+# engine (the shared build primitives — one implementation with the sidecar);
+# `model` carries the resident types (CorpusIndex, Document, MerkleRoot fingerprint).
+fs = { workspace = true }
+model = { workspace = true }
+# The spine's read surface (U2): `query` serves toc/links over the resident
+# index; `syntax` is the parser the resident build folds in (via `fs`). Declared
+# here as the U1 engine's read/parse edges; the U1 gate exercises `query` over a
+# warm engine to prove the resident state answers real queries.
+query = { workspace = true }
+syntax = { workspace = true }
+# The wire contract (U2): the daemon socket now answers the frozen wire read ops
+# (toc/cat/extract/links/root/diff/resolve). `wire` is the request/response
+# vocabulary; `wire-serve` is the shared strict-decode + read-op arms, served
+# from the resident engine's borrowed state (one implementation with the sidecar).
+wire = { workspace = true }
+wire-serve = { workspace = true }
+# V2 §Q2 the view-organ (write-only leaf): the daemon is the SOLE persistent
+# builder (OD6), so the `view_path` op publishes `view.duckdb` from the warm
+# engine's docs via `view::publish` under the per-workspace publish mutex this
+# crate owns. C2 topology ALLOWS `view --> registry` (registry is not a
+# correctness/fact crate); the forbidden edge is any fact crate depending on
+# `view`, enforced by `crates/view/tests/topology_assert.rs`.
+view = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

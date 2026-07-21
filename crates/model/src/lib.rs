@@ -754,6 +754,83 @@ fn find_frontmatter(node: &Node) -> Option<&Node> {
     node.children.iter().find_map(find_frontmatter)
 }
 
+/// A planned `fm_key` upsert: the pre-batch target span (disjointness grain),
+/// the byte region to replace (zero-width for a create), the composed
+/// replacement text, and the honest before-rev the CAS guard compares.
+struct FmUpsertPlan {
+    target_span: ByteSpan,
+    region: ByteSpan,
+    text: String,
+    before_rev: NodeRev,
+}
+
+/// Plan a frontmatter-key upsert against the PRE-batch document — the
+/// create-or-replace site for `{key}: {value}` (`PutAt::Upsert`). The insertion
+/// offset is SERVER-derived (never a client byte offset, D-C1):
+/// - key present → replace its full line span; before-rev is the line's rev.
+/// - key absent, frontmatter present → insert `{key}: {value}\n` right after the
+///   opening `---\n` fence (first-key position); before-rev is the empty
+///   insertion point's rev.
+/// - no frontmatter → synthesize `---\n{key}: {value}\n---\n` at byte 0.
+fn plan_fm_upsert(doc: &Document, key: &str, value: &str) -> FmUpsertPlan {
+    let line = format!("{key}: {value}");
+    // key present → replace the whole key line (== `at:all` on the fm_key leaf).
+    if let Ok(existing) = resolve_fm_key_resolved(doc, key) {
+        return FmUpsertPlan {
+            target_span: existing.span.clone(),
+            region: existing.span,
+            text: line,
+            before_rev: existing.node_rev,
+        };
+    }
+    // A create has no prior node: the honest before-rev is the empty span's rev.
+    let empty_rev = node_rev(doc.raw.as_bytes(), &(0..0));
+    match find_frontmatter(&doc.root) {
+        Some(fm) => {
+            let at = fm_insert_offset(doc.raw.as_bytes(), &fm.span);
+            FmUpsertPlan {
+                target_span: at..at,
+                region: at..at,
+                text: format!("{line}\n"),
+                before_rev: empty_rev,
+            }
+        }
+        None => FmUpsertPlan {
+            target_span: 0..0,
+            region: 0..0,
+            text: format!("---\n{line}\n---\n"),
+            before_rev: empty_rev,
+        },
+    }
+}
+
+/// The byte offset just past a frontmatter block's opening `---\n` fence — where
+/// a new key line inserts (first-key position, keeping the block well-formed).
+/// The block always opens with `---` + a terminator (the syntax fm gate); a
+/// terminator-less block (never emitted by the parser) falls back to the block
+/// start.
+fn fm_insert_offset(bytes: &[u8], block: &ByteSpan) -> usize {
+    let mut i = block.start;
+    while i < block.end && bytes[i] != b'\n' {
+        i += 1;
+    }
+    if i < block.end { i + 1 } else { block.start }
+}
+
+/// The pre-batch armed BEFORE fact for an `fm_key` upsert target: the existing
+/// key line's span + rev when present, else the empty insertion point's span +
+/// the empty-span rev (`blake3("")[:16]` — a create has no prior node). The
+/// dispatch write path uses this to arm `node_rev_before` without re-deriving the
+/// synthesis site ([`plan_fm_upsert`]); `value` does not affect the before fact.
+#[must_use]
+pub fn fm_upsert_before(doc: &Document, key: &str) -> Target {
+    let plan = plan_fm_upsert(doc, key, "");
+    Target {
+        span: plan.target_span,
+        node_rev: plan.before_rev,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CAS-splice validation (rung 2) — validation here, execution in `fs`
 // ---------------------------------------------------------------------------
@@ -771,6 +848,13 @@ pub enum PutAt {
     /// that must begin a new line carries its own leading `\n`; a result that
     /// loses containment refuses [`SpliceVerdict::WouldCorrupt`].
     End,
+    /// Set a frontmatter key (create-or-replace) — valid ONLY on a
+    /// [`Ref::FmKey`] target. `text` is the VALUE; the server composes
+    /// `{key}: {value}` and either replaces the key's existing line, inserts a
+    /// new line into the frontmatter block, or synthesizes a `---` block when
+    /// the file has none (see [`plan_fm_upsert`]). The insertion offset is
+    /// derived from the document — never client-supplied (D-C1).
+    Upsert,
 }
 
 /// The two edit shapes (contract §4.4).
@@ -937,6 +1021,39 @@ pub fn validate_batch(
     // first failure (in edit order) is returned — the §5.2 single-error shape.
     let mut planned: Vec<PlannedEdit> = Vec::with_capacity(batch.edits.len());
     for edit in &batch.edits {
+        // Upsert on an `fm_key` target is the ONE create-or-replace shape: the
+        // key may not exist yet, so it plans BEFORE the resolve gate (which
+        // would refuse a missing key `RefNotFound`). CAS compares the honest
+        // before-rev (§5.1) — the existing line's rev, or the empty insertion
+        // point's rev for a create. Non-`fm_key` upserts fall through to the
+        // normal path (the dispatch write path refuses them first).
+        if let (
+            EditKind::Put {
+                at: PutAt::Upsert,
+                text: value,
+            },
+            Ref::FmKey(key),
+        ) = (&edit.edit, &edit.target)
+        {
+            let plan = plan_fm_upsert(doc, key, value);
+            if let Some(expected) = &edit.if_node_rev
+                && *expected != plan.before_rev
+            {
+                return SpliceVerdict::CasMismatch {
+                    expected: expected.clone(),
+                    actual: plan.before_rev,
+                };
+            }
+            if let Err(v) = guard_char_aligned(raw, &plan.region) {
+                return v;
+            }
+            planned.push(PlannedEdit {
+                target: plan.target_span,
+                region: plan.region,
+                text: plan.text,
+            });
+            continue;
+        }
         let resolved = match resolve_full(doc, &edit.target) {
             Ok(r) => r,
             Err(ResolveError::NotFound) => return SpliceVerdict::RefNotFound,
@@ -959,7 +1076,9 @@ pub fn validate_batch(
             },
             EditKind::Put { at, text } => {
                 let region = match at {
-                    PutAt::All => resolved.span.clone(),
+                    // Upsert on a non-`fm_key` target degrades to `all` (the
+                    // dispatch write path refuses it before it reaches here).
+                    PutAt::All | PutAt::Upsert => resolved.span.clone(),
                     PutAt::Content => resolved.content_span.clone(),
                     PutAt::End => resolved.span.end..resolved.span.end,
                 };

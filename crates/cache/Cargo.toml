@@ -1,0 +1,26 @@
+[package]
+name = "cache"
+description = "The central hashed cache drawer: drawer addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade last-use GC sweep (decision 0001 round 4 + amendments C1/C3/M4/m3)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# sha256 over canonical-path bytes = the drawer key (shipped Go pattern,
+# internal/cache/location.go). Added to [workspace.dependencies] under the
+# cargo-root-toml mutex.
+sha2 = { workspace = true }
+# Per-drawer advisory flock (m3): flock(2) has no std wrapper. libc is already a
+# graph-wide transitive dep (MIT OR Apache-2.0, passes cargo deny); a direct edge
+# here adds no new crate to the graph. Unix-only crate by design (like sidecar).
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

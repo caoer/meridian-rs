@@ -1,0 +1,28 @@
+[package]
+name = "view"
+description = "The DuckDB view-organ: a write-only leaf that projects the warm parsed corpus into a disposable, fingerprint-stamped DuckDB file (view-never-store; C2 crate-topology leaf; design tournament-duckdb/team-a)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# read the parsed corpus (Document/Node/NodeKind) — the projector's only source
+model = { workspace = true }
+# drawer path resolution (CacheDrawer::dir) for the persistent publish path
+cache = { workspace = true }
+# the DuckDB sink. `bundled` compiles the vendored amalgamation, so the gate SQL
+# (generated columns, UNION ALL BY NAME, no statement_timeout, READ_ONLY INSERT
+# refusal) is pinned to one DuckDB version, never the host's libduckdb.
+duckdb = { workspace = true }
+
+[dev-dependencies]
+# build Document fixtures for the gate tests (parse -> model::build); a dev-only
+# edge, never a runtime dependency of the projector.
+syntax = { workspace = true }
+tempfile = "3"
+toml = { workspace = true }

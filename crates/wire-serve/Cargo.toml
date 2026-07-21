@@ -1,0 +1,41 @@
+[package]
+name = "wire-serve"
+description = "The shared typed edge: the hand-rolled strict-decode pass (wire §3.2 server law) plus the read-op arms served over BORROWED parsed state. One implementation for both hosts — the per-workspace sidecar (which builds the corpus per request) and the resident registry daemon (which serves from its warm engine). Wiring only: parsing is fs/syntax's, tree law is model's, projection is wire-map's, edges are query's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The frozen wire vocabulary this crate decodes into and answers with.
+wire = { workspace = true }
+# The named wire<->model projection seam (toc/extract node rows, delta files).
+wire-map = { workspace = true }
+# Tree law + resolution: the read arms operate on borrowed `model::Document`s
+# and the `CorpusIndex`; `model::resolve`/`model::walk` back cat/resolve, and the
+# write choke-point validates + simulates the after-doc through `model`.
+model = { workspace = true }
+# The corpus edge map (§4.6 links), read over the borrowed index + docs.
+query = { workspace = true }
+# Disk (W1): the write choke-point loads fresh bytes, folds the ambient root, and
+# lands the two-file atomic commit (`fs::load`/`domain_snapshot`/`apply_batch`);
+# the shared `load_doc`/`ambient_root`/`domain_snapshot` mappers live here too.
+fs = { workspace = true }
+# The parser the write path reparses the simulated after-state with (§4.4
+# one-reparse law) — the same parse the corpus build folds in.
+syntax = { workspace = true }
+# CALL-ONLY (advisor ruling, d4-splice): the splice choke-point renders receipt
+# lines through it; edits to the crate itself need an ownership ruling.
+receipt = { workspace = true }
+# The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the write
+# choke-point evaluates whatever admitted rule packs the CALLER hands in over the
+# post-batch doc and projects §11.1 findings to `wire::Verdict`. Zero edges run
+# the OTHER way (policy consumes supplied facts, names no wire/serve type).
+policy = { workspace = true }
+# Decode-time JSON: the strict-decode pass validates the raw request object by
+# hand (serde's `deny_unknown_fields` does not compose with `flatten`).
+serde_json = { workspace = true }

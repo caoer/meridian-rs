@@ -53,6 +53,7 @@ fn put_at_to_pb(a: wire::PutAt) -> pb::PutAt {
         wire::PutAt::All => pb::PutAt::All,
         wire::PutAt::Content => pb::PutAt::Content,
         wire::PutAt::End => pb::PutAt::End,
+        wire::PutAt::Upsert => pb::PutAt::Upsert,
     }
 }
 
@@ -99,10 +100,15 @@ fn armed_edit_to_pb(e: wire::ArmedEdit) -> pb::ArmedEdit {
 }
 
 fn armed_to_pb(a: wire::Armed) -> pb::Armed {
-    let wire::Armed { path, edits } = a;
+    let wire::Armed {
+        path,
+        edits,
+        file_rev_after,
+    } = a;
     pb::Armed {
         path: path.0,
         edits: edits.into_iter().map(armed_edit_to_pb).collect(),
+        file_rev_after: file_rev_after.map(|r| r.0),
     }
 }
 
@@ -296,9 +302,17 @@ fn toc_node_to_pb(n: wire::TocNode) -> pb::TocNode {
 
 fn op_to_pb(op: wire::Op) -> pb::request::Op {
     match op {
-        wire::Op::Hello { proto, client } => {
-            pb::request::Op::Hello(pb::HelloRequest { proto, client })
-        }
+        wire::Op::Hello {
+            proto,
+            client,
+            contract,
+            workspace,
+        } => pb::request::Op::Hello(pb::HelloRequest {
+            proto,
+            client,
+            contract,
+            workspace,
+        }),
         wire::Op::Toc { path } => pb::request::Op::Toc(pb::TocRequest { path: path.0 }),
         wire::Op::Cat { path, sec } => pb::request::Op::Cat(pb::CatRequest {
             path: path.0,
@@ -344,6 +358,9 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             require_root: require_root.map(|r| r.0),
         }),
         wire::Op::Sub { from_seq } => pb::request::Op::Sub(pb::SubRequest { from_seq }),
+        wire::Op::ViewPath { cwd, fresh } => {
+            pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh })
+        }
     }
 }
 
@@ -426,6 +443,7 @@ fn error_to_pb(e: wire::ErrorBody) -> pb::ErrorBody {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one exhaustive match arm per response body — the drift pin
 fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
     match b {
         wire::ResponseBody::Hello {
@@ -433,11 +451,13 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             server,
             caps,
             root,
+            storage,
         } => pb::response::Body::Hello(pb::HelloResponse {
             proto,
             server,
             caps,
             root: root.map(|r| r.0),
+            storage,
         }),
         wire::ResponseBody::Toc {
             path,
@@ -509,6 +529,68 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
                 .map(|(p, f)| (p, file_links_to_pb(f)))
                 .collect(),
         }),
+        wire::ResponseBody::ViewPath {
+            path,
+            as_of_root,
+            live_root,
+            changes_seq,
+            state,
+            live_source,
+            stale,
+            refresh_in_progress,
+            last_error,
+        } => pb::response::Body::ViewPath(pb::ViewPathResponse {
+            path,
+            as_of_root: as_of_root.0,
+            live_root: live_root.0,
+            changes_seq,
+            state: view_state_to_pb(state).into(),
+            live_source: view_live_source_to_pb(live_source).into(),
+            stale,
+            refresh_in_progress,
+            last_error: last_error.map(refresh_error_to_pb),
+        }),
+    }
+}
+
+fn view_state_to_pb(s: wire::ViewState) -> pb::ViewState {
+    match s {
+        wire::ViewState::FreshAtSample => pb::ViewState::FreshAtSample,
+        wire::ViewState::Stale => pb::ViewState::Stale,
+        wire::ViewState::Raced => pb::ViewState::Raced,
+    }
+}
+
+fn view_live_source_to_pb(s: wire::ViewLiveSource) -> pb::ViewLiveSource {
+    match s {
+        wire::ViewLiveSource::Fold => pb::ViewLiveSource::Fold,
+        wire::ViewLiveSource::Watch => pb::ViewLiveSource::Watch,
+        wire::ViewLiveSource::None => pb::ViewLiveSource::None,
+    }
+}
+
+fn refresh_error_code_to_pb(c: wire::RefreshErrorCode) -> pb::RefreshErrorCode {
+    match c {
+        wire::RefreshErrorCode::ParseError => pb::RefreshErrorCode::ParseError,
+        wire::RefreshErrorCode::DiskFull => pb::RefreshErrorCode::DiskFull,
+        wire::RefreshErrorCode::Oom => pb::RefreshErrorCode::Oom,
+        wire::RefreshErrorCode::Timeout => pb::RefreshErrorCode::Timeout,
+        wire::RefreshErrorCode::Io => pb::RefreshErrorCode::Io,
+    }
+}
+
+fn refresh_error_to_pb(e: wire::RefreshError) -> pb::RefreshError {
+    let wire::RefreshError {
+        code,
+        unix,
+        fingerprint_attempted,
+        message,
+    } = e;
+    pb::RefreshError {
+        code: refresh_error_code_to_pb(code).into(),
+        unix,
+        fingerprint_attempted: fingerprint_attempted.map(|r| r.0),
+        message,
     }
 }
 
@@ -662,6 +744,7 @@ fn put_at_from_pb(a: pb::PutAt) -> wire::PutAt {
         pb::PutAt::All => wire::PutAt::All,
         pb::PutAt::Content => wire::PutAt::Content,
         pb::PutAt::End => wire::PutAt::End,
+        pb::PutAt::Upsert => wire::PutAt::Upsert,
     }
 }
 
@@ -710,10 +793,15 @@ fn armed_edit_from_pb(e: pb::ArmedEdit) -> wire::ArmedEdit {
 }
 
 fn armed_from_pb(a: pb::Armed) -> wire::Armed {
-    let pb::Armed { path, edits } = a;
+    let pb::Armed {
+        path,
+        edits,
+        file_rev_after,
+    } = a;
     wire::Armed {
         path: wire::Path(path),
         edits: edits.into_iter().map(armed_edit_from_pb).collect(),
+        file_rev_after: file_rev_after.map(wire::NodeRev),
     }
 }
 
@@ -908,9 +996,17 @@ fn toc_node_from_pb(n: pb::TocNode) -> wire::TocNode {
 
 fn op_from_pb(op: pb::request::Op) -> wire::Op {
     match op {
-        pb::request::Op::Hello(pb::HelloRequest { proto, client }) => {
-            wire::Op::Hello { proto, client }
-        }
+        pb::request::Op::Hello(pb::HelloRequest {
+            proto,
+            client,
+            contract,
+            workspace,
+        }) => wire::Op::Hello {
+            proto,
+            client,
+            contract,
+            workspace,
+        },
         pb::request::Op::Toc(pb::TocRequest { path }) => wire::Op::Toc {
             path: wire::Path(path),
         },
@@ -958,6 +1054,9 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             require_root: require_root.map(wire::Root),
         },
         pb::request::Op::Sub(pb::SubRequest { from_seq }) => wire::Op::Sub { from_seq },
+        pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh }) => {
+            wire::Op::ViewPath { cwd, fresh }
+        }
     }
 }
 
@@ -1055,6 +1154,7 @@ fn payload_from_pb(b: pb::response::Body) -> wire::ResponsePayload {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one exhaustive match arm per response body — the drift pin
 fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
     match b {
         pb::response::Body::Hello(pb::HelloResponse {
@@ -1062,11 +1162,13 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             server,
             caps,
             root,
+            storage,
         }) => wire::ResponseBody::Hello {
             proto,
             server,
             caps,
             root: root.map(wire::Root),
+            storage,
         },
         pb::response::Body::Toc(pb::TocResponse {
             path,
@@ -1139,7 +1241,80 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
                 .map(|(p, f)| (p, file_links_from_pb(f)))
                 .collect(),
         },
+        pb::response::Body::ViewPath(pb::ViewPathResponse {
+            path,
+            as_of_root,
+            live_root,
+            changes_seq,
+            state,
+            live_source,
+            stale,
+            refresh_in_progress,
+            last_error,
+        }) => wire::ResponseBody::ViewPath {
+            path,
+            as_of_root: wire::Root(as_of_root),
+            live_root: wire::Root(live_root),
+            changes_seq,
+            state: view_state_from_pb(pb::ViewState::try_from(state).expect("known view state")),
+            live_source: view_live_source_from_pb(
+                pb::ViewLiveSource::try_from(live_source).expect("known live source"),
+            ),
+            stale,
+            refresh_in_progress,
+            last_error: last_error.map(refresh_error_from_pb),
+        },
         pb::response::Body::Error(_) => unreachable!("payload_from_pb routes the error arm"),
+    }
+}
+
+fn view_state_from_pb(s: pb::ViewState) -> wire::ViewState {
+    match s {
+        pb::ViewState::FreshAtSample => wire::ViewState::FreshAtSample,
+        pb::ViewState::Stale => wire::ViewState::Stale,
+        pb::ViewState::Raced => wire::ViewState::Raced,
+        pb::ViewState::Unspecified => panic!("VIEW_STATE_UNSPECIFIED never crosses the seam"),
+    }
+}
+
+fn view_live_source_from_pb(s: pb::ViewLiveSource) -> wire::ViewLiveSource {
+    match s {
+        pb::ViewLiveSource::Fold => wire::ViewLiveSource::Fold,
+        pb::ViewLiveSource::Watch => wire::ViewLiveSource::Watch,
+        pb::ViewLiveSource::None => wire::ViewLiveSource::None,
+        pb::ViewLiveSource::Unspecified => {
+            panic!("VIEW_LIVE_SOURCE_UNSPECIFIED never crosses the seam")
+        }
+    }
+}
+
+fn refresh_error_code_from_pb(c: pb::RefreshErrorCode) -> wire::RefreshErrorCode {
+    match c {
+        pb::RefreshErrorCode::ParseError => wire::RefreshErrorCode::ParseError,
+        pb::RefreshErrorCode::DiskFull => wire::RefreshErrorCode::DiskFull,
+        pb::RefreshErrorCode::Oom => wire::RefreshErrorCode::Oom,
+        pb::RefreshErrorCode::Timeout => wire::RefreshErrorCode::Timeout,
+        pb::RefreshErrorCode::Io => wire::RefreshErrorCode::Io,
+        pb::RefreshErrorCode::Unspecified => {
+            panic!("REFRESH_ERROR_CODE_UNSPECIFIED never crosses the seam")
+        }
+    }
+}
+
+fn refresh_error_from_pb(e: pb::RefreshError) -> wire::RefreshError {
+    let pb::RefreshError {
+        code,
+        unix,
+        fingerprint_attempted,
+        message,
+    } = e;
+    wire::RefreshError {
+        code: refresh_error_code_from_pb(
+            pb::RefreshErrorCode::try_from(code).expect("known refresh code"),
+        ),
+        unix,
+        fingerprint_attempted: fingerprint_attempted.map(wire::Root),
+        message,
     }
 }
 
@@ -1451,6 +1626,18 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                     },
                     if_node_rev: None,
                 },
+                // put at:upsert — the fm-key create-or-replace verb; text is the
+                // VALUE, the server composes `{key}: {value}` (design W-8).
+                wire::Edit {
+                    target: wire::SecRef::FmKey {
+                        fm_key: "status".into(),
+                    },
+                    edit: wire::EditShape::Put {
+                        at: wire::PutAt::Upsert,
+                        text: "active".into(),
+                    },
+                    if_node_rev: None,
+                },
             ],
         },
     ]
@@ -1461,6 +1648,8 @@ fn sample_requests() -> Vec<wire::Request> {
         wire::Op::Hello {
             proto: 1,
             client: Some("agreement-test".into()),
+            contract: Some("v3".into()),
+            workspace: Some("/home/zt/wiki".into()), // resident-engine handshake target
         },
         wire::Op::Toc {
             path: wire::Path("tasks/x.md".into()),
@@ -1534,6 +1723,20 @@ fn sample_requests() -> Vec<wire::Request> {
         // sub (§4.7 push path): live-only anchor and a catchup position
         wire::Op::Sub { from_seq: 0 },
         wire::Op::Sub { from_seq: 2 },
+        // view_path (§Q2): the default forward, the bounded --fresh, and the
+        // explicit fresh:false — the optional-bool wrapper's reason to exist.
+        wire::Op::ViewPath {
+            cwd: "/home/zt/wiki".into(),
+            fresh: None,
+        },
+        wire::Op::ViewPath {
+            cwd: "/home/zt/wiki".into(),
+            fresh: Some(true),
+        },
+        wire::Op::ViewPath {
+            cwd: "/home/zt/wiki".into(),
+            fresh: Some(false),
+        },
     ];
     ops.into_iter()
         .chain(sample_splice_requests())
@@ -1666,6 +1869,7 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
         wire::ResponseBody::Splice {
             armed: wire::Armed {
                 path: wire::Path("notes/plan.md".into()),
+                file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
                 edits: vec![wire::ArmedEdit {
                     target: wire::SecRef::Hpath {
                         hpath: vec![seg("Goals"), seg("Q3")],
@@ -1705,6 +1909,8 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
         wire::ResponseBody::Splice {
             armed: wire::Armed {
                 path: wire::Path("notes/plan.md".into()),
+                // dry — nothing written, so no post-write file rev
+                file_rev_after: None,
                 edits: vec![wire::ArmedEdit {
                     target: wire::SecRef::FmKey {
                         fm_key: "title".into(),
@@ -1822,6 +2028,77 @@ fn sample_diff_body() -> wire::ResponseBody {
     }
 }
 
+/// The §Q2 `view_path` replies across the seam: `stale` is ALWAYS null (a
+/// pre-open hint is never a verdict, B5+C3), every `ViewState`
+/// (`FRESH_AT_SAMPLE`/STALE/RACED) and every `ViewLiveSource` (watch/none/fold)
+/// cross once, and the OD7 `last_error` rides every `RefreshErrorCode` — so a
+/// wire-or-proto drift on any of them stops the roundtrip compiling or passing.
+fn sample_view_path_bodies() -> Vec<wire::ResponseBody> {
+    const VIEW: &str = "/home/zt/.cache/meridian/abc123/v1/view.duckdb";
+    // The pre-open hint variety: (state, live_source) pairs the daemon emits
+    // (watch), plus the never-emitted-but-seam-legal fold/none for coverage.
+    let hints = [
+        (wire::ViewState::FreshAtSample, wire::ViewLiveSource::Watch),
+        (wire::ViewState::Stale, wire::ViewLiveSource::None),
+        (wire::ViewState::Raced, wire::ViewLiveSource::Fold),
+    ];
+    // Every OD7 failure class crosses once (mirrors sample_error_payloads).
+    let codes = [
+        wire::RefreshErrorCode::ParseError,
+        wire::RefreshErrorCode::DiskFull,
+        wire::RefreshErrorCode::Oom,
+        wire::RefreshErrorCode::Timeout,
+        wire::RefreshErrorCode::Io,
+    ];
+    let mut bodies = Vec::new();
+    for (state, live_source) in hints {
+        bodies.push(wire::ResponseBody::ViewPath {
+            path: VIEW.into(),
+            as_of_root: wire::Root("b3:aa".into()),
+            // STALE/RACED carry distinct fingerprints; FRESH_AT_SAMPLE equal.
+            live_root: wire::Root(
+                if state == wire::ViewState::FreshAtSample {
+                    "b3:aa"
+                } else {
+                    "b3:bb"
+                }
+                .into(),
+            ),
+            changes_seq: 0,
+            state,
+            live_source,
+            stale: None,
+            refresh_in_progress: false,
+            last_error: None,
+        });
+    }
+    for code in codes {
+        bodies.push(wire::ResponseBody::ViewPath {
+            path: VIEW.into(),
+            as_of_root: wire::Root("b3:aa".into()),
+            live_root: wire::Root("b3:bb".into()),
+            changes_seq: 3,
+            state: wire::ViewState::Stale,
+            live_source: wire::ViewLiveSource::Watch,
+            stale: None,
+            refresh_in_progress: false,
+            last_error: Some(wire::RefreshError {
+                code,
+                unix: 1_753_070_400,
+                // Exercise the optional-absent path too (a parse failure may not
+                // reach a fingerprint).
+                fingerprint_attempted: if code == wire::RefreshErrorCode::ParseError {
+                    None
+                } else {
+                    Some(wire::Root("b3:cc".into()))
+                },
+                message: "rebuild failed".into(),
+            }),
+        });
+    }
+    bodies
+}
+
 fn sample_responses() -> Vec<wire::Response> {
     let root =
         wire::Root("b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into());
@@ -1836,12 +2113,14 @@ fn sample_responses() -> Vec<wire::Response> {
                 "resolve.content".into(),
             ],
             root: Some(root.clone()),
+            storage: Some("/home/zt/.cache/meridian/abc123/v1".into()), // the pinned drawer
         },
         wire::ResponseBody::Hello {
             proto: 1,
             server: "meridian-sidecar".into(),
             caps: vec!["hello".into()],
-            root: None, // the engine may not have walked yet
+            root: None,    // the engine may not have walked yet
+            storage: None, // a workspace-less handshake pins nothing
         },
         wire::ResponseBody::Toc {
             path: wire::Path("notes/plan.md".into()),
@@ -1900,6 +2179,7 @@ fn sample_responses() -> Vec<wire::Response> {
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()
         .chain(sample_splice_bodies())
+        .chain(sample_view_path_bodies())
         .map(|body| wire::ResponsePayload::Body { body })
         .collect();
     payloads.extend(sample_error_payloads());

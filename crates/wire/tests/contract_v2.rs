@@ -490,6 +490,9 @@ fn worked_splice_frames_match_contract() {
             body: wire::ResponseBody::Splice {
                 armed: wire::Armed {
                     path: wire::Path("notes/plan.md".into()),
+                    // the same batch's post-write file rev as E3's delta for
+                    // notes/plan.md — one non-drifting fact, two frames
+                    file_rev_after: Some(wire::NodeRev("a9794a262e67ed02".into())),
                     edits: vec![wire::ArmedEdit {
                         target: wire::SecRef::Hpath {
                             hpath: vec![seg("Goals"), seg("Q3")],
@@ -520,7 +523,7 @@ fn worked_splice_frames_match_contract() {
     assert_eq!(
         serde_json::to_value(&frame).unwrap(),
         json!({"id":42,"ok":true,"body":{
-            "armed":{"path":"notes/plan.md","edits":[
+            "armed":{"path":"notes/plan.md","file_rev_after":"a9794a262e67ed02","edits":[
                 {"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
                  "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
                  "span_after":[49,75]}]},
@@ -576,6 +579,9 @@ fn worked_dry_splice_frame_matches_contract() {
             body: wire::ResponseBody::Splice {
                 armed: wire::Armed {
                     path: wire::Path("notes/plan.md".into()),
+                    // dry — no post-write file rev (skipped in the JSON, like
+                    // root_after's null it never rides an unwritten batch)
+                    file_rev_after: None,
                     edits: vec![wire::ArmedEdit {
                         target: wire::SecRef::FmKey {
                             fm_key: "title".into(),
