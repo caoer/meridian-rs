@@ -34,7 +34,7 @@ use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
 use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
-use crate::{DEFAULT_IDLE_REAP, DEFAULT_REAP_INTERVAL, now_secs};
+use crate::{DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_REAP_INTERVAL, now_secs};
 
 /// How long the accept loop parks between non-blocking `accept` polls. Short
 /// enough that shutdown is prompt, long enough not to spin a core.
@@ -43,6 +43,10 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 /// The reaper's wake granularity: it sleeps in these steps so shutdown is
 /// prompt even when the reap interval is an hour.
 const REAP_TICK: Duration = Duration::from_millis(200);
+
+/// The pre-warm thread's wake granularity: it sleeps in these steps so shutdown
+/// stays prompt even when the pre-warm interval is configured long.
+const PREWARM_TICK: Duration = Duration::from_millis(100);
 
 /// The fixed subdirectory under the cache root that holds the socket, state
 /// file, and singleton lock.
@@ -67,6 +71,9 @@ pub struct Config {
     pub idle_threshold: Duration,
     /// How often the reaper scans (see [`DEFAULT_REAP_INTERVAL`]).
     pub reap_interval: Duration,
+    /// How often the pre-warm thread sweeps the warm workspaces (see
+    /// [`DEFAULT_PREWARM_INTERVAL`]).
+    pub prewarm_interval: Duration,
 }
 
 impl Config {
@@ -82,6 +89,7 @@ impl Config {
             cache_root,
             idle_threshold: DEFAULT_IDLE_REAP,
             reap_interval: DEFAULT_REAP_INTERVAL,
+            prewarm_interval: DEFAULT_PREWARM_INTERVAL,
         }
     }
 
@@ -122,6 +130,7 @@ pub struct RunningServer {
     shutdown: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
     reaper: Option<JoinHandle<()>>,
+    prewarm: Option<JoinHandle<()>>,
     registry: Arc<Registry>,
     socket_path: PathBuf,
     // The singleton flock, held for the daemon's whole lifetime; dropping it
@@ -176,11 +185,13 @@ impl RunningServer {
             config.idle_threshold,
             config.reap_interval,
         );
+        let prewarm = spawn_prewarm(registry.clone(), shutdown.clone(), config.prewarm_interval);
 
         Ok(RunningServer {
             shutdown,
             accept: Some(accept),
             reaper: Some(reaper),
+            prewarm: Some(prewarm),
             registry,
             socket_path: config.socket_path,
             _singleton: singleton,
@@ -214,6 +225,9 @@ impl RunningServer {
             let _ = handle.join();
         }
         if let Some(handle) = self.reaper.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.prewarm.take() {
             let _ = handle.join();
         }
         // Capture in-memory last_use bumps that resolve made without persisting.
@@ -310,6 +324,37 @@ fn spawn_reaper(
             let reaped = registry.reap(now_secs(), threshold_secs);
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
+            }
+        }
+    })
+}
+
+/// Spawn the pre-warm thread (decision 0002, P2): every `interval`, sweep the
+/// warm workspaces so a file change pays its parse HERE — the watch event — not
+/// on the next query. Latency only; correctness stays fingerprint
+/// ([`Registry::prewarm`] reuses the warm engine when the corpus content hash is
+/// unchanged, so a quiet sweep parses nothing). Wakes every [`PREWARM_TICK`] so
+/// shutdown is prompt even when the interval is long; exits on the shutdown flag.
+fn spawn_prewarm(
+    registry: Arc<Registry>,
+    shutdown: Arc<AtomicBool>,
+    interval: Duration,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut elapsed = Duration::ZERO;
+        while !shutdown.load(Ordering::SeqCst) {
+            thread::sleep(PREWARM_TICK);
+            elapsed += PREWARM_TICK;
+            if elapsed < interval {
+                continue;
+            }
+            elapsed = Duration::ZERO;
+            let rebuilt = registry.prewarm();
+            if !rebuilt.is_empty() {
+                eprintln!(
+                    "registry: pre-warmed {} changed workspace(s)",
+                    rebuilt.len()
+                );
             }
         }
     })
@@ -609,10 +654,11 @@ fn dispatch_read(
             })
         }),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
-            // The resident daemon holds no delta ring yet (the watcher is P2):
-            // a same-root diff is truthfully empty; any other range is
-            // `root_unknown` → full resync (degrade to re-derive, never to
-            // wrong data).
+            // The resident daemon holds no delta ring: the P2 pre-warm watcher is
+            // latency-only (it re-warms the engine, emits no deltas), and the ring
+            // lands only when subscriptions (`sub`) do. So a same-root diff is
+            // truthfully empty; any other range is `root_unknown` → full resync
+            // (degrade to re-derive, never to wrong data).
             let current = engine_root(engine);
             if from_root == current && to_root == current {
                 Ok(ResponseBody::Diff {
@@ -631,7 +677,8 @@ fn dispatch_read(
         // shared `splice → commit` choke-point (`wire_serve::write::splice`). The
         // daemon holds no rule packs (`&[]` ⇒ `verdicts: []`; pack admission is a
         // reserved, later unit) and no delta ring (`seq` 0; the emitted frame is
-        // discarded — P2 watcher owns the ring). The commit reads + writes disk
+        // discarded — the ring lands with subscriptions, not the latency-only P2
+        // pre-warm watcher). The commit reads + writes disk
         // directly, so the warm engine is untouched here; the change is durable in
         // the disk bytes, and the next read's `warm_or_build` rebuilds from them
         // (fingerprint moved), reflecting the write.

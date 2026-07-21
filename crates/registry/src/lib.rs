@@ -69,6 +69,16 @@ pub const DEFAULT_IDLE_REAP: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How often the daemon's pre-warm thread sweeps the warm workspaces so a file
+/// change pays its parse on the watch event, not on the next query (decision
+/// 0002, P2 — latency only, correctness stays fingerprint). Much shorter than
+/// the reap horizon: pre-warm is latency-sensitive, reaping is a days-scale
+/// cleanup. A quiet sweep only re-folds each warm corpus's content hash (the
+/// cheap half — no parse), so a one-second cadence is inexpensive. This is the
+/// poll-based interim; an OS notifier (FSEvents/inotify) is the future upgrade
+/// (decision 0001, "Daemon optional: FSEvents/macOS, inotify/Linux").
+pub const DEFAULT_PREWARM_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Current unix time in whole seconds. Returns `0` if the clock predates the
 /// epoch — a registration or state write must never be a failure mode, so this
 /// never panics (mirrors `cache::now_secs`).
