@@ -28,6 +28,7 @@ mod engine;
 mod gc;
 mod init;
 mod resolve;
+mod rules_cmd;
 mod unregister;
 
 /// Exit code: a clean success.
@@ -51,9 +52,16 @@ usage:
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
   mrd daemon               run the registry daemon in the foreground
+  mrd rules replay [PATH]  replay a workspace's history (git commits, or an
+                           ordered --snapshots corpus) through a --rules set and
+                           report dead rules, fire counts, effect-kind
+                           distribution, and the fuel profile (markdown)
 
 options:
   --json                   emit JSON instead of a human table
+  --rules DIR              (rules replay) the .star rule set to replay
+  --snapshots DIR          (rules replay) an ordered snapshot corpus instead of git
+  --out FILE               (rules replay) write the report to FILE instead of stdout
   -h, --help               print this help
 ";
 
@@ -125,6 +133,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::run_command(p.positional.as_deref(), p.format())
         }
         "cache" => dispatch_cache(&args[1..]),
+        "rules" => rules_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
