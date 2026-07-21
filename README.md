@@ -3,9 +3,10 @@
 A Rust engine for a governed Markdown workspace. `meridian-rs` reads an
 Obsidian-flavored Markdown vault into an in-memory world model, serves
 byte-exact section reads and CAS-guarded batch edits, and emits change deltas
-— all over a frozen NDJSON wire contract. It ships as two binaries: `sidecar`,
-the stdin/stdout process a host daemon speaks to, and `mrd`, a one-shot CLI
-over the same engine.
+— all over a frozen NDJSON wire contract. It ships two binaries: `sidecar`, the
+stdin/stdout process a host daemon speaks to, and `mrd`, the workspace CLI that
+resolves a directory's identity, manages the on-disk cache, and runs the
+registry daemon.
 
 ## What it is
 
@@ -35,7 +36,10 @@ over the same engine.
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
 | `sidecar` (bin) | The thin NDJSON stdin/stdout binary — the only place wire and model meet |
-| `mrd-cli` (bin `mrd`) | One-shot CLI: pure wire client driving the sidecar library in-process, one subcommand per wire op |
+| `workspace` | Workspace identity: the discovery ladder (env → `.meridian.toml` → git root → bare), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
+| `cache` | The central hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade GC sweep |
+| `registry` | The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server + client, first-writer-wins registration, atomic state file, idle-reap |
+| `mrd` (bin) | The workspace CLI wiring `workspace`/`cache`/`registry` into the settled verbs: `init`, `unregister`, `resolve`, `cache ls`, `cache clean`, `daemon` |
 | `testsuite` | Consolidated integration-test member carrying the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness: deterministic corpora, a claims registry, and criterion benches (out of default-members) |
 
@@ -56,11 +60,17 @@ graph TD
     WIRE --> SC
     WMAP --> SC
     POL --> SC
-    SC --> MRD((mrd bin))
-    WIRE --> MRD
+    CACHE[cache] --> WS[workspace]
+    WS --> REG[registry]
+    CACHE --> REG
+    WS --> MRD((mrd bin))
+    CACHE --> MRD
+    REG --> MRD
 ```
 
-The dependency edges enforce three laws — see `docs/laws.md`.
+The `workspace` / `cache` / `registry` / `mrd` cluster is the CLI foundation:
+identity, storage, and the daemon-held registry, disjoint from the sidecar's
+wire↔model plane. The dependency edges enforce three laws — see `docs/laws.md`.
 
 ## Build & run
 
@@ -68,6 +78,8 @@ The dependency edges enforce three laws — see `docs/laws.md`.
 cargo build            # default members (perfsuite excluded)
 cargo test --workspace # the full suite
 cargo run -p sidecar -- <workspace-root>   # serve one vault on stdin/stdout
+cargo run -p mrd -- init                   # mark the cwd as a workspace
+cargo run -p mrd -- cache ls               # list the on-disk cache drawers
 ```
 
 The sidecar speaks NDJSON: one request object per line in, one response per
@@ -76,13 +88,6 @@ line out. A minimal exchange:
 ```
 {"id":1,"op":"hello","proto":1}
 {"id":2,"op":"toc","path":"notes/plan.md"}
-```
-
-The same exchange without a daemon, via the one-shot CLI (`--root` defaults
-to the current directory; `--json` emits the raw wire frame):
-
-```sh
-cargo run -p mrd-cli -- --root <vault> toc notes/plan.md
 ```
 
 ## Documentation

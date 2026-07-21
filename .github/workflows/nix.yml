@@ -1,0 +1,40 @@
+# Nix delivery lane — builds the `sidecar` binary and pushes it to the ccc
+# binary cache (ccc.cachix.org). osfiles pins this flake as a flake-input and
+# substitutes the prebuilt store path from the cache — no build-in-prod, no
+# vendoring. Mirrors the ccc-mdformat CI→cache→flake-input precedent verbatim.
+#
+# The cargo correctness lane lives in ci.yml (fmt/clippy/test/deny); this lane
+# is delivery only — it proves the flake builds AND seeds the cache.
+name: nix
+
+on:
+  push:
+    branches: [main, "infra/**"]
+  pull_request:
+
+jobs:
+  sidecar:
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-latest → x86_64-linux (fleet Linux hosts).
+        # macos-latest  → aarch64-darwin (zmax, the running-proof host).
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: ccc
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build sidecar
+        run: nix build .#sidecar -L
+      # Fleet-portable STATIC musl linux binary (x86_64-linux only) — the
+      # installer/R2 delivery pulls THIS for foreign-Debian hosts. cachix-action
+      # pushes it to ccc.cachix.org alongside the dynamic sidecar.
+      - name: Build sidecar-static (musl, linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: nix build .#sidecar-static -L
+      - name: Flake check
+        run: nix flake check -L

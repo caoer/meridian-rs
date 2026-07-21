@@ -1,0 +1,38 @@
+[package]
+name = "mrd"
+description = "The mrd CLI: wires the workspace / cache / registry foundation into the settled verb surface (init, unregister, resolve, cache ls, cache clean, daemon). Hand-rolled subcommand parsing, no clap; tier-4 ephemeral degrade and Cargo-model last-use auto-GC."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
+# library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
+# and the typed entry points.
+[lib]
+name = "mrd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mrd"
+path = "src/main.rs"
+
+[dependencies]
+# The three landed foundation crates this CLI wires together.
+workspace = { workspace = true }
+cache = { workspace = true }
+registry = { workspace = true }
+# JSON output (the house grammar) + the marker body. All already in the graph.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Foreground-daemon signal handling (SIGINT/SIGTERM → graceful shutdown).
+# libc is already a graph dependency (cache depends on it); no new crate enters
+# the graph and it passes `cargo deny` unchanged.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
