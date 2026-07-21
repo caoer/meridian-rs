@@ -12,11 +12,14 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+
+use wire::{ErrorBody, ErrorCode, ResponseBody, Root};
 
 use crate::engine::{WarmOutcome, WorkspaceEngine};
 use crate::now_secs;
 use crate::protocol::{DenyKind, WorkspaceEntry};
+use crate::refresh::{RefreshState, view_err_to_refresh};
 use crate::state::StateStore;
 
 /// The outcome of a [`Registry::register`] call.
@@ -73,6 +76,23 @@ pub enum PinOutcome {
 pub struct Registry {
     inner: RwLock<HashMap<PathBuf, WorkspaceEntry>>,
     engines: RwLock<HashMap<PathBuf, WorkspaceEngine>>,
+    /// V2 §Q2 the per-workspace **publish mutex** (OD6/B1). The daemon is the
+    /// sole persistent writer; `view::publish` adds zero flock and assumes the
+    /// caller holds this. One `Mutex` per workspace, created on first publish,
+    /// held across build + post-build live sample so a concurrent `view_path`
+    /// for the same workspace serializes (never two `rename`s racing one
+    /// drawer). Distinct workspaces never contend.
+    publish_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    /// OD7 refresh telemetry per workspace (daemon memory, lost on restart;
+    /// advisory, never correctness). Also the daemon-memory `as_of` proxy: the
+    /// last successful publish fingerprint, sole-writer-faithful within one
+    /// epoch.
+    refresh_state: RwLock<HashMap<PathBuf, RefreshState>>,
+    /// This daemon instance's epoch token — the `built_epoch` half of a
+    /// published stamp (pairs with `seq`). A per-instance value (a restart mints
+    /// a new one); the resident daemon holds no delta ring, so `seq` is `0`
+    /// until subscriptions land (round-2).
+    epoch: String,
     state: StateStore,
     cache_root: PathBuf,
 }
@@ -94,6 +114,11 @@ impl Registry {
             // Cold start holds no warm engines: residency is a disposable
             // projection, rebuilt from disk on the first `warm_or_build`.
             engines: RwLock::new(HashMap::new()),
+            publish_locks: Mutex::new(HashMap::new()),
+            refresh_state: RwLock::new(HashMap::new()),
+            // A per-instance epoch stamp: restart mints a new one, so a stale
+            // cross-restart `built_epoch` never reads as current.
+            epoch: now_secs().to_string(),
             state,
             cache_root,
         }
@@ -274,6 +299,267 @@ impl Registry {
         f(engines.get(canonical))
     }
 
+    /// V2 §Q2 the `view_path` op: resolve `cwd` → workspace, publish (or serve)
+    /// `view.duckdb`, and return the stamped PATH plus a pre-open freshness
+    /// hint — never rows. The daemon is the sole persistent builder (OD6).
+    ///
+    /// The whole build + post-build sample runs under the workspace's publish
+    /// mutex ([`publish_lock`](Self::publish_lock)), so `view::publish`'s
+    /// flock-free atomic `temp + rename` never races a concurrent `view_path`
+    /// for the same workspace (B1). Branches:
+    /// - `fresh` ⇒ the bounded `--fresh` rebuild (§Q3): build at `F0`, sample
+    ///   `live = F_now` after, `FRESH_AT_SAMPLE` on equality, one retry, else
+    ///   `RACED`;
+    /// - absent file, or an unknown `as_of` (a fresh daemon that did not build
+    ///   this file) ⇒ a first build + post-build sample;
+    /// - a published file with a known `as_of` ⇒ **serve it, no rebuild** (a
+    ///   default stale query serves last-good immediately, §Huge-corpus): the
+    ///   daemon-memory `as_of` vs a fresh `live` fold decides `FRESH_AT_SAMPLE`
+    ///   / `STALE`.
+    ///
+    /// On a publish failure with a last-good file present, the last-good path is
+    /// served with the OD7 `last_error` set (telemetry, never a freshness gate);
+    /// with no last-good, the wire error propagates.
+    ///
+    /// # Errors
+    /// `bad_request` when `cwd` is refused by the deny ceiling; `io_error` when
+    /// the workspace cannot be resolved, the corpus cannot be folded, or a build
+    /// fails with no last-good file to serve; `invalid_utf8` for a non-UTF-8
+    /// corpus.
+    pub fn view_path(&self, cwd: &str, fresh: bool) -> Result<ResponseBody, Box<ErrorBody>> {
+        let (workspace, drawer, dir) = self.resolve_drawer(cwd)?;
+        let dest = dir.join("view.duckdb");
+
+        // The per-workspace publish mutex, held across build + post-build sample.
+        let lock = self.publish_lock(&workspace);
+        let _publish = lock.lock().unwrap_or_else(PoisonError::into_inner);
+
+        // A published file whose `as_of` this daemon knows is served WITHOUT a
+        // rebuild (a default stale query serves last-good, §Huge-corpus);
+        // `fresh`, an absent file, or an unknown `as_of` must build.
+        let served = self
+            .last_ok_fingerprint(&workspace)
+            .filter(|_| dest.exists());
+        let built = if fresh {
+            self.bounded_fresh(&workspace, &drawer)
+        } else if let Some(as_of) = served {
+            let live = sample_fingerprint(&workspace)?;
+            let state = view_state(&as_of, &live);
+            Ok((as_of, live, state))
+        } else {
+            self.build_once(&workspace, &drawer)
+        };
+
+        let (as_of, live, state) = match built {
+            Ok(triple) => triple,
+            // A failed build serves the last-good file if one exists (OD7:
+            // telemetry, never a freshness gate); otherwise the error stands.
+            Err(op_err) => {
+                if dest.exists()
+                    && let Some(as_of) = self.last_ok_fingerprint(&workspace)
+                {
+                    let live = sample_fingerprint(&workspace)?;
+                    let state = view_state(&as_of, &live);
+                    (as_of, live, state)
+                } else {
+                    return Err(op_err);
+                }
+            }
+        };
+
+        let (refresh_in_progress, last_error) = self.refresh_telemetry(&workspace);
+        Ok(ResponseBody::ViewPath {
+            path: dest.to_string_lossy().into_owned(),
+            as_of_root: Root(as_of.0),
+            live_root: Root(live.0),
+            // The resident daemon holds no delta ring (subscriptions are
+            // round-2), so the per-epoch counter is `0` — mirroring the `Root`
+            // and `Links` arms, which already report `0`.
+            changes_seq: 0,
+            state,
+            // The daemon sampled `live` from its warm `at_fingerprint` fold: a
+            // hint, never a post-result verdict (§Q3 C3 — never `fold` here).
+            live_source: wire::ViewLiveSource::Watch,
+            // A PRE-OPEN hint is never a verdict (B5+C3): always null.
+            stale: None,
+            refresh_in_progress,
+            last_error,
+        })
+    }
+
+    /// Resolve `cwd` to its canonical workspace, disk drawer, and drawer
+    /// directory (V2 §Q2). Reuses the one canonicalize → deny-ceiling → sentinel
+    /// path via [`pin`](Self::pin), then addresses the drawer under THIS
+    /// registry's `cache_root` (never the ambient `CacheDrawer::open`, so a test
+    /// cache root is honored).
+    fn resolve_drawer(
+        &self,
+        cwd: &str,
+    ) -> Result<(PathBuf, cache::CacheDrawer, PathBuf), Box<ErrorBody>> {
+        let workspace = match self.pin(Path::new(cwd)) {
+            PinOutcome::Pinned { workspace, .. } => workspace,
+            PinOutcome::Denied(reason) => {
+                return Err(wire_serve::bad_request(format!(
+                    "cannot resolve `{cwd}` to a workspace: it is the {reason} (deny ceiling)"
+                )));
+            }
+            PinOutcome::Error(message) => {
+                let mut e = ErrorBody::new(ErrorCode::IoError);
+                e.cause = Some(message);
+                return Err(Box::new(e));
+            }
+        };
+        let dir = cache::drawer_dir(&self.cache_root, &workspace);
+        let drawer = cache::CacheDrawer::Disk {
+            dir: dir.clone(),
+            workspace: workspace.clone(),
+        };
+        Ok((workspace, drawer, dir))
+    }
+
+    /// The per-workspace publish mutex, created on first use (V2 §Q2 / OD6).
+    fn publish_lock(&self, workspace: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .publish_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            locks
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
+
+    /// The last successful publish fingerprint (daemon-memory `as_of` proxy), or
+    /// `None` when this daemon has not published this workspace.
+    fn last_ok_fingerprint(&self, workspace: &Path) -> Option<model::MerkleRoot> {
+        self.refresh_state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(workspace)
+            .and_then(|s| s.last_ok_fingerprint.clone())
+    }
+
+    /// The OD7 reply telemetry: `refresh_in_progress` (always `false` in round-1
+    /// — rebuilds are synchronous, done before the reply) + the last failure.
+    fn refresh_telemetry(&self, workspace: &Path) -> (bool, Option<wire::RefreshError>) {
+        let states = self
+            .refresh_state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let last_error = states.get(workspace).and_then(|s| s.last_error.clone());
+        (false, last_error)
+    }
+
+    /// Build + publish `view.duckdb` at the current disk fold, then sample
+    /// `live` AFTER — the absent/first-build path (§Q3 post-result fold shape,
+    /// no retry). `FRESH_AT_SAMPLE` iff `F0 == F_now`, else `STALE`.
+    fn build_once(
+        &self,
+        workspace: &Path,
+        drawer: &cache::CacheDrawer,
+    ) -> Result<(model::MerkleRoot, model::MerkleRoot, wire::ViewState), Box<ErrorBody>> {
+        let f0 = self.publish_now(workspace, drawer)?;
+        let f_now = sample_fingerprint(workspace)?;
+        let state = view_state(&f0, &f_now);
+        Ok((f0, f_now, state))
+    }
+
+    /// The bounded `--fresh` rebuild (§Q3): build at `F0`, sample `live = F_now`
+    /// after; equal ⇒ `FRESH_AT_SAMPLE`; else retry ONCE; still differing ⇒
+    /// `RACED` with both fingerprints. Never loops, never labels fresh.
+    fn bounded_fresh(
+        &self,
+        workspace: &Path,
+        drawer: &cache::CacheDrawer,
+    ) -> Result<(model::MerkleRoot, model::MerkleRoot, wire::ViewState), Box<ErrorBody>> {
+        let f0 = self.publish_now(workspace, drawer)?;
+        let f_now = sample_fingerprint(workspace)?;
+        if f0 == f_now {
+            return Ok((f0, f_now, wire::ViewState::FreshAtSample));
+        }
+        // The workspace raced the build — one bounded retry.
+        let f0b = self.publish_now(workspace, drawer)?;
+        let f_nowb = sample_fingerprint(workspace)?;
+        let state = if f0b == f_nowb {
+            wire::ViewState::FreshAtSample
+        } else {
+            wire::ViewState::Raced
+        };
+        Ok((f0b, f_nowb, state))
+    }
+
+    /// Warm the engine (fold + parse-on-change), snapshot its fingerprint + docs
+    /// OUT of the engines lock, then `view::publish` (holding the publish mutex,
+    /// never the engines lock — a slow `DuckDB` build must not block another
+    /// workspace's warm insert). Records OD7 success/failure telemetry. Returns
+    /// the built fingerprint `F0`.
+    fn publish_now(
+        &self,
+        workspace: &Path,
+        drawer: &cache::CacheDrawer,
+    ) -> Result<model::MerkleRoot, Box<ErrorBody>> {
+        // Ensure the resident engine reflects current disk (the docs source).
+        self.warm_or_build(workspace)
+            .map_err(|e| warm_err_to_wire(&e))?;
+        // Clone the fingerprint + docs out of the read lock: `view::publish`
+        // does slow DuckDB I/O, and holding the engines read lock across it
+        // would block a concurrent `warm_or_build` write insert (any workspace).
+        let Some((f0, docs)) = self.with_engine(workspace, |engine| {
+            engine.map(|e| (e.at_fingerprint.clone(), e.docs.clone()))
+        }) else {
+            // An idle-reap evicted the engine between warm and borrow — transient.
+            return Err(Box::new(ErrorBody::new(ErrorCode::Internal)));
+        };
+
+        let stamp = view::PublishStamp {
+            workspace: workspace.to_string_lossy().into_owned(),
+            as_of_fingerprint: f0.0.clone(),
+            epoch: self.epoch.clone(),
+            seq: 0,
+        };
+        match view::publish(&docs, drawer, &stamp) {
+            Ok(_path) => {
+                self.record_publish_ok(workspace, f0.clone());
+                Ok(f0)
+            }
+            Err(e) => {
+                self.record_publish_err(workspace, &f0, &e);
+                let mut err = ErrorBody::new(ErrorCode::IoError);
+                err.cause = Some(e.to_string());
+                Err(Box::new(err))
+            }
+        }
+    }
+
+    /// Adopt `fingerprint` as the workspace's last-good and clear its error
+    /// (OD7 recovery).
+    fn record_publish_ok(&self, workspace: &Path, fingerprint: model::MerkleRoot) {
+        self.refresh_state
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(workspace.to_path_buf())
+            .or_default()
+            .record_ok(fingerprint, now_secs());
+    }
+
+    /// Record a publish failure against the workspace (OD7); the last-good
+    /// fingerprint is left untouched (the old file is still published).
+    fn record_publish_err(
+        &self,
+        workspace: &Path,
+        attempted: &model::MerkleRoot,
+        e: &view::ViewError,
+    ) {
+        let error = view_err_to_refresh(e, attempted, now_secs());
+        self.refresh_state
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(workspace.to_path_buf())
+            .or_default()
+            .record_err(error);
+    }
+
     /// Pre-warm every resident (warm) workspace, rebuilding only those whose
     /// corpus content hash changed since it was built (decision 0002, P2).
     ///
@@ -402,6 +688,41 @@ impl Registry {
         let map = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         self.persist(&map);
     }
+}
+
+/// Sample a workspace's CURRENT disk fingerprint — a full-corpus fold
+/// (`fs::domain_snapshot`, the cheap half, no parse), the §Q3 live sample.
+fn sample_fingerprint(workspace: &Path) -> Result<model::MerkleRoot, Box<ErrorBody>> {
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    Ok(fs::domain_snapshot(&root)
+        .map_err(|e| warm_err_to_wire(&e))?
+        .1)
+}
+
+/// The §Q3 pre-open state from an `as_of`/`live` fingerprint pair:
+/// `FRESH_AT_SAMPLE` on equality, else `STALE` (a legal frame, never an error).
+/// `RACED` is a `--fresh`-only outcome, decided in [`Registry::bounded_fresh`],
+/// so it never arises here.
+fn view_state(as_of: &model::MerkleRoot, live: &model::MerkleRoot) -> wire::ViewState {
+    if as_of == live {
+        wire::ViewState::FreshAtSample
+    } else {
+        wire::ViewState::Stale
+    }
+}
+
+/// Map a `warm_or_build` / `domain_snapshot` I/O failure onto its wire frame: a
+/// non-UTF-8 corpus file is `invalid_utf8` (refused, never lossy-decoded);
+/// anything else carries its cause on `io_error`. Mirrors the daemon read
+/// path's `warm_err_to_wire` (`server.rs`) so a fold failure reads identically
+/// whichever op raised it.
+fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
+    if e.kind() == io::ErrorKind::InvalidData {
+        return Box::new(ErrorBody::new(ErrorCode::InvalidUtf8));
+    }
+    let mut err = ErrorBody::new(ErrorCode::IoError);
+    err.cause = Some(e.to_string());
+    Box::new(err)
 }
 
 #[cfg(test)]

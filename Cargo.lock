@@ -2756,6 +2756,7 @@ dependencies = [
  "serde_json",
  "syntax",
  "tempfile",
+ "view",
  "wire",
  "wire-serve",
  "workspace",

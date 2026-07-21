@@ -48,6 +48,7 @@ message Request {
     DiffRequest diff = 10;      // v2 §4.7
     LinksRequest links = 11;    // v2 §4.6 (Q5-LINKS)
     SubRequest sub = 12;        // v2 §4.7 push path (T5-SUB)
+    ViewPathRequest view_path = 13; // V2 §Q2 the view-organ path forwarder
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -170,6 +171,15 @@ message LinksRequest {
 // per-daemon-epoch (§7.1); outside retained history → root_unknown.
 message SubRequest {
   uint64 from_seq = 1;
+}
+
+// V2 §Q2 the view-organ path forwarder request: resolve `cwd` → workspace,
+// publish (daemon sole builder), return the stamped PATH. `cwd` is a RAW host
+// path (absolute), NOT a workspace-relative wire path. `fresh` is the bounded
+// --fresh knob (§Q3); absent ⇒ serve the published/first-built view.
+message ViewPathRequest {
+  string cwd = 1;
+  optional bool fresh = 2;
 }
 
 // Half-open byte range [start, end) — contract v2 §1 span sub-laws.
@@ -317,6 +327,7 @@ message Response {
     CatResponse cat = 11;   // v2 §4.2
     DiffResponse diff = 12; // v2 §4.7/§7.3 (D3-DELTA)
     LinksResponse links = 13; // v2 §4.6 + §10.1 triple (Q5-LINKS)
+    ViewPathResponse view_path = 14; // V2 §Q2 the path forwarder reply
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -445,6 +456,71 @@ message LinksResponse {
 message FileLinks {
   map<string, uint64> resolved = 1;
   map<string, uint64> unresolved = 2;
+}
+
+// V2 §Q2 the `view_path` reply: a stamped PATH plus a PRE-OPEN freshness hint —
+// never rows. `path` is authoritative; the fingerprints/state/live_source are a
+// hint the consumer discards once it re-reads the opened file's stamp. The
+// fingerprint slots carry the v2 `root` vocabulary (as_of_root/live_root) — the
+// v3 projection re-keys them to as_of_fingerprint/live_fingerprint.
+message ViewPathResponse {
+  // The stamped view.duckdb filesystem path — AUTHORITATIVE.
+  string path = 1;
+  // PRE-OPEN hint: the fingerprint the published file was built at.
+  string as_of_root = 2;
+  // PRE-OPEN hint: the daemon's live fingerprint sample (its warm at_fingerprint).
+  string live_root = 3;
+  // Per-daemon-epoch delta counter at the sample (§7.1); 0 until the ring lands.
+  uint64 changes_seq = 4;
+  // The daemon's pre-open freshness ASSESSMENT (hint, never a verdict).
+  ViewState state = 5;
+  // Provenance of live_root: watch/none on this pre-open hint (never fold).
+  ViewLiveSource live_source = 6;
+  // ALWAYS null on the pre-open hint (B5+C3: a hint is never a verdict). JSON
+  // serializes `null`; proto absence carries the same always-absent tri-state.
+  optional bool stale = 7;
+  // OD7 advisory: a rebuild is in flight (round-1 synchronous ⇒ always false).
+  bool refresh_in_progress = 8;
+  // OD7 advisory: the last rebuild failure (daemon memory), if any.
+  optional RefreshError last_error = 9;
+}
+
+// V2 §Q3 the pre-open freshness assessment. Round-1 emits FRESH_AT_SAMPLE /
+// STALE / RACED; the wider state machine is a query-frame concern.
+enum ViewState {
+  VIEW_STATE_UNSPECIFIED = 0;
+  VIEW_STATE_FRESH_AT_SAMPLE = 1;
+  VIEW_STATE_STALE = 2;
+  VIEW_STATE_RACED = 3;
+}
+
+// V2 §Q3 C3 the source-labeled live fingerprint. The view_path hint only ever
+// uses WATCH/NONE; FOLD labels a consumer's post-result fold.
+enum ViewLiveSource {
+  VIEW_LIVE_SOURCE_UNSPECIFIED = 0;
+  VIEW_LIVE_SOURCE_FOLD = 1;
+  VIEW_LIVE_SOURCE_WATCH = 2;
+  VIEW_LIVE_SOURCE_NONE = 3;
+}
+
+// V2 §OD7 refresh-failure telemetry (daemon memory, never the immutable stamp).
+// Advisory only — it explains why a view is stale, never gates a freshness
+// verdict. fingerprint_attempted is vocabulary-neutral (v3 leaves it untouched).
+message RefreshError {
+  RefreshErrorCode code = 1;
+  uint64 unix = 2;
+  optional string fingerprint_attempted = 3;
+  string message = 4;
+}
+
+// V2 §OD7 the closed refresh-failure class.
+enum RefreshErrorCode {
+  REFRESH_ERROR_CODE_UNSPECIFIED = 0;
+  REFRESH_ERROR_CODE_PARSE_ERROR = 1;
+  REFRESH_ERROR_CODE_DISK_FULL = 2;
+  REFRESH_ERROR_CODE_OOM = 3;
+  REFRESH_ERROR_CODE_TIMEOUT = 4;
+  REFRESH_ERROR_CODE_IO = 5;
 }
 
 // ---------------------------------------------------------------------------
