@@ -6,7 +6,7 @@
 
 mod support;
 
-use rules::{eval_with_limits, ChangeEvent, Domain, EvalLimits};
+use rules::{ChangeEvent, Domain, EvalLimits, eval_with_limits};
 use support::rule;
 
 fn limits(max_depth: u32) -> EvalLimits {

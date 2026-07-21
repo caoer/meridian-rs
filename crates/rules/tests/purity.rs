@@ -7,7 +7,7 @@
 //! (The exact global-name surface is asserted as an in-crate unit test in
 //! `kernel.rs`, which can reach `effect_globals()` directly.)
 
-use rules::{eval, EffectKind, EvalError, Rule};
+use rules::{EffectKind, EvalError, Rule, eval};
 
 fn ev() -> rules::ChangeEvent {
     rules::ChangeEvent::new("f.md", "a", "b")
@@ -101,7 +101,9 @@ fn all_constructors_are_defined_and_emit_their_kind() {
 fn dependency_graph_has_no_io_runtime() {
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let out = std::process::Command::new(env!("CARGO"))
-        .args(["tree", "-p", "rules", "--edges", "normal", "--prefix", "none"])
+        .args([
+            "tree", "-p", "rules", "--edges", "normal", "--prefix", "none",
+        ])
         .arg("--manifest-path")
         .arg(manifest)
         .output();

@@ -4,7 +4,7 @@
 
 mod support;
 
-use rules::{validate, EvalError, EvalLimits, Rule};
+use rules::{EvalError, EvalLimits, Rule, validate};
 use support::all_rules;
 
 #[test]

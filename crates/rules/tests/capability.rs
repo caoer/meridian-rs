@@ -4,7 +4,7 @@
 
 mod support;
 
-use rules::{eval, CapabilitySet, Domain, EffectKind};
+use rules::{CapabilitySet, Domain, EffectKind, eval};
 use support::{all_rules, event};
 
 fn mixed_effects() -> Vec<rules::Effect> {
@@ -36,7 +36,10 @@ fn empty_capability_rejects_everything() {
 #[test]
 fn domain_capability_routes_by_domain() {
     let effects = mixed_effects();
-    let n_md = effects.iter().filter(|e| e.kind.domain() == Domain::Md).count();
+    let n_md = effects
+        .iter()
+        .filter(|e| e.kind.domain() == Domain::Md)
+        .count();
     assert!(n_md > 0, "fixture should include an md.* effect");
 
     // A wire-only consumer (proto.*) admits proto, rejects md + daemon.
@@ -64,9 +67,13 @@ fn routing_preserves_order_within_partitions() {
         .filter(|e| e.kind.domain() == Domain::Proto)
         .map(|e| (e.rule_id.clone(), e.seq))
         .collect();
-    let (admitted, _) = CapabilitySet::none().with_domain(Domain::Proto).route(effects);
-    let seqs_after: Vec<(String, u32)> =
-        admitted.iter().map(|e| (e.rule_id.clone(), e.seq)).collect();
+    let (admitted, _) = CapabilitySet::none()
+        .with_domain(Domain::Proto)
+        .route(effects);
+    let seqs_after: Vec<(String, u32)> = admitted
+        .iter()
+        .map(|e| (e.rule_id.clone(), e.seq))
+        .collect();
     assert_eq!(seqs_before, seqs_after, "order preserved through routing");
 }
 
@@ -80,7 +87,9 @@ fn from_iter_builds_a_set() {
     // The fixture has exactly one notice + one refresh_view → both admitted.
     assert_eq!(admitted.len(), 2, "collected kinds must actually admit");
     assert!(!rejected.is_empty(), "the append_section is rejected");
-    assert!(admitted
-        .iter()
-        .all(|e| matches!(e.kind, EffectKind::Notice | EffectKind::RefreshView)));
+    assert!(
+        admitted
+            .iter()
+            .all(|e| matches!(e.kind, EffectKind::Notice | EffectKind::RefreshView))
+    );
 }
