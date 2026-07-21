@@ -39,6 +39,13 @@ syntax = { workspace = true }
 # from the resident engine's borrowed state (one implementation with the sidecar).
 wire = { workspace = true }
 wire-serve = { workspace = true }
+# V2 §Q2 the view-organ (write-only leaf): the daemon is the SOLE persistent
+# builder (OD6), so the `view_path` op publishes `view.duckdb` from the warm
+# engine's docs via `view::publish` under the per-workspace publish mutex this
+# crate owns. C2 topology ALLOWS `view --> registry` (registry is not a
+# correctness/fact crate); the forbidden edge is any fact crate depending on
+# `view`, enforced by `crates/view/tests/topology_assert.rs`.
+view = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -14,8 +14,36 @@ env:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      # CI-only disk lever: strip debug info from every test binary. V3 added the
+      # bundled/static duckdb dep to `crates/mrd`, so mrd AND every mrd test
+      # binary (sql_e2e, sql/view_status unit tests) now each statically embed
+      # libduckdb; the duplicated debug info is the bulk of target/ and overflowed
+      # the ~31 GB freed below, SIGBUS'ing rust-lld mid-link. This is an env var,
+      # NOT a Cargo.toml [profile] edit — local dev builds keep full debug.
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
+      # Reclaim disk before the toolchain/cache/build steps. The `view` crate
+      # pulls duckdb with the `bundled` feature, which compiles the full DuckDB
+      # C++ amalgamation from source; V3 added the same bundled/static duckdb to
+      # `crates/mrd`, so every mrd test binary statically embeds libduckdb too.
+      # Combined with a full `cargo test --workspace` target/ and the rust-cache
+      # restore this exhausts even the ~31 GB freed by dropping CodeQL alone
+      # (link-time SIGBUS: the FS can't extend the mmap'd output → bus error, not
+      # a clean ENOSPC). Drop the whole hostedtoolcache + swapfile + boost + node
+      # modules to free ~10 GB more headroom.
+      # Do NOT `docker image prune` here: the cargo-deny step runs as a Docker
+      # action whose image is pre-built at job setup; pruning deletes it and
+      # the later cargo-deny step fails with "pull access denied".
+      - name: reclaim disk (bundled libduckdb-sys needs headroom on ubuntu-latest)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost /usr/local/lib/node_modules
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile /swapfile
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -26,6 +54,8 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy (workspace lint policy, escalated)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: free space before the full-workspace test link (disk-exhaustion diagnostic)
+        run: df -h /
       - name: tests (all members incl. perfsuite harness)
         run: cargo test --workspace
       - name: cargo-deny (fork one-copy law, licenses, sources)
