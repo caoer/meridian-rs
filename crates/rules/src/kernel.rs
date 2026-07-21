@@ -148,9 +148,7 @@ fn check_nesting_depth(rule: &Rule) -> Result<(), EvalError> {
     let mut unary_run: usize = 0;
     let over = |rule: &Rule| EvalError::Parse {
         rule_id: rule.id.clone(),
-        reason: format!(
-            "source nesting depth exceeds {MAX_NESTING_DEPTH} (parse-recursion guard)"
-        ),
+        reason: format!("source nesting depth exceeds {MAX_NESTING_DEPTH} (parse-recursion guard)"),
     };
     while i < n {
         let c = bytes[i];
@@ -452,7 +450,44 @@ fn heap_bytes(heap: Heap<'_>) -> u64 {
     u64::try_from(heap.peak_allocated_bytes()).unwrap_or(u64::MAX)
 }
 
-/// Run ONE rule's `on_change(event)` over the injected event, metered.
+/// The metered outcome of one rule run: its typed result plus the EXACT
+/// post-eval resource accounting (`fuel_used` Starlark ticks, `mem_used` peak
+/// heap bytes) the result was judged against. The corpus-replay harness reads
+/// `fuel_used`/`mem_used` for its per-rule consumption profile; a parse-time or
+/// setup-time failure never reached eval, so both read `0` there. A bomb
+/// terminated by the fuel/mem ceiling reports the ceiling it hit.
+pub(crate) struct RuleRun {
+    pub(crate) fuel_used: u64,
+    pub(crate) mem_used: u64,
+    pub(crate) outcome: Result<Vec<Effect>, EvalError>,
+}
+
+impl RuleRun {
+    /// A run that never reached eval (source-cap, nesting, or evaluator setup) —
+    /// no fuel spent, the typed authoring/setup fault.
+    fn failed(outcome: EvalError) -> Self {
+        Self {
+            fuel_used: 0,
+            mem_used: 0,
+            outcome: Err(outcome),
+        }
+    }
+}
+
+/// Run ONE rule's `on_change(event)` over the injected event, returning only the
+/// typed effect result — the batch-eval path (`eval_with_limits`) uses this and
+/// discards the metering. See [`run_rule_metered`] for the full contract.
+pub(crate) fn run_rule(
+    globals: &Globals,
+    rule: &Rule,
+    event: &ChangeEvent,
+    limits: EvalLimits,
+) -> Result<Vec<Effect>, EvalError> {
+    run_rule_metered(globals, rule, event, limits).outcome
+}
+
+/// Run ONE rule's `on_change(event)` over the injected event, metered, returning
+/// the typed result AND the exact fuel/mem it spent.
 ///
 /// Fuel/mem are enforced two ways, mirroring `policy`: Starlark's own
 /// `set_max_*` guards abort a runaway loop/recursion at coarse (~1000-event)
@@ -463,14 +498,18 @@ fn heap_bytes(heap: Heap<'_>) -> u64 {
 /// assert INSIDE the engine is caught by [`std::panic::catch_unwind`] and mapped
 /// to [`EvalError::Budget`] (the only panic reachable inside the metered eval is
 /// resource overflow) — so a bomb terminates, never hangs, never crashes.
-pub(crate) fn run_rule(
+pub(crate) fn run_rule_metered(
     globals: &Globals,
     rule: &Rule,
     event: &ChangeEvent,
     limits: EvalLimits,
-) -> Result<Vec<Effect>, EvalError> {
-    check_source_size(rule, limits)?;
-    check_nesting_depth(rule)?;
+) -> RuleRun {
+    if let Err(e) = check_source_size(rule, limits) {
+        return RuleRun::failed(e);
+    }
+    if let Err(e) = check_nesting_depth(rule) {
+        return RuleRun::failed(e);
+    }
 
     let store = EmitStore::new(rule, event);
     let step_guard = limits.fuel.max(1);
@@ -485,24 +524,30 @@ pub(crate) fn run_rule(
             let event_value = alloc_event(heap, event);
 
             let mut eval = Evaluator::new(&module);
-            eval.set_max_tick_count(step_guard)
-                .map_err(|e| runtime(rule, e))?;
-            eval.set_max_heap_size(mem_guard)
-                .map_err(|e| runtime(rule, e))?;
+            if let Err(e) = eval.set_max_tick_count(step_guard) {
+                return RuleRun::failed(runtime(rule, e));
+            }
+            if let Err(e) = eval.set_max_heap_size(mem_guard) {
+                return RuleRun::failed(runtime(rule, e));
+            }
             // Bound recursion DEPTH: unbounded Starlark recursion consumes native
             // frames and would overflow even the large evaluation stack before the
             // tick guard fires. The callstack limit stops it at a fixed depth with
             // a typed `StackOverflow` error (classified as budget below).
-            eval.set_max_callstack_size(limits.max_call_depth.max(1))
-                .map_err(|e| runtime(rule, e))?;
+            if let Err(e) = eval.set_max_callstack_size(limits.max_call_depth.max(1)) {
+                return RuleRun::failed(runtime(rule, e));
+            }
             eval.extra = Some(&store);
 
-            let ast = AstModule::parse(&rule.id, rule.source.clone(), &rule_dialect()).map_err(
-                |e| EvalError::Parse {
-                    rule_id: rule.id.clone(),
-                    reason: e.to_string(),
-                },
-            )?;
+            let ast = match AstModule::parse(&rule.id, rule.source.clone(), &rule_dialect()) {
+                Ok(ast) => ast,
+                Err(e) => {
+                    return RuleRun::failed(EvalError::Parse {
+                        rule_id: rule.id.clone(),
+                        reason: e.to_string(),
+                    });
+                }
+            };
 
             let mut aborted = false;
             let mut depth_overflow = false;
@@ -536,40 +581,50 @@ pub(crate) fn run_rule(
             let effects = store.effects.take();
 
             let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
-            if aborted {
+            let outcome = if aborted {
                 // The eval errored: a resource limit (⇒ budget) or a genuine
                 // fault? The coarse tick/heap guards are visible in the exact
                 // accounting; the callstack-depth guard surfaces as a typed
                 // `StackOverflow` — either is a terminated bomb, not a rule fault.
                 if over_budget || depth_overflow {
-                    return Err(budget(limits));
+                    Err(budget(limits))
+                } else {
+                    Err(EvalError::Runtime {
+                        rule_id: rule.id.clone(),
+                        reason: fault.unwrap_or_default(),
+                    })
                 }
-                return Err(EvalError::Runtime {
-                    rule_id: rule.id.clone(),
-                    reason: fault.unwrap_or_default(),
-                });
-            }
-            if let Some(reason) = fault {
-                return Err(EvalError::Runtime {
+            } else if let Some(reason) = fault {
+                Err(EvalError::Runtime {
                     rule_id: rule.id.clone(),
                     reason,
-                });
+                })
+            } else if over_budget {
+                // A non-looping allocation can complete WITHOUT aborting yet
+                // still overrun the exact mem bound — refuse it as budget.
+                Err(budget(limits))
+            } else {
+                Ok(effects)
+            };
+            RuleRun {
+                fuel_used: used_steps,
+                mem_used: used_mem,
+                outcome,
             }
-            // A non-looping allocation can complete WITHOUT aborting yet still
-            // overrun the exact mem bound — refuse it as budget, never admit it.
-            if over_budget {
-                return Err(budget(limits));
-            }
-            Ok(effects)
         })
     }));
 
     match evaluated {
-        Ok(inner) => inner,
+        Ok(run) => run,
         // The only panic reachable inside the metered Starlark eval is a
         // resource-overflow assert (a multi-GiB allocation tripping a `len
         // overflow`): a terminated bomb, reported as budget — never a crash.
-        Err(_panic) => Err(budget(limits)),
+        // It hit the fuel/mem ceiling, so the profile records the ceiling.
+        Err(_panic) => RuleRun {
+            fuel_used: limits.fuel,
+            mem_used: limits.mem,
+            outcome: Err(budget(limits)),
+        },
     }
 }
 
@@ -725,7 +780,10 @@ mod tests {
             "]".repeat(MAX_NESTING_DEPTH + 1)
         );
         assert!(
-            matches!(check_nesting_depth(&rule(&over_brackets)), Err(EvalError::Parse { .. })),
+            matches!(
+                check_nesting_depth(&rule(&over_brackets)),
+                Err(EvalError::Parse { .. })
+            ),
             "one over the cap is rejected"
         );
 
