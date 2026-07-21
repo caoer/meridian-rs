@@ -97,7 +97,7 @@ fn worked_session_e3_e4_failures_dry_links_root_byte_exact() {
     assert_eq!(
         frames[0],
         json!({"id":42,"ok":true,"body":{
-         "armed":{"path":"notes/plan.md","edits":[
+         "armed":{"path":"notes/plan.md","file_rev_after":"a9794a262e67ed02","edits":[
            {"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
             "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
             "span_after":[49,75]}]},
@@ -113,7 +113,7 @@ fn worked_session_e3_e4_failures_dry_links_root_byte_exact() {
     assert_eq!(
         frames[1],
         json!({"id":57,"ok":true,"body":{
-         "armed":{"path":"notes/plan.md","edits":[
+         "armed":{"path":"notes/plan.md","file_rev_after":"5f27a2814b517680","edits":[
            {"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
             "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
             "span_after":[75,150]}]},
@@ -240,6 +240,54 @@ fn dry_run_touches_nothing() {
     assert_eq!(
         std::fs::read_to_string(root.0.join("receipts/2026-07-18.md")).unwrap(),
         wsfix("s0/receipts/2026-07-18.md")
+    );
+}
+
+/// W-5 `file_rev_after`: a real splice reports the post-write whole-file rev
+/// on its armed fact, and it matches a SUBSEQUENT `toc`'s `file_rev`
+/// byte-for-byte — a consumer learns the new rev without the follow-up `toc`.
+/// The DRY twin carries NO `file_rev_after` (nothing was written), and the
+/// `root_after` world grain is the advanced root either way (unchanged).
+#[test]
+fn armed_file_rev_after_matches_subsequent_toc() {
+    let (_d, root) = s0();
+    let frames = serve(
+        &root,
+        concat!(
+            // the E3 real commit (plan edit + receipt) — root advances R0→R1
+            r#"{"id":1,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}]}"#,
+            "\n",
+            // read the map — its file_rev is the ground truth a consumer would fetch
+            r#"{"id":2,"op":"toc","path":"notes/plan.md"}"#,
+            "\n",
+            // a DRY splice on the committed S1 — writes nothing
+            r#"{"id":3,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- x\n"}}}]}"#,
+            "\n",
+        ),
+    );
+
+    // the armed post-write file rev rides the real commit ...
+    assert_eq!(
+        frames[0]["body"]["armed"]["file_rev_after"], "a9794a262e67ed02",
+        "armed reports the post-write file rev"
+    );
+    // ... and equals the SUBSEQUENT toc's file_rev — no drift, no extra round trip
+    assert_eq!(
+        frames[0]["body"]["armed"]["file_rev_after"], frames[1]["body"]["file_rev"],
+        "armed file_rev_after ≡ subsequent toc file_rev"
+    );
+    // the world grain is untouched: root_after is still a real advanced root
+    // on the real commit (never dry-null) — file_rev_after rides beside it
+    assert!(
+        frames[0]["body"]["root_after"].is_string(),
+        "root_after world grain present on the real commit"
+    );
+
+    // the DRY twin wrote nothing, so it carries NO post-write file rev
+    assert_eq!(frames[2]["body"]["dry"], true);
+    assert!(
+        frames[2]["body"]["armed"].get("file_rev_after").is_none(),
+        "dry splice carries no file_rev_after"
     );
 }
 
