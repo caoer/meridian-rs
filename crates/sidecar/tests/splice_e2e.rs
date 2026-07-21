@@ -97,7 +97,7 @@ fn worked_session_e3_e4_failures_dry_links_root_byte_exact() {
     assert_eq!(
         frames[0],
         json!({"id":42,"ok":true,"body":{
-         "armed":{"path":"notes/plan.md","edits":[
+         "armed":{"path":"notes/plan.md","file_rev_after":"a9794a262e67ed02","edits":[
            {"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},
             "node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f",
             "span_after":[49,75]}]},
@@ -113,7 +113,7 @@ fn worked_session_e3_e4_failures_dry_links_root_byte_exact() {
     assert_eq!(
         frames[1],
         json!({"id":57,"ok":true,"body":{
-         "armed":{"path":"notes/plan.md","edits":[
+         "armed":{"path":"notes/plan.md","file_rev_after":"5f27a2814b517680","edits":[
            {"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},
             "node_rev_before":"4b8bc385a58da0e0","node_rev_after":"f43203a1f0b4c9a3",
             "span_after":[75,150]}]},
@@ -243,6 +243,54 @@ fn dry_run_touches_nothing() {
     );
 }
 
+/// W-5 `file_rev_after`: a real splice reports the post-write whole-file rev
+/// on its armed fact, and it matches a SUBSEQUENT `toc`'s `file_rev`
+/// byte-for-byte — a consumer learns the new rev without the follow-up `toc`.
+/// The DRY twin carries NO `file_rev_after` (nothing was written), and the
+/// `root_after` world grain is the advanced root either way (unchanged).
+#[test]
+fn armed_file_rev_after_matches_subsequent_toc() {
+    let (_d, root) = s0();
+    let frames = serve(
+        &root,
+        concat!(
+            // the E3 real commit (plan edit + receipt) — root advances R0→R1
+            r#"{"id":1,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}]}"#,
+            "\n",
+            // read the map — its file_rev is the ground truth a consumer would fetch
+            r#"{"id":2,"op":"toc","path":"notes/plan.md"}"#,
+            "\n",
+            // a DRY splice on the committed S1 — writes nothing
+            r#"{"id":3,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- x\n"}}}]}"#,
+            "\n",
+        ),
+    );
+
+    // the armed post-write file rev rides the real commit ...
+    assert_eq!(
+        frames[0]["body"]["armed"]["file_rev_after"], "a9794a262e67ed02",
+        "armed reports the post-write file rev"
+    );
+    // ... and equals the SUBSEQUENT toc's file_rev — no drift, no extra round trip
+    assert_eq!(
+        frames[0]["body"]["armed"]["file_rev_after"], frames[1]["body"]["file_rev"],
+        "armed file_rev_after ≡ subsequent toc file_rev"
+    );
+    // the world grain is untouched: root_after is still a real advanced root
+    // on the real commit (never dry-null) — file_rev_after rides beside it
+    assert!(
+        frames[0]["body"]["root_after"].is_string(),
+        "root_after world grain present on the real commit"
+    );
+
+    // the DRY twin wrote nothing, so it carries NO post-write file rev
+    assert_eq!(frames[2]["body"]["dry"], true);
+    assert!(
+        frames[2]["body"]["armed"].get("file_rev_after").is_none(),
+        "dry splice carries no file_rev_after"
+    );
+}
+
 /// Gate 7: the receipt parent-dir obligation is the CALLER's (fs does not
 /// mkdir — F4 seam memo). A real splice naming a receipt under an absent
 /// directory succeeds — the arm creates the dir; the SAME request dry
@@ -351,5 +399,98 @@ fn if_root_checked_first_root_mismatch() {
     assert_eq!(
         frame["error"]["actual"], R0,
         "world guard first, ref second"
+    );
+}
+
+/// W-8 `put at:upsert` — the frontmatter-key create-or-replace verb, END-TO-END
+/// through the live serve loop. Three cases (design): a key that EXISTS is
+/// replaced in place; a key ABSENT from an existing frontmatter block inserts a
+/// new line right after the opening fence; a file with NO frontmatter gets a
+/// synthesized `---` block at byte 0. The server composes `{key}: {value}` from
+/// the target key — the request carries only the VALUE, never a byte offset
+/// (D-C1). Every disk state derived (real decode → validate → apply → commit).
+#[test]
+fn fm_upsert_creates_and_replaces() {
+    // Case 1 — key EXISTS → its line is replaced. Same `title: Plan` line, span,
+    // and revs as the frozen dry `fm_key` fixture (before fa77…, after fb49…):
+    // the upsert of `Plan v2` produces the identical committed leaf.
+    let (_d1, root) = workspace(&[("notes/a.md", "---\ntitle: Plan\n---\n# Body\n")]);
+    let frame = one(
+        &root,
+        r#"{"id":1,"op":"splice","path":"notes/a.md","edits":[{"target":{"fm_key":"title"},"edit":{"put":{"at":"upsert","text":"Plan v2"}}}]}"#,
+    );
+    assert_eq!(frame["ok"], true, "{frame}");
+    assert_eq!(
+        frame["body"]["armed"]["edits"][0],
+        json!({"target":{"fm_key":"title"},
+               "node_rev_before":"fa77480c79a853bc","node_rev_after":"fb49e9df2257fab8",
+               "span_after":[4,18]}),
+        "existing key replaced in place"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("notes/a.md")).unwrap(),
+        "---\ntitle: Plan v2\n---\n# Body\n",
+        "case 1: existing key line replaced"
+    );
+
+    // Case 2 — key ABSENT, frontmatter EXISTS → the new line inserts right after
+    // the opening `---` fence (first-key position); the block stays well-formed.
+    let (_d2, root) = workspace(&[("notes/a.md", "---\ntitle: Plan\n---\n# Body\n")]);
+    let frame = one(
+        &root,
+        r#"{"id":2,"op":"splice","path":"notes/a.md","edits":[{"target":{"fm_key":"status"},"edit":{"put":{"at":"upsert","text":"active"}}}]}"#,
+    );
+    assert_eq!(frame["ok"], true, "{frame}");
+    assert_eq!(
+        frame["body"]["armed"]["edits"][0]["span_after"],
+        json!([4, 18]),
+        "new key `status: active` at the first-key position (span [4,18])"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("notes/a.md")).unwrap(),
+        "---\nstatus: active\ntitle: Plan\n---\n# Body\n",
+        "case 2: new key inserted after the opening fence"
+    );
+
+    // Case 3 — NO frontmatter → a `---` block is synthesized at byte 0; the
+    // pre-existing body bytes are untouched (server-derived offset, not client).
+    let (_d3, root) = workspace(&[("notes/b.md", "# Body\n\ntext\n")]);
+    let frame = one(
+        &root,
+        r#"{"id":3,"op":"splice","path":"notes/b.md","edits":[{"target":{"fm_key":"title"},"edit":{"put":{"at":"upsert","text":"Plan"}}}]}"#,
+    );
+    assert_eq!(frame["ok"], true, "{frame}");
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("notes/b.md")).unwrap(),
+        "---\ntitle: Plan\n---\n# Body\n\ntext\n",
+        "case 3: frontmatter block synthesized at byte 0"
+    );
+}
+
+/// W-8 upsert guards (write path → `bad_request`): the verb is defined ONLY for
+/// an `fm_key` target, and the value must be single-line — the server composes
+/// `{key}: {value}`, so a non-fm_key target or a newline-bearing value is refused
+/// loud before any byte moves.
+#[test]
+fn fm_upsert_guards_reject_bad_domain() {
+    let (_d, root) = s0();
+    // a non-fm_key target (hpath) is outside the verb's domain → bad_request,
+    // even though the hpath itself resolves.
+    let frame = one(
+        &root,
+        r#"{"id":1,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"}]},"edit":{"put":{"at":"upsert","text":"x"}}}]}"#,
+    );
+    assert_bad_request(&frame);
+    // a newline-bearing value would forge extra frontmatter lines → bad_request.
+    let frame = one(
+        &root,
+        r#"{"id":2,"op":"splice","path":"notes/plan.md","edits":[{"target":{"fm_key":"title"},"edit":{"put":{"at":"upsert","text":"a\nb"}}}]}"#,
+    );
+    assert_bad_request(&frame);
+    // the file never moved under either refusal.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("notes/plan.md")).unwrap(),
+        wsfix("s0/notes/plan.md"),
+        "guards refuse before any byte lands"
     );
 }

@@ -132,6 +132,7 @@ fn shape_display(shape: &wire::EditShape) -> &'static str {
             wire::PutAt::All => "put:all",
             wire::PutAt::Content => "put:content",
             wire::PutAt::End => "put:end",
+            wire::PutAt::Upsert => "put:upsert",
         },
     }
 }

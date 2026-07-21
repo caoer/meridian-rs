@@ -262,6 +262,15 @@ pub enum PutAt {
     /// get right, and a result that loses containment refuses
     /// `would_corrupt`.
     End,
+    /// Set a frontmatter key (create-or-replace) — the property UPSERT verb,
+    /// valid ONLY on an `fm_key` target. `text` is the VALUE (not the whole
+    /// line): the server composes `{key}: {value}` from the target key, so the
+    /// `fm_key` is the single source of truth. Replaces the key's line when it
+    /// exists; creates it (synthesizing the `---` frontmatter block when the
+    /// file has none) when absent. The insertion offset is SERVER-derived from
+    /// the document structure — no client byte offset (D-C1). A NON-`fm_key`
+    /// target or a multi-line value is `bad_request`.
+    Upsert,
 }
 
 /// A receipt address (v2 §6.1): ordinary markdown inside the hash domain —
@@ -291,10 +300,30 @@ pub struct Request {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     /// v2 §3.2 version handshake; `caps` discovery, never version sniffing.
+    ///
+    /// `contract` is the v3-amendment negotiation knob (`docs/wire-contract-v3-amendment.md`):
+    /// an OPTIONAL client-DECLARED contract rev, absent or `"v2"` ⇒ the frozen
+    /// v2 vocabulary (byte-for-byte), `"v3"` ⇒ the `fingerprint` vocabulary from
+    /// the hello response onward. A DECLARED rev is not the §3.2-forbidden
+    /// version sniffing (the client states its rev; the server never guesses).
+    /// Absent ⇒ serialized away, so the v2 request stays byte-identical.
+    ///
+    /// `workspace` is the resident-engine handshake's workspace-target
+    /// (`[[0002-resident-daemon]]` §4): the host path the client binds this
+    /// connection to. The daemon resolves it (the ancestor walk), pins its
+    /// storage drawer, warms its resident engine, and serves subsequent read ops
+    /// from that binding — one round trip. Absent ⇒ a pure version handshake
+    /// that binds nothing (the sidecar's per-process stdio hello never sends it,
+    /// so the v2 request stays byte-identical). An OPTIONAL additive field on the
+    /// frozen shape, exactly like `contract`.
     Hello {
         proto: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         client: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        contract: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
     /// v2 §4.1 the map: complete write kit (hpath + rev per section, anchors
     /// with revs, fm keys), header `file_rev` + ambient `root` in the response.
@@ -382,6 +411,26 @@ pub enum Op {
     /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
     /// law); outside the retained history → `root_unknown` → diff-by-root.
     Sub { from_seq: u64 },
+    /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
+    /// publish `view.duckdb` (the daemon is the sole builder), and return the
+    /// stamped filesystem PATH plus a pre-open freshness hint. It marshals
+    /// **no rows**, executes no query, maps no result-set errors — a
+    /// row-returning `sql` op is a brand-new tabular surface, explicitly
+    /// round-2 and OUT of scope. `fresh:true` asks the daemon for a bounded
+    /// rebuild (§Q3). Served by the resident daemon only; a per-process sidecar
+    /// (which cannot publish — C2 forbids `sidecar`→`view`) answers
+    /// `daemon_only`.
+    ViewPath {
+        /// The consumer's working directory — the daemon resolves it to a
+        /// workspace (ancestor walk) and its drawer. A raw HOST path
+        /// (absolute), NOT a workspace-relative wire [`Path`], so it carries no
+        /// path-law and is a plain string.
+        cwd: String,
+        /// `true` ⇒ the bounded `--fresh` rebuild (§Q3); absent/`false` ⇒ serve
+        /// the published (or first-built) view.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fresh: Option<bool>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -525,12 +574,21 @@ pub enum ResponseBody {
     /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
     /// optional first ambient `root`.
+    ///
+    /// `storage` is the pinned storage drawer (`[[0002-resident-daemon]]` §4
+    /// storage pin): the cache drawer directory the daemon pinned for the
+    /// hello'd workspace, via the canonicalize → deny-ceiling → sentinel path.
+    /// Absent on a workspace-less handshake (nothing to pin) and on the sidecar
+    /// (which opens its drawer client-side). An OPTIONAL additive field on the
+    /// frozen shape.
     Hello {
         proto: u32,
         server: String,
         caps: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         root: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        storage: Option<String>,
     },
     /// v2 §4.1: the map — header `file_rev` + ambient `root` (the commit-guard
     /// idiom made ambient: read a toc, later pass `if_root`), rows in frozen
@@ -605,6 +663,127 @@ pub enum ResponseBody {
         changes_seq: u64,
         files: BTreeMap<String, FileLinks>,
     },
+    /// V2 §Q2 the `view_path` reply: a stamped **PATH** plus a **pre-open**
+    /// freshness hint — never rows. `path` is authoritative; the fingerprints,
+    /// `state`, and `live_source` are a PRE-OPEN hint the consumer discards once
+    /// it opens the file and re-reads the `_meridian_view` stamp (a concurrent
+    /// rebuild's rename can stale the reply's fingerprints — §Q3). The
+    /// fingerprint slots carry the v2 `root` vocabulary (`as_of_root`/`live_root`)
+    /// so the v3 projection re-keys them to `as_of_fingerprint`/`live_fingerprint`
+    /// through the ONE existing rename table (`wire-serve::rev`), never a second
+    /// dialect.
+    ///
+    /// Placed last in this untagged enum: its shape is unique (`path` +
+    /// `state` + `live_source` + `refresh_in_progress`, and NO `files`), so no
+    /// earlier variant captures a `view_path` frame and it captures none of
+    /// theirs.
+    ViewPath {
+        /// The stamped `view.duckdb` filesystem path — **authoritative**, the
+        /// one field the consumer trusts (it opens THIS inode).
+        path: String,
+        /// PRE-OPEN hint: the fingerprint the published file was built at (the
+        /// daemon's `at_fingerprint` at publish). v2 `root` vocabulary; v3 →
+        /// `as_of_fingerprint`. Non-authoritative — re-read the opened file's
+        /// `_meridian_view` stamp for the real `as_of`.
+        as_of_root: Root,
+        /// PRE-OPEN hint: the daemon's live fingerprint sample (its warm
+        /// `at_fingerprint`, a disk fold that may lag). v2 `root` vocabulary;
+        /// v3 → `live_fingerprint`.
+        live_root: Root,
+        /// The per-daemon-epoch delta counter at the sample (§7.1); `0` until
+        /// the delta ring lands (the resident daemon holds none in round-1,
+        /// mirroring `Root`/`Links` which already report `0`).
+        changes_seq: u64,
+        /// The daemon's pre-open freshness ASSESSMENT (`as_of` vs `live`) — a
+        /// hint label, never a verdict (`stale` stays null).
+        state: ViewState,
+        /// Provenance of `live_root`: `watch` (the daemon's warm hint) or `none`
+        /// (no sample). NEVER `fold` on a pre-open hint — a `fold` verdict comes
+        /// only from a consumer's POST-result sample (§Q3 C3).
+        live_source: ViewLiveSource,
+        /// **ALWAYS null** on this pre-open hint (B5+C3): a hint is never a
+        /// freshness verdict. The consumer folds `live` AFTER its own result to
+        /// reach `true`/`false`. Serialized as `null`, never omitted.
+        stale: Option<bool>,
+        /// OD7 advisory telemetry (daemon memory): a rebuild is in flight.
+        /// Round-1 rebuilds are SYNCHRONOUS (done before this reply), so it is
+        /// always `false`; the async executor is round-2.
+        refresh_in_progress: bool,
+        /// OD7 advisory telemetry (daemon memory): the last rebuild failure, if
+        /// any — it explains WHY a view is stale, never gates freshness.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_error: Option<RefreshError>,
+    },
+}
+
+/// The daemon's pre-open freshness assessment for a `view_path` reply (§Q3
+/// state machine, querier vantage). A HINT label on the reply — decoupled from
+/// the null `stale` verdict, which only a consumer's post-result fold can set.
+/// Round-1 emits exactly these three; the wider state machine (`REBUILDING`,
+/// `NO_VIEW`, `UNKNOWN`) is a query-frame / error concern, never a `view_path`
+/// success body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ViewState {
+    /// `as_of == live` at the daemon's sample — fresh AT that instant, never
+    /// timeless (§Q3).
+    FreshAtSample,
+    /// `as_of != live` — a legal frame, never an error; both fingerprints ride
+    /// the reply.
+    Stale,
+    /// A bounded `--fresh` rebuild could not reach `as_of == live` within its
+    /// one-retry bound (§Q3); a first-class sibling of `STALE`, never a loop,
+    /// never a fresh lie.
+    Raced,
+}
+
+/// The provenance of a `live` fingerprint value (§Q3 C3, source-labeled). The
+/// `view_path` pre-open hint only ever uses `watch`/`none`; `fold` labels a
+/// consumer's post-result disk fold on the delivered-query surface. Mirrors the
+/// schema `CHECK (live_source IN ('fold','watch','none'))`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewLiveSource {
+    /// A real post-result `fs::domain_snapshot` fold — a VERDICT source.
+    Fold,
+    /// The daemon's warm `at_fingerprint` hint (may lag disk) — never a verdict.
+    Watch,
+    /// No liveness sampled — never a verdict.
+    None,
+}
+
+/// OD7 refresh-failure telemetry (daemon memory, never the immutable stamp): a
+/// rebuild that failed. Advisory only — it explains why a view is stale and
+/// never gates a freshness verdict. `fingerprint_attempted` is vocabulary-neutral
+/// (like `expected`/`actual`), so the v3 projection leaves it untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshError {
+    pub code: RefreshErrorCode,
+    /// Unix seconds at which the failure was recorded.
+    pub unix: u64,
+    /// The fingerprint the failed rebuild targeted, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint_attempted: Option<Root>,
+    /// A human-readable cause (never machine-dispatched — `code` is the class).
+    pub message: String,
+}
+
+/// The closed refresh-failure class (OD7). Flat lowercase `snake_case` on the
+/// wire. Round-1 populates what the synchronous rebuild can distinguish; the
+/// richer executor taxonomy (backoff, retry) lands with the round-2 async path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshErrorCode {
+    /// The corpus could not be parsed into the projection source.
+    ParseError,
+    /// The drawer filesystem is out of space.
+    DiskFull,
+    /// The build ran out of memory.
+    Oom,
+    /// The build exceeded its time bound.
+    Timeout,
+    /// Any other I/O failure (temp create, `chmod`, `fsync`, rename, WAL).
+    Io,
 }
 
 /// One file's outgoing edges (v2 §4.6, the app's `resolvedLinks`/
@@ -623,6 +802,14 @@ pub struct FileLinks {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Armed {
     pub path: Path,
+    /// The whole-file rev AFTER the batch commits — same family/width as
+    /// [`DeltaFile::file_rev_after`] and a subsequent `toc`'s `file_rev`, so a
+    /// consumer learns the new file rev WITHOUT a follow-up `toc`. A latency
+    /// fact only; correctness stays the fingerprint/`root_after` world grain.
+    /// Absent on a dry run — nothing was written, so the post-write rev does
+    /// not exist yet (mirrors `root_after`'s dry-null at file grain).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_rev_after: Option<NodeRev>,
     pub edits: Vec<ArmedEdit>,
 }
 

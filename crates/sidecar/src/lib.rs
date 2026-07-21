@@ -33,11 +33,14 @@ use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
-pub mod commit;
-mod decode;
 mod policy_bridge;
 pub mod ring;
 mod watch;
+
+// The v3 vocabulary projection lives in `wire-serve`, the shared typed-edge home
+// both hosts project through (arch map A6: "lift, don't duplicate"). Imported as
+// `rev` so the serve loop reads the same as before.
+use wire_serve::rev;
 
 /// Admit a rule pack sidecar-mode (P6-VERDICTS): compile through policy's load
 /// gate over the REAL parse→facts plane, refusing a corpus-class pack LOUD
@@ -104,6 +107,10 @@ pub fn serve(
     let mut epoch = ring::RootRing::new();
     let mut subs: Vec<SubState> = Vec::new();
     let mut watch = watch::WatchState::new(root);
+    // Per-serve-session contract rev (one epoch, one rev), negotiated at
+    // `hello` (docs/wire-contract-v3-amendment.md). Defaults to v2 so an
+    // un-negotiated session is byte-for-byte the frozen contract.
+    let mut rev = rev::Rev::V2;
     let mut line = String::new();
     loop {
         line.clear();
@@ -119,10 +126,9 @@ pub fn serve(
         if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
             eprintln!("watch reconcile: {e:?}");
         }
-        flush_subs(&mut output, &epoch, &mut subs)?;
-        let response = respond_line(root, &mut epoch, &mut subs, rulesets, &line);
-        serde_json::to_writer(&mut output, &response)?;
-        output.write_all(b"\n")?;
+        flush_subs(&mut output, &epoch, &mut subs, rev)?;
+        let response = respond_line(root, &mut epoch, &mut subs, rulesets, &mut rev, &line);
+        write_response(&mut output, &response, rev)?;
         // Post-dispatch reconcile: internal commits sync the baseline
         // silently; an external landing mid-dispatch is emitted here.
         if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
@@ -131,7 +137,7 @@ pub fn serve(
         // The push path: ok first, THEN Notification frames (§4.7 order) —
         // a fresh subscription's replay and every live emission ride the
         // same flush, so replay ≡ live holds at the transport too.
-        flush_subs(&mut output, &epoch, &mut subs)?;
+        flush_subs(&mut output, &epoch, &mut subs, rev)?;
         output.flush()?;
     }
 }
@@ -146,20 +152,44 @@ struct SubState {
 /// Write every undelivered ring frame to each subscription, in emission
 /// order — the frames are the STORED ring objects serialized directly
 /// (`{"delta":{…}}`, no `id` key — §3.1 classification): the d4
-/// single-constructor law extends to the push path by construction.
+/// single-constructor law extends to the push path by construction. Under a
+/// v3 session each frame is re-shaped `root_before/after` → `fingerprint_*`
+/// before write; v2 serializes the ring object directly (byte-identical).
 fn flush_subs(
     output: &mut impl Write,
     epoch: &ring::RootRing,
     subs: &mut [SubState],
+    rev: rev::Rev,
 ) -> io::Result<()> {
     for sub in subs.iter_mut() {
         for frame in epoch.frames_after(sub.delivered) {
-            serde_json::to_writer(&mut *output, &frame)?;
+            if rev == rev::Rev::V3 {
+                let mut v = serde_json::to_value(&frame)?;
+                rev::project_delta_frame(&mut v);
+                serde_json::to_writer(&mut *output, &v)?;
+            } else {
+                serde_json::to_writer(&mut *output, &frame)?;
+            }
             output.write_all(b"\n")?;
             sub.delivered = frame.delta.seq;
         }
     }
     Ok(())
+}
+
+/// Write one response frame, shaped per the negotiated rev. v2 serializes the
+/// typed `wire::Response` directly — the frozen path, byte-identical. v3
+/// projects the serialized frame `root` → `fingerprint` at the envelope layer
+/// (the typed layer never changes).
+fn write_response(output: &mut impl Write, response: &Response, rev: rev::Rev) -> io::Result<()> {
+    if rev == rev::Rev::V3 {
+        let mut v = serde_json::to_value(response)?;
+        rev::project_response(&mut v);
+        serde_json::to_writer(&mut *output, &v)?;
+    } else {
+        serde_json::to_writer(&mut *output, response)?;
+    }
+    output.write_all(b"\n")
 }
 
 /// v2 §4.7 `sub`, live at T5-SUB. The §7.1 late law's residue: `from_seq`
@@ -192,7 +222,7 @@ fn subscribe(
         delivered: from_seq,
     });
     Ok(wire::ResponseBody::Root {
-        root: arms::ambient_root(root)?,
+        root: wire_serve::ambient_root(root)?,
         seq: current,
     })
 }
@@ -205,6 +235,7 @@ fn respond_line(
     epoch: &mut ring::RootRing,
     subs: &mut Vec<SubState>,
     rulesets: &[policy::CompiledRuleset],
+    rev: &mut rev::Rev,
     line: &str,
 ) -> Response {
     let id = match scan_id(line) {
@@ -222,7 +253,7 @@ fn respond_line(
         Ok(IdScan::Notification) => None,
     };
     // scan_id proved the line is a JSON object.
-    let Ok(obj) = serde_json::from_str::<Map<String, Value>>(line) else {
+    let Ok(mut obj) = serde_json::from_str::<Map<String, Value>>(line) else {
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     };
     if !obj.contains_key("op") {
@@ -230,7 +261,14 @@ fn respond_line(
         // protocol misuse → bad_frame; un-correlatable by design.
         return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
     }
-    match decode::decode(&obj) {
+    // v3 session: re-key the request into its v2 form so the strict decoder
+    // and every arm stay v2-only. `hello` itself always arrives in the base
+    // vocabulary + the `contract` knob, so a not-yet-negotiated session (still
+    // v2 here) never mangles it.
+    if *rev == rev::Rev::V3 {
+        rev::rename_request(&mut obj);
+    }
+    match wire_serve::decode::decode(&obj) {
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
         Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
@@ -241,14 +279,21 @@ fn respond_line(
             },
             Err(e) => error_frame(id, *e),
         },
-        Ok(op) => match arms::dispatch(root, epoch, id, op, rulesets) {
-            Ok(body) => Response {
-                id,
-                ok: true,
-                payload: ResponsePayload::Body { body },
-            },
-            Err(e) => error_frame(id, *e),
-        },
+        Ok(op) => {
+            // Negotiate the session rev from the hello declaration, so THIS
+            // hello response (and every frame after) is shaped for it.
+            if let wire::Op::Hello { contract, .. } = &op {
+                *rev = rev::Rev::from_contract(contract.as_deref());
+            }
+            match arms::dispatch(root, epoch, id, op, rulesets) {
+                Ok(body) => Response {
+                    id,
+                    ok: true,
+                    payload: ResponsePayload::Body { body },
+                },
+                Err(e) => error_frame(id, *e),
+            }
+        }
         Err(e) => error_frame(id, *e),
     }
 }
@@ -259,11 +304,4 @@ fn error_frame(id: Option<u64>, error: ErrorBody) -> Response {
         ok: false,
         payload: ResponsePayload::Error { error },
     }
-}
-
-/// A `bad_request` with a human message — the strict-decode workhorse.
-pub(crate) fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
-    let mut e = ErrorBody::new(ErrorCode::BadRequest);
-    e.message = Some(message.into());
-    Box::new(e)
 }

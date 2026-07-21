@@ -1,0 +1,32 @@
+[package]
+name = "rules"
+description = "The extension kernel: pure Starlark evaluation — rules in, effect descriptors out, zero I/O, zero integration (decisions/0003)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The sealed evaluation engine (fenced Starlark → effect descriptors). Pinned at
+# the workspace root (=0.14.2), shared with `policy`. Zero ambient I/O: the only
+# capabilities a rule gets are the effect-descriptor builtins registered here —
+# the standard globals carry no file/net/os surface (research-starlark-mcp §1).
+starlark = { workspace = true }
+# `#[starlark_module]` builtins return `anyhow::Result`; the effect constructors use it.
+anyhow = { workspace = true }
+# Effect descriptors serialize for golden snapshots and the (reserved) wire
+# `effects[]` field. serde derive only — pure, no I/O.
+serde = { workspace = true }
+
+[dev-dependencies]
+# Golden descriptor snapshots (rule + event → exact effect set).
+insta = { workspace = true }
+# Invariants: determinism across runs/threads, fuel bounds, no panic on any event,
+# idempotency-key stability. proptest is the stable-runnable fuzz layer.
+proptest = { workspace = true }
+# Golden fixtures + property assertions render effects to canonical JSON.
+serde_json = { workspace = true }
