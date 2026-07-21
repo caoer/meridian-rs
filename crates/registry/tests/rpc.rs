@@ -23,6 +23,7 @@ fn test_config(tmp: &TempDir) -> Config {
         cache_root: tmp.path().join("cache"),
         idle_threshold: Duration::from_secs(365 * 24 * 60 * 60),
         reap_interval: Duration::from_secs(365 * 24 * 60 * 60),
+        prewarm_interval: Duration::from_secs(365 * 24 * 60 * 60),
     }
 }
 

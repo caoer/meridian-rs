@@ -300,10 +300,12 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             proto,
             client,
             contract,
+            workspace,
         } => pb::request::Op::Hello(pb::HelloRequest {
             proto,
             client,
             contract,
+            workspace,
         }),
         wire::Op::Toc { path } => pb::request::Op::Toc(pb::TocRequest { path: path.0 }),
         wire::Op::Cat { path, sec } => pb::request::Op::Cat(pb::CatRequest {
@@ -439,11 +441,13 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             server,
             caps,
             root,
+            storage,
         } => pb::response::Body::Hello(pb::HelloResponse {
             proto,
             server,
             caps,
             root: root.map(|r| r.0),
+            storage,
         }),
         wire::ResponseBody::Toc {
             path,
@@ -918,10 +922,12 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             proto,
             client,
             contract,
+            workspace,
         }) => wire::Op::Hello {
             proto,
             client,
             contract,
+            workspace,
         },
         pb::request::Op::Toc(pb::TocRequest { path }) => wire::Op::Toc {
             path: wire::Path(path),
@@ -1074,11 +1080,13 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             server,
             caps,
             root,
+            storage,
         }) => wire::ResponseBody::Hello {
             proto,
             server,
             caps,
             root: root.map(wire::Root),
+            storage,
         },
         pb::response::Body::Toc(pb::TocResponse {
             path,
@@ -1474,6 +1482,7 @@ fn sample_requests() -> Vec<wire::Request> {
             proto: 1,
             client: Some("agreement-test".into()),
             contract: Some("v3".into()),
+            workspace: Some("/home/zt/wiki".into()), // resident-engine handshake target
         },
         wire::Op::Toc {
             path: wire::Path("tasks/x.md".into()),
@@ -1849,12 +1858,14 @@ fn sample_responses() -> Vec<wire::Response> {
                 "resolve.content".into(),
             ],
             root: Some(root.clone()),
+            storage: Some("/home/zt/.cache/meridian/abc123/v1".into()), // the pinned drawer
         },
         wire::ResponseBody::Hello {
             proto: 1,
             server: "meridian-sidecar".into(),
             caps: vec!["hello".into()],
-            root: None, // the engine may not have walked yet
+            root: None,    // the engine may not have walked yet
+            storage: None, // a workspace-less handshake pins nothing
         },
         wire::ResponseBody::Toc {
             path: wire::Path("notes/plan.md".into()),

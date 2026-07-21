@@ -26,6 +26,26 @@ path = "src/main.rs"
 workspace = { workspace = true }
 cache = { workspace = true }
 registry = { workspace = true }
+# The engine-client path (P1, decision 0002 §3): dial the resident daemon over
+# its socket, or degrade to an in-process ephemeral engine built from `fs` and
+# answered through the shared `wire-serve` read arms — the SAME projection the
+# daemon serves, so the two paths never drift. `fs::build_corpus` is U1's
+# builder, reused for the degrade; `wire` names the frozen request/response
+# shapes. All three are already in the graph via `registry`, so no new external
+# crate enters and `cargo deny` is unchanged.
+fs = { workspace = true }
+wire = { workspace = true }
+wire-serve = { workspace = true }
+# The corpus-replay harness (`mrd rules replay`): synthesize a ChangeEvent stream
+# from a workspace's real history (git commits → consecutive fingerprint diffs)
+# or an ordered snapshot fixture, run the extension kernel over it, and report
+# dead rules / fire counts / effect-kind distribution / fuel profile. `rules` is
+# the eval kernel (0003); `model` + `syntax` build a Document from raw bytes and
+# `model::delta::file_delta` derives the per-file change facts. All are path deps
+# already in the graph via `fs` — no new external crate, `cargo deny` unchanged.
+rules = { workspace = true }
+model = { workspace = true }
+syntax = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }

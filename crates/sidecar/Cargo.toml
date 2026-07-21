@@ -16,24 +16,24 @@ workspace = true
 transport = { workspace = true }
 model = { workspace = true }
 fs = { workspace = true }
-# links (§4.6) parses the domain snapshot's exact bytes — the bytes the
-# as_of_root folded — rather than re-reading disk through fs::load.
+# The watcher (F5) reparses changed bytes to compute change facts; policy
+# admission (P6-VERDICTS) folds the same parse into its load gate.
 syntax = { workspace = true }
-# Rung-5 corpus reads: the §4.6 edge map is query's (the additive-crate
-# arrival — nothing reshuffles).
-query = { workspace = true }
-# CALL-ONLY (advisor ruling, d4-splice): the splice arm renders receipt
-# lines through it; edits to the crate itself need an ownership ruling.
-receipt = { workspace = true }
 # The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the sidecar
-# composes policy + the real parse pipeline in-process — the splice arm evaluates
-# loaded rule packs and fills verdicts:[]. Zero edges run the OTHER way: nothing
-# depends INTO policy that did not before (policy consumes supplied facts).
+# ADMITS policy packs in-process (`policy_bridge::admit`) over the real parse
+# pipeline, then hands them to the shared write choke-point. Zero edges run the
+# OTHER way: nothing depends INTO policy (policy consumes supplied facts). The
+# splice/commit/receipt/query edges moved to `wire-serve` with the write path.
 policy = { workspace = true }
 wire = { workspace = true }
 # Law 3 as amended (review C1): projection lives at the named wire-map seam,
 # tested there; this bin stays wiring-only.
 wire-map = { workspace = true }
+# The shared typed edge (U2, arch map A6): the strict-decode pass and the read-op
+# arms live here now, so the sidecar and the resident daemon answer the wire
+# contract through ONE implementation. The sidecar builds the corpus per request
+# and hands the borrowed state to these arms.
+wire-serve = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

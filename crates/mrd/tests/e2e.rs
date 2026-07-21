@@ -295,3 +295,239 @@ fn graceful_kill(child: &mut std::process::Child) {
         libc::kill(pid, libc::SIGTERM);
     }
 }
+
+// ===========================================================================
+// P1 (decision 0002 §3): the engine-client path — `mrd links` auto-spawns the
+// resident daemon on first use and degrades to an in-process ephemeral engine.
+// ===========================================================================
+
+impl Sandbox {
+    /// A marker workspace `tmp/<name>` (a `.meridian.toml`, so `resolve` is
+    /// tier-2 and never needs a daemon) seeded with `files`. Returns its
+    /// canonical path.
+    fn marker_ws(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+        let ws = self.dir(name);
+        std::fs::write(ws.join(".meridian.toml"), "version = 1\n").expect("marker");
+        for (rel, content) in files {
+            std::fs::write(ws.join(rel), content).expect("seed file");
+        }
+        std::fs::canonicalize(&ws).expect("canonical ws")
+    }
+
+    /// The resident daemon's pidfile path (written by the singleton winner).
+    fn daemon_pidfile(&self) -> PathBuf {
+        self.cache_root.join("registry").join("daemon.pid")
+    }
+
+    /// Read the resident daemon's pid, polling until the pidfile appears (the
+    /// daemon writes it just after binding — a small window past first ping).
+    fn wait_daemon_pid(&self, timeout: Duration) -> Option<i32> {
+        self.wait_daemon_pid_since(None, timeout)
+    }
+
+    /// Like [`Self::wait_daemon_pid`], but when `exclude` is set, poll until the
+    /// pidfile names a DIFFERENT pid — so a respawn is not confused with the
+    /// killed daemon's stale pidfile (SIGKILL leaves it behind until the fresh
+    /// daemon overwrites it).
+    fn wait_daemon_pid_since(&self, exclude: Option<i32>, timeout: Duration) -> Option<i32> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(self.daemon_pidfile())
+                && let Ok(pid) = text.trim().parse::<i32>()
+                && Some(pid) != exclude
+            {
+                return Some(pid);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        None
+    }
+}
+
+/// Send `signal` to `pid` (a detached daemon we do not own as a child).
+fn signal(pid: i32, signal: libc::c_int) {
+    // SAFETY: a plain `kill(2)` to a pid we read from the daemon's own pidfile.
+    unsafe {
+        libc::kill(pid, signal);
+    }
+}
+
+/// Poll until `pid` is gone (`kill(pid, 0)` → `ESRCH`), so a killed daemon has
+/// released its socket + singleton flock before the next client dials.
+fn wait_dead(pid: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // SAFETY: signal 0 probes existence without delivering a signal.
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Gate: cold client auto-spawns the daemon and answers warm — and the degrade
+// answer is byte-identical (one projection, two state sources, no drift).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_links_cold_auto_spawns_and_answers_warm() {
+    let sb = sandbox();
+    let ws = sb.marker_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
+
+    // Cold: no daemon running. `mrd links` must auto-spawn one and answer.
+    let warm = sb.run(&ws, &["links", "--json"]);
+
+    // Reap the auto-spawned resident daemon BEFORE asserting, so a failed
+    // assertion never leaks it. It is detached (reparented to init), so we
+    // signal it by the pid it wrote to its own pidfile.
+    let pid = sb.wait_daemon_pid(Duration::from_secs(5));
+    if let Some(pid) = pid {
+        signal(pid, libc::SIGTERM);
+        wait_dead(pid, Duration::from_secs(5));
+    }
+    // With the daemon gone, the same query degrades to the in-process engine.
+    let cold = sb
+        .base(mrd_bin())
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .args(["links", "--json"])
+        .current_dir(&ws)
+        .output()
+        .expect("spawn mrd");
+
+    assert!(pid.is_some(), "the auto-spawned daemon wrote a pidfile");
+    assert!(warm.status.success(), "warm links: {}", stderr(&warm));
+    let warm = json(&warm);
+    assert_eq!(
+        warm["source"], "daemon",
+        "cold first use auto-spawns the daemon"
+    );
+    assert_eq!(
+        warm["links"]["files"]["a.md"]["resolved"]["b.md"],
+        serde_json::json!(1),
+        "the warm engine resolves [[b]] → b.md: {warm}"
+    );
+
+    assert!(cold.status.success(), "degrade links: {}", stderr(&cold));
+    let cold = json(&cold);
+    assert_eq!(
+        cold["source"], "ephemeral",
+        "no daemon → in-process degrade"
+    );
+
+    // The whole point: the warm and degrade paths answer the SAME body.
+    assert_eq!(
+        warm["links"], cold["links"],
+        "warm and degrade answers must not drift"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gate: spawn impossible → the in-process ephemeral answer is correct; the
+// degrade NEVER fails a run.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
+    let sb = sandbox();
+    let ws = sb.marker_ws(
+        "proj",
+        &[
+            ("a.md", "# A\n\nsee [[b]] and [[ghost]]\n"),
+            ("b.md", "# B\n"),
+        ],
+    );
+
+    // No daemon is running, and spawning one is impossible (the override names a
+    // binary that does not exist), so `ensure_daemon` fails and the client
+    // degrades — the run still succeeds.
+    let out = sb
+        .base(mrd_bin())
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .args(["links", "--json"])
+        .current_dir(&ws)
+        .output()
+        .expect("spawn mrd");
+
+    assert!(
+        out.status.success(),
+        "degrade must never fail the run: {}",
+        stderr(&out)
+    );
+    let v = json(&out);
+    assert_eq!(v["source"], "ephemeral", "spawn-impossible → in-process");
+    assert_eq!(
+        v["links"]["files"]["a.md"]["resolved"]["b.md"],
+        serde_json::json!(1),
+        "the in-process engine resolves [[b]] → b.md: {v}"
+    );
+    assert_eq!(
+        v["links"]["files"]["a.md"]["unresolved"]["ghost"],
+        serde_json::json!(1),
+        "and reports the dangling [[ghost]]: {v}"
+    );
+
+    // No daemon was spawned, so nothing to reap.
+    assert!(
+        !sb.daemon_pidfile().exists(),
+        "a degraded run spawns no daemon"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gate: SIGKILL the daemon mid-session → the next client respawns a fresh
+// daemon and answers correctly via fingerprint recovery.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn e2e_links_respawns_after_daemon_sigkill() {
+    let sb = sandbox();
+    let ws = sb.marker_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
+
+    // First use auto-spawns daemon d1 and answers warm.
+    let first = sb.run(&ws, &["links", "--json"]);
+    let pid1 = sb
+        .wait_daemon_pid(Duration::from_secs(5))
+        .expect("first use spawns a daemon");
+
+    // SIGKILL d1 mid-session (no graceful shutdown): the socket goes stale and
+    // the singleton flock releases on process death.
+    signal(pid1, libc::SIGKILL);
+    assert!(
+        wait_dead(pid1, Duration::from_secs(5)),
+        "the killed daemon exits"
+    );
+
+    // The next client sees the stale socket, respawns a FRESH daemon (d2), and
+    // answers correctly — d2 rebuilds the engine from disk (fingerprint
+    // recovery), never from d1's lost in-memory state.
+    let second = sb.run(&ws, &["links", "--json"]);
+    let pid2 = sb
+        .wait_daemon_pid_since(Some(pid1), Duration::from_secs(5))
+        .expect("the next client respawns a daemon");
+
+    // Reap d2 before asserting.
+    signal(pid2, libc::SIGTERM);
+    wait_dead(pid2, Duration::from_secs(5));
+
+    assert!(first.status.success(), "first links: {}", stderr(&first));
+    assert_eq!(json(&first)["source"], "daemon");
+
+    assert_ne!(pid2, pid1, "the killed daemon was respawned, not reused");
+    assert!(
+        second.status.success(),
+        "respawned links: {}",
+        stderr(&second)
+    );
+    let second = json(&second);
+    assert_eq!(
+        second["source"], "daemon",
+        "the next client respawns and serves warm"
+    );
+    assert_eq!(
+        second["links"]["files"]["a.md"]["resolved"]["b.md"],
+        serde_json::json!(1),
+        "the respawned daemon answers correctly via fingerprint recovery: {second}"
+    );
+}

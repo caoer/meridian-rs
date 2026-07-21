@@ -33,8 +33,6 @@ use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
-pub mod commit;
-mod decode;
 mod policy_bridge;
 pub(crate) mod rev;
 pub mod ring;
@@ -220,7 +218,7 @@ fn subscribe(
         delivered: from_seq,
     });
     Ok(wire::ResponseBody::Root {
-        root: arms::ambient_root(root)?,
+        root: wire_serve::ambient_root(root)?,
         seq: current,
     })
 }
@@ -266,7 +264,7 @@ fn respond_line(
     if *rev == rev::Rev::V3 {
         rev::rename_request(&mut obj);
     }
-    match decode::decode(&obj) {
+    match wire_serve::decode::decode(&obj) {
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
         Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
@@ -302,11 +300,4 @@ fn error_frame(id: Option<u64>, error: ErrorBody) -> Response {
         ok: false,
         payload: ResponsePayload::Error { error },
     }
-}
-
-/// A `bad_request` with a human message — the strict-decode workhorse.
-pub(crate) fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
-    let mut e = ErrorBody::new(ErrorCode::BadRequest);
-    e.message = Some(message.into());
-    Box::new(e)
 }
