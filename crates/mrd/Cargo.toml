@@ -65,3 +65,15 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# V3 integration gates (crates/mrd/tests/sql_e2e.rs): pre-publish a `view.duckdb`
+# (view + fs + cache + workspace) to drive the cold-degrade/STALE/OD8 paths
+# without a live daemon, and start an in-process `registry` daemon to drive the
+# `view_path` client path. All are path crates already in the graph — no new
+# external crate enters, `cargo deny` unchanged.
+view = { workspace = true }
+fs = { workspace = true }
+cache = { workspace = true }
+workspace = { workspace = true }
+registry = { workspace = true }
+model = { workspace = true }
+duckdb = { workspace = true }
