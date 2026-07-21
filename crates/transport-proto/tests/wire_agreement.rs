@@ -53,6 +53,7 @@ fn put_at_to_pb(a: wire::PutAt) -> pb::PutAt {
         wire::PutAt::All => pb::PutAt::All,
         wire::PutAt::Content => pb::PutAt::Content,
         wire::PutAt::End => pb::PutAt::End,
+        wire::PutAt::Upsert => pb::PutAt::Upsert,
     }
 }
 
@@ -672,6 +673,7 @@ fn put_at_from_pb(a: pb::PutAt) -> wire::PutAt {
         pb::PutAt::All => wire::PutAt::All,
         pb::PutAt::Content => wire::PutAt::Content,
         pb::PutAt::End => wire::PutAt::End,
+        pb::PutAt::Upsert => wire::PutAt::Upsert,
     }
 }
 
@@ -1468,6 +1470,18 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                     edit: wire::EditShape::Put {
                         at: wire::PutAt::Content,
                         text: "replacement content\n".into(),
+                    },
+                    if_node_rev: None,
+                },
+                // put at:upsert — the fm-key create-or-replace verb; text is the
+                // VALUE, the server composes `{key}: {value}` (design W-8).
+                wire::Edit {
+                    target: wire::SecRef::FmKey {
+                        fm_key: "status".into(),
+                    },
+                    edit: wire::EditShape::Put {
+                        at: wire::PutAt::Upsert,
+                        text: "active".into(),
                     },
                     if_node_rev: None,
                 },
