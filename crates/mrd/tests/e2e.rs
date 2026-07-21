@@ -421,6 +421,20 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
         warm["links"], cold["links"],
         "warm and degrade answers must not drift"
     );
+
+    // And both speak the v3 vocabulary the CLI negotiated (`contract:v3`): the
+    // degrade body carries the `fingerprint` staleness triple, never `root`. A
+    // positive+negative check, so a SYMMETRIC regression of both paths back to
+    // `root` (which the equality above would not catch) fails here.
+    assert!(
+        cold["links"]["as_of_fingerprint"].is_string()
+            && cold["links"]["live_fingerprint"].is_string(),
+        "the degrade answer speaks the fingerprint vocabulary: {cold}"
+    );
+    assert!(
+        cold["links"].get("as_of_root").is_none() && cold["links"].get("live_root").is_none(),
+        "the degrade answer never leaks the `root` vocabulary: {cold}"
+    );
 }
 
 // ---------------------------------------------------------------------------
