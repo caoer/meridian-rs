@@ -32,8 +32,12 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         Some(p) => p,
         None => current_dir()?,
     };
-    let resolved = resolve_runtime(&cwd)
-        .map_err(|e| Fail::tool(format!("cannot resolve workspace for {}: {e}", cwd.display())))?;
+    let resolved = resolve_runtime(&cwd).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace for {}: {e}",
+            cwd.display()
+        ))
+    })?;
 
     let status = match crate::sql::try_daemon_view_path(&cwd, false) {
         Some(body) => Status::from_daemon(&resolved.workspace, &body),
@@ -200,8 +204,10 @@ fn cold_as_of(path: &Path) -> Option<String> {
     }
     let escaped = path.to_string_lossy().replace('\'', "''");
     let conn = Connection::open_in_memory().ok()?;
-    conn.execute_batch(&format!("ATTACH '{escaped}' AS meridian (READ_ONLY); USE meridian;"))
-        .ok()?;
+    conn.execute_batch(&format!(
+        "ATTACH '{escaped}' AS meridian (READ_ONLY); USE meridian;"
+    ))
+    .ok()?;
     conn.query_row("SELECT as_of_fingerprint FROM _meridian_view", [], |r| {
         r.get::<_, String>(0)
     })

@@ -150,7 +150,8 @@ impl SqlArgs {
             i += 1;
         }
 
-        let query = query.ok_or_else(|| Fail::tool("mrd sql needs a <query> argument".to_owned()))?;
+        let query =
+            query.ok_or_else(|| Fail::tool("mrd sql needs a <query> argument".to_owned()))?;
         Ok(SqlArgs {
             query,
             fresh,
@@ -292,8 +293,12 @@ fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
         Some(p) => p.clone(),
         None => current_dir()?,
     };
-    let resolved = resolve_runtime(&cwd)
-        .map_err(|e| Fail::tool(format!("cannot resolve workspace for {}: {e}", cwd.display())))?;
+    let resolved = resolve_runtime(&cwd).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace for {}: {e}",
+            cwd.display()
+        ))
+    })?;
 
     match resolved.source {
         // Tiers 1-3 / daemon-adopted: the daemon (sole builder) publishes; on any
@@ -390,9 +395,7 @@ fn dial_view_path(socket: &Path, cwd: &Path, fresh: bool) -> std::io::Result<Opt
 /// The daemon's `view_path` reply `path` (authoritative — the inode the consumer
 /// opens).
 fn reply_path(body: &Value) -> Option<String> {
-    body.get("path")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    body.get("path").and_then(Value::as_str).map(str::to_owned)
 }
 
 /// The daemon's per-epoch `changes_seq` (OD9: present on the daemon path,
@@ -552,12 +555,7 @@ fn freshness(
     } else {
         QueryState::Stale
     };
-    (
-        LiveSource::Fold,
-        Some(!equal),
-        state,
-        Some(live.to_owned()),
-    )
+    (LiveSource::Fold, Some(!equal), state, Some(live.to_owned()))
 }
 
 /// `ATTACH '<path>' AS meridian (READ_ONLY); USE meridian;` with the path's
@@ -701,9 +699,15 @@ enum EphemeralError {
     Fail(Fail),
 }
 
-fn build_and_run_ephemeral(workspace: &Path, args: &SqlArgs) -> Result<EphemeralRun, EphemeralError> {
+fn build_and_run_ephemeral(
+    workspace: &Path,
+    args: &SqlArgs,
+) -> Result<EphemeralRun, EphemeralError> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
-        EphemeralError::NoCorpus(format!("cannot resolve workspace {}: {e}", workspace.display()))
+        EphemeralError::NoCorpus(format!(
+            "cannot resolve workspace {}: {e}",
+            workspace.display()
+        ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
     let (files, _f0) = fs::domain_snapshot(&root)
@@ -763,14 +767,19 @@ fn apply_profile(conn: &Connection, profile: ExecProfile) -> Result<(), Fail> {
 /// Execute the user's query and materialise all rows + column metadata. Returns
 /// the SQL error string (never a `Fail`) so the caller can buffer it into the
 /// OD9 document.
-fn run_user_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<Vec<Value>>), String> {
+fn run_user_query(
+    conn: &Connection,
+    query: &str,
+) -> Result<(Vec<ColMeta>, Vec<Vec<Value>>), String> {
     let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
     let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
 
     // Column metadata is available once the query has executed (`query` binds +
     // executes); collect owned copies before stepping the rows.
     let columns: Vec<ColMeta> = {
-        let stmt_ref = rows.as_ref().ok_or_else(|| "no result statement".to_owned())?;
+        let stmt_ref = rows
+            .as_ref()
+            .ok_or_else(|| "no result statement".to_owned())?;
         let n = stmt_ref.column_count();
         let mut cols = Vec::with_capacity(n);
         for i in 0..n {
@@ -789,9 +798,7 @@ fn run_user_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<V
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let mut r = Vec::with_capacity(ncol);
         for i in 0..ncol {
-            let v = row
-                .get_ref(i)
-                .map_or(Value::Null, value_ref_to_json);
+            let v = row.get_ref(i).map_or(Value::Null, value_ref_to_json);
             r.push(v);
         }
         out.push(r);
@@ -801,8 +808,12 @@ fn run_user_query(conn: &Connection, query: &str) -> Result<(Vec<ColMeta>, Vec<V
 
 /// Sample `live` = a full-corpus disk fold (§Q3 step 5, `fs::domain_snapshot`).
 fn fold_live(workspace: &Path) -> Result<String, Fail> {
-    let canonical = workspace::canonicalize(workspace)
-        .map_err(|e| Fail::tool(format!("cannot resolve workspace {}: {e}", workspace.display())))?;
+    let canonical = workspace::canonicalize(workspace).map_err(|e| {
+        Fail::tool(format!(
+            "cannot resolve workspace {}: {e}",
+            workspace.display()
+        ))
+    })?;
     let root = fs::WorkspaceRoot(canonical);
     let (_files, fingerprint) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot fold the corpus for live: {e}")))?;
@@ -938,11 +949,7 @@ fn print_human(frame: &Frame) {
         .join("\t");
     println!("{header}");
     for row in &frame.rows {
-        let line = row
-            .iter()
-            .map(cell_text)
-            .collect::<Vec<_>>()
-            .join("\t");
+        let line = row.iter().map(cell_text).collect::<Vec<_>>().join("\t");
         println!("{line}");
     }
     println!("({} row{})", frame.rows.len(), plural(frame.rows.len()));
@@ -982,10 +989,10 @@ fn banner(frame: &Frame) -> String {
 fn stale_refresh_suffix(frame: &Frame) -> Option<String> {
     let err = frame.last_error.as_ref()?;
     let code = err.get("code").and_then(Value::as_str).unwrap_or("unknown");
-    let age = err
-        .get("unix")
-        .and_then(Value::as_u64)
-        .map_or_else(|| "unknown age".to_owned(), |unix| format!("{}s ago", age_secs(unix)));
+    let age = err.get("unix").and_then(Value::as_u64).map_or_else(
+        || "unknown age".to_owned(),
+        |unix| format!("{}s ago", age_secs(unix)),
+    );
     Some(format!("last refresh failed: {code}, {age}"))
 }
 
@@ -1074,13 +1081,94 @@ mod tests {
         assert!(matches!(state, QueryState::Stale));
 
         let (_, _, state, _) = freshness("b3:x", "b3:y", true);
-        assert!(matches!(state, QueryState::Raced), "--fresh mismatch is RACED");
+        assert!(
+            matches!(state, QueryState::Raced),
+            "--fresh mismatch is RACED"
+        );
     }
 
     #[test]
     fn attach_sql_escapes_single_quotes() {
         let sql = attach_sql(Path::new("/tmp/it's/view.duckdb"));
-        assert!(sql.contains("'/tmp/it''s/view.duckdb'"), "quotes doubled: {sql}");
+        assert!(
+            sql.contains("'/tmp/it''s/view.duckdb'"),
+            "quotes doubled: {sql}"
+        );
         assert!(sql.contains("READ_ONLY"));
+    }
+
+    /// Gate 14 (reader side): the B1 pre-open check refuses a `.wal`-shadowed OR
+    /// non-read-only file, accepts a clean `0444` file, and reports a missing one.
+    #[test]
+    fn check_openable_enforces_no_wal_and_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.duckdb");
+        std::fs::write(&path, b"placeholder").unwrap();
+
+        // A writable file (a writer could be mutating it in place) is refused.
+        assert!(matches!(
+            check_openable(&path),
+            Err(OpenRefusal::NotReadOnly)
+        ));
+
+        // `chmod 0444` (the publish mode) is accepted.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(check_openable(&path).is_ok());
+
+        // A present `.wal` sidecar ⇒ refuse open (would replay a dead generation).
+        let wal = dir.path().join("view.duckdb.wal");
+        std::fs::write(&wal, b"STALE-WAL-GEN").unwrap();
+        assert!(matches!(
+            check_openable(&path),
+            Err(OpenRefusal::WalPresent)
+        ));
+        std::fs::remove_file(&wal).unwrap();
+
+        // A gone file is Missing.
+        assert!(matches!(
+            check_openable(&dir.path().join("absent.duckdb")),
+            Err(OpenRefusal::Missing)
+        ));
+    }
+
+    /// Gate 15 (B5): the `agent` sandbox blocks file reads
+    /// (`enable_external_access=false`), freezes settings
+    /// (`lock_configuration=true`), and there is NO `statement_timeout` pragma on
+    /// this DuckDB — a wall-clock cap is the parent's process kill (OD9).
+    #[test]
+    fn agent_sandbox_blocks_external_access_locks_config_no_statement_timeout() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_profile(&conn, ExecProfile::Agent).expect("apply agent sandbox");
+
+        assert!(
+            conn.execute_batch("SELECT * FROM read_csv('/etc/hosts')")
+                .is_err(),
+            "enable_external_access=false must block file reads"
+        );
+        assert!(
+            conn.execute_batch("SET memory_limit='8GB'").is_err(),
+            "lock_configuration=true must freeze settings"
+        );
+        let timeout_settings: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM duckdb_settings() WHERE name ILIKE '%statement_timeout%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(timeout_settings, 0, "no statement_timeout setting exists");
+    }
+
+    /// The `local` sandbox sets a memory cap only — it does NOT lock the
+    /// configuration (the trusted user already has a shell).
+    #[test]
+    fn local_sandbox_does_not_lock_configuration() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_profile(&conn, ExecProfile::Local).expect("apply local sandbox");
+        assert!(
+            conn.execute_batch("SET memory_limit='2GB'").is_ok(),
+            "local does not lock configuration"
+        );
     }
 }
