@@ -1,0 +1,25 @@
+[package]
+name = "registry"
+description = "The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server plus client library. The daemon is the sole writer of warm tier-4 registrations — canonicalize, deny-ceiling enforce, first-writer-wins insert, drawer sentinel via cache, atomic state file, idle-reap (decision 0001 round 5)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The identity + safety layer: canonicalize (drawer-key input) and the
+# deny-ceiling predicate the daemon enforces on every register. Leaf crate.
+workspace = { workspace = true }
+# The hashed drawer + sentinel: the daemon writes the drawer sentinel on a
+# successful register (the single warm-registration writer). Leaf crate; its
+# DrawerLock also serves as the daemon-singleton flock (no libc edge needed).
+cache = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
