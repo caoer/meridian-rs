@@ -34,12 +34,6 @@ pub(crate) enum Rev {
 }
 
 impl Rev {
-    /// Is `rev` a contract rev this sidecar serves? Unknown revs are refused
-    /// LOUD at `hello` decode, never silently downgraded.
-    pub(crate) fn is_known(rev: &str) -> bool {
-        matches!(rev, "v2" | "v3")
-    }
-
     /// Map the `hello` `contract` declaration to the negotiated rev. Absent or
     /// `"v2"` is v2 (today's behavior); `"v3"` is v3. Any other value never
     /// reaches here — the decoder rejected it (`is_known`).
@@ -201,14 +195,6 @@ mod tests {
         assert_eq!(Rev::from_contract(None), Rev::V2);
         assert_eq!(Rev::from_contract(Some("v2")), Rev::V2);
         assert_eq!(Rev::from_contract(Some("v3")), Rev::V3);
-    }
-
-    #[test]
-    fn is_known_rejects_unknown_rev() {
-        assert!(Rev::is_known("v2"));
-        assert!(Rev::is_known("v3"));
-        assert!(!Rev::is_known("v4"));
-        assert!(!Rev::is_known(""));
     }
 
     #[test]

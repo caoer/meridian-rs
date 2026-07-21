@@ -28,7 +28,9 @@ pub(crate) fn dispatch(
         } => resolve(root, &from, &r#ref, content.unwrap_or(false)),
         Op::Root => root_op(root, epoch),
         Op::Diff { from_root, to_root } => diff_op(root, epoch, &from_root, &to_root),
-        Op::Links { path, require_root } => links_op(root, epoch, path.as_ref(), require_root),
+        Op::Links { path, require_root } => {
+            links_op(root, epoch, path.as_ref(), require_root.as_ref())
+        }
         // Armed, but registered at the serve layer (the loop owns the
         // subscription list) — unreachable through serve; answering internal
         // (never a panic) keeps a future misroute non-fatal.
@@ -228,11 +230,13 @@ fn model_edits_and_before_facts(
     let mut model_edits = Vec::with_capacity(edits.len());
     let mut before_facts = Vec::with_capacity(edits.len());
     for edit in edits {
-        let target = to_model_ref(&edit.target)?;
+        let target = wire_serve::read::to_model_ref(&edit.target)?;
         let resolved = model::resolve(doc, &target).map_err(|e| {
             Box::new(match e {
                 model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
-                model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, c.len()),
+                model::ResolveError::Ambiguous(c) => {
+                    wire_serve::read::ambiguous(&edit.target, c.len())
+                }
             })
         })?;
         before_facts.push(resolved);
@@ -290,7 +294,7 @@ fn simulate_armed_edits(
 ) -> Result<Vec<wire::ArmedEdit>, Box<ErrorBody>> {
     let mut armed_edits = Vec::with_capacity(edits.len());
     for (edit, before) in edits.iter().zip(before_facts) {
-        let target = to_model_ref(&edit.target)?;
+        let target = wire_serve::read::to_model_ref(&edit.target)?;
         let after = model::resolve(after_doc, &target).map_err(|_| {
             // A target whose identity does not survive its own edit (e.g. a
             // heading rewritten by put at:all) has no worked armed shape in
@@ -470,22 +474,15 @@ fn links_op(
     root: &fs::WorkspaceRoot,
     epoch: &crate::ring::RootRing,
     path: Option<&Path>,
-    require_root: Option<Root>,
+    require_root: Option<&Root>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let (files, as_of_root) = domain_snapshot(root)?;
     // The Delta counter at as_of_root (§10.1) — sampled with the snapshot;
     // §7.1 per-daemon-epoch semantics ride along unchanged.
     let changes_seq = epoch.seq();
-    if let Some(required) = require_root
-        && required != as_of_root
-    {
-        // §10.2: the opt-in strictness refusal — retryable, never silent.
-        let mut e = ErrorBody::new(ErrorCode::StaleView);
-        e.required = Some(required);
-        e.as_of_root = Some(as_of_root.clone());
-        e.live_root = Some(as_of_root);
-        return Err(Box::new(e));
-    }
+    // §10.2: the opt-in strictness refusal — checked BEFORE the parse, so a
+    // stale view refuses without paying `build_corpus`.
+    wire_serve::read::require_root_check(require_root, &as_of_root)?;
     // The fact plane refuses what it cannot parse — loud, never skipped (the
     // walk plane's skip-broken-files posture is resolve's, §4.5). Parse + build
     // + index is the shared [`fs::build_corpus`] primitive (the daemon's
@@ -493,40 +490,18 @@ fn links_op(
     // drift); `invalid_data` is the shared UTF-8 refusal, re-homed to the wire
     // `invalid_utf8` frame.
     let (index, docs) = fs::build_corpus(files).map_err(|e| {
-        Box::new(match e.kind() {
-            ErrorKind::InvalidData => ErrorBody::new(ErrorCode::InvalidUtf8),
-            _ => {
-                let mut err = ErrorBody::new(ErrorCode::IoError);
-                err.cause = Some(e.to_string());
-                err
-            }
+        Box::new(if e.kind() == ErrorKind::InvalidData {
+            ErrorBody::new(ErrorCode::InvalidUtf8)
+        } else {
+            let mut err = ErrorBody::new(ErrorCode::IoError);
+            err.cause = Some(e.to_string());
+            err
         })
     })?;
-    if let Some(p) = path
-        && !docs.contains_key(&p.0)
-    {
-        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
-        e.path = Some(p.clone());
-        return Err(Box::new(e));
-    }
-    let map = query::links(&index, &docs, path.map(|p| p.0.as_str()));
-    let live_root = domain_snapshot(root)?.1;
-    Ok(ResponseBody::Links {
-        as_of_root,
-        live_root,
-        changes_seq,
-        files: map
-            .into_iter()
-            .map(|(p, e)| {
-                (
-                    p,
-                    wire::FileLinks {
-                        resolved: e.resolved,
-                        unresolved: e.unresolved,
-                    },
-                )
-            })
-            .collect(),
+    // The edge map + the §10.1 `live_root` (a fresh fold AFTER the computation)
+    // is the shared read arm; `live_root` is sampled only on the success path.
+    wire_serve::read::links(&index, &docs, path, as_of_root, changes_seq, || {
+        Ok(domain_snapshot(root)?.1)
     })
 }
 
@@ -624,12 +599,7 @@ fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document, Bo
 /// whole-file bytes) + ambient `root`, rows from the `wire-map` projection.
 fn toc(root: &fs::WorkspaceRoot, path: &Path) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
-    Ok(ResponseBody::Toc {
-        path: path.clone(),
-        file_rev: NodeRev(doc.root.node_rev.0.clone()),
-        root: ambient_root(root)?,
-        nodes: wire_map::project_toc(&doc),
-    })
+    Ok(wire_serve::read::toc(&doc, path, &ambient_root(root)?))
 }
 
 /// v2 §4.2: full span bytes (heading-inclusive), rev over precisely those
@@ -640,78 +610,7 @@ fn cat(
     sec: Option<SecRef>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
-    let Some(sec) = sec else {
-        return Ok(ResponseBody::Cat {
-            span: Span(0, doc.raw.len() as u64),
-            node_rev: NodeRev(doc.root.node_rev.0.clone()),
-            content: doc.raw.clone(),
-        });
-    };
-    let target = model::resolve(&doc, &to_model_ref(&sec)?).map_err(|e| {
-        Box::new(match e {
-            model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
-            model::ResolveError::Ambiguous(candidates) => ambiguous(&sec, candidates.len()),
-        })
-    })?;
-    Ok(ResponseBody::Cat {
-        span: Span(target.span.start as u64, target.span.end as u64),
-        node_rev: NodeRev(target.node_rev.0),
-        content: doc.raw[target.span].to_string(),
-    })
-}
-
-/// The wire→model ref bridge (the crates never share a type — no-serde law).
-/// The anchor form re-passes the mint-guard; the strict decode already
-/// refused out-of-charset ids, so this is the belt to that suspender.
-fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
-    Ok(match sec {
-        SecRef::Hpath { hpath } => model::Ref::Hpath(
-            hpath
-                .iter()
-                .map(|s| model::HpathSeg {
-                    h: s.h.clone(),
-                    n: s.n,
-                })
-                .collect(),
-        ),
-        SecRef::Anchor { anchor } => model::Ref::anchor(anchor.clone()).map_err(|bad| {
-            crate::bad_request(format!(
-                "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
-                id = bad.id
-            ))
-        })?,
-        SecRef::FmKey { fm_key } => model::Ref::FmKey(fm_key.clone()),
-    })
-}
-
-/// `ambiguous_ref` (§2.1: the strict plane never silently picks) with
-/// `candidates` in THE grammar: hpath duplicates are nameable exactly by
-/// occurrence index on the final segment; duplicate block ids have no exact
-/// §2.1 spelling per target (the occurrence index is hpath-segment syntax
-/// only), so `candidates` stays type-level EMPTY — `[]`, never prose inside
-/// the grammar field — with the human message carrying the count.
-fn ambiguous(sec: &SecRef, count: usize) -> ErrorBody {
-    let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
-    match sec {
-        SecRef::Hpath { hpath } => {
-            e.candidates = Some(
-                (1..=count)
-                    .map(|n| {
-                        let mut segs = hpath.clone();
-                        if let Some(last) = segs.last_mut() {
-                            last.n = Some(u32::try_from(n).unwrap_or(u32::MAX));
-                        }
-                        SecRef::Hpath { hpath: segs }
-                    })
-                    .collect(),
-            );
-        }
-        SecRef::Anchor { .. } | SecRef::FmKey { .. } => {
-            e.candidates = Some(Vec::new());
-            e.message = Some(format!("{count} duplicate targets in one file"));
-        }
-    }
-    e
+    wire_serve::read::cat(&doc, sec)
 }
 
 /// v2 §4.3: the full node inventory via the `wire-map` projection, `kinds`
@@ -722,18 +621,7 @@ fn extract(
     kinds: Option<Vec<String>>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
-    let mut nodes = wire_map::project(&doc);
-    if let Some(kinds) = kinds {
-        let keep: Vec<wire::NodeKind> = kinds
-            .iter()
-            .filter_map(|s| serde_json::from_value(serde_json::Value::String(s.clone())).ok())
-            .collect();
-        nodes.retain(|n| keep.contains(&n.kind));
-    }
-    Ok(ResponseBody::Nodes {
-        path: path.clone(),
-        nodes,
-    })
+    Ok(wire_serve::read::extract(&doc, path, kinds))
 }
 
 /// v2 §4.5: the walk plane — best-effort app-compatible two-stage walk over
@@ -762,20 +650,5 @@ fn resolve(
             docs.insert(rel_str, doc);
         }
     }
-    match model::walk::walk(&index, &docs, &from.0, link) {
-        Ok(loc) => {
-            let content = want_content.then(|| docs[&loc.dest].raw[loc.span.clone()].to_string());
-            Ok(ResponseBody::Resolve {
-                dest: Path(loc.dest),
-                span: Span(loc.span.start as u64, loc.span.end as u64),
-                content,
-            })
-        }
-        Err(miss) => {
-            let mut e = ErrorBody::new(ErrorCode::RefNotFound);
-            e.stage = Some(u32::from(miss.stage.number()));
-            e.dest = miss.dest.map(Path);
-            Err(Box::new(e))
-        }
-    }
+    wire_serve::read::resolve(&index, &docs, from, link, want_content)
 }

@@ -34,6 +34,11 @@ wire = { workspace = true }
 # Law 3 as amended (review C1): projection lives at the named wire-map seam,
 # tested there; this bin stays wiring-only.
 wire-map = { workspace = true }
+# The shared typed edge (U2, arch map A6): the strict-decode pass and the read-op
+# arms live here now, so the sidecar and the resident daemon answer the wire
+# contract through ONE implementation. The sidecar builds the corpus per request
+# and hands the borrowed state to these arms.
+wire-serve = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

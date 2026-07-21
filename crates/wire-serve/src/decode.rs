@@ -17,7 +17,17 @@ use crate::bad_request;
 /// Envelope keys every request may carry beside the op fields.
 const ENVELOPE: [&str; 2] = ["id", "op"];
 
-pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+/// Strict-decode one request object into a [`wire::Op`], validating its field
+/// set by hand (§3.2 server law). Both hosts call this — the sidecar over stdio
+/// and the resident daemon over its socket — so the strict pass is one
+/// implementation.
+///
+/// # Errors
+/// A `bad_request` for an unknown field, an unknown enum value, a mistyped
+/// value, a malformed path/anchor/`now`, or an unknown declared contract rev; a
+/// `bad_path` for a path-law violation; `unsupported_proto` for a `hello` whose
+/// `proto` this server does not speak; `unknown_op` for an unrecognized op name.
+pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let Some(op) = obj.get("op").and_then(Value::as_str) else {
         return Err(bad_request("`op` must be a string"));
     };
@@ -35,7 +45,7 @@ pub(crate) fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             // v3-amendment negotiation: an unknown DECLARED rev is refused LOUD,
             // never a silent fallback (docs/wire-contract-v3-amendment.md).
             if let Some(rev) = &contract
-                && !crate::rev::Rev::is_known(rev)
+                && !crate::is_known_rev(rev)
             {
                 return Err(bad_request(format!(
                     "unknown contract rev `{rev}`: this sidecar speaks v2, v3"
