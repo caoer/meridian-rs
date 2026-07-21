@@ -261,9 +261,10 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
                     "all" => wire::PutAt::All,
                     "content" => wire::PutAt::Content,
                     "end" => wire::PutAt::End,
+                    "upsert" => wire::PutAt::Upsert,
                     other => {
                         return Err(bad_request(format!(
-                            "`at` must be one of all/content/end: `{other}`"
+                            "`at` must be one of all/content/end/upsert: `{other}`"
                         )));
                     }
                 },
