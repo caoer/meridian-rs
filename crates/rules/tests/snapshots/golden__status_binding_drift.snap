@@ -8,6 +8,7 @@ expression: effects
     "rule_id": "status_binding",
     "seq": 0,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "aaa",
     "fingerprint_after": "bbb",
     "args": {

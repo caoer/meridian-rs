@@ -32,7 +32,7 @@ use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
-use crate::{ArgValue, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits, Rule};
+use crate::{ArgValue, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule};
 
 /// Max parser NESTING depth — brackets `([{` or a run of consecutive unary
 /// operators (`not`, `-`, `+`, `~`). The Starlark recursive-descent parser
@@ -255,13 +255,15 @@ fn is_word_byte(b: u8) -> bool {
 }
 
 /// The store the effect constructors record into, reached via `Evaluator::extra`.
-/// It carries the emitting rule's provenance and the event's fingerprints/depth
-/// so each constructor stamps a complete [`Effect`], and a per-rule `seq` counter.
+/// It carries the emitting rule's id, the plane-typed [`Provenance`] to stamp,
+/// and the event depth, so each constructor records a complete [`Effect`], plus
+/// a per-rule `seq` counter. The `on_change` path always stamps change-plane
+/// provenance (the event's diff fingerprints); a run-plane entry point stamps
+/// [`Provenance::Run`] at construction.
 #[derive(starlark::any::ProvidesStaticType)]
 struct EmitStore {
     rule_id: String,
-    fingerprint_before: String,
-    fingerprint_after: String,
+    provenance: Provenance,
     depth: u32,
     effects: RefCell<Vec<Effect>>,
     next_seq: Cell<u32>,
@@ -271,16 +273,18 @@ impl EmitStore {
     fn new(rule: &Rule, event: &ChangeEvent) -> Self {
         Self {
             rule_id: rule.id.clone(),
-            fingerprint_before: event.fingerprint_before.clone(),
-            fingerprint_after: event.fingerprint_after.clone(),
+            provenance: Provenance::Change {
+                fingerprint_before: event.fingerprint_before.clone(),
+                fingerprint_after: event.fingerprint_after.clone(),
+            },
             depth: event.depth,
             effects: RefCell::new(Vec::new()),
             next_seq: Cell::new(0),
         }
     }
 
-    /// Record one descriptor, stamping provenance, fingerprints, depth, and the
-    /// next per-rule `seq`.
+    /// Record one descriptor, stamping the rule id, plane-typed provenance,
+    /// depth, and the next per-rule `seq`.
     fn push(&self, kind: EffectKind, args: BTreeMap<String, ArgValue>) {
         let seq = self.next_seq.get();
         self.next_seq.set(seq + 1);
@@ -289,8 +293,7 @@ impl EmitStore {
             rule_id: self.rule_id.clone(),
             seq,
             depth: self.depth,
-            fingerprint_before: self.fingerprint_before.clone(),
-            fingerprint_after: self.fingerprint_after.clone(),
+            provenance: self.provenance.clone(),
             args,
         });
     }

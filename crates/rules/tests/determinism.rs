@@ -47,11 +47,13 @@ proptest! {
     }
 
     /// Idempotency keys are stable across runs — the executor-dedup contract.
+    /// `on_change` effects are change-plane, so every key is `Some`.
     #[test]
     fn idempotency_keys_are_stable(event in any_event()) {
         let rules = all_rules();
-        let a: Vec<_> = eval(&rules, &event).unwrap().iter().map(Effect::idempotency_key).collect();
-        let b: Vec<_> = eval(&rules, &event).unwrap().iter().map(Effect::idempotency_key).collect();
+        let key = |e: &Effect| e.idempotency_key().expect("change-plane effects carry a key");
+        let a: Vec<_> = eval(&rules, &event).unwrap().iter().map(key).collect();
+        let b: Vec<_> = eval(&rules, &event).unwrap().iter().map(key).collect();
         prop_assert_eq!(a, b);
     }
 
@@ -63,7 +65,8 @@ proptest! {
         let effects = eval(&all_rules(), &event).unwrap();
         let mut seen = HashSet::new();
         for e in &effects {
-            prop_assert!(seen.insert(e.idempotency_key()), "duplicate idempotency key: {:?}", e.idempotency_key());
+            let key = e.idempotency_key().expect("change-plane effects carry a key");
+            prop_assert!(seen.insert(key.clone()), "duplicate idempotency key: {key:?}");
         }
     }
 }

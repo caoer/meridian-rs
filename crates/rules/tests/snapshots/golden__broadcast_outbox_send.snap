@@ -8,6 +8,7 @@ expression: effects
     "rule_id": "broadcast_outbox",
     "seq": 0,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "v1",
     "fingerprint_after": "v2",
     "args": {
