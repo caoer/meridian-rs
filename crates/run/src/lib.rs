@@ -64,6 +64,6 @@ pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock}
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
 pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
 pub use report::{CapsReport, EffectLine, Report, ReportState};
-pub use runner::{Generation, LabelRefusal, RunReport, RunSpec, RunnerError, TaskOutcome};
+pub use runner::{Generation, RunReport, RunSpec, RunnerError, TaskOutcome};
 pub use shim::{ShimDescriptor, ShimError, ShimStream};
 pub use snapshot::{Detection, ExecBracket, OpenRefusal};

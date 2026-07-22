@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! load_page → resolve_task → contract validate → caps resolve
-//!   → GUARANTEE LABEL (#23 gate — refuse before anything commits)
 //!   → dispatch by fence (starlark hermetic | bash two-phase)
+//!   → guarantee label, evidence-derived (#23)
 //!   → cascade: event → eval(&[Rule]) → md.* through the executor → event…
 //! ```
 //!
@@ -22,18 +22,15 @@
 //! authority is the ceiling — a cascade can never exceed it) and carry no
 //! receipt (resident-cascade receipt policy is phase-2 scope).
 //!
-//! # The guarantee labeler (#23, SHARPENED)
+//! # The guarantee label (#23, ACTIVE)
 //! Ruling 4: every block's claim ships scoped, per block. `hermetic` is
-//! starlark's by construction. `detected` may be emitted ONLY when BOTH
-//! hold: (a) the U6b detection bracket is wired through `dispatch_bash`
-//! (`BashOutcome.detection` gates phase 2), and (b) the U9 report renders
-//! the `narrowed[]` caps facts. Until both land, the labeler emits
-//! hermetic-or-refuses — a bash block REFUSES AT THE LABEL, before any
-//! receipt or commit, rather than run under a guarantee nobody can state.
-//! The report's class is EVIDENCE-DERIVED post-dispatch: `detected` is
-//! claimed only off the rendered `BashOutcome::detection` verdict (a
-//! compile-time binding, not an assertion). Activation is the one-line
-//! [`DETECTED_LABEL_ACTIVE`] flip, landed LAST.
+//! starlark's by construction. `detected` is claimed EVIDENCE-DERIVED,
+//! post-dispatch, off the rendered `BashOutcome::detection` verdict — a
+//! compile-time binding (exhaustive match), never an assertion. The #23
+//! sharpened gate that once refused bash at a pre-flight label is
+//! satisfied and its scaffold is gone: the U6b detection bracket is wired
+//! through `dispatch_bash` (7553071, hardened 6c48ace) and the U9 report
+//! renders the `narrowed[]` caps facts (e289596, fixed 0c6ccf4).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -50,11 +47,6 @@ use crate::dispatch_starlark::{self, DispatchError, DispatchOutcome, StarlarkDis
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};
 use crate::fence::{GuaranteeClass, TaskLanguage};
 use crate::snapshot::Detection;
-
-/// The #23 activation switch. `false` until BOTH gate conditions are landed
-/// and verified (see the module docs) — flipping it is the LAST commit of
-/// the label chain, never a side effect of another change.
-pub const DETECTED_LABEL_ACTIVE: bool = false;
 
 /// One run request: the addressed page/task plus the caller-supplied
 /// identity, receipts, and bash bracket inputs (§9 — nothing here mints or
@@ -133,31 +125,6 @@ pub struct Generation {
     pub unexecuted: Vec<Effect>,
 }
 
-/// The #23 label refusal — the block does not run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LabelRefusal {
-    /// A bash block while the `detected` label is not active: the detection
-    /// bracket and the narrowed-caps report are not both landed, and the
-    /// runner will not execute under a guarantee nobody can state.
-    DetectionNotActive {
-        /// The refused task.
-        task: String,
-    },
-}
-
-impl std::fmt::Display for LabelRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LabelRefusal::DetectionNotActive { task } => write!(
-                f,
-                "task '{task}' is a bash block, and the 'detected' guarantee label is not active yet (U6b bracket + U9 narrowed-caps rendering must both land) — refusing to run unlabeled"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for LabelRefusal {}
-
 /// A cascade fault at a specific generation. Prior generations stand
 /// committed (ruling 2: no rollback); the report names the depth.
 #[derive(Debug)]
@@ -213,8 +180,6 @@ pub enum RunnerError {
     Violation(ContractViolation),
     /// Capability resolution refused.
     Caps(CapsError),
-    /// The #23 label gate refused — nothing ran, nothing committed.
-    Label(LabelRefusal),
     /// Computing the pre-dispatch corpus root failed.
     Root {
         /// The underlying failure.
@@ -236,7 +201,6 @@ impl std::fmt::Display for RunnerError {
             RunnerError::Contract(e) => write!(f, "contract: {e}"),
             RunnerError::Violation(e) => write!(f, "contract: {e}"),
             RunnerError::Caps(e) => write!(f, "caps: {e}"),
-            RunnerError::Label(e) => write!(f, "label: {e}"),
             RunnerError::Root { reason } => write!(f, "corpus root: {reason}"),
             RunnerError::Starlark(e) => write!(f, "dispatch: {e}"),
             RunnerError::Bash(e) => write!(f, "dispatch: {e}"),
@@ -246,22 +210,6 @@ impl std::fmt::Display for RunnerError {
 }
 
 impl std::error::Error for RunnerError {}
-
-/// The #23-gated guarantee labeler. Starlark is hermetic by construction;
-/// bash labels `detected` ONLY once [`DETECTED_LABEL_ACTIVE`] — until then a
-/// bash block refuses HERE, before any receipt or commit.
-///
-/// # Errors
-/// [`LabelRefusal`] — the block must not run.
-pub fn label(task: &str, lang: TaskLanguage) -> Result<GuaranteeClass, LabelRefusal> {
-    match lang {
-        TaskLanguage::Starlark => Ok(GuaranteeClass::Hermetic),
-        TaskLanguage::Bash if DETECTED_LABEL_ACTIVE => Ok(GuaranteeClass::Detected),
-        TaskLanguage::Bash => Err(LabelRefusal::DetectionNotActive {
-            task: task.to_owned(),
-        }),
-    }
-}
 
 /// Run one addressed task end to end: compose the pre-eval chain, dispatch
 /// by fence language, then drive the cascade over `rules` (EMPTY in S1 —
@@ -292,15 +240,10 @@ pub fn run(
     let resolution = caps::resolve_caps(&name, task.block.lang, explicit.as_ref(), &conventions)
         .map_err(RunnerError::Caps)?;
 
-    // 2. The label gate (#23) — BEFORE anything can commit. The class the
-    // REPORT carries is derived from evidence after dispatch, not from this
-    // pre-flight answer.
-    label(&name, task.block.lang).map_err(RunnerError::Label)?;
-
-    // 3. Dispatch by fence language (decision #13).
+    // 2. Dispatch by fence language (decision #13).
     let outcome = dispatch(root, spec, &task, &name, &resolution.effective, live)?;
 
-    // 4. The guarantee label, evidence-derived (#23): hermetic is the sealed
+    // 3. The guarantee label, evidence-derived (#23): hermetic is the sealed
     // kernel's proof by construction; `detected` is claimed ONLY off the
     // rendered bracket verdict the bash outcome carries — the binding below
     // is the proof, and removing `detection` from the outcome breaks this
@@ -319,7 +262,7 @@ pub fn run(
         },
     };
 
-    // 5. The cascade loop over generation 0's event.
+    // 4. The cascade loop over generation 0's event.
     let first_event = match &outcome {
         TaskOutcome::Starlark(o) => o.applied.as_ref().and_then(|a| a.event.clone()),
         TaskOutcome::Bash(o) => match &o.phase2 {
