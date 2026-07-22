@@ -230,6 +230,28 @@ fn delta_wording_names_the_window_not_the_block() {
     );
 }
 
+/// S3 residual-escape window, pinned as a test: a write landing AFTER close
+/// has NO retroactive verdict — the bracket boundary is the close snapshot.
+/// At the primitive level the escape is absorbed into the NEXT guard's
+/// baseline (open succeeds; the write shows only as a root delta between
+/// brackets). Naming that boundary is the run layer's job: its next open
+/// cross-checks against the prior verified root (see run's snapshot gates).
+#[test]
+fn post_close_write_is_the_named_escape_window() {
+    let (_tmp, root) = workspace();
+    let g1 = StepGuard::open(&root).unwrap();
+    let verified = g1.close(&[]).unwrap(); // clean window, verdict rendered
+
+    // the S3 escape: a straggler lands after the close snapshot
+    write(&root.0, "notes/late.md", "after the bracket\n");
+
+    // no retroactive verdict exists; the next guard absorbs it as baseline …
+    let g2 = StepGuard::open(&root).expect("the escape is not a refusal at the primitive level");
+    // … and the escape is visible ONLY as a root delta between brackets.
+    assert_ne!(g2.pre_root(), verified);
+    g2.close(&[]).unwrap();
+}
+
 /// `pre_root` equivalence — the #19 cross-check's ground: on a symlink-free
 /// tree the guard's observed baseline folds to EXACTLY the root
 /// [`fs::domain_snapshot`] computes (the flock-computed `root_after_phase1`
