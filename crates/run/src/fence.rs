@@ -89,7 +89,10 @@ impl std::fmt::Display for FenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FenceError::UnknownLanguage { lang } if lang.is_empty() => {
-                write!(f, "task fence declares no language (expected starlark or bash)")
+                write!(
+                    f,
+                    "task fence declares no language (expected starlark or bash)"
+                )
             }
             FenceError::UnknownLanguage { lang } => write!(
                 f,
@@ -148,9 +151,7 @@ fn find_code_block<'a>(doc: &'a Document, span: &ByteSpan) -> Option<&'a model::
 /// The bytes between the fence lines: drop the opening fence line and the
 /// closing fence line, keep everything between verbatim.
 fn inner_source(fence_text: &str) -> String {
-    let after_open = fence_text
-        .find('\n')
-        .map_or("", |p| &fence_text[p + 1..]);
+    let after_open = fence_text.find('\n').map_or("", |p| &fence_text[p + 1..]);
     match after_open.rfind('\n') {
         Some(p) => after_open[..p].to_owned(),
         // Single-line fence body (open + close on adjacent lines) → empty.

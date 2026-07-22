@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use model::MerkleRoot;
+use rules::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::{Cap, CapResolution, CapSet, CapSource};
 use run::dispatch_bash::{BashOutcome, Phase2};
 use run::dispatch_starlark::DispatchOutcome;
@@ -16,7 +17,6 @@ use run::report::{self, ReportState};
 use run::runner::{RunReport, TaskOutcome};
 use run::shim::ShimStream;
 use run::snapshot::Detection;
-use rules::{ArgValue, Effect, EffectKind, Provenance};
 
 fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
     Effect {
@@ -36,7 +36,10 @@ fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
 }
 
 fn md() -> Effect {
-    effect(EffectKind::SetField, &[("field", "status"), ("value", "done")])
+    effect(
+        EffectKind::SetField,
+        &[("field", "status"), ("value", "done")],
+    )
 }
 
 fn proto() -> Effect {
@@ -163,7 +166,10 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
     ));
     assert_eq!(r.caps.narrowed, vec!["md.append_section".to_owned()]);
     assert_eq!(r.caps.source, "convention:fix-*");
-    assert!(r.to_text().contains("narrowed by ceiling: md.append_section"));
+    assert!(
+        r.to_text()
+            .contains("narrowed by ceiling: md.append_section")
+    );
 
     // --json is ONE object carrying the same narrowed facts.
     let json = r.to_json().unwrap();

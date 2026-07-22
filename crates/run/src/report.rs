@@ -111,13 +111,22 @@ pub struct CapsReport {
 impl CapsReport {
     fn of(caps: &CapResolution) -> Self {
         Self {
-            effective: caps.effective.0.iter().map(crate::caps::Cap::as_string).collect(),
+            effective: caps
+                .effective
+                .0
+                .iter()
+                .map(crate::caps::Cap::as_string)
+                .collect(),
             source: match &caps.source {
                 CapSource::Explicit => "explicit".to_owned(),
                 CapSource::Convention(pattern) => format!("convention:{pattern}"),
                 CapSource::DenyDefault => "deny-default".to_owned(),
             },
-            narrowed: caps.narrowed.iter().map(crate::caps::Cap::as_string).collect(),
+            narrowed: caps
+                .narrowed
+                .iter()
+                .map(crate::caps::Cap::as_string)
+                .collect(),
         }
     }
 }
@@ -373,7 +382,10 @@ fn classify(report: &RunReport, applied: &[EffectLine], unexecuted: &[EffectLine
 /// A bash step that was signaled (not a clean nonzero exit) is interrupted —
 /// the #21 distinction the report must keep.
 fn signaled(status: &ExecStatus) -> bool {
-    matches!(status, ExecStatus::Signaled { .. } | ExecStatus::TimedOut { .. })
+    matches!(
+        status,
+        ExecStatus::Signaled { .. } | ExecStatus::TimedOut { .. }
+    )
 }
 
 /// The exec-window out-of-band-delta line. The bracket is U6b's and rides the

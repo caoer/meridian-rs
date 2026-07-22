@@ -358,9 +358,7 @@ pub fn resolve_caps(
     explicit: Option<&CapSet>,
     conventions: &Conventions,
 ) -> Result<CapResolution, CapsError> {
-    let read_only_match = READ_ONLY_PATTERNS
-        .iter()
-        .find(|p| pattern_matches(p, task));
+    let read_only_match = READ_ONLY_PATTERNS.iter().find(|p| pattern_matches(p, task));
     if lang == TaskLanguage::Bash
         && let Some(pattern) = read_only_match
     {

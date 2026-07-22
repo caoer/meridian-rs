@@ -2,8 +2,8 @@
 //! framing, trailer-counted streams, and FAIL CLOSED on every deviation —
 //! one bad byte refuses the whole batch.
 
-use run::shim::{self, MAX_RECORD_BYTES, MAX_RECORDS, ShimDescriptor, ShimError, ShimStream};
 use rules::{ArgValue, EffectKind, Provenance};
+use run::shim::{self, MAX_RECORD_BYTES, MAX_RECORDS, ShimDescriptor, ShimError, ShimStream};
 
 fn stream(bytes: &[u8]) -> ShimStream {
     ShimStream {

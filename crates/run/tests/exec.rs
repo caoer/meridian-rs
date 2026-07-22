@@ -169,12 +169,22 @@ fn exec_streaming_hands_stdout_to_the_consumer() {
 fn configured_timeout_reads_meridian_toml_and_defaults() {
     let tmp = tempfile::tempdir().unwrap();
     // No file → the default.
-    assert_eq!(exec::configured_timeout(tmp.path()).unwrap(), DEFAULT_TIMEOUT);
+    assert_eq!(
+        exec::configured_timeout(tmp.path()).unwrap(),
+        DEFAULT_TIMEOUT
+    );
     // A file without the key → the default.
     std::fs::write(tmp.path().join(".meridian.toml"), "[run.caps]\n").unwrap();
-    assert_eq!(exec::configured_timeout(tmp.path()).unwrap(), DEFAULT_TIMEOUT);
+    assert_eq!(
+        exec::configured_timeout(tmp.path()).unwrap(),
+        DEFAULT_TIMEOUT
+    );
     // The key → the configured ceiling.
-    std::fs::write(tmp.path().join(".meridian.toml"), "[run]\ntimeout_secs = 7\n").unwrap();
+    std::fs::write(
+        tmp.path().join(".meridian.toml"),
+        "[run]\ntimeout_secs = 7\n",
+    )
+    .unwrap();
     assert_eq!(
         exec::configured_timeout(tmp.path()).unwrap(),
         Duration::from_secs(7)
