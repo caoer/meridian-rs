@@ -43,15 +43,21 @@
 pub mod address;
 pub mod caps;
 pub mod contracts;
+pub mod dispatch_bash;
 pub mod dispatch_starlark;
+pub mod exec;
 pub mod executor;
 pub mod fence;
 pub mod record;
+pub mod shim;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
 pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
 pub use contracts::{Contract, ContractError, ContractViolation};
+pub use dispatch_bash::{BashDispatch, BashError, BashOutcome, Phase2};
 pub use dispatch_starlark::{DispatchError, DispatchOutcome, StarlarkDispatch};
+pub use exec::{ExecResult, ExecSpec, ExecStatus, TimeoutConfigError};
 pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
 pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
+pub use shim::{ShimDescriptor, ShimError, ShimStream};
