@@ -25,6 +25,40 @@ impl TaskLanguage {
             TaskLanguage::Bash => "bash",
         }
     }
+
+    /// The guarantee class this language's dispatch path carries (verdict
+    /// ruling 4, decision #16) — labeled PER BLOCK, and the claim ships
+    /// scoped, never unqualified.
+    #[must_use]
+    pub fn guarantee_class(self) -> GuaranteeClass {
+        match self {
+            TaskLanguage::Starlark => GuaranteeClass::Hermetic,
+            TaskLanguage::Bash => GuaranteeClass::Detected,
+        }
+    }
+}
+
+/// What the sandbox can PROVE about a block's execution (decision #16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuaranteeClass {
+    /// Proof by construction: the sealed Starlark kernel — zero I/O, closed
+    /// builtins, metered.
+    Hermetic,
+    /// Detection, not prevention: bash under root-snapshot enforcement —
+    /// ungoverned writes are DETECTED and named, not blocked (until the
+    /// OS-sandbox unit U11 upgrades this class).
+    Detected,
+}
+
+impl GuaranteeClass {
+    /// The report label.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GuaranteeClass::Hermetic => "hermetic",
+            GuaranteeClass::Detected => "detected",
+        }
+    }
 }
 
 /// One classified task block: its language, the fence node's span in the page,
