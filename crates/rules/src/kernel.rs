@@ -28,11 +28,14 @@ use starlark::starlark_module;
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::Heap;
 use starlark::values::Value;
+use starlark::values::dict::AllocDict;
 use starlark::values::list::UnpackList;
 use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
-use crate::{ArgValue, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule};
+use crate::{
+    ArgValue, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx,
+};
 
 /// Max parser NESTING depth — brackets `([{` or a run of consecutive unary
 /// operators (`not`, `-`, `+`, `~`). The Starlark recursive-descent parser
@@ -270,14 +273,11 @@ struct EmitStore {
 }
 
 impl EmitStore {
-    fn new(rule: &Rule, event: &ChangeEvent) -> Self {
+    fn new(rule_id: &str, provenance: Provenance, depth: u32) -> Self {
         Self {
-            rule_id: rule.id.clone(),
-            provenance: Provenance::Change {
-                fingerprint_before: event.fingerprint_before.clone(),
-                fingerprint_after: event.fingerprint_after.clone(),
-            },
-            depth: event.depth,
+            rule_id: rule_id.to_owned(),
+            provenance,
+            depth,
             effects: RefCell::new(Vec::new()),
             next_seq: Cell::new(0),
         }
@@ -489,6 +489,78 @@ pub(crate) fn run_rule(
     run_rule_metered(globals, rule, event, limits).outcome
 }
 
+/// Run ONE task's `run(ctx)` over the injected context — the run-plane entry.
+/// Identical machinery to the change plane ([`metered_eval`]): same globals,
+/// same guards, same metering, same panic containment. Only the entry name,
+/// the injected value, and the stamped provenance differ.
+pub(crate) fn run_task(
+    globals: &Globals,
+    task: &Rule,
+    ctx: &RunCtx,
+    limits: EvalLimits,
+) -> Result<Vec<Effect>, EvalError> {
+    metered_eval(globals, task, &EvalEntry::Run(ctx), limits).outcome
+}
+
+/// The plane an evaluation enters on: which hook is called, what value is
+/// injected, and what provenance the emitted effects carry. One entry per
+/// plane — the planes never cross (a wrong-plane source is a typed
+/// [`EvalError::MissingEntry`]).
+pub(crate) enum EvalEntry<'a> {
+    /// `on_change(event)` — change-plane provenance from the event's diff.
+    Change(&'a ChangeEvent),
+    /// `run(ctx)` — Run-plane provenance from the caller-supplied facts.
+    Run(&'a RunCtx),
+}
+
+impl EvalEntry<'_> {
+    /// The hook name this plane calls.
+    fn name(&self) -> &'static str {
+        match self {
+            EvalEntry::Change(_) => "on_change",
+            EvalEntry::Run(_) => "run",
+        }
+    }
+
+    /// The OTHER plane's hook name (for the wrong-plane diagnosis).
+    fn other(&self) -> &'static str {
+        match self {
+            EvalEntry::Change(_) => "run",
+            EvalEntry::Run(_) => "on_change",
+        }
+    }
+
+    /// The emit store this plane stamps: provenance + depth.
+    fn store(&self, rule: &Rule) -> EmitStore {
+        match self {
+            EvalEntry::Change(event) => EmitStore::new(
+                &rule.id,
+                Provenance::Change {
+                    fingerprint_before: event.fingerprint_before.clone(),
+                    fingerprint_after: event.fingerprint_after.clone(),
+                },
+                event.depth,
+            ),
+            EvalEntry::Run(ctx) => EmitStore::new(
+                &ctx.task,
+                Provenance::Run {
+                    invocation_id: ctx.invocation_id.clone(),
+                    root_at_eval: ctx.root_at_eval.clone(),
+                },
+                0,
+            ),
+        }
+    }
+
+    /// Allocate the injected argument value on the eval heap.
+    fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+        match self {
+            EvalEntry::Change(event) => alloc_event(heap, event),
+            EvalEntry::Run(ctx) => alloc_ctx(heap, ctx),
+        }
+    }
+}
+
 /// Run ONE rule's `on_change(event)` over the injected event, metered, returning
 /// the typed result AND the exact fuel/mem it spent.
 ///
@@ -507,6 +579,17 @@ pub(crate) fn run_rule_metered(
     event: &ChangeEvent,
     limits: EvalLimits,
 ) -> RuleRun {
+    metered_eval(globals, rule, &EvalEntry::Change(event), limits)
+}
+
+/// The one metered evaluation both planes share (see [`run_rule_metered`] for
+/// the metering/panic contract; [`EvalEntry`] carries the per-plane surface).
+fn metered_eval(
+    globals: &Globals,
+    rule: &Rule,
+    entry: &EvalEntry<'_>,
+    limits: EvalLimits,
+) -> RuleRun {
     if let Err(e) = check_source_size(rule, limits) {
         return RuleRun::failed(e);
     }
@@ -514,7 +597,7 @@ pub(crate) fn run_rule_metered(
         return RuleRun::failed(e);
     }
 
-    let store = EmitStore::new(rule, event);
+    let store = entry.store(rule);
     let step_guard = limits.fuel.max(1);
     let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
 
@@ -524,7 +607,7 @@ pub(crate) fn run_rule_metered(
     let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let heap = module.heap();
-            let event_value = alloc_event(heap, event);
+            let arg_value = entry.alloc(heap);
 
             let mut eval = Evaluator::new(&module);
             if let Err(e) = eval.set_max_tick_count(step_guard) {
@@ -555,21 +638,19 @@ pub(crate) fn run_rule_metered(
             let mut aborted = false;
             let mut depth_overflow = false;
             let mut fault: Option<String> = None;
+            let mut missing: Option<Option<&'static str>> = None;
             match eval.eval_module(ast, globals) {
-                Ok(_) => match module.get("on_change") {
-                    Some(on_change) => {
-                        if let Err(e) = eval.eval_function(on_change, &[event_value], &[]) {
+                Ok(_) => match module.get(entry.name()) {
+                    Some(hook) => {
+                        if let Err(e) = eval.eval_function(hook, &[arg_value], &[]) {
                             aborted = true;
                             depth_overflow = is_depth_overflow(&e);
                             fault = Some(e.to_string());
                         }
                     }
-                    None => {
-                        fault = Some(format!(
-                            "rule '{}' defines no `on_change(event)` hook",
-                            rule.id
-                        ));
-                    }
+                    // No entry for this plane — typed, with the wrong-plane
+                    // diagnosis when the OTHER plane's entry is what exists.
+                    None => missing = Some(module.get(entry.other()).map(|_| entry.other())),
                 },
                 Err(e) => {
                     aborted = true;
@@ -584,7 +665,13 @@ pub(crate) fn run_rule_metered(
             let effects = store.effects.take();
 
             let over_budget = used_steps > limits.fuel || used_mem > limits.mem;
-            let outcome = if aborted {
+            let outcome = if let Some(wrong_plane) = missing {
+                Err(EvalError::MissingEntry {
+                    rule_id: rule.id.clone(),
+                    expected: entry.name(),
+                    wrong_plane,
+                })
+            } else if aborted {
                 // The eval errored: a resource limit (⇒ budget) or a genuine
                 // fault? The coarse tick/heap guards are visible in the exact
                 // accounting; the callstack-depth guard surfaces as a typed
@@ -597,11 +684,6 @@ pub(crate) fn run_rule_metered(
                         reason: fault.unwrap_or_default(),
                     })
                 }
-            } else if let Some(reason) = fault {
-                Err(EvalError::Runtime {
-                    rule_id: rule.id.clone(),
-                    reason,
-                })
             } else if over_budget {
                 // A non-looping allocation can complete WITHOUT aborting yet
                 // still overrun the exact mem bound — refuse it as budget.
@@ -679,6 +761,26 @@ fn alloc_event<'v>(heap: Heap<'v>, event: &ChangeEvent) -> Value<'v> {
             heap.alloc(event.fingerprint_after.as_str()),
         ),
         ("depth", heap.alloc(event.depth)),
+    ]))
+}
+
+/// Allocate the injected `ctx` value: the run-plane facts a task sees —
+/// `page`, `task`, `args` (list of strings), `env` (dict of strings). The
+/// provenance facts (`invocation_id`, `root_at_eval`) are deliberately NOT
+/// injected (see [`crate::RunCtx`]): a task's output must not depend on its
+/// invocation identity.
+fn alloc_ctx<'v>(heap: Heap<'v>, ctx: &RunCtx) -> Value<'v> {
+    let args: Vec<Value<'v>> = ctx.args.iter().map(|s| heap.alloc(s.as_str())).collect();
+    let env = heap.alloc(AllocDict(
+        ctx.env
+            .iter()
+            .map(|(k, v)| (heap.alloc(k.as_str()), heap.alloc(v.as_str()))),
+    ));
+    heap.alloc(AllocStruct([
+        ("page", heap.alloc(ctx.page.as_str())),
+        ("task", heap.alloc(ctx.task.as_str())),
+        ("args", heap.alloc(args)),
+        ("env", env),
     ]))
 }
 

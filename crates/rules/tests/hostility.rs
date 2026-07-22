@@ -21,9 +21,30 @@ fn malformed_syntax_is_parse_error() {
 }
 
 #[test]
-fn missing_on_change_hook_is_runtime_error() {
+fn missing_on_change_hook_is_typed_missing_entry() {
     // Parses fine, defines no `on_change` — a rule defect, surfaced loud.
-    assert!(matches!(run("x = 1\n"), Err(EvalError::Runtime { .. })));
+    assert!(matches!(
+        run("x = 1\n"),
+        Err(EvalError::MissingEntry {
+            expected: "on_change",
+            wrong_plane: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn run_plane_source_fed_a_change_event_is_wrong_plane() {
+    // A `def run(ctx)` task addressed as a change-plane rule: the typed error
+    // names BOTH what was required and what the source defines.
+    assert!(matches!(
+        run("def run(ctx):\n    pass\n"),
+        Err(EvalError::MissingEntry {
+            expected: "on_change",
+            wrong_plane: Some("run"),
+            ..
+        })
+    ));
 }
 
 #[test]

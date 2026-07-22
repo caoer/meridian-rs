@@ -341,9 +341,36 @@ impl ChangeEvent {
     }
 }
 
+/// The run-plane context — one `run(ctx)` invocation's inert facts, ALL
+/// caller-supplied (§9: the engine invents no identity and no time; nothing
+/// here is read from a clock or minted in-kernel).
+///
+/// The sandbox sees `ctx.page`, `ctx.task`, `ctx.args`, `ctx.env` and nothing
+/// else. `invocation_id` / `root_at_eval` are the Run-plane provenance facts
+/// stamped onto every emitted effect ([`Provenance::Run`]) — deliberately NOT
+/// injected: a task's output must not depend on its invocation identity, so a
+/// re-run with the same inputs emits byte-identical effects and only the
+/// provenance distinguishes the invocations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCtx {
+    /// The addressed page's workspace path.
+    pub page: String,
+    /// The task name (also the emitting `rule_id` on this plane).
+    pub task: String,
+    /// Positional args, contract-validated by the caller before eval.
+    pub args: Vec<String>,
+    /// Declared env, contract-validated by the caller before eval.
+    pub env: BTreeMap<String, String>,
+    /// The caller-supplied invocation id (Run-plane provenance).
+    pub invocation_id: String,
+    /// The workspace root fingerprint at evaluation time (Run-plane provenance).
+    pub root_at_eval: String,
+}
+
 /// A rule: a caller-assigned `id` (its provenance — stamped onto every effect it
 /// emits) plus its fenced-free Starlark `source` (a `def on_change(event):`
-/// definition). Loading rule files from disk is the CALLER's job (that is the
+/// definition on the change plane, a `def run(ctx):` definition on the run
+/// plane). Loading rule files from disk is the CALLER's job (that is the
 /// I/O this crate refuses); the crate takes the loaded source and parses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
@@ -496,6 +523,18 @@ pub enum EvalError {
         /// The configured limit.
         limit: usize,
     },
+    /// The source parsed and evaluated but defines no entry for the plane it
+    /// was addressed on — or defines the OTHER plane's entry (an `on_change`
+    /// rule addressed as a task, or a `run` task fed a change event). One
+    /// entry per plane; the planes never cross.
+    MissingEntry {
+        /// The offending rule/task.
+        rule_id: String,
+        /// The entry this eval required (`run` or `on_change`).
+        expected: &'static str,
+        /// The other plane's entry, when that is what the source defines.
+        wrong_plane: Option<&'static str>,
+    },
 }
 
 impl std::fmt::Display for EvalError {
@@ -519,6 +558,17 @@ impl std::fmt::Display for EvalError {
                 f,
                 "rule '{rule_id}' source is {bytes} bytes, over the {limit}-byte parse limit"
             ),
+            EvalError::MissingEntry {
+                rule_id,
+                expected,
+                wrong_plane: Some(found),
+            } => write!(
+                f,
+                "'{rule_id}' defines `{found}` — wrong plane: this eval requires `{expected}`"
+            ),
+            EvalError::MissingEntry {
+                rule_id, expected, ..
+            } => write!(f, "'{rule_id}' defines no `{expected}` entry"),
         }
     }
 }
@@ -584,6 +634,32 @@ pub fn eval_with_limits(
             out.retain(|e| e.kind.domain() != Domain::Md);
         }
         Ok(out)
+    })
+}
+
+/// Evaluate one task's `run(ctx)` — the run-plane entry (verdict rulings 1/8)
+/// — under explicit `limits`, in the SAME sealed sandbox as `on_change`: the
+/// same [`kernel::effect_globals`] closed builtin surface, the same fuel / mem
+/// / call-depth metering, the same panic containment. There is no second
+/// sandbox and no wider one — `run(ctx)` cannot spawn a process, read a clock,
+/// or touch I/O any more than `on_change` can (starlark-invokes-bash is a
+/// permanent no).
+///
+/// Emitted effects carry [`Provenance::Run`] (from `ctx.invocation_id` /
+/// `ctx.root_at_eval`), `rule_id = ctx.task`, `depth = 0`, and NO idempotency
+/// key — a re-run is new intent, never a replay. Determinism: the result is a
+/// pure function of `(task, ctx, limits)`; the provenance facts are stamped,
+/// never injected, so the effect PAYLOAD depends only on
+/// `(page, task, args, env)`.
+///
+/// # Errors
+/// The same typed surface as [`eval_with_limits`], plus
+/// [`EvalError::MissingEntry`] when the source defines no `run(ctx)` — with
+/// the wrong-plane detail when it defines `on_change` instead.
+pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Effect>, EvalError> {
+    kernel::on_eval_stack(|| {
+        let globals = kernel::effect_globals();
+        kernel::run_task(&globals, task, ctx, limits)
     })
 }
 
