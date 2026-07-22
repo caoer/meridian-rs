@@ -12,13 +12,23 @@ workspace = true
 
 [dependencies]
 # Page parse chain: fs::load → syntax::parse → model::build; mint-plane anchor
-# resolution (model::resolve) is the §2.1 lookup task bindings reuse.
+# resolution (model::resolve) is the §2.1 lookup task bindings reuse. The
+# executor rides the same seam: model::validate_batch mints the sealed batch,
+# fs::apply_batch is the only write path.
 fs = { workspace = true }
 model = { workspace = true }
+# md.* effect descriptors in (executor input), ChangeEvent synthesis out.
+rules = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
 # `.meridian.toml` `[run.caps]` name-convention table.
 toml = { workspace = true }
+# Run-plane receipt line body (machine-re-readable — the decision-#26
+# foreign-edit check parses prior receipts back).
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+# Workspace flock (decision #9) — same flock(2) discipline as cache's drawer lock.
+libc = "0.2"
 
 [dev-dependencies]
 # test-only: on-disk workspace fixtures for load_page / conventions tests.

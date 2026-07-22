@@ -2873,7 +2873,11 @@ name = "run"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "libc",
  "model",
+ "rules",
+ "serde",
+ "serde_json",
  "syntax",
  "tempfile",
  "toml",

@@ -43,9 +43,11 @@
 pub mod address;
 pub mod caps;
 pub mod contracts;
+pub mod executor;
 pub mod fence;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
 pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
 pub use contracts::{Contract, ContractError, ContractViolation};
+pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 pub use fence::{FenceError, TaskBlock, TaskLanguage};
