@@ -86,6 +86,19 @@ fn ctx_does_not_expose_invocation_identity() {
 }
 
 #[test]
+fn task_id_ctx_task_divergence_is_refused() {
+    // f9542789 U3-gate: error provenance (task.id) and effect provenance
+    // (ctx.task) must be ONE identity — a divergent pair is refused.
+    let t = Rule::new("other-name", "def run(ctx):\n    pass\n");
+    let err = eval_run(&t, &ctx(), EvalLimits::default()).unwrap_err();
+    let EvalError::Runtime { rule_id, reason } = err else {
+        panic!("expected Runtime refusal");
+    };
+    assert_eq!(rule_id, "other-name");
+    assert!(reason.contains("one identity"), "{reason}");
+}
+
+#[test]
 fn absent_run_entry_is_typed_missing_entry() {
     assert!(matches!(
         run("x = 1\n"),

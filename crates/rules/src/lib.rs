@@ -657,6 +657,18 @@ pub fn eval_with_limits(
 /// [`EvalError::MissingEntry`] when the source defines no `run(ctx)` — with
 /// the wrong-plane detail when it defines `on_change` instead.
 pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Effect>, EvalError> {
+    // One identity per invocation (f9542789 U3-gate): `task.id` is the error
+    // provenance, `ctx.task` the effect provenance — a divergence would let
+    // the same failed run report two names. Refused, never reconciled.
+    if task.id != ctx.task {
+        return Err(EvalError::Runtime {
+            rule_id: task.id.clone(),
+            reason: format!(
+                "task id '{}' != ctx.task '{}' — one identity per invocation",
+                task.id, ctx.task
+            ),
+        });
+    }
     kernel::on_eval_stack(|| {
         let globals = kernel::effect_globals();
         kernel::run_task(&globals, task, ctx, limits)
