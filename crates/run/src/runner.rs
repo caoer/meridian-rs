@@ -107,10 +107,11 @@ pub struct RunReport {
 /// flattened away — the report reads them directly).
 #[derive(Debug)]
 pub enum TaskOutcome {
-    /// The hermetic path (U5).
-    Starlark(DispatchOutcome),
+    /// The hermetic path (U5). Boxed like its sibling — both outcomes carry
+    /// bulky exec/effect facts, and the report reads them by reference.
+    Starlark(Box<DispatchOutcome>),
     /// The two-phase bash path (U6a).
-    Bash(BashOutcome),
+    Bash(Box<BashOutcome>),
 }
 
 /// One cascade generation: what the rules emitted over the previous
@@ -298,7 +299,7 @@ pub fn run(
                 .map_err(|e| RunnerError::Root {
                     reason: e.to_string(),
                 })?;
-            TaskOutcome::Starlark(
+            TaskOutcome::Starlark(Box::new(
                 dispatch_starlark::dispatch(
                     root,
                     &StarlarkDispatch {
@@ -318,9 +319,9 @@ pub fn run(
                     },
                 )
                 .map_err(RunnerError::Starlark)?,
-            )
+            ))
         }
-        TaskLanguage::Bash => TaskOutcome::Bash(
+        TaskLanguage::Bash => TaskOutcome::Bash(Box::new(
             dispatch_bash::run(
                 root,
                 &BashDispatch {
@@ -342,7 +343,7 @@ pub fn run(
                 live,
             )
             .map_err(RunnerError::Bash)?,
-        ),
+        )),
     };
 
     // 4. The cascade loop over generation 0's event.
