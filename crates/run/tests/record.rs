@@ -163,6 +163,94 @@ fn live_sink_failure_is_typed_distinct() {
     assert_eq!(rec.bytes, 4);
 }
 
+/// u6a seam gate: a group-SIGKILLed child's stdout pipe EOFs after its
+/// buffered bytes drain — `stream` must terminate cleanly (no hang, no
+/// error) and the record must seal. The child writes `ready` in one atomic
+/// `printf` (< `PIPE_BUF`), so the captured content is exactly `""` or
+/// `"ready"` — never a torn write.
+#[test]
+fn stream_terminates_on_pipe_eof_after_sigkill() {
+    use std::process::{Command, Stdio};
+
+    let ws = ws();
+    let mut child = Command::new("/bin/sh")
+        .args(["-c", "printf ready; exec sleep 30"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    // Let the printf land in the pipe buffer, then the u6a analogue of the
+    // group SIGKILL (#21): kill + reap closes the write end.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    child.kill().expect("SIGKILL");
+    child.wait().expect("reap");
+
+    // Watchdog thread: a hang here is the failure mode under test.
+    let ws_path = ws.path().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut log = RunLog::create(&ws_path, "inv-kill").expect("create");
+        let mut live: Vec<u8> = Vec::new();
+        let streamed = record::stream(&mut stdout, &mut log, &mut live);
+        let sealed = log.seal();
+        let _ = tx.send((streamed, sealed, live));
+    });
+    let (streamed, sealed, live) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("stream hung after SIGKILL — pipe EOF not honored");
+
+    let n = streamed.expect("clean EOF termination");
+    let rec = sealed.expect("seal");
+    assert!(live == b"ready" || live.is_empty(), "torn capture: {live:?}");
+    assert_eq!(n, live.len() as u64);
+    assert_eq!(rec.bytes, n);
+    assert_eq!(rec.sha256, hex_sha256(&live));
+    assert_eq!(
+        std::fs::read(ws.path().join(&rec.log)).expect("log file"),
+        live
+    );
+}
+
+/// u6a seam gate: the live sink dies MID-stream (after accepting bytes) —
+/// typed `Live` error, and the record survives with every byte read so far
+/// (log-first ordering: the failing chunk landed in the log before the
+/// sink refused it).
+#[test]
+fn live_sink_death_mid_stream_keeps_the_record() {
+    struct DiesAfterFirstWrite {
+        writes: usize,
+    }
+    impl std::io::Write for DiesAfterFirstWrite {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            if self.writes > 1 {
+                return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "gone"));
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let ws = ws();
+    // > one tee chunk (8192), so the sink dies on the SECOND chunk.
+    let payload = vec![0xabu8; 20_000];
+    let mut log = RunLog::create(ws.path(), "inv-midpipe").expect("create");
+    let mut sink = DiesAfterFirstWrite { writes: 0 };
+    let err = record::stream(&mut Cursor::new(&payload[..]), &mut log, &mut sink)
+        .expect_err("sink died mid-stream");
+    assert!(matches!(err, RecordError::Live { .. }), "got {err:?}");
+
+    // The record survives: both chunks read so far are in the log (16384 =
+    // 2 × 8192 — the second landed log-first before the sink refused).
+    let rec = log.seal().expect("seal");
+    assert_eq!(rec.bytes, 16_384);
+    let on_disk = std::fs::read(ws.path().join(&rec.log)).expect("log file");
+    assert_eq!(on_disk, payload[..16_384]);
+    assert_eq!(rec.sha256, hex_sha256(&payload[..16_384]));
+}
+
 /// S7 gate: the record swallows the FULL child environment and emits keys
 /// only — no serialization of any record type may contain an env value.
 #[test]
