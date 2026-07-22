@@ -2061,6 +2061,7 @@ dependencies = [
  "model",
  "registry",
  "rules",
+ "run",
  "serde",
  "serde_json",
  "syntax",

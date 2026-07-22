@@ -53,6 +53,7 @@ workspace = { path = "crates/workspace", version = "0.0.0" }
 cache = { path = "crates/cache", version = "0.0.0" }
 registry = { path = "crates/registry", version = "0.0.0" }
 rules = { path = "crates/rules", version = "0.0.0" }
+run = { path = "crates/run", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }

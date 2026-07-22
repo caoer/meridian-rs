@@ -46,6 +46,12 @@ wire-serve = { workspace = true }
 rules = { workspace = true }
 model = { workspace = true }
 syntax = { workspace = true }
+# The local run plane (U10, verdict ruling 7): `mrd run` mounts `crates/run` —
+# §2.1 task addressing, arg/env contracts, deny-by-default caps (U2), and the
+# hermetic `--dry` truth through the U5 `evaluate` seam. mrd stays a local
+# CLIENT of the engine crates (docs/laws.md charter): never a resident organ,
+# never the serve path; run→model is the one reviewable engine edge.
+run = { workspace = true }
 # The view-organ (V3, design tournament-duckdb/team-a §Q5). `mrd sql` links DuckDB
 # client-side: it calls the daemon's `view_path` op, opens the published RO file,
 # and for the daemon-absent degrade builds an ephemeral `:memory:` view. mrd calls
