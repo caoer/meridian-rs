@@ -30,7 +30,10 @@
 //! the `narrowed[]` caps facts. Until both land, the labeler emits
 //! hermetic-or-refuses — a bash block REFUSES AT THE LABEL, before any
 //! receipt or commit, rather than run under a guarantee nobody can state.
-//! Activation is the one-line [`DETECTED_LABEL_ACTIVE`] flip, landed LAST.
+//! The report's class is EVIDENCE-DERIVED post-dispatch: `detected` is
+//! claimed only off the rendered `BashOutcome::detection` verdict (a
+//! compile-time binding, not an assertion). Activation is the one-line
+//! [`DETECTED_LABEL_ACTIVE`] flip, landed LAST.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -46,6 +49,7 @@ use crate::dispatch_bash::{self, BashDispatch, BashError, BashOutcome};
 use crate::dispatch_starlark::{self, DispatchError, DispatchOutcome, StarlarkDispatch};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};
 use crate::fence::{GuaranteeClass, TaskLanguage};
+use crate::snapshot::Detection;
 
 /// The #23 activation switch. `false` until BOTH gate conditions are landed
 /// and verified (see the module docs) — flipping it is the LAST commit of
@@ -288,8 +292,10 @@ pub fn run(
     let resolution = caps::resolve_caps(&name, task.block.lang, explicit.as_ref(), &conventions)
         .map_err(RunnerError::Caps)?;
 
-    // 2. The label gate (#23) — BEFORE anything can commit.
-    let guarantee = label(&name, task.block.lang).map_err(RunnerError::Label)?;
+    // 2. The label gate (#23) — BEFORE anything can commit. The class the
+    // REPORT carries is derived from evidence after dispatch, not from this
+    // pre-flight answer.
+    label(&name, task.block.lang).map_err(RunnerError::Label)?;
 
     // 3. Dispatch by fence language (decision #13).
     let outcome = match task.block.lang {
@@ -346,7 +352,26 @@ pub fn run(
         )),
     };
 
-    // 4. The cascade loop over generation 0's event.
+    // 4. The guarantee label, evidence-derived (#23): hermetic is the sealed
+    // kernel's proof by construction; `detected` is claimed ONLY off the
+    // rendered bracket verdict the bash outcome carries — the binding below
+    // is the proof, and removing `detection` from the outcome breaks this
+    // claim at compile time, never silently.
+    let guarantee = match &outcome {
+        TaskOutcome::Starlark(_) => GuaranteeClass::Hermetic,
+        // Any rendered verdict proves the bracket ran — clean-vs-delta is
+        // phase 2's gate, not the label's. The exhaustive match keeps the
+        // claim honest against future Detection growth.
+        TaskOutcome::Bash(o) => match &o.detection {
+            Detection::Clean { .. }
+            | Detection::OutOfBand(_)
+            | Detection::ConfigChanged
+            | Detection::Symlink { .. }
+            | Detection::Failed { .. } => GuaranteeClass::Detected,
+        },
+    };
+
+    // 5. The cascade loop over generation 0's event.
     let first_event = match &outcome {
         TaskOutcome::Starlark(o) => o.applied.as_ref().and_then(|a| a.event.clone()),
         TaskOutcome::Bash(o) => match &o.phase2 {
