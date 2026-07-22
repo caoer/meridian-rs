@@ -146,6 +146,7 @@ pub fn dispatch(
                     live_root: &live,
                     receipt: d.receipt.clone(),
                     takeover: d.takeover,
+                    exec: None, // hermetic: no child process
                     depth: 0,
                 },
             )

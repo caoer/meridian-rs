@@ -246,6 +246,7 @@ pub fn run(
                         live_root: &root0,
                         receipt: Some(addr.clone()),
                         takeover: false,
+                        exec: None, // pre-exec: no child has run yet
                         depth: 0,
                     },
                 )
@@ -313,7 +314,9 @@ pub fn run(
                         d.invocation_id,
                         &root_after_phase1.0,
                     );
-                    apply_phase2(root, d, &root_after_phase1, effects)
+                    // U13: the sealed exec facts ride the completion receipt.
+                    let exec = exec_record(&result.status, &stdout, &d.env);
+                    apply_phase2(root, d, &root_after_phase1, effects, exec.as_ref())
                 }
             },
             ExecStatus::Exited { .. } | ExecStatus::Signaled { .. } => Phase2::RefusedExecFailed,
@@ -336,11 +339,13 @@ pub fn run(
 /// Phase 2: the shim batch through the executor's one choke point, pinned
 /// AND validated against the COMPUTED `root_after_phase1` (#19 — never a
 /// re-read around the bash step; out-of-band detection is U6b's bracket).
+/// `exec` (U13) rides into the committed completion receipt.
 fn apply_phase2(
     root: &fs::WorkspaceRoot,
     d: &BashDispatch<'_>,
     root_after_phase1: &MerkleRoot,
     effects: Vec<Effect>,
+    exec: Option<&record::ExecRecord>,
 ) -> Phase2 {
     match executor::apply(
         root,
@@ -356,6 +361,7 @@ fn apply_phase2(
             live_root: root_after_phase1,
             receipt: d.receipt.clone(),
             takeover: d.takeover,
+            exec,
             depth: 0,
         },
     ) {
@@ -365,6 +371,26 @@ fn apply_phase2(
         },
         Err(error) => Phase2::RefusedExec { effects, error },
     }
+}
+
+/// The receipt's exec facts (U13): built only for an exited child whose
+/// stdout record SEALED — S8 holds because the record exists only after its
+/// log fsync'd (`seal()` runs inside the exec consumer, before phase 2). An
+/// unsealed record leaves `exec` absent and the orphan lint finds a receipt
+/// whose log is missing. Env enters as KEYS ONLY (S7, by construction in
+/// [`record::ExecRecord::new`]).
+fn exec_record(
+    status: &ExecStatus,
+    stdout: &Result<StdoutRecord, RecordError>,
+    env: &BTreeMap<String, String>,
+) -> Option<record::ExecRecord> {
+    let ExecStatus::Exited { code } = status else {
+        return None;
+    };
+    let Ok(record) = stdout else {
+        return None;
+    };
+    Some(record::ExecRecord::new(*code, record.clone(), env))
 }
 
 /// One corpus-root snapshot ([`fs::domain_snapshot`]) with the dispatch's
