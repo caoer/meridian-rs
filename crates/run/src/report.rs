@@ -20,11 +20,13 @@
 //! - **`--json` is ONE object** (the whole report), and the human text is the
 //!   same facts — the two never diverge in content.
 //!
-//! In S1 the runner labels a bash block and REFUSES it before dispatch
-//! ([`crate::runner::DETECTED_LABEL_ACTIVE`] is `false`), so a `RunReport`
-//! reaching here is hermetic in practice. The renderer still handles the bash
-//! [`TaskOutcome`]/`partial`/`interrupted` shapes so the one-line label flip
-//! needs no report change.
+//! The guarantee class is evidence-derived: `hermetic` for starlark by
+//! construction, `detected` for a bash block whose exec-window bracket verified
+//! (a bash block refused before the run never reaches here). The renderer
+//! handles every [`TaskOutcome`] and report-state shape — including the bash
+//! `partial`/`interrupted` matrix and the [`crate::snapshot::Detection`]
+//! out-of-band-delta line — so activating the `detected` label is a change
+//! confined to the labeler, never the report.
 
 use serde::Serialize;
 
@@ -226,7 +228,7 @@ fn partition_effects(report: &RunReport) -> (Vec<EffectLine>, Vec<EffectLine>) {
     let mut unexecuted = Vec::new();
     let all = outcome_effects(&report.outcome)
         .iter()
-        .chain(report.cascade.iter().flat_map(|gen| gen.effects.iter()));
+        .chain(report.cascade.iter().flat_map(|g| g.effects.iter()));
     for effect in all {
         if effect.kind.domain() == Domain::Md {
             applied.push(EffectLine::of(effect));
@@ -245,7 +247,10 @@ fn outcome_effects(outcome: &TaskOutcome) -> &[Effect] {
         TaskOutcome::Starlark(o) => &o.effects,
         TaskOutcome::Bash(o) => match &o.phase2 {
             Phase2::Applied { effects, .. } | Phase2::RefusedExec { effects, .. } => effects,
-            Phase2::RefusedExecFailed | Phase2::RefusedTimeout | Phase2::RefusedShim(_) => &[],
+            Phase2::RefusedExecFailed
+            | Phase2::RefusedTimeout
+            | Phase2::RefusedShim(_)
+            | Phase2::RefusedDetection => &[],
         },
     }
 }
@@ -258,10 +263,15 @@ fn classify(report: &RunReport, applied: &[EffectLine], unexecuted: &[EffectLine
         match &o.phase2 {
             Phase2::RefusedTimeout => return ReportState::Interrupted,
             Phase2::RefusedExecFailed if signaled(&o.status) => return ReportState::Interrupted,
-            Phase2::RefusedExecFailed | Phase2::RefusedShim(_) | Phase2::RefusedExec { .. } => {
+            Phase2::RefusedExecFailed
+            | Phase2::RefusedShim(_)
+            | Phase2::RefusedDetection
+            | Phase2::RefusedExec { .. } => {
                 // Phase 1 committed (the pre-exec receipt stands) → partial;
                 // without a pre-exec receipt there is no committed phase-1
                 // state, so the run is interrupted before any effect landed.
+                // A detection refusal is the same shape: the exec ran, the
+                // md.* apply was withheld — the out-of-band-delta line names it.
                 return if o.pre_receipt_line.is_some() {
                     ReportState::Partial
                 } else {
@@ -292,7 +302,15 @@ fn signaled(status: &ExecStatus) -> bool {
 fn out_of_band_delta(report: &RunReport) -> String {
     match &report.outcome {
         TaskOutcome::Starlark(_) => "none (hermetic — no exec window)".to_owned(),
-        TaskOutcome::Bash(_) => "none".to_owned(),
+        // The U6b bracket verdict rides EVERY bash outcome (orthogonal to how
+        // the exec ended): a clean window is no delta; anything else names it.
+        TaskOutcome::Bash(o) => {
+            if o.detection.is_clean() {
+                "none".to_owned()
+            } else {
+                o.detection.to_string()
+            }
+        }
     }
 }
 

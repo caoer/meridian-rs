@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use model::MerkleRoot;
 use run::caps::{Cap, CapResolution, CapSet, CapSource};
 use run::dispatch_bash::{BashOutcome, Phase2};
 use run::dispatch_starlark::DispatchOutcome;
@@ -14,6 +15,7 @@ use run::record::StdoutRecord;
 use run::report::{self, ReportState};
 use run::runner::{RunReport, TaskOutcome};
 use run::shim::ShimStream;
+use run::snapshot::Detection;
 use rules::{ArgValue, Effect, EffectKind, Provenance};
 
 fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
@@ -90,6 +92,11 @@ fn bash(phase2: Phase2, status: ExecStatus, pre_receipt: Option<&str>) -> RunRep
             shim: ShimStream {
                 bytes: Vec::new(),
                 overflowed: false,
+            },
+            // A clean window: these failures are exec-fail/timeout, not
+            // detection — the delta line reads "none".
+            detection: Detection::Clean {
+                root: MerkleRoot("b3:clean".to_owned()),
             },
             phase2,
         })),
