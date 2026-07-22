@@ -40,13 +40,14 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use model::{
-    Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, Ref, ReceiptAppend,
+    Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
     SpliceRequest, SpliceVerdict, delta,
 };
 use rules::{ArgValue, ChangeEvent, Domain, Effect, EffectKind};
 use serde::{Deserialize, Serialize};
 
 use crate::caps::CapSet;
+use crate::record::{ExecRecord, ExecRecordSink};
 
 /// Where the run receipt lands: a workspace-relative file (appended) and the
 /// pre-minted block anchor for the line. Address policy is the CALLER's (U5
@@ -67,6 +68,10 @@ pub struct ApplyRequest<'a> {
     pub page: &'a str,
     /// The task name — the receipt actor is `run:<task>`.
     pub task: &'a str,
+    /// The addressed task block's `node_rev` at eval/address time — the
+    /// procedure-hash the receipt attests (WHICH code ran, not just the
+    /// mutable task NAME). The caller threads it from the resolved block.
+    pub task_rev: &'a str,
     /// Caller-supplied invocation id (§9).
     pub invocation_id: &'a str,
     /// Caller-supplied time fact (§9); absent stays absent, never invented.
@@ -242,8 +247,25 @@ pub struct ReceiptFacts {
     pub now: Option<String>,
     /// The root the batch was pinned to.
     pub root_pin: String,
+    /// The addressed task block's `node_rev` — the procedure-hash (attestation
+    /// roadmap): the receipt names WHICH code ran, not just the mutable task
+    /// NAME. Stamped at eval/address time, frozen into the receipt here.
+    pub task_rev: String,
     /// Per-edit facts: target identity + rev transition.
     pub edits: Vec<ReceiptEdit>,
+    /// The bash step's exec facts (U8), adopted post-hoc via
+    /// [`ExecRecordSink`]; absent on the hermetic path (no child process).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub exec: Option<ExecRecord>,
+}
+
+/// The U8→U4 record edge (review S10): the receipt owner adopts the sealed
+/// exec facts by taking them into its optional `exec` field. Defined here so
+/// the bash path can fill the record without editing this file's construction.
+impl ExecRecordSink for ReceiptFacts {
+    fn fill_exec(&mut self, exec: ExecRecord) {
+        self.exec = Some(exec);
+    }
 }
 
 /// One edit's receipt fact: which node, and its rev transition. `after` is
@@ -415,7 +437,9 @@ pub fn apply_under(
     fs::apply_batch(
         root,
         Path::new(req.page),
-        receipt.as_ref().map(|(path, _, _)| Path::new(path.as_str())),
+        receipt
+            .as_ref()
+            .map(|(path, _, _)| Path::new(path.as_str())),
         &sealed,
     )
     .map_err(|e| ExecError::Io {
@@ -540,8 +564,15 @@ fn find_section(
             section: heading.to_owned(),
         }),
         [only] => {
-            let segs = only.hpath.clone().unwrap_or_else(|| vec![heading.to_owned()]);
-            let last_byte = doc.raw.as_bytes().get(only.span.end.wrapping_sub(1)).copied();
+            let segs = only
+                .hpath
+                .clone()
+                .unwrap_or_else(|| vec![heading.to_owned()]);
+            let last_byte = doc
+                .raw
+                .as_bytes()
+                .get(only.span.end.wrapping_sub(1))
+                .copied();
             Ok((segs, last_byte, only.node_rev.clone()))
         }
         many => Err(ExecError::SectionAmbiguous {
@@ -586,7 +617,9 @@ fn last_governed_revs(
         reason: format!("receipt scan: {e}"),
     };
     let abs = root.0.join(&addr.path);
-    let dir: PathBuf = abs.parent().map_or_else(|| root.0.clone(), Path::to_path_buf);
+    let dir: PathBuf = abs
+        .parent()
+        .map_or_else(|| root.0.clone(), Path::to_path_buf);
     let mut out = BTreeMap::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -644,6 +677,7 @@ fn render_receipt(
         actor: format!("run:{}", req.task),
         now: req.now.map(str::to_owned),
         root_pin: req.pin_root.0.clone(),
+        task_rev: req.task_rev.to_owned(),
         edits: planned
             .iter()
             .zip(after_revs)
@@ -653,6 +687,10 @@ fn render_receipt(
                 after: after.0.clone(),
             })
             .collect(),
+        // No child exec on this path. The bash path's sealed record is adopted
+        // through the `ExecRecordSink` seam (`fill_exec`); wiring it into the
+        // committed line is the runner's receipt-composition step. Absent here.
+        exec: None,
     };
     let json = serde_json::to_string(&facts).map_err(|e| ExecError::Io {
         reason: format!("receipt encode: {e}"),

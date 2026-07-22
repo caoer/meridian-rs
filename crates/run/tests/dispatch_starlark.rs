@@ -5,11 +5,11 @@
 use std::collections::BTreeMap;
 
 use model::MerkleRoot;
+use rules::{Domain, EvalError, EvalLimits};
 use run::caps::CapSet;
 use run::dispatch_starlark::{self, DispatchError, StarlarkDispatch};
 use run::executor::{ExecError, ReceiptAddr};
 use run::fence::GuaranteeClass;
-use rules::{Domain, EvalError, EvalLimits};
 
 const PAGE: &str = "\
 ---
@@ -26,10 +26,15 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (tmp, root)
 }
 
-fn dispatch_of<'a>(source: &'a str, root_at_eval: &'a MerkleRoot, caps: &'a CapSet) -> StarlarkDispatch<'a> {
+fn dispatch_of<'a>(
+    source: &'a str,
+    root_at_eval: &'a MerkleRoot,
+    caps: &'a CapSet,
+) -> StarlarkDispatch<'a> {
     StarlarkDispatch {
         page: "page.md",
         task: "fix-x",
+        task_rev: "b3:proc-star",
         source,
         args: vec!["done".to_owned()],
         env: BTreeMap::new(),
@@ -79,7 +84,10 @@ fn no_md_effects_means_nothing_applied_nothing_written() {
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
     assert!(out.applied.is_none());
     assert_eq!(out.unexecuted.len(), 1);
-    assert_eq!(std::fs::read_to_string(root.0.join("page.md")).unwrap(), PAGE);
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
     assert!(!root.0.join("receipts").exists());
 }
 
@@ -111,7 +119,10 @@ fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
         err,
         DispatchError::Exec(ExecError::CapDenied { .. })
     ));
-    assert_eq!(std::fs::read_to_string(root.0.join("page.md")).unwrap(), PAGE);
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
 }
 
 #[test]
@@ -122,5 +133,8 @@ fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
     let effects = dispatch_starlark::evaluate(&dispatch_of(src, &now, &caps)).unwrap();
     assert_eq!(effects.len(), 1, "all descriptors reported");
-    assert_eq!(std::fs::read_to_string(root.0.join("page.md")).unwrap(), PAGE);
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
 }

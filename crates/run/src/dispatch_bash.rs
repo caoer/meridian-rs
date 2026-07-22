@@ -52,6 +52,10 @@ pub struct BashDispatch<'a> {
     pub page: &'a str,
     /// The task name (effect provenance, receipt actor).
     pub task: &'a str,
+    /// The addressed block's `node_rev` — the procedure-hash the pre-exec AND
+    /// completion receipts attest (from the resolved task; §9). The pre-exec
+    /// receipt pins the procedure the run is ABOUT to execute (orphan-lint).
+    pub task_rev: &'a str,
     /// The fence's inner source.
     pub source: &'a str,
     /// Contract-validated positional args.
@@ -203,6 +207,7 @@ pub fn run(
                     &ApplyRequest {
                         page: d.page,
                         task: d.task,
+                        task_rev: d.task_rev,
                         invocation_id: d.invocation_id,
                         now: d.now,
                         effects: &[],
@@ -256,12 +261,8 @@ pub fn run(
                 applied: None,
             },
             Ok(descriptors) => {
-                let effects = shim::to_effects(
-                    &descriptors,
-                    d.task,
-                    d.invocation_id,
-                    &root_after_phase1.0,
-                );
+                let effects =
+                    shim::to_effects(&descriptors, d.task, d.invocation_id, &root_after_phase1.0);
                 apply_phase2(root, d, &root_after_phase1, effects)
             }
         },
@@ -292,6 +293,7 @@ fn apply_phase2(
         &ApplyRequest {
             page: d.page,
             task: d.task,
+            task_rev: d.task_rev,
             invocation_id: d.invocation_id,
             now: d.now,
             effects: &effects,

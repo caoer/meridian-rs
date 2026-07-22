@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 
 use model::MerkleRoot;
+use rules::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::CapSet;
 use run::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
-use rules::{ArgValue, Effect, EffectKind, Provenance};
 
 const PAGE: &str = "\
 ---
@@ -50,7 +50,11 @@ fn effect(kind: EffectKind, args: &[(&str, &str)], seq: u32) -> Effect {
 }
 
 fn set_field(field: &str, value: &str, seq: u32) -> Effect {
-    effect(EffectKind::SetField, &[("field", field), ("value", value)], seq)
+    effect(
+        EffectKind::SetField,
+        &[("field", field), ("value", value)],
+        seq,
+    )
 }
 
 fn append(section: &str, content: &str, seq: u32) -> Effect {
@@ -83,6 +87,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
         &ApplyRequest {
             page: "page.md",
             task: "fix-x",
+            task_rev: "b3:proc-test",
             invocation_id: "inv-1",
             now: Some("2026-07-22T01:00:00Z"),
             effects: r.effects,
@@ -385,7 +390,10 @@ fn foreign_edit_is_refused_with_the_three_way_frame() {
     };
     assert_eq!(target, "fm:status");
     assert_ne!(last_governed, current, "the three-way frame is real");
-    assert!(page_text(&root).contains("status: human-truth"), "preserved");
+    assert!(
+        page_text(&root).contains("status: human-truth"),
+        "preserved"
+    );
 
     // Explicit takeover overrides (decision #26).
     apply(
@@ -500,4 +508,50 @@ fn held_lock_is_a_fast_typed_refusal_never_a_wait() {
         "refusal must be immediate, not a blocked wait"
     );
     assert!(!page_text(&root).contains("status: x"), "nothing applied");
+}
+
+#[test]
+fn receipt_stamps_the_procedure_hash_and_adopts_the_exec_seam() {
+    use run::executor::ReceiptFacts;
+    use run::record::{ExecRecord, ExecRecordSink, RunLog};
+
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let applied = apply(
+        &root,
+        &Req {
+            effects: &[set_field("status", "done", 0)],
+            caps: write_caps(),
+            pin: now.clone(),
+            live: now,
+            receipt: Some(receipt_addr(1)),
+            takeover: false,
+        },
+    )
+    .unwrap();
+
+    // The procedure-hash (task_rev) is stamped into the receipt: the line
+    // attests WHICH code ran, not just the mutable task name.
+    let line = applied.receipt_line.expect("a receipt rode the commit");
+    assert!(line.contains("\"task_rev\":\"b3:proc-test\""), "{line}");
+
+    // Round-trip the ReceiptFacts back: the hermetic path carries no exec facts.
+    let json = line
+        .strip_prefix("- run ")
+        .and_then(|b| b.rsplit_once(" ^"))
+        .map_or(line.as_str(), |(j, _)| j);
+    let mut facts: ReceiptFacts = serde_json::from_str(json).expect("receipt round-trips");
+    assert_eq!(facts.task_rev, "b3:proc-test");
+    assert!(facts.exec.is_none(), "hermetic run has no child exec facts");
+
+    // The U8 S10 seam binds on the REAL receipt type: a bash owner adopts a
+    // sealed record through `fill_exec`, and it serializes back into the line.
+    let stdout = RunLog::create(&root.0, "inv-seam")
+        .expect("create")
+        .seal()
+        .expect("seal");
+    facts.fill_exec(ExecRecord::new(0, stdout, [] as [(&str, &str); 0]));
+    let round = serde_json::to_string(&facts).expect("re-serialize");
+    assert!(round.contains("\"exec\""), "adopted exec serializes: {round}");
+    assert!(round.contains("inv-seam"), "{round}");
 }

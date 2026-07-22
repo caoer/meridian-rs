@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use model::{ByteSpan, Document, Node, NodeKind, Ref, ResolveError, YamlMap};
+use model::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, ResolveError, YamlMap};
 
 use crate::fence::{self, FenceError, TaskBlock};
 
@@ -34,6 +34,9 @@ pub struct ResolvedTask {
     pub binding: TaskBinding,
     /// The classified block: language + spans + source.
     pub block: TaskBlock,
+    /// The addressed code block's `node_rev` — the procedure-hash carried into
+    /// the run receipt (attestation: WHICH code ran, not just the task NAME).
+    pub task_rev: String,
 }
 
 /// Why addressing refused. Page-class variants are environment faults (exit 2);
@@ -48,7 +51,10 @@ pub enum AddressError {
     PageIo { path: String, reason: String },
     /// TASK was named but the page declares no `task.<name>` key. Carries the
     /// declared task names so the caller can list them.
-    NoTask { name: String, available: Vec<String> },
+    NoTask {
+        name: String,
+        available: Vec<String>,
+    },
     /// TASK was omitted and the page declares no task bindings at all.
     NoTasks,
     /// TASK was omitted and the page declares more than one binding — the
@@ -293,10 +299,11 @@ fn resolve_binding(doc: &Document, binding: &TaskBinding) -> Result<ResolvedTask
             count: candidates.len(),
         },
     })?;
-    let code_span = host_code_block(doc, &target.span).ok_or_else(|| AddressError::NotACodeBlock {
-        name: binding.name.clone(),
-        anchor: binding.anchor.clone(),
-    })?;
+    let (code_span, task_rev) =
+        host_code_block(doc, &target.span).ok_or_else(|| AddressError::NotACodeBlock {
+            name: binding.name.clone(),
+            anchor: binding.anchor.clone(),
+        })?;
     let block = fence::classify(doc, &code_span).map_err(|error| AddressError::Fence {
         name: binding.name.clone(),
         error,
@@ -304,6 +311,7 @@ fn resolve_binding(doc: &Document, binding: &TaskBinding) -> Result<ResolvedTask
     Ok(ResolvedTask {
         binding: binding.clone(),
         block,
+        task_rev: task_rev.0,
     })
 }
 
@@ -311,7 +319,7 @@ fn resolve_binding(doc: &Document, binding: &TaskBinding) -> Result<ResolvedTask
 /// (fence content is masked at parse), so a block-keying anchor is the
 /// Obsidian own-line form directly BELOW the fence: the nearest `CodeBlock`
 /// whose span ends before the anchor's line with only blank bytes between.
-fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<ByteSpan> {
+fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<(ByteSpan, NodeRev)> {
     fn collect<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
         if matches!(node.kind, NodeKind::CodeBlock { .. }) {
             out.push(node);
@@ -331,5 +339,5 @@ fn host_code_block(doc: &Document, anchor_span: &ByteSpan) -> Option<ByteSpan> {
                     .all(|c| matches!(c, b' ' | b'\t' | b'\r' | b'\n'))
         })
         .max_by_key(|b| b.span.end)
-        .map(|b| b.span.clone())
+        .map(|b| (b.span.clone(), b.node_rev.clone()))
 }

@@ -5,12 +5,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use rules::Provenance;
 use run::caps::CapSet;
 use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
 use run::shim::ShimError;
-use rules::Provenance;
 
 const PAGE: &str = "\
 ---
@@ -42,6 +42,7 @@ fn dispatch_of<'a>(
     BashDispatch {
         page: "page.md",
         task: "fix-x",
+        task_rev: "b3:proc-bash",
         source,
         args: vec![],
         env: BTreeMap::new(),
@@ -191,8 +192,8 @@ fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
-    let out = dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch, &caps), &mut live)
-        .unwrap();
+    let out =
+        dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch, &caps), &mut live).unwrap();
 
     assert!(out.status.success());
     assert!(matches!(
@@ -212,9 +213,12 @@ fn the_choke_point_refuses_an_uncapped_descriptor() {
     let caps = CapSet::none(); // deny-by-default
     let mut live: Vec<u8> = Vec::new();
 
-    let out =
-        dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch, &caps), &mut live)
-            .unwrap();
+    let out = dispatch_bash::run(
+        &root,
+        &dispatch_of(EMIT_SET_FIELD, &scratch, &caps),
+        &mut live,
+    )
+    .unwrap();
 
     assert!(matches!(
         out.phase2,
@@ -237,8 +241,8 @@ fn a_held_workspace_lock_is_a_fast_typed_refusal() {
     let mut live: Vec<u8> = Vec::new();
 
     let _held = WorkspaceLock::acquire(&root.0).unwrap();
-    let err = dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch, &caps), &mut live)
-        .unwrap_err();
+    let err =
+        dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch, &caps), &mut live).unwrap_err();
     assert!(matches!(err, BashError::Phase1(ExecError::WorkspaceBusy)));
 }
 
