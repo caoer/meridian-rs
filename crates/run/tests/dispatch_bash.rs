@@ -1,6 +1,8 @@
 //! U6a gates — the two-phase bash dispatch: pre-exec receipt + locked-window
 //! `root_after_phase1` (#19 addendum), the S2/S6/#21 failure matrix, the
-//! executor choke point, and the U8 stdout record riding the exec.
+//! executor choke point, and the U8 stdout record riding the exec — plus the
+//! U6b detection gates (the wired `ExecBracket`: #14 cheat detection, the
+//! phase-2 gate, ruling-2 never-roll-back).
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -11,6 +13,7 @@ use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
 use run::shim::ShimError;
+use run::snapshot::Detection;
 
 const PAGE: &str = "\
 ---
@@ -258,6 +261,147 @@ fn an_unsafe_invocation_id_refuses_before_anything_commits() {
     let err = dispatch_bash::run(&root, &d, &mut live).unwrap_err();
     assert!(matches!(err, BashError::Record(_)));
     assert!(!root.0.join("receipts").exists(), "nothing committed");
+}
+
+/// U6b #14, the zero-descriptor cheat end-to-end: bash writes an md file
+/// into the TREE, emits nothing on the shim fd, exits 0. Without the bracket
+/// this was `Applied { applied: None }`; now phase 2 refuses, the delta
+/// names the file with the S4 wording, and the write is NEVER rolled back
+/// (ruling 2).
+#[test]
+fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::none();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = format!("echo sneaky > '{}/rogue.md'", root.0.display());
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+
+    assert!(out.status.success());
+    assert!(matches!(out.phase2, Phase2::RefusedDetection));
+    let Detection::OutOfBand(delta) = &out.detection else {
+        panic!("expected OutOfBand, got {:?}", out.detection);
+    };
+    assert_eq!(delta.unexpected, vec!["rogue.md".to_string()]);
+    let msg = out.detection.to_string();
+    assert!(
+        msg.contains("out-of-band change during exec window"),
+        "S4 wording: {msg}"
+    );
+    // Ruling 2: the ungoverned write persists — never rolled back.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("rogue.md")).unwrap(),
+        "sneaky\n"
+    );
+}
+
+/// U6b #19, the cheat a naive root-compare passes: one HONEST descriptor AND
+/// a rogue tree write. The residual names exactly the rogue path, and the
+/// WHOLE phase 2 refuses — even the honest effect does not apply.
+#[test]
+fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::parse("md.set_field").unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = format!(
+        "echo sneaky > '{}/rogue.md'\n{EMIT_SET_FIELD}",
+        root.0.display()
+    );
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+
+    assert!(matches!(out.phase2, Phase2::RefusedDetection));
+    let Detection::OutOfBand(delta) = &out.detection else {
+        panic!("expected OutOfBand, got {:?}", out.detection);
+    };
+    assert_eq!(delta.unexpected, vec!["rogue.md".to_string()]);
+    // The honest descriptor did NOT apply — the page is untouched.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
+    // No completion receipt joined the pre-exec anchor.
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    assert!(receipts.contains("^p-000001"));
+    assert!(!receipts.contains("^r-000001"));
+}
+
+/// U6b #20, the config-widening attack end-to-end: bash rewrites
+/// `mdfs_config.yaml` to ignore its rogue path. The config bracket refuses
+/// before the residual could be filtered by the widened domain.
+#[test]
+fn a_config_rewrite_in_the_window_refuses_phase2() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::none();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = format!(
+        "printf 'ignore:\\n  - \"rogue.md\"\\n' > '{ws}/mdfs_config.yaml'\necho sneaky > '{ws}/rogue.md'",
+        ws = root.0.display()
+    );
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+
+    assert!(matches!(out.detection, Detection::ConfigChanged));
+    assert!(matches!(out.phase2, Phase2::RefusedDetection));
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
+}
+
+/// U6b happy path: a clean window's verdict is `Clean`, phase 2 proceeds,
+/// and the verified root IS the phase-2 pin (`root_after_phase1`) — the
+/// bracket and the #19 computed-root discipline agree end-to-end.
+#[test]
+fn a_clean_window_verdict_rides_the_outcome() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::parse("md.set_field").unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let out = dispatch_bash::run(
+        &root,
+        &dispatch_of(EMIT_SET_FIELD, &scratch, &caps),
+        &mut live,
+    )
+    .unwrap();
+
+    assert!(out.detection.is_clean());
+    let Phase2::Applied { effects, applied } = &out.phase2 else {
+        panic!("expected Applied, got {:?}", out.phase2);
+    };
+    assert!(applied.is_some());
+    let Detection::Clean { root: verified } = &out.detection else {
+        unreachable!();
+    };
+    let Provenance::Run { root_at_eval, .. } = &effects[0].provenance else {
+        panic!("run-plane provenance expected");
+    };
+    assert_eq!(
+        verified.0, *root_at_eval,
+        "the bracket-verified root is the phase-2 pin"
+    );
+}
+
+/// U6b: the verdict is rendered on EVERY exit path — a timed-out step still
+/// closes the bracket (clean here: the tree was untouched).
+#[test]
+fn a_timeout_still_renders_the_detection_verdict() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::none();
+    let mut live: Vec<u8> = Vec::new();
+
+    let mut d = dispatch_of("sleep 30", &scratch, &caps);
+    d.timeout = Duration::from_millis(300);
+    let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
+
+    assert!(matches!(out.status, ExecStatus::TimedOut { .. }));
+    assert!(matches!(out.phase2, Phase2::RefusedTimeout));
+    assert!(out.detection.is_clean(), "untouched tree ⇒ clean verdict");
 }
 
 #[test]
