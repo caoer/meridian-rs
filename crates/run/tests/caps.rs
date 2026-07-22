@@ -7,9 +7,7 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use run::caps::{
-    self, Cap, CapResolution, CapSet, CapSource, CapsError, Conventions,
-};
+use run::caps::{self, Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
 use run::fence::TaskLanguage;
 use support::doc;
 
@@ -38,7 +36,12 @@ fn resolve(
 
 #[test]
 fn undeclared_block_is_read_only_deny_by_default() {
-    let r = resolve("anything", TaskLanguage::Starlark, None, &Conventions::none());
+    let r = resolve(
+        "anything",
+        TaskLanguage::Starlark,
+        None,
+        &Conventions::none(),
+    );
     assert_eq!(r.source, CapSource::DenyDefault);
     assert_eq!(r.effective, CapSet::none());
     assert!(r.narrowed.is_empty());
@@ -147,7 +150,14 @@ fn cap_strings_are_namespaced_and_target_scoped_forward_compat() {
     assert_eq!(scoped.target.as_deref(), Some("status"));
     assert_eq!(scoped.as_string(), "md.set_field:status");
 
-    for bad in ["md", "set_field", "MD.set_field", "md.set field", "md.:x", "md.set_field:"] {
+    for bad in [
+        "md",
+        "set_field",
+        "MD.set_field",
+        "md.set field",
+        "md.:x",
+        "md.set_field:",
+    ] {
         assert!(Cap::parse(bad).is_err(), "{bad} must refuse");
     }
 }
@@ -169,7 +179,12 @@ fn empty_explicit_declaration_is_explicit_read_only() {
     let d = doc(page);
     let explicit = caps::explicit_caps(&d, "t").unwrap();
     assert_eq!(explicit, Some(CapSet(BTreeSet::new())));
-    let r = resolve("t", TaskLanguage::Bash, explicit.as_ref(), &Conventions::none());
+    let r = resolve(
+        "t",
+        TaskLanguage::Bash,
+        explicit.as_ref(),
+        &Conventions::none(),
+    );
     assert_eq!(r.source, CapSource::Explicit);
     assert_eq!(r.effective, CapSet::none());
 }
@@ -191,7 +206,10 @@ fn conventions_load_from_meridian_toml() {
 #[test]
 fn absent_file_or_section_is_the_empty_table() {
     let tmp = tempfile::tempdir().unwrap();
-    assert_eq!(caps::load_conventions(tmp.path()).unwrap(), Conventions::none());
+    assert_eq!(
+        caps::load_conventions(tmp.path()).unwrap(),
+        Conventions::none()
+    );
 
     // The plain mrd-init marker body has no [run] section.
     std::fs::write(
@@ -199,7 +217,10 @@ fn absent_file_or_section_is_the_empty_table() {
         "version = 1\ncreated_by = \"mrd\"\n",
     )
     .unwrap();
-    assert_eq!(caps::load_conventions(tmp.path()).unwrap(), Conventions::none());
+    assert_eq!(
+        caps::load_conventions(tmp.path()).unwrap(),
+        Conventions::none()
+    );
 }
 
 #[test]

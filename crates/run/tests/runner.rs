@@ -7,11 +7,11 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use rules::{EvalLimits, Rule};
 use run::dispatch_bash::Phase2;
 use run::executor::ReceiptAddr;
 use run::fence::GuaranteeClass;
 use run::runner::{self, RunSpec, RunnerError, TaskOutcome};
-use rules::{EvalLimits, Rule};
 
 /// A one-task starlark page: `fix-x` sets `status` from its arg and emits a
 /// notice (the non-md surface).

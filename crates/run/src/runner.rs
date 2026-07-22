@@ -155,7 +155,9 @@ pub enum CascadeError {
 impl std::fmt::Display for CascadeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CascadeError::Eval { depth, error } => write!(f, "cascade eval (depth {depth}): {error}"),
+            CascadeError::Eval { depth, error } => {
+                write!(f, "cascade eval (depth {depth}): {error}")
+            }
             CascadeError::Apply { depth, error } => {
                 write!(f, "cascade apply (depth {depth}): {error}")
             }
@@ -232,8 +234,7 @@ pub fn run(
     let name = task.binding.name.clone();
 
     let contract = contracts::contract_for(&doc, &name).map_err(RunnerError::Contract)?;
-    contracts::validate(&name, &contract, &spec.args, &spec.env)
-        .map_err(RunnerError::Violation)?;
+    contracts::validate(&name, &contract, &spec.args, &spec.env).map_err(RunnerError::Violation)?;
 
     let explicit = caps::explicit_caps(&doc, &name).map_err(RunnerError::Caps)?;
     let conventions = caps::load_conventions(&root.0).map_err(RunnerError::Caps)?;
@@ -306,11 +307,12 @@ fn dispatch(
 ) -> Result<TaskOutcome, RunnerError> {
     match task.block.lang {
         TaskLanguage::Starlark => {
-            let root_at_eval = fs::domain_snapshot(root)
-                .map(|(_, r)| r)
-                .map_err(|e| RunnerError::Root {
-                    reason: e.to_string(),
-                })?;
+            let root_at_eval =
+                fs::domain_snapshot(root)
+                    .map(|(_, r)| r)
+                    .map_err(|e| RunnerError::Root {
+                        reason: e.to_string(),
+                    })?;
             Ok(TaskOutcome::Starlark(Box::new(
                 dispatch_starlark::dispatch(
                     root,
@@ -400,12 +402,13 @@ fn cascade(
         let applied = if md.is_empty() {
             None
         } else {
-            let live = fs::domain_snapshot(root)
-                .map(|(_, r)| r)
-                .map_err(|e| CascadeError::Root {
-                    depth: ev.depth,
-                    reason: e.to_string(),
-                })?;
+            let live =
+                fs::domain_snapshot(root)
+                    .map(|(_, r)| r)
+                    .map_err(|e| CascadeError::Root {
+                        depth: ev.depth,
+                        reason: e.to_string(),
+                    })?;
             Some(
                 executor::apply(
                     root,

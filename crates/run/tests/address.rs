@@ -159,11 +159,17 @@ true
 ";
     let d = doc(page);
     assert_eq!(
-        address::resolve_task(&d, Some("bare")).unwrap().binding.anchor,
+        address::resolve_task(&d, Some("bare"))
+            .unwrap()
+            .binding
+            .anchor,
         "t-1"
     );
     assert_eq!(
-        address::resolve_task(&d, Some("alias")).unwrap().binding.anchor,
+        address::resolve_task(&d, Some("alias"))
+            .unwrap()
+            .binding
+            .anchor,
         "t-1"
     );
 }

@@ -309,8 +309,8 @@ type DescriptorBuilder = fn(&str, &str) -> ShimDescriptor;
 /// serde's internally-tagged enums cannot deny unknown fields).
 fn parse_payload(index: usize, payload: &[u8]) -> Result<ShimDescriptor, ShimError> {
     let malformed = |reason: String| ShimError::Malformed { index, reason };
-    let text = std::str::from_utf8(payload)
-        .map_err(|_| malformed("payload is not UTF-8".to_owned()))?;
+    let text =
+        std::str::from_utf8(payload).map_err(|_| malformed("payload is not UTF-8".to_owned()))?;
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| malformed(format!("not JSON: {e}")))?;
     let serde_json::Value::Object(obj) = value else {

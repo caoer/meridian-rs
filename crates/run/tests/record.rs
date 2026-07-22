@@ -107,7 +107,17 @@ fn invocation_id_reuse_refuses() {
 fn hostile_invocation_ids_refuse() {
     let ws = ws();
     let overlong = "z".repeat(129);
-    for id in ["", ".", "..", "../evil", "a/b", "a\\b", "a b", "x\0y", overlong.as_str()] {
+    for id in [
+        "",
+        ".",
+        "..",
+        "../evil",
+        "a/b",
+        "a\\b",
+        "a b",
+        "x\0y",
+        overlong.as_str(),
+    ] {
         let err = RunLog::create(ws.path(), id).expect_err("hostile id");
         assert_eq!(
             err,
@@ -155,8 +165,12 @@ fn live_sink_failure_is_typed_distinct() {
     }
     let ws = ws();
     let mut log = RunLog::create(ws.path(), "inv-pipe").expect("create");
-    let err = record::stream(&mut Cursor::new(b"data".as_slice()), &mut log, &mut DeadPipe)
-        .expect_err("dead pipe");
+    let err = record::stream(
+        &mut Cursor::new(b"data".as_slice()),
+        &mut log,
+        &mut DeadPipe,
+    )
+    .expect_err("dead pipe");
     assert!(matches!(err, RecordError::Live { .. }), "got {err:?}");
     // The log kept the chunk (log-first ordering): the record can still seal.
     let rec = log.seal().expect("seal");
@@ -201,7 +215,10 @@ fn stream_terminates_on_pipe_eof_after_sigkill() {
 
     let n = streamed.expect("clean EOF termination");
     let rec = sealed.expect("seal");
-    assert!(live == b"ready" || live.is_empty(), "torn capture: {live:?}");
+    assert!(
+        live == b"ready" || live.is_empty(),
+        "torn capture: {live:?}"
+    );
     assert_eq!(n, live.len() as u64);
     assert_eq!(rec.bytes, n);
     assert_eq!(rec.sha256, hex_sha256(&live));
@@ -264,7 +281,10 @@ fn env_record_carries_keys_never_values() {
         ("HOME_WIKI", "/dup/ignored"),
     ];
     let rec = ExecRecord::new(0, stdout, env);
-    assert_eq!(rec.env_keys, vec!["API_TOKEN".to_owned(), "HOME_WIKI".to_owned()]);
+    assert_eq!(
+        rec.env_keys,
+        vec!["API_TOKEN".to_owned(), "HOME_WIKI".to_owned()]
+    );
     let json = serde_json::to_string(&rec).expect("json");
     assert!(json.contains("API_TOKEN"));
     assert!(!json.contains("SECRET-VALUE"), "env value leaked: {json}");

@@ -257,9 +257,9 @@ pub fn configured_timeout(workspace_root: &Path) -> Result<Duration, TimeoutConf
     })?;
     match value.get("run").and_then(|r| r.get("timeout_secs")) {
         None => Ok(DEFAULT_TIMEOUT),
-        Some(toml::Value::Integer(secs)) if *secs > 0 => {
-            Ok(Duration::from_secs(u64::try_from(*secs).unwrap_or(u64::MAX)))
-        }
+        Some(toml::Value::Integer(secs)) if *secs > 0 => Ok(Duration::from_secs(
+            u64::try_from(*secs).unwrap_or(u64::MAX),
+        )),
         Some(other) => Err(TimeoutConfigError {
             reason: format!("[run] timeout_secs must be a positive integer, got {other}"),
         }),
