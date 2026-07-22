@@ -186,7 +186,11 @@ fn unknown_task_exits_2() {
     let ws = Ws::new();
     let out = ws.run(&["tasks.md", "no-such"]);
     assert_eq!(code(&out), 2);
-    assert!(stderr(&out).contains("no task 'no-such'"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("no task 'no-such'"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// A contract violation exits 2 WITH the declared contract shown.

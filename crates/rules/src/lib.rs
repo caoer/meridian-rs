@@ -737,7 +737,9 @@ mod tests {
     #[test]
     fn change_plane_idempotency_key_is_rule_fingerprint_seq() {
         let e = effect(EffectKind::Send, "r1", "fpA", 3);
-        let k = e.idempotency_key().expect("change-plane effects carry a key");
+        let k = e
+            .idempotency_key()
+            .expect("change-plane effects carry a key");
         assert_eq!(k.rule_id, "r1");
         assert_eq!(k.fingerprint_after, "fpA");
         assert_eq!(k.seq, 3);
@@ -746,7 +748,11 @@ mod tests {
     #[test]
     fn run_plane_effect_has_no_idempotency_key() {
         let e = run_effect(EffectKind::SetField, "task", 0);
-        assert_eq!(e.idempotency_key(), None, "a re-run is new intent — never deduped");
+        assert_eq!(
+            e.idempotency_key(),
+            None,
+            "a re-run is new intent — never deduped"
+        );
     }
 
     #[test]

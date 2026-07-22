@@ -5,9 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use rules::{
-    Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx, eval_run,
-};
+use rules::{Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx, eval_run};
 
 fn ctx() -> RunCtx {
     RunCtx {
@@ -144,10 +142,7 @@ fn run_plane_recursion_bomb_is_budget() {
 fn run_plane_source_guards_apply() {
     // The parse-DoS guards are plane-independent (shared metered path).
     let over = "x".repeat(EvalLimits::default().max_source_bytes + 1);
-    assert!(matches!(
-        run(&over),
-        Err(EvalError::SourceTooLarge { .. })
-    ));
+    assert!(matches!(run(&over), Err(EvalError::SourceTooLarge { .. })));
 }
 
 #[test]
@@ -155,7 +150,18 @@ fn sandbox_exposes_no_process_or_io_names() {
     // Ruling 8: starlark-invokes-bash is a PERMANENT no. The run plane uses
     // the same closed globals as on_change — assert the exec-shaped names are
     // absent behaviorally: reaching one faults, never runs.
-    for name in ["exec", "subprocess", "os", "system", "spawn", "popen", "command", "shell", "open", "getenv"] {
+    for name in [
+        "exec",
+        "subprocess",
+        "os",
+        "system",
+        "spawn",
+        "popen",
+        "command",
+        "shell",
+        "open",
+        "getenv",
+    ] {
         let src = format!("def run(ctx):\n    {name}(\"true\")\n");
         assert!(
             matches!(
