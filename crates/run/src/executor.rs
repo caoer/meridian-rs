@@ -93,6 +93,13 @@ pub struct ApplyRequest<'a> {
     /// Explicit foreign-edit takeover (decision #26): overwrite a target whose
     /// current rev diverged from its last governed after-rev.
     pub takeover: bool,
+    /// The bash step's exec facts (U13), threaded at render so the COMMITTED
+    /// receipt line carries them — `render_receipt` commits internally, so a
+    /// post-hoc `fill_exec` cannot reach the committed line. `None` on the
+    /// hermetic path, on phase-1 pre-exec receipts (no child has run yet),
+    /// and on cascade generations. The receipt field stays skip-if-none
+    /// (#27 freeze clock — no new required wire field).
+    pub exec: Option<&'a ExecRecord>,
     /// The cascade generation of the effects being applied (`0` for the run
     /// itself); the synthesized event carries `depth + 1`.
     pub depth: u32,
@@ -253,8 +260,10 @@ pub struct ReceiptFacts {
     pub task_rev: String,
     /// Per-edit facts: target identity + rev transition.
     pub edits: Vec<ReceiptEdit>,
-    /// The bash step's exec facts (U8), adopted post-hoc via
-    /// [`ExecRecordSink`]; absent on the hermetic path (no child process).
+    /// The bash step's exec facts (U8/U13): threaded into the committed line
+    /// at render via [`ApplyRequest::exec`]; absent on the hermetic path (no
+    /// child process). The [`ExecRecordSink`] seam remains for composition
+    /// outside the commit (parse-back, tests).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub exec: Option<ExecRecord>,
 }
@@ -687,10 +696,11 @@ fn render_receipt(
                 after: after.0.clone(),
             })
             .collect(),
-        // No child exec on this path. The bash path's sealed record is adopted
-        // through the `ExecRecordSink` seam (`fill_exec`); wiring it into the
-        // committed line is the runner's receipt-composition step. Absent here.
-        exec: None,
+        // U13: the sealed exec facts enter the COMMITTED line here — the only
+        // point that can put them there (this render commits internally).
+        // S8 holds at this site by construction: the record exists only after
+        // its log sealed (`ExecRecord.stdout` presence proves the fsync ran).
+        exec: req.exec.cloned(),
     };
     let json = serde_json::to_string(&facts).map_err(|e| ExecError::Io {
         reason: format!("receipt encode: {e}"),

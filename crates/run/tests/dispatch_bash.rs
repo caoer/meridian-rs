@@ -352,6 +352,49 @@ fn a_config_rewrite_in_the_window_refuses_phase2() {
     );
 }
 
+/// U13: the sealed exec facts ride the COMMITTED completion receipt — same
+/// invocation, same sha256 as the sealed record — while the PRE-exec line
+/// stays bare (no child had run). Env enters keys-only (S7): the value never
+/// reaches the receipt file.
+#[test]
+fn the_completion_receipt_carries_the_sealed_exec_facts() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::parse("md.set_field").unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = format!("echo running{EMIT_SET_FIELD}");
+    let mut d = dispatch_of(&src, &scratch, &caps);
+    d.env = BTreeMap::from([("HOME_WIKI".to_string(), "secret-value".to_string())]);
+    let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
+
+    assert!(matches!(out.phase2, Phase2::Applied { .. }));
+    let record = out.stdout.as_ref().expect("record sealed");
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+
+    // The completion line (^r-000001) carries the exec facts of THE record.
+    let completion = receipts
+        .lines()
+        .find(|l| l.contains("^r-000001"))
+        .expect("completion line committed");
+    assert!(completion.contains("\"exec\""), "{completion}");
+    assert!(
+        completion.contains(&record.sha256),
+        "receipt attests the sealed stdout hash: {completion}"
+    );
+    assert!(completion.contains("\"exit_code\":0"), "{completion}");
+    assert!(completion.contains("HOME_WIKI"), "env key recorded");
+    // S7: the env VALUE never reaches the receipt file.
+    assert!(!receipts.contains("secret-value"), "{receipts}");
+
+    // The PRE-exec line (^p-000001) has no exec facts — no child had run.
+    let pre = receipts
+        .lines()
+        .find(|l| l.contains("^p-000001"))
+        .expect("pre-exec line committed");
+    assert!(!pre.contains("\"exec\""), "{pre}");
+}
+
 /// U6b happy path: a clean window's verdict is `Clean`, phase 2 proceeds,
 /// and the verified root IS the phase-2 pin (`root_after_phase1`) — the
 /// bracket and the #19 computed-root discipline agree end-to-end.

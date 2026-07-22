@@ -478,6 +478,7 @@ fn cascade(
                         live_root: &live,
                         receipt: None,
                         takeover: false,
+                        exec: None, // cascade generation: no child exec
                         depth: ev.depth,
                     },
                 )

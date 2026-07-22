@@ -96,6 +96,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             live_root: &r.live,
             receipt: r.receipt.clone(),
             takeover: r.takeover,
+            exec: None,
             depth: 0,
         },
     )
@@ -552,6 +553,67 @@ fn receipt_stamps_the_procedure_hash_and_adopts_the_exec_seam() {
         .expect("seal");
     facts.fill_exec(ExecRecord::new(0, stdout, [] as [(&str, &str); 0]));
     let round = serde_json::to_string(&facts).expect("re-serialize");
-    assert!(round.contains("\"exec\""), "adopted exec serializes: {round}");
+    assert!(
+        round.contains("\"exec\""),
+        "adopted exec serializes: {round}"
+    );
     assert!(round.contains("inv-seam"), "{round}");
+}
+
+/// U13: exec facts threaded through `ApplyRequest.exec` land in the
+/// COMMITTED receipt line — `render_receipt` commits internally, so this is
+/// the only path that can put them there (post-hoc adoption cannot). S7
+/// rides in by construction: env keys only, the value never touches disk.
+#[test]
+fn receipt_commits_the_threaded_exec_facts() {
+    use run::executor::ReceiptFacts;
+    use run::record::{ExecRecord, RunLog};
+
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let stdout = RunLog::create(&root.0, "inv-exec")
+        .expect("create")
+        .seal()
+        .expect("seal");
+    let exec = ExecRecord::new(0, stdout, [("HOME_WIKI", "secret-value")]);
+
+    let applied = executor::apply(
+        &root,
+        &ApplyRequest {
+            page: "page.md",
+            task: "fix-x",
+            task_rev: "b3:proc-test",
+            invocation_id: "inv-exec",
+            now: Some("2026-07-22T03:00:00Z"),
+            effects: &[set_field("status", "done", 0)],
+            caps: &write_caps(),
+            pin_root: &now,
+            live_root: &now,
+            receipt: Some(receipt_addr(9)),
+            takeover: false,
+            exec: Some(&exec),
+            depth: 0,
+        },
+    )
+    .unwrap();
+
+    // The COMMITTED file carries the line, and the line carries the facts.
+    let line = applied.receipt_line.expect("a receipt rode the commit");
+    let receipts = std::fs::read_to_string(root.0.join(&receipt_addr(9).path)).unwrap();
+    assert!(
+        receipts.contains(&line),
+        "line committed to the receipt file"
+    );
+
+    let json = line
+        .strip_prefix("- run ")
+        .and_then(|b| b.rsplit_once(" ^"))
+        .map_or(line.as_str(), |(j, _)| j);
+    let facts: ReceiptFacts = serde_json::from_str(json).expect("receipt round-trips");
+    let exec_back = facts.exec.expect("threaded exec facts committed");
+    assert_eq!(exec_back.exit_code, 0);
+    assert_eq!(exec_back.stdout.invocation, "inv-exec");
+    assert_eq!(exec_back.env_keys, vec!["HOME_WIKI".to_string()]);
+    // S7: the env VALUE never reaches the committed receipt.
+    assert!(!receipts.contains("secret-value"), "{receipts}");
 }
