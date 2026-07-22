@@ -296,6 +296,34 @@ struct PlannedEdit {
 /// # Errors
 /// [`ExecError`] — in every case NOTHING was applied.
 pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied, ExecError> {
+    // Serialize local runs (decision #9: LOCK_NB — busy is a fast typed
+    // refusal, never a wait).
+    let lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            ExecError::WorkspaceBusy
+        } else {
+            ExecError::Io {
+                reason: format!("workspace lock: {e}"),
+            }
+        }
+    })?;
+    apply_under(&lock, root, req)
+}
+
+/// [`apply`] under a CALLER-held [`WorkspaceLock`] — the U6a two-phase seam
+/// (u4-gate addendum on #19): the bash dispatcher must commit phase 1 and
+/// compute `root_after_phase1` inside ONE locked window, so it holds the lock
+/// across both and threads it here. The lock parameter is the proof-of-lock —
+/// flock cannot re-acquire on a second fd, so a self-locking call under a
+/// held lock would refuse itself as busy.
+///
+/// # Errors
+/// [`ExecError`] — in every case NOTHING was applied.
+pub fn apply_under(
+    _lock: &WorkspaceLock,
+    root: &fs::WorkspaceRoot,
+    req: &ApplyRequest<'_>,
+) -> Result<Applied, ExecError> {
     // 1. THE CHOKE POINT — before any I/O: md.* only, each admitted by the
     // block's caps (kind + target, so target-scoped caps bind for real).
     for effect in req.effects {
@@ -308,17 +336,7 @@ pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied
         }
     }
 
-    // 2. Serialize local runs (decision #9: LOCK_NB — busy is a fast typed
-    // refusal, never a wait), then load under the lock.
-    let _lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
-        if e.kind() == io::ErrorKind::WouldBlock {
-            ExecError::WorkspaceBusy
-        } else {
-            ExecError::Io {
-                reason: format!("workspace lock: {e}"),
-            }
-        }
-    })?;
+    // 2. Load under the lock.
     let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
         path: req.page.to_owned(),
         reason: e.to_string(),
