@@ -19,13 +19,15 @@
 //!   or the tool failed pre-run. TASK omitted with several declared tasks
 //!   lists them and exits 2 — the CLI never guesses.
 //!
-//! # Half-scope (U7 gate)
-//! `--list` and `--dry` are complete. `--dry` on starlark is END-TO-END
-//! truth: the hermetic kernel evaluates the block through the U5 `evaluate`
-//! seam and the FULL effect set prints — nothing applies. `--dry` on bash
-//! shows the block + resolved caps and REFUSES to exec (no descriptor
-//! fiction, decision #18). The execute leg itself refuses loudly until the
-//! U7 runner (compose + guarantee labeler) lands.
+//! # The three legs
+//! `--list` surfaces every declared task with contracts and caps. `--dry`
+//! on starlark is END-TO-END truth: the hermetic kernel evaluates the block
+//! through the U5 `evaluate` seam and the FULL effect set prints — nothing
+//! applies. `--dry` on bash shows the block + resolved caps and REFUSES to
+//! exec (no descriptor fiction, decision #18). The execute leg composes the
+//! run through the U7 runner — with the EMPTY S1 ruleset ([`S1_RULES`]) —
+//! and renders the U9 report (text and `--json` off one struct, exec facts
+//! `RunReport`-sourced).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -33,8 +35,12 @@ use std::path::Path;
 use run::address::{self, AddressError, ResolvedTask};
 use run::caps::{self, CapResolution, CapSource, CapsError, Conventions};
 use run::contracts::{self, Contract};
-use run::executor::ExecError;
+use run::dispatch_bash::{BashError, Phase2};
+use run::dispatch_starlark::DispatchError;
+use run::exec::ExecStatus;
+use run::executor::{ExecError, ReceiptAddr};
 use run::fence::TaskLanguage;
+use run::runner::{self, CascadeError, RunSpec, RunnerError, TaskOutcome};
 use rules::EvalLimits;
 use serde_json::json;
 
@@ -47,6 +53,18 @@ const EXIT_RUN: u8 = 1;
 /// The deterministic invocation id a `--dry` evaluation sees: `--dry` records
 /// nothing, and a fixed id keeps dry output byte-stable run over run.
 const DRY_INVOCATION: &str = "dry";
+
+/// The S1 ruleset the CLI hands the runner: EMPTY, always (u7-gate forward
+/// condition). Cascade applies are receipt-less by phase-2 scoping, so S1
+/// must short-circuit the cascade before any apply — the runner's vacuous
+/// stop on an empty ruleset is that short-circuit, and the CLI surface has
+/// no rules input to widen it.
+const S1_RULES: &[rules::Rule] = &[];
+
+/// The workspace-relative receipt file `mrd run` appends to (executor
+/// convention: address policy is the caller's; the executor scans every
+/// `.md` beside it for foreign-edit anchors).
+const RECEIPT_FILE: &str = "receipts/run.md";
 
 /// A run-plane refusal (exit 1) — distinct from [`Fail::tool`]'s exit 2.
 fn fail_run(message: String) -> Fail {
@@ -73,22 +91,33 @@ fn fail_caps(e: &CapsError) -> Fail {
     }
 }
 
-/// Executor refusals all land on the run leg (exit 1) — the U7 runner wiring
-/// adopts this mapping wholesale. The two named legs the triad review asked
-/// for: `ForeignEdit` (decision #26 refusal, never a silent overwrite) and
-/// the workspace-busy lock refusal (decision #9) both exit 1.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "adopted by the U7 runner wiring (execute leg)")
-)]
+/// Executor refusals all land on the run leg (exit 1). The two named legs of
+/// the triad review: `ForeignEdit` (decision #26 refusal, never a silent
+/// overwrite) and `WorkspaceBusy` (decision #9, the `LOCK_NB` refusal) — both
+/// carry their typed `Display` and exit 1.
 fn fail_exec(e: &ExecError) -> Fail {
-    let message = match e {
-        ExecError::Io { reason } if reason.contains("workspace lock") => {
-            format!("workspace busy: {reason}")
+    fail_run(e.to_string())
+}
+
+/// Map a runner refusal onto the triad. Pre-eval faults (addressing,
+/// contract) are invocation faults (exit 2); everything past the gate is the
+/// run plane refusing (exit 1), with `ExecError` legs routed through
+/// [`fail_exec`].
+fn fail_runner(e: &RunnerError) -> Fail {
+    match e {
+        RunnerError::Address(e) => fail_address(e),
+        RunnerError::Contract(e) => Fail::tool(e.to_string()),
+        RunnerError::Violation(e) => Fail::tool(e.to_string()),
+        RunnerError::Caps(e) => fail_caps(e),
+        RunnerError::Starlark(DispatchError::Exec(err))
+        | RunnerError::Bash(BashError::Phase1(err)) => fail_exec(err),
+        RunnerError::Cascade(CascadeError::Apply { error, .. }) => {
+            let mut fail = fail_exec(error);
+            fail.message = format!("cascade: {}", fail.message);
+            fail
         }
-        other => other.to_string(),
-    };
-    fail_run(message)
+        other => fail_run(other.to_string()),
+    }
 }
 
 /// The parsed `mrd run` invocation.
@@ -232,12 +261,110 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         return dry(&root, &parsed, &resolved, &caps);
     }
 
-    // HALF-SCOPE: the execute leg lands with the U7 runner.
-    Err(Fail::tool(format!(
-        "task '{task}' resolved ({} fence, caps ok) — the execute path lands \
-         with the U7 runner; use --dry for the effect truth or --list for the surface",
-        resolved.block.lang.as_str()
-    )))
+    execute(&root, &parsed, task)
+}
+
+/// The execute leg: compose the run through the U7 runner (empty ruleset —
+/// see [`S1_RULES`]), render the U9 report, and map the outcome onto the
+/// exit triad. The CLI is the §9 boundary: it mints the invocation id and
+/// the time fact here, and nowhere below does.
+fn execute(root: &fs::WorkspaceRoot, parsed: &RunArgs, task: &str) -> Result<(), Fail> {
+    let (invocation_id, now) = mint_identity()?;
+    let timeout =
+        run::exec::configured_timeout(&root.0).map_err(|e| Fail::tool(e.to_string()))?;
+    let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
+    std::fs::create_dir_all(&scratch)
+        .map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
+
+    let spec = RunSpec {
+        page: &parsed.page,
+        task: Some(task),
+        args: parsed.args.clone(),
+        env: parsed.env.clone(),
+        invocation_id: &invocation_id,
+        now: Some(&now),
+        receipt: Some(ReceiptAddr {
+            path: RECEIPT_FILE.to_owned(),
+            anchor: format!("r-{invocation_id}"),
+        }),
+        pre_receipt: Some(ReceiptAddr {
+            path: RECEIPT_FILE.to_owned(),
+            anchor: format!("p-{invocation_id}"),
+        }),
+        takeover: false,
+        scratch: &scratch,
+        timeout,
+        limits: EvalLimits::default(),
+    };
+
+    // Bash stdout streams LIVE to our stdout while the record tees it
+    // out-of-tree (U8); starlark ignores the sink.
+    let mut live = std::io::stdout();
+    let result = runner::run(root, &spec, S1_RULES, &mut live);
+    let _ = std::fs::remove_dir_all(&scratch);
+    let report = result.map_err(|e| fail_runner(&e))?;
+
+    // The U9 report: one object, text and json off the same struct — with
+    // the RunReport-sourced exec facts (never receipt-sourced).
+    let rendered = run::report::render(&report);
+    match parsed.format() {
+        Format::Json => println!(
+            "{}",
+            rendered
+                .to_json()
+                .map_err(|e| Fail::tool(format!("report encode: {e}")))?
+        ),
+        Format::Human => print!("{}", rendered.to_text()),
+    }
+    exit_leg(&report)
+}
+
+/// The exit leg for a run the runner carried to a report: a bash phase-2
+/// refusal is a run-plane failure even though the report rendered — exit 1,
+/// except a signaled step, which exits 128+signal (130 on SIGINT, plan §5).
+fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
+    let TaskOutcome::Bash(outcome) = &report.outcome else {
+        return Ok(());
+    };
+    let cause = match &outcome.phase2 {
+        Phase2::Applied { .. } => return Ok(()),
+        Phase2::RefusedExecFailed => match &outcome.status {
+            ExecStatus::Exited { code } => {
+                format!("bash exited {code} — phase 2 refused; committed phase-1 state stands")
+            }
+            ExecStatus::Signaled { signal } => {
+                let leg = u8::try_from(128 + *signal).unwrap_or(1);
+                return Err(Fail {
+                    code: leg,
+                    message: format!("bash was signaled ({signal}) — run interrupted"),
+                });
+            }
+            ExecStatus::TimedOut { limit } => {
+                format!("bash timed out after {}s", limit.as_secs())
+            }
+        },
+        Phase2::RefusedTimeout => "bash timed out — process group killed, phase 2 refused"
+            .to_owned(),
+        Phase2::RefusedShim(e) => format!("effect-shim stream refused: {e}"),
+        Phase2::RefusedDetection => outcome.detection.to_string(),
+        Phase2::RefusedExec { error, .. } => return Err(fail_exec(error)),
+    };
+    Err(fail_run(cause))
+}
+
+/// Mint the run identity at the §9 boundary: a unique, path-safe invocation
+/// id and a unix-seconds time fact.
+fn mint_identity() -> Result<(String, String), Fail> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| Fail::tool(format!("system clock: {e}")))?;
+    let secs = elapsed.as_secs();
+    let id = format!(
+        "run-{secs}{:03}-{}",
+        elapsed.subsec_millis(),
+        std::process::id()
+    );
+    Ok((id, secs.to_string()))
 }
 
 /// One task's `--list` / listing row facts.
@@ -536,6 +663,15 @@ mod tests {
         }
     }
 
+    /// u7-gate forward condition: the CLI invocation of the runner uses the
+    /// EMPTY ruleset — cascade applies are receipt-less by phase-2 scoping,
+    /// so S1 short-circuits the cascade via the runner's vacuous stop. The
+    /// call site is pinned to [`S1_RULES`]; this test pins [`S1_RULES`].
+    #[test]
+    fn cli_hands_the_runner_an_empty_ruleset() {
+        assert!(S1_RULES.is_empty(), "S1 must not evaluate cascade rules");
+    }
+
     #[test]
     fn triad_run_leg_mappings() {
         // Foreign edit (decision #26) → exit 1, never exit 2.
@@ -547,10 +683,8 @@ mod tests {
         assert_eq!(fe.code, EXIT_RUN);
         assert!(fe.message.contains("foreign edit"));
 
-        // Workspace busy (decision #9 lock) → exit 1, named.
-        let busy = fail_exec(&ExecError::Io {
-            reason: "workspace lock: held".to_owned(),
-        });
+        // Workspace busy (decision #9, LOCK_NB) → exit 1, named.
+        let busy = fail_exec(&ExecError::WorkspaceBusy);
         assert_eq!(busy.code, EXIT_RUN);
         assert!(busy.message.contains("workspace busy"));
 
