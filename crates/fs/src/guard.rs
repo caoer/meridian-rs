@@ -112,6 +112,30 @@ impl ResidualDelta {
     }
 }
 
+/// The S4 report wording, at its single source: the delta names the exec
+/// WINDOW and the paths — never an author. Downstream reports (run crate,
+/// receipts) render the delta through this impl so the discipline cannot
+/// drift.
+impl fmt::Display for ResidualDelta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "out-of-band change during exec window —")?;
+        let mut first = true;
+        for (label, paths) in [
+            ("unexpected", &self.unexpected),
+            ("missing", &self.missing),
+            ("altered", &self.altered),
+        ] {
+            if paths.is_empty() {
+                continue;
+            }
+            let sep = if first { " " } else { "; " };
+            write!(f, "{sep}{label}: {}", paths.join(", "))?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
 /// A refusal (or I/O failure) from the detection bracket. Refusals are typed
 /// so the run layer maps them to distinct report states; every `Display`
 /// string keeps the S4 discipline — name the window, never an author.
@@ -144,23 +168,7 @@ impl fmt::Display for GuardError {
                 f,
                 "{CONFIG_FILE_NAME} changed during exec window — the detection domain itself moved; refusing",
             ),
-            GuardError::OutOfBand(delta) => {
-                write!(f, "out-of-band change during exec window —")?;
-                let mut first = true;
-                for (label, paths) in [
-                    ("unexpected", &delta.unexpected),
-                    ("missing", &delta.missing),
-                    ("altered", &delta.altered),
-                ] {
-                    if paths.is_empty() {
-                        continue;
-                    }
-                    let sep = if first { " " } else { "; " };
-                    write!(f, "{sep}{label}: {}", paths.join(", "))?;
-                    first = false;
-                }
-                Ok(())
-            }
+            GuardError::OutOfBand(delta) => delta.fmt(f),
         }
     }
 }
@@ -210,6 +218,21 @@ impl StepGuard {
     #[must_use]
     pub fn config_state(&self) -> &ConfigState {
         &self.config
+    }
+
+    /// The pre-step root as this guard OBSERVED it at open: the fold of the
+    /// captured baseline. The run layer cross-checks this against the
+    /// flock-computed `root_after_phase1` (#19 addendum — the COMPUTED root
+    /// is the authority; a mismatch means the tree moved between the phase-1
+    /// commit and the bracket opening, and the exec must not start).
+    #[must_use]
+    pub fn pre_root(&self) -> model::MerkleRoot {
+        let refs: Vec<(&str, &[u8])> = self
+            .pre
+            .iter()
+            .map(|(p, b)| (p.as_str(), b.as_slice()))
+            .collect();
+        model::merkle_root(&refs, self.domain.version())
     }
 
     /// Cross-step continuity (#20 is "mid-RUN", not just mid-step): compare

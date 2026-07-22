@@ -230,6 +230,22 @@ fn delta_wording_names_the_window_not_the_block() {
     );
 }
 
+/// `pre_root` equivalence — the #19 cross-check's ground: on a symlink-free
+/// tree the guard's observed baseline folds to EXACTLY the root
+/// [`fs::domain_snapshot`] computes (the flock-computed `root_after_phase1`
+/// comes from that path). A divergence here would make the run layer's
+/// computed-vs-observed comparison meaningless.
+#[test]
+fn pre_root_matches_domain_snapshot() {
+    let (_tmp, root) = workspace();
+    let (_, snap_root) = fs::domain_snapshot(&root).unwrap();
+    let guard = StepGuard::open(&root).unwrap();
+    assert_eq!(guard.pre_root(), snap_root);
+
+    // and a clean zero-edit close returns that same root
+    assert_eq!(guard.close(&[]).unwrap(), snap_root);
+}
+
 /// #20 accepted gap, stated as a test: non-md, `.meridian/`, and dot-path
 /// writes during the window are UNDETECTED — the §12 hash domain is md-only
 /// and dot-excluded. Explicit and named, distinct from the out-of-tree
