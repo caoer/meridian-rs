@@ -165,7 +165,11 @@ fn deny_by_default_refuses_undeclared_descriptor() {
     let before = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
     let out = ws.run(&["tasks.md", "fix-uncapped"]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
-    assert!(stderr(&out).contains("capability denied"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("capability denied"),
+        "{}",
+        stderr(&out)
+    );
     let after = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
     assert_eq!(before, after, "refusal must apply nothing");
 }

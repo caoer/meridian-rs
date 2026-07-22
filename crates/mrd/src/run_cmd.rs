@@ -32,6 +32,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use rules::EvalLimits;
 use run::address::{self, AddressError, ResolvedTask};
 use run::caps::{self, CapResolution, CapSource, CapsError, Conventions};
 use run::contracts::{self, Contract};
@@ -41,7 +42,6 @@ use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr};
 use run::fence::TaskLanguage;
 use run::runner::{self, CascadeError, RunSpec, RunnerError, TaskOutcome};
-use rules::EvalLimits;
 use serde_json::json;
 
 use crate::{Fail, Format, current_dir};
@@ -270,11 +270,9 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
 /// the time fact here, and nowhere below does.
 fn execute(root: &fs::WorkspaceRoot, parsed: &RunArgs, task: &str) -> Result<(), Fail> {
     let (invocation_id, now) = mint_identity()?;
-    let timeout =
-        run::exec::configured_timeout(&root.0).map_err(|e| Fail::tool(e.to_string()))?;
+    let timeout = run::exec::configured_timeout(&root.0).map_err(|e| Fail::tool(e.to_string()))?;
     let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
-    std::fs::create_dir_all(&scratch)
-        .map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
+    std::fs::create_dir_all(&scratch).map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
 
     let spec = RunSpec {
         page: &parsed.page,
@@ -343,8 +341,9 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
                 format!("bash timed out after {}s", limit.as_secs())
             }
         },
-        Phase2::RefusedTimeout => "bash timed out — process group killed, phase 2 refused"
-            .to_owned(),
+        Phase2::RefusedTimeout => {
+            "bash timed out — process group killed, phase 2 refused".to_owned()
+        }
         Phase2::RefusedShim(e) => format!("effect-shim stream refused: {e}"),
         Phase2::RefusedDetection => outcome.detection.to_string(),
         Phase2::RefusedExec { error, .. } => return Err(fail_exec(error)),
@@ -648,15 +647,15 @@ mod tests {
     #[test]
     fn parse_refusals_are_exit_2() {
         for tail in [
-            vec![],                                              // no PAGE
-            strings(&["p.md", "t", "extra"]),                    // third positional
-            strings(&["p.md", "--flag"]),                        // unknown flag
-            strings(&["p.md", "--env"]),                         // --env no value
-            strings(&["p.md", "--env", "NOEQ"]),                 // not KEY=VALUE
-            strings(&["p.md", "--env", "=v"]),                   // empty key
-            strings(&["p.md", "--env", "A=1", "--env", "A=2"]),  // duplicate
-            strings(&["p.md", "t", "--list"]),                   // list + TASK
-            strings(&["p.md", "--list", "--dry"]),               // list + dry
+            vec![],                                             // no PAGE
+            strings(&["p.md", "t", "extra"]),                   // third positional
+            strings(&["p.md", "--flag"]),                       // unknown flag
+            strings(&["p.md", "--env"]),                        // --env no value
+            strings(&["p.md", "--env", "NOEQ"]),                // not KEY=VALUE
+            strings(&["p.md", "--env", "=v"]),                  // empty key
+            strings(&["p.md", "--env", "A=1", "--env", "A=2"]), // duplicate
+            strings(&["p.md", "t", "--list"]),                  // list + TASK
+            strings(&["p.md", "--list", "--dry"]),              // list + dry
         ] {
             let fail = RunArgs::parse(&tail).expect_err("must refuse");
             assert_eq!(fail.code, 2, "{tail:?} → {}", fail.message);

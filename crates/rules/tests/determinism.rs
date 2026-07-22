@@ -82,14 +82,16 @@ fn any_ctx() -> impl Strategy<Value = RunCtx> {
         ".*",
         ".*",
     )
-        .prop_map(|(page, task, args, env, invocation_id, root_at_eval)| RunCtx {
-            page,
-            task,
-            args,
-            env,
-            invocation_id,
-            root_at_eval,
-        })
+        .prop_map(
+            |(page, task, args, env, invocation_id, root_at_eval)| RunCtx {
+                page,
+                task,
+                args,
+                env,
+                invocation_id,
+                root_at_eval,
+            },
+        )
 }
 
 /// A task that exercises every ctx fact.
