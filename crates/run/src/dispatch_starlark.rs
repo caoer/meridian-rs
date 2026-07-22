@@ -21,6 +21,9 @@ pub struct StarlarkDispatch<'a> {
     pub page: &'a str,
     /// The task name (rule id, effect provenance, receipt actor).
     pub task: &'a str,
+    /// The addressed block's `node_rev` — the procedure-hash the receipt
+    /// attests (from the resolved task; §9 — nothing here mints it).
+    pub task_rev: &'a str,
     /// The fence's inner source (a `def run(ctx):` definition).
     pub source: &'a str,
     /// Contract-validated positional args.
@@ -134,6 +137,7 @@ pub fn dispatch(
                 &ApplyRequest {
                     page: d.page,
                     task: d.task,
+                    task_rev: d.task_rev,
                     invocation_id: d.invocation_id,
                     now: d.now,
                     effects: &md,
