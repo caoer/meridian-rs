@@ -8,6 +8,7 @@ expression: effects
     "rule_id": "join_arming",
     "seq": 0,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "",
     "fingerprint_after": "born",
     "args": {
@@ -22,6 +23,7 @@ expression: effects
     "rule_id": "join_arming",
     "seq": 1,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "",
     "fingerprint_after": "born",
     "args": {

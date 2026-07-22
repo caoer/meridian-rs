@@ -29,6 +29,7 @@ mod gc;
 mod init;
 mod resolve;
 mod rules_cmd;
+mod run_cmd;
 mod sql;
 mod unregister;
 mod view_status;
@@ -61,9 +62,20 @@ usage:
                            ordered --snapshots corpus) through a --rules set and
                            report dead rules, fire counts, effect-kind
                            distribution, and the fuel profile (markdown)
+  mrd run <PAGE> [TASK] [-- ARGS]
+                           run a task block addressed by the page's frontmatter
+                           (task.<name> bindings; PAGE is workspace-relative).
+                           TASK omitted: one declared task runs, several list
+                           and exit 2. Exits: 0 clean / 1 run refused or failed
+                           / 2 bad invocation
 
 options:
   --json                   emit JSON instead of a human table
+  --env KEY=VALUE          (run) supply one declared env entry (repeatable)
+  --dry                    (run) starlark: evaluate hermetically and print the
+                           full effect set, apply nothing; bash: show the block
+                           + resolved caps, refuse to exec
+  --list                   (run) list the page's tasks with contracts and caps
   --rules DIR              (rules replay) the .star rule set to replay
   --snapshots DIR          (rules replay) an ordered snapshot corpus instead of git
   --out FILE               (rules replay) write the report to FILE instead of stdout
@@ -142,6 +154,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "sql" => sql::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),
         "rules" => rules_cmd::dispatch(&args[1..]),
+        "run" => run_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()

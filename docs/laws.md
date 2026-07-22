@@ -61,6 +61,6 @@ which laws it carries. In one line each:
 | `workspace` | Workspace identity: the discovery ladder, canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only) |
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
-| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`; sees no `wire` or `model` |
+| `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |

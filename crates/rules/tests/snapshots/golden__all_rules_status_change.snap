@@ -8,6 +8,7 @@ expression: effects
     "rule_id": "task_conventions",
     "seq": 0,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "aaa",
     "fingerprint_after": "bbb",
     "args": {
@@ -19,6 +20,7 @@ expression: effects
     "rule_id": "task_conventions",
     "seq": 1,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "aaa",
     "fingerprint_after": "bbb",
     "args": {
@@ -30,6 +32,7 @@ expression: effects
     "rule_id": "status_log",
     "seq": 0,
     "depth": 0,
+    "plane": "change",
     "fingerprint_before": "aaa",
     "fingerprint_after": "bbb",
     "args": {
