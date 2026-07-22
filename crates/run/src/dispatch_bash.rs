@@ -5,11 +5,16 @@
 //! ┌ LOCKED WINDOW (one flock, u4-gate addendum on #19) ──────────────┐
 //! │ phase 1: pre-exec receipt commit  →  root_after_phase1 snapshot  │
 //! └──────────────────────────────────────────────────────────────────┘
+//!   → U6b bracket OPENS against the computed root (PreExecMismatch ⇒
+//!     refuse, the exec never starts)
 //!   → exec (scratch cwd, `setsid`, timeout→group SIGKILL; stdout teed
 //!     into the U8 record; md.* descriptors on the shim fd)
-//!   → phase 2: shim batch through the executor's ONE choke point,
-//!     pinned AND validated against the COMPUTED `root_after_phase1` —
-//!     never a root re-read after the bash step (#19).
+//!   → U6b bracket CLOSES after the group kill (residual-compare #19 +
+//!     config bracket #20 + symlink refusal #25) — verdict on EVERY path
+//!   → phase 2 (gated on a verified-clean window): shim batch through the
+//!     executor's ONE choke point, pinned AND validated against the
+//!     COMPUTED `root_after_phase1` — never a root re-read after the bash
+//!     step (#19).
 //! ```
 //!
 //! **No `Exec` `EffectKind`** (ruling 1): running the block is not an effect —
@@ -23,12 +28,17 @@
 //! - truncated / malformed shim stream → fails closed, the WHOLE phase-2
 //!   batch refuses (S6).
 //! - executor refusal in phase 2 → typed, nothing applied.
+//! - window not verified clean (U6b: out-of-band delta / config change /
+//!   symlink / no verdict) → phase 2 refuses ([`Phase2::RefusedDetection`]);
+//!   the verdict with the named delta is [`BashOutcome::detection`] and the
+//!   change is NEVER rolled back (ruling 2).
 //!
-//! # What this path does NOT do
-//! Detection is U6b's exec-window bracket (`fs::guard` — residual-compare,
-//! config hash); U7 composes it around this step. The guarantee-class label
-//! is the U7 labeler's (#23 — `detected` must not be emitted until the
-//! bracket is wired). This module is the data path only.
+//! # Detection (U6b) and what stays elsewhere
+//! The exec-window bracket IS wired here: [`crate::snapshot::ExecBracket`]
+//! opens against the computed `root_after_phase1` and closes after the
+//! group kill; phase 2 gates on [`Detection::is_clean`]. The guarantee-class
+//! LABEL stays the U7 labeler's (#23 — it consumes
+//! [`BashOutcome::detection`] as the type-level evidence).
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -43,6 +53,7 @@ use crate::exec::{self, ExecSpec, ExecStatus};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 use crate::record::{self, RecordError, RunLog, StdoutRecord};
 use crate::shim::{self, ShimError, ShimStream};
+use crate::snapshot::{Detection, ExecBracket, OpenRefusal};
 
 /// One bash block dispatch: the addressed block's facts plus the
 /// caller-supplied identity (§9 — nothing here mints or reads a clock).
@@ -99,6 +110,11 @@ pub struct BashOutcome {
     /// The raw captured shim stream (report diagnostics; the parsed truth is
     /// in [`BashOutcome::phase2`]).
     pub shim: ShimStream,
+    /// The exec-window detection verdict (U6b) — rendered on EVERY outcome,
+    /// orthogonal to how the exec ended (a delta is named even when the step
+    /// also timed out or failed). The U7 labeler consumes this as the
+    /// type-level evidence for the #23 gate.
+    pub detection: Detection,
     /// The phase-2 verdict.
     pub phase2: Phase2,
 }
@@ -123,6 +139,13 @@ pub enum Phase2 {
     RefusedTimeout,
     /// The shim stream failed closed (S6) — NOTHING from it applies.
     RefusedShim(ShimError),
+    /// The exec window did not verify clean (U6b: out-of-band delta,
+    /// mid-window config change, symlink, or no verdict — fail closed) —
+    /// phase 2 refuses outright; NOTHING from the shim applies. The verdict
+    /// with the named delta is [`BashOutcome::detection`]; the ungoverned
+    /// change is NEVER rolled back (ruling 2 — rollback would be a second
+    /// write path with invented authority).
+    RefusedDetection,
     /// The executor refused the batch — typed, nothing applied.
     RefusedExec {
         /// The effects that were refused (the report names them).
@@ -154,6 +177,12 @@ pub enum BashError {
         /// The underlying failure.
         reason: String,
     },
+    /// The U6b detection bracket refused to open: a pre-exec root mismatch
+    /// (out-of-band change BETWEEN the phase-1 commit and the bracket
+    /// opening — nothing ran, nothing to accuse) or a guarded-snapshot
+    /// refusal (symlink #25 / I/O). The exec never started; a committed
+    /// phase-1 pre-exec receipt stands (the orphan lint finds it).
+    Detection(OpenRefusal),
 }
 
 impl std::fmt::Display for BashError {
@@ -163,6 +192,7 @@ impl std::fmt::Display for BashError {
             BashError::Phase1(e) => write!(f, "phase 1: {e}"),
             BashError::Root { reason } => write!(f, "corpus root: {reason}"),
             BashError::Spawn { reason } => write!(f, "spawn: {reason}"),
+            BashError::Detection(e) => write!(f, "detection bracket: {e}"),
         }
     }
 }
@@ -227,7 +257,14 @@ pub fn run(
         }
     };
 
-    // 2. Exec under the supervision bracket (#21/S3), stdout teed into the
+    // 2. U6b: the detection bracket opens against the flock-COMPUTED root
+    // (#19 addendum — the computed root is the authority, never a re-read).
+    // A PreExecMismatch means the tree moved between the phase-1 commit and
+    // here: the exec never starts (the pre-exec receipt stands; the orphan
+    // lint finds it).
+    let bracket = ExecBracket::open(root, &root_after_phase1).map_err(BashError::Detection)?;
+
+    // 3. Exec under the supervision bracket (#21/S3), stdout teed into the
     // record (U8) live. seal() runs inside the consumer — the record is
     // durable BEFORE any phase-2 receipt batch (S8 order).
     let spec = ExecSpec {
@@ -250,23 +287,39 @@ pub fn run(
         reason: e.to_string(),
     })?;
 
-    // 3. The failure matrix (S2/S6/#21): phase 2 runs ONLY off a clean exit
-    // and a whole stream.
-    let phase2 = match &result.status {
-        ExecStatus::TimedOut { .. } => Phase2::RefusedTimeout,
-        ExecStatus::Exited { code: 0 } => match shim::parse(&result.shim) {
-            Err(e) => Phase2::RefusedShim(e),
-            Ok(descriptors) if descriptors.is_empty() => Phase2::Applied {
-                effects: Vec::new(),
-                applied: None,
+    // 4. U6b: close the bracket now the group is dead (S3) — UNCONDITIONAL,
+    // so the delta is named on every exit path (timeout / nonzero /
+    // shim-fail included). The verdict rides the outcome.
+    let detection = bracket.close();
+
+    // 5. The failure matrix (S2/S6/#21) behind the detection gate (#14): a
+    // window that did not verify clean refuses phase 2 outright — nothing
+    // from the shim applies, and the named delta is NEVER rolled back
+    // (ruling 2). Otherwise phase 2 runs ONLY off a clean exit and a whole
+    // stream.
+    let phase2 = if detection.is_clean() {
+        match &result.status {
+            ExecStatus::TimedOut { .. } => Phase2::RefusedTimeout,
+            ExecStatus::Exited { code: 0 } => match shim::parse(&result.shim) {
+                Err(e) => Phase2::RefusedShim(e),
+                Ok(descriptors) if descriptors.is_empty() => Phase2::Applied {
+                    effects: Vec::new(),
+                    applied: None,
+                },
+                Ok(descriptors) => {
+                    let effects = shim::to_effects(
+                        &descriptors,
+                        d.task,
+                        d.invocation_id,
+                        &root_after_phase1.0,
+                    );
+                    apply_phase2(root, d, &root_after_phase1, effects)
+                }
             },
-            Ok(descriptors) => {
-                let effects =
-                    shim::to_effects(&descriptors, d.task, d.invocation_id, &root_after_phase1.0);
-                apply_phase2(root, d, &root_after_phase1, effects)
-            }
-        },
-        ExecStatus::Exited { .. } | ExecStatus::Signaled { .. } => Phase2::RefusedExecFailed,
+            ExecStatus::Exited { .. } | ExecStatus::Signaled { .. } => Phase2::RefusedExecFailed,
+        }
+    } else {
+        Phase2::RefusedDetection
     };
 
     Ok(BashOutcome {
@@ -275,6 +328,7 @@ pub fn run(
         stdout,
         stderr: result.stderr,
         shim: result.shim,
+        detection,
         phase2,
     })
 }
