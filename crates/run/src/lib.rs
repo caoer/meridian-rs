@@ -49,6 +49,7 @@ pub mod exec;
 pub mod executor;
 pub mod fence;
 pub mod record;
+pub mod runner;
 pub mod shim;
 pub mod snapshot;
 
@@ -61,5 +62,6 @@ pub use exec::{ExecResult, ExecSpec, ExecStatus, TimeoutConfigError};
 pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
 pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
+pub use runner::{Generation, LabelRefusal, RunReport, RunSpec, RunnerError, TaskOutcome};
 pub use shim::{ShimDescriptor, ShimError, ShimStream};
 pub use snapshot::{Detection, ExecBracket, OpenRefusal};
