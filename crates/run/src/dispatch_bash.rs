@@ -39,6 +39,11 @@
 //! group kill; phase 2 gates on [`Detection::is_clean`]. The guarantee-class
 //! LABEL stays the U7 labeler's (#23 — it consumes
 //! [`BashOutcome::detection`] as the type-level evidence).
+//!
+//! The verdict is rendered on every OUTCOME path, not every error path: a
+//! [`BashError`] (spawn failure included) aborts before phase 2 with the
+//! bracket unclosed and NO verdict — nothing ran or nothing can apply, so
+//! there is no window to attest.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};

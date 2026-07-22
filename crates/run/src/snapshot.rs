@@ -28,7 +28,7 @@
 //! symlinks on non-dot paths REFUSE (#25); writes landing after the close
 //! snapshot are outside the bracket (S3 residual escape window).
 
-use fs::guard::{GuardError, ResidualDelta, StepGuard};
+use fs::guard::{ConfigState, GuardError, ResidualDelta, StepGuard};
 use model::MerkleRoot;
 
 use crate::fence::GuaranteeClass;
@@ -167,6 +167,37 @@ impl ExecBracket {
             });
         }
         Ok(ExecBracket { guard })
+    }
+
+    /// Open the bracket AND pin it to the run-initial config state. #20 is
+    /// "mid-RUN", not just mid-step: a config change landing BETWEEN two
+    /// clean windows must refuse step N even though each window's own
+    /// bracket was clean. Multi-step activation (the U7 #23 checklist) MUST
+    /// open every bracket after the first through this form, with step 1's
+    /// [`ExecBracket::config_state`].
+    ///
+    /// # Errors
+    /// Everything [`ExecBracket::open`] refuses, plus
+    /// [`OpenRefusal::Guard`] carrying [`GuardError::ConfigChanged`] when
+    /// the captured config differs from `run_config`.
+    pub fn open_pinned(
+        root: &fs::WorkspaceRoot,
+        root_after_phase1: &MerkleRoot,
+        run_config: &ConfigState,
+    ) -> Result<ExecBracket, OpenRefusal> {
+        let bracket = Self::open(root, root_after_phase1)?;
+        bracket
+            .guard
+            .verify_config(run_config)
+            .map_err(OpenRefusal::Guard)?;
+        Ok(bracket)
+    }
+
+    /// The captured config state — pin step 1's state and open every later
+    /// bracket with [`ExecBracket::open_pinned`] (#20 mid-RUN continuity).
+    #[must_use]
+    pub fn config_state(&self) -> &ConfigState {
+        self.guard.config_state()
     }
 
     /// Close the bracket after the process group is dead: re-snapshot,

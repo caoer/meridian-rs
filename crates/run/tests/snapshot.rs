@@ -119,6 +119,55 @@ fn in_window_symlink_is_detected() {
     }
 }
 
+/// S3 escape window — WHERE it lands (gate F1): a write after close escapes
+/// THAT bracket, and is caught at the NEXT bracket's open as
+/// `PreExecMismatch` against the previously verified root. Detection holds
+/// across brackets even though the window itself has closed.
+#[test]
+fn the_escape_window_lands_in_the_next_brackets_open() {
+    let (_tmp, root) = workspace();
+    let b1 = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let Detection::Clean { root: verified } = b1.close() else {
+        panic!("clean window expected");
+    };
+
+    // the S3 escape: a straggler write AFTER the close snapshot
+    write(&root.0, "notes/late.md", "after the bracket\n");
+
+    match ExecBracket::open(&root, &verified) {
+        Err(OpenRefusal::PreExecMismatch { expected, observed }) => {
+            assert_eq!(expected, verified);
+            assert_ne!(observed, verified);
+        }
+        other => panic!("the escape must land in the next open, got {other:?}"),
+    }
+}
+
+/// #20 mid-RUN via the bracket (gate F2): step N opened with `open_pinned`
+/// against step 1's config refuses when the config moved between steps —
+/// even though each window's own bracket was clean and the new computed
+/// root matches the new on-disk state.
+#[test]
+fn open_pinned_refuses_a_config_that_moved_between_steps() {
+    let (_tmp, root) = workspace();
+    let b1 = ExecBracket::open(&root, &computed_root(&root)).unwrap();
+    let pinned = b1.config_state().clone();
+    let step1 = b1.close();
+    assert!(step1.is_clean());
+
+    // unmoved config: open_pinned passes (the positive arm)
+    let b2 = ExecBracket::open_pinned(&root, &computed_root(&root), &pinned).unwrap();
+    assert!(b2.close().is_clean());
+
+    // between steps: the domain moves — each window still clean on its own
+    write(&root.0, "mdfs_config.yaml", "ignore:\n  - \"notes/**\"\n");
+
+    match ExecBracket::open_pinned(&root, &computed_root(&root), &pinned) {
+        Err(OpenRefusal::Guard(fs::guard::GuardError::ConfigChanged)) => {}
+        other => panic!("expected ConfigChanged, got {other:?}"),
+    }
+}
+
 /// The bracket's guarantee class is `detected` — the U7 labeler's source
 /// (#23: the label must come from the bracket being wired, not the language).
 #[test]

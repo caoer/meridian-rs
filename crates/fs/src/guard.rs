@@ -33,8 +33,10 @@
 //! outside detection. The guard captures the raw config bytes at open and
 //! refuses at close — BEFORE the residual diff, so a widened domain never
 //! filters it — if they changed. Byte equality subsumes the planned hash
-//! compare. [`StepGuard::verify_config`] extends the bracket across steps:
-//! the run layer pins every step to the config the run started under.
+//! compare. [`StepGuard::config_state`] + [`StepGuard::verify_config`] are
+//! the SEAM for mid-run continuity: the run layer is expected to pin every
+//! step to the config the run started under (surfaced there as
+//! `ExecBracket::open_pinned`); this module only provides the predicate.
 //!
 //! # Symlinks (#25)
 //! `ln -s <out-of-tree secret> notes/x.md` would make out-of-tree bytes
