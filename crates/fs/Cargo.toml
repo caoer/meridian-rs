@@ -14,7 +14,15 @@ workspace = true
 model = { workspace = true }
 syntax = { workspace = true }
 
+# O_NOFOLLOW for the exec-window guard's symlink-refusing reads (guard.rs,
+# #25). libc is already a graph dependency (cache/run); no new crate enters.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
+# test-only: the exec-guard gates compare close()'s verified root against an
+# independently folded merkle_root (model is already a production dep).
+model = { workspace = true }
 # test-only: blake3 recomputes the §12.1 counterfactual roots (the production
 # merkle_root lives in `model`, M3-MERKLE); tempfile builds on-disk corpora.
 blake3 = "1"
