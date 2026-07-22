@@ -50,6 +50,7 @@ pub mod executor;
 pub mod fence;
 pub mod record;
 pub mod shim;
+pub mod snapshot;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
 pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
@@ -61,3 +62,4 @@ pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock}
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
 pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};
 pub use shim::{ShimDescriptor, ShimError, ShimStream};
+pub use snapshot::{Detection, ExecBracket, OpenRefusal};
