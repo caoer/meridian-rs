@@ -298,59 +298,7 @@ pub fn run(
     label(&name, task.block.lang).map_err(RunnerError::Label)?;
 
     // 3. Dispatch by fence language (decision #13).
-    let outcome = match task.block.lang {
-        TaskLanguage::Starlark => {
-            let root_at_eval = fs::domain_snapshot(root)
-                .map(|(_, r)| r)
-                .map_err(|e| RunnerError::Root {
-                    reason: e.to_string(),
-                })?;
-            TaskOutcome::Starlark(Box::new(
-                dispatch_starlark::dispatch(
-                    root,
-                    &StarlarkDispatch {
-                        page: spec.page,
-                        task: &name,
-                        task_rev: &task.task_rev,
-                        source: &task.block.source,
-                        args: spec.args.clone(),
-                        env: spec.env.clone(),
-                        invocation_id: spec.invocation_id,
-                        now: spec.now,
-                        root_at_eval: &root_at_eval,
-                        caps: &resolution.effective,
-                        receipt: spec.receipt.clone(),
-                        takeover: spec.takeover,
-                        limits: spec.limits,
-                    },
-                )
-                .map_err(RunnerError::Starlark)?,
-            ))
-        }
-        TaskLanguage::Bash => TaskOutcome::Bash(Box::new(
-            dispatch_bash::run(
-                root,
-                &BashDispatch {
-                    page: spec.page,
-                    task: &name,
-                    task_rev: &task.task_rev,
-                    source: &task.block.source,
-                    args: spec.args.clone(),
-                    env: spec.env.clone(),
-                    invocation_id: spec.invocation_id,
-                    now: spec.now,
-                    caps: &resolution.effective,
-                    pre_receipt: spec.pre_receipt.clone(),
-                    receipt: spec.receipt.clone(),
-                    takeover: spec.takeover,
-                    scratch: spec.scratch,
-                    timeout: spec.timeout,
-                },
-                live,
-            )
-            .map_err(RunnerError::Bash)?,
-        )),
-    };
+    let outcome = dispatch(root, spec, &task, &name, &resolution.effective, live)?;
 
     // 4. The guarantee label, evidence-derived (#23): hermetic is the sealed
     // kernel's proof by construction; `detected` is claimed ONLY off the
@@ -401,6 +349,71 @@ pub fn run(
         cascade,
         cap_reached,
     })
+}
+
+/// Dispatch the addressed block by its fence language (decision #13): the
+/// hermetic starlark path or the two-phase bash path, each carried whole.
+fn dispatch(
+    root: &fs::WorkspaceRoot,
+    spec: &RunSpec<'_>,
+    task: &address::ResolvedTask,
+    name: &str,
+    caps: &CapSet,
+    live: &mut (dyn Write + Send),
+) -> Result<TaskOutcome, RunnerError> {
+    match task.block.lang {
+        TaskLanguage::Starlark => {
+            let root_at_eval = fs::domain_snapshot(root)
+                .map(|(_, r)| r)
+                .map_err(|e| RunnerError::Root {
+                    reason: e.to_string(),
+                })?;
+            Ok(TaskOutcome::Starlark(Box::new(
+                dispatch_starlark::dispatch(
+                    root,
+                    &StarlarkDispatch {
+                        page: spec.page,
+                        task: name,
+                        task_rev: &task.task_rev,
+                        source: &task.block.source,
+                        args: spec.args.clone(),
+                        env: spec.env.clone(),
+                        invocation_id: spec.invocation_id,
+                        now: spec.now,
+                        root_at_eval: &root_at_eval,
+                        caps,
+                        receipt: spec.receipt.clone(),
+                        takeover: spec.takeover,
+                        limits: spec.limits,
+                    },
+                )
+                .map_err(RunnerError::Starlark)?,
+            )))
+        }
+        TaskLanguage::Bash => Ok(TaskOutcome::Bash(Box::new(
+            dispatch_bash::run(
+                root,
+                &BashDispatch {
+                    page: spec.page,
+                    task: name,
+                    task_rev: &task.task_rev,
+                    source: &task.block.source,
+                    args: spec.args.clone(),
+                    env: spec.env.clone(),
+                    invocation_id: spec.invocation_id,
+                    now: spec.now,
+                    caps,
+                    pre_receipt: spec.pre_receipt.clone(),
+                    receipt: spec.receipt.clone(),
+                    takeover: spec.takeover,
+                    scratch: spec.scratch,
+                    timeout: spec.timeout,
+                },
+                live,
+            )
+            .map_err(RunnerError::Bash)?,
+        ))),
+    }
 }
 
 /// Drive the cascade: evaluate `rules` over each generation's event, apply
