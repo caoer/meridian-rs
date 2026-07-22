@@ -35,6 +35,7 @@ use rules::{Domain, Effect};
 use crate::caps::{CapResolution, CapSource};
 use crate::dispatch_bash::Phase2;
 use crate::exec::ExecStatus;
+use crate::record::StdoutRecord;
 use crate::runner::{RunReport, TaskOutcome};
 
 /// The run's overall report state (plan §4 U9; S2). Closed set — a run is
@@ -144,6 +145,62 @@ pub struct Report {
     pub cap_reached: bool,
     /// The exec-window out-of-band delta line (S1 hermetic: no exec window).
     pub out_of_band_delta: String,
+    /// Bash exec facts — ADDITIVE, `RunReport`-sourced, NEVER receipt-sourced
+    /// (a failed run has no completion receipt, but its exec facts must
+    /// still surface). Absent (`None`, omitted from `--json`) on the
+    /// starlark path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ExecReport>,
+}
+
+/// One bash step's exec facts for the report surface (u9-gate forward note):
+/// how the step ended plus the out-of-tree stdout record address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecReport {
+    /// How the step ended: `exited` / `signaled` / `timed-out` (#21 keeps
+    /// timeout distinct).
+    pub status: String,
+    /// The exit code (`exited` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    /// The signal number (`signaled` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    /// The enforced ceiling in seconds (`timed-out` only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// The sealed stdout record (invocation id, log address, sha256, size).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<StdoutRecord>,
+    /// The typed record failure when the log could not seal — the run still
+    /// reports; the orphan lint reconciles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_error: Option<String>,
+}
+
+impl ExecReport {
+    fn of(outcome: &TaskOutcome) -> Option<Self> {
+        let TaskOutcome::Bash(o) = outcome else {
+            return None;
+        };
+        let (status, exit_code, signal, timeout_secs) = match &o.status {
+            ExecStatus::Exited { code } => ("exited", Some(*code), None, None),
+            ExecStatus::Signaled { signal } => ("signaled", None, Some(*signal), None),
+            ExecStatus::TimedOut { limit } => ("timed-out", None, None, Some(limit.as_secs())),
+        };
+        let (stdout, stdout_error) = match &o.stdout {
+            Ok(record) => (Some(record.clone()), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
+        Some(Self {
+            status: status.to_owned(),
+            exit_code,
+            signal,
+            timeout_secs,
+            stdout,
+            stdout_error,
+        })
+    }
 }
 
 /// Build the report from a runner [`RunReport`] — the one place the renderer
@@ -161,6 +218,7 @@ pub fn render(report: &RunReport) -> Report {
         caps: CapsReport::of(&report.caps),
         cap_reached: report.cap_reached,
         out_of_band_delta: out_of_band_delta(report),
+        exec: ExecReport::of(&report.outcome),
     }
 }
 
@@ -214,6 +272,28 @@ impl Report {
                 s,
                 "cascade: depth cap reached — capped md.* suppressed by the kernel"
             );
+        }
+        if let Some(exec) = &self.exec {
+            let ended = match (&exec.exit_code, &exec.signal, &exec.timeout_secs) {
+                (Some(code), _, _) => format!("exited {code}"),
+                (_, Some(signal), _) => format!("signaled {signal}"),
+                (_, _, Some(secs)) => format!("timed out after {secs}s"),
+                _ => exec.status.clone(),
+            };
+            let _ = writeln!(s, "exec: {ended}");
+            match (&exec.stdout, &exec.stdout_error) {
+                (Some(record), _) => {
+                    let _ = writeln!(
+                        s,
+                        "stdout: {} ({} byte(s), sha256 {})",
+                        record.log, record.bytes, record.sha256
+                    );
+                }
+                (None, Some(error)) => {
+                    let _ = writeln!(s, "stdout: record failed — {error}");
+                }
+                (None, None) => {}
+            }
         }
         let _ = writeln!(s, "out-of-band delta: {}", self.out_of_band_delta);
         s

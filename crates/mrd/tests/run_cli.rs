@@ -168,16 +168,16 @@ fn task_omitted_many_lists_and_exits_2() {
     assert!(stderr(&out).contains("name one"), "{}", stderr(&out));
 }
 
-/// TASK omitted on a single-task page resolves that task (half-scope: the
-/// execute leg then refuses naming U7 — proof the omission rule ran).
+/// TASK omitted on a single-task page resolves and RUNS that task — the
+/// one-binding leg of the omission rule (§2.1: one runs, many refuse).
 #[test]
-fn task_omitted_single_resolves_it() {
+fn task_omitted_single_runs_it() {
     let ws = Ws::new();
     let out = ws.run(&["solo.md"]);
-    assert_eq!(code(&out), 2);
-    let err = stderr(&out);
-    assert!(err.contains("'solo'"), "{err}");
-    assert!(err.contains("U7"), "{err}");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("solo"), "{text}");
+    assert!(text.contains("hermetic"), "{text}");
 }
 
 /// Unknown TASK → exit 2 with the declared names.

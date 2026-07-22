@@ -1,10 +1,7 @@
-//! U12 full-lifecycle e2e scaffolding for `mrd run` — the suite that
-//! ACTIVATES WHEN U7 LANDS (the runner compose / execute leg). Every test is
-//! `#[ignore]` with that reason; activation is deleting the attribute, not
-//! writing the suite under review pressure. Assertions bind only to ratified
-//! surface behavior (plan §3 decisions + verdict rulings), never to
-//! in-flight internals: each test drives the REAL binary over its process
-//! boundary.
+//! U12 full-lifecycle e2e for `mrd run` — ACTIVE (U7 landed @ 04b6f48; the
+//! six gates flipped live at activation, none ignored). Assertions bind to
+//! ratified surface behavior (plan §3 decisions + verdict rulings): each
+//! test drives the REAL binary over its process boundary.
 //!
 //! Coverage map (plan §4 U12): starlark + bash apply via ONE splice batch;
 //! deny-by-default caps at the choke; the snapshot bracket catching an
@@ -29,7 +26,9 @@ task.fix-shim: \"[[#^shim-1]]\"
 task.fix-shim.caps: md.set_field:status
 task.fix-uncapped: \"[[#^uncap-1]]\"
 task.fix-cheat: \"[[#^cheat-1]]\"
+task.fix-cheat.env: WS
 task.fix-widen: \"[[#^widen-1]]\"
+task.fix-widen.env: WS
 ---
 
 # Tasks
@@ -41,27 +40,27 @@ def run(ctx):
 ^note-1
 
 ```bash
-p='{\"kind\":\"md.set_field\",\"args\":{\"field\":\"status\",\"value\":\"shimmed\"}}'
+p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"shimmed\"}'
 printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
 printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
 ```
 ^shim-1
 
 ```bash
-p='{\"kind\":\"md.set_field\",\"args\":{\"field\":\"status\",\"value\":\"denied\"}}'
+p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"denied\"}'
 printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
 printf 'end:1\\n' >&\"$MD_EFFECT_FD\"
 ```
 ^uncap-1
 
 ```bash
-printf 'smuggled\\n' > \"$MRD_WORKSPACE_ROOT/cheat.md\"
+printf 'smuggled\\n' > \"$WS/cheat.md\"
 ```
 ^cheat-1
 
 ```bash
-printf 'version: 2\\nignore:\\n  - \"*.md\"\\n' > \"$MRD_WORKSPACE_ROOT/mdfs_config.yaml\"
-printf 'widened\\n' > \"$MRD_WORKSPACE_ROOT/hidden.md\"
+printf 'version: 2\\nignore:\\n  - \"*.md\"\\n' > \"$WS/mdfs_config.yaml\"
+printf 'widened\\n' > \"$WS/hidden.md\"
 ```
 ^widen-1
 ";
@@ -124,7 +123,6 @@ fn receipts_text(ws: &Ws) -> String {
 /// Starlark lifecycle: ONE splice batch applies the field, the receipt line
 /// rides the same commit, the report labels the block `hermetic` — exit 0.
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn starlark_task_applies_one_batch_with_receipt() {
     let ws = Ws::new();
     let out = ws.run(&["tasks.md", "fix-note", "--", "done"]);
@@ -143,7 +141,6 @@ fn starlark_task_applies_one_batch_with_receipt() {
 /// exit code, stdout sha256 + size, log address — ruling 7/S8); the stdout
 /// log exists under `.meridian/runs/`.
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn bash_task_applies_via_shim_with_run_record() {
     let ws = Ws::new();
     let out = ws.run(&["tasks.md", "fix-shim"]);
@@ -163,7 +160,6 @@ fn bash_task_applies_via_shim_with_run_record() {
 /// Deny-by-default at the choke: an undeclared block's descriptor refuses
 /// (exit 1), and NOTHING applies — the batch is atomic.
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn deny_by_default_refuses_undeclared_descriptor() {
     let ws = Ws::new();
     let before = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
@@ -179,10 +175,10 @@ fn deny_by_default_refuses_undeclared_descriptor() {
 /// write PERSISTS — never rolled back (#14: rollback would be a second write
 /// path with invented authority).
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn ungoverned_md_write_is_detected_named_never_rolled_back() {
     let ws = Ws::new();
-    let out = ws.run(&["tasks.md", "fix-cheat"]);
+    let ws_env = format!("WS={}", ws.path().display());
+    let out = ws.run(&["tasks.md", "fix-cheat", "--env", &ws_env]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let report = format!("{}{}", stdout(&out), stderr(&out));
     // Named as an exec-window delta (S4 wording: the window, not the block).
@@ -197,10 +193,10 @@ fn ungoverned_md_write_is_detected_named_never_rolled_back() {
 /// the new blind spot. The config hash bracket refuses (exit 1) and the
 /// smuggled write is still reported; nothing is silently admitted.
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn config_widening_attack_is_refused() {
     let ws = Ws::new();
-    let out = ws.run(&["tasks.md", "fix-widen"]);
+    let ws_env = format!("WS={}", ws.path().display());
+    let out = ws.run(&["tasks.md", "fix-widen", "--env", &ws_env]);
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let report = format!("{}{}", stdout(&out), stderr(&out));
     assert!(report.contains("mdfs_config.yaml"), "{report}");
@@ -215,7 +211,6 @@ fn config_widening_attack_is_refused() {
 /// S14: the caps `--dry` displays are byte-identical to the caps the real
 /// run enforces at the choke point — compare the two renderings.
 #[test]
-#[ignore = "U7 execute leg pending — activate when the runner lands"]
 fn dry_caps_are_byte_identical_to_choke_caps() {
     let ws = Ws::new();
     let dry = ws.run(&["tasks.md", "fix-shim", "--dry", "--json"]);
