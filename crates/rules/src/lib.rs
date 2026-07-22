@@ -215,12 +215,40 @@ pub enum ArgValue {
     List(Vec<String>),
 }
 
+/// The plane an effect descriptor was produced on — its typed provenance. The
+/// two planes carry DIFFERENT facts and one can never impersonate the other: a
+/// change-plane effect was produced against a semantic diff and carries its
+/// fingerprints (the cursor coordinates); a run-plane effect was produced by an
+/// explicit invocation (`mrd run`) and carries the invocation identity plus the
+/// tree root it evaluated against. Serialized with an explicit `plane` tag —
+/// the public JSON surface states the plane from day one rather than
+/// overloading fingerprint fields with run-plane values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "plane", rename_all = "lowercase")]
+pub enum Provenance {
+    /// Change-plane: emitted by `on_change` over a semantic diff (0003 §3).
+    Change {
+        /// The pre-change fingerprint of the diff.
+        fingerprint_before: String,
+        /// The post-change fingerprint of the diff — the cursor coordinate.
+        fingerprint_after: String,
+    },
+    /// Run-plane: emitted by an explicit task invocation. There is no diff and
+    /// no cursor — a re-run is new intent, never a replay.
+    Run {
+        /// The caller-supplied invocation id (the engine mints no identity).
+        invocation_id: String,
+        /// The workspace root fingerprint at evaluation time.
+        root_at_eval: String,
+    },
+}
+
 /// One effect descriptor — inert data a consumer executes. Carries the routing
-/// `kind`, its flat `args`, the emitting `rule_id`, the diff fingerprints it was
-/// produced against, its per-rule `seq`, and the cascade `depth`.
+/// `kind`, its flat `args`, the emitting `rule_id`, its plane-typed
+/// [`Provenance`], its per-rule `seq`, and the cascade `depth`.
 ///
 /// The idempotency key for executor dedup is `(rule_id, fingerprint_after, seq)`
-/// (0003 §4) — see [`Effect::idempotency_key`].
+/// (0003 §4), defined on the change plane only — see [`Effect::idempotency_key`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Effect {
     /// The routing kind (`md.set_field`, `proto.send`, …).
@@ -231,29 +259,37 @@ pub struct Effect {
     pub seq: u32,
     /// The cascade depth of the event this was produced from.
     pub depth: u32,
-    /// The pre-change fingerprint of the diff (0003 §3).
-    pub fingerprint_before: String,
-    /// The post-change fingerprint of the diff — the cursor coordinate.
-    pub fingerprint_after: String,
+    /// The plane this descriptor was produced on, with that plane's facts.
+    #[serde(flatten)]
+    pub provenance: Provenance,
     /// Flat, canonical (sorted-key) descriptor arguments.
     pub args: BTreeMap<String, ArgValue>,
 }
 
 impl Effect {
     /// The executor-dedup idempotency key `(rule_id, fingerprint_after, seq)`
-    /// (0003 §4). Stable across re-evaluation of the same `(rules, event)`.
+    /// (0003 §4) — `Some` only on the change plane, stable across re-evaluation
+    /// of the same `(rules, event)`. A run-plane effect has NO dedup key: dedup
+    /// exists for cursor replay, and a re-run is new intent — suppressing it as
+    /// a replay would silently drop requested work.
     #[must_use]
-    pub fn idempotency_key(&self) -> IdempotencyKey {
-        IdempotencyKey {
-            rule_id: self.rule_id.clone(),
-            fingerprint_after: self.fingerprint_after.clone(),
-            seq: self.seq,
+    pub fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        match &self.provenance {
+            Provenance::Change {
+                fingerprint_after, ..
+            } => Some(IdempotencyKey {
+                rule_id: self.rule_id.clone(),
+                fingerprint_after: fingerprint_after.clone(),
+                seq: self.seq,
+            }),
+            Provenance::Run { .. } => None,
         }
     }
 }
 
-/// The executor-dedup key of an [`Effect`] (0003 §4): a replayed effect carrying
-/// a key the executor already applied is dropped.
+/// The executor-dedup key of a change-plane [`Effect`] (0003 §4): a replayed
+/// effect carrying a key the executor already applied is dropped. Run-plane
+/// effects have no key (see [`Effect::idempotency_key`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct IdempotencyKey {
     /// The emitting rule.
@@ -588,19 +624,59 @@ mod tests {
             rule_id: rule_id.to_owned(),
             seq,
             depth: 0,
-            fingerprint_before: "before".to_owned(),
-            fingerprint_after: fp_after.to_owned(),
+            provenance: Provenance::Change {
+                fingerprint_before: "before".to_owned(),
+                fingerprint_after: fp_after.to_owned(),
+            },
+            args: BTreeMap::new(),
+        }
+    }
+
+    fn run_effect(kind: EffectKind, rule_id: &str, seq: u32) -> Effect {
+        Effect {
+            kind,
+            rule_id: rule_id.to_owned(),
+            seq,
+            depth: 0,
+            provenance: Provenance::Run {
+                invocation_id: "inv-1".to_owned(),
+                root_at_eval: "root".to_owned(),
+            },
             args: BTreeMap::new(),
         }
     }
 
     #[test]
-    fn idempotency_key_is_rule_fingerprint_seq() {
+    fn change_plane_idempotency_key_is_rule_fingerprint_seq() {
         let e = effect(EffectKind::Send, "r1", "fpA", 3);
-        let k = e.idempotency_key();
+        let k = e.idempotency_key().expect("change-plane effects carry a key");
         assert_eq!(k.rule_id, "r1");
         assert_eq!(k.fingerprint_after, "fpA");
         assert_eq!(k.seq, 3);
+    }
+
+    #[test]
+    fn run_plane_effect_has_no_idempotency_key() {
+        let e = run_effect(EffectKind::SetField, "task", 0);
+        assert_eq!(e.idempotency_key(), None, "a re-run is new intent — never deduped");
+    }
+
+    #[test]
+    fn provenance_serializes_with_an_explicit_plane_tag() {
+        // The public JSON surface is plane-typed from day one: change-plane
+        // effects carry fingerprints, run-plane effects carry invocation
+        // identity — flattened, tagged, never overloaded into each other.
+        let change = serde_json::to_value(effect(EffectKind::Notice, "r", "fpA", 0)).unwrap();
+        assert_eq!(change["plane"], "change");
+        assert_eq!(change["fingerprint_before"], "before");
+        assert_eq!(change["fingerprint_after"], "fpA");
+        assert!(change.get("invocation_id").is_none());
+
+        let run = serde_json::to_value(run_effect(EffectKind::Notice, "t", 0)).unwrap();
+        assert_eq!(run["plane"], "run");
+        assert_eq!(run["invocation_id"], "inv-1");
+        assert_eq!(run["root_at_eval"], "root");
+        assert!(run.get("fingerprint_after").is_none());
     }
 
     #[test]
