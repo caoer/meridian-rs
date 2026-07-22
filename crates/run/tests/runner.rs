@@ -7,9 +7,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use run::dispatch_bash::Phase2;
 use run::executor::ReceiptAddr;
 use run::fence::GuaranteeClass;
-use run::runner::{self, LabelRefusal, RunSpec, RunnerError, TaskOutcome};
+use run::runner::{self, RunSpec, RunnerError, TaskOutcome};
 use rules::{EvalLimits, Rule};
 
 /// A one-task starlark page: `fix-x` sets `status` from its arg and emits a
@@ -32,7 +33,8 @@ def run(ctx):
 ^fix-1
 ";
 
-/// A one-task bash page (for the label gate).
+/// A one-task bash page: the block emits one framed `md.set_field` via the
+/// shim fd (the documented emitter idiom) and streams a line of stdout.
 const BASH_PAGE: &str = "\
 ---
 status: todo
@@ -43,7 +45,10 @@ task.fix-sh.caps: md.set_field
 # Tasks
 
 ```bash
-echo hi
+echo running
+p='{\"op\":\"md.set_field\",\"field\":\"status\",\"value\":\"done\"}'
+printf '%s:%s\\n' \"${#p}\" \"$p\" >&\"$MD_EFFECT_FD\"
+printf 'end:1\\n' >&3
 ```
 ^sh-1
 ";
@@ -197,29 +202,36 @@ fn the_depth_cap_suppresses_md_and_names_the_stop() {
 }
 
 #[test]
-fn a_bash_block_refuses_at_the_label_gate_before_anything_commits() {
-    // #23 SHARPENED: until the detection bracket is wired AND the report
-    // renders narrowed[], the labeler never emits `detected` — the bash
-    // block refuses at the label, and NOTHING has committed.
+fn a_bash_block_runs_end_to_end_and_labels_detected_off_the_verdict() {
+    // #23 ACTIVE: both gate conditions are landed (U6b bracket wired through
+    // dispatch_bash; U9 renders narrowed[]) — a bash block now runs through
+    // the runner and its `detected` label is evidence-derived off the
+    // rendered bracket verdict.
     let (_tmp, root) = workspace(BASH_PAGE);
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let err = runner::run(&root, &spec_for(&scratch, vec![]), &[], &mut live).unwrap_err();
+    let report = runner::run(&root, &spec_for(&scratch, vec![]), &[], &mut live).unwrap();
 
-    assert!(matches!(
-        err,
-        RunnerError::Label(LabelRefusal::DetectionNotActive { ref task }) if task == "fix-sh"
-    ));
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        BASH_PAGE
-    );
-    assert!(!root.0.join("receipts").exists(), "nothing committed");
+    assert_eq!(report.guarantee, GuaranteeClass::Detected);
+    let TaskOutcome::Bash(out) = &report.outcome else {
+        panic!("bash outcome expected");
+    };
+    assert!(out.status.success());
     assert!(
-        !root.0.join(".meridian/runs").exists(),
-        "no run log either — the refusal precedes the record"
+        out.detection.is_clean(),
+        "the verdict behind the label: {:?}",
+        out.detection
     );
+    let Phase2::Applied { effects, applied } = &out.phase2 else {
+        panic!("expected Applied, got {:?}", out.phase2);
+    };
+    assert_eq!(effects.len(), 1);
+    assert!(applied.is_some());
+    let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
+    assert!(text.contains("status: done"), "{text}");
+    assert_eq!(live, b"running\n", "stdout streamed live");
+    assert!(report.cascade.is_empty());
 }
 
 #[test]
