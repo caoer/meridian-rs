@@ -438,28 +438,66 @@ fn re_run_without_foreign_edit_is_clean() {
 
 #[test]
 fn flock_serializes_two_concurrent_appliers() {
+    // LOCK_NB (decision #9): a loser never waits inside the executor — it gets
+    // the typed WorkspaceBusy refusal and retries HERE, in the caller. Both
+    // appends still land, never interleaved.
     let (_tmp, root) = workspace();
     std::thread::scope(|scope| {
         for i in 0..2u32 {
             let root = root.clone();
             scope.spawn(move || {
-                let now = current_root(&root);
-                apply(
-                    &root,
-                    &Req {
-                        effects: &[append("Log", &format!("- from thread {i}"), 0)],
-                        caps: write_caps(),
-                        pin: now.clone(),
-                        live: now,
-                        receipt: Some(receipt_addr(u64::from(i) + 1)),
-                        takeover: false,
-                    },
-                )
-                .unwrap();
+                loop {
+                    let now = current_root(&root);
+                    match apply(
+                        &root,
+                        &Req {
+                            effects: &[append("Log", &format!("- from thread {i}"), 0)],
+                            caps: write_caps(),
+                            pin: now.clone(),
+                            live: now,
+                            receipt: Some(receipt_addr(u64::from(i) + 1)),
+                            takeover: false,
+                        },
+                    ) {
+                        Ok(_) => break,
+                        Err(ExecError::WorkspaceBusy) => {
+                            std::thread::sleep(std::time::Duration::from_millis(2));
+                        }
+                        Err(e) => panic!("unexpected refusal: {e:?}"),
+                    }
+                }
             });
         }
     });
     let text = page_text(&root);
     assert!(text.contains("- from thread 0"), "{text}");
     assert!(text.contains("- from thread 1"), "{text}");
+}
+
+#[test]
+fn held_lock_is_a_fast_typed_refusal_never_a_wait() {
+    // Decision #9 / review C4: a hung holder must never make a caller hang —
+    // the second run refuses WorkspaceBusy immediately.
+    let (_tmp, root) = workspace();
+    let _held = executor::WorkspaceLock::acquire(&root.0).unwrap();
+    let now = current_root(&root);
+    let start = std::time::Instant::now();
+    let err = apply(
+        &root,
+        &Req {
+            effects: &[set_field("status", "x", 0)],
+            caps: write_caps(),
+            pin: now.clone(),
+            live: now,
+            receipt: Some(receipt_addr(1)),
+            takeover: false,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err, ExecError::WorkspaceBusy);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "refusal must be immediate, not a blocked wait"
+    );
+    assert!(!page_text(&root).contains("status: x"), "nothing applied");
 }

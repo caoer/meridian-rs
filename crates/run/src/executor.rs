@@ -19,7 +19,9 @@
 //!   COMPUTED root — never re-read around a bash step.
 //! - **Self-guards (decision #9):** every edit carries `if_node_rev` from the
 //!   load-time resolve; load → validate → commit runs under the workspace
-//!   flock ([`WorkspaceLock`]), closing the cross-process read→rename TOCTOU.
+//!   flock ([`WorkspaceLock`], `LOCK_NB` — a held lock is the fast typed
+//!   [`ExecError::WorkspaceBusy`] refusal, never a wait), closing the
+//!   cross-process read→rename TOCTOU without ever taking callers hostage.
 //! - **Foreign-edit law (decision #26, ZT):** CAS only covers concurrent
 //!   races — a re-run reads the edited state, so its token matches and a
 //!   replace would silently destroy a newer HUMAN edit. The executor anchors
@@ -128,6 +130,9 @@ pub enum ExecError {
         last_governed: String,
         current: String,
     },
+    /// Another run holds the workspace lock (decision #9: `LOCK_NB` — a fast
+    /// typed refusal, never a wait; a hung holder can never make callers hang).
+    WorkspaceBusy,
     /// The pinned root does not match the live root — out-of-band change;
     /// the declared effects refuse (ruling 2).
     RootMismatch { expected: String, actual: String },
@@ -164,6 +169,10 @@ impl std::fmt::Display for ExecError {
                 f,
                 "foreign edit on {target}: last governed rev {last_governed}, current {current} — refusing to overwrite (use takeover to override)"
             ),
+            ExecError::WorkspaceBusy => write!(
+                f,
+                "workspace busy: another run holds the lock — retry when it exits"
+            ),
             ExecError::RootMismatch { expected, actual } => write!(
                 f,
                 "root mismatch: pinned {expected}, live {actual} — out-of-band change, nothing applied"
@@ -180,8 +189,10 @@ impl std::error::Error for ExecError {}
 /// The workspace run lock (decision #9): an exclusive advisory `flock(2)` on
 /// `.meridian/run.lock`, held from page load through the atomic rename, so two
 /// local runs cannot interleave read→rename (the lost-update TOCTOU intra-
-/// process CAS guards cannot see). Blocking acquire — the second run waits.
-/// Released on drop.
+/// process CAS guards cannot see). `LOCK_NB` acquire — a held lock is
+/// [`io::ErrorKind::WouldBlock`], surfaced as the fast typed
+/// [`ExecError::WorkspaceBusy`] refusal; it never waits, so a hung holder can
+/// never make callers hang (review C4). Released on drop.
 #[derive(Debug)]
 pub struct WorkspaceLock {
     // Held open for its fd; flock releases when the fd closes on drop.
@@ -189,11 +200,13 @@ pub struct WorkspaceLock {
 }
 
 impl WorkspaceLock {
-    /// Acquire the exclusive workspace run lock, creating `.meridian/` and the
-    /// lockfile on first use. Blocks until available.
+    /// Try to acquire the exclusive workspace run lock, creating `.meridian/`
+    /// and the lockfile on first use. Never blocks: a held lock returns
+    /// [`io::ErrorKind::WouldBlock`] immediately (decision #9).
     ///
     /// # Errors
-    /// I/O failure creating or locking the lockfile.
+    /// [`io::ErrorKind::WouldBlock`] when another run holds the lock; any
+    /// other I/O failure creating or locking the lockfile.
     pub fn acquire(workspace_root: &Path) -> io::Result<Self> {
         let dir = workspace_root.join(".meridian");
         std::fs::create_dir_all(&dir)?;
@@ -203,7 +216,7 @@ impl WorkspaceLock {
             .write(true)
             .open(dir.join("run.lock"))?;
         // SAFETY: flock on a valid open fd; the fd outlives the call.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Self { _file: file })
@@ -295,9 +308,16 @@ pub fn apply(root: &fs::WorkspaceRoot, req: &ApplyRequest<'_>) -> Result<Applied
         }
     }
 
-    // 2. Serialize local runs (decision #9), then load under the lock.
-    let _lock = WorkspaceLock::acquire(&root.0).map_err(|e| ExecError::Io {
-        reason: format!("workspace lock: {e}"),
+    // 2. Serialize local runs (decision #9: LOCK_NB — busy is a fast typed
+    // refusal, never a wait), then load under the lock.
+    let _lock = WorkspaceLock::acquire(&root.0).map_err(|e| {
+        if e.kind() == io::ErrorKind::WouldBlock {
+            ExecError::WorkspaceBusy
+        } else {
+            ExecError::Io {
+                reason: format!("workspace lock: {e}"),
+            }
+        }
     })?;
     let doc = fs::load(root, Path::new(req.page)).map_err(|e| ExecError::Page {
         path: req.page.to_owned(),
