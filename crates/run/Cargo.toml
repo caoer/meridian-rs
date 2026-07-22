@@ -1,0 +1,25 @@
+[package]
+name = "run"
+description = "The mrd-local run plane (S1, U2 slice): task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, and deny-by-default capability resolution. Pure pre-eval resolution — no eval, no apply, no I/O beyond page load and the .meridian.toml caps table."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Page parse chain: fs::load → syntax::parse → model::build; mint-plane anchor
+# resolution (model::resolve) is the §2.1 lookup task bindings reuse.
+fs = { workspace = true }
+model = { workspace = true }
+# Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
+syntax = { workspace = true }
+# `.meridian.toml` `[run.caps]` name-convention table.
+toml = { workspace = true }
+
+[dev-dependencies]
+# test-only: on-disk workspace fixtures for load_page / conventions tests.
+tempfile = "3"

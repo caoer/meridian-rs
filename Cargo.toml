@@ -24,6 +24,7 @@ default-members = [
     "crates/cache",
     "crates/registry",
     "crates/rules",
+    "crates/run",
     "crates/mrd",
     "crates/view",
 ]
