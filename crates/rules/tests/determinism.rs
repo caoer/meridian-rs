@@ -6,7 +6,7 @@
 mod support;
 
 use proptest::prelude::*;
-use rules::{ChangeEvent, Effect, eval};
+use rules::{ChangeEvent, Effect, EvalLimits, Rule, RunCtx, eval, eval_run};
 use support::all_rules;
 
 /// An arbitrary change event — arbitrary paths, changed sections/fields, and
@@ -47,11 +47,13 @@ proptest! {
     }
 
     /// Idempotency keys are stable across runs — the executor-dedup contract.
+    /// `on_change` effects are change-plane, so every key is `Some`.
     #[test]
     fn idempotency_keys_are_stable(event in any_event()) {
         let rules = all_rules();
-        let a: Vec<_> = eval(&rules, &event).unwrap().iter().map(Effect::idempotency_key).collect();
-        let b: Vec<_> = eval(&rules, &event).unwrap().iter().map(Effect::idempotency_key).collect();
+        let key = |e: &Effect| e.idempotency_key().expect("change-plane effects carry a key");
+        let a: Vec<_> = eval(&rules, &event).unwrap().iter().map(key).collect();
+        let b: Vec<_> = eval(&rules, &event).unwrap().iter().map(key).collect();
         prop_assert_eq!(a, b);
     }
 
@@ -63,7 +65,66 @@ proptest! {
         let effects = eval(&all_rules(), &event).unwrap();
         let mut seen = HashSet::new();
         for e in &effects {
-            prop_assert!(seen.insert(e.idempotency_key()), "duplicate idempotency key: {:?}", e.idempotency_key());
+            let key = e.idempotency_key().expect("change-plane effects carry a key");
+            prop_assert!(seen.insert(key.clone()), "duplicate idempotency key: {key:?}");
+        }
+    }
+}
+
+/// An arbitrary run context — arbitrary page/task/args/env and provenance
+/// facts, including empties and unicode.
+fn any_ctx() -> impl Strategy<Value = RunCtx> {
+    (
+        ".*",
+        ".*",
+        prop::collection::vec(".*", 0..4),
+        prop::collection::btree_map(".*", ".*", 0..4),
+        ".*",
+        ".*",
+    )
+        .prop_map(|(page, task, args, env, invocation_id, root_at_eval)| RunCtx {
+            page,
+            task,
+            args,
+            env,
+            invocation_id,
+            root_at_eval,
+        })
+}
+
+/// A task that exercises every ctx fact.
+fn probe_task(ctx: &RunCtx) -> Rule {
+    Rule::new(
+        ctx.task.clone(),
+        "def run(ctx):\n    notice(message = ctx.page)\n    for a in ctx.args:\n        warn(message = a)\n    for k in ctx.env:\n        send(to = [k], message = ctx.env[k])\n",
+    )
+}
+
+proptest! {
+    /// The re-eval stability contract holds on BOTH planes (f9542789 U1-review
+    /// gate): Run-plane effects are byte-identical across re-evaluation even
+    /// though they carry NO idempotency key — stability comes from eval being
+    /// a pure function of `(task, ctx, limits)`, not from dedup.
+    #[test]
+    fn run_plane_re_eval_is_byte_identical(ctx in any_ctx()) {
+        let task = probe_task(&ctx);
+        let a = eval_run(&task, &ctx, EvalLimits::default()).unwrap();
+        let b = eval_run(&task, &ctx, EvalLimits::default()).unwrap();
+        prop_assert_eq!(json(&a), json(&b));
+    }
+
+    /// Run-plane effects NEVER carry an idempotency key (a re-run is new
+    /// intent, never a replay), and every one carries Run provenance.
+    #[test]
+    fn run_plane_effects_have_no_key_and_run_provenance(ctx in any_ctx()) {
+        let task = probe_task(&ctx);
+        let expected = rules::Provenance::Run {
+            invocation_id: ctx.invocation_id.clone(),
+            root_at_eval: ctx.root_at_eval.clone(),
+        };
+        for e in eval_run(&task, &ctx, EvalLimits::default()).unwrap() {
+            prop_assert_eq!(e.idempotency_key(), None);
+            prop_assert_eq!(&e.provenance, &expected);
         }
     }
 }

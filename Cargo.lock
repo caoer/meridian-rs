@@ -1225,6 +1225,7 @@ name = "fs"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "libc",
  "model",
  "syntax",
  "tempfile",
@@ -2060,6 +2061,7 @@ dependencies = [
  "model",
  "registry",
  "rules",
+ "run",
  "serde",
  "serde_json",
  "syntax",
@@ -2866,6 +2868,22 @@ dependencies = [
  "serde",
  "serde_json",
  "starlark",
+]
+
+[[package]]
+name = "run"
+version = "0.0.0"
+dependencies = [
+ "fs",
+ "libc",
+ "model",
+ "rules",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syntax",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

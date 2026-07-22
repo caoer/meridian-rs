@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod domain;
+pub mod guard;
 
 /// The workspace root every wire `path` resolves strictly inside. Constructed
 /// once at process start; path-escape rejection (`bad_path`) anchors here.
