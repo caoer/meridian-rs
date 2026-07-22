@@ -46,6 +46,7 @@ pub mod contracts;
 pub mod dispatch_starlark;
 pub mod executor;
 pub mod fence;
+pub mod record;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
 pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
@@ -53,3 +54,4 @@ pub use contracts::{Contract, ContractError, ContractViolation};
 pub use dispatch_starlark::{DispatchError, DispatchOutcome, StarlarkDispatch};
 pub use executor::{Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 pub use fence::{FenceError, GuaranteeClass, TaskBlock, TaskLanguage};
+pub use record::{ExecRecord, ExecRecordSink, RecordError, RunLog, StdoutRecord};

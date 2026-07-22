@@ -29,6 +29,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # Workspace flock (decision #9) — same flock(2) discipline as cache's drawer lock.
 libc = "0.2"
+# Run-log content hash (U8): full sha256 over streamed stdout — the same
+# content-address discipline as cache's drawer key.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # test-only: on-disk workspace fixtures for load_page / conventions tests.

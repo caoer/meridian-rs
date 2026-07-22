@@ -2878,6 +2878,7 @@ dependencies = [
  "rules",
  "serde",
  "serde_json",
+ "sha2",
  "syntax",
  "tempfile",
  "toml",
