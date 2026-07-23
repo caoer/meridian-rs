@@ -613,6 +613,7 @@ mod tests {
             root_before: "b3:0",
             root_after: "b3:1",
             edits: Vec::new(),
+            file: None,
         });
         let observe_old = render_row(&JournalRow {
             seq: 2,
@@ -623,6 +624,7 @@ mod tests {
             root_before: "b3:1",
             root_after: "b3:2",
             edits: Vec::new(),
+            file: None,
         });
         let observe_new = render_row(&JournalRow {
             seq: 3,
@@ -633,6 +635,7 @@ mod tests {
             root_before: "b3:2",
             root_after: "b3:3",
             edits: Vec::new(),
+            file: None,
         });
         let page = format!("# journal\n{splice}\n{observe_old}\n{observe_new}\n");
         let rows = parse_rows(&page);

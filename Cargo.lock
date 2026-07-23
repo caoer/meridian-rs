@@ -4306,6 +4306,7 @@ dependencies = [
  "receipt",
  "serde_json",
  "syntax",
+ "tempfile",
  "wire",
  "wire-map",
 ]
