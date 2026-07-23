@@ -61,6 +61,11 @@ run = { workspace = true }
 # external crate enters and `cargo deny` is unchanged.
 view = { workspace = true }
 duckdb = { workspace = true }
+# `mrd pin` (U2.4): read a page's inputs: manifest, resolve + compose atomically,
+# evaluate check: predicates, and splice the ^inputs lock through the strict
+# writer. A local CLIENT of the pin op — `pin` orchestrates model/view/wire-serve
+# and is already in the graph via those crates; no new external crate enters.
+pin = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }

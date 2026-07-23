@@ -1,0 +1,49 @@
+[package]
+name = "pin"
+description = "The pin operation (d2 §2.5, U2.4): read a page's inputs: manifest, atomically resolve + compose every ref, evaluate declared check: predicates, merge and splice the ^inputs lock in ONE CAS-guarded write, and project the edge/claim fact tables — the critical-path attestation unit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# resolve selectors + colors (U2.2), compose_rev + rev_class (U2.8), the
+# frontmatter fm_key block-sequence grain (U2.11) — pin's read half.
+model = { workspace = true }
+# parse the corpus into the model tree (build_corpus, domain_snapshot, the
+# atomic write primitives replace_file/append_line).
+fs = { workspace = true }
+# the ONE write choke-point: pin_lock lands the computed ^inputs splice + journals.
+wire-serve = { workspace = true }
+# wire value types on the write args (Path, NodeRev, Root, Span).
+wire = { workspace = true }
+# the receipt journal row anchor format (r-NNNNNN).
+receipt = { workspace = true }
+# the fact-table DDL (edge/claim) + the C1 read face; pin projects edge FROM the
+# same input_lock parse U2.9 owns (compose, never fork).
+view = { workspace = true }
+# the FULL EvalLimits + the source-size/nesting load gate for check_claim
+# (crates/effects/src/kernel.rs pattern — tick + heap + call-depth + nesting).
+effects = { workspace = true }
+# the sealed evaluator for check_claim (def check_claim(t)); pinned =0.14.2.
+starlark = { workspace = true }
+# starlark builtins return anyhow::Result (the doc(ref) claim-site builtin).
+anyhow = { workspace = true }
+# the DuckDB fact-table connection edge projection populates.
+duckdb = { workspace = true }
+# PinReport serializes to JSON for `mrd pin --json`.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# node_rev = blake3-256(span bytes)[:16] — the lock block's journal rev, matching
+# model's node-rev law (contract §1); the same hash family the engine already uses.
+blake3 = "1"
+
+[dev-dependencies]
+# build Document fixtures + parse the corpus in tests.
+syntax = { workspace = true }
+# real on-disk workspaces for the pin write / journal / CAS gates.
+tempfile = "3"
