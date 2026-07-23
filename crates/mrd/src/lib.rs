@@ -25,19 +25,24 @@ use std::process::ExitCode;
 mod cache_cmd;
 mod daemon;
 mod engine;
+mod expect;
 mod gc;
 mod init;
 mod resolve;
 mod rules_cmd;
 mod run_cmd;
 mod sql;
+mod test_cmd;
 mod unregister;
 mod view_status;
 
 /// Exit code: a clean success.
 const EXIT_OK: u8 = 0;
-/// Exit code: a tool failure — bad usage, a refused deny ceiling, or an I/O
-/// error. (Exit 1 is reserved for future "findings"-style verbs.)
+/// Exit code: findings — a verb ran cleanly but reported failures (e.g. `mrd
+/// test` scenarios whose `^expect` did not hold).
+const EXIT_FINDINGS: u8 = 1;
+/// Exit code: a tool failure — bad usage, a refused deny ceiling, an I/O error,
+/// or a structural fault (a malformed scenario, a pairing hard error).
 const EXIT_FAIL: u8 = 2;
 
 const USAGE: &str = "\
@@ -62,6 +67,11 @@ usage:
                            ordered --snapshots corpus) through a --rules set and
                            report dead rules, fire counts, effect-kind
                            distribution, and the fuel profile (markdown)
+  mrd test <PATH>          run scenario file(s) (a *.md file, or a dir of them):
+                           mount base/ into a real tmpdir, route ^put through the
+                           production write path, assert ^expect starlark over
+                           t.result / t.doc(path) / t.journal. Exits: 0 clean /
+                           1 an ^expect failed / 2 malformed or pairing hard error
   mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block addressed by the page's frontmatter
                            (task.<name> bindings; PAGE is workspace-relative).
@@ -94,6 +104,14 @@ impl Fail {
     pub(crate) fn tool(message: String) -> Self {
         Fail {
             code: EXIT_FAIL,
+            message,
+        }
+    }
+
+    /// A findings failure (exit 1): the verb ran, but reported failures.
+    pub(crate) fn findings(message: String) -> Self {
+        Fail {
+            code: EXIT_FINDINGS,
             message,
         }
     }
@@ -154,6 +172,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "sql" => sql::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),
         "rules" => rules_cmd::dispatch(&args[1..]),
+        "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;

@@ -2066,6 +2066,8 @@ dependencies = [
 name = "mrd"
 version = "0.0.0"
 dependencies = [
+ "allocative",
+ "anyhow",
  "cache",
  "duckdb",
  "effects",
@@ -2076,6 +2078,7 @@ dependencies = [
  "run",
  "serde",
  "serde_json",
+ "starlark",
  "syntax",
  "tempfile",
  "view",
