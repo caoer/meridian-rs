@@ -1,0 +1,41 @@
+[package]
+name = "check"
+description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is convention-free (chain integrity by full recompute of the receipt journal, claims realised by observe-then-compare, and the mechanical journal TRACE that catches a foreign_edit by last-receipt-vs-live). Layer 1 runs the armed conventions read-only through the U1.3 loader — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Layer 0 chain recompute: the U2.1 journal primitives — parse the reserved
+# journal page into rows and recompute chain continuity (`check_chain`), catching
+# a spliced/forged row with a row cite.
+receipt = { workspace = true }
+# The workspace root handle + the live §12 tree merkle (`domain_snapshot`) the
+# foreign_edit trace compares against the last receipt's recorded root_after.
+fs = { workspace = true }
+# The layer-0 claims-realised read reuses the realise engine's pure-detection
+# surface (observe → CheckOutcome) rather than forking it — the SAME check the
+# realise loop would converge, run here read-only (no apply, no cap).
+realise = { workspace = true }
+# Layer 1: the U1.3 convention loader + the rulepack-api@2 `check_change` surface
+# (Change / Convention / Refusal), and the U1.4 arming vocabulary (Enforcement /
+# ArmedRef). The armed set evaluates read-only through this, verbatim.
+policy = { workspace = true }
+
+[dev-dependencies]
+# The end-to-end fixtures mount a REAL tmpdir workspace and seed its journal
+# through the PRODUCTION write path (no in-memory double): a guarded `create`
+# mints real journal rows with real tree roots, then the fixtures splice a forged
+# row (chain) or edit a page out-of-band (foreign_edit).
+tempfile = "3"
+wire-serve = { workspace = true }
+wire = { workspace = true }
+# Build real `Document`s for the layer-1 change derivation in the byte-for-byte
+# and read-only fixtures.
+model = { workspace = true }
+syntax = { workspace = true }

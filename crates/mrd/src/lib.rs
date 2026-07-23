@@ -24,6 +24,7 @@ use std::process::ExitCode;
 
 mod attest_cmd;
 mod cache_cmd;
+mod check_cmd;
 mod corpus_tier;
 mod daemon;
 mod engine;
@@ -71,6 +72,11 @@ usage:
                            dependents). Read-only; every answer cites the revs
                            it read. Exits: 0 clean / 1 a red edge / 2 bad
                            invocation or in-snapshot cycle
+  mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
+                           recomputes the receipt journal's chain continuity and
+                           the foreign_edit trace (last-receipt-vs-live) over the
+                           resolved workspace. Writes nothing. Exits: 0 green / 1 a
+                           chain break or foreign_edit finding / 2 bad invocation
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
@@ -231,6 +237,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             engine::run_command(p.positional.as_deref(), p.format())
         }
         "walk" => walk_cmd::dispatch(&args[1..]),
+        "check" => check_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),

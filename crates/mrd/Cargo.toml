@@ -94,6 +94,11 @@ preset = { workspace = true }
 # `mrd migrate inputs` (U3.2, SELF-RETIRING): the one-shot draws-from -> inputs
 # corpus rename. A local CLIENT of the migrate kit; the crate dies at cutover.
 migrate = { workspace = true }
+# `mrd check` (U2.10): the pure READ validity verb. A local CLIENT of the `check`
+# engine — layer 0 recomputes the receipt journal's chain continuity and the
+# foreign_edit trace over the resolved workspace. `check` composes receipt / fs /
+# realise / policy, already in the graph; no new external crate enters.
+check = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
