@@ -125,6 +125,5 @@ carve-in. This kernel is advisory-only by charter; it will never gain a
 correctness path.
 
 **Elsewhere or reserved (0003 § reserved):** the wire `effects[]` field, the
-executor, cursor replay (consumer-side), and the `mrd rules test` /
-corpus-replay product surfaces. The kernel exposes the pure `eval` primitive
-those build on.
+executor, and cursor replay (consumer-side). The kernel exposes the pure `eval`
+primitive those build on.
