@@ -71,7 +71,7 @@ pub use pack::{FactDoc, facts_from_document};
 /// `check_change(change)` evaluator behind the convention loader. [`CheckLimits`]
 /// meters all five guards (tick + heap + call-depth + source-size + nesting);
 /// [`CheckError`] is its typed failure surface.
-pub use check_eval::{CheckError, CheckLimits};
+pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 
 /// The convention loader (U1.3): `conventions/<slug>/` folder grammar, the CHECK
 /// capability ceiling (FIX/HOOK/VIEW deferred), and `paths:` scope. A loaded

@@ -130,6 +130,21 @@ impl std::fmt::Display for CheckError {
 
 impl std::error::Error for CheckError {}
 
+/// One `check_change` evaluation's metered outcome: the [`Refusal`]s it emitted
+/// plus the EXACT fuel (Starlark ticks) and peak eval-heap bytes it spent. The
+/// `test --corpus` tier (U1.5) reads these for its fuel + heap p50/p99 profile;
+/// the plain [`run_check_change`] path drops the telemetry. Mirrors the effect
+/// kernel's `RuleTelemetry` so the two harness tiers report the same shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckTelemetry {
+    /// The refusals the CHECK emitted, in emission order (empty ⇒ the change passes).
+    pub refusals: Vec<Refusal>,
+    /// Exact Starlark ticks the evaluation spent.
+    pub fuel_used: u64,
+    /// Peak eval-heap bytes the evaluation spent.
+    pub mem_used: u64,
+}
+
 /// Run `f` on a dedicated large-stack thread and return its result — the parse +
 /// eval must run here so pathologically nested source cannot overflow the native
 /// stack and abort the process. Scoped, so borrowed data needs no `'static` bound;
@@ -202,6 +217,21 @@ pub(crate) fn run_check_change(
     change: &Change,
     limits: CheckLimits,
 ) -> Result<Vec<Refusal>, CheckError> {
+    on_eval_stack(|| eval_check(source, change, limits)).map(|t| t.refusals)
+}
+
+/// Run a CHECK's `check_change(change)` under the FULL limits and return the
+/// [`CheckTelemetry`] — the [`Refusal`]s AND the exact fuel/heap the evaluation
+/// spent. Same metered core as [`run_check_change`]; this variant keeps the
+/// telemetry the corpus tier's p50/p99 profile needs.
+///
+/// # Errors
+/// [`CheckError`] — see its variants.
+pub(crate) fn run_check_change_metered(
+    source: &str,
+    change: &Change,
+    limits: CheckLimits,
+) -> Result<CheckTelemetry, CheckError> {
     on_eval_stack(|| eval_check(source, change, limits))
 }
 
@@ -210,7 +240,7 @@ fn eval_check(
     source: &str,
     change: &Change,
     limits: CheckLimits,
-) -> Result<Vec<Refusal>, CheckError> {
+) -> Result<CheckTelemetry, CheckError> {
     check_source_size(source, limits)?;
     check_nesting_depth(source)?;
 
@@ -300,7 +330,11 @@ fn eval_check(
                 // overrun the exact mem bound — refuse it as budget.
                 Err(budget(limits))
             } else {
-                Ok(refusals)
+                Ok(CheckTelemetry {
+                    refusals,
+                    fuel_used: used_steps,
+                    mem_used: used_mem,
+                })
             }
         })
     }));
@@ -723,6 +757,24 @@ def check_change(change):
             refusals[0].passing_scenario, "scenarios/reviewer-close.md",
             "the refusal cites the passing scenario"
         );
+    }
+
+    #[test]
+    fn metered_run_reports_fuel_and_is_deterministic() {
+        // The metered path returns the same refusals AND the exact fuel/heap the
+        // eval spent; a real eval spends fuel, and replaying is byte-identical.
+        let change = self_close_change("agent:alice");
+        let a = run_check_change_metered(REVIEWER_NOT_OWNER, &change, CheckLimits::default())
+            .expect("metered run");
+        let b = run_check_change_metered(REVIEWER_NOT_OWNER, &change, CheckLimits::default())
+            .expect("metered run");
+        assert_eq!(a.refusals.len(), 1, "owner self-close fires");
+        assert!(a.fuel_used > 0, "a CHECK that ran spent fuel");
+        assert_eq!(a.fuel_used, b.fuel_used, "fuel is deterministic");
+        assert_eq!(a.mem_used, b.mem_used, "heap is deterministic");
+        // Telemetry refusals match the plain path.
+        let plain = run_check_change(REVIEWER_NOT_OWNER, &change, CheckLimits::default()).unwrap();
+        assert_eq!(a.refusals, plain, "metered refusals match the plain path");
     }
 
     #[test]
