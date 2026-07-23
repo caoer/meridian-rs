@@ -757,4 +757,98 @@ mod tests {
             "native + mismatch = red drift"
         );
     }
+
+    /// U3.4 (form-2 reader): the ratified SCHEMA.md effect-receipt chain — a plain
+    /// `` ```yaml `` block, block-SEQUENCE body, `hash-algo: v1`, trailing `^inputs`
+    /// anchor. Pre-U3.4 mrd was BLIND to this form: a `walk` printed `(nothing)`.
+    /// Now the edge PARSES and renders `grey superseded-algo` (v1 is an algo this
+    /// engine does not compute). The entry list is non-empty — the pre-change
+    /// behavior was zero items.
+    #[test]
+    fn form2_chain_block_renders_grey_superseded_algo() {
+        let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(raw));
+
+        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
+        assert!(
+            !report.entries.is_empty(),
+            "form-2 now parses — pre-U3.4 this walk was empty (mrd printed `(nothing)`)",
+        );
+        assert_eq!(report.entries.len(), 1);
+        let entry = &report.entries[0];
+        assert_eq!(entry.selector, "llm-wiki-skill-compilation");
+        assert_eq!(
+            entry.rev.as_deref(),
+            Some("merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d"),
+            "the `hash:` line is the pinned rev — the `merkle-v1:` prefix is kept",
+        );
+        assert_eq!(
+            entry.color,
+            Color::Grey(GreyReason::SupersededAlgo),
+            "a v1-algo form-2 pin is grey superseded-algo, never red",
+        );
+        assert!(
+            !has_red(&report),
+            "a superseded-algo pin is never a finding"
+        );
+    }
+
+    /// A form-2 chain with MULTIPLE `- ref:` block-sequence items parses ALL of
+    /// them (count assertion), each grey superseded-algo under the shared `v1`
+    /// header — proving the block-sequence reader is not one-shot.
+    #[test]
+    fn form2_multiple_refs_all_parse() {
+        let raw = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta]]'\n  claim:\n  hash: 'merkle-v1:bbbb'\n- ref: '[[gamma]]'\n  hash: 'merkle-v1:cccc'\nhash-algo: v1\n```\n\n^inputs\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(raw));
+
+        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
+        assert_eq!(
+            report.entries.len(),
+            3,
+            "all three form-2 block-sequence items parse",
+        );
+        assert_eq!(
+            report
+                .entries
+                .iter()
+                .map(|e| e.selector.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"],
+        );
+        assert!(
+            report
+                .entries
+                .iter()
+                .all(|e| e.color == Color::Grey(GreyReason::SupersededAlgo)),
+            "every v1-algo item is grey superseded-algo",
+        );
+    }
+
+    /// Control: a form-2 chain whose `hash-algo` is the engine's native `node-rev`,
+    /// pinning a real fixture page (`b.md`) at a rev EQUAL to its live `node_rev`,
+    /// renders GREEN. This proves the reader feeds the NORMAL verify path and that
+    /// superseded-algo keys on the ALGO alone, not on the form-2 shape.
+    #[test]
+    fn form2_native_node_rev_verifies_green() {
+        let b = doc("# B\n\nbody\n");
+        let b_rev = b.root.node_rev.0.clone();
+        let a_raw = format!(
+            "## Chain\n\n```yaml\n- ref: 'b.md'\n  claim:\n  hash: '{b_rev}'\nhash-algo: node-rev\n```\n\n^inputs\n"
+        );
+        let mut docs = BTreeMap::new();
+        docs.insert("a.md".to_string(), doc(&a_raw));
+        docs.insert("b.md".to_string(), b);
+
+        let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].selector, "b.md");
+        assert_eq!(
+            report.entries[0].color,
+            Color::Green,
+            "native-algo form-2, rev == live node_rev ⇒ green (normal verify path)",
+        );
+        assert!(!has_red(&report));
+    }
 }

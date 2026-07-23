@@ -302,10 +302,24 @@ pub struct LockItem {
 /// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
 /// The SHARED reader for the board projection ([`project_input_locks`]) and the
 /// walk plane ([`crate::walk`]) — one owner for the lock grammar.
+///
+/// Reads BOTH serializations of the SAME `^inputs` chain (U3.4 compat reader):
+/// - **form-1** (mrd native) — the `^inputs` token is in the fence info
+///   (`` ```yaml ^inputs ``), body is `items:` + flow-mappings
+///   ([`collect_lock_items`]);
+/// - **form-2** (ratified SCHEMA.md effect-receipt) — a plain `` ```yaml `` block
+///   whose TRAILING block-anchor line is `^inputs`, body a block-SEQUENCE of
+///   `- ref:/hash:` items plus a bare `hash-algo:` header
+///   ([`collect_form2_lock_items`]).
+///
+/// A page carries ONE form or the other, never both — the form-2 pass skips any
+/// block the form-1 pass already owns (its fence info carries `^inputs`), so no
+/// item is double-counted.
 #[must_use]
 pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     let mut out = Vec::new();
     collect_lock_items(&doc.root, &doc.raw, &mut out);
+    collect_form2_lock_items(doc, &mut out);
     out
 }
 
@@ -373,6 +387,128 @@ fn block_hash_algo(body: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// form-2 — the ratified SCHEMA.md effect-receipt chain block (U3.4 compat reader)
+// ---------------------------------------------------------------------------
+
+/// Append the form-2 chain-block lock items of `doc` to `out` (document order).
+///
+/// Form-2 is INVISIBLE to the form-1 reader ([`collect_lock_items`]): its
+/// `^inputs` token is a TRAILING block-anchor line (a sibling [`NodeKind::Anchor`]
+/// with `name == "inputs"`), not a fence-info token, and its body is a
+/// block-SEQUENCE (`- ref:` / `claim:` / `hash:`) plus a bare `hash-algo:` header.
+///
+/// Detection walks `doc.root` collecting every [`NodeKind::CodeBlock`] and every
+/// `^inputs` anchor. A plain `` ```yaml `` block is a form-2 chain block iff an
+/// `^inputs` anchor IMMEDIATELY FOLLOWS it — the bytes between the block's end and
+/// the anchor's start are whitespace-only. A block whose fence info already
+/// carries `^inputs` is a form-1 block ([`is_inputs_lang`]) and is left to the
+/// form-1 pass, so no item is double-counted. Detection is via the block+anchor
+/// alone — never the frontmatter `inputs: '[[#^inputs]]'` discriminator (this is a
+/// READER; the U3.4 ruling licenses no schema conversion, no write).
+fn collect_form2_lock_items(doc: &Document, out: &mut Vec<LockItem>) {
+    let mut blocks: Vec<&Node> = Vec::new();
+    let mut anchors: Vec<&Node> = Vec::new();
+    collect_blocks_and_inputs_anchors(&doc.root, &mut blocks, &mut anchors);
+    for block in blocks {
+        let NodeKind::CodeBlock { lang, .. } = &block.kind else {
+            continue;
+        };
+        // A form-1 block (its fence info carries `^inputs`) is owned by the form-1
+        // pass — never re-read here (no double-count for a page in either form).
+        if is_inputs_lang(lang) {
+            continue;
+        }
+        if !inputs_anchor_immediately_follows(&doc.raw, block, &anchors) {
+            continue;
+        }
+        if let Some(body) = doc.raw.get(block.span.clone()) {
+            parse_form2_body(body, out);
+        }
+    }
+}
+
+/// Collect (into `blocks`) every [`NodeKind::CodeBlock`] node and (into `anchors`)
+/// every `^inputs` [`NodeKind::Anchor`] node reachable from `node`, pre-order.
+fn collect_blocks_and_inputs_anchors<'a>(
+    node: &'a Node,
+    blocks: &mut Vec<&'a Node>,
+    anchors: &mut Vec<&'a Node>,
+) {
+    match &node.kind {
+        NodeKind::CodeBlock { .. } => blocks.push(node),
+        NodeKind::Anchor { name } if name == "inputs" => anchors.push(node),
+        _ => {}
+    }
+    for child in &node.children {
+        collect_blocks_and_inputs_anchors(child, blocks, anchors);
+    }
+}
+
+/// Whether any `^inputs` anchor immediately follows `block` — its span starts at
+/// or after the block's end with only whitespace between (the form-2 marker). The
+/// anchor's model span is its host line (`^inputs`); the gap is the blank line(s)
+/// the writer leaves between the fenced block and the trailing anchor.
+fn inputs_anchor_immediately_follows(raw: &str, block: &Node, anchors: &[&Node]) -> bool {
+    anchors.iter().any(|anchor| {
+        anchor.span.start >= block.span.end
+            && raw
+                .get(block.span.end..anchor.span.start)
+                .is_some_and(|gap| gap.chars().all(char::is_whitespace))
+    })
+}
+
+/// Parse a form-2 chain-block body into lock items, appended to `out`. The body
+/// (the whole fenced block, fences included) is a block-SEQUENCE:
+/// - a `- ref: <value>` line starts a NEW item — `declared_ref` is the unquoted
+///   value with a surrounding `[[ ]]` wikilink stripped, its trailing `#sel` split
+///   into `to_path` / `to_sel` (no `#` ⇒ `to_sel = ""`);
+/// - a `hash: <value>` continuation line sets the current item's `pinned_rev`
+///   verbatim (any `merkle-v1:` prefix kept — it is the pinned rev as written);
+/// - `claim:` is an ignored passenger, `rev_class` stays `None`.
+///
+/// Every item's `hash_algo` is the block's bare `hash-algo:` header
+/// ([`block_hash_algo`], e.g. `v1`) — a NAMED non-`node-rev` algo, so the read
+/// face renders these grey `superseded-algo` (U3.4).
+fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
+    let hash_algo = block_hash_algo(body);
+    let mut current: Option<usize> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if let Some(after_dash) = trimmed.strip_prefix('-') {
+            // A block-sequence item start; its first key must be `ref:`.
+            if let Some(value) = after_dash.trim_start().strip_prefix("ref:") {
+                let declared_ref = strip_wikilink(&unquote(value.trim()));
+                let (to_path, to_sel) = split_selector(&declared_ref);
+                out.push(LockItem {
+                    declared_ref,
+                    to_path,
+                    to_sel,
+                    pinned_rev: None,
+                    rev_class: None,
+                    hash_algo: hash_algo.clone(),
+                });
+                current = Some(out.len() - 1);
+            }
+        } else if let Some(value) = trimmed.strip_prefix("hash:")
+            && let Some(i) = current
+        {
+            out[i].pinned_rev = Some(unquote(value.trim()));
+        }
+    }
+}
+
+/// Strip a surrounding `[[ ]]` wikilink from a ref value, best-effort
+/// (`[[llm-wiki-skill-compilation]]` → `llm-wiki-skill-compilation`); a value with
+/// no brackets is returned unchanged.
+fn strip_wikilink(value: &str) -> String {
+    value
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .unwrap_or(value)
+        .to_string()
 }
 
 /// Parse one flow-mapping body (`ref: 'a.md', to: 'a.md#^c', rev: 'r1'`) into a
@@ -552,5 +688,78 @@ mod tests {
             doc_revs, 0,
             "every projected row records its source doc_rev"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // form-2 — the ratified SCHEMA.md effect-receipt chain block (U3.4)
+    // -----------------------------------------------------------------------
+
+    /// The real effect-page form: a plain `` ```yaml `` block, block-SEQUENCE body
+    /// (`- ref:` / `claim:` / `hash:`), a bare `hash-algo: v1` header, and a
+    /// TRAILING `^inputs` anchor line. `page_lock_items` now SEES it (pre-U3.4:
+    /// zero items). `declared_ref` is dewikilinked, `pinned_rev` is the `hash:`
+    /// value verbatim (`merkle-v1:` kept), and `hash_algo` is the block header.
+    #[test]
+    fn form2_chain_block_parses_ref_hash_and_algo() {
+        let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
+        let items = page_lock_items(&doc(raw));
+        assert_eq!(
+            items.len(),
+            1,
+            "form-2 chain parses (pre-U3.4: zero — blind)"
+        );
+        let item = &items[0];
+        assert_eq!(item.declared_ref, "llm-wiki-skill-compilation");
+        assert_eq!(item.to_path, "llm-wiki-skill-compilation");
+        assert_eq!(item.to_sel, "");
+        assert_eq!(
+            item.pinned_rev.as_deref(),
+            Some("merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d"),
+        );
+        assert_eq!(item.rev_class, None);
+        assert_eq!(item.hash_algo.as_deref(), Some("v1"));
+    }
+
+    /// A form-2 block with MULTIPLE `- ref:` items parses ALL of them, in order,
+    /// each with its own `hash:` and the shared block `hash-algo:` header. A `#sel`
+    /// on a ref splits into `to_path` / `to_sel`.
+    #[test]
+    fn form2_multiple_refs_all_parse() {
+        let raw = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta.md#^claim]]'\n  claim:\n  hash: 'merkle-v1:bbbb'\n- ref: 'gamma.md'\n  hash: 'merkle-v1:cccc'\nhash-algo: v1\n```\n\n^inputs\n";
+        let items = page_lock_items(&doc(raw));
+        assert_eq!(items.len(), 3, "all three block-sequence items parse");
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| i.declared_ref.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta.md#^claim", "gamma.md"],
+        );
+        // The middle ref's `#^claim` splits into to_path / to_sel.
+        assert_eq!(items[1].to_path, "beta.md");
+        assert_eq!(items[1].to_sel, "^claim");
+        assert_eq!(items[2].pinned_rev.as_deref(), Some("merkle-v1:cccc"));
+        assert!(items.iter().all(|i| i.hash_algo.as_deref() == Some("v1")));
+    }
+
+    /// A `` ```yaml `` block NOT followed by an `^inputs` anchor (e.g. the sibling
+    /// `## Receipt` block, trailing anchor `^receipt`) is NOT a form-2 chain — it
+    /// projects zero lock items. Only the `^inputs`-anchored block is read.
+    #[test]
+    fn form2_non_inputs_anchored_block_is_ignored() {
+        // A receipt-shaped block: plain yaml, trailing `^receipt` (not `^inputs`).
+        let raw = "## Receipt\n\n```yaml\ncommit: abc123\nverdict: 'x'\n```\n\n^receipt\n";
+        assert!(
+            page_lock_items(&doc(raw)).is_empty(),
+            "a `^receipt`-anchored block is not an `^inputs` chain",
+        );
+    }
+
+    /// A form-1 page (the `^inputs` token in the fence info) is read by the form-1
+    /// pass ONLY — the form-2 pass skips it, so items are never double-counted.
+    #[test]
+    fn form1_page_is_not_double_counted_by_form2_pass() {
+        let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', rev: 'deadbeef'}\n```\n";
+        assert_eq!(page_lock_items(&doc(raw)).len(), 1, "one item, read once");
     }
 }
