@@ -2298,6 +2298,7 @@ name = "policy"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "model",
  "serde",
  "serde_yaml",
