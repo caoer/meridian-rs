@@ -52,7 +52,7 @@ fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
 /// (the verdict frozen at close).
 fn review_page(pinned_rev: &str) -> String {
     format!(
-        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
+        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
     )
 }
 
@@ -305,6 +305,67 @@ fn gate_board_one_color_per_edge() {
         scalar_i64(&conn, "SELECT count(*) FROM input_lock"),
         "exactly one color per ^inputs edge",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3b — archive fixture: a v1 (foreign-algo) pin renders superseded-algo grey
+// ---------------------------------------------------------------------------
+
+/// Archive fixture (U3.4): a lock pinned under `hash-algo: v1` — an algo this
+/// engine does not compute — renders `grey superseded-algo` on the board, NEVER
+/// red. The v1 rev cannot equal the live node-rev, so without the algo gate the
+/// board would report drift (a false red) on an archived block that must stay
+/// grey forever (d2 §6.3; U0.2/U3.4). The negative control is the same edge
+/// under native `node-rev`, which reds on the same mismatch.
+#[test]
+fn gate_archived_v1_pin_renders_superseded_algo_grey() {
+    let subject = "# Subject\n\nbody. ^claim\n";
+    // A v1 (sha256) rev — foreign; never equals the live node-rev.
+    let v1_page = "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: v1\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', rev: 'a1b2c3d4e5f60718', rev_class: 'content'}\n```\n";
+
+    let mut docs = BTreeMap::new();
+    docs.insert("subject.md".to_string(), doc(subject));
+    docs.insert("v1.md".to_string(), doc(v1_page));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    let (color, reason): (String, String) = conn
+        .query_row(
+            "SELECT color, reason FROM board WHERE src_path='v1.md' AND to_path='subject.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the v1 edge has a board row");
+    assert_eq!(color, "grey", "a v1-algo pin is grey, never red drift");
+    assert_eq!(reason, "superseded-algo");
+    // Never counted as a board red.
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM board_red WHERE src_path='v1.md'",
+        ),
+        0,
+        "a superseded-algo edge is never a board red",
+    );
+    // Exactly one color for the edge.
+    assert_eq!(
+        scalar_i64(&conn, "SELECT count(*) FROM board WHERE src_path='v1.md'"),
+        1
+    );
+
+    // Negative control: the SAME mismatch under native node-rev reds (drift).
+    let native_page = review_page("a1b2c3d4e5f60718"); // node-rev header, wrong rev
+    let mut nd = BTreeMap::new();
+    nd.insert("subject.md".to_string(), doc(subject));
+    nd.insert("review.md".to_string(), doc(&native_page));
+    let conn2 = open_board(&nd, &[]).expect("open board native");
+    let ncolor: String = conn2
+        .query_row(
+            "SELECT color FROM board WHERE src_path='review.md' AND to_path='subject.md'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the native edge has a board row");
+    assert_eq!(ncolor, "red", "native algo + rev mismatch = red drift");
 }
 
 // ---------------------------------------------------------------------------

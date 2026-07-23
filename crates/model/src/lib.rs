@@ -38,6 +38,14 @@ pub mod walk;
 /// serializable span on purpose — converting between them is `sidecar`'s job.
 pub type ByteSpan = Range<usize>;
 
+/// The `hash-algo` label this engine mints and computes — `blake3-256(span
+/// bytes)[:16]` (contract v2 §1; node-rev-merkle-spec §1). An `^inputs` lock
+/// whose `hash-algo` header is anything else carries a rev this engine cannot
+/// recompute, so the read face renders it grey `superseded-algo` — never green,
+/// never red (wire-contract-v2-colors-amendment § Colors; U0.2/U3.4). One owner
+/// for the label so `pin` (writer) and `view` (reader) never drift.
+pub const NODE_REV_ALGO: &str = "node-rev";
+
 /// Node content hash — the CAS token's model-side form. Opaque; algorithm is a
 /// rung-2 wire amendment (meridian's xxhash64 `sec_rev` is the migration donor;
 /// the mapping must be stated when the amendment lands).
