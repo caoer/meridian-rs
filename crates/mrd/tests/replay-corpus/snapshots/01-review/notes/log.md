@@ -1,6 +1,0 @@
----
-title: Log
----
-# Log
-
-Start.

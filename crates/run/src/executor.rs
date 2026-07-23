@@ -778,8 +778,8 @@ pub fn synthesize_event(
     })
 }
 
-/// Render an hpath for the event payload (`A#B`, `%n` occurrence) — the same
-/// spelling `mrd rules replay` uses.
+/// Render an hpath for the event payload (`A#B`, `%n` occurrence) — the
+/// mint-plane heading-path spelling.
 fn render_hpath(segs: &[HpathSeg]) -> String {
     segs.iter()
         .map(|s| match s.n {

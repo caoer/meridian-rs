@@ -2075,6 +2075,8 @@ dependencies = [
  "libc",
  "model",
  "pin",
+ "policy",
+ "receipt",
  "registry",
  "run",
  "serde",
