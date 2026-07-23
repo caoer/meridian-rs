@@ -61,9 +61,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let mut path: Option<String> = None;
     let mut json = false;
+    let mut corpus = false;
     for arg in args {
         match arg.as_str() {
             "--json" => json = true,
+            "--corpus" => corpus = true,
             flag if flag.starts_with('-') => {
                 return Err(Fail::tool(format!("unknown flag: {flag}")));
             }
@@ -71,8 +73,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             value => return Err(Fail::tool(format!("unexpected argument: {value}"))),
         }
     }
-    let path = path.ok_or_else(|| Fail::tool("test needs a scenario DIR or FILE".to_owned()))?;
     let format = if json { Format::Json } else { Format::Human };
+
+    // Tier 2 — the corpus runner: the positional is a corpus-test SPEC file.
+    if corpus {
+        let spec = path.ok_or_else(|| Fail::tool("test --corpus needs a SPEC file".to_owned()))?;
+        return crate::corpus_tier::run(&spec, format);
+    }
+
+    let path = path.ok_or_else(|| Fail::tool("test needs a scenario DIR or FILE".to_owned()))?;
 
     let report = run_suite(Path::new(&path))?;
     match format {
@@ -277,7 +286,8 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
 
 /// Parse the leading `--- … ---` YAML frontmatter as flat `key: value` pairs
 /// (quotes stripped). Enough for the scenario keys; not a general YAML parser.
-fn parse_frontmatter(text: &str) -> HashMap<String, String> {
+/// Shared with the `--corpus` tier ([`crate::corpus_tier`]).
+pub(crate) fn parse_frontmatter(text: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
@@ -301,8 +311,8 @@ fn parse_frontmatter(text: &str) -> HashMap<String, String> {
 /// Every fenced block as `(info-string, body)`. The body preserves inner lines
 /// verbatim (each with its trailing newline) — that is the mounted file content /
 /// the JSON / the starlark. Frontmatter carries no fence, so scanning the whole
-/// text is safe.
-fn scan_blocks(text: &str) -> Vec<(String, String)> {
+/// text is safe. Shared with the `--corpus` tier ([`crate::corpus_tier`]).
+pub(crate) fn scan_blocks(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
