@@ -53,6 +53,12 @@ use crate::{Fail, Format};
 /// [`Fail`] — exit 2 (bad usage, unreadable path, a malformed scenario, or a
 /// pairing hard error) or exit 1 (one or more `^expect` blocks did not hold).
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
+    // The history tier is a distinct mode: `--history` reconstructs journal rows
+    // against git and runs a convention's `check_change`, never the scenario path.
+    if args.iter().any(|a| a == "--history") {
+        return crate::history_cmd::dispatch(args);
+    }
+
     let mut path: Option<String> = None;
     let mut json = false;
     for arg in args {

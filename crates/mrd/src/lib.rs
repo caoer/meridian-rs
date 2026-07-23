@@ -27,9 +27,9 @@ mod daemon;
 mod engine;
 mod expect;
 mod gc;
+mod history_cmd;
 mod init;
 mod resolve;
-mod rules_cmd;
 mod run_cmd;
 mod sql;
 mod test_cmd;
@@ -71,15 +71,21 @@ usage:
                            view, with the honest-tense freshness frame
   mrd view status          per-workspace view freshness + refresh telemetry (OD7)
   mrd daemon               run the registry daemon in the foreground
-  mrd rules replay [PATH]  replay a workspace's history (git commits, or an
-                           ordered --snapshots corpus) through a --rules set and
-                           report dead rules, fire counts, effect-kind
-                           distribution, and the fuel profile (markdown)
   mrd test <PATH>          run scenario file(s) (a *.md file, or a dir of them):
                            mount base/ into a real tmpdir, route ^put through the
                            production write path, assert ^expect starlark over
                            t.result / t.doc(path) / t.journal. Exits: 0 clean /
                            1 an ^expect failed / 2 malformed or pairing hard error
+  mrd test --history WORKSPACE --convention SLUG
+                           the history tier: JOIN the receipt journal's rows
+                           against git (the commit that appended each ^r-NNNNNN
+                           row gives the write's before/after bytes), rebuild the
+                           docs, and run conventions/SLUG's check_change over each
+                           reconstructed change. A would-refuse item absent from
+                           conventions/SLUG/GOLDEN.md fails the run; a declared
+                           item passes with its reason rendered; unreconstructable
+                           rows are counted grey, never guessed. Exits: 0 clean /
+                           1 an undeclared would-refuse item / 2 tool failure
   mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block addressed by the page's frontmatter
                            (task.<name> bindings; PAGE is workspace-relative).
@@ -94,9 +100,8 @@ options:
                            full effect set, apply nothing; bash: show the block
                            + resolved caps, refuse to exec
   --list                   (run) list the page's tasks with contracts and caps
-  --rules DIR              (rules replay) the .star rule set to replay
-  --snapshots DIR          (rules replay) an ordered snapshot corpus instead of git
-  --out FILE               (rules replay) write the report to FILE instead of stdout
+  --history                (test) the history tier over WORKSPACE (a git repo)
+  --convention SLUG        (test --history) the conventions/SLUG folder to run
   -h, --help               print this help
 ";
 
@@ -180,7 +185,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),
-        "rules" => rules_cmd::dispatch(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
         "daemon" => {
