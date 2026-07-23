@@ -72,17 +72,40 @@ pub fn load_armed_set(root: &fs::WorkspaceRoot) -> policy::ArmedSet {
     )
 }
 
+/// A passing gate's output: the advisory verdicts to merge into the response,
+/// plus the `--force`-escaped skips the mount must JOURNAL (U4.3, decision #6 —
+/// a forced bypass is journaled AND rendered). `forced_skips` is empty for an
+/// ordinary (non-forced) write.
+#[derive(Debug, Default)]
+pub struct GatePass {
+    /// The §11.1 advisory verdicts (warn findings + any forced-skip renders).
+    pub verdicts: Vec<Verdict>,
+    /// The forced skips — one per `--force`-escaped refusal, journaled by the
+    /// mount on a REAL commit.
+    pub forced_skips: Vec<ForcedSkip>,
+}
+
+/// One `--force`-escaped refusal — the loud record the mount journals.
+#[derive(Debug, Clone)]
+pub struct ForcedSkip {
+    /// The convention / binding-break the force bypassed.
+    pub rule: String,
+    /// The teaching message the skip carries.
+    pub message: String,
+}
+
 /// Build the `rulepack-api@2` change surface for one write and gate it — the ONE
 /// call the write choke-point makes at each of its three verdict sites (splice,
 /// create, remove). `before`/`after` are the pre/post states; `edits` the model
-/// edits (empty for a whole-file birth/death); `op` the change op; `subject_doc`
-/// the state whose path + root rev the advisory verdicts carry (the `after` for a
-/// splice/create, the `before` for a remove). U4.2 gates the change + states, so
-/// declared-evidence edges are empty (`no_edges`).
+/// edits (empty for a whole-file birth/death); `op` the change op; `force` the
+/// U4.3 `--force` bypass; `subject_doc` the state whose path + root rev the
+/// advisory verdicts carry (the `after` for a splice/create, the `before` for a
+/// remove). U4.2 gates the change + states, so declared-evidence edges are empty
+/// (`no_edges`).
 ///
 /// # Errors
-/// A `convention_fault` (fail-closed) or `armed_drift` refusal — the write must
-/// not land.
+/// A `convention_fault` / `armed_drift` / `binding_break` / `index_integrity`
+/// refusal — the write must not land.
 #[allow(clippy::too_many_arguments)]
 pub fn gate_write(
     root: &fs::WorkspaceRoot,
@@ -91,17 +114,14 @@ pub fn gate_write(
     edits: &[model::Edit],
     op: policy::ChangeOp,
     actor: Option<&str>,
+    force: bool,
     subject_doc: &model::Document,
-) -> Result<Vec<Verdict>, Box<ErrorBody>> {
+) -> Result<GatePass, Box<ErrorBody>> {
     let change = policy::derive_change(
         before,
         after,
         edits,
-        policy::Invocation {
-            op,
-            actor,
-            force: false,
-        },
+        policy::Invocation { op, actor, force },
         &[],
         &no_edges,
     );
@@ -109,22 +129,35 @@ pub fn gate_write(
 }
 
 /// Gate one already-built change through the workspace's armed law, after CAS and
-/// before bytes land. Returns the advisory `warn` verdicts to merge into the
-/// response on a pass/no-op, or a wire refusal the caller returns instead of
+/// before bytes land. Returns the advisory verdicts + forced skips to merge into
+/// the response on a pass/no-op, or a wire refusal the caller returns instead of
 /// committing. `subject_doc` supplies the path + root rev the advisory verdicts
 /// carry.
 ///
 /// # Errors
-/// A `convention_fault` (fail-closed) or `armed_drift` refusal — the write must
-/// not land.
+/// A `convention_fault` / `armed_drift` / `binding_break` / `index_integrity`
+/// refusal — the write must not land.
 pub fn enforce_gate(
     root: &fs::WorkspaceRoot,
     change: &policy::Change,
     subject_doc: &model::Document,
-) -> Result<Vec<Verdict>, Box<ErrorBody>> {
+) -> Result<GatePass, Box<ErrorBody>> {
     let armed_set = load_armed_set(root);
     match policy::gate(change, &armed_set) {
-        policy::GateOutcome::Ok(findings) => Ok(findings_to_verdicts(findings, subject_doc)),
+        policy::GateOutcome::Ok(findings) => {
+            let forced_skips = findings
+                .iter()
+                .filter(|f| f.forced)
+                .map(|f| ForcedSkip {
+                    rule: f.slug.clone(),
+                    message: f.message.clone(),
+                })
+                .collect();
+            Ok(GatePass {
+                verdicts: findings_to_verdicts(findings, subject_doc),
+                forced_skips,
+            })
+        }
         policy::GateOutcome::Refusal(refusal) => Err(gate_refusal_to_wire(refusal)),
     }
 }
@@ -188,6 +221,31 @@ pub fn gate_refusal_to_wire(refusal: policy::GateRefusal) -> Box<ErrorBody> {
             e.message = Some(message);
             Box::new(e)
         }
+        // U4.3 taxonomy row 9 — a one-sided file↔index change stopped at the
+        // door. `path` echoes the engine-managed file; `message` names the side
+        // and the legal path (the `side` is prefixed so it reads on the wire).
+        policy::GateRefusal::BindingBreak {
+            side,
+            path,
+            teaching,
+            legal_path,
+        } => {
+            let mut e = ErrorBody::new(ErrorCode::BindingBreak);
+            e.path = Some(Path(path));
+            e.message = Some(format!(
+                "binding-break[side={}]: {teaching} (legal path: {legal_path})",
+                side.as_str()
+            ));
+            Box::new(e)
+        }
+        // U4.3 taxonomy row 10 — the INDEX-integrity floor. `path` is the
+        // protected file (the INDEX or the marker) the write tried to remove.
+        policy::GateRefusal::IndexIntegrity { target, teaching } => {
+            let mut e = ErrorBody::new(ErrorCode::IndexIntegrity);
+            e.path = Some(Path(target));
+            e.message = Some(teaching);
+            Box::new(e)
+        }
     }
 }
 
@@ -249,9 +307,9 @@ mod scenarios {
 
     use std::path::Path as FsPath;
 
-    use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path, PutAt, Recovery, SecRef};
+    use wire::{Edit, EditShape, ErrorCode, HpathSeg, NodeRev, Path, PutAt, Recovery, SecRef};
 
-    use crate::write::{CreateArgs, SpliceArgs, create, splice};
+    use crate::write::{CreateArgs, RemoveArgs, SpliceArgs, create, remove, splice};
 
     /// A real `reviewer-not-owner` CHECK.md: refuses when `actor == owner`.
     const CHECK_MD: &str = "---\npaths:\n  - tasks/**\n---\n\n# reviewer-not-owner\n\n\
@@ -446,6 +504,7 @@ mod scenarios {
             receipt: None,
             if_root: None,
             dry: false,
+            force: false,
             edits: vec![Edit {
                 target: SecRef::Hpath {
                     hpath: vec![HpathSeg {
@@ -488,6 +547,231 @@ mod scenarios {
         assert!(
             !fs::domain::Domain::new().contains(FsPath::new(fs::domain::ATTESTED_MARKER_PATH)),
             "the once-armed sentinel is never hashed"
+        );
+    }
+
+    // ═══ U4.3 named merge-gate scenarios (real write path) ═══════════════════
+
+    /// A splice that hand-injects a forged armed row into the INDEX (a one-sided
+    /// index edit / checkbox flip), aimed at the H1 section so it always
+    /// validates. `force` toggles the sanctioned bypass.
+    fn checkbox_flip(force: bool) -> SpliceArgs {
+        SpliceArgs {
+            id: None,
+            path: Path(fs::domain::RESERVED_INDEX_PATH.into()),
+            actor: Some("agent:mallory".into()),
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: false,
+            force,
+            edits: vec![Edit {
+                target: SecRef::Hpath {
+                    hpath: vec![HpathSeg {
+                        h: "Attested conventions INDEX".into(),
+                        n: None,
+                    }],
+                },
+                edit: EditShape::Put {
+                    at: PutAt::End,
+                    text: "\n- [x] **forged** · block · `deadbeefdeadbeef` · \
+                           [[conventions/forged/CHECK.md]] · `**`"
+                        .into(),
+                },
+                if_node_rev: None,
+            }],
+        }
+    }
+
+    // ── Scenario 1 — one-sided checkbox flip → binding refusal (teaching) ───────
+    #[test]
+    fn u43_s1_one_sided_checkbox_flip_refuses() {
+        let (dir, root) = armed_block_ws();
+        let index_path = dir.path().join(fs::domain::RESERVED_INDEX_PATH);
+        let before = std::fs::read_to_string(&index_path).unwrap();
+
+        let err = splice(&root, 0, &checkbox_flip(false), &[])
+            .expect_err("a direct INDEX edit must break the file↔index binding");
+        assert_eq!(err.code, ErrorCode::BindingBreak);
+        assert_eq!(err.recovery, Recovery::Fix, "binding-break recovers by fix");
+        let msg = err.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("binding-break[side=index]"),
+            "the refusal names the index side: {msg}"
+        );
+        assert!(
+            msg.contains("--truth") && msg.contains("--force"),
+            "the teaching refusal names the legal paths: {msg}"
+        );
+        assert_eq!(
+            err.path.as_ref().map(|p| p.0.as_str()),
+            Some(fs::domain::RESERVED_INDEX_PATH),
+            "the refusal points at the INDEX"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&index_path).unwrap(),
+            before,
+            "a refused INDEX edit lands no bytes (no checkbox flipped)"
+        );
+    }
+
+    // ── Scenario 2 — forced write → skip JOURNALED and RENDERED ─────────────────
+    #[test]
+    fn u43_s2_forced_write_journals_and_renders_the_skip() {
+        let (dir, root) = armed_block_ws();
+        std::fs::create_dir_all(dir.path().join("tasks")).unwrap();
+        std::fs::write(
+            dir.path().join("tasks/fix.md"),
+            "---\nowner: agent:alice\nstatus: open\n---\n# Fix\n\nbody\n",
+        )
+        .unwrap();
+        // The owner self-closes (actor == owner) — the armed convention refuses
+        // it. `--force` escapes: the write lands, the skip is journaled + rendered.
+        let args = SpliceArgs {
+            id: None,
+            path: Path("tasks/fix.md".into()),
+            actor: Some("agent:alice".into()),
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: false,
+            force: true,
+            edits: vec![Edit {
+                target: SecRef::Hpath {
+                    hpath: vec![HpathSeg {
+                        h: "Fix".into(),
+                        n: None,
+                    }],
+                },
+                edit: EditShape::Put {
+                    at: PutAt::Content,
+                    text: "done\n".into(),
+                },
+                if_node_rev: None,
+            }],
+        };
+        let out = splice(&root, 0, &args, &[]).expect("--force escapes the armed refusal");
+
+        // RENDERED: a forced verdict rides the response naming the skip.
+        let wire::ResponseBody::Splice { verdicts, .. } = out.body else {
+            panic!("splice returns a Splice body");
+        };
+        assert!(
+            verdicts.iter().any(|v| v.message.contains("FORCED")),
+            "the forced skip renders as a visible verdict row: {verdicts:?}"
+        );
+
+        // The write LANDED (the bypass is real, not a silent refusal).
+        assert!(
+            std::fs::read_to_string(dir.path().join("tasks/fix.md"))
+                .unwrap()
+                .contains("done"),
+            "a forced write lands its bytes"
+        );
+
+        // JOURNALED: a permanent `op=force` row in the reserved journal.
+        let journal =
+            std::fs::read_to_string(dir.path().join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap();
+        assert!(
+            journal.contains("op=force") && journal.contains("path=tasks/fix.md"),
+            "the forced skip is journaled as a permanent force-row: {journal}"
+        );
+        assert!(
+            journal.contains("forced_rule="),
+            "the force-row names the bypassed rule: {journal}"
+        );
+    }
+
+    // ── Scenario 4 — INDEX-remove + marker-remove → INDEX-integrity floor ───────
+    /// The current whole-file rev of `path` — the remove-what-you-read CAS the
+    /// remove op checks BEFORE the gate, so the test must pass the live rev.
+    fn live_rev(root: &fs::WorkspaceRoot, path: &str) -> NodeRev {
+        let doc = fs::load(root, FsPath::new(path)).expect("loads");
+        NodeRev(doc.root.node_rev.0.clone())
+    }
+
+    fn remove_args(path: &str, rev: NodeRev) -> RemoveArgs {
+        RemoveArgs {
+            id: None,
+            path: Path(path.into()),
+            if_file_rev: rev,
+            actor: Some("agent:mallory".into()),
+            now: None,
+            if_root: None,
+            dry: false,
+        }
+    }
+
+    #[test]
+    fn u43_s4_index_remove_refuses_citing_the_floor() {
+        let (dir, root) = armed_block_ws();
+        let rev = live_rev(&root, fs::domain::RESERVED_INDEX_PATH);
+        let err = remove(
+            &root,
+            0,
+            &remove_args(fs::domain::RESERVED_INDEX_PATH, rev),
+            &[],
+        )
+        .expect_err("removing the INDEX hits the integrity floor");
+        assert_eq!(err.code, ErrorCode::IndexIntegrity);
+        assert_eq!(err.recovery, Recovery::Fix);
+        assert!(
+            err.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("INDEX-integrity floor convention"),
+            "the refusal cites the floor convention: {:?}",
+            err.message
+        );
+        assert!(
+            dir.path().join(fs::domain::RESERVED_INDEX_PATH).exists(),
+            "a refused remove deletes nothing"
+        );
+    }
+
+    #[test]
+    fn u43_s4_marker_remove_refuses_citing_the_floor() {
+        let (dir, root) = armed_block_ws();
+        let rev = live_rev(&root, fs::domain::ATTESTED_MARKER_PATH);
+        let err = remove(
+            &root,
+            0,
+            &remove_args(fs::domain::ATTESTED_MARKER_PATH, rev),
+            &[],
+        )
+        .expect_err("removing the once-armed marker hits the integrity floor");
+        assert_eq!(err.code, ErrorCode::IndexIntegrity);
+        assert!(
+            dir.path().join(fs::domain::ATTESTED_MARKER_PATH).exists(),
+            "the once-armed marker survives — the silent-disarm attack is refused"
+        );
+    }
+
+    /// The INDEX-integrity floor is STRUCTURAL — `--force` does NOT escape a
+    /// marker removal (security F2: a forced silent-disarm would defeat the
+    /// fail-closed design). The `remove` op carries no force, so this asserts the
+    /// pure decision directly: even a forced change refuses.
+    #[test]
+    fn u43_index_integrity_is_not_force_escapable() {
+        use policy::{ChangeOp, DoorLaw, classify_door_law};
+        let d = classify_door_law(ChangeOp::Remove, fs::domain::ATTESTED_MARKER_PATH, &|_| {
+            false
+        });
+        assert!(
+            matches!(d, DoorLaw::IndexIntegrity { .. }),
+            "the marker floor is structural, not a force-escapable binding break: {d:?}"
+        );
+    }
+
+    /// The policy-side reserved-path spellings MUST equal `fs::domain`'s — the
+    /// binding law and the disk layer name the SAME files. This cross-crate
+    /// assertion fails the moment the two drift (they live in separate crates).
+    #[test]
+    fn policy_and_fs_agree_on_reserved_paths() {
+        assert_eq!(policy::RESERVED_INDEX_PATH, fs::domain::RESERVED_INDEX_PATH);
+        assert_eq!(
+            policy::ATTESTED_MARKER_PATH,
+            fs::domain::ATTESTED_MARKER_PATH
         );
     }
 }

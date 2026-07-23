@@ -765,6 +765,7 @@ fn dispatch_read(
             receipt,
             if_root,
             dry,
+            force,
             edits,
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
@@ -776,6 +777,7 @@ fn dispatch_read(
                 receipt,
                 if_root,
                 dry: dry.unwrap_or(false),
+                force: force.unwrap_or(false),
                 edits,
             };
             wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)

@@ -524,6 +524,7 @@ fn splice_put(
         receipt: None,
         if_root: cas_root,
         dry: false,
+        force: false,
         edits: vec![Edit {
             target,
             edit: shape,

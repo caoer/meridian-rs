@@ -202,6 +202,8 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::DaemonOnly => pb::ErrorCode::DaemonOnly,
         wire::ErrorCode::ConventionFault => pb::ErrorCode::ConventionFault,
         wire::ErrorCode::ArmedDrift => pb::ErrorCode::ArmedDrift,
+        wire::ErrorCode::BindingBreak => pb::ErrorCode::BindingBreak,
+        wire::ErrorCode::IndexIntegrity => pb::ErrorCode::IndexIntegrity,
     }
 }
 
@@ -340,6 +342,7 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             receipt,
             if_root,
             dry,
+            force,
             edits,
         } => pb::request::Op::Splice(pb::SpliceRequest {
             path: path.0,
@@ -348,6 +351,7 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             receipt: receipt.map(receipt_addr_to_pb),
             if_root: if_root.map(|r| r.0),
             dry,
+            force,
             edits: edits.into_iter().map(edit_to_pb).collect(),
         }),
         wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
@@ -903,6 +907,8 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::DaemonOnly => wire::ErrorCode::DaemonOnly,
         pb::ErrorCode::ConventionFault => wire::ErrorCode::ConventionFault,
         pb::ErrorCode::ArmedDrift => wire::ErrorCode::ArmedDrift,
+        pb::ErrorCode::BindingBreak => wire::ErrorCode::BindingBreak,
+        pb::ErrorCode::IndexIntegrity => wire::ErrorCode::IndexIntegrity,
     }
 }
 
@@ -1038,6 +1044,7 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             receipt,
             if_root,
             dry,
+            force,
             edits,
         }) => wire::Op::Splice {
             path: wire::Path(path),
@@ -1046,6 +1053,7 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             receipt: receipt.map(receipt_addr_from_pb),
             if_root: if_root.map(wire::Root),
             dry,
+            force,
             edits: edits.into_iter().map(edit_from_pb).collect(),
         },
         pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
@@ -1571,6 +1579,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
             )),
             dry: None,
+            force: None,
             edits: vec![wire::Edit {
                 target: wire::SecRef::Hpath {
                     hpath: vec![seg("Goals"), seg("Q3")],
@@ -1590,6 +1599,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
             receipt: None,
             if_root: None,
             dry: None,
+            force: None,
             edits: vec![wire::Edit {
                 target: wire::SecRef::Hpath {
                     hpath: vec![seg("Goals"), seg("Q4")],
@@ -1609,6 +1619,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
             receipt: None,
             if_root: None,
             dry: Some(true),
+            force: None,
             edits: vec![
                 wire::Edit {
                     target: wire::SecRef::FmKey {

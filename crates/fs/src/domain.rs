@@ -201,14 +201,37 @@ fn is_markdown(p: &Path) -> bool {
 /// non-canonical spelling of the reserved path.
 #[must_use]
 pub fn is_reserved_journal(rel: &Path) -> bool {
-    let segments: Vec<&str> = rel
-        .components()
+    normalized(rel) == RESERVED_JOURNAL_PATH
+}
+
+/// Is `rel` the attested INDEX page ([`RESERVED_INDEX_PATH`])? Normalized like
+/// [`is_reserved_journal`] so a non-canonical spelling (`./conventions/INDEX.md`)
+/// cannot dodge the U4.3 binding law / INDEX-integrity floor at the write door.
+#[must_use]
+pub fn is_reserved_index(rel: &Path) -> bool {
+    normalized(rel) == RESERVED_INDEX_PATH
+}
+
+/// Is `rel` the once-armed marker ([`ATTESTED_MARKER_PATH`])? Normalized like
+/// [`is_reserved_journal`]. The U4.3 INDEX-integrity floor refuses its
+/// deletion/rename at the write door (security F2: deleting the marker is the
+/// silent-disarm attack the fail-closed design defeats).
+#[must_use]
+pub fn is_attested_marker(rel: &Path) -> bool {
+    normalized(rel) == ATTESTED_MARKER_PATH
+}
+
+/// A path's normalized workspace-relative spelling: `Normal` segments joined by
+/// `/`, dropping `.`/`..`/empty components. The single normalizer the reserved-
+/// path identity checks share, so a non-canonical spelling defeats none of them.
+fn normalized(rel: &Path) -> String {
+    rel.components()
         .filter_map(|c| match c {
             Component::Normal(s) => s.to_str(),
             _ => None,
         })
-        .collect();
-    segments.join("/") == RESERVED_JOURNAL_PATH
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// One parsed gitignore-style rule. Matching operates on path *segments*.

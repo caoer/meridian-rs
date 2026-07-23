@@ -381,6 +381,13 @@ pub enum Op {
         /// `root_after:null`, no receipt written.
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
+        /// U4.3 the sanctioned bypass (refusal-amendment §11.1 pt 3, decision
+        /// #6): a `--force` write ESCAPES an armed binding-break / block refusal
+        /// — the skip is journaled AND rendered, never silent. Absent/`false` is
+        /// an ordinary gated write. Additive by the tolerant-code law: a v2
+        /// client that never sends it writes exactly as before.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
         edits: Vec<Edit>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
@@ -1061,6 +1068,23 @@ pub enum ErrorCode {
     /// (report-rev ≠ armed-rev). Extras: `expected` (`armed_rev`) + `actual`
     /// (`report_rev`). Refresh class — re-arm at the live rev, or revert the law.
     ArmedDrift,
+    /// Refusal-amendment row 9 (U4.3 binding law): a one-sided file↔index
+    /// change stops at the door. An ordinary write to the engine-managed
+    /// attested INDEX (a checkbox flip) or a direct edit of an armed
+    /// convention's `CHECK.md` is refused — the two sides must move through the
+    /// ONE-act arming path, `--truth`, or realise. Extras: `path` (the
+    /// engine-managed file) + `message` (names the broken side + the legal
+    /// path). Fix class — change the request (arm properly, or `--force`).
+    /// Additive by the tolerant-code law: an unknown code dispatches on
+    /// `recovery` alone.
+    BindingBreak,
+    /// Refusal-amendment row 10 (U4.3 INDEX-integrity floor): deletion or
+    /// rename of the attested INDEX or the once-armed marker is refused, citing
+    /// the floor convention. A structural guard on the enforcement substrate —
+    /// NOT force-escapable (security F2: a silent disarm by deleting the marker
+    /// is the attack this defeats). Extras: `path` (the protected file) +
+    /// `message`. Fix class. Additive by the tolerant-code law.
+    IndexIntegrity,
 }
 
 impl ErrorCode {
@@ -1079,7 +1103,9 @@ impl ErrorCode {
             | ErrorCode::NoMatch
             | ErrorCode::NotUnique
             | ErrorCode::WouldCorrupt
-            | ErrorCode::AmbiguousRef => Recovery::Fix,
+            | ErrorCode::AmbiguousRef
+            | ErrorCode::BindingBreak
+            | ErrorCode::IndexIntegrity => Recovery::Fix,
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8
