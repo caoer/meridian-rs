@@ -21,6 +21,7 @@
 //!   responsibility (OD6: zero flock code here).
 
 pub mod facts;
+pub mod read_face;
 pub mod schema;
 
 use std::collections::BTreeMap;
@@ -32,6 +33,9 @@ use duckdb::Connection;
 use duckdb::types::Value;
 use model::{CorpusIndex, Document, Node, NodeKind};
 
+pub use read_face::{
+    READ_FACE_SCHEMA_SQL, create_read_face_schema, lock_read_face, open_board, stale_paths,
+};
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 
 /// The fingerprint domain version the ephemeral build folds under. `0` ⇒ the
