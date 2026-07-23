@@ -36,16 +36,22 @@ registry = { workspace = true }
 fs = { workspace = true }
 wire = { workspace = true }
 wire-serve = { workspace = true }
-# The corpus-replay harness (`mrd rules replay`): synthesize a ChangeEvent stream
-# from a workspace's real history (git commits → consecutive fingerprint diffs)
-# or an ordered snapshot fixture, run the effect kernel over it, and report
-# dead rules / fire counts / effect-kind distribution / fuel profile. `effects` is
-# the eval kernel (0003); `model` + `syntax` build a Document from raw bytes and
-# `model::delta::file_delta` derives the per-file change facts. All are path deps
-# already in the graph via `fs` — no new external crate, `cargo deny` unchanged.
+# The `mrd test --history` tier (U1.6): reconstruct historical changes by JOINing
+# the receipt journal's rows against git (the git-anchor JOIN — the commit that
+# appended each `^r-NNNNNN` row gives the write's before/after bytes), build the
+# before/after `Document`s through the fixture doc-building path (`syntax::parse` →
+# `model::build`), derive the `rulepack-api@2` change, and run the convention's
+# `check_change` — the SAME loader/evaluator the door uses. `receipt` parses the
+# journal rows; `policy` is the convention loader + `derive_change` + the
+# full-`EvalLimits` CHECK evaluator; `model`/`syntax` build the docs. `effects` is
+# still the `mrd test`/`mrd run` eval kernel. All are path crates already in the
+# graph (`policy`/`receipt` via `wire-serve`) — no new external crate enters,
+# `cargo deny` unchanged.
 effects = { workspace = true }
 model = { workspace = true }
 syntax = { workspace = true }
+policy = { workspace = true }
+receipt = { workspace = true }
 # The local run plane (U10, verdict ruling 7): `mrd run` mounts `crates/run` —
 # §2.1 task addressing, arg/env contracts, deny-by-default caps (U2), and the
 # hermetic `--dry` truth through the U5 `evaluate` seam. mrd stays a local
@@ -103,3 +109,9 @@ model = { workspace = true }
 # unchanged.
 syntax = { workspace = true }
 duckdb = { workspace = true }
+# The U1.6 `test --history` gate (crates/mrd/tests/history.rs) drives the tier over
+# the REAL embedded seed convention: `policy::seed_convention_files()` supplies the
+# exact `reviewer-not-owner` CHECK bytes the test writes into the workspace's
+# convention folder, so the gate exercises the shipped law, never a hand-copied
+# rule. `policy` is a path crate already in the graph — no new external crate.
+policy = { workspace = true }

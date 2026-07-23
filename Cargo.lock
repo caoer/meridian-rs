@@ -2074,6 +2074,8 @@ dependencies = [
  "fs",
  "libc",
  "model",
+ "policy",
+ "receipt",
  "registry",
  "run",
  "serde",
