@@ -55,7 +55,7 @@ which laws it carries. In one line each:
 | `receipt` | Receipt-line rendering, committed in the same batch as its edit |
 | `transport` | Untyped NDJSON envelope + codec seam; framing without meaning |
 | `transport-proto` | Opt-in typed protobuf transport transcribing the wire contract |
-| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts |
+| `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate()` at the armed change plane (`policy::authorize`) — see § Amendment |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
 | `sidecar` | The NDJSON binary — the one place wire and model meet (Law 3) |
 | `workspace` | Workspace identity: the discovery ladder, canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only) |
@@ -64,3 +64,36 @@ which laws it carries. In one line each:
 | `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |
+
+## Amendment — the policy gate (armed change plane)
+
+Law: ZT ruling #2; plan unit U4.2; wire-contract v2 refusal amendment
+(`docs/wire-contract-v2-refusal-amendment.md`).
+
+`crates/policy` originally owned advisory edit-time verdicts only — findings the
+host could act on or ignore. This amendment extends the charter: `policy` now
+also owns the **blocking gate** at the armed change plane.
+
+- **The seam.** `gate(change, armed_set) → Ok(verdicts) | Refusal(violations)`
+  fills `policy::authorize` and converts the advisory `evaluate_verdicts` seam
+  to blocking — evaluated after CAS, before bytes land, in both writer paths.
+  When a workspace is armed, a block-severity verdict or a door-law violation
+  refuses the write; the refusal carries a `{code, recovery}` pair from the
+  closed §8 taxonomy (the refusal-amendment table).
+- **Trusted-path armed set.** `gate()` loads and verifies the attested INDEX
+  from the workspace path inside the trusted write path; the caller-supplied
+  ruleset parameter is removed from the gating decision. Absent INDEX on a
+  never-armed workspace is a no-op bit-for-bit; a missing INDEX on an
+  once-armed workspace fails CLOSED (`convention-fault`).
+- **Additivity holds (Law § Additivity).** `policy` is still an additive
+  consumer of the model's index; the gate is a new match arm at the write seam,
+  not a reshuffle of what ships. `model`, `wire`, and the projection seam are
+  untouched — the engine still never derives `Serialize` on a model type (Law 1),
+  and the gate mints wire refusals only through `wire`'s error types (Law 2).
+
+**ATTACK-034 scoping.** Refusal makes violations "unrepresentable through an
+armed change plane" — never a stronger claim. The genesis epoch (pre-first-arming
+writes) renders grey, never green. The gate governs only the armed change plane:
+out-of-band mutation (an offline pre-push git rewrite, a root-preserving forged
+journal row) is caught by the git witness plus the receipt-engine-only write
+restriction, or it is a named residual — it is never rendered green by refusal.
