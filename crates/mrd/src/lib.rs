@@ -22,6 +22,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+mod attest_cmd;
 mod cache_cmd;
 mod daemon;
 mod engine;
@@ -92,6 +93,14 @@ usage:
                            and splice the ^inputs lock in ONE CAS write (one
                            receipt). Idempotent. Exits: 0 pinned / 1 refused
                            (or dry would-refuse) / 2 bad invocation
+  mrd attest <PAGE> [--dry] [--board DIR]
+                           attest = realised-gate + pin + receipt. Refuse iff (a)
+                           resolution fails, (b) the realised-gate is unmet (a
+                           pending-agent / non-convergent claim on the board,
+                           default board/), or (c) a declared check: is false.
+                           Drifted pins re-pin; grey greens; a refused attest
+                           writes nothing. Exits: 0 attested / 1 refused (or dry
+                           would-refuse) / 2 bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -99,6 +108,8 @@ options:
   --dry                    (run) starlark: evaluate hermetically and print the
                            full effect set, apply nothing; bash: show the block
                            + resolved caps, refuse to exec
+  --board DIR              (attest) the realise board dir the realised-gate reads
+                           (default board/)
   --list                   (run) list the page's tasks with contracts and caps
   --rules DIR              (rules replay) the .star rule set to replay
   --snapshots DIR          (rules replay) an ordered snapshot corpus instead of git
@@ -190,6 +201,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::run(&args[1..]),
+        "attest" => attest_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
