@@ -3849,6 +3849,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "transcript"
+version = "0.0.0"
+dependencies = [
+ "receipt",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "transport"
 version = "0.0.0"
 dependencies = [
