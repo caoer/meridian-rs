@@ -216,6 +216,72 @@ pub fn apply_batch(
     stage_batch(root, content_path, receipt_path, batch)?.commit()
 }
 
+/// Birth one file: write `body` to `rel_path` atomically (tmp+fsync+rename, the
+/// crate's one write discipline — never in place), refusing if the destination
+/// is already occupied (the `if_absent` CAS at file grain, d2 §2.5 C3). Parent
+/// directories are created first — a birth may name a fresh subtree.
+///
+/// # `if_absent` is a logical CAS, not a hardware one (stated limit)
+/// The occupancy check (`symlink_metadata`, so a symlink or a dangling link
+/// counts as occupied) runs BEFORE staging, then the rename lands the bytes.
+/// A concurrent writer creating the path between the check and the rename is
+/// the same serialized-write-path window every CAS on this engine assumes
+/// (splice's `if_root`/`if_node_rev` are checked-then-applied too); the guard
+/// is a precondition, not a lock.
+///
+/// # Errors
+/// [`io::ErrorKind::AlreadyExists`] when the destination is occupied (the
+/// `if_absent` violation) — no byte is staged; any I/O failure at mkdir,
+/// tmp-write, fsync, or rename.
+pub fn create_file(root: &WorkspaceRoot, rel_path: &Path, body: &str) -> io::Result<()> {
+    let dst = root.0.join(rel_path);
+    if fs::symlink_metadata(&dst).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "create refused: the path is already occupied (if_absent)",
+        ));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    commit_rename(&stage_file(&dst, body.as_bytes())?)
+}
+
+/// Death of one file: remove `rel_path`, then fsync its parent directory so the
+/// deletion survives a crash (the rename-durability discipline, applied to
+/// unlink). The rev-CAS (remove-what-you-read, d2 §2.5 C3) is the CALLER's — it
+/// compares the read rev against the live file before calling; this only
+/// executes the death.
+///
+/// # Errors
+/// [`io::ErrorKind::NotFound`] when the path is already gone; any other I/O
+/// failure at unlink or the parent fsync.
+pub fn remove_file(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<()> {
+    let dst = root.0.join(rel_path);
+    fs::remove_file(&dst)?;
+    fsync_dir(dst.parent().unwrap_or_else(|| Path::new(".")))
+}
+
+/// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+
+/// rename), creating the page and its parent directories when absent. The
+/// receipt engine appends journal rows through this: `fs` renders NOTHING
+/// (crate charter) — the caller passes the rendered row and this only lands
+/// bytes. `line` is written verbatim followed by one `\n` (the appender owns
+/// terminators; a rendered row leaf excludes its own).
+///
+/// # Errors
+/// Any I/O failure at mkdir, read, tmp-write, fsync, or rename.
+pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Result<()> {
+    let dst = root.0.join(rel_path);
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut bytes = read_or_empty(&dst)?;
+    bytes.extend_from_slice(line.as_bytes());
+    bytes.push(b'\n');
+    commit_rename(&stage_file(&dst, &bytes)?)
+}
+
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the two
 /// renames. Separating staging from the renames is what lets the crash-honesty
 /// test drive a kill BETWEEN the renames deterministically (§6.5).
@@ -767,6 +833,75 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput,
+        );
+    }
+
+    /// d2 §2.5 C3 birth: `create_file` lands a NEW file's bytes (tmp+fsync+
+    /// rename), makes its parent subtree, and `walk` then sees it.
+    #[test]
+    fn create_file_births_a_new_file() {
+        let (dir, root) = workspace();
+        super::create_file(&root, Path::new("births/fresh.md"), "# Fresh\n").unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("births/fresh.md")).unwrap(),
+            b"# Fresh\n",
+        );
+        assert!(
+            walk(&root)
+                .unwrap()
+                .contains(&PathBuf::from("births/fresh.md")),
+            "the born file is addressable via walk"
+        );
+        // no staged temp survives a clean birth.
+        assert!(!any_tmp_in(&dir.path().join("births")));
+    }
+
+    /// The `if_absent` CAS at the disk edge: `create_file` on an occupied path
+    /// refuses `AlreadyExists` and leaves the existing bytes untouched (no
+    /// clobber, no partial write).
+    #[test]
+    fn create_file_refuses_when_occupied() {
+        let (dir, root) = workspace();
+        let err = super::create_file(&root, &content_rel(), "OVERWRITE").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            PLAN_S0.as_bytes(),
+            "the occupant is untouched — the birth refused before any byte",
+        );
+    }
+
+    /// d2 §2.5 C3 death: `remove_file` deletes the file (walk no longer sees
+    /// it); removing an absent path is `NotFound`.
+    #[test]
+    fn remove_file_deletes_then_missing_is_not_found() {
+        let (_dir, root) = workspace();
+        super::remove_file(&root, &content_rel()).unwrap();
+        assert!(
+            !walk(&root).unwrap().contains(&content_rel()),
+            "the removed file is gone from walk"
+        );
+        assert_eq!(
+            super::remove_file(&root, &content_rel())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound,
+            "removing what is already gone is NotFound",
+        );
+    }
+
+    /// `append_line` creates the page on first append (parent dirs and all),
+    /// then appends at EOF — verbatim line plus one `\n` terminator each.
+    #[test]
+    fn append_line_creates_then_appends_at_eof() {
+        let (dir, root) = workspace();
+        let journal = Path::new("meridian/journal.md");
+        super::append_line(&root, journal, "- op=create ^r-000001").unwrap();
+        super::append_line(&root, journal, "- op=remove ^r-000002").unwrap();
+        assert_eq!(
+            fs::read(dir.path().join(journal)).unwrap(),
+            b"- op=create ^r-000001\n- op=remove ^r-000002\n",
+            "each rendered row is appended verbatim with one terminator",
         );
     }
 
