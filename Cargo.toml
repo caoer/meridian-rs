@@ -23,7 +23,7 @@ default-members = [
     "crates/workspace",
     "crates/cache",
     "crates/registry",
-    "crates/rules",
+    "crates/effects",
     "crates/run",
     "crates/mrd",
     "crates/view",
@@ -52,14 +52,14 @@ query = { path = "crates/query", version = "0.0.0" }
 workspace = { path = "crates/workspace", version = "0.0.0" }
 cache = { path = "crates/cache", version = "0.0.0" }
 registry = { path = "crates/registry", version = "0.0.0" }
-rules = { path = "crates/rules", version = "0.0.0" }
+effects = { path = "crates/effects", version = "0.0.0" }
 run = { path = "crates/run", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Fenced-Starlark evaluation, shared by `policy` (rung-6 predicates) and `rules`
-# (the extension kernel). Pinned EXACT (=0.14.2): starlark-rust disclaims API
+# Fenced-Starlark evaluation, shared by `policy` (rung-6 predicates) and `effects`
+# (the effect kernel). Pinned EXACT (=0.14.2): starlark-rust disclaims API
 # stability and 0.14 introduced the per-eval resource meters (tick/heap) both
 # crates rely on — a silent minor bump could move that surface. One workspace
 # pin keeps a single copy in the graph (row-13 wire-invariance holds: no wire

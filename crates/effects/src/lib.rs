@@ -1,5 +1,6 @@
-//! The extension kernel — pure Starlark evaluation: rules in, effect descriptors
-//! out, **zero I/O, zero integration** (decisions/0003).
+//! The effect kernel — pure Starlark evaluation: rules in, effect descriptors
+//! out, **zero I/O, zero integration**, advisory-only (decisions/0003,
+//! decision #7 rename-and-demote).
 //!
 //! # Charter
 //! **Owns:** turning a semantic [`ChangeEvent`] plus a set of [`Rule`]s (fenced
@@ -13,9 +14,11 @@
 //! **Never does:** read or write disk, open a socket, apply an effect, watch a
 //! tree, or talk to the daemon/wire. Effects are DESCRIPTORS — inert data a
 //! consumer executes. This crate runs parallel to the resident-daemon spine and
-//! touches nothing it owns (no splice choke point, no wire, no daemon). The
-//! splice-point carve-in and the wire `effects[]` field are reserved later units
-//! (0003 § reserved).
+//! touches nothing it owns (no splice choke point, no wire, no daemon) — and
+//! never will: the crate is advisory-only by charter (decision #7). The
+//! splice-point carve-in is DEAD, not reserved — this kernel will never gain a
+//! correctness path. (The wire `effects[]` field remains a reserved later unit,
+//! 0003 § reserved.)
 //!
 //! # The advisory law (0003 §6)
 //! Effects are latency / UX, never correctness. An undelivered effect is lost
@@ -145,15 +148,12 @@ pub enum EffectKind {
     Notice,
     /// `proto.warn` — a warning advisory about the change.
     Warn,
-    /// `proto.reject` — advisory rejection feedback (never blocks the write —
-    /// the change already happened; this teaches the writer to self-correct).
-    Reject,
 }
 
 impl EffectKind {
     /// Every descriptor kind, in a stable order — the "declare all capabilities"
     /// convenience and the source of truth for the closed surface.
-    pub const ALL: [EffectKind; 9] = [
+    pub const ALL: [EffectKind; 8] = [
         EffectKind::SetField,
         EffectKind::AppendSection,
         EffectKind::RefreshView,
@@ -162,7 +162,6 @@ impl EffectKind {
         EffectKind::Ask,
         EffectKind::Notice,
         EffectKind::Warn,
-        EffectKind::Reject,
     ];
 
     /// The namespaced wire / snapshot identity.
@@ -177,7 +176,6 @@ impl EffectKind {
             EffectKind::Ask => "proto.ask",
             EffectKind::Notice => "proto.notice",
             EffectKind::Warn => "proto.warn",
-            EffectKind::Reject => "proto.reject",
         }
     }
 
@@ -191,8 +189,7 @@ impl EffectKind {
             | EffectKind::Remind
             | EffectKind::Ask
             | EffectKind::Notice
-            | EffectKind::Warn
-            | EffectKind::Reject => Domain::Proto,
+            | EffectKind::Warn => Domain::Proto,
         }
     }
 }

@@ -5,8 +5,8 @@
 //! never hang, never crash. If any case looped, the suite would hang; if any
 //! panicked, proptest would fail — so a green run IS the liveness proof.
 
+use effects::{ChangeEvent, EvalLimits, Rule, eval_with_limits};
 use proptest::prelude::*;
-use rules::{ChangeEvent, EvalLimits, Rule, eval_with_limits};
 
 /// Tight limits keep each fuzz case fast (a valid infinite loop still terminates
 /// at the fuel bound, just sooner).

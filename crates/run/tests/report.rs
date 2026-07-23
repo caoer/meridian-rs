@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use effects::{ArgValue, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
-use rules::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::{Cap, CapResolution, CapSet, CapSource};
 use run::dispatch_bash::{BashOutcome, Phase2};
 use run::dispatch_starlark::DispatchOutcome;
@@ -57,7 +57,7 @@ fn caps(effective: &str, source: CapSource, narrowed: &[&str]) -> CapResolution 
 fn starlark(effects: Vec<Effect>, caps: CapResolution, cap_reached: bool) -> RunReport {
     let unexecuted = effects
         .iter()
-        .filter(|e| e.kind.domain() != rules::Domain::Md)
+        .filter(|e| e.kind.domain() != effects::Domain::Md)
         .cloned()
         .collect();
     RunReport {

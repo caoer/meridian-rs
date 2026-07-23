@@ -30,7 +30,7 @@
 
 use serde::Serialize;
 
-use rules::{Domain, Effect};
+use effects::{Domain, Effect};
 
 use crate::caps::{CapResolution, CapSource};
 use crate::dispatch_bash::Phase2;

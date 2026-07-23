@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rules::{EvalLimits, Rule};
+use effects::{EvalLimits, Rule};
 use run::dispatch_bash::Phase2;
 use run::executor::ReceiptAddr;
 use run::fence::GuaranteeClass;

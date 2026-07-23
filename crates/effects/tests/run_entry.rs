@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use rules::{Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx, eval_run};
+use effects::{Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx, eval_run};
 
 fn ctx() -> RunCtx {
     RunCtx {
@@ -61,7 +61,7 @@ fn ctx_exposes_page_task_args_env() {
         "def run(ctx):\n    send(to = [ctx.task], message = ctx.page + \" \" + ctx.args[1] + \" \" + ctx.env[\"HOME_WIKI\"])\n",
     )
     .unwrap();
-    let rules::ArgValue::Str(message) = &effects[0].args["message"] else {
+    let effects::ArgValue::Str(message) = &effects[0].args["message"] else {
         panic!("message is a scalar");
     };
     assert_eq!(message, "wiki/tasks.md a1 /wiki");

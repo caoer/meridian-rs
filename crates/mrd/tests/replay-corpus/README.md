@@ -2,7 +2,7 @@
 
 The committed, public-safe fixture the corpus-replay harness (`mrd rules
 replay`) runs against — in the `rules-replay` CI lane (nightly + on changes to
-`crates/mrd`/`crates/rules`) and in `crates/mrd/tests/replay.rs`.
+`crates/mrd`/`crates/effects`) and in `crates/mrd/tests/replay.rs`.
 
 ## Layout
 

@@ -4,10 +4,10 @@
 
 mod support;
 
-use rules::{CapabilitySet, Domain, EffectKind, eval};
+use effects::{CapabilitySet, Domain, EffectKind, eval};
 use support::{all_rules, event};
 
-fn mixed_effects() -> Vec<rules::Effect> {
+fn mixed_effects() -> Vec<effects::Effect> {
     // A status-field change on a task file fires task_conventions (notice +
     // refresh_view) and status_log (append_section) — proto, daemon, and md kinds.
     eval(

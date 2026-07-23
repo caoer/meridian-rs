@@ -39,11 +39,11 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
+use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind};
 use model::{
     Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
     SpliceRequest, SpliceVerdict, delta,
 };
-use rules::{ArgValue, ChangeEvent, Domain, Effect, EffectKind};
 use serde::{Deserialize, Serialize};
 
 use crate::caps::CapSet;
