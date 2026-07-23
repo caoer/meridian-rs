@@ -705,9 +705,19 @@ fn collect_anchors<'a>(node: &'a Node, id: &str, hits: &mut Vec<&'a Node>) {
     }
 }
 
-/// A top-level frontmatter key → the full key line (span + rev). The node the
-/// contract names is the key line inside the frontmatter block, not the whole
-/// block.
+/// A top-level frontmatter key → its full VALUE grain (span + rev). The node the
+/// contract names is the key line PLUS any multi-line block value that hangs off
+/// it (indented continuation lines), never the whole fence-to-fence block.
+///
+/// A scalar or flow value (`title: Plan`, `tags: [a, b]`) has no continuation,
+/// so the grain is the single key line — the frozen §4.4 leaf (`[4,15]` =
+/// `title: Plan`, §1 leaf law: terminator-excluded). A block value (`inputs:`
+/// plus indented `- item` lines) extends the grain over every item, so an
+/// upsert/replace addresses the WHOLE value and can never orphan the tail
+/// (U2.11 — the line-oriented edit could formerly reach only the key line,
+/// minting a rev over a silently corrupted block sequence). The frontmatter
+/// CONTAINER node stays fence-to-fence, terminator-inclusive (`[0,20]`, §18 row
+/// 3) and is minted elsewhere; nothing here touches it.
 fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, ResolveError> {
     let Some(fm) = find_frontmatter(&doc.root) else {
         return Err(ResolveError::NotFound);
@@ -716,10 +726,7 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
     let block = &fm.span;
     let mut line_start = block.start;
     while line_start < block.end {
-        let line_end = bytes[line_start..block.end]
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(block.end, |p| line_start + p + 1);
+        let line_end = fm_line_end(bytes, line_start, block.end);
         let line = &doc.raw[line_start..line_end];
         // top-level keys sit at column 0 (the fm-parse convention); match the
         // key byte-exactly up to its colon.
@@ -728,13 +735,7 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
                 .split_once(':')
                 .is_some_and(|(k, _)| k.trim().trim_matches(['"', '\'']) == key)
         {
-            // §1 leaf law: the `fm_key` LEAF span excludes its trailing
-            // terminator (`[4,15]` = `title: Plan`, §4.4). The frontmatter
-            // CONTAINER node stays fence-to-fence, terminator-inclusive
-            // (`[0,20]`, §18 row 3 — "all hashes stand") and is minted
-            // elsewhere; nothing here touches it. The loop's `line_start`
-            // advance below stays at the terminator-INCLUSIVE `line_end`.
-            let span = line_start..trim_terminator(bytes, line_start, line_end);
+            let span = fm_key_grain_span(bytes, line_start, block.end);
             return Ok(Resolved {
                 node_rev: node_rev(bytes, &span),
                 content_span: span.clone(),
@@ -744,6 +745,54 @@ fn resolve_fm_key_resolved(doc: &Document, key: &str) -> Result<Resolved, Resolv
         line_start = line_end;
     }
     Err(ResolveError::NotFound)
+}
+
+/// The end byte (terminator INCLUDED) of the frontmatter line starting at
+/// `start`, clamped to the block end.
+fn fm_line_end(bytes: &[u8], start: usize, block_end: usize) -> usize {
+    bytes[start..block_end]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(block_end, |p| start + p + 1)
+}
+
+/// A frontmatter line with no non-whitespace content (spaces/tabs then its
+/// terminator).
+fn fm_line_is_blank(bytes: &[u8], start: usize, end: usize) -> bool {
+    bytes[start..end]
+        .iter()
+        .all(|&b| matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
+}
+
+/// The full grain span of a top-level frontmatter key whose LINE starts at
+/// `key_line_start`: the key line, extended over every INDENTED continuation
+/// line of a block value (block sequence or block mapping). A blank line is
+/// carried only when a later indented line follows — trailing blanks belong to
+/// the inter-key gap, not the value. The scan stops at the next column-0
+/// non-blank line (the next key or the closing fence) or the block end. The
+/// returned end EXCLUDES the last content line's terminator (§1 leaf law), so a
+/// single-line key keeps its frozen terminator-excluded grain.
+fn fm_key_grain_span(bytes: &[u8], key_line_start: usize, block_end: usize) -> ByteSpan {
+    let key_line_end = fm_line_end(bytes, key_line_start, block_end);
+    let mut grain_end = trim_terminator(bytes, key_line_start, key_line_end);
+    let mut cursor = key_line_end;
+    while cursor < block_end {
+        let line_end = fm_line_end(bytes, cursor, block_end);
+        if fm_line_is_blank(bytes, cursor, line_end) {
+            // tentative — a blank line joins the value only if a later indented
+            // line extends the grain past it.
+        } else if matches!(bytes.get(cursor), Some(b' ' | b'\t')) {
+            // an indented continuation line: the block value extends over it
+            // (and any blank lines skipped since the last content line, since
+            // the grain is the contiguous `[key_line_start, grain_end)` region).
+            grain_end = trim_terminator(bytes, cursor, line_end);
+        } else {
+            // column-0 non-blank: the next key or the closing fence — value ends.
+            break;
+        }
+        cursor = line_end;
+    }
+    key_line_start..grain_end
 }
 
 /// The document's frontmatter node, if any.
@@ -1686,6 +1735,179 @@ mod tests {
             blake3::hash(&s1.raw.as_bytes()[4..18]).to_hex().as_str()[..16].to_string();
         assert_eq!(after.node_rev.0, independent);
         assert_eq!(independent, "fb49e9df2257fab8"); // frozen §4.4 node_rev_after
+    }
+
+    // -----------------------------------------------------------------------
+    // U2.11 — frontmatter multi-line block-sequence write grain
+    // -----------------------------------------------------------------------
+    //
+    // Fixture = the LIVE pinned specimen: the a475ccfc cross-review frontmatter
+    // at file rev df4198ba8ba4ab02 (rev verified via ccc-statusd read before
+    // transcription). `inputs:` is a multi-line block SEQUENCE (11 items),
+    // `tags:` a single-line FLOW sequence, `finalized_at:` the block's trailing
+    // sibling. At the pinned rev the LIVE file is CORRUPTED: `finalized_at:` sits
+    // wedged BETWEEN `inputs:` and its items (see `SPECIMEN_FM_WEDGED`) — the exact
+    // silent corruption this unit fixes. `SPECIMEN_FM_CLEAN` is the pre-corruption
+    // shape (finalized_at as the trailing sibling), the byte-stable block the
+    // grain must round-trip.
+
+    /// The pre-corruption specimen frontmatter — `inputs:` a well-formed block
+    /// sequence, `finalized_at:` its trailing sibling.
+    const SPECIMEN_FM_CLEAN: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\nfinalized_at: 2026-07-23T00:20-04:00\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
+
+    /// The LIVE bytes at df4198ba8ba4ab02 — `finalized_at:` wedged between
+    /// `inputs:` and its block items (the in-the-wild silent corruption).
+    const SPECIMEN_FM_WEDGED: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\nfinalized_at: 2026-07-23T00:20-04:00\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
+
+    fn specimen_clean() -> Document {
+        build(
+            SPECIMEN_FM_CLEAN.to_string(),
+            syntax::parse(SPECIMEN_FM_CLEAN),
+        )
+    }
+
+    /// U2.11 grain: a multi-line block-sequence value grows the `fm_key` leaf over
+    /// the WHOLE value (key line + every indented item), while a single-line flow
+    /// or scalar value keeps its frozen one-line grain (§1 leaf law). The old
+    /// line-oriented grain stopped at the key line, orphaning the block on replace.
+    #[test]
+    fn fm_key_multiline_block_sequence_grain_spans_full_value() {
+        let doc = specimen_clean();
+        // `inputs:` (block sequence) → the grain covers the key line AND all 11
+        // indented items, ending at the last item (terminator excluded), never
+        // bleeding into the next key `finalized_at:`.
+        let inputs = resolve(&doc, &Ref::FmKey("inputs".to_string())).expect("inputs fm_key");
+        let grain = &doc.raw[inputs.span.clone()];
+        assert!(grain.starts_with("inputs:\n  - \"results/round2/design-1.md"));
+        assert!(grain.ends_with("  - \"[[attestation-tournament]]\""));
+        assert!(
+            !grain.contains("finalized_at"),
+            "grain must stop before the next top-level key"
+        );
+        // honest CAS: the rev covers the FULL block value, not just the key line.
+        let independent = blake3::hash(grain.as_bytes()).to_hex().as_str()[..16].to_string();
+        assert_eq!(inputs.node_rev.0, independent);
+
+        // `tags:` (flow sequence, single line) → grain is exactly the key line.
+        let tags = resolve(&doc, &Ref::FmKey("tags".to_string())).expect("tags fm_key");
+        assert_eq!(
+            &doc.raw[tags.span.clone()],
+            "tags: [type/review, round2, cross-review, adversary]"
+        );
+        // `status:` (scalar) → grain is exactly the key line (frozen leaf law).
+        let status = resolve(&doc, &Ref::FmKey("status".to_string())).expect("status fm_key");
+        assert_eq!(&doc.raw[status.span.clone()], "status: final");
+    }
+
+    /// U2.11 corrupting-patch fixture: the `put` properties patch that formerly
+    /// orphaned the block sequence (a rev minted over silent corruption) now
+    /// ENCODES CORRECTLY — the upsert replaces the WHOLE `inputs:` value, the 11
+    /// items are gone, every sibling key survives byte-identical, and the reparse
+    /// is clean. No silent-corrupt path remains: the only write that validates is
+    /// one whose applied bytes reparse to exactly the intended frontmatter, and
+    /// the minted rev is the honest rev over the clean new value.
+    #[test]
+    fn fm_multiline_upsert_encodes_correctly_no_orphan() {
+        let doc = specimen_clean();
+        let b = batch(vec![put_edit(
+            Ref::FmKey("inputs".to_string()),
+            PutAt::Upsert,
+            "[design-1, design-2]",
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("multi-line upsert must validate (encode correctly)");
+        };
+        let out = apply_validated(&doc.raw, &vb);
+        let new_doc = build(out.clone(), syntax::parse(&out));
+
+        // `inputs` is now the intended scalar — the block items are GONE (no orphan).
+        let inputs = resolve(&new_doc, &Ref::FmKey("inputs".to_string())).expect("inputs after");
+        assert_eq!(
+            &new_doc.raw[inputs.span.clone()],
+            "inputs: [design-1, design-2]"
+        );
+        for orphan in [
+            "results/round2/design-1.md@d8536666b42dc8fd",
+            "results/round2/design-3.md@32ed1508fb3396fa",
+            "[[attestation-tournament]]",
+        ] {
+            assert!(
+                !out.contains(orphan),
+                "orphaned block item survived: {orphan}"
+            );
+        }
+        // every sibling key survives byte-identical (the write touched only inputs).
+        for (k, v) in [
+            ("type", "type: review"),
+            (
+                "tags",
+                "tags: [type/review, round2, cross-review, adversary]",
+            ),
+            ("finalized_at", "finalized_at: 2026-07-23T00:20-04:00"),
+        ] {
+            let r = resolve(&new_doc, &Ref::FmKey(k.to_string())).expect(k);
+            assert_eq!(&new_doc.raw[r.span.clone()], v, "sibling {k} corrupted");
+        }
+        // the minted rev is the HONEST rev over the clean new value.
+        let honest = blake3::hash(b"inputs: [design-1, design-2]")
+            .to_hex()
+            .as_str()[..16]
+            .to_string();
+        assert_eq!(inputs.node_rev.0, honest);
+    }
+
+    /// U2.11 round-trip byte-stability: reading the `inputs:` block sequence and
+    /// writing the SAME bytes back through the sealed splice path leaves the file
+    /// byte-identical — the grain the reader sees is exactly the grain the writer
+    /// replaces (`at:all`), so a no-op patch is a no-op on disk.
+    #[test]
+    fn fm_multiline_block_roundtrip_byte_stable() {
+        let doc = specimen_clean();
+        let inputs = resolve(&doc, &Ref::FmKey("inputs".to_string())).expect("inputs fm_key");
+        let read_back = doc.raw[inputs.span.clone()].to_string();
+        assert!(
+            read_back.contains("\n  - \"[[reconciliation]]\""),
+            "read the block"
+        );
+        let b = batch(vec![put_edit(
+            Ref::FmKey("inputs".to_string()),
+            PutAt::All,
+            &read_back,
+        )]);
+        let SpliceVerdict::Validated(vb) = validate_batch(&doc, None, &b, None) else {
+            panic!("round-trip write must validate");
+        };
+        let out = apply_validated(&doc.raw, &vb);
+        assert_eq!(
+            out, SPECIMEN_FM_CLEAN,
+            "read -> patch -> write must be byte-stable"
+        );
+    }
+
+    /// U2.11 LIVE pinned witness (df4198ba8ba4ab02): on the corrupted specimen the
+    /// wedged `finalized_at:` splits `inputs:` from its items — `inputs` resolves
+    /// to an EMPTY grain and the 11 items misattribute to `finalized_at`'s grain.
+    /// The corrected grain attributes lines to the nearest preceding column-0 key
+    /// exactly as YAML block scope does, making the corruption visible instead of
+    /// silent.
+    #[test]
+    fn fm_wedged_specimen_at_pinned_rev_grain() {
+        let doc = build(
+            SPECIMEN_FM_WEDGED.to_string(),
+            syntax::parse(SPECIMEN_FM_WEDGED),
+        );
+        // `inputs:` is immediately followed by a column-0 key → empty value grain.
+        let inputs = resolve(&doc, &Ref::FmKey("inputs".to_string())).expect("inputs fm_key");
+        assert_eq!(&doc.raw[inputs.span.clone()], "inputs:");
+        // the block items now hang off `finalized_at:` (the wedge's visible effect).
+        let fin = resolve(&doc, &Ref::FmKey("finalized_at".to_string())).expect("finalized_at");
+        let grain = &doc.raw[fin.span.clone()];
+        assert!(
+            grain.starts_with(
+                "finalized_at: 2026-07-23T00:20-04:00\n  - \"results/round2/design-1.md"
+            )
+        );
+        assert!(grain.ends_with("  - \"[[attestation-tournament]]\""));
     }
 
     /// DERIVED DATA (advisor 44870138 classification): the full-terminator trim
