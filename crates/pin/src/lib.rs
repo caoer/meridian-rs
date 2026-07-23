@@ -720,6 +720,9 @@ fn grey_reason(reason: &GreyReason) -> &'static str {
         GreyReason::ImmutableRoot => "immutable-root",
         GreyReason::DeclaredUnpinned => "unmanaged",
         GreyReason::Ambiguous => "ambiguous",
+        // pin mints node-rev, so a fresh pin never greys superseded-algo; the
+        // label is kept exhaustive-and-correct for the shared enum (U3.4).
+        GreyReason::SupersededAlgo => "superseded-algo",
     }
 }
 

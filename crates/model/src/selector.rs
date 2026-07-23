@@ -118,6 +118,14 @@ pub enum GreyReason {
     /// cannot address (d1 § selector ambiguity, point 3: grey — "selector
     /// unresolvable" — red would claim drift nobody measured).
     Ambiguous,
+    /// The lock is pinned under a `hash-algo` this engine does not compute
+    /// (anything but [`crate::NODE_REV_ALGO`]) — readable, unverifiable here.
+    /// A `hash-algo: vN` mismatch is a mechanical re-hash trigger, never
+    /// invalidation, so it renders grey — NEVER red (a false drift the engine
+    /// never measured) and NEVER green (an unverified claim dressed as attested).
+    /// Archived v1 blocks render this forever (d2 §6.3; U0.2/U3.4;
+    /// wire-contract-v2-colors-amendment § Colors).
+    SupersededAlgo,
 }
 
 /// Why an edge renders red — the three reasons kept distinct (decision #9).

@@ -15,8 +15,10 @@ use model::{ByteSpan, Document, Node, NodeKind};
 
 /// The `hash-algo` header of an engine-written lock: the content-class rev is the
 /// node-rev (`blake3-256(span bytes)[:16]`, contract §1) — the same rev U2.2
-/// `classify_edge` and U2.9 `board_drift` compare against live nodes.
-pub const HASH_ALGO: &str = "node-rev";
+/// `classify_edge` and U2.9 `board_drift` compare against live nodes. One owner
+/// for the label: [`model::NODE_REV_ALGO`], so the reader's `superseded-algo`
+/// grey (U3.4) can never drift from what the writer stamps here.
+pub const HASH_ALGO: &str = model::NODE_REV_ALGO;
 
 /// One lock item's engine-visible fields (the merge + render surface). A grey
 /// declared-only item has `rev: None` (and no `rev_class`).
