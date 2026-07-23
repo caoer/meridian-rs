@@ -33,6 +33,7 @@ mod run_cmd;
 mod sql;
 mod unregister;
 mod view_status;
+mod walk_cmd;
 
 /// Exit code: a clean success.
 const EXIT_OK: u8 = 0;
@@ -51,6 +52,13 @@ usage:
   mrd resolve [PATH]       report how a path resolves (read-only, writes nothing)
   mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                            answered by the daemon (auto-spawned) or in-process
+  mrd walk <PAGE> [--down] [--depth N]
+                           the context-assembly listing over the ^inputs pin
+                           graph: up (default) = what PAGE draws from, --down =
+                           who pins PAGE + blast radius (--depth 1 = direct
+                           dependents). Read-only; every answer cites the revs
+                           it read. Exits: 0 clean / 1 a red edge / 2 bad
+                           invocation or in-snapshot cycle
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
@@ -100,7 +108,7 @@ impl Fail {
 }
 
 /// Output shape: a human table by default, JSON under `--json`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Format {
     Human,
     Json,
@@ -150,6 +158,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
             engine::run_command(p.positional.as_deref(), p.format())
         }
+        "walk" => walk_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),
