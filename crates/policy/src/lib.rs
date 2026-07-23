@@ -35,6 +35,7 @@
 
 use model::{CorpusIndex, Document};
 
+mod binding;
 mod change;
 mod check_eval;
 mod convention;
@@ -95,6 +96,16 @@ pub use index::{
 pub use gate::{
     ArmedConvention, ArmedSet, ConventionSource, GateFault, GateFinding, GateOutcome, GateRefusal,
     GateViolation, gate, resolve_armed_set,
+};
+
+/// The binding law + `--truth` convergence (U4.3): the door law that refuses a
+/// one-sided file↔index change ([`classify_door_law`], taxonomy row 9) and the
+/// INDEX-integrity floor that refuses deletion/rename of the INDEX or the
+/// once-armed marker (row 10, not force-escapable). [`converge`] deploys a
+/// divergence in an explicit direction ([`Truth`]).
+pub use binding::{
+    ATTESTED_MARKER_PATH, BindingSide, ConvergeError, Convergence, DoorLaw, FileAction,
+    RESERVED_INDEX_PATH, Truth, classify_door_law, converge,
 };
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
