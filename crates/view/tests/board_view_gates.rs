@@ -369,6 +369,69 @@ fn gate_archived_v1_pin_renders_superseded_algo_grey() {
 }
 
 // ---------------------------------------------------------------------------
+// Gate 3c — form-2 (ratified SCHEMA.md effect-receipt) chain renders grey
+// ---------------------------------------------------------------------------
+
+/// U3.4 compat reader: the ratified SCHEMA.md effect-receipt form (form-2) — a
+/// plain fenced `yaml` chain block whose TRAILING block-anchor line is `^inputs`,
+/// block-SEQUENCE `- ref:/hash:` items, and a bare `hash-algo: v1` header.
+/// Pre-U3.4 the board saw ZERO rows for such a page (mrd was blind to form-2);
+/// now the block PARSES and renders `grey superseded-algo` on the board — never
+/// red, never silently empty. A MULTI-item form-2 block projects every item.
+#[test]
+fn gate_form2_chain_renders_superseded_algo_grey() {
+    let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
+    let mut docs = BTreeMap::new();
+    docs.insert("effect.md".to_string(), doc(raw));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    // NOT empty — the pre-change behavior was zero items (form-2 was invisible).
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM input_lock WHERE src_path='effect.md'",
+        ),
+        1,
+        "the form-2 chain parses one lock item (pre-U3.4: zero — the board was blind)",
+    );
+    let (color, reason): (String, String) = conn
+        .query_row(
+            "SELECT color, reason FROM board WHERE src_path='effect.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the form-2 edge has a board row");
+    assert_eq!(
+        color, "grey",
+        "a v1-algo form-2 pin is grey, never red drift"
+    );
+    assert_eq!(reason, "superseded-algo");
+    // Never counted as a board red.
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM board_red WHERE src_path='effect.md'",
+        ),
+        0,
+        "a superseded-algo form-2 edge is never a board red",
+    );
+
+    // A MULTI-item form-2 block projects EVERY item, each grey superseded-algo.
+    let multi = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta]]'\n  hash: 'merkle-v1:bbbb'\nhash-algo: v1\n```\n\n^inputs\n";
+    let mut mdocs = BTreeMap::new();
+    mdocs.insert("multi.md".to_string(), doc(multi));
+    let mconn = open_board(&mdocs, &[]).expect("open board multi");
+    assert_eq!(
+        scalar_i64(
+            &mconn,
+            "SELECT count(*) FROM board WHERE src_path='multi.md' AND color='grey' AND reason='superseded-algo'",
+        ),
+        2,
+        "both form-2 block-sequence items project as grey superseded-algo",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Gate 4 — the locked-face guard holds with the board view loaded
 // ---------------------------------------------------------------------------
 
