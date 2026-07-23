@@ -56,6 +56,29 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 ///    continuity alone.
 pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
 
+/// The attested INDEX page (U1.4) — the ONE living checklist the door reads to
+/// learn a workspace's armed set. `gate()` (U4.2) loads and verifies it from
+/// this workspace-relative path inside the trusted write path. It is ordinary
+/// in-tree `conventions/` markdown and STAYS in the hash domain (attested
+/// content whose rev matters); this constant is the single shared spelling so
+/// the gate, arming (U4.4), and the binding law (U4.3) cannot drift on where it
+/// lives.
+pub const RESERVED_INDEX_PATH: &str = "conventions/INDEX.md";
+
+/// The once-armed sentinel (U4.2 read contract). Its PRESENCE — not its bytes —
+/// records that a workspace has EVER been armed. The gate needs this to tell a
+/// never-armed workspace (no INDEX, no marker ⇒ a bit-for-bit no-op) from a
+/// once-armed one whose INDEX went missing (⇒ fail CLOSED, `convention-fault`):
+/// the INDEX alone cannot make that distinction, because deleting it is exactly
+/// the attack the marker defeats.
+///
+/// A NON-markdown path on purpose: the md-only hash-domain floor keeps it out
+/// of the merkle root by construction (no carve-out needed, unlike the
+/// journal), so writing the marker never perturbs the very root a write
+/// guards. Arming (U4.4) creates it on the first arm and never removes it;
+/// U4.3's index-integrity law refuses its deletion/rename at the door.
+pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
+
 /// The §12 hash-domain filter: the md-only floor + dot-segment default ignore
 /// (both fixed and structural) plus the custom ignore rules and the domain
 /// `version` parsed from `mdfs_config.yaml`.

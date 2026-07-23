@@ -97,6 +97,10 @@ pub struct SpliceOutcome {
 /// A typed validation refusal (§5.2 failure split) mapped to its wire frame, an
 /// ambient-root/domain failure, or an I/O error — in every error case nothing was
 /// committed and no Delta exists.
+// THE single write choke-point (decision 0002 W1): its length is the deliberate
+// one-linear-flow this crate is built around; the U4.2 gate mount grew it past
+// the 100-line lint, but splitting the flow would obscure it.
+#[allow(clippy::too_many_lines)]
 pub fn splice(
     root: &fs::WorkspaceRoot,
     seq: u64,
@@ -162,12 +166,22 @@ pub fn splice(
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
     let after_doc = build_after_doc(&doc, &sealed, &args.path);
     let armed_edits = simulate_armed_edits(&after_doc, &args.edits, &before_facts)?;
-    // THE carve-in point (W1): the ONE production `policy::evaluate` call site
-    // (advisor Ruling 3) — the touched doc's post-batch state → §11.1 verdicts,
-    // filled identically on dry and real. Empty when the caller loads no pack
-    // (the resident daemon's BARE commit). A later per-session rule-evaluation
-    // hook attaches HERE, not by rewriting the path.
-    let verdicts = evaluate_verdicts(rulesets, &after_doc);
+    // ADVISORY §11.1 verdicts from any caller packs (W1) — never a decision; the
+    // caller-supplied packs do not gate, only the armed law below does.
+    let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
+
+    // U4.2: the armed-plane GATE — after CAS, before bytes land, both writer
+    // paths. Reads the workspace's OWN armed law (never caller packs) and REFUSES
+    // here (`?`) before the dry short-circuit; never-armed is a no-op.
+    verdicts.extend(crate::gate::gate_write(
+        root,
+        &doc,
+        &after_doc,
+        &batch.edits,
+        policy::ChangeOp::Splice,
+        args.actor.as_deref(),
+        &after_doc,
+    )?);
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -363,10 +377,21 @@ pub fn create(
     let after_doc = build_doc(&args.path, &args.body);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
 
-    // THE gate seam (advisor Ruling 3, mirrored from splice): the ONE
-    // production verdict-evaluation site for a birth — U4.2 mounts `gate()`
-    // here. Empty rulesets ⇒ `[]` (the BARE commit).
-    let verdicts = evaluate_verdicts(rulesets, &after_doc);
+    // Advisory §11.1 findings from any caller packs (never a decision).
+    let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
+
+    // U4.2: the armed-plane GATE over the birth's after-state — before=absent
+    // (the `create` change surface). Blocks an armed refusal before the file is
+    // born; a no-op on a never-armed workspace.
+    verdicts.extend(crate::gate::gate_write(
+        root,
+        &crate::gate::absent_doc(&args.path),
+        &after_doc,
+        &[],
+        policy::ChangeOp::Create,
+        args.actor.as_deref(),
+        &after_doc,
+    )?);
 
     if args.dry {
         // A dry birth honors if_absent too — a rehearsal of a clobber refuses.
@@ -471,8 +496,21 @@ pub fn remove(
         return Err(cas_mismatch(&args.if_file_rev, &current));
     }
 
-    // The gate seam over the death's before-state (what is being removed).
-    let verdicts = evaluate_verdicts(rulesets, &before_doc);
+    // Advisory §11.1 findings from any caller packs (never a decision).
+    let mut verdicts = evaluate_verdicts(rulesets, &before_doc);
+
+    // U4.2: the armed-plane GATE over the death — after=absent (the `remove`
+    // change surface); `before_doc` carries what is being removed. Blocks an
+    // armed refusal before the unlink; a no-op on a never-armed workspace.
+    verdicts.extend(crate::gate::gate_write(
+        root,
+        &before_doc,
+        &crate::gate::absent_doc(&args.path),
+        &[],
+        policy::ChangeOp::Remove,
+        args.actor.as_deref(),
+        &before_doc,
+    )?);
 
     if args.dry {
         return Ok(RemoveOutcome {

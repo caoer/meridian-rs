@@ -48,6 +48,7 @@ pub mod dispatch_starlark;
 pub mod exec;
 pub mod executor;
 pub mod fence;
+pub mod gate;
 pub mod record;
 pub mod report;
 pub mod runner;

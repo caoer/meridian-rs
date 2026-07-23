@@ -1,53 +1,44 @@
-//! Rung-6 policy engine stub: compile rulesets-as-data, evaluate assertions
-//! under declared budgets, authorize I3-shaped writes.
+//! Rung-6 policy engine: compile rulesets-as-data, evaluate assertions under
+//! declared budgets, and gate writes at the armed change plane.
 //!
 //! # Charter
 //! **Owns:** executing rulesets — YAML parse/compile (content-hash cache, pin
 //! verify), the 14-assertion vocabulary with declared `Budget { class, p99_us }`,
 //! and the `policy` / `policy_compile` / `policy_vocab` evaluation entry points.
+//! Since U4.2 it ALSO owns the **blocking gate** at the armed change plane (see
+//! [`gate`] / [`resolve_armed_set`]; laws.md § the policy gate): the pure
+//! decision that refuses a write when the workspace's own attested law says so.
 //! The complete contract — schema, semantics, error taxonomy, versioning —
 //! is implemented here; this crate is that contract's implementation.
 //!
-//! **Never does:** decide what a violation *means* (block/annotate/page is Go's
-//! action mapping), own a corpus index (borrows `model`'s, capability-gated:
+//! **Never does:** own a corpus index (borrows `model`'s, capability-gated:
 //! `Option<&CorpusIndex>` — absent index + corpus-class ruleset = the loud
 //! `daemon_only` error), contain rules (the vocabulary is engine, rules are
-//! data — weekly-churn policy never couples to release-cadence binary).
+//! data — weekly-churn policy never couples to release-cadence binary), reach
+//! disk (stays I/O-free like `model`: the gate's armed-set load takes injected
+//! file access — the trusted write path in `wire-serve`/`run` does the reads).
 //!
-//! # Axis E — SETTLED Go-side by review C5; this stub's argument kept for the record
-//! The frozen `splice` shape carries no actor field: authorization is
-//! structurally Go's (position b). `authorize` below is **deferrable** — it is
-//! NOT on the rung-2 splice path. If hpath-shaped authorization rules ever
-//! need this crate's selector machinery, they arrive as ordinary rung-6
-//! assertions evaluated *for* Go (verdict as data, decision and actor stay
-//! Go's). The original position-(a) argument, superseded but kept:
-//!
-//! ## (superseded) position (a), argued
-//! I3 splice-authorization rules are hpath/section-shaped (`$owner`, section +
-//! path specificity) — which is *exactly* the selector machinery this crate
-//! already owns for rung 6: file-glob, hpath-glob, node predicates. Position (b)
-//! (authorization entirely Go-side) would force Go to answer a section-shaped
-//! question, and law 1 says Go never parses markdown — so (b) either duplicates
-//! the selector engine in Go or degrades I3 to path-only rules. Position (a)
-//! keeps the split clean along the existing law line: Go pre-authorizes the
-//! *actor* (identity is fleet state — the oracle sees states, not who changed
-//! them, per the schema doc's T2 ruling), passes actor claims in as data, and
-//! this engine evaluates the section-shaped *rules*, returning a verdict on the
-//! wire. Rules stay data (I3 rulesets ship like any ruleset — no daemon
-//! redeploy); the actor never enters the oracle. Cost accepted: `authorize`
-//! sits on the splice path, so its budget is gate-critical — the declared-p99
-//! machinery exists precisely to hold that line.
+//! # The gate at the armed change plane (U4.2)
+//! When a workspace is armed (an attested INDEX plus the once-armed marker),
+//! [`gate`] evaluates a [`Change`] through the workspace's OWN armed law after
+//! CAS and before bytes land, in both writer paths — a `block`-severity firing,
+//! a drifted law, or an un-loadable/corrupt/missing-once-armed INDEX REFUSES the
+//! write with a `{code, recovery}` pair from the closed §8 taxonomy. A
+//! never-armed workspace is a bit-for-bit no-op. This is the seam the deferred
+//! Go-era `authorize` stub reserved; the caller-supplies shape died with Go —
+//! the armed set is loaded and verified from the workspace path, never supplied
+//! by the caller.
 //!
 //! # Rungs
-//! Rung 6 lands the engine (`compile` / `evaluate` / `vocab`); `authorize` is
-//! deferred per C5 (not on the splice path). The wire ops appear only in
-//! `sidecar`.
+//! Rung 6 lands the engine (`compile` / `evaluate` / `vocab`) and the U4.2 gate;
+//! the wire ops appear only in `sidecar`.
 
 use model::{CorpusIndex, Document};
 
 mod change;
 mod check_eval;
 mod convention;
+mod gate;
 mod index;
 mod pack;
 mod seed;
@@ -92,8 +83,18 @@ pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_conve
 /// ([`armed_from_index`]), and the arming gate ([`arm`]) that refuses on evidence
 /// drift ([`ArmError::Drift`], `report-rev == armed-rev`).
 pub use index::{
-    ArmError, ArmedRef, Enforcement, IndexEntry, arm, armed_from_index, evidence_rev,
-    generate_index, render_rows, sweep,
+    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index, evidence_rev,
+    generate_index, parse_index_strict, render_rows, sweep,
+};
+
+/// The blocking gate at the armed change plane (U4.2): the pure decision
+/// ([`gate`]) plus the load-and-verify half ([`resolve_armed_set`]) that reads a
+/// workspace's attested INDEX (U1.4) + once-armed marker (U2.5) through an
+/// injected [`ConventionSource`], failing CLOSED on missing-once-armed, corrupt,
+/// un-loadable, or DRIFTED armed law. Fills the retired `authorize` seam.
+pub use gate::{
+    ArmedConvention, ArmedSet, ConventionSource, GateFault, GateFinding, GateOutcome, GateRefusal,
+    GateViolation, gate, resolve_armed_set,
 };
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
@@ -459,28 +460,6 @@ pub fn evaluate(
         ));
     }
     out
-}
-
-/// Axis-E entry point: may this splice stand, per the I3-shaped rules in
-/// `ruleset`? `actor` arrives as pre-authorized data from Go (never resolved
-/// here); the verdict goes back on the wire. See crate doc for the position
-/// argument.
-#[must_use]
-pub fn authorize(
-    doc: &Document,
-    target: &model::Target,
-    actor: &str,
-    ruleset: &CompiledRuleset,
-) -> AuthorizeVerdict {
-    let _ = (doc, target, actor, ruleset);
-    todo!("rung 2: I3 rules-as-data evaluation (EPERM-first, $owner sentinel)")
-}
-
-/// EPERM-first: denial is the default shape, allowance is explicit.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AuthorizeVerdict {
-    Allow,
-    Deny { rule: String, message: String },
 }
 
 /// The engine declares itself: the `rulepack-api@2` change surface's 14-key fact

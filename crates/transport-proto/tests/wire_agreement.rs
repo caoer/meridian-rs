@@ -200,6 +200,8 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::RootUnknown => pb::ErrorCode::RootUnknown,
         wire::ErrorCode::StaleView => pb::ErrorCode::StaleView,
         wire::ErrorCode::DaemonOnly => pb::ErrorCode::DaemonOnly,
+        wire::ErrorCode::ConventionFault => pb::ErrorCode::ConventionFault,
+        wire::ErrorCode::ArmedDrift => pb::ErrorCode::ArmedDrift,
     }
 }
 
@@ -899,6 +901,8 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::RootUnknown => wire::ErrorCode::RootUnknown,
         pb::ErrorCode::StaleView => wire::ErrorCode::StaleView,
         pb::ErrorCode::DaemonOnly => wire::ErrorCode::DaemonOnly,
+        pb::ErrorCode::ConventionFault => wire::ErrorCode::ConventionFault,
+        pb::ErrorCode::ArmedDrift => wire::ErrorCode::ArmedDrift,
     }
 }
 
