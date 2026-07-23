@@ -1,0 +1,41 @@
+[package]
+name = "preset"
+description = "Presets + session birth (U5.3): a preset is a def file whose inputs pin the convention floor; unfold materializes the declared scaffold through the U2.6 guarded create so every scaffold file carries a birth receipt; new births one record from the def's ^template after validating it against the def's ^properties, refusing def_invalid{rule} on a violation. mrd is a thin client (docs/laws.md charter)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Parse a def page into the model tree; read the multi-line inputs block-sequence
+# through the U2.11 fm_key grain (resolve(FmKey)); read ^properties/^template.
+model = { workspace = true }
+# Parse the filled ^template record body (build + parse) to validate its
+# frontmatter against the def's ^properties.
+syntax = { workspace = true }
+# Workspace root handle + page load (fs::load) for the def cascade.
+fs = { workspace = true }
+# The U2.6 guarded create: every scaffold file / new record is born through
+# wire_serve::write::create (CAS if_absent, journaled birth, gate seam).
+wire-serve = { workspace = true }
+# The Path/ErrorCode/ErrorBody newtypes the guarded create takes and returns.
+wire = { workspace = true }
+# The CompiledRuleset slice the guarded create's gate seam evaluates (&[] ⇒ the
+# bare commit; the armed set mounts at the write door, U4.2).
+policy = { workspace = true }
+# Reports serialize to JSON for `mrd new --json` / `mrd unfold --json`.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Real on-disk workspaces for the birth-receipt sweep, def-invalid refusal, and
+# CAS-if_absent gates (no in-memory double — fidelity is the point).
+tempfile = "3"
+# Read a born root record back through the U2.11 fm_key grain to witness the
+# inputs block-sequence round-trip (byte-stable, no orphan).
+model = { workspace = true }
+syntax = { workspace = true }

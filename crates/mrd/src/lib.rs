@@ -31,11 +31,14 @@ mod expect;
 mod gc;
 mod history_cmd;
 mod init;
+mod new_cmd;
 mod pin_cmd;
+mod preset_cmd;
 mod resolve;
 mod run_cmd;
 mod sql;
 mod test_cmd;
+mod unfold_cmd;
 mod unregister;
 mod view_status;
 mod walk_cmd;
@@ -113,6 +116,21 @@ usage:
                            Drifted pins re-pin; grey greens; a refused attest
                            writes nothing. Exits: 0 attested / 1 refused (or dry
                            would-refuse) / 2 bad invocation
+  mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
+                           file birth (U5.3): resolve the def (presets/<KIND>.md
+                           or a page path), fill its ^template, validate the
+                           filled record against its ^properties, and birth the
+                           first rev through the guarded create (inline birth
+                           receipt). An invalid def refuses def_invalid naming the
+                           rule; an occupied target refuses cas_mismatch. Exits: 0
+                           born (or dry) / 1 refused / 2 bad invocation
+  mrd unfold <PRESET> [--dry] [--actor A] [--now T]
+                           materialize a preset's declared scaffold (U5.3): every
+                           # Unfold file is born through the guarded create, so
+                           each carries a birth receipt; an existing path refuses
+                           via the if_absent CAS, byte-untouched. Exits: 0 all
+                           born (or dry) / 1 a path already existed / 2 bad
+                           invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -212,6 +230,8 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "run" => run_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::run(&args[1..]),
         "attest" => attest_cmd::run(&args[1..]),
+        "new" => new_cmd::run(&args[1..]),
+        "unfold" => unfold_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
