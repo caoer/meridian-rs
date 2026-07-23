@@ -42,7 +42,7 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
     let target = model::resolve(doc, &to_model_ref(&sec)?).map_err(|e| {
         Box::new(match e {
             model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
-            model::ResolveError::Ambiguous(candidates) => ambiguous(&sec, candidates.len()),
+            model::ResolveError::Ambiguous(candidates) => ambiguous(&sec, doc, &candidates),
         })
     })?;
     Ok(ResponseBody::Cat {
@@ -207,34 +207,63 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
     })
 }
 
-/// `ambiguous_ref` (§2.1: the strict plane never silently picks) with
-/// `candidates` in THE grammar: hpath duplicates are nameable exactly by
-/// occurrence index on the final segment; duplicate block ids have no exact
-/// §2.1 spelling per target, so `candidates` stays type-level EMPTY — `[]`,
-/// never prose inside the grammar field — with the human message carrying the
-/// count. `pub` because the sidecar's write path raises the same refusal against
-/// a splice target — one spelling of it, shared.
+/// `ambiguous_ref` (§2.1: the strict plane never silently picks) — the U2.2
+/// refuse-ambiguous-only refusal, naming EACH duplicate by both addressable
+/// disambiguators the teaching refusal offers: its node index (`n=`, the §2.1
+/// occurrence index) and its block id (`^block`) when it carries one. `candidates`
+/// holds the machine-addressable `n=` forms (hpath duplicates are nameable
+/// exactly by occurrence index on the final segment; duplicate block ids share
+/// one id that cannot disambiguate them, so their `candidates` stays type-level
+/// EMPTY — `[]`, never prose inside the grammar field). `message` carries the d1
+/// teaching refusal verbatim (both spellings interpolated, "Unambiguous writes to
+/// this file remain served"). `pub` because the sidecar's write path raises the
+/// same refusal against a splice target — one spelling of it, shared.
 #[must_use]
-pub fn ambiguous(sec: &SecRef, count: usize) -> ErrorBody {
+pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Target]) -> ErrorBody {
     let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
-    match sec {
+    // One naming per duplicate: node index (1-based occurrence) + its ^block.
+    let named: Vec<model::selector::AmbiguityCandidate> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, c)| model::selector::AmbiguityCandidate {
+            node_index: u32::try_from(i + 1).unwrap_or(u32::MAX),
+            block: model::selector::first_anchor_in_span(doc, &c.span),
+        })
+        .collect();
+    let display = match sec {
         SecRef::Hpath { hpath } => {
+            // Machine-addressable `n=` forms, one per duplicate: the occurrence
+            // index on the final segment resolves each uniquely (§2.1).
             e.candidates = Some(
-                (1..=count)
-                    .map(|n| {
+                named
+                    .iter()
+                    .map(|c| {
                         let mut segs = hpath.clone();
                         if let Some(last) = segs.last_mut() {
-                            last.n = Some(u32::try_from(n).unwrap_or(u32::MAX));
+                            last.n = Some(c.node_index);
                         }
                         SecRef::Hpath { hpath: segs }
                     })
                     .collect(),
             );
+            hpath
+                .iter()
+                .map(|s| s.h.as_str())
+                .collect::<Vec<_>>()
+                .join("/")
         }
-        SecRef::Anchor { .. } | SecRef::FmKey { .. } => {
+        SecRef::Anchor { anchor } => {
+            // Duplicate block ids share one id — it cannot disambiguate them, so
+            // `candidates` stays EMPTY (no exact §2.1 spelling per target); the
+            // message names them by node index (d1: "by ... node index").
             e.candidates = Some(Vec::new());
-            e.message = Some(format!("{count} duplicate targets in one file"));
+            format!("^{anchor}")
         }
-    }
+        SecRef::FmKey { fm_key } => {
+            e.candidates = Some(Vec::new());
+            fm_key.clone()
+        }
+    };
+    e.message = Some(model::selector::render_ambiguity(&display, &named));
     e
 }

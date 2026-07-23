@@ -31,6 +31,7 @@ use std::ops::Range;
 
 pub mod compose;
 pub mod delta;
+pub mod selector;
 pub mod walk;
 
 /// Half-open byte range into a file's raw bytes. Distinct from the wire's
@@ -1271,7 +1272,17 @@ fn collect_lost(
                     n: None,
                 })
                 .collect();
-            if resolve_full(new_doc, &Ref::Hpath(segs)).is_err() {
+            // Containment is LOST only when the section vanished entirely
+            // (`NotFound`). A pre-existing OR newly-created duplicate heading
+            // resolves `Ambiguous` — the section still exists, merely un-unique
+            // — so an unrelated byte-disjoint edit to such a file is NOT
+            // corruption (the F6 refuse-all death mode: a stray duplicate must
+            // not poison every write to the file; ambiguity surfaces only when a
+            // caller ADDRESSES the duplicate, refuse-ambiguous-only, U2.2).
+            if matches!(
+                resolve_full(new_doc, &Ref::Hpath(segs)),
+                Err(ResolveError::NotFound)
+            ) {
                 lost.push(hpath.clone());
             }
         }
@@ -2313,6 +2324,61 @@ mod tests {
         assert!(
             applied.contains("\n\nextra\n## Q4\n"),
             "Q4 heading survives"
+        );
+    }
+
+    /// U2.2 refuse-ambiguous-only + the F6 fix: a file with a DUPLICATE heading
+    /// refuses ONLY the write that addresses the ambiguous selector — an
+    /// unambiguous sibling still validates, and the duplicate is addressable by
+    /// node index. Before the fix, `collect_lost` re-resolved each disjoint
+    /// section's bare hpath and counted an `Ambiguous` result as `would_corrupt`,
+    /// so one stray duplicate refused EVERY write to the file (the F6 refuse-all
+    /// death mode that forced outside-jail repair).
+    #[test]
+    fn duplicate_heading_refuses_ambiguous_only_sibling_serves() {
+        // two `## Objective` under `# Task`, plus an unambiguous `## Notes`.
+        let raw = "# Task\n\n## Objective\n\nalpha ^a1b2c3\n\n## Objective\n\nbeta ^d4e5f6\n\n## Notes\n\ngamma\n".to_string();
+        let doc = build(raw.clone(), syntax::parse(&raw));
+
+        // (a) a write at the AMBIGUOUS bare selector refuses `Ambiguous`, naming
+        // both duplicate targets — refuse-ambiguous-only.
+        let amb = batch(vec![put_edit(
+            hpath(&["Task", "Objective"]),
+            PutAt::Content,
+            "rewritten\n",
+        )]);
+        let SpliceVerdict::Ambiguous(cands) = validate_batch(&doc, None, &amb, None) else {
+            panic!("a write at the ambiguous selector must refuse Ambiguous");
+        };
+        assert_eq!(cands.len(), 2, "both duplicates are named candidates");
+
+        // (b) a write at the UNAMBIGUOUS sibling still SERVES — the F6 fix: a
+        // stray duplicate elsewhere no longer poisons a byte-disjoint write.
+        let sibling = batch(vec![put_edit(
+            hpath(&["Task", "Notes"]),
+            PutAt::Content,
+            "served\n",
+        )]);
+        assert!(
+            matches!(
+                validate_batch(&doc, None, &sibling, None),
+                SpliceVerdict::Validated(_)
+            ),
+            "an unambiguous sibling write must validate despite the file's duplicate heading"
+        );
+
+        // (c) the duplicate is addressable by node index (`n=`) — the write serves.
+        let by_index = batch(vec![put_edit(
+            Ref::Hpath(vec![seg("Task"), seg_n("Objective", 1)]),
+            PutAt::Content,
+            "first only\n",
+        )]);
+        assert!(
+            matches!(
+                validate_batch(&doc, None, &by_index, None),
+                SpliceVerdict::Validated(_)
+            ),
+            "node-index addressing disambiguates the duplicate"
         );
     }
 
