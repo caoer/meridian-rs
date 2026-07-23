@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+pub mod compose;
 pub mod delta;
 pub mod walk;
 
