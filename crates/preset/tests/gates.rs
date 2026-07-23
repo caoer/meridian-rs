@@ -13,7 +13,10 @@
 //! round-trips the born root record's `inputs` pin.
 
 use model::{Ref, resolve};
-use preset::{BirthOptions, FileOutcome, NewOutcome, load_def, new_record, pins_floor, unfold};
+use preset::{
+    BirthOptions, FileOutcome, NewOutcome, PruneOutcome, load_def, new_record, pins_floor,
+    reconcile, reconcile_plan, unfold,
+};
 
 /// A valid session preset: `inputs` pin the convention floor, `^properties` are
 /// satisfiable by the `^template`, and `# Unfold` declares a four-file scaffold.
@@ -347,4 +350,155 @@ fn session_preset_pins_the_convention_floor() {
     );
     assert_eq!(def.defines, "session");
     assert_eq!(def.scaffold.len(), 4);
+}
+
+// ---------------------------------------------------------------------------
+// U3.5b reconcile-toward-scaffold (ZT ruling #3, the asymmetric reconcile law).
+// The three fixture assertions (plan §4 Block 3 U3.5b Test: line):
+//   1. a missing declared path is materialized;
+//   2. an undeclared NON-empty path is untouched and rendered as a finding;
+//   3. a declared-ephemeral file is pruned.
+// ---------------------------------------------------------------------------
+
+/// A reconcile preset: `# Unfold` declares a three-file scaffold, `# Ephemeral`
+/// marks `*.lock` disposable (the prune allowlist).
+const RECONCILE_PRESET: &str = r#"---
+type: def
+defines: session
+root: SESSION.md
+inputs:
+  - "conventions/reviewer-not-owner/CHECK.md@rev-a"
+---
+
+# Unfold
+
+- SESSION.md
+- tasks/index.md
+- results/plan.md
+
+# Ephemeral
+
+- *.lock
+"#;
+
+#[test]
+fn reconcile_plan_is_asymmetric_materialize_by_diff_prune_by_allowlist() {
+    // A PURE-fold gate: declared scaffold vs a live tree.
+    let declared = vec![
+        "SESSION.md".to_owned(),
+        "tasks/index.md".to_owned(),
+        "results/plan.md".to_owned(),
+    ];
+    let ephemeral = vec!["*.lock".to_owned()];
+    let live = vec![
+        "SESSION.md".to_owned(),       // declared + present → converged
+        "tasks/index.md".to_owned(),   // declared + present → converged
+        "results/notes.md".to_owned(), // UNDECLARED content → finding, never pruned
+        "tasks/build.lock".to_owned(), // declared-ephemeral → prune
+    ];
+
+    let plan = reconcile_plan(&declared, &ephemeral, &live);
+
+    // 1. the missing declared path is the additive set-difference.
+    assert_eq!(plan.materialize, vec!["results/plan.md".to_owned()]);
+    // 3. the declared-ephemeral file is the ONLY prune (allowlist, not diff).
+    assert_eq!(plan.prune, vec!["tasks/build.lock".to_owned()]);
+    // 2. the undeclared content file is a finding, NEVER a prune action.
+    assert_eq!(plan.findings, vec!["results/notes.md".to_owned()]);
+}
+
+#[test]
+fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
+    // A live tree that exercises all three fold branches at once. `results/plan.md`
+    // is declared but ABSENT; `results/notes.md` is undeclared NON-empty content;
+    // `tasks/build.lock` is declared-ephemeral. SESSION.md + tasks/index.md already
+    // exist (converged, left byte-untouched).
+    const NOTES_BODY: &str = "---\ntype: note\n---\n\n# undeclared work product\n";
+    let (_tmp, root) = workspace(&[
+        ("presets/session.md", RECONCILE_PRESET),
+        ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
+        ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
+        ("results/notes.md", NOTES_BODY),
+        ("tasks/build.lock", "stale-lock\n"),
+    ]);
+
+    let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
+
+    // 1. the missing declared path was MATERIALIZED with a real birth receipt.
+    let materialized: std::collections::BTreeMap<&str, bool> = report
+        .materialized
+        .iter()
+        .map(|f| match f {
+            FileOutcome::Born { path, receipt } => (path.as_str(), receipt.is_some()),
+            FileOutcome::Occupied { path, .. } => (path.as_str(), false),
+        })
+        .collect();
+    assert_eq!(
+        materialized.get("results/plan.md"),
+        Some(&true),
+        "the missing declared path is materialized with a birth receipt: {report:?}"
+    );
+    assert!(
+        root.0.join("results/plan.md").exists(),
+        "results/plan.md was not materialized on disk"
+    );
+    // The already-present declared paths were NOT re-materialized (occupied is not
+    // in the plan; only the genuinely missing path is).
+    assert_eq!(
+        report.materialized.len(),
+        1,
+        "exactly one missing declared path"
+    );
+
+    // 2. the undeclared NON-empty path is UNTOUCHED and rendered as a FINDING.
+    assert_eq!(
+        report.findings,
+        vec!["results/notes.md".to_owned()],
+        "undeclared content is a finding, never a prune: {report:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("results/notes.md")).unwrap(),
+        NOTES_BODY,
+        "the undeclared file's bytes were left untouched"
+    );
+
+    // 3. the declared-ephemeral file was PRUNED (guarded remove) and is gone.
+    let pruned: Vec<&str> = report
+        .pruned
+        .iter()
+        .filter_map(|p| match p {
+            PruneOutcome::Removed { path, .. } => Some(path.as_str()),
+            PruneOutcome::Refused { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        pruned,
+        vec!["tasks/build.lock"],
+        "the declared-ephemeral file is the only prune: {report:?}"
+    );
+    assert!(
+        !root.0.join("tasks/build.lock").exists(),
+        "the ephemeral lock file was not pruned"
+    );
+}
+
+#[test]
+fn reconcile_without_prune_leaves_ephemeral_in_place() {
+    // Prune is opt-in: bare `mrd reconcile` materializes but removes nothing.
+    let (_tmp, root) = workspace(&[
+        ("presets/session.md", RECONCILE_PRESET),
+        ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
+        ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
+        ("tasks/build.lock", "stale-lock\n"),
+    ]);
+
+    let report = reconcile(&root, "presets/session.md", false, &opts()).unwrap();
+
+    assert!(report.pruned.is_empty(), "no prune without --prune");
+    assert!(
+        root.0.join("tasks/build.lock").exists(),
+        "the ephemeral file survives a no-prune reconcile"
+    );
+    // The missing declared path is still materialized (additive is unconditional).
+    assert!(root.0.join("results/plan.md").exists());
 }

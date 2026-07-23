@@ -35,6 +35,8 @@ mod init;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
+mod realise_cmd;
+mod reconcile_cmd;
 mod resolve;
 mod run_cmd;
 mod sql;
@@ -137,6 +139,24 @@ usage:
                            via the if_absent CAS, byte-untouched. Exits: 0 all
                            born (or dry) / 1 a path already existed / 2 bad
                            invocation
+  mrd reconcile <PRESET> [--prune] [--dry] [--actor A] [--now T]
+                           reconcile the tree toward a preset's declared scaffold
+                           (U3.5b; ZT ruling #3): materialize ALL missing declared
+                           paths (guarded create). --prune removes ONLY declared
+                           -ephemeral files (guarded remove) + empty-undeclared
+                           dirs; undeclared content renders as findings, NEVER a
+                           prune. Exits: 0 converged (or dry) / 1 a finding / 2 bad
+                           invocation
+  mrd realise <PAGE> [--dry] [--truth index|file]
+                           the reconciliation loop (U3.5b): observe -> check ->
+                           apply (only on drift, once) -> re-check over the page's
+                           declared claim (realise.field/realise.expected +
+                           realise.apply). Apply rides mrd run. Reports one terminal
+                           state: converged / drifted-fixed / non-convergent /
+                           pending-agent. --truth index|file resolves a file<->index
+                           convention divergence (realise-as-deploy). Exits: 0
+                           converged/drifted-fixed (or dry) / 1 non-convergent or
+                           pending-agent / 2 bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -239,6 +259,8 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "attest" => attest_cmd::run(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
         "unfold" => unfold_cmd::run(&args[1..]),
+        "reconcile" => reconcile_cmd::run(&args[1..]),
+        "realise" => realise_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
