@@ -82,6 +82,10 @@ anyhow = { workspace = true }
 # writer. A local CLIENT of the pin op — `pin` orchestrates model/view/wire-serve
 # and is already in the graph via those crates; no new external crate enters.
 pin = { workspace = true }
+# `mrd attest` (U2.5): attest = realised-gate + pin + receipt. A local CLIENT of
+# the attest op — `attest` composes `pin` (already in the graph) and reads the
+# realise board for the realised-gate; no new external crate enters.
+attest = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
