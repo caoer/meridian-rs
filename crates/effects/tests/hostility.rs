@@ -2,13 +2,13 @@
 //! and descriptor-forgery attempts all resolve to TYPED errors — never a panic,
 //! never a silent wrong effect.
 
-use rules::{EvalError, Rule, eval};
+use effects::{EvalError, Rule, eval};
 
-fn ev() -> rules::ChangeEvent {
-    rules::ChangeEvent::new("f.md", "a", "b")
+fn ev() -> effects::ChangeEvent {
+    effects::ChangeEvent::new("f.md", "a", "b")
 }
 
-fn run(src: &str) -> Result<Vec<rules::Effect>, EvalError> {
+fn run(src: &str) -> Result<Vec<effects::Effect>, EvalError> {
     eval(&[Rule::new("hostile", src)], &ev())
 }
 

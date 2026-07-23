@@ -5,8 +5,8 @@
 
 mod support;
 
+use effects::{ChangeEvent, Effect, EvalLimits, Rule, RunCtx, eval, eval_run};
 use proptest::prelude::*;
-use rules::{ChangeEvent, Effect, EvalLimits, Rule, RunCtx, eval, eval_run};
 use support::all_rules;
 
 /// An arbitrary change event — arbitrary paths, changed sections/fields, and
@@ -120,7 +120,7 @@ proptest! {
     #[test]
     fn run_plane_effects_have_no_key_and_run_provenance(ctx in any_ctx()) {
         let task = probe_task(&ctx);
-        let expected = rules::Provenance::Run {
+        let expected = effects::Provenance::Run {
             invocation_id: ctx.invocation_id.clone(),
             root_at_eval: ctx.root_at_eval.clone(),
         };

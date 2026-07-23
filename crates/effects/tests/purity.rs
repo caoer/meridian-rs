@@ -7,13 +7,13 @@
 //! (The exact global-name surface is asserted as an in-crate unit test in
 //! `kernel.rs`, which can reach `effect_globals()` directly.)
 
-use rules::{EffectKind, EvalError, Rule, eval};
+use effects::{EffectKind, EvalError, Rule, eval};
 
-fn ev() -> rules::ChangeEvent {
-    rules::ChangeEvent::new("f.md", "a", "b")
+fn ev() -> effects::ChangeEvent {
+    effects::ChangeEvent::new("f.md", "a", "b")
 }
 
-fn run(src: &str) -> Result<Vec<rules::Effect>, EvalError> {
+fn run(src: &str) -> Result<Vec<effects::Effect>, EvalError> {
     eval(&[Rule::new("purity", src)], &ev())
 }
 
@@ -66,7 +66,7 @@ fn load_statement_is_rejected() {
     );
 }
 
-/// All nine descriptor constructors ARE defined — the closed capability surface
+/// All eight descriptor constructors ARE defined — the closed capability surface
 /// is present in full. Each fires exactly one effect of its kind.
 #[test]
 fn all_constructors_are_defined_and_emit_their_kind() {
@@ -85,7 +85,6 @@ fn all_constructors_are_defined_and_emit_their_kind() {
         ("ask(message = \"m\")", EffectKind::Ask),
         ("notice(message = \"m\")", EffectKind::Notice),
         ("warn(message = \"m\")", EffectKind::Warn),
-        ("reject(message = \"m\")", EffectKind::Reject),
     ];
     for (call, kind) in cases {
         let src = format!("def on_change(event):\n    {call}\n");
@@ -102,7 +101,7 @@ fn dependency_graph_has_no_io_runtime() {
     let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
     let out = std::process::Command::new(env!("CARGO"))
         .args([
-            "tree", "-p", "rules", "--edges", "normal", "--prefix", "none",
+            "tree", "-p", "effects", "--edges", "normal", "--prefix", "none",
         ])
         .arg("--manifest-path")
         .arg(manifest)

@@ -18,7 +18,7 @@ hermetic (decision #3):
 
 | Plane | Entry | Trigger |
 |---|---|---|
-| change | `on_change(event)` | a governed change event (the extension kernel) |
+| change | `on_change(event)` | a governed change event (the effect kernel) |
 | run | `def run(ctx)` | `mrd run` addressing a task block |
 
 `RunCtx` is inert data: page, task, args, env, invocation id, root-at-eval.
@@ -176,7 +176,7 @@ S1 — ship the scoped claim, never the unqualified one."*
 | Seam | Owner |
 |---|---|
 | addressing / fence / contracts / caps | `crates/run` (`address`, `fence`, `contracts`, `caps`) |
-| hermetic eval | `rules::eval_run` via `crates/run::dispatch_starlark` |
+| hermetic eval | `effects::eval_run` via `crates/run::dispatch_starlark` |
 | bash exec + shim + two-phase | `crates/run` (`exec`, `shim`, `dispatch_bash`) |
 | detection bracket | `fs::guard` (+ `crates/run` snapshot integration) |
 | the one write path | `crates/run::executor` → `model::validate_batch` → `fs::apply_batch` |

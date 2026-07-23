@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use effects::{Domain, EvalError, EvalLimits};
 use model::MerkleRoot;
-use rules::{Domain, EvalError, EvalLimits};
 use run::caps::CapSet;
 use run::dispatch_starlark::{self, DispatchError, StarlarkDispatch};
 use run::executor::{ExecError, ReceiptAddr};

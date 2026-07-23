@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use rules::Provenance;
+use effects::Provenance;
 use run::caps::CapSet;
 use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;

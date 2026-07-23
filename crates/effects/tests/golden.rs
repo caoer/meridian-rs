@@ -5,7 +5,7 @@
 
 mod support;
 
-use rules::{EffectKind, eval};
+use effects::{EffectKind, eval};
 use support::{all_rules, event, rule};
 
 // status_binding fires when the Status section moved but the frontmatter status

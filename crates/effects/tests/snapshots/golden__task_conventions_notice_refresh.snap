@@ -1,5 +1,5 @@
 ---
-source: crates/rules/tests/golden.rs
+source: crates/effects/tests/golden.rs
 expression: effects
 ---
 [
@@ -25,19 +25,6 @@ expression: effects
     "fingerprint_after": "bbb",
     "args": {
       "view": "tasks"
-    }
-  },
-  {
-    "kind": "md.append_section",
-    "rule_id": "status_log",
-    "seq": 0,
-    "depth": 0,
-    "plane": "change",
-    "fingerprint_before": "aaa",
-    "fingerprint_after": "bbb",
-    "args": {
-      "content": "status changed at bbb",
-      "section": "Log"
     }
   }
 ]

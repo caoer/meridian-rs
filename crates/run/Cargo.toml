@@ -18,7 +18,7 @@ workspace = true
 fs = { workspace = true }
 model = { workspace = true }
 # md.* effect descriptors in (executor input), ChangeEvent synthesis out.
-rules = { workspace = true }
+effects = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
 # `.meridian.toml` `[run.caps]` name-convention table.

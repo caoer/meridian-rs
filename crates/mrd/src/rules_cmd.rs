@@ -1,9 +1,9 @@
-//! `mrd rules replay` — corpus replay for the extension kernel (decisions/0003 §
+//! `mrd rules replay` — corpus replay for the effect kernel (decisions/0003 §
 //! Testing methodology, the third layer above fixtures).
 //!
 //! # What it does
 //! Walk a workspace's real history as a stream of consecutive corpus states,
-//! synthesize the [`rules::ChangeEvent`] stream from the per-file diffs, run a
+//! synthesize the [`effects::ChangeEvent`] stream from the per-file diffs, run a
 //! rule set over every event, and report the aggregate: which rules NEVER fired
 //! (dead-rule detection), per-rule fire counts, the effect-kind distribution,
 //! and the fuel-consumption profile. Fixtures say "my cases pass"; replay says
@@ -31,9 +31,9 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use effects::{ChangeEvent, EvalLimits, Rule};
 use model::delta::{FileChangeKind, FileDelta, file_delta};
 use model::{Document, NodeKind, Ref};
-use rules::{ChangeEvent, EvalLimits, Rule};
 use serde_json::json;
 
 use crate::{Fail, current_dir};
@@ -262,7 +262,7 @@ fn process_change(fc: &FileChange, rules: &[Rule], limits: EvalLimits, agg: &mut
     let event = synth_event(&fc.path, &delta, before.as_ref(), after.as_ref());
     agg.events += 1;
 
-    for tel in rules::eval_telemetry(rules, &event, limits) {
+    for tel in effects::eval_telemetry(rules, &event, limits) {
         let ra = agg
             .rules
             .get_mut(&tel.rule_id)
@@ -611,7 +611,7 @@ struct RuleAgg {
     events_fired: u64,
     /// Total effect descriptors emitted across all events.
     total_effects: u64,
-    /// Events where the rule faulted (a typed [`rules::EvalError`]).
+    /// Events where the rule faulted (a typed [`effects::EvalError`]).
     errors: u64,
     /// The first fault message seen (for the report's error sample).
     error_sample: Option<String>,

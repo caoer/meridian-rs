@@ -5,7 +5,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use rules::{eval_with_limits, ChangeEvent, EvalLimits, Rule};
+use effects::{eval_with_limits, ChangeEvent, EvalLimits, Rule};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
