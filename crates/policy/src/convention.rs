@@ -29,7 +29,7 @@
 //! arming (U1.4), never widen it.
 
 use crate::change::Change;
-use crate::check_eval::{self, CheckError, CheckLimits};
+use crate::check_eval::{self, CheckError, CheckLimits, CheckTelemetry};
 
 /// The four capability files a convention folder may carry. Each earns a file iff
 /// it needs a distinct power ceiling (rulings § capability grammar); v1 loads
@@ -211,6 +211,17 @@ impl Convention {
     pub fn check_change(&self, change: &Change) -> Result<CheckOutcome, CheckError> {
         let refusals = check_eval::run_check_change(&self.check_source, change, self.limits)?;
         Ok(CheckOutcome { refusals })
+    }
+
+    /// Run the CHECK over one [`Change`] and return the [`CheckTelemetry`] — the
+    /// refusals AND the exact fuel + heap the evaluation spent. Same metered core
+    /// as [`Convention::check_change`]; the `test --corpus` tier (U1.5) reads the
+    /// telemetry for its fuel + heap p50/p99 budgets.
+    ///
+    /// # Errors
+    /// [`CheckError`] — a budget/parse/runtime fault or a missing `check_change`.
+    pub fn check_change_metered(&self, change: &Change) -> Result<CheckTelemetry, CheckError> {
+        check_eval::run_check_change_metered(&self.check_source, change, self.limits)
     }
 
     /// The CHECK source (for tests and later units that re-run it).
