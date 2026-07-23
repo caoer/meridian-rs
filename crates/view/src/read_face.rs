@@ -42,7 +42,7 @@ use std::collections::BTreeMap;
 
 use duckdb::Connection;
 use duckdb::types::Value;
-use model::{Document, Node, NodeKind};
+use model::{CorpusIndex, Document, Node, NodeKind};
 
 use crate::ViewError;
 use crate::facts;
@@ -71,27 +71,30 @@ CREATE TABLE input_lock (
 
 -- board_drift — RED in the default face: a pinned NATIVE-algo lock item whose
 -- live target content rev differs from the pinned rev (§2.3 red; the
--- doctored-verdict trace, §5.3). A foreign-algo lock (hash_algo != 'node-rev')
--- cannot drift — the engine never computed its rev — so it is excluded here and
--- renders superseded-algo grey (U3.4). Computed per query by joining the parse
--- projection against live nodes.
+-- doctored-verdict trace, §5.3). A foreign-algo lock (hash_algo not in the
+-- engine-native set {node-rev, v2}) cannot drift — the engine never computed its
+-- rev — so it is excluded here and renders superseded-algo grey (U3.4). The
+-- v1→v2 supersede keeps the node-rev value under the `v2` label, so a `v2` pin
+-- drifts/greens through the SAME node_rev compare. Computed per query by joining
+-- the parse projection against live nodes.
 CREATE VIEW board_drift AS
     SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
            il.pinned_rev, n.node_rev AS live_rev, 'content-drifted' AS reason
     FROM input_lock il
     JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
       AND n.node_rev <> il.pinned_rev;
 
 -- board_unresolved — RED in the default face: a pinned NATIVE-algo lock item
 -- whose `to` selector resolves to no live node (rename / delete / rewrite; §2.3,
--- §2.5). Foreign-algo locks render superseded-algo grey, never red — excluded.
+-- §2.5). Foreign-algo locks (not in {node-rev, v2}) render superseded-algo grey,
+-- never red — excluded.
 CREATE VIEW board_unresolved AS
     SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
            il.pinned_rev
     FROM input_lock il
     LEFT JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
       AND n.path IS NULL;
 
 -- board_red — the union board-red surface: drift + unresolved. Grey
@@ -119,12 +122,14 @@ CREATE VIEW board_red AS
 -- close; the board compares the LIVE rev against that frozen rev, it never
 -- recomputes the verdict. A closed card color is a reading of the frozen pin.
 CREATE VIEW board AS
-    -- green: pinned NATIVE-algo + live rev still equals the frozen pinned rev.
+    -- green: pinned NATIVE-algo ({node-rev, v2}) + live rev still equals the
+    -- frozen pinned rev. The v1→v2 supersede keeps the node-rev value under the
+    -- `v2` label, so it greens through the SAME node_rev compare.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            n.node_rev AS live_rev, 'green' AS color, 'attested' AS reason
         FROM input_lock il
         JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-        WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+        WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
           AND n.node_rev = il.pinned_rev
     UNION ALL
     -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned target).
@@ -133,12 +138,13 @@ CREATE VIEW board AS
         FROM board_red
     UNION ALL
     -- grey superseded-algo: pinned under a hash-algo this engine does not compute
-    -- (v1/foreign). Readable, unverifiable here — never red, never green; an
-    -- archived v1 block renders this forever (d2 §6.3; U0.2/U3.4).
+    -- (v1/merkle-v1/foreign — anything outside the native {node-rev, v2} set).
+    -- Readable, unverifiable here — never red, never green; an archived v1 block
+    -- renders this forever (d2 §6.3; U0.2/U3.4).
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            NULL AS live_rev, 'grey' AS color, 'superseded-algo' AS reason
         FROM input_lock il
-        WHERE il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo <> 'node-rev'
+        WHERE il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo NOT IN ('node-rev', 'v2')
     UNION ALL
     -- grey: declared-unpinned — the ungated close, never green.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
@@ -246,6 +252,7 @@ pub fn stale_paths(
 /// is a fenced code block whose info string carries the `^inputs` anchor
 /// (`` ```yaml ^inputs ``) — parsed here from the vault bytes alone (source 1).
 fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
+    let index = corpus_index(docs);
     let mut stmt = conn.prepare(
         "INSERT INTO input_lock \
          (src_path, seq, declared_ref, to_path, to_sel, pinned_rev, rev_class, hash_algo, src_doc_rev) \
@@ -253,7 +260,10 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
     )?;
     for (path, doc) in docs {
         let src_doc_rev = doc.root.node_rev.0.clone();
-        for (seq, item) in page_lock_items(doc).into_iter().enumerate() {
+        for (seq, item) in page_lock_items_in_corpus(path, doc, &index, docs)
+            .into_iter()
+            .enumerate()
+        {
             stmt.execute(duckdb::params_from_iter(
                 [
                     Value::Text(path.clone()),
@@ -321,6 +331,74 @@ pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     collect_lock_items(&doc.root, &doc.raw, &mut out);
     collect_form2_lock_items(doc, &mut out);
     out
+}
+
+/// Build the corpus [`CorpusIndex`] over `docs` — the vault name/alias index the
+/// form-2 wikilink resolution needs (`getFirstLinkpathDest` parity, contract
+/// §4.5). One owner: both the board projection ([`project_input_locks`]) and the
+/// walk plane ([`crate::walk`]) build it from the SAME `docs`.
+#[must_use]
+pub fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
+    let mut index = CorpusIndex::new();
+    for (path, doc) in docs {
+        index.insert(path, doc);
+    }
+    index
+}
+
+/// Parse `doc`'s `^inputs` lock items, then RESOLVE each item's `to_path` against
+/// the corpus (the U3.4 wikilink wiring). A form-2 ref is a `[[wikilink]]`-by-NAME
+/// (`llm-wiki-skill-compilation`), not a vault path, so the raw `to_path` matches
+/// no `node.path` and the board/walk cannot find the target. This maps the name to
+/// a real path via [`resolve_to_path`], so a native-algo form-2 pin verifies
+/// green against its live target (Go resolves these; mrd must too, or Gate B
+/// agreement fails). A form-1 path (already a real `node.path`) passes through
+/// unchanged; an unresolvable ref keeps its bare name and renders red/unresolved.
+#[must_use]
+pub fn page_lock_items_in_corpus(
+    src_path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+) -> Vec<LockItem> {
+    let mut items = page_lock_items(doc);
+    for item in &mut items {
+        item.to_path = resolve_to_path(&item.to_path, src_path, index, docs);
+    }
+    items
+}
+
+/// Resolve a lock item's `to_path` to a real corpus path. Precedence:
+/// 1. already a real `node.path` (a form-1 path, or a full-path ref that carries
+///    its `.md`) — kept verbatim;
+/// 2. the ref + `.md` is a real path (a full-path wikilink `a/b/c` → `a/b/c.md`);
+/// 3. otherwise `getFirstLinkpathDest` by basename/alias
+///    ([`CorpusIndex::resolve_linkpath`]).
+///
+/// An unresolvable ref returns its bare input unchanged — unresolved is
+/// first-class (the edge then renders red `selector-unresolved`, never a false
+/// green), exactly as a genuinely missing target should.
+///
+/// Public so the U3.4 supersede tool resolves a ref to the SAME path this reader
+/// does — one owner for wikilink resolution, no reader/writer drift on which
+/// node a `[[ref]]` names (the swept `node_rev` must match what the board reads).
+#[must_use]
+pub fn resolve_to_path(
+    to_path: &str,
+    src_path: &str,
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+) -> String {
+    if docs.contains_key(to_path) {
+        return to_path.to_string();
+    }
+    let with_md = format!("{to_path}.md");
+    if docs.contains_key(&with_md) {
+        return with_md;
+    }
+    index
+        .resolve_linkpath(to_path, src_path)
+        .unwrap_or_else(|| to_path.to_string())
 }
 
 /// Walk the node tree, parsing the lock items of every `^inputs` code block into
@@ -502,12 +580,18 @@ fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
 
 /// Strip a surrounding `[[ ]]` wikilink from a ref value, best-effort
 /// (`[[llm-wiki-skill-compilation]]` → `llm-wiki-skill-compilation`); a value with
-/// no brackets is returned unchanged.
+/// no brackets is returned unchanged. An Obsidian display alias (`[[target|show]]`)
+/// is dropped — only the LINK TARGET addresses a node, the `|show` text is render
+/// sugar — so `[[usage|meridian usage]]` resolves as `usage` (a `#section`
+/// survives for [`split_selector`]).
 fn strip_wikilink(value: &str) -> String {
-    value
+    let inner = value
         .strip_prefix("[[")
         .and_then(|s| s.strip_suffix("]]"))
-        .unwrap_or(value)
+        .unwrap_or(value);
+    inner
+        .split_once('|')
+        .map_or(inner, |(target, _alias)| target)
         .to_string()
 }
 
@@ -718,6 +802,21 @@ mod tests {
         );
         assert_eq!(item.rev_class, None);
         assert_eq!(item.hash_algo.as_deref(), Some("v1"));
+    }
+
+    /// A form-2 ref with an Obsidian display alias (`[[target|show]]`) resolves as
+    /// the TARGET, dropping the `|show` render text — `[[usage|meridian usage]]`
+    /// declares `usage`, not `usage|meridian usage` (which resolves to nothing).
+    #[test]
+    fn form2_ref_drops_display_alias() {
+        let raw = "## Chain\n\n```yaml\n- ref: '[[usage|meridian usage]]'\n  hash: 'merkle-v1:abcd'\nhash-algo: v1\n```\n\n^inputs\n";
+        let items = page_lock_items(&doc(raw));
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].declared_ref, "usage",
+            "the `|meridian usage` display alias is dropped — only `usage` addresses a node",
+        );
+        assert_eq!(items[0].to_path, "usage");
     }
 
     /// A form-2 block with MULTIPLE `- ref:` items parses ALL of them, in order,

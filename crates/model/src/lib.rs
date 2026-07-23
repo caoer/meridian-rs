@@ -46,6 +46,26 @@ pub type ByteSpan = Range<usize>;
 /// for the label so `pin` (writer) and `view` (reader) never drift.
 pub const NODE_REV_ALGO: &str = "node-rev";
 
+/// The effect-page `hash-algo` label the v1→v2 supersede stamps (design-2 §6.3:
+/// "`hash-algo: v2` = merkle-v1's composition law verbatim, two swaps: sha256 →
+/// blake3; norm-v1 → raw bytes"). For a whole-page ref that swap yields exactly
+/// this engine's `node_rev` (`blake3(raw bytes)[:16]`), so a `v2` pin is
+/// verified through the SAME node-rev compare as a native `node-rev` pin — the
+/// supersede keeps the value and re-labels it under the effect-page `vN`
+/// data-contract convention (SCHEMA.md). One owner for the label.
+pub const SUPERSEDE_ALGO_V2: &str = "v2";
+
+/// Whether `algo` is an engine-native `hash-algo` — one whose rev this engine's
+/// node-rev compare verifies to green/red, NOT grey `superseded-algo`. The
+/// native set is `{node-rev, v2}`: `node-rev` is what `pin` mints; `v2` is the
+/// design-2 §6.3 supersede label carrying the same node-rev value under the
+/// effect-page `vN` convention. Any other label (v1/merkle-v1, statusd-file-rev,
+/// read-rev, …) is a rev this engine cannot recompute → grey.
+#[must_use]
+pub fn is_native_algo(algo: &str) -> bool {
+    algo == NODE_REV_ALGO || algo == SUPERSEDE_ALGO_V2
+}
+
 /// Node content hash — the CAS token's model-side form. Opaque; algorithm is a
 /// rung-2 wire amendment (meridian's xxhash64 `sec_rev` is the migration donor;
 /// the mapping must be stated when the amendment lands).
@@ -1498,6 +1518,23 @@ impl CorpusIndex {
             .by_basename
             .get(&base)
             .or_else(|| self.by_alias.get(&key))?;
+        // A linkpath WITH subdirs (`a/b`) addresses a path ENDING in `a/b.md`, not
+        // just any file named `b` — getFirstLinkpathDest matches the fuller path
+        // (§4.5). Narrow the basename candidates to those whose path carries the
+        // whole subpath suffix; only fall back to the bare-basename set when the
+        // qualifier matches nothing (a stale subpath still resolves best-effort).
+        // Without this, `[[a/b]]` collides with every other `b.md` in the vault.
+        if key.contains('/') {
+            let suffix = format!("/{key}.md");
+            let narrowed: Vec<String> = candidates
+                .iter()
+                .filter(|p| p.to_lowercase().ends_with(&suffix))
+                .cloned()
+                .collect();
+            if !narrowed.is_empty() {
+                return pick_source_relative(&narrowed, from);
+            }
+        }
         pick_source_relative(candidates, from)
     }
 }
@@ -1582,6 +1619,47 @@ mod tests {
             return Some(node);
         }
         node.children.iter().find_map(|c| find(c, pred))
+    }
+
+    /// A subpath linkpath (`a/b`) resolves to the path ENDING in `a/b.md`, not to
+    /// an unrelated file sharing the basename `b` — getFirstLinkpathDest honors the
+    /// subdirs (§4.5). Fixture: FIVE `caveman.md` basename collisions plus the real
+    /// `sources/git/caveman/CAVEMAN.md`; `[[caveman/CAVEMAN]]` must pick the last.
+    /// Falsified by the bare basename: without the subpath narrow it would collide
+    /// with (and, source-relative, prefer) `effects/skills/caveman.md`.
+    #[test]
+    fn resolve_linkpath_honors_subpath_over_basename_collision() {
+        let mut index = CorpusIndex::new();
+        let empty = build(String::new(), syntax::parse(""));
+        for p in [
+            "sources/caveman.md",
+            "effects/skills/caveman.md",
+            "domains/agents/skills/caveman.md",
+            "sources/git/caveman/CAVEMAN.md",
+        ] {
+            index.insert(p, &empty);
+        }
+        // From the effect page, the bare `caveman` would be source-relative to the
+        // effect page itself; the SUBPATH `caveman/CAVEMAN` must override that.
+        assert_eq!(
+            index.resolve_linkpath("caveman/CAVEMAN", "effects/skills/caveman.md"),
+            Some("sources/git/caveman/CAVEMAN.md".to_string()),
+            "the subpath qualifier selects the path ending in caveman/CAVEMAN.md",
+        );
+        // A bare basename still resolves best-effort over the collision set.
+        assert!(
+            index
+                .resolve_linkpath("caveman", "effects/skills/caveman.md")
+                .is_some(),
+            "a bare basename still resolves (source-relative pick over the set)",
+        );
+        // A subpath that matches no path suffix falls back to the basename set.
+        assert!(
+            index
+                .resolve_linkpath("nowhere/caveman", "sources/caveman.md")
+                .is_some(),
+            "a stale subpath degrades to the bare-basename resolution",
+        );
     }
 
     #[test]
