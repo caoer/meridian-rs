@@ -63,8 +63,28 @@ pub struct JournalRow<'a> {
     /// The workspace tree merkle AFTER the write — recordable here only because
     /// the journal is root-EXCLUDED (it does not cover the row's own bytes).
     pub root_after: &'a str,
+    /// The whole-file rev transition a `create`/`remove` row records — the
+    /// birth/death on the ordinary change surface (d2 §2.5 C3). A create is a
+    /// birth (`before` absent); a remove is a death (`after` absent). `splice`
+    /// rows carry `None` here: their transitions are node-grain, in `edits`.
+    pub file: Option<FileTransition<'a>>,
     /// The write's edits (rev transitions per target), same order as the batch.
+    /// A whole-file `create`/`remove` carries none (`edits=0`) — the file-grain
+    /// transition rides [`JournalRow::file`], never this node-grain list.
     pub edits: Vec<EditFact<'a>>,
+}
+
+/// A whole-file rev transition for a `create`/`remove` row (d2 §2.5 C3): an
+/// absent side (`None`) renders as the literal `absent`. A birth is
+/// `{before: None, after: Some(rev)}`; a death is `{before: Some(rev), after:
+/// None}` — the same before/after-absent shape the Delta change surface carries
+/// (`file_rev_before`/`file_rev_after`).
+#[derive(Debug, Clone, Copy)]
+pub struct FileTransition<'a> {
+    /// The file rev BEFORE the write — `None` (absent) for a `create` birth.
+    pub before: Option<&'a str>,
+    /// The file rev AFTER the write — `None` (absent) for a `remove` death.
+    pub after: Option<&'a str>,
 }
 
 /// Render one journal row as a single markdown list item — the block-leaf
@@ -87,11 +107,23 @@ pub fn render_row(row: &JournalRow<'_>) -> String {
     }
     let _ = write!(
         out,
-        " root_before={} root_after={} edits={}",
-        row.root_before,
-        row.root_after,
-        row.edits.len()
+        " root_before={} root_after={}",
+        row.root_before, row.root_after
     );
+    // Whole-file birth/death token (create/remove): an absent side renders as
+    // the literal `absent`, so a birth reads `before=absent` and a death reads
+    // `after=absent`. Omitted for splice rows (node-grain, in `edits`). Placed
+    // before `edits=` and never using the `root_` prefix, so `parse_rows` reads
+    // neither as a root token.
+    if let Some(file) = &row.file {
+        let _ = write!(
+            out,
+            " before={} after={}",
+            file.before.unwrap_or("absent"),
+            file.after.unwrap_or("absent")
+        );
+    }
+    let _ = write!(out, " edits={}", row.edits.len());
     for edit in &row.edits {
         let _ = write!(
             out,
@@ -263,6 +295,7 @@ mod tests {
             now: Some("2026-07-23T12:00:00Z"),
             root_before: rb,
             root_after: ra,
+            file: None,
             edits: Vec::new(),
         })
     }
@@ -298,6 +331,7 @@ mod tests {
             now: None,
             root_before: "b3:x",
             root_after: "b3:y",
+            file: None,
             edits: Vec::new(),
         });
         assert!(!line.contains("actor="));
@@ -305,6 +339,63 @@ mod tests {
         let p = &parse_rows(&line)[0];
         assert_eq!(p.actor, None);
         assert_eq!(p.now, None);
+    }
+
+    /// d2 §2.5 C3: a `create` row records a birth — `before=absent` — and a
+    /// `remove` row records a death — `after=absent`. The token rides between
+    /// the roots and `edits=`, and `parse_rows` still reads the roots and
+    /// anchor (the file token is not a `root_` token, so it never shadows one).
+    #[test]
+    fn create_row_before_absent_remove_row_after_absent() {
+        let birth = render_row(&JournalRow {
+            seq: 42,
+            op: "create",
+            path: "notes/new.md",
+            actor: Some("alice"),
+            now: None,
+            root_before: "b3:0",
+            root_after: "b3:1",
+            file: Some(FileTransition {
+                before: None,
+                after: Some("41f6dead0badcafe"),
+            }),
+            edits: Vec::new(),
+        });
+        assert!(
+            birth.contains(" before=absent after=41f6dead0badcafe "),
+            "create records before=absent: {birth}"
+        );
+        assert!(
+            birth.contains("edits=0"),
+            "whole-file create has no node edits"
+        );
+
+        let death = render_row(&JournalRow {
+            seq: 43,
+            op: "remove",
+            path: "notes/new.md",
+            actor: Some("alice"),
+            now: None,
+            root_before: "b3:1",
+            root_after: "b3:2",
+            file: Some(FileTransition {
+                before: Some("41f6dead0badcafe"),
+                after: None,
+            }),
+            edits: Vec::new(),
+        });
+        assert!(
+            death.contains(" before=41f6dead0badcafe after=absent "),
+            "remove records after=absent: {death}"
+        );
+
+        // The file token never defeats root/anchor parsing.
+        for (line, rb, ra) in [(&birth, "b3:0", "b3:1"), (&death, "b3:1", "b3:2")] {
+            let p = &parse_rows(line)[0];
+            assert_eq!(p.root_before, rb);
+            assert_eq!(p.root_after, ra);
+            assert!(p.anchor.starts_with("r-"));
+        }
     }
 
     /// A continuous chain (`root_after(N)` == `root_before(N+1)`) is green.
@@ -348,6 +439,7 @@ mod tests {
             now: Some("2026-07-23T13:00:00Z"),
             root_before: "b3:FORGED_BEFORE",
             root_after: "b3:FORGED_AFTER",
+            file: None,
             edits: Vec::new(),
         });
         let page = format!(

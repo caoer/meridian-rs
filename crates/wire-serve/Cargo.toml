@@ -39,3 +39,8 @@ policy = { workspace = true }
 # Decode-time JSON: the strict-decode pass validates the raw request object by
 # hand (serde's `deny_unknown_fields` does not compose with `flatten`).
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# test-only: create/remove birth/death gates need a real on-disk workspace
+# (atomic file writes, journal-page append, root re-folds).
+tempfile = "3"
