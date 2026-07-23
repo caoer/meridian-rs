@@ -177,9 +177,7 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
     )?;
     for (path, doc) in docs {
         let src_doc_rev = doc.root.node_rev.0.clone();
-        let mut items = Vec::new();
-        collect_lock_items(&doc.root, &doc.raw, &mut items);
-        for (seq, item) in items.into_iter().enumerate() {
+        for (seq, item) in page_lock_items(doc).into_iter().enumerate() {
             stmt.execute(duckdb::params_from_iter(
                 [
                     Value::Text(path.clone()),
@@ -199,13 +197,34 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
 }
 
 /// One parsed `^inputs` lock item (source 1). Passengers the engine ignores
-/// (`claim`, `at:`) are not projected — only the columns board reds compute on.
-struct LockItem {
-    declared_ref: String,
-    to_path: String,
-    to_sel: String,
-    pinned_rev: Option<String>,
-    rev_class: Option<String>,
+/// (`claim`, `at:`) are not carried — only the columns board reds and the walk
+/// plane compute on.
+///
+/// Public because the walk plane ([`crate::walk`]) consumes the SAME parser this
+/// board projection uses: one owner for the `^inputs` lock grammar (design "one
+/// owner per fact"), never a second reader that could drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockItem {
+    /// The `ref` field, verbatim (the declared ref).
+    pub declared_ref: String,
+    /// The `to` page path — the `ref` path when `to` is absent.
+    pub to_path: String,
+    /// The `to` selector, verbatim after the first `#` (`""` = the page/doc root).
+    pub to_sel: String,
+    /// The `rev` field — `None` = declared-only (grey).
+    pub pinned_rev: Option<String>,
+    /// The `rev_class` field — `content` | `object` (`None` = unstated).
+    pub rev_class: Option<String>,
+}
+
+/// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
+/// The SHARED reader for the board projection ([`project_input_locks`]) and the
+/// walk plane ([`crate::walk`]) — one owner for the lock grammar.
+#[must_use]
+pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
+    let mut out = Vec::new();
+    collect_lock_items(&doc.root, &doc.raw, &mut out);
+    out
 }
 
 /// Walk the node tree, parsing the lock items of every `^inputs` code block into

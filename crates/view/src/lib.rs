@@ -23,6 +23,7 @@
 pub mod facts;
 pub mod read_face;
 pub mod schema;
+pub mod walk;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
