@@ -15,9 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use effects::EvalLimits;
-use realise::{
-    ApplyBinding, Check, Claim, ClaimState, FieldEquals, RealiseSpec, realise,
-};
+use realise::{ApplyBinding, Check, Claim, ClaimState, FieldEquals, RealiseSpec, realise};
 
 /// A page whose `status` an apply task converges to `done` (the happy claim).
 const CONVERGES_PAGE: &str = "\
@@ -154,14 +152,19 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         panic!("expected pending-agent, got {:?}", report.claims[0].state);
     };
     assert!(card.is_some(), "the card mint returns its journal anchor");
-    assert_eq!(report.claims[0].applies, 0, "no apply ran for pending-agent");
+    assert_eq!(
+        report.claims[0].applies, 0,
+        "no apply ran for pending-agent"
+    );
     assert!(report.claims[0].receipts.is_empty());
 
     // The board card is a real governed page with the pending-agent frontmatter.
-    let card_body =
-        std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap();
+    let card_body = std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap();
     assert!(card_body.contains("state: pending-agent"), "{card_body}");
-    assert!(card_body.contains("claim: status-must-be-done"), "{card_body}");
+    assert!(
+        card_body.contains("claim: status-must-be-done"),
+        "{card_body}"
+    );
     assert!(
         card_body.contains("'status' is 'todo', expected 'done'"),
         "card carries the drift detail: {card_body}"
@@ -169,8 +172,14 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
 
     // The card was born through the guarded create: a before=absent journal row.
     let journal = journal_text(&root);
-    assert!(journal.contains("op=create path=board/status-must-be-done.md"), "{journal}");
-    assert!(journal.contains(" before=absent "), "guarded birth: {journal}");
+    assert!(
+        journal.contains("op=create path=board/status-must-be-done.md"),
+        "{journal}"
+    );
+    assert!(
+        journal.contains(" before=absent "),
+        "guarded birth: {journal}"
+    );
 
     // Idempotent by claim selector: a second realise mints no second card and
     // does not error — the guarded create's if_absent CAS is the idempotency.
@@ -208,7 +217,10 @@ fn retry_exhausted_renders_non_convergent() {
     let report = realise(&root, &[claim], &spec(&scratch)).unwrap();
 
     assert_eq!(report.claims[0].state, ClaimState::NonConvergent);
-    assert_eq!(report.claims[0].applies, 3, "the whole retry budget was spent");
+    assert_eq!(
+        report.claims[0].applies, 3,
+        "the whole retry budget was spent"
+    );
     assert_eq!(
         report.claims[0].receipts.len(),
         3,
@@ -301,7 +313,12 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
     let report = realise(&root, &claims, &spec(&scratch)).unwrap();
     assert!(report.caps_union.admits("md.set_field", None));
     // Both converged (each apply sets its own field).
-    assert!(report.claims.iter().all(|c| c.state == ClaimState::Converged));
+    assert!(
+        report
+            .claims
+            .iter()
+            .all(|c| c.state == ClaimState::Converged)
+    );
 }
 
 #[test]
