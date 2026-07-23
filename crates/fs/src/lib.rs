@@ -262,6 +262,22 @@ pub fn remove_file(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<()> {
     fsync_dir(dst.parent().unwrap_or_else(|| Path::new(".")))
 }
 
+/// Overwrite one existing file's whole bytes with `body`, atomically
+/// (tmp+fsync+rename beside the destination — the crate's one write discipline,
+/// never in place). Unlike [`create_file`] this carries NO `if_absent` guard:
+/// the caller (the pin lock writer, d2 §2.5) has already CAS-guarded the file's
+/// read rev, so the overwrite is the committed edge of a checked write. The
+/// destination's parent must exist (a whole-file overwrite never mints a fresh
+/// subtree); a missing file is the caller's CAS-drift concern, surfaced here as
+/// the rename's own I/O error, never silently created.
+///
+/// # Errors
+/// Any I/O failure at tmp-write, fsync, or rename.
+pub fn replace_file(root: &WorkspaceRoot, rel_path: &Path, body: &str) -> io::Result<()> {
+    let dst = root.0.join(rel_path);
+    commit_rename(&stage_file(&dst, body.as_bytes())?)
+}
+
 /// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+
 /// rename), creating the page and its parent directories when absent. The
 /// receipt engine appends journal rows through this: `fs` renders NOTHING
