@@ -86,6 +86,11 @@ pin = { workspace = true }
 # the attest op — `attest` composes `pin` (already in the graph) and reads the
 # realise board for the realised-gate; no new external crate enters.
 attest = { workspace = true }
+# `mrd new` / `mrd unfold` (U5.3): presets + session birth. A local CLIENT of the
+# `preset` op — it loads a def, validates ^properties, and births the scaffold /
+# record through the U2.6 guarded create (already in the graph via `wire-serve`);
+# no new external crate enters.
+preset = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
