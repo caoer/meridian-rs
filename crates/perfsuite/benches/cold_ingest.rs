@@ -157,6 +157,7 @@ fn proto_pass(loaded: &[(String, String)]) -> (f64, u64, usize) {
                     receipt: None,
                     if_root: None,
                     dry: None,
+                    force: None,
                     edits: vec![pb::Edit {
                         target: Some(pb::SecRef {
                             form: Some(pb::sec_ref::Form::Hpath(pb::HpathRef {

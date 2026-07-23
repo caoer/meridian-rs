@@ -144,7 +144,9 @@ fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     check_fields(
         obj,
         op,
-        &["path", "actor", "now", "receipt", "if_root", "dry", "edits"],
+        &[
+            "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
+        ],
     )?;
     let now = opt_str(obj, op, "now")?;
     if let Some(n) = &now
@@ -164,6 +166,7 @@ fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         receipt: obj.get("receipt").map(decode_receipt).transpose()?,
         if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
         dry: opt_bool(obj, op, "dry")?,
+        force: opt_bool(obj, op, "force")?,
         edits: decode_edits(edits_v)?,
     })
 }

@@ -117,16 +117,21 @@ pub enum GateOutcome {
     Refusal(GateRefusal),
 }
 
-/// One advisory finding a `warn`-armed convention emitted — it renders on the
-/// write response but never refuses (§11.1 advisory shape).
+/// One advisory finding a `warn`-armed convention emitted, OR a `--force`-escaped
+/// refusal (U4.3) — both render on the write response but never refuse (§11.1
+/// advisory shape). A `forced` finding is the loud record of a skip: it renders,
+/// and the mount journals it (the sanctioned bypass, decision #6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateFinding {
-    /// The convention that emitted it.
+    /// The convention (or `binding-break:<side>`) that emitted it.
     pub slug: String,
     /// The teaching message.
     pub message: String,
     /// The legal path the refusal cites (the passing scenario).
     pub passing_scenario: String,
+    /// `true` when this finding is a `--force`-escaped refusal — a skip the
+    /// mount must journal (never a plain `warn` advisory).
+    pub forced: bool,
 }
 
 /// One blocking violation a `block`-armed convention emitted — the change
@@ -159,6 +164,29 @@ pub enum GateRefusal {
         slug: String,
         armed_rev: String,
         report_rev: String,
+    },
+    /// U4.3 taxonomy row 9: a one-sided file↔index change stopped at the door (a
+    /// checkbox flip on the INDEX, or a direct edit of an armed convention's
+    /// `CHECK.md`). Force-escapable — a `--force` write converts this to a
+    /// journaled + rendered finding instead. Mints `binding_break`.
+    BindingBreak {
+        /// Which side the one-sided change touched (`index` / `file`).
+        side: crate::binding::BindingSide,
+        /// The engine-managed file the write targeted.
+        path: String,
+        /// The teaching message naming the break.
+        teaching: String,
+        /// The legal path the refusal cites (the ONE-act proper path).
+        legal_path: String,
+    },
+    /// U4.3 taxonomy row 10: deletion/rename of the INDEX or the once-armed
+    /// marker, refused by the INDEX-integrity floor convention. NOT
+    /// force-escapable (security F2). Mints `index_integrity`.
+    IndexIntegrity {
+        /// The protected file (the INDEX or the marker).
+        target: String,
+        /// The teaching message citing the floor convention.
+        teaching: String,
     },
 }
 
@@ -286,7 +314,58 @@ pub fn gate(change: &Change, armed_set: &ArmedSet) -> GateOutcome {
             armed_rev: armed_rev.clone(),
             report_rev: report_rev.clone(),
         }),
-        ArmedSet::Armed(convs) => evaluate_armed(change, convs),
+        ArmedSet::Armed(convs) => gate_armed(change, convs),
+    }
+}
+
+/// The armed-workspace decision: the U4.3 door law FIRST (INDEX-integrity floor,
+/// then the binding law), then the armed conventions. The door law runs before
+/// conventions because a write to the engine-managed INDEX / an armed `CHECK.md`
+/// is structurally wrong regardless of what a user convention would say.
+fn gate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
+    let path = target_path(change);
+    let is_armed_slug = |slug: &str| convs.iter().any(|c| c.slug() == slug);
+    match crate::binding::classify_door_law(change.op, path, &is_armed_slug) {
+        // The INDEX-integrity floor is structural — `--force` does NOT escape it
+        // (security F2: deleting the marker is the silent-disarm attack).
+        crate::binding::DoorLaw::IndexIntegrity { target, teaching } => {
+            return GateOutcome::Refusal(GateRefusal::IndexIntegrity { target, teaching });
+        }
+        // A binding break is the sanctioned-bypass class: `--force` escapes it,
+        // the skip becoming a journaled + rendered finding.
+        crate::binding::DoorLaw::BindingBreak {
+            side,
+            path,
+            teaching,
+            legal_path,
+        } => {
+            if change.force {
+                return GateOutcome::Ok(vec![GateFinding {
+                    slug: format!("binding-break:{}", side.as_str()),
+                    message: format!("FORCED past the binding law: {teaching}"),
+                    passing_scenario: legal_path,
+                    forced: true,
+                }]);
+            }
+            return GateOutcome::Refusal(GateRefusal::BindingBreak {
+                side,
+                path,
+                teaching,
+                legal_path,
+            });
+        }
+        crate::binding::DoorLaw::Clear => {}
+    }
+    evaluate_armed(change, convs)
+}
+
+/// The write's target file path — `change.doc.path` (the after state; stamped on
+/// an absent doc for a `remove`), falling back to the before state's path.
+fn target_path(change: &Change) -> &str {
+    if change.doc.path.is_empty() {
+        change.before.path.as_str()
+    } else {
+        change.doc.path.as_str()
     }
 }
 
@@ -324,6 +403,7 @@ fn evaluate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
                     slug: ac.slug.clone(),
                     message: refusal.message,
                     passing_scenario: refusal.passing_scenario,
+                    forced: false,
                 }),
                 // `off` is never armed — it does not appear in a resolved set.
                 Enforcement::Off => {}
@@ -341,6 +421,7 @@ fn evaluate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
                 slug: v.slug,
                 message: format!("FORCED past armed refusal: {}", v.message),
                 passing_scenario: v.passing_scenario,
+                forced: true,
             }));
             return GateOutcome::Ok(all);
         }

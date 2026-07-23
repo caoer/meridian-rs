@@ -725,6 +725,7 @@ fn absent_actor_now_absent_on_the_wire() {
             receipt: None,
             if_root: None,
             dry: None,
+            force: None,
             edits: vec![wire::Edit {
                 target: wire::SecRef::FmKey {
                     fm_key: "title".into(),

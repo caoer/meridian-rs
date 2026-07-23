@@ -119,6 +119,7 @@ fn proto_frames(n: usize) -> Vec<pb::Frame> {
                     receipt: None,
                     if_root: None,
                     dry: None,
+                    force: None,
                     edits: vec![pb::Edit {
                         target: Some(pb::SecRef {
                             form: Some(pb::sec_ref::Form::Hpath(pb::HpathRef {
