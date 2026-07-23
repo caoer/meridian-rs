@@ -135,7 +135,11 @@ pub fn build_facts_memory(
 /// root, each section, the frontmatter node, and each block anchor — exactly
 /// the spans the selector grammar (§2.2) addresses. Inline nodes (wikilinks,
 /// tags) carry no independent selector and are not node rows.
-fn project_nodes(
+///
+/// `pub(crate)` so the U2.9 read face ([`crate::read_face`]) can project `node`
+/// into the SAME connection as its `^inputs`/board projections (board reds join
+/// `input_lock` against `node`), never a second store.
+pub(crate) fn project_nodes(
     conn: &Connection,
     docs: &std::collections::BTreeMap<String, Document>,
 ) -> duckdb::Result<()> {
@@ -182,7 +186,9 @@ fn collect_nodes(node: &Node, path: &str, doc_rev: &str, rows: &mut Vec<Vec<Valu
 }
 
 /// Project the supplied journal rows into `receipt_journal` (page order).
-fn project_journal(conn: &Connection, rows: &[JournalRowInput]) -> duckdb::Result<()> {
+/// `pub(crate)` for the same reason as [`project_nodes`]: the read face mounts
+/// the `^receipt` projection alongside `node` in one connection.
+pub(crate) fn project_journal(conn: &Connection, rows: &[JournalRowInput]) -> duckdb::Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO receipt_journal \
          (anchor, op, path, actor, now, root_before, root_after, edits, line_no) \
