@@ -34,6 +34,7 @@ choke-point functions.
 | 3 | **run-plane apply + `receipts/run.md` append** (`run::executor::apply_under`, U3.x) | **GATED** | The run plane lands bytes through `fs::apply_batch`, NOT the wire choke-point, so it mounts the SAME evaluator (`run::gate::refuse_reason` → `policy::gate`) at step 6b — before the commit. The `receipts/run.md` append rides the same sealed `fs::apply_batch`, so it is gated with the change that produces it. Scenario 7 + falsification. |
 | 4 | **journal append** (`fs::append_line` → `meridian/journal.md`, U2.1) | **EXEMPT** | Receipt-engine-only path. An ordinary `splice`/`create`/`remove` targeting the reserved journal is REFUSED (`reserved_journal_guard`, `fs::domain::is_reserved_journal`); the engine's own append is not a wire op and does not re-enter the write choke-point. The gate would never (and must never) see it. |
 | 5 | **migrate kit** (strict writer, U3.2) | **GATED by construction** | The migrate kit writes through the strict writer (`splice`/`commit_batch`), so it rides the gated choke-point (#1). NOTE: no migrate-kit byte-lander exists in-tree yet (U3.2 pin-leg in-progress at review time); when it lands it inherits row #1's gate — there is no second write path to add. |
+| 6 | **`^inputs` lock-write** (`wire_serve::write::pin_lock`, U2.4) | **EXEMPT** (sanctioned, Block 4 leader ruling at U4.2 merge) | Engine's own act, same trust class as row 4: `new_text` is engine-rendered by `pin` (`crates/pin` is the only production caller; not dispatched as a wire op by either host), the triggering `inputs:` manifest edit rides the gated splice (#1), and the write itself is CAS + confinement + reserved-journal guarded and journaled. Gating it would gate an engine derivation, not a user change. Residual (stated): in-process code calling `pin_lock` with fabricated bytes is inside the TCB — the same residual class as the receipt engine's journal append. |
 
 ## Findings (byte-landers beyond the law's enumeration)
 
@@ -41,17 +42,11 @@ The plan's byte-landing enumeration lists rows 1–5. Surveying the current tree
 surfaced ONE further byte-lander not in that list — reported, not silently gated
 (per the U4.2 work order: "more than two byte-landing writer paths … is a finding"):
 
-- **`wire_serve::write::pin_lock`** (the guarded `^inputs` lock-write, U2.4). It
-  lands page bytes (the engine-computed `^inputs` lock) through `fs::replace_file`,
-  and it is **NOT** wired to `enforce_gate` today. It is absent from the plan's
-  enumeration, which suggests it is intentionally exempt: the lock bytes are
-  ENGINE-COMPUTED from the page's `inputs:` manifest (deterministic given the
-  manifest), and the user's edit to that manifest is itself an ordinary `splice`
-  that IS gated (row #1). Gating the computed lock-write would gate an engine
-  derivation, not a user change. **Recommendation:** treat `pin_lock` as EXEMPT
-  (engine-computed, downstream of a gated manifest edit), and record it here as
-  the sanctioned exemption. Flagged to the Block 4 leader for a ruling rather than
-  gated or dropped silently.
+- **`wire_serve::write::pin_lock`** (the guarded `^inputs` lock-write, U2.4) —
+  found ungated and absent from the plan's enumeration. **RULED EXEMPT** at the
+  U4.2 merge (Block 4 leader, rationale verified against the code); now census
+  row #6 above. Flagged upward for the plan's enumeration text to be amended by
+  its owner.
 
 - `wire_serve::write::commit_batch` has **no production caller** (tests only); it
   is the shared commit seam rows #1/#2 use internally, not a separate byte-lander.
