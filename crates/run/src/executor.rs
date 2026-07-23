@@ -155,6 +155,12 @@ pub enum ExecError {
     Page { path: String, reason: String },
     /// Lock, receipt-scan, or commit I/O failure.
     Io { reason: String },
+    /// The armed change plane REFUSED this apply (U4.2): the workspace's own
+    /// attested law blocked the change the run plane produced, before any byte
+    /// landed. The run plane lands bytes through `fs::apply_batch` (not the wire
+    /// choke-point), so it mounts the SAME gate — byte-landing parity. `detail`
+    /// names the convention/INDEX and cites the legal path.
+    ArmedRefusal { detail: String },
 }
 
 impl std::fmt::Display for ExecError {
@@ -192,6 +198,9 @@ impl std::fmt::Display for ExecError {
             ExecError::Refused { verdict } => write!(f, "batch refused: {verdict}"),
             ExecError::Page { path, reason } => write!(f, "page {path}: {reason}"),
             ExecError::Io { reason } => write!(f, "io: {reason}"),
+            ExecError::ArmedRefusal { detail } => {
+                write!(f, "armed change refused: {detail}")
+            }
         }
     }
 }
@@ -419,6 +428,23 @@ pub fn apply_under(
         .iter()
         .map(|p| after_rev(&after_doc, &p.edit.target))
         .collect::<Result<_, _>>()?;
+
+    // 6b. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
+    // bytes through `fs::apply_batch` below (not the wire choke-point), so it
+    // mounts the SAME `policy::gate` over the change it produces: read the
+    // workspace's OWN attested INDEX + once-armed marker, and REFUSE before the
+    // commit if the armed law blocks. A never-armed workspace is a bit-for-bit
+    // no-op (nothing was applied in that case either — the gate adds no write).
+    if let Some(detail) = crate::gate::refuse_reason(
+        root,
+        &doc,
+        &after_doc,
+        req.page,
+        &batch.edits,
+        &format!("run:{}", req.task),
+    ) {
+        return Err(ExecError::ArmedRefusal { detail });
+    }
 
     // 7. Receipt (rides the same sealed commit — §6.1).
     let receipt = match &req.receipt {

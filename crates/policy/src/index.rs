@@ -307,6 +307,15 @@ pub fn armed_from_index(index: &str) -> Vec<ArmedRef> {
 /// the line is off, prose, or malformed.
 fn parse_armed_line(line: &str) -> Option<ArmedRef> {
     let rest = line.strip_prefix("- [x] ")?;
+    parse_row_fields(rest)
+}
+
+/// Parse ONE checklist row's fields (everything after the `- [x] ` / `- [ ] `
+/// checkbox) into an [`ArmedRef`] — the middot-separated slug, severity, and
+/// pinned rev. Returns `None` when the structure is malformed. Shared by
+/// [`armed_from_index`] (armed rows only) and [`parse_index_strict`] (structural
+/// validation of every row).
+fn parse_row_fields(rest: &str) -> Option<ArmedRef> {
     let mut fields = rest.split(" · ");
     let slug = fields
         .next()?
@@ -322,6 +331,59 @@ fn parse_armed_line(line: &str) -> Option<ArmedRef> {
         enforcement,
         armed_rev: armed_rev.to_string(),
     })
+}
+
+/// Why a strict INDEX parse refused — the page exists but is not a trustworthy
+/// attested INDEX. The door treats this as `convention-fault` and fails CLOSED:
+/// a corrupt INDEX must never silently read as "nothing armed" (that would be a
+/// gate-disabling attack). Carries a human detail naming the fault.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexCorrupt {
+    /// What is structurally wrong with the page.
+    pub detail: String,
+}
+
+/// Strictly parse an INDEX page the door found on disk, returning the armed rows
+/// or [`IndexCorrupt`] when the page is not a trustworthy attested INDEX.
+///
+/// Unlike [`armed_from_index`] (which tolerantly skips any non-row line so the
+/// title/preamble never mis-parse), this is the DOOR's fail-closed reader: the
+/// page MUST open with the INDEX title, and EVERY checklist row (`- [x]` armed
+/// or `- [ ]` off) MUST parse. A tampered or truncated INDEX — a page whose
+/// title is gone, or whose armed row lost its severity/rev — is refused here
+/// rather than read as an empty (gate-disabling) armed set.
+///
+/// # Errors
+/// [`IndexCorrupt`] when the title is absent or any checklist row is malformed.
+pub fn parse_index_strict(index: &str) -> Result<Vec<ArmedRef>, IndexCorrupt> {
+    let mut lines = index.lines();
+    match lines.next() {
+        Some(first) if first.trim_end() == INDEX_TITLE => {}
+        _ => {
+            return Err(IndexCorrupt {
+                detail: format!("missing the `{INDEX_TITLE}` title header"),
+            });
+        }
+    }
+    let mut armed = Vec::new();
+    for line in index.lines() {
+        let is_on = line.starts_with("- [x] ");
+        let is_off = line.starts_with("- [ ] ");
+        if !is_on && !is_off {
+            continue; // title / preamble / blank — not a checklist row
+        }
+        let rest = &line[6..]; // both checkboxes are exactly 6 bytes ("- [x] ")
+        match parse_row_fields(rest) {
+            Some(entry) if is_on => armed.push(entry),
+            Some(_) => {} // a well-formed off row: valid, but not armed
+            None => {
+                return Err(IndexCorrupt {
+                    detail: format!("malformed checklist row: {line:?}"),
+                });
+            }
+        }
+    }
+    Ok(armed)
 }
 
 #[cfg(test)]

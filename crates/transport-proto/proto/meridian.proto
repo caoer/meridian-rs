@@ -624,6 +624,8 @@ enum ErrorCode {
   ERROR_CODE_IO_ERROR = 19;
   ERROR_CODE_STALE_VIEW = 20; // joined with links (Q5-LINKS), v2 §10.2
   ERROR_CODE_DAEMON_ONLY = 21; // joined with rule packs (P6-VERDICTS), v2 §8/§11.3
+  ERROR_CODE_CONVENTION_FAULT = 22; // armed change plane (U4.2), refusal-amendment row 6, env
+  ERROR_CODE_ARMED_DRIFT = 23; // armed change plane (U4.2), refusal-amendment row 7, refresh
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.
