@@ -31,6 +31,7 @@ mod expect;
 mod gc;
 mod history_cmd;
 mod init;
+mod migrate_cmd;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
@@ -131,6 +132,13 @@ usage:
                            via the if_absent CAS, byte-untouched. Exits: 0 all
                            born (or dry) / 1 a path already existed / 2 bad
                            invocation
+  mrd migrate inputs [--dry]
+                           one-shot mechanical corpus rename draws-from: ->
+                           inputs: (value bytes preserved), spliced through the
+                           strict writer under CAS — one ^r-NNNNNN wire audit row
+                           per page, zero attestation receipts. Idempotent,
+                           resumable. Exits: 0 clean / 1 a both-keys conflict / 2
+                           bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -232,6 +240,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "attest" => attest_cmd::run(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
         "unfold" => unfold_cmd::run(&args[1..]),
+        "migrate" => migrate_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()

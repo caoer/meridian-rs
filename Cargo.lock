@@ -2045,6 +2045,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "migrate"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fs",
+ "model",
+ "receipt",
+ "serde",
+ "serde_json",
+ "syntax",
+ "tempfile",
+ "wire",
+ "wire-serve",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2085,6 +2101,7 @@ dependencies = [
  "effects",
  "fs",
  "libc",
+ "migrate",
  "model",
  "pin",
  "policy",
