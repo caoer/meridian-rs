@@ -48,6 +48,7 @@ use model::{CorpusIndex, Document};
 mod change;
 mod check_eval;
 mod convention;
+mod index;
 mod pack;
 mod seed;
 
@@ -84,6 +85,16 @@ pub use convention::{
 /// The throwaway seed convention (U1.3): a real `reviewer-not-owner` `check_change`
 /// the harness (U1.2) and the door (U4.2) pre-test against before U4.4's floor lands.
 pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_convention_files};
+
+/// The attested INDEX generator (U1.4): sweep `conventions/` into a living
+/// checklist page (row = checkbox · slug · severity · pinned rev · evidence link ·
+/// scope; sorted severity desc, then slug), the O(armed) single-file read
+/// ([`armed_from_index`]), and the arming gate ([`arm`]) that refuses on evidence
+/// drift ([`ArmError::Drift`], `report-rev == armed-rev`).
+pub use index::{
+    ArmError, ArmedRef, Enforcement, IndexEntry, arm, armed_from_index, evidence_rev,
+    generate_index, render_rows, sweep,
+};
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
 /// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an
