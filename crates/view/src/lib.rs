@@ -20,6 +20,7 @@
 //!   the shared drawer. The per-workspace publish mutex is the **caller's**
 //!   responsibility (OD6: zero flock code here).
 
+pub mod facts;
 pub mod schema;
 
 use std::collections::BTreeMap;

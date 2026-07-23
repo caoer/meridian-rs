@@ -103,6 +103,22 @@ pub fn splice(
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
+    // Journal write restriction (d2 §2.1 A3/A9; F4): the reserved receipt
+    // journal is writable ONLY by the receipt engine (a receipt append rides
+    // `args.receipt`, engine-rendered from armed facts). An ORDINARY splice
+    // whose content target IS the reserved path is a forge attempt — refuse it,
+    // dry or real. This restriction, plus the git witness, is what detects a
+    // root-preserving forged row that chain continuity cannot (named residual,
+    // `receipt::journal`). A `bad_request` teaching refusal (no new taxonomy
+    // reason minted — U2.1 carries no U4.1 dependency).
+    if fs::domain::is_reserved_journal(FsPath::new(&args.path.0)) {
+        return Err(bad_request(format!(
+            "refused: {} is the reserved receipt journal — writable only by the \
+             receipt engine (d2 §2.1); an ordinary splice targeting it is a forged-row attempt",
+            args.path.0
+        )));
+    }
+
     let doc = load_doc(root, &args.path)?;
     let root_before = ambient_root(root)?;
 
@@ -713,5 +729,65 @@ fn violation_to_verdict(v: policy::Violation) -> Verdict {
         span: Span(v.span.start as u64, v.span.end as u64),
         node_rev: NodeRev(v.node_rev.0),
         message: v.message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use wire::{Edit, EditShape, ErrorCode, Path, SecRef};
+
+    use super::{SpliceArgs, splice};
+
+    fn journal_splice(dry: bool) -> SpliceArgs {
+        SpliceArgs {
+            id: None,
+            path: Path(fs::domain::RESERVED_JOURNAL_PATH.to_string()),
+            actor: Some("mallory".into()),
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry,
+            // An ordinary content edit aimed at the journal — a forged-row attempt.
+            edits: vec![Edit {
+                target: SecRef::Hpath { hpath: Vec::new() },
+                edit: EditShape::Put {
+                    at: wire::PutAt::End,
+                    text: "- op=splice root_before=b3:x root_after=b3:y edits=0 ^r-000999".into(),
+                },
+                if_node_rev: None,
+            }],
+        }
+    }
+
+    /// F4 / d2 §2.1: an ordinary `^put`/splice whose target is the reserved
+    /// journal refuses with a teaching `bad_request` — BEFORE any disk touch,
+    /// so the fake root need not resolve. The receipt engine's own append rides
+    /// `args.receipt` (engine-rendered) and is unaffected by this restriction.
+    #[test]
+    fn ordinary_splice_at_journal_path_refuses() {
+        let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
+        let err = splice(&root, 0, &journal_splice(false), &[])
+            .expect_err("a splice targeting the reserved journal must refuse");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+        assert!(
+            err.message
+                .as_deref()
+                .is_some_and(|m| m.contains(fs::domain::RESERVED_JOURNAL_PATH)
+                    && m.contains("receipt engine")),
+            "the refusal teaches: names the reserved path + receipt-engine-only rule: {:?}",
+            err.message
+        );
+    }
+
+    /// The restriction holds on a DRY run too — a rehearsal of a forbidden
+    /// write is still forbidden (never a silent "would-succeed").
+    #[test]
+    fn dry_splice_at_journal_path_also_refuses() {
+        let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
+        let err = splice(&root, 0, &journal_splice(true), &[])
+            .expect_err("dry splice at the journal must also refuse");
+        assert_eq!(err.code, ErrorCode::BadRequest);
     }
 }
