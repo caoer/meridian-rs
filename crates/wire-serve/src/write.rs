@@ -152,7 +152,7 @@ pub fn splice(
         None,
     ) {
         model::SpliceVerdict::Validated(b) => b,
-        refused => return Err(verdict_to_wire(&refused, args, &before_facts)),
+        refused => return Err(verdict_to_wire(&refused, args, &doc, &before_facts)),
     };
 
     // Build the post-batch document state ONCE, shared by BOTH the armed AFTER
@@ -211,7 +211,7 @@ pub fn splice(
         },
     )
     .map_err(|e| match e {
-        CommitError::Refused(v) => verdict_to_wire(&v, args, &before_facts),
+        CommitError::Refused(v) => verdict_to_wire(&v, args, &doc, &before_facts),
         CommitError::Env(err) => err,
         CommitError::Io(err) => {
             let mut w = ErrorBody::new(ErrorCode::IoError);
@@ -312,7 +312,7 @@ fn model_edits_and_before_facts(
             model::resolve(doc, &target).map_err(|e| {
                 Box::new(match e {
                     model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
-                    model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, c.len()),
+                    model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, doc, &c),
                 })
             })?
         };
@@ -459,6 +459,7 @@ fn apply_validated(raw: &str, sealed: &model::ValidatedBatch) -> String {
 fn verdict_to_wire(
     verdict: &model::SpliceVerdict,
     args: &SpliceArgs,
+    doc: &model::Document,
     before_facts: &[model::Target],
 ) -> Box<ErrorBody> {
     let e = match verdict {
@@ -473,13 +474,27 @@ fn verdict_to_wire(
         }
         model::SpliceVerdict::RefNotFound => ErrorBody::new(ErrorCode::RefNotFound),
         model::SpliceVerdict::Ambiguous(candidates) => {
-            let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
-            e.message = Some(format!(
-                "{} duplicate targets in one file",
-                candidates.len()
-            ));
-            e.candidates = Some(Vec::new());
-            e
+            // Name each duplicate by node index + ^block via the shared helper
+            // (§2.1 / d1 teaching refusal). In the splice flow this arm is
+            // normally pre-empted by the per-target resolution in
+            // `model_edits_and_before_facts`; routing it through `ambiguous` keeps
+            // both refusal sites identical. The offending target is the first
+            // edit that resolves ambiguously.
+            let offending = args.edits.iter().map(|e| &e.target).find(|t| {
+                to_model_ref(t).is_ok_and(|r| {
+                    matches!(
+                        model::resolve(doc, &r),
+                        Err(model::ResolveError::Ambiguous(_))
+                    )
+                })
+            });
+            if let Some(sec) = offending {
+                ambiguous(sec, doc, candidates)
+            } else {
+                let mut e = ErrorBody::new(ErrorCode::AmbiguousRef);
+                e.candidates = Some(Vec::new());
+                e
+            }
         }
         model::SpliceVerdict::CasMismatch { expected, actual } => {
             let mut e = ErrorBody::new(ErrorCode::CasMismatch);
