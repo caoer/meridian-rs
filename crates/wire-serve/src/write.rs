@@ -246,6 +246,465 @@ pub fn splice(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Guarded create / remove — file birth and death (d2 §2.5 C3, U2.6)
+// ---------------------------------------------------------------------------
+//
+// Birth and death join the strict writer as core write OPS inside the one write
+// shape (design §2.5, §3): `create` under CAS `if_absent` + workspace-root;
+// `remove` under CAS on the file's read rev (remove-what-you-read) +
+// workspace-root. Both are journaled (write-mechanics only, A5 bound: op, path,
+// actor, now, BOTH roots, the whole-file rev transition) and both expose the
+// change surface a gate evaluates at birth/death — `before = absent` (create) /
+// `after = absent` (remove). This unit builds the OPS and that seam; the
+// callers (put-class clients, the effects-domain workflow, `realise`'s apply
+// plane) and the armed `gate()` mount are later units — the verdict seam here
+// runs whatever rulesets the caller hands in (`&[]` ⇒ the BARE commit), exactly
+// like `splice`.
+
+/// One `create` request's fields — ONE `new` spec (a single path + body, never
+/// a batch, d2 §2.5 C3). `actor`/`now` are recorded exactly as given (§9),
+/// `if_root` is the optional §5.1 world guard, `dry` runs everything but disk.
+#[derive(Debug, Clone)]
+pub struct CreateArgs {
+    /// Frame correlation token — recorded only, no field reads it.
+    pub id: Option<u64>,
+    /// The path the new file is born at (workspace-confined).
+    pub path: Path,
+    /// The new file's full bytes.
+    pub body: String,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    /// The optional §5.1 world guard: refuse if the ambient root differs.
+    pub if_root: Option<Root>,
+    /// Dry run — everything except disk (no file, no journal row, no root advance).
+    pub dry: bool,
+}
+
+/// The outcome of a guarded `create` (birth). `committed`/`root_after`/
+/// `journal_anchor` are absent on a dry run — nothing landed. `verdicts` is the
+/// gate seam's output over the birth's after-state: empty for the BARE commit,
+/// inhabited once U4.2 mounts `gate()` at this site.
+#[derive(Debug)]
+pub struct CreateOutcome {
+    pub root_before: Root,
+    /// `None` on a dry run (nothing written, so no advanced root).
+    pub root_after: Option<Root>,
+    /// The born file's whole-file rev — computed from the body, so present even
+    /// on a dry run (a fact about the spec, not the disk).
+    pub file_rev_after: NodeRev,
+    /// The appended journal row's anchor (`r-NNNNNN`); `None` on a dry run.
+    pub journal_anchor: Option<String>,
+    /// The birth Delta (`created`, `file_rev_before` absent); `None` on dry.
+    pub committed: Option<DeltaFrame>,
+    pub verdicts: Vec<Verdict>,
+    pub dry: bool,
+}
+
+/// One `remove` request's fields (d2 §2.5 C3). `if_file_rev` is the rev the
+/// caller READ — remove-what-you-read: the live file must still carry it, or the
+/// death refuses citing the drift. `if_root`/`dry` mirror `create`.
+#[derive(Debug, Clone)]
+pub struct RemoveArgs {
+    pub id: Option<u64>,
+    /// The path whose file is removed (workspace-confined).
+    pub path: Path,
+    /// The whole-file rev the caller read — the remove-what-you-read guard.
+    pub if_file_rev: NodeRev,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    pub if_root: Option<Root>,
+    pub dry: bool,
+}
+
+/// The outcome of a guarded `remove` (death). Absences mirror [`CreateOutcome`].
+#[derive(Debug)]
+pub struct RemoveOutcome {
+    pub root_before: Root,
+    pub root_after: Option<Root>,
+    /// The removed file's whole-file rev (the read rev, re-confirmed live).
+    pub file_rev_before: NodeRev,
+    pub journal_anchor: Option<String>,
+    /// The death Delta (`deleted`, `file_rev_after` absent); `None` on dry.
+    pub committed: Option<DeltaFrame>,
+    pub verdicts: Vec<Verdict>,
+    pub dry: bool,
+}
+
+/// **Guarded `create`** (d2 §2.5 C3): birth one file under CAS `if_absent` +
+/// workspace-root, journal the birth, and emit the `created` change surface.
+///
+/// Order: path confinement → reserved-journal guard → world guard (§5.1) → the
+/// gate seam over the birth's after-state → the `if_absent` CAS at the disk edge
+/// ([`fs::create_file`], the single source of the guard) → root advance → birth
+/// Delta → journal row (`before=absent`). `dry: true` runs everything except
+/// disk and still refuses a would-be clobber.
+///
+/// # Errors
+/// `bad_path` (escapes the workspace), `bad_request` (targets the reserved
+/// journal), `root_mismatch` (stale world guard), `cas_mismatch` (the path is
+/// occupied — taxonomy row 13, recovery `refresh`), or an I/O failure. In every
+/// error case nothing was created and no journal row was written.
+pub fn create(
+    root: &fs::WorkspaceRoot,
+    seq: u64,
+    args: &CreateArgs,
+    rulesets: &[policy::CompiledRuleset],
+) -> Result<CreateOutcome, Box<ErrorBody>> {
+    let fs_path = FsPath::new(&args.path.0);
+    path_confined(&args.path)?;
+    reserved_journal_guard(fs_path)?;
+
+    let root_before = ambient_root(root)?;
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    // The birth's after-state, built once from the body (path-stamped so the
+    // gate sees it). Its whole-file rev is the born file's rev.
+    let after_doc = build_doc(&args.path, &args.body);
+    let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+
+    // THE gate seam (advisor Ruling 3, mirrored from splice): the ONE
+    // production verdict-evaluation site for a birth — U4.2 mounts `gate()`
+    // here. Empty rulesets ⇒ `[]` (the BARE commit).
+    let verdicts = evaluate_verdicts(rulesets, &after_doc);
+
+    if args.dry {
+        // A dry birth honors if_absent too — a rehearsal of a clobber refuses.
+        if let Some(actual) = occupant_rev(root, &args.path)? {
+            return Err(cas_mismatch(&absent_rev(), &actual));
+        }
+        return Ok(CreateOutcome {
+            root_before,
+            root_after: None,
+            file_rev_after,
+            journal_anchor: None,
+            committed: None,
+            verdicts,
+            dry: true,
+        });
+    }
+
+    // The if_absent CAS lives at the disk edge (`fs::create_file`): an occupied
+    // path is `AlreadyExists`, mapped to `cas_mismatch{expected:absent,
+    // actual:occupant-rev}` (row 13, recovery refresh — "re-read, it exists").
+    if let Err(e) = fs::create_file(root, fs_path, &args.body) {
+        return Err(match e.kind() {
+            ErrorKind::AlreadyExists => cas_mismatch(
+                &absent_rev(),
+                &occupant_rev(root, &args.path)?.unwrap_or_else(absent_rev),
+            ),
+            _ => io_to_wire(&e),
+        });
+    }
+    let root_after = ambient_root(root)?;
+
+    let committed = birth_death_delta(
+        seq,
+        &args.path,
+        &root_before,
+        &root_after,
+        args.actor.clone(),
+        args.now.clone(),
+        model::delta::file_delta(None, Some(&after_doc)).as_ref(),
+    );
+    let journal_anchor = journal_write(
+        root,
+        "create",
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &root_before,
+        &root_after,
+        receipt::journal::FileTransition {
+            before: None,
+            after: Some(&file_rev_after.0),
+        },
+    )?;
+
+    Ok(CreateOutcome {
+        root_before,
+        root_after: Some(root_after),
+        file_rev_after,
+        journal_anchor: Some(journal_anchor),
+        committed: Some(committed),
+        verdicts,
+        dry: false,
+    })
+}
+
+/// **Guarded `remove`** (d2 §2.5 C3): death of one file under CAS
+/// remove-what-you-read + workspace-root, journal the death, and emit the
+/// `deleted` change surface.
+///
+/// Order: path confinement → reserved-journal guard → world guard (§5.1) → load
+/// the live file (absent ⇒ `file_not_found`) → the remove-what-you-read CAS
+/// (the live rev must equal `if_file_rev`, else refuse citing rev read vs found)
+/// → the gate seam over the death's before-state → unlink → root advance →
+/// death Delta → journal row (`after=absent`).
+///
+/// # Errors
+/// `bad_path`, `bad_request` (reserved journal), `root_mismatch`,
+/// `file_not_found` (nothing to remove), `cas_mismatch` (the file drifted from
+/// the read rev — taxonomy row 14, recovery `refresh`), or an I/O failure. In
+/// every error case nothing was removed and no journal row was written.
+pub fn remove(
+    root: &fs::WorkspaceRoot,
+    seq: u64,
+    args: &RemoveArgs,
+    rulesets: &[policy::CompiledRuleset],
+) -> Result<RemoveOutcome, Box<ErrorBody>> {
+    let fs_path = FsPath::new(&args.path.0);
+    path_confined(&args.path)?;
+    reserved_journal_guard(fs_path)?;
+
+    let root_before = ambient_root(root)?;
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    // Load what is there — you cannot remove nothing (`file_not_found`, env).
+    let before_doc = load_doc(root, &args.path)?;
+    let current = NodeRev(before_doc.root.node_rev.0.clone());
+
+    // remove-what-you-read CAS (row 14, recovery refresh): the live rev must
+    // still equal the rev the caller read. Drift refuses citing rev read
+    // (`expected`) vs found (`actual`).
+    if args.if_file_rev != current {
+        return Err(cas_mismatch(&args.if_file_rev, &current));
+    }
+
+    // The gate seam over the death's before-state (what is being removed).
+    let verdicts = evaluate_verdicts(rulesets, &before_doc);
+
+    if args.dry {
+        return Ok(RemoveOutcome {
+            root_before,
+            root_after: None,
+            file_rev_before: current,
+            journal_anchor: None,
+            committed: None,
+            verdicts,
+            dry: true,
+        });
+    }
+
+    fs::remove_file(root, fs_path).map_err(|e| io_to_wire(&e))?;
+    let root_after = ambient_root(root)?;
+
+    let committed = birth_death_delta(
+        seq,
+        &args.path,
+        &root_before,
+        &root_after,
+        args.actor.clone(),
+        args.now.clone(),
+        model::delta::file_delta(Some(&before_doc), None).as_ref(),
+    );
+    let journal_anchor = journal_write(
+        root,
+        "remove",
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &root_before,
+        &root_after,
+        receipt::journal::FileTransition {
+            before: Some(&current.0),
+            after: None,
+        },
+    )?;
+
+    Ok(RemoveOutcome {
+        root_before,
+        root_after: Some(root_after),
+        file_rev_before: current,
+        journal_anchor: Some(journal_anchor),
+        committed: Some(committed),
+        verdicts,
+        dry: false,
+    })
+}
+
+/// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): the same §1
+/// path law the strict decode enforces — no absolute path, no `.`/`..`/empty
+/// segment — so a `create`/`remove` can never escape the root via `root.join`.
+/// A violation is `bad_path`, echoing the offending path.
+fn path_confined(path: &Path) -> Result<(), Box<ErrorBody>> {
+    let s = &path.0;
+    let violates = s.is_empty()
+        || s.starts_with('/')
+        || s.split('/')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..");
+    if violates {
+        let mut e = ErrorBody::new(ErrorCode::BadPath);
+        e.path = Some(path.clone());
+        return Err(Box::new(e));
+    }
+    Ok(())
+}
+
+/// The reserved receipt journal is writable ONLY by the receipt engine (d2
+/// §2.1) — a guarded `create`/`remove` targeting it is a tamper attempt,
+/// refused with a teaching `bad_request` (the same restriction `splice` makes,
+/// shared via `fs::domain::is_reserved_journal` so the two cannot drift).
+fn reserved_journal_guard(path: &FsPath) -> Result<(), Box<ErrorBody>> {
+    if fs::domain::is_reserved_journal(path) {
+        return Err(bad_request(format!(
+            "refused: {} is the reserved receipt journal — writable only by the \
+             receipt engine (d2 §2.1); a guarded create/remove targeting it is a tamper attempt",
+            fs::domain::RESERVED_JOURNAL_PATH
+        )));
+    }
+    Ok(())
+}
+
+/// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if
+/// a supplied `if_root` no longer matches the ambient root (the plan is stale).
+fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<ErrorBody>> {
+    if let Some(expected) = if_root
+        && *expected != *root_before
+    {
+        let mut e = ErrorBody::new(ErrorCode::RootMismatch);
+        e.expected = Some(NodeRev(expected.0.clone()));
+        e.actual = Some(NodeRev(root_before.0.clone()));
+        return Err(Box::new(e));
+    }
+    Ok(())
+}
+
+/// Build a path-stamped `model::Document` from raw body bytes — the birth/death
+/// state the gate seam and the Delta read (`model::build` is I/O-free and leaves
+/// the path empty, so stamp it, mirroring `build_after_doc`).
+fn build_doc(path: &Path, body: &str) -> model::Document {
+    let mut doc = model::build(body.to_string(), syntax::parse(body));
+    if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
+        p.clone_from(&path.0);
+    }
+    doc
+}
+
+/// The occupant's whole-file rev when `path` is occupied, else `None`. Occupancy
+/// is `symlink_metadata` (a symlink or dangling link counts), so a birth cannot
+/// dodge the `if_absent` CAS by aiming at a link.
+fn occupant_rev(root: &fs::WorkspaceRoot, path: &Path) -> Result<Option<NodeRev>, Box<ErrorBody>> {
+    if std::fs::symlink_metadata(root.0.join(&path.0)).is_ok() {
+        Ok(Some(NodeRev(load_doc(root, path)?.root.node_rev.0)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// The "absent" file rev sentinel — the whole-file rev of empty content, used
+/// as a create-CAS refusal's `expected` (an absent file is bytewise nothing).
+fn absent_rev() -> NodeRev {
+    NodeRev(
+        model::build(String::new(), syntax::parse(""))
+            .root
+            .node_rev
+            .0,
+    )
+}
+
+/// A `cas_mismatch` frame (recovery `refresh` by the §8 binding) carrying the
+/// pinned-vs-found revs — the create-CAS (`expected=absent`) and remove-CAS
+/// (`expected=rev-read`) refusals both mint through here.
+fn cas_mismatch(expected: &NodeRev, actual: &NodeRev) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::CasMismatch);
+    e.expected = Some(expected.clone());
+    e.actual = Some(actual.clone());
+    Box::new(e)
+}
+
+/// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
+/// (env), otherwise `io_error{cause}`.
+fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
+    if e.kind() == ErrorKind::NotFound {
+        return Box::new(ErrorBody::new(ErrorCode::FileNotFound));
+    }
+    let mut w = ErrorBody::new(ErrorCode::IoError);
+    w.cause = Some(e.to_string());
+    Box::new(w)
+}
+
+/// Assemble the birth/death Delta at the ONE production constructor
+/// ([`assemble_delta`]): a `created`/`deleted` file (absent-tense per §7.1 — no
+/// `file_rev_before` on birth, no `file_rev_after` on death). `fd` is `None`
+/// only if nothing changed, which a real create/remove never is.
+fn birth_death_delta(
+    seq: u64,
+    path: &Path,
+    root_before: &Root,
+    root_after: &Root,
+    actor: Option<String>,
+    now: Option<String>,
+    fd: Option<&model::delta::FileDelta>,
+) -> DeltaFrame {
+    let files = fd
+        .map(|fd| vec![wire_map::project_file_delta(&path.0, fd)])
+        .unwrap_or_default();
+    assemble_delta(
+        seq,
+        root_before.clone(),
+        root_after.clone(),
+        actor,
+        now,
+        files,
+    )
+}
+
+/// Journal one guarded birth/death: render the row through `receipt::journal`
+/// (BOTH roots + the whole-file transition, `edits=0`) and append it to the
+/// reserved root-EXCLUDED journal page via the receipt-engine append
+/// (`fs::append_line`). The next `seq` is derived from the page itself (the
+/// journal is the only durable home of its own counter). Returns the row anchor.
+#[allow(clippy::too_many_arguments)]
+fn journal_write(
+    root: &fs::WorkspaceRoot,
+    op: &str,
+    path: &Path,
+    actor: Option<&str>,
+    now: Option<&str>,
+    root_before: &Root,
+    root_after: &Root,
+    file: receipt::journal::FileTransition<'_>,
+) -> Result<String, Box<ErrorBody>> {
+    let seq = next_journal_seq(root)?;
+    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
+        seq,
+        op,
+        path: &path.0,
+        actor,
+        now,
+        root_before: &root_before.0,
+        root_after: &root_after.0,
+        file: Some(file),
+        edits: Vec::new(),
+    });
+    fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
+        .map_err(|e| io_to_wire(&e))?;
+    Ok(receipt::anchor(seq))
+}
+
+/// The next journal row counter: one past the highest `r-NNNNNN` the reserved
+/// page already carries (an absent page starts at 1). The journal is the sole
+/// durable home of this counter (no separate on-disk sequence, §14).
+fn next_journal_seq(root: &fs::WorkspaceRoot) -> Result<u64, Box<ErrorBody>> {
+    let page = root.0.join(fs::domain::RESERVED_JOURNAL_PATH);
+    let text = match std::fs::read_to_string(&page) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io_to_wire(&e)),
+    };
+    let max = receipt::journal::parse_rows(&text)
+        .iter()
+        .filter_map(|r| {
+            r.anchor
+                .strip_prefix("r-")
+                .and_then(|n| n.parse::<u64>().ok())
+        })
+        .max()
+        .unwrap_or(0);
+    Ok(max + 1)
+}
+
 /// The post-commit receipt FACT: resolve the anchor in the just-committed receipt
 /// file (host-block-leaf grain — the true after-state, §6.1). `None` when the
 /// splice carried no receipt.
@@ -789,5 +1248,354 @@ mod tests {
         let err = splice(&root, 0, &journal_splice(true), &[])
             .expect_err("dry splice at the journal must also refuse");
         assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+}
+
+/// Guarded `create`/`remove` — file birth and death (d2 §2.5 C3, U2.6). The
+/// named gates: create-existing-path refuses (CAS), remove-after-drift refuses
+/// citing rev, both journal rows carry the `before=absent`/`after=absent`
+/// shape, and both refusals map to their taxonomy rows (`cas_mismatch` +
+/// recovery `refresh`, rows 13/14).
+#[cfg(test)]
+mod guarded_create_remove {
+    use wire::{ErrorCode, FileChange, NodeRev, Path, Recovery};
+
+    use super::{CreateArgs, RemoveArgs, create, remove};
+
+    /// A real on-disk workspace (create/remove land bytes and re-fold the root).
+    fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = fs::WorkspaceRoot(dir.path().to_path_buf());
+        (dir, root)
+    }
+
+    fn create_args(path: &str, body: &str) -> CreateArgs {
+        CreateArgs {
+            id: None,
+            path: Path(path.into()),
+            body: body.into(),
+            actor: Some("alice".into()),
+            now: None,
+            if_root: None,
+            dry: false,
+        }
+    }
+
+    fn remove_args(path: &str, if_file_rev: &str) -> RemoveArgs {
+        RemoveArgs {
+            id: None,
+            path: Path(path.into()),
+            if_file_rev: NodeRev(if_file_rev.into()),
+            actor: Some("alice".into()),
+            now: None,
+            if_root: None,
+            dry: false,
+        }
+    }
+
+    fn journal_text(root: &fs::WorkspaceRoot) -> String {
+        std::fs::read_to_string(root.0.join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap_or_default()
+    }
+
+    /// Birth: `create` lands the file, advances the root, emits a `created`
+    /// Delta (`file_rev_before` absent — the change surface's before=absent),
+    /// and journals a row whose whole-file token reads `before=absent`, carries
+    /// BOTH roots, and counts `edits=0`.
+    #[test]
+    fn create_births_file_and_journals_before_absent() {
+        let (dir, root) = ws();
+        let out = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[])
+            .expect("create births the file");
+
+        // (a) the file is on disk with exactly the body bytes.
+        assert_eq!(
+            std::fs::read(dir.path().join("notes/new.md")).unwrap(),
+            b"# New\n"
+        );
+        // (b) the birth advanced the world root (an in-domain md file).
+        let root_after = out.root_after.expect("real create advances the root");
+        assert_ne!(out.root_before, root_after, "birth advances the root");
+
+        // (c) the change surface is a `created` file: before=absent.
+        let file = &out
+            .committed
+            .expect("real create emits a Delta")
+            .delta
+            .files[0];
+        assert_eq!(file.change, FileChange::Created);
+        assert_eq!(file.file_rev_before, None, "created: before=absent");
+        assert_eq!(file.file_rev_after.as_ref(), Some(&out.file_rev_after));
+
+        // (d) the journal row: op=create, before=absent, both roots, edits=0.
+        let row = journal_text(&root);
+        assert!(row.contains("op=create path=notes/new.md"), "{row}");
+        assert!(
+            row.contains(" before=absent "),
+            "create row before=absent: {row}"
+        );
+        assert!(
+            row.contains(&format!(
+                "root_before={} root_after={}",
+                out.root_before.0, root_after.0
+            )),
+            "row carries BOTH roots: {row}"
+        );
+        assert!(
+            row.contains("edits=0"),
+            "whole-file create has no node edits: {row}"
+        );
+        assert_eq!(out.journal_anchor.as_deref(), Some("r-000001"));
+    }
+
+    /// GATE — create-existing-path refuses (CAS negative) + taxonomy: a second
+    /// `create` at an occupied path refuses `cas_mismatch` with recovery
+    /// `refresh` (row 13), and the occupant's bytes are untouched.
+    #[test]
+    fn create_existing_path_refuses_cas() {
+        let (dir, root) = ws();
+        create(&root, 0, &create_args("notes/new.md", "# First\n"), &[]).expect("first create");
+
+        let err = create(&root, 0, &create_args("notes/new.md", "# Second\n"), &[])
+            .expect_err("create on an existing path must refuse");
+        assert_eq!(
+            err.code,
+            ErrorCode::CasMismatch,
+            "create-CAS → cas_mismatch"
+        );
+        assert_eq!(
+            err.recovery,
+            Recovery::Refresh,
+            "taxonomy row 13: recovery refresh"
+        );
+
+        assert_eq!(
+            std::fs::read(dir.path().join("notes/new.md")).unwrap(),
+            b"# First\n",
+            "the occupant is untouched — the birth refused before any byte"
+        );
+    }
+
+    /// Death: `remove` (with the read rev) deletes the file, advances the root,
+    /// emits a `deleted` Delta (`file_rev_after` absent — after=absent), and
+    /// journals a row whose whole-file token reads `after=absent`.
+    #[test]
+    fn remove_death_and_journals_after_absent() {
+        let (dir, root) = ws();
+        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+
+        let out = remove(
+            &root,
+            0,
+            &remove_args("notes/new.md", &born.file_rev_after.0),
+            &[],
+        )
+        .expect("remove-what-you-read succeeds when the rev still matches");
+
+        assert!(
+            !dir.path().join("notes/new.md").exists(),
+            "the file is gone from disk"
+        );
+        let file = &out
+            .committed
+            .expect("real remove emits a Delta")
+            .delta
+            .files[0];
+        assert_eq!(file.change, FileChange::Deleted);
+        assert_eq!(file.file_rev_after, None, "deleted: after=absent");
+        assert_eq!(file.file_rev_before.as_ref(), Some(&out.file_rev_before));
+
+        // journal: the create row then the remove row (after=absent).
+        let text = journal_text(&root);
+        assert!(text.contains("op=remove path=notes/new.md"), "{text}");
+        let remove_row = text.lines().find(|l| l.contains("op=remove")).unwrap();
+        assert!(
+            remove_row.contains(" after=absent"),
+            "remove row after=absent: {remove_row}"
+        );
+        assert_eq!(out.journal_anchor.as_deref(), Some("r-000002"));
+    }
+
+    /// GATE — remove-after-drift refuses citing rev + taxonomy: after the file
+    /// drifts from the read rev, `remove` refuses `cas_mismatch` (recovery
+    /// `refresh`, row 14) and NAMES the rev read (`expected`) vs found
+    /// (`actual`).
+    #[test]
+    fn remove_after_drift_refuses_citing_rev() {
+        let (dir, root) = ws();
+        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        let read_rev = born.file_rev_after.clone();
+
+        // The file drifts under the plan (a later edit / foreign write).
+        std::fs::write(dir.path().join("notes/new.md"), "# Drifted\n").unwrap();
+        let live_rev = super::occupant_rev(&root, &Path("notes/new.md".into()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(read_rev, live_rev, "the fixture actually drifted");
+
+        let err = remove(&root, 0, &remove_args("notes/new.md", &read_rev.0), &[])
+            .expect_err("remove after drift must refuse");
+        assert_eq!(
+            err.code,
+            ErrorCode::CasMismatch,
+            "remove-CAS → cas_mismatch"
+        );
+        assert_eq!(
+            err.recovery,
+            Recovery::Refresh,
+            "taxonomy row 14: recovery refresh"
+        );
+        assert_eq!(err.expected.as_ref(), Some(&read_rev), "names the rev READ");
+        assert_eq!(err.actual.as_ref(), Some(&live_rev), "names the rev FOUND");
+        assert_ne!(
+            err.expected, err.actual,
+            "the refusal cites both revs, and they differ"
+        );
+
+        // The drift refusal wrote nothing: only the create row is journalled.
+        assert_eq!(
+            journal_text(&root)
+                .lines()
+                .filter(|l| l.contains("^r-"))
+                .count(),
+            1,
+            "a refused remove appends no journal row"
+        );
+    }
+
+    /// A `remove` of a path that is not there is `file_not_found` (env) — you
+    /// cannot remove nothing.
+    #[test]
+    fn remove_absent_is_file_not_found() {
+        let (_dir, root) = ws();
+        let err = remove(
+            &root,
+            0,
+            &remove_args("notes/ghost.md", "deadbeefdeadbeef"),
+            &[],
+        )
+        .expect_err("removing an absent file refuses");
+        assert_eq!(err.code, ErrorCode::FileNotFound);
+    }
+
+    /// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): a `..`-escape
+    /// or an absolute path refuses `bad_path` for BOTH create and remove — the
+    /// op can never reach outside the root.
+    #[test]
+    fn guarded_ops_confined_to_workspace_root() {
+        let (_dir, root) = ws();
+        for bad in ["../outside.md", "/etc/passwd", "notes/../../escape.md"] {
+            assert_eq!(
+                create(&root, 0, &create_args(bad, "x"), &[])
+                    .unwrap_err()
+                    .code,
+                ErrorCode::BadPath,
+                "create confined: {bad}"
+            );
+            assert_eq!(
+                remove(&root, 0, &remove_args(bad, "deadbeefdeadbeef"), &[])
+                    .unwrap_err()
+                    .code,
+                ErrorCode::BadPath,
+                "remove confined: {bad}"
+            );
+        }
+    }
+
+    /// The reserved receipt journal is receipt-engine-only (d2 §2.1): a guarded
+    /// create/remove targeting it refuses with a teaching `bad_request` — the
+    /// same restriction `splice` makes, so the journal cannot be tampered.
+    #[test]
+    fn guarded_ops_refuse_reserved_journal() {
+        let (_dir, root) = ws();
+        let jp = fs::domain::RESERVED_JOURNAL_PATH;
+        let ce = create(&root, 0, &create_args(jp, "- forged ^r-000999"), &[]).unwrap_err();
+        assert_eq!(ce.code, ErrorCode::BadRequest);
+        assert!(
+            ce.message
+                .as_deref()
+                .is_some_and(|m| m.contains("receipt engine")),
+            "teaching refusal names the engine-only rule: {:?}",
+            ce.message
+        );
+        let re = remove(&root, 0, &remove_args(jp, "deadbeefdeadbeef"), &[]).unwrap_err();
+        assert_eq!(re.code, ErrorCode::BadRequest);
+    }
+
+    /// Dry runs touch no disk (§4.4 batch law, applied to birth/death): a dry
+    /// create writes no file and no journal row; a dry remove leaves the file
+    /// and journals nothing. Both still run the gate seam (empty ⇒ `[]`).
+    #[test]
+    fn dry_create_and_remove_touch_no_disk() {
+        let (dir, root) = ws();
+
+        let dry_born = create(
+            &root,
+            0,
+            &CreateArgs {
+                dry: true,
+                ..create_args("notes/new.md", "# New\n")
+            },
+            &[],
+        )
+        .expect("dry create reports without landing");
+        assert!(
+            !dir.path().join("notes/new.md").exists(),
+            "dry create writes no file"
+        );
+        assert!(dry_born.root_after.is_none() && dry_born.committed.is_none());
+        assert!(dry_born.journal_anchor.is_none() && dry_born.verdicts.is_empty());
+        assert!(
+            journal_text(&root).is_empty(),
+            "dry create writes no journal row"
+        );
+
+        // A real file to dry-remove.
+        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        let before = journal_text(&root);
+        let dry_dead = remove(
+            &root,
+            0,
+            &RemoveArgs {
+                dry: true,
+                ..remove_args("notes/new.md", &born.file_rev_after.0)
+            },
+            &[],
+        )
+        .expect("dry remove reports without landing");
+        assert!(
+            dir.path().join("notes/new.md").exists(),
+            "dry remove leaves the file"
+        );
+        assert!(dry_dead.committed.is_none() && dry_dead.journal_anchor.is_none());
+        assert_eq!(
+            journal_text(&root),
+            before,
+            "dry remove writes no journal row"
+        );
+    }
+
+    /// The journal integration composes with U2.1's chain detector: a `create`
+    /// then a `remove` leave a CONTINUOUS chain (`root_after(1)` ==
+    /// `root_before(2)`), because the root-EXCLUDED journal append never moves
+    /// the root it just recorded.
+    #[test]
+    fn create_then_remove_leaves_a_continuous_chain() {
+        let (_dir, root) = ws();
+        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        remove(
+            &root,
+            0,
+            &remove_args("notes/new.md", &born.file_rev_after.0),
+            &[],
+        )
+        .unwrap();
+
+        let rows = receipt::journal::parse_rows(&journal_text(&root));
+        assert_eq!(rows.len(), 2, "one row per guarded write");
+        let report = receipt::journal::check_chain(&rows);
+        assert!(
+            report.is_green(),
+            "birth→death chain is continuous: {report:?}"
+        );
     }
 }
