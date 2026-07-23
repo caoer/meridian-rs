@@ -40,6 +40,7 @@ mod reconcile_cmd;
 mod resolve;
 mod run_cmd;
 mod sql;
+mod status_cmd;
 mod test_cmd;
 mod unfold_cmd;
 mod unregister;
@@ -84,6 +85,15 @@ usage:
   mrd sql <query>          run SQL client-side over the daemon-published DuckDB
                            view, with the honest-tense freshness frame
   mrd view status          per-workspace view freshness + refresh telemetry (OD7)
+  mrd status [--cwd PATH]  the bare, pure-local drift + freshness summary: the
+                           armed INDEX line (armed / drifted / forced-since
+                           -realise), the composed three-axis line (pin color ·
+                           anchor state · convention severity), the anchor
+                           -qualified tip axis, and one violation row per forced
+                           write. O(armed) — reads ONE index file, fetch-less,
+                           never evaluates a predicate. Exits: 0 clean / 1 a
+                           finding (drift / forced / faulted INDEX) / 2 bad
+                           invocation
   mrd daemon               run the registry daemon in the foreground
   mrd test <PATH>          run scenario file(s) (a *.md file, or a dir of them):
                            mount base/ into a real tmpdir, route ^put through the
@@ -252,6 +262,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "check" => check_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
+        "status" => status_cmd::run(&args[1..]),
         "view" => dispatch_view(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
