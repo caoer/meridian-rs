@@ -29,6 +29,8 @@ default-members = [
     "crates/mrd",
     "crates/view",
     "crates/pin",
+    # SELF-RETIRING (U3.2 migration kit): dies at the pin-leg cutover.
+    "crates/migrate",
 ]
 
 [workspace.package]
@@ -59,6 +61,8 @@ run = { path = "crates/run", version = "0.0.0" }
 realise = { path = "crates/realise", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
 pin = { path = "crates/pin", version = "0.0.0" }
+# SELF-RETIRING (U3.2 migration kit): dies at the pin-leg cutover.
+migrate = { path = "crates/migrate", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
