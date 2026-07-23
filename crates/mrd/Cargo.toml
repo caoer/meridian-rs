@@ -96,6 +96,11 @@ preset = { workspace = true }
 # foreign_edit trace over the resolved workspace. `check` composes receipt / fs /
 # realise / policy, already in the graph; no new external crate enters.
 check = { workspace = true }
+# `mrd realise` (U3.5b): the reconciliation-loop verb. A local CLIENT of the
+# `realise` engine (U3.5a) — observe → check → apply (rides `run`) → re-check,
+# the A4 classifier, the pending-agent board mint. Already in the graph via
+# `check`; no new external crate enters.
+realise = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
