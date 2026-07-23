@@ -46,6 +46,14 @@ wire-serve = { workspace = true }
 effects = { workspace = true }
 model = { workspace = true }
 syntax = { workspace = true }
+# The `mrd test --corpus` tier (U1.5): load a convention and run its
+# `check_change` (rulepack-api@2) over synthetic changes derived from the 18-02
+# corpus, metered under FULL `EvalLimits`, for fire-where-expected + dead-rule +
+# fuel/heap p50/p99 reporting. `policy` owns the convention loader, the seed
+# convention, `derive_change`, and the metered `check_change` — mrd is a pure
+# client. Already a workspace member (via the engine graph), so no new external
+# crate enters and `cargo deny` is unchanged.
+policy = { workspace = true }
 # The local run plane (U10, verdict ruling 7): `mrd run` mounts `crates/run` —
 # §2.1 task addressing, arg/env contracts, deny-by-default caps (U2), and the
 # hermetic `--dry` truth through the U5 `evaluate` seam. mrd stays a local

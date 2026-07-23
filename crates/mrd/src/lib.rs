@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 mod cache_cmd;
+mod corpus_tier;
 mod daemon;
 mod engine;
 mod expect;
@@ -80,6 +81,11 @@ usage:
                            production write path, assert ^expect starlark over
                            t.result / t.doc(path) / t.journal. Exits: 0 clean /
                            1 an ^expect failed / 2 malformed or pairing hard error
+  mrd test --corpus <SPEC> tier-2 corpus runner: drive a convention's check_change
+                           over SYNTHETIC changes derived from the 18-02 corpus and
+                           report fire-where-expected, dead rules, and fuel + heap
+                           p50/p99 budgets. Exits: 0 clean / 1 a fire mismatch or
+                           dead rule / 2 malformed spec or unreadable corpus
   mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block addressed by the page's frontmatter
                            (task.<name> bindings; PAGE is workspace-relative).
