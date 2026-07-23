@@ -56,6 +56,10 @@ pub struct SpliceArgs {
     pub if_root: Option<Root>,
     /// Dry run — everything except disk (no receipt, no root advance, no Delta).
     pub dry: bool,
+    /// U4.3 `--force`: escape an armed binding-break / block refusal. The skip is
+    /// journaled (a permanent force-row) AND rendered (a forced verdict). The
+    /// INDEX-integrity floor is NOT escaped (security F2). Ordinary writes: false.
+    pub force: bool,
     /// The requested edits, 1:1 with the armed edits in the response.
     pub edits: Vec<Edit>,
 }
@@ -170,18 +174,23 @@ pub fn splice(
     // caller-supplied packs do not gate, only the armed law below does.
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
 
-    // U4.2: the armed-plane GATE — after CAS, before bytes land, both writer
+    // U4.2/U4.3: the armed-plane GATE — after CAS, before bytes land, both writer
     // paths. Reads the workspace's OWN armed law (never caller packs) and REFUSES
-    // here (`?`) before the dry short-circuit; never-armed is a no-op.
-    verdicts.extend(crate::gate::gate_write(
+    // here (`?`) before the dry short-circuit; never-armed is a no-op. U4.3:
+    // `args.force` escapes a binding-break / block refusal (the skip is journaled
+    // below on a REAL commit + rendered here); the INDEX-integrity floor never
+    // escapes.
+    let gate_pass = crate::gate::gate_write(
         root,
         &doc,
         &after_doc,
         &batch.edits,
         policy::ChangeOp::Splice,
         args.actor.as_deref(),
+        args.force,
         &after_doc,
-    )?);
+    )?;
+    verdicts.extend(gate_pass.verdicts);
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -236,6 +245,19 @@ pub fn splice(
 
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
+
+    // U4.3: journal every `--force`-escaped skip — a permanent force-row per
+    // bypassed rule (the render carries the same detail). The reserved journal is
+    // root-EXCLUDED, so appending it never perturbs the root the splice advanced.
+    force_journal_write(
+        root,
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &frame.delta.root_before,
+        &frame.delta.root_after,
+        &gate_pass.forced_skips,
+    )?;
 
     Ok(SpliceOutcome {
         body: ResponseBody::Splice {
@@ -380,18 +402,24 @@ pub fn create(
     // Advisory §11.1 findings from any caller packs (never a decision).
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
 
-    // U4.2: the armed-plane GATE over the birth's after-state — before=absent
-    // (the `create` change surface). Blocks an armed refusal before the file is
-    // born; a no-op on a never-armed workspace.
-    verdicts.extend(crate::gate::gate_write(
-        root,
-        &crate::gate::absent_doc(&args.path),
-        &after_doc,
-        &[],
-        policy::ChangeOp::Create,
-        args.actor.as_deref(),
-        &after_doc,
-    )?);
+    // U4.2/U4.3: the armed-plane GATE over the birth's after-state — before=absent
+    // (the `create` change surface). Blocks an armed refusal (convention or a
+    // binding-break on the INDEX) before the file is born; a no-op on a
+    // never-armed workspace. Guarded create carries no `--force` (the wire
+    // `create` op is internal — no forced-birth path in v1).
+    verdicts.extend(
+        crate::gate::gate_write(
+            root,
+            &crate::gate::absent_doc(&args.path),
+            &after_doc,
+            &[],
+            policy::ChangeOp::Create,
+            args.actor.as_deref(),
+            false,
+            &after_doc,
+        )?
+        .verdicts,
+    );
 
     if args.dry {
         // A dry birth honors if_absent too — a rehearsal of a clobber refuses.
@@ -499,18 +527,23 @@ pub fn remove(
     // Advisory §11.1 findings from any caller packs (never a decision).
     let mut verdicts = evaluate_verdicts(rulesets, &before_doc);
 
-    // U4.2: the armed-plane GATE over the death — after=absent (the `remove`
+    // U4.2/U4.3: the armed-plane GATE over the death — after=absent (the `remove`
     // change surface); `before_doc` carries what is being removed. Blocks an
-    // armed refusal before the unlink; a no-op on a never-armed workspace.
-    verdicts.extend(crate::gate::gate_write(
-        root,
-        &before_doc,
-        &crate::gate::absent_doc(&args.path),
-        &[],
-        policy::ChangeOp::Remove,
-        args.actor.as_deref(),
-        &before_doc,
-    )?);
+    // armed refusal before the unlink; the INDEX-integrity floor (U4.3) refuses a
+    // remove of the INDEX or the once-armed marker here. No-op on never-armed.
+    verdicts.extend(
+        crate::gate::gate_write(
+            root,
+            &before_doc,
+            &crate::gate::absent_doc(&args.path),
+            &[],
+            policy::ChangeOp::Remove,
+            args.actor.as_deref(),
+            false,
+            &before_doc,
+        )?
+        .verdicts,
+    );
 
     if args.dry {
         return Ok(RemoveOutcome {
@@ -914,6 +947,55 @@ fn journal_write(
     fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
         .map_err(|e| io_to_wire(&e))?;
     Ok(receipt::anchor(seq))
+}
+
+/// Journal every `--force`-escaped skip (U4.3, decision #6): one `op=force`
+/// row per bypassed rule, appended to the reserved root-EXCLUDED journal. Each
+/// row carries BOTH roots of the forced splice (chain continuity) and names the
+/// bypassed rule via a `forced_rule=` token that `parse_rows` reads as an extra
+/// (the render carries the full teaching). Empty `skips` is a no-op (an ordinary
+/// non-forced write journals nothing here).
+fn force_journal_write(
+    root: &fs::WorkspaceRoot,
+    path: &Path,
+    actor: Option<&str>,
+    now: Option<&str>,
+    root_before: &Root,
+    root_after: &Root,
+    skips: &[crate::gate::ForcedSkip],
+) -> Result<(), Box<ErrorBody>> {
+    for skip in skips {
+        let seq = next_journal_seq(root)?;
+        // The canonical row (op=force, both roots, edits=0) plus a `forced_rule=`
+        // token naming the bypassed rule — read as an extra by `parse_rows`.
+        let base = receipt::journal::render_row(&receipt::journal::JournalRow {
+            seq,
+            op: "force",
+            path: &path.0,
+            actor,
+            now,
+            root_before: &root_before.0,
+            root_after: &root_after.0,
+            file: None,
+            edits: Vec::new(),
+        });
+        // Insert the rule token before the trailing ` ^r-NNNNNN` anchor so the
+        // row still parses (anchor stays last).
+        let anchor = format!(" ^{}", receipt::anchor(seq));
+        let line = match base.strip_suffix(&anchor) {
+            Some(head) => format!("{head} forced_rule={}{anchor}", token_safe(&skip.rule)),
+            None => base,
+        };
+        fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
+            .map_err(|e| io_to_wire(&e))?;
+    }
+    Ok(())
+}
+
+/// Squeeze a rule name into one whitespace-free journal token (spaces → `_`), so
+/// the `forced_rule=` extra never splits into stray tokens.
+fn token_safe(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join("_")
 }
 
 /// The next journal row counter: one past the highest `r-NNNNNN` the reserved
@@ -1456,6 +1538,7 @@ mod tests {
             receipt: None,
             if_root: None,
             dry,
+            force: false,
             // An ordinary content edit aimed at the journal — a forged-row attempt.
             edits: vec![Edit {
                 target: SecRef::Hpath { hpath: Vec::new() },

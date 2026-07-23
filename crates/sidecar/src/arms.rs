@@ -59,6 +59,7 @@ pub(crate) fn dispatch(
             receipt,
             if_root,
             dry,
+            force,
             edits,
         } => {
             let out = wire_serve::write::splice(
@@ -72,6 +73,7 @@ pub(crate) fn dispatch(
                     receipt,
                     if_root,
                     dry: dry.unwrap_or(false),
+                    force: force.unwrap_or(false),
                     edits,
                 },
                 rulesets,

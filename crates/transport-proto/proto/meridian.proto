@@ -107,6 +107,7 @@ message SpliceRequest {
   optional string if_root = 5; // world-grain guard, checked FIRST (§5.1)
   optional bool dry = 6;
   repeated Edit edits = 7;
+  optional bool force = 8;     // U4.3 the sanctioned bypass (§11.1 pt 3)
 }
 
 message ReceiptAddr {
@@ -626,6 +627,8 @@ enum ErrorCode {
   ERROR_CODE_DAEMON_ONLY = 21; // joined with rule packs (P6-VERDICTS), v2 §8/§11.3
   ERROR_CODE_CONVENTION_FAULT = 22; // armed change plane (U4.2), refusal-amendment row 6, env
   ERROR_CODE_ARMED_DRIFT = 23; // armed change plane (U4.2), refusal-amendment row 7, refresh
+  ERROR_CODE_BINDING_BREAK = 24; // binding law (U4.3), refusal-amendment row 9, fix
+  ERROR_CODE_INDEX_INTEGRITY = 25; // INDEX-integrity floor (U4.3), refusal-amendment row 10, fix
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.

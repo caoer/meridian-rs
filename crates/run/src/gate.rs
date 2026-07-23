@@ -125,6 +125,13 @@ fn describe(refusal: policy::GateRefusal) -> String {
             "armed convention `{slug}` drifted: approved rev `{armed_rev}` but the convention \
              now reads `{report_rev}` — re-arm at the live rev, or revert the law"
         ),
+        // U4.3 binding law / INDEX-integrity floor — the run plane lands bytes
+        // through the same gate, so a run-plane write that edits the INDEX / an
+        // armed CHECK.md, or removes the INDEX / marker, is refused here too.
+        policy::GateRefusal::BindingBreak { side, teaching, .. } => {
+            format!("binding-break[side={}]: {teaching}", side.as_str())
+        }
+        policy::GateRefusal::IndexIntegrity { teaching, .. } => teaching,
     }
 }
 
