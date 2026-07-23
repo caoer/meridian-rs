@@ -45,7 +45,17 @@
 
 use model::{CorpusIndex, Document};
 
+mod change;
 mod pack;
+
+/// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
+/// `check_change(change)` predicate reads, its derivation from before/after
+/// states, the closed 14-key fact vocabulary, and the purity guard's classifier.
+/// Shared by the `mrd test` harness (U1.2) and the door's `gate()` (U4.2).
+pub use change::{
+    CHANGE_FACT_VOCAB, Change, ChangeOp, DocFacts, Edge, EdgeDecl, EditFact, Invocation, NodeFact,
+    RULEPACK_API_V2, TargetFact, assert_vocab_pure, derive_change, impure_source, vocab_keys,
+};
 
 /// The load gate's injected fact plane, in policy vocabulary: the composition
 /// layer builds [`FactDoc`]s from fixture bytes through the real parse→facts path
@@ -441,9 +451,29 @@ pub enum AuthorizeVerdict {
     Deny { rule: String, message: String },
 }
 
-/// The engine declares itself: vocabulary version + per-assertion budgets,
-/// surfaced verbatim (the `policy_vocab` op body).
+/// The engine declares itself: the `rulepack-api@2` change surface's 14-key fact
+/// vocabulary, each key paired with the [`Budget`] of the plane it reads (the
+/// `policy_vocab` op body).
+///
+/// The `class` is the true cost tier of the fact (change-local / whole-document /
+/// one-hop cross-document); the `p99_us` is a monotonic class DEFAULT
+/// ([`change::class_default_p99`]), not a per-key measured SLA — per-key
+/// calibration against the frozen corpus is U1.5's (`test --corpus`). The keys
+/// are exactly the [purity-guarded vocabulary](change::CHANGE_FACT_VOCAB): every
+/// one a pure function of the before/after states and pinned evidence, no
+/// git/clock/random/io fact among them.
 #[must_use]
 pub fn vocab() -> Vec<(&'static str, Budget)> {
-    todo!("rung 6: the 14-assertion vocabulary with declared budgets")
+    CHANGE_FACT_VOCAB
+        .iter()
+        .map(|(key, class)| {
+            (
+                *key,
+                Budget {
+                    class: *class,
+                    p99_us: change::class_default_p99(*class),
+                },
+            )
+        })
+        .collect()
 }
