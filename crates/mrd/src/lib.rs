@@ -28,6 +28,7 @@ mod engine;
 mod expect;
 mod gc;
 mod init;
+mod pin_cmd;
 mod resolve;
 mod rules_cmd;
 mod run_cmd;
@@ -86,6 +87,11 @@ usage:
                            TASK omitted: one declared task runs, several list
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
+  mrd pin <PAGE> [--dry]   read PAGE's inputs: manifest, resolve + compose every
+                           ref atomically, evaluate declared check: predicates,
+                           and splice the ^inputs lock in ONE CAS write (one
+                           receipt). Idempotent. Exits: 0 pinned / 1 refused
+                           (or dry would-refuse) / 2 bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -183,6 +189,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "rules" => rules_cmd::dispatch(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
+        "pin" => pin_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
