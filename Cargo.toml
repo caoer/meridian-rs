@@ -27,6 +27,7 @@ default-members = [
     "crates/run",
     "crates/mrd",
     "crates/view",
+    "crates/pin",
 ]
 
 [workspace.package]
@@ -55,6 +56,7 @@ registry = { path = "crates/registry", version = "0.0.0" }
 effects = { path = "crates/effects", version = "0.0.0" }
 run = { path = "crates/run", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
+pin = { path = "crates/pin", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

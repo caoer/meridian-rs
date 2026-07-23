@@ -523,6 +523,201 @@ pub fn remove(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Guarded pin lock-write — the `^inputs` splice (d2 §2.5, U2.4)
+// ---------------------------------------------------------------------------
+//
+// `pin` reads a page's `inputs:` manifest, resolves + composes every ref, and
+// splices the `^inputs` lock in ONE CAS-guarded write minting one receipt (d2
+// §2.5). The manifest read, resolve, compose, `check:` evaluation, merge law,
+// and the lock's byte rendering all live in `crates/pin` (the orchestration).
+// This is the WRITE choke-point half: a core span splice that lands the
+// engine-COMPUTED block bytes and journals the write — mirroring the
+// create/remove shape, so the one-write-shape law holds (no second write path).
+
+/// One `pin` lock-write request (d2 §2.5): a COMPUTED span edit that splices the
+/// `^inputs` lock into `path`. `span` is the pre-batch byte range the new block
+/// replaces — an empty range (`start == end`) at the append point BIRTHS the
+/// block. The span is engine-computed from parse (source 1), never
+/// client-supplied, so the D-C1 "no request-side span" law holds: `pin` is a
+/// core op, not a wire `splice`. `if_file_rev` is the pinning page's whole-file
+/// rev the pin read (write-what-you-read CAS); `if_root` the §5.1 world guard;
+/// `before_rev`/`after_rev` the lock block's node rev transition for the journal.
+#[derive(Debug, Clone)]
+pub struct PinLockArgs {
+    /// Frame correlation token — recorded only.
+    pub id: Option<u64>,
+    /// The pinning page the `^inputs` lock lives in (workspace-confined).
+    pub path: Path,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    /// The optional §5.1 world guard: refuse if the ambient root differs.
+    pub if_root: Option<Root>,
+    /// The pinning page's whole-file rev the pin computed against — the
+    /// write-what-you-read CAS; a drift refuses `cas_mismatch`.
+    pub if_file_rev: NodeRev,
+    /// The pre-batch byte range the new block replaces (`start == end` = birth).
+    pub span: Span,
+    /// The new `^inputs` block bytes (fence to fence), engine-rendered by `pin`.
+    pub new_text: String,
+    /// The lock block's node rev BEFORE the write (empty-span rev on a birth).
+    pub before_rev: NodeRev,
+    /// The lock block's node rev AFTER the write.
+    pub after_rev: NodeRev,
+    /// Dry run — everything except disk (no bytes, no journal row, no advance).
+    pub dry: bool,
+}
+
+/// The outcome of a guarded `pin` lock-write. Absences mirror [`CreateOutcome`]:
+/// `root_after`/`journal_anchor`/`committed` are `None` on a dry run.
+#[derive(Debug)]
+pub struct PinLockOutcome {
+    pub root_before: Root,
+    pub root_after: Option<Root>,
+    /// The pinning page's whole-file rev before the write (the CAS-confirmed rev).
+    pub file_rev_before: NodeRev,
+    /// The pinning page's whole-file rev after the lock landed.
+    pub file_rev_after: NodeRev,
+    pub journal_anchor: Option<String>,
+    pub committed: Option<DeltaFrame>,
+    pub dry: bool,
+}
+
+/// **Guarded `pin` lock-write** (d2 §2.5, U2.4): splice the engine-computed
+/// `^inputs` lock into `path` under CAS write-what-you-read + workspace-root,
+/// journal ONE `splice` row, and emit the `modified` change surface.
+///
+/// Order: path confinement → reserved-journal guard → world guard (§5.1) → load
+/// the page → the write-what-you-read CAS (the live rev must equal `if_file_rev`)
+/// → span-bound + char-boundary guard → apply the span replacement in memory →
+/// [`fs::replace_file`] (the atomic overwrite) → root advance → splice Delta →
+/// journal row (`op=splice`, `edits=1` naming the `^inputs` lock). `dry: true`
+/// runs everything except disk.
+///
+/// # Errors
+/// `bad_path`, `bad_request` (reserved journal, or a bad computed span),
+/// `root_mismatch` (stale world guard), `cas_mismatch` (the page drifted from
+/// the read rev), or an I/O failure. In every error case nothing was written and
+/// no journal row was appended.
+pub fn pin_lock(
+    root: &fs::WorkspaceRoot,
+    seq: u64,
+    args: &PinLockArgs,
+) -> Result<PinLockOutcome, Box<ErrorBody>> {
+    let fs_path = FsPath::new(&args.path.0);
+    path_confined(&args.path)?;
+    reserved_journal_guard(fs_path)?;
+
+    let before_doc = load_doc(root, &args.path)?;
+    let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
+
+    let root_before = ambient_root(root)?;
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    // write-what-you-read CAS: the page must still carry the rev the pin read
+    // (a drift means the compose the lock records was against stale bytes).
+    if args.if_file_rev != file_rev_before {
+        return Err(cas_mismatch(&args.if_file_rev, &file_rev_before));
+    }
+
+    // The span is engine-computed, but guard it defensively: in bounds and on
+    // char boundaries so the splice can never corrupt bytes.
+    let start = usize::try_from(args.span.0).unwrap_or(usize::MAX);
+    let end = usize::try_from(args.span.1).unwrap_or(usize::MAX);
+    let raw = &before_doc.raw;
+    if start > end || end > raw.len() || !raw.is_char_boundary(start) || !raw.is_char_boundary(end)
+    {
+        return Err(bad_request(
+            "pin lock span is out of bounds or splits a character",
+        ));
+    }
+    let mut new_raw = String::with_capacity(raw.len() + args.new_text.len());
+    new_raw.push_str(&raw[..start]);
+    new_raw.push_str(&args.new_text);
+    new_raw.push_str(&raw[end..]);
+    let after_doc = build_doc(&args.path, &new_raw);
+    let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+
+    if args.dry {
+        return Ok(PinLockOutcome {
+            root_before,
+            root_after: None,
+            file_rev_before,
+            file_rev_after,
+            journal_anchor: None,
+            committed: None,
+            dry: true,
+        });
+    }
+
+    fs::replace_file(root, fs_path, &new_raw).map_err(|e| io_to_wire(&e))?;
+    let root_after = ambient_root(root)?;
+
+    let files = model::delta::file_delta(Some(&before_doc), Some(&after_doc))
+        .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
+        .unwrap_or_default();
+    let committed = assemble_delta(
+        seq,
+        root_before.clone(),
+        root_after.clone(),
+        args.actor.clone(),
+        args.now.clone(),
+        files,
+    );
+    let journal_anchor = pin_journal_write(root, args, &root_before, &root_after)?;
+
+    Ok(PinLockOutcome {
+        root_before,
+        root_after: Some(root_after),
+        file_rev_before,
+        file_rev_after,
+        journal_anchor: Some(journal_anchor),
+        committed: Some(committed),
+        dry: false,
+    })
+}
+
+/// Journal one guarded `pin`: an `op=splice` row with a single edit naming the
+/// `^inputs` lock (target `^inputs`, the block's before→after rev). The row
+/// carries BOTH roots (chain continuity) and appends to the reserved
+/// root-EXCLUDED journal via the receipt-engine append. Returns the row anchor.
+fn pin_journal_write(
+    root: &fs::WorkspaceRoot,
+    args: &PinLockArgs,
+    root_before: &Root,
+    root_after: &Root,
+) -> Result<String, Box<ErrorBody>> {
+    let seq = next_journal_seq(root)?;
+    // The lock block has no request-side ref grammar; name it by its `^inputs`
+    // anchor for the journal display (a whole-slot write of the lock).
+    let target = SecRef::Anchor {
+        anchor: "inputs".to_string(),
+    };
+    let shape = EditShape::Put {
+        at: PutAt::All,
+        text: String::new(),
+    };
+    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
+        seq,
+        op: "splice",
+        path: &args.path.0,
+        actor: args.actor.as_deref(),
+        now: args.now.as_deref(),
+        root_before: &root_before.0,
+        root_after: &root_after.0,
+        file: None,
+        edits: vec![receipt::EditFact {
+            target: &target,
+            shape: &shape,
+            before: &args.before_rev,
+            after: &args.after_rev,
+        }],
+    });
+    fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
+        .map_err(|e| io_to_wire(&e))?;
+    Ok(receipt::anchor(seq))
+}
+
 /// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): the same §1
 /// path law the strict decode enforces — no absolute path, no `.`/`..`/empty
 /// segment — so a `create`/`remove` can never escape the root via `root.join`.

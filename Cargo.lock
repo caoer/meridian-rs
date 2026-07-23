@@ -2074,6 +2074,7 @@ dependencies = [
  "fs",
  "libc",
  "model",
+ "pin",
  "registry",
  "run",
  "serde",
@@ -2282,6 +2283,27 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
+]
+
+[[package]]
+name = "pin"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "duckdb",
+ "effects",
+ "fs",
+ "model",
+ "receipt",
+ "serde",
+ "serde_json",
+ "starlark",
+ "syntax",
+ "tempfile",
+ "view",
+ "wire",
+ "wire-serve",
 ]
 
 [[package]]
