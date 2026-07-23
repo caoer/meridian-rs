@@ -1,6 +1,6 @@
 [package]
-name = "rules"
-description = "The extension kernel: pure Starlark evaluation — rules in, effect descriptors out, zero I/O, zero integration (decisions/0003)"
+name = "effects"
+description = "The effect kernel: pure Starlark evaluation — rules in, effect descriptors out, zero I/O, zero integration, advisory-only (decisions/0003, decision #7)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

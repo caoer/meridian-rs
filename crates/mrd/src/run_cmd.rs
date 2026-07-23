@@ -32,7 +32,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rules::EvalLimits;
+use effects::EvalLimits;
 use run::address::{self, AddressError, ResolvedTask};
 use run::caps::{self, CapResolution, CapSource, CapsError, Conventions};
 use run::contracts::{self, Contract};
@@ -59,7 +59,7 @@ const DRY_INVOCATION: &str = "dry";
 /// must short-circuit the cascade before any apply — the runner's vacuous
 /// stop on an empty ruleset is that short-circuit, and the CLI surface has
 /// no rules input to widen it.
-const S1_RULES: &[rules::Rule] = &[];
+const S1_RULES: &[effects::Rule] = &[];
 
 /// The workspace-relative receipt file `mrd run` appends to (executor
 /// convention: address policy is the caller's; the executor scans every

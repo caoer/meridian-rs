@@ -4,7 +4,7 @@
 // items look unused / non-reexported from any single crate's vantage.
 #![allow(dead_code, unreachable_pub)]
 
-use rules::{ChangeEvent, Rule};
+use effects::{ChangeEvent, Rule};
 
 /// Load a committed rule fixture by file stem (its id = the stem).
 pub fn rule(stem: &str) -> Rule {

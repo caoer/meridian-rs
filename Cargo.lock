@@ -1020,6 +1020,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "effects"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "insta",
+ "proptest",
+ "serde",
+ "serde_json",
+ "starlark",
+]
+
+[[package]]
 name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2056,11 +2068,11 @@ version = "0.0.0"
 dependencies = [
  "cache",
  "duckdb",
+ "effects",
  "fs",
  "libc",
  "model",
  "registry",
- "rules",
  "run",
  "serde",
  "serde_json",
@@ -2859,25 +2871,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "rules"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "insta",
- "proptest",
- "serde",
- "serde_json",
- "starlark",
-]
-
-[[package]]
 name = "run"
 version = "0.0.0"
 dependencies = [
+ "effects",
  "fs",
  "libc",
  "model",
- "rules",
  "serde",
  "serde_json",
  "sha2",

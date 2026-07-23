@@ -50,8 +50,8 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use effects::Effect;
 use model::MerkleRoot;
-use rules::Effect;
 
 use crate::caps::CapSet;
 use crate::exec::{self, ExecSpec, ExecStatus};

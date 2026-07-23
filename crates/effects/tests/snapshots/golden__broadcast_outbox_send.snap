@@ -1,5 +1,5 @@
 ---
-source: crates/rules/tests/golden.rs
+source: crates/effects/tests/golden.rs
 expression: effects
 ---
 [

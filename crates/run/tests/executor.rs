@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use effects::{ArgValue, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
-use rules::{ArgValue, Effect, EffectKind, Provenance};
 use run::caps::CapSet;
 use run::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 

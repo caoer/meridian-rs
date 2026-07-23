@@ -1,12 +1,13 @@
-# rules — the extension kernel
+# effects — the effect kernel
 
 Pure Starlark evaluation: **rules in, effect descriptors out. Zero I/O, zero
-integration.** The engine's organ for the `on_change` hook, in its own crate
-(decisions/0003). Runs parallel to the resident-daemon spine and touches nothing
-it owns — no splice choke point, no wire, no daemon.
+integration. Advisory-only.** The engine's organ for the `on_change` hook, in
+its own crate (decisions/0003, decision #7 rename-and-demote). Runs parallel to
+the resident-daemon spine and touches nothing it owns — no splice choke point,
+no wire, no daemon — and never will.
 
 ```rust
-use rules::{eval, ChangeEvent, Rule};
+use effects::{eval, ChangeEvent, Rule};
 
 let rules = vec![Rule::new("status-teach", r#"
 def on_change(event):
@@ -62,7 +63,6 @@ every argument named):
 | `ask(message, options=?)` | `proto.ask` | proto |
 | `notice(message)` | `proto.notice` | proto |
 | `warn(message, section=?)` | `proto.warn` | proto |
-| `reject(message, field=?)` | `proto.reject` | proto |
 
 A rule reaches these plus the Starlark standard library and nothing else: no
 file, net, os, clock, random, `print`, or `load`. An effect is inert data a
@@ -106,20 +106,25 @@ disk carries the history the wire never does.
 
 | Layer | Tool | Run |
 |---|---|---|
-| Golden descriptor snapshots | insta | `cargo test -p rules --test golden` |
-| Invariants (determinism, keys) | proptest | `cargo test -p rules --test determinism` |
-| Fuel / bombs | — | `cargo test -p rules --test fuel` |
-| Hostility / purity / cascade / capability | — | `cargo test -p rules` |
+| Golden descriptor snapshots | insta | `cargo test -p effects --test golden` |
+| Invariants (determinism, keys) | proptest | `cargo test -p effects --test determinism` |
+| Fuel / bombs | — | `cargo test -p effects --test fuel` |
+| Hostility / purity / cascade / capability | — | `cargo test -p effects` |
 | Fuzz (source + event) | cargo-fuzz | `cargo +nightly fuzz run eval_source` (see `fuzz/`) |
-| Mutation (tests bite) | cargo-mutants | `cargo mutants -p rules --test-workspace=false` |
-| Coverage | cargo-llvm-cov | `cargo llvm-cov -p rules` |
+| Mutation (tests bite) | cargo-mutants | `cargo mutants -p effects --test-workspace=false` |
+| Coverage | cargo-llvm-cov | `cargo llvm-cov -p effects` |
 
 The stable `cargo test` path (golden + proptest + fuzz-shaped `robustness.rs`)
 runs the whole suite without any extra cargo subcommand; the fuzz targets and
 mutation/coverage tools are the deeper CI gates.
 
-## Not in this crate (0003 § reserved)
+## Not in this crate
 
-Splice-point carve-in, the wire `effects[]` field, the executor, cursor replay
-(consumer-side), and the `mrd rules test` / corpus-replay product surfaces. The
-kernel exposes the pure `eval` primitive those build on.
+**Dead — never coming here (decision #7 rename-and-demote):** the splice-point
+carve-in. This kernel is advisory-only by charter; it will never gain a
+correctness path.
+
+**Elsewhere or reserved (0003 § reserved):** the wire `effects[]` field, the
+executor, cursor replay (consumer-side), and the `mrd rules test` /
+corpus-replay product surfaces. The kernel exposes the pure `eval` primitive
+those build on.
