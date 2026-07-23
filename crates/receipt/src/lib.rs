@@ -30,6 +30,8 @@
 
 use std::fmt::Write;
 
+pub mod journal;
+
 /// The armed-fact set for one batch, borrowed from the request + armed
 /// response pair the caller already holds (§6.1 fact list).
 #[derive(Debug, Clone)]
@@ -105,7 +107,7 @@ pub fn anchor(n: u64) -> String {
 /// Target display text — DISPLAY inside the default template, never a
 /// second address grammar (§6.4): hpath segments joined `>`, an occurrence
 /// index as `(n)`, anchors as `^id`, frontmatter keys bare.
-fn target_display(target: &wire::SecRef) -> String {
+pub(crate) fn target_display(target: &wire::SecRef) -> String {
     match target {
         wire::SecRef::Hpath { hpath } => {
             let mut out = String::new();
@@ -125,7 +127,7 @@ fn target_display(target: &wire::SecRef) -> String {
     }
 }
 
-fn shape_display(shape: &wire::EditShape) -> &'static str {
+pub(crate) fn shape_display(shape: &wire::EditShape) -> &'static str {
     match shape {
         wire::EditShape::Match { .. } => "match",
         wire::EditShape::Put { at, .. } => match at {
