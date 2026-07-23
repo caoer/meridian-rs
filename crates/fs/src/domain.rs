@@ -28,6 +28,34 @@ use crate::WorkspaceRoot;
 /// The custom-ignore config file. Not markdown ⇒ never in its own domain.
 pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 
+/// The ONE reserved receipt-journal page (d2 §2.1 A3/A9; node-rev-merkle-spec
+/// §10 open-question 3). The receipt engine appends one row per guarded write
+/// here; it is in-vault markdown, git-tracked, and **root-EXCLUDED** — the
+/// workspace tree merkle never covers it. That exclusion is the whole point:
+/// without it every guarded write would move the very root it just guarded (a
+/// receipt records `root_after`, but writing that receipt would change the
+/// root again — "a root that self-invalidates on every splice is useless as a
+/// commit guard"). Excluding the journal lets a row carry BOTH `root_before`
+/// and `root_after`, which is what makes the chain-continuity detector
+/// (`receipt::journal::check_chain`) possible.
+///
+/// A NON-dot path on purpose: the dot-segment default-ignore would exclude a
+/// `.`-prefixed page incidentally, but the journal must be git-TRACKED (the
+/// outer git witness is one of its two integrity sides), and its exclusion is
+/// a NAMED law, not a side effect of the dot rule.
+///
+/// # Integrity residuals — both named, stated not hidden (d2 §2.1)
+/// 1. **Pre-push offline rewrite** — a full offline rewrite of the journal
+///    before the first push is undetectable from inside the engine. This is
+///    git's own trust floor; cryptographic closure is a deferred door.
+/// 2. **Root-preserving online forged-row insertion** — inserting a forged row
+///    whose `root_before`/`root_after` already chain is NOT caught by
+///    `check_chain` (the chain stays continuous). Detection rests on the
+///    receipt-engine-only write restriction (an ordinary `^put`/splice at this
+///    path refuses — `wire-serve`) plus the git witness, never on chain
+///    continuity alone.
+pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
+
 /// The §12 hash-domain filter: the md-only floor + dot-segment default ignore
 /// (both fixed and structural) plus the custom ignore rules and the domain
 /// `version` parsed from `mdfs_config.yaml`.
@@ -120,6 +148,13 @@ impl Domain {
         if segments.iter().any(|s| s.starts_with('.')) {
             return false;
         }
+        // 2b. the reserved receipt journal — root-EXCLUDED by NAMED law (d2
+        //     §2.1 A3/A9), structural like the dot rule (a `!` re-include
+        //     cannot lift it). Excluded so guarded writes do not self-
+        //     invalidate the root and so a journal row may carry root_after.
+        if is_reserved_journal(rel) {
+            return false;
+        }
         // 3. custom ignore — gitignore last-match-wins.
         let mut ignored = false;
         for rule in &self.rules {
@@ -133,6 +168,24 @@ impl Domain {
 
 fn is_markdown(p: &Path) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// Is `rel` the ONE reserved receipt-journal page? The single source of truth
+/// for that identity, shared by the hash-domain exclusion (above) and the
+/// write-choke-point restriction (`wire-serve`) so the two can never drift.
+/// Matches on normalized path segments (a leading `./` or empty segments do
+/// not defeat it), so a splice cannot dodge the restriction with a
+/// non-canonical spelling of the reserved path.
+#[must_use]
+pub fn is_reserved_journal(rel: &Path) -> bool {
+    let segments: Vec<&str> = rel
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+    segments.join("/") == RESERVED_JOURNAL_PATH
 }
 
 /// One parsed gitignore-style rule. Matching operates on path *segments*.
@@ -485,6 +538,23 @@ mod tests {
         assert!(!d.contains(Path::new("build/out.md")));
         assert!(!d.contains(Path::new("a/build/out.md"))); // unanchored dir at depth
         assert!(d.contains(Path::new("notes/plan.md")));
+    }
+
+    /// d2 §2.1 A3/A9: the reserved receipt journal is root-EXCLUDED by named
+    /// law — never in the hash domain, and a custom `!` re-include cannot lift
+    /// it (structural, above custom rules). Addressability is a separate
+    /// concern (`fs::load` reaches it by path); this only gates HASHING.
+    #[test]
+    fn reserved_journal_is_root_excluded() {
+        let d = Domain::new();
+        assert!(!d.contains(Path::new(RESERVED_JOURNAL_PATH)));
+        assert!(!d.contains(Path::new("meridian/journal.md")));
+        // a sibling page under the same dir stays IN the domain — only the one
+        // reserved page is carved out.
+        assert!(d.contains(Path::new("meridian/notes.md")));
+        // a `!` re-include cannot pull the journal back into the root.
+        let re = Domain::from_config("ignore:\n  - \"!meridian/journal.md\"\n");
+        assert!(!re.contains(Path::new(RESERVED_JOURNAL_PATH)));
     }
 
     #[test]
