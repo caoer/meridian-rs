@@ -52,7 +52,7 @@ fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
 /// (the verdict frozen at close).
 fn review_page(pinned_rev: &str) -> String {
     format!(
-        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
+        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
     )
 }
 
@@ -304,6 +304,204 @@ fn gate_board_one_color_per_edge() {
         scalar_i64(&conn, "SELECT count(*) FROM board"),
         scalar_i64(&conn, "SELECT count(*) FROM input_lock"),
         "exactly one color per ^inputs edge",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3b — archive fixture: a v1 (foreign-algo) pin renders superseded-algo grey
+// ---------------------------------------------------------------------------
+
+/// Archive fixture (U3.4): a lock pinned under `hash-algo: v1` — an algo this
+/// engine does not compute — renders `grey superseded-algo` on the board, NEVER
+/// red. The v1 rev cannot equal the live node-rev, so without the algo gate the
+/// board would report drift (a false red) on an archived block that must stay
+/// grey forever (d2 §6.3; U0.2/U3.4). The negative control is the same edge
+/// under native `node-rev`, which reds on the same mismatch.
+#[test]
+fn gate_archived_v1_pin_renders_superseded_algo_grey() {
+    let subject = "# Subject\n\nbody. ^claim\n";
+    // A v1 (sha256) rev — foreign; never equals the live node-rev.
+    let v1_page = "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: v1\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', rev: 'a1b2c3d4e5f60718', rev_class: 'content'}\n```\n";
+
+    let mut docs = BTreeMap::new();
+    docs.insert("subject.md".to_string(), doc(subject));
+    docs.insert("v1.md".to_string(), doc(v1_page));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    let (color, reason): (String, String) = conn
+        .query_row(
+            "SELECT color, reason FROM board WHERE src_path='v1.md' AND to_path='subject.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the v1 edge has a board row");
+    assert_eq!(color, "grey", "a v1-algo pin is grey, never red drift");
+    assert_eq!(reason, "superseded-algo");
+    // Never counted as a board red.
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM board_red WHERE src_path='v1.md'",
+        ),
+        0,
+        "a superseded-algo edge is never a board red",
+    );
+    // Exactly one color for the edge.
+    assert_eq!(
+        scalar_i64(&conn, "SELECT count(*) FROM board WHERE src_path='v1.md'"),
+        1
+    );
+
+    // Negative control: the SAME mismatch under native node-rev reds (drift).
+    let native_page = review_page("a1b2c3d4e5f60718"); // node-rev header, wrong rev
+    let mut nd = BTreeMap::new();
+    nd.insert("subject.md".to_string(), doc(subject));
+    nd.insert("review.md".to_string(), doc(&native_page));
+    let conn2 = open_board(&nd, &[]).expect("open board native");
+    let ncolor: String = conn2
+        .query_row(
+            "SELECT color FROM board WHERE src_path='review.md' AND to_path='subject.md'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the native edge has a board row");
+    assert_eq!(ncolor, "red", "native algo + rev mismatch = red drift");
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3c — form-2 (ratified SCHEMA.md effect-receipt) chain renders grey
+// ---------------------------------------------------------------------------
+
+/// U3.4 compat reader: the ratified SCHEMA.md effect-receipt form (form-2) — a
+/// plain fenced `yaml` chain block whose TRAILING block-anchor line is `^inputs`,
+/// block-SEQUENCE `- ref:/hash:` items, and a bare `hash-algo: v1` header.
+/// Pre-U3.4 the board saw ZERO rows for such a page (mrd was blind to form-2);
+/// now the block PARSES and renders `grey superseded-algo` on the board — never
+/// red, never silently empty. A MULTI-item form-2 block projects every item.
+#[test]
+fn gate_form2_chain_renders_superseded_algo_grey() {
+    let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
+    let mut docs = BTreeMap::new();
+    docs.insert("effect.md".to_string(), doc(raw));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    // NOT empty — the pre-change behavior was zero items (form-2 was invisible).
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM input_lock WHERE src_path='effect.md'",
+        ),
+        1,
+        "the form-2 chain parses one lock item (pre-U3.4: zero — the board was blind)",
+    );
+    let (color, reason): (String, String) = conn
+        .query_row(
+            "SELECT color, reason FROM board WHERE src_path='effect.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("the form-2 edge has a board row");
+    assert_eq!(
+        color, "grey",
+        "a v1-algo form-2 pin is grey, never red drift"
+    );
+    assert_eq!(reason, "superseded-algo");
+    // Never counted as a board red.
+    assert_eq!(
+        scalar_i64(
+            &conn,
+            "SELECT count(*) FROM board_red WHERE src_path='effect.md'",
+        ),
+        0,
+        "a superseded-algo form-2 edge is never a board red",
+    );
+
+    // A MULTI-item form-2 block projects EVERY item, each grey superseded-algo.
+    let multi = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta]]'\n  hash: 'merkle-v1:bbbb'\nhash-algo: v1\n```\n\n^inputs\n";
+    let mut mdocs = BTreeMap::new();
+    mdocs.insert("multi.md".to_string(), doc(multi));
+    let mconn = open_board(&mdocs, &[]).expect("open board multi");
+    assert_eq!(
+        scalar_i64(
+            &mconn,
+            "SELECT count(*) FROM board WHERE src_path='multi.md' AND color='grey' AND reason='superseded-algo'",
+        ),
+        2,
+        "both form-2 block-sequence items project as grey superseded-algo",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3d — post-sweep: a v2 form-2 pin with a wikilink ref renders GREEN
+// ---------------------------------------------------------------------------
+
+/// U3.4 (the mrd-v2 leg of Gate B): after the v1→v2 supersede, a form-2 effect
+/// page carries `hash-algo: v2` and a `[[wikilink]]`-by-NAME ref pinned at the
+/// target's live `node_rev`. The board must render it GREEN — proving BOTH new
+/// pieces on the board plane: (1) the wikilink NAME resolves to the real corpus
+/// path (else the JOIN misses and it reds unresolved), and (2) `v2` is native
+/// `{node-rev, v2}` (else it greys superseded-algo). This is what conserves the
+/// pre-sweep-green pages green under mrd-v2. Negative controls: the SAME pin left
+/// at `hash-algo: v1` greys, and a drifted v2 rev reds.
+#[test]
+fn gate_form2_v2_wikilink_pin_renders_green() {
+    let target = "# Target\n\nsource body\n";
+    // The target lives at a nested path; the ref is the bare NAME.
+    let target_rev = live_node_rev("sources/target-page.md", target, "");
+    let effect_v2 = format!(
+        "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: v2\n```\n\n^inputs\n"
+    );
+
+    let mut docs = BTreeMap::new();
+    docs.insert("sources/target-page.md".to_string(), doc(target));
+    docs.insert("effects/e.md".to_string(), doc(&effect_v2));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    let (color, reason, to_path): (String, String, String) = conn
+        .query_row(
+            "SELECT color, reason, to_path FROM board WHERE src_path='effects/e.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("the v2 form-2 edge has a board row");
+    assert_eq!(
+        to_path, "sources/target-page.md",
+        "the wikilink NAME resolved to the real corpus path (else the JOIN misses)",
+    );
+    assert_eq!(color, "green", "v2 + wikilink + rev==live ⇒ green");
+    assert_eq!(reason, "attested");
+
+    // Negative control 1: the SAME pin still labeled v1 greys (not a false green).
+    let effect_v1 = format!(
+        "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: v1\n```\n\n^inputs\n"
+    );
+    let mut d1 = BTreeMap::new();
+    d1.insert("sources/target-page.md".to_string(), doc(target));
+    d1.insert("effects/e.md".to_string(), doc(&effect_v1));
+    let c1 = open_board(&d1, &[]).expect("open board v1");
+    assert_eq!(
+        scalar_i64(
+            &c1,
+            "SELECT count(*) FROM board WHERE src_path='effects/e.md' AND color='grey' AND reason='superseded-algo'",
+        ),
+        1,
+        "the pre-sweep v1 label greys — the sweep to v2 is what turns it green",
+    );
+
+    // Negative control 2: a v2 pin whose rev no longer matches live reds (drift),
+    // proving v2 is VERIFIED, never a blanket green.
+    let effect_v2_stale = "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: v2\n```\n\n^inputs\n";
+    let mut d2 = BTreeMap::new();
+    d2.insert("sources/target-page.md".to_string(), doc(target));
+    d2.insert("effects/e.md".to_string(), doc(effect_v2_stale));
+    let c2 = open_board(&d2, &[]).expect("open board v2 stale");
+    assert_eq!(
+        scalar_i64(
+            &c2,
+            "SELECT count(*) FROM board WHERE src_path='effects/e.md' AND color='red' AND reason='content-drifted'",
+        ),
+        1,
+        "a v2 pin that drifts reds — v2 is verified, not blanket-green",
     );
 }
 

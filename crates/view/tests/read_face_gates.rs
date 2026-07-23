@@ -56,7 +56,7 @@ fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
 /// A review page whose `^inputs` lock pins `subject.md#^claim` at `pinned_rev`.
 fn review_page(pinned_rev: &str) -> String {
     format!(
-        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
+        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
     )
 }
 
