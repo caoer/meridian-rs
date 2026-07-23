@@ -578,6 +578,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "check"
+version = "0.0.0"
+dependencies = [
+ "fs",
+ "model",
+ "policy",
+ "realise",
+ "receipt",
+ "syntax",
+ "tempfile",
+ "wire",
+ "wire-serve",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2097,6 +2112,7 @@ dependencies = [
  "anyhow",
  "attest",
  "cache",
+ "check",
  "duckdb",
  "effects",
  "fs",
