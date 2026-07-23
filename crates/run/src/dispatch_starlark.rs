@@ -6,8 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use effects::{Domain, Effect, EvalError, EvalLimits, Rule, RunCtx, eval_run};
 use model::MerkleRoot;
-use rules::{Domain, Effect, EvalError, EvalLimits, Rule, RunCtx, eval_run};
 
 use crate::caps::CapSet;
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};

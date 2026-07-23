@@ -430,20 +430,6 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         store(eval)?.push(EffectKind::Warn, args);
         Ok(NoneType)
     }
-
-    /// `proto.reject` — advisory rejection `message` (never blocks the write —
-    /// the change already happened), optionally naming the offending `field`.
-    fn reject(
-        #[starlark(require = named)] message: String,
-        #[starlark(require = named)] field: Option<String>,
-        eval: &mut Evaluator<'_, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let mut args = BTreeMap::new();
-        args.insert("message".to_owned(), ArgValue::Str(message));
-        insert_opt(&mut args, "field", field);
-        store(eval)?.push(EffectKind::Reject, args);
-        Ok(NoneType)
-    }
 }
 
 /// Peak eval-heap bytes as `u64` (saturating). Peak (not current) is monotonic
@@ -806,7 +792,6 @@ mod tests {
             "ask",
             "notice",
             "warn",
-            "reject",
         ] {
             assert!(names.contains(ctor), "missing constructor `{ctor}`");
         }

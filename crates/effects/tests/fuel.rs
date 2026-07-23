@@ -4,7 +4,7 @@
 //! guard: if any of these hung, the suite would hang, so their passing IS the
 //! "never hangs" proof.
 
-use rules::{EvalError, EvalLimits, Rule, eval_with_limits};
+use effects::{EvalError, EvalLimits, Rule, eval_with_limits};
 
 fn tight() -> EvalLimits {
     EvalLimits {
@@ -16,11 +16,11 @@ fn tight() -> EvalLimits {
     }
 }
 
-fn ev() -> rules::ChangeEvent {
-    rules::ChangeEvent::new("f.md", "a", "b")
+fn ev() -> effects::ChangeEvent {
+    effects::ChangeEvent::new("f.md", "a", "b")
 }
 
-fn run(src: &str, limits: EvalLimits) -> Result<Vec<rules::Effect>, EvalError> {
+fn run(src: &str, limits: EvalLimits) -> Result<Vec<effects::Effect>, EvalError> {
     eval_with_limits(&[Rule::new("bomb", src)], &ev(), limits)
 }
 

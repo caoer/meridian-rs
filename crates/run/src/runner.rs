@@ -37,7 +37,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-use rules::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
+use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
 
 use crate::address::{self, AddressError};
 use crate::caps::{self, CapResolution, CapSet, CapsError};
@@ -380,7 +380,7 @@ fn cascade(
         return Ok((generations, cap_reached));
     }
     while let Some(ev) = event.take() {
-        let effects = rules::eval_with_limits(rules, &ev, spec.limits).map_err(|error| {
+        let effects = effects::eval_with_limits(rules, &ev, spec.limits).map_err(|error| {
             CascadeError::Eval {
                 depth: ev.depth,
                 error,

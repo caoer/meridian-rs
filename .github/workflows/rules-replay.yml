@@ -17,7 +17,7 @@ on:
   pull_request:
     paths:
       - "crates/mrd/**"
-      - "crates/rules/**"
+      - "crates/effects/**"
       - ".github/workflows/rules-replay.yml"
 
 env:

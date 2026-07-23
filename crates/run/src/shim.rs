@@ -2,7 +2,7 @@
 //! channel through which a bash task block reaches the tree. Bash writes
 //! length-prefixed NDJSON `md.*` descriptor records to the shim fd; this
 //! module parses the captured stream into inert descriptors and converts them
-//! to [`rules::Effect`]s for the executor's one batch.
+//! to [`effects::Effect`]s for the executor's one batch.
 //!
 //! # Wire grammar (explicit framing — S6)
 //!
@@ -41,7 +41,7 @@
 
 use std::collections::BTreeMap;
 
-use rules::{ArgValue, Effect, EffectKind, Provenance};
+use effects::{ArgValue, Effect, EffectKind, Provenance};
 
 /// Hard cap on one record's payload (resource bound, C4 spirit).
 pub const MAX_RECORD_BYTES: usize = 1 << 20;

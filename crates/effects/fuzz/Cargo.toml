@@ -1,4 +1,4 @@
-# cargo-fuzz targets for the extension kernel (decisions/0003 § Testing
+# cargo-fuzz targets for the effect kernel (decisions/0003 § Testing
 # methodology). Detached sub-workspace (`[workspace]` below) so the main
 # `cargo build` / `cargo test` never pulls in libfuzzer (nightly + sanitizer).
 #
@@ -6,7 +6,7 @@
 #   cargo +nightly fuzz run eval_source
 #   cargo +nightly fuzz run eval_input
 [package]
-name = "rules-fuzz"
+name = "effects-fuzz"
 version = "0.0.0"
 edition = "2024"
 publish = false
@@ -17,7 +17,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-rules = { path = ".." }
+effects = { path = ".." }
 
 [[bin]]
 name = "eval_source"
