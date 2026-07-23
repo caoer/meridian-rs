@@ -23,7 +23,9 @@
 
 use std::collections::BTreeMap;
 
-use model::{ByteSpan, CorpusIndex, Document, Node, NodeKind, Ref};
+use model::{
+    ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, SpliceRequest,
+};
 
 /// One inbound reference: which file, where, linking how.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,18 +128,246 @@ fn collect_links<'a>(node: &'a Node, out: &mut Vec<(&'a str, ByteSpan)>) {
 }
 
 /// A planned corpus-wide rename: the spliceable edit set, span-exact. Applying
-/// it is the caller's loop through model-validate + fs-execute.
+/// it is the caller's loop through model-validate + fs-execute. Each entry is one
+/// `(path, batch)` splice; the list order is load-bearing (see [`plan_rename`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenamePlan {
-    pub edits: Vec<(String, model::SpliceRequest)>,
+    pub edits: Vec<(String, SpliceRequest)>,
 }
 
-/// Plan a heading/file rename: every affected wikilink rewritten
-/// depth/anchor/alias-preservingly, nothing applied.
+/// Plan an in-file heading rename with corpus backlink fixup (rung 5, meridian's
+/// `mv` for a heading). `from_path` is the file holding the heading, `from` its
+/// section ref (an `hpath`, or an `anchor` whose host section is renamed), `to`
+/// the new heading TEXT. Nothing is applied — the returned `edits` are
+/// `(path, batch)` splices the caller runs through `model::validate_batch` +
+/// `fs::apply_batch`, like every other write.
+///
+/// Two properties this preserves, both asserted by U5.4's gate:
+/// - **Block ids survive.** The heading edit is a `match` over the heading LINE
+///   only (`## Old` → `## New`); every `^block-id` in the section BODY (and any
+///   `^id` trailing the heading line) is byte-untouched.
+/// - **hpath pins redden, block pins stay green.** A dependent pinning
+///   `from_path#Old` (an hpath selector) resolves to nothing after the rename →
+///   `red(selector-unresolved)`; one pinning a body `^block-id` still resolves at
+///   an unchanged rev → green (U2.2 `classify_edge`). Backlink fixup rewrites
+///   `[[…]]` WIKILINKS, never `inputs:` pins — so pins redden as the law says.
+///
+/// Edit order is load-bearing: every backlink rewrite FIRST, the heading rename
+/// LAST — a self-referential link inside the renamed section is addressed by the
+/// section's OLD hpath, which the heading rename would invalidate if it ran
+/// first.
+///
+/// Stated limits (fail LOUD at apply, never silent corruption): renaming a
+/// heading that has SUB-sections refuses `would_corrupt` (the children's hpaths
+/// would move); two byte-identical affected links in one section refuse
+/// `not_unique`. Both are the fuller span-grain rename's to close, not this unit.
 #[must_use]
-pub fn plan_rename(index: &CorpusIndex, from: &Ref, to: &str) -> RenamePlan {
-    let _ = (index, from, to);
-    todo!("rung 5: span-exact corpus rename planning")
+pub fn plan_rename(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    from_path: &str,
+    from: &Ref,
+    to: &str,
+) -> RenamePlan {
+    let mut edits: Vec<(String, SpliceRequest)> = Vec::new();
+    let Some(doc) = docs.get(from_path) else {
+        return RenamePlan { edits };
+    };
+    // The section being renamed: the deepest `Section` containing the resolved
+    // target byte (an hpath resolves to the section itself; an anchor to its host
+    // block, whose enclosing section is the one renamed).
+    let Ok(target) = model::resolve(doc, from) else {
+        return RenamePlan { edits };
+    };
+    let Some(section) = enclosing_section(&doc.root, target.span.start) else {
+        return RenamePlan { edits };
+    };
+    let (NodeKind::Section { heading_text, .. }, Some(section_hpath)) =
+        (&section.kind, &section.hpath)
+    else {
+        return RenamePlan { edits };
+    };
+    let old_text = heading_text.clone();
+    if to == old_text {
+        return RenamePlan { edits };
+    }
+    let section_ref = hpath_ref(section_hpath);
+
+    // Backlink fixup FIRST (see order note): every corpus wikilink/embed whose
+    // fragment is the renamed heading AND resolves to `from_path`.
+    for (src_path, src_doc) in docs {
+        collect_backlink_edits(
+            index, src_path, src_doc, from_path, &old_text, to, &mut edits,
+        );
+    }
+
+    // Heading rename LAST: a `match` over the heading LINE (marker + text) so the
+    // section BODY and any trailing `^id` on the line survive byte-for-byte.
+    if let Some(edit) = heading_match_edit(doc, section, &old_text, to, section_ref) {
+        edits.push((from_path.to_string(), single(edit)));
+    }
+    RenamePlan { edits }
+}
+
+/// The deepest `Section` node whose span contains `offset` (byte). A section's
+/// heading byte resolves to the section itself; a body byte to the section it
+/// lives under. `None` when `offset` sits above every heading (frontmatter or a
+/// pre-heading preamble — un-addressable by the mint-plane hpath grammar).
+fn enclosing_section(node: &Node, offset: usize) -> Option<&Node> {
+    let mut found = if matches!(node.kind, NodeKind::Section { .. })
+        && node.span.start <= offset
+        && offset < node.span.end
+    {
+        Some(node)
+    } else {
+        None
+    };
+    for c in &node.children {
+        if let Some(deeper) = enclosing_section(c, offset) {
+            found = Some(deeper);
+        }
+    }
+    found
+}
+
+/// The heading-line rename edit: a `match` that rewrites only the heading's
+/// marker-plus-text run (`## Old` → `## New`) within the section's full span,
+/// leaving the body (and any trailing `^id`) untouched. `None` when the heading
+/// text is not found on the heading line (defensive — it always is for a live
+/// `Section`).
+fn heading_match_edit(
+    doc: &Document,
+    section: &Node,
+    old_text: &str,
+    to: &str,
+    section_ref: Ref,
+) -> Option<Edit> {
+    let raw = &doc.raw;
+    let span = &section.span;
+    let line_end = raw[span.start..span.end]
+        .find('\n')
+        .map_or(span.end, |p| span.start + p);
+    let heading_line = &raw[span.start..line_end];
+    let pos = heading_line.find(old_text)?;
+    let old_match = heading_line[..pos + old_text.len()].to_string();
+    let new_match = format!("{}{}", &heading_line[..pos], to);
+    Some(Edit {
+        target: section_ref,
+        edit: EditKind::Match {
+            old: old_match,
+            new: new_match,
+        },
+        if_node_rev: None,
+    })
+}
+
+/// Every wikilink/embed in `doc` whose fragment is `old_text` and whose linkpath
+/// resolves to `from_path` becomes one section-scoped `match` splice rewriting
+/// `#old_text` → `#to` in the exact link text (embed `!`, `|alias`, and path all
+/// preserved). Each rewrite is its OWN batch so two links in one section never
+/// collide on a shared target span.
+fn collect_backlink_edits(
+    index: &CorpusIndex,
+    src_path: &str,
+    doc: &Document,
+    from_path: &str,
+    old_text: &str,
+    to: &str,
+    out: &mut Vec<(String, SpliceRequest)>,
+) {
+    fn walk(
+        node: &Node,
+        section_hpath: Option<&Vec<String>>,
+        ctx: &BacklinkCtx<'_>,
+        out: &mut Vec<(String, SpliceRequest)>,
+    ) {
+        let here = match (&node.kind, &node.hpath) {
+            (NodeKind::Section { .. }, Some(hp)) => Some(hp),
+            _ => section_hpath,
+        };
+        if let NodeKind::Wikilink {
+            target, heading, ..
+        }
+        | NodeKind::Embed {
+            target, heading, ..
+        } = &node.kind
+            && heading.as_deref() == Some(ctx.old_text)
+            && resolves_to(ctx.index, ctx.src_path, target, ctx.from_path)
+            && let Some(hpath) = here
+        {
+            let raw_link = &ctx.raw[node.span.clone()];
+            let new_link =
+                raw_link.replacen(&format!("#{}", ctx.old_text), &format!("#{}", ctx.to), 1);
+            if new_link != raw_link {
+                out.push((
+                    ctx.src_path.to_string(),
+                    single(Edit {
+                        target: hpath_ref(hpath),
+                        edit: EditKind::Match {
+                            old: raw_link.to_string(),
+                            new: new_link,
+                        },
+                        if_node_rev: None,
+                    }),
+                ));
+            }
+        }
+        for c in &node.children {
+            walk(c, here, ctx, out);
+        }
+    }
+    let ctx = BacklinkCtx {
+        index,
+        src_path,
+        from_path,
+        old_text,
+        to,
+        raw: &doc.raw,
+    };
+    walk(&doc.root, None, &ctx, out);
+}
+
+/// The read-only context threaded through the backlink walk (keeps the recursive
+/// arg list small — clippy's `too_many_arguments`).
+struct BacklinkCtx<'a> {
+    index: &'a CorpusIndex,
+    src_path: &'a str,
+    from_path: &'a str,
+    old_text: &'a str,
+    to: &'a str,
+    raw: &'a str,
+}
+
+/// Does `linkpath` written in `source` resolve to `target_path`? Empty linkpath
+/// (`[[#H]]`) is the source itself (stage-1 parity), matching [`resolve_edge`].
+fn resolves_to(index: &CorpusIndex, source: &str, linkpath: &str, target_path: &str) -> bool {
+    let dest = if linkpath.is_empty() {
+        Some(source.to_string())
+    } else {
+        index.resolve_linkpath(linkpath, source)
+    };
+    dest.as_deref() == Some(target_path)
+}
+
+/// A single-edit batch (unguarded) — one `(path, batch)` entry of a [`RenamePlan`].
+fn single(edit: Edit) -> SpliceRequest {
+    SpliceRequest {
+        if_root: None,
+        edits: vec![edit],
+    }
+}
+
+/// A heading-path (`/`-joined text chain) as a mint-plane `hpath` ref.
+fn hpath_ref(hpath: &[String]) -> Ref {
+    Ref::Hpath(
+        hpath
+            .iter()
+            .map(|h| HpathSeg {
+                h: h.clone(),
+                n: None,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -228,5 +458,59 @@ mod tests {
         assert!(got[0].span.start < got[1].span.start, "span order in-file");
         assert_eq!(got[2].path, "b.md");
         assert_eq!(backlinks(&index, &docs, "missing.md"), vec![]);
+    }
+
+    /// `plan_rename` emits backlink fixups FIRST (a heading link `#Foo` → `#Bar`,
+    /// alias-preserved) and the heading rename LAST (a `match` over the heading
+    /// line only), never touching a `^block-id` link.
+    #[test]
+    fn plan_rename_emits_backlink_fixup_then_heading_edit() {
+        let (index, docs) = corpus(&[
+            ("page.md", "# Foo\n\nbody ^abc\n"),
+            (
+                "other.md",
+                "# L\n\n[[page#Foo]] and [[page#Foo|note]] and [[page#^abc]]\n",
+            ),
+        ]);
+        let plan = plan_rename(
+            &index,
+            &docs,
+            "page.md",
+            &hpath_ref(&["Foo".to_string()]),
+            "Bar",
+        );
+
+        // Heading rename is LAST, over the heading LINE only.
+        let (last_path, last_batch) = plan.edits.last().expect("a heading edit");
+        assert_eq!(last_path, "page.md");
+        assert!(
+            matches!(&last_batch.edits[0].edit, EditKind::Match { old, new } if old == "# Foo" && new == "# Bar"),
+            "heading edit rewrites the heading line: {:?}",
+            last_batch.edits[0].edit
+        );
+
+        // Backlink fixups come first; the `^abc` block link is never rewritten.
+        let backlink_news: Vec<&str> = plan.edits[..plan.edits.len() - 1]
+            .iter()
+            .map(|(p, b)| {
+                assert_eq!(p, "other.md");
+                match &b.edits[0].edit {
+                    EditKind::Match { new, .. } => new.as_str(),
+                    other @ EditKind::Put { .. } => panic!("backlink edit is a match: {other:?}"),
+                }
+            })
+            .collect();
+        assert!(
+            backlink_news.contains(&"[[page#Bar]]"),
+            "bare link rewritten"
+        );
+        assert!(
+            backlink_news.contains(&"[[page#Bar|note]]"),
+            "aliased link rewritten, alias preserved"
+        );
+        assert!(
+            !backlink_news.iter().any(|n| n.contains("^abc")),
+            "the ^block-id link is never a rename edit: {backlink_news:?}"
+        );
     }
 }
