@@ -61,9 +61,23 @@ run = { workspace = true }
 # external crate enters and `cargo deny` is unchanged.
 view = { workspace = true }
 duckdb = { workspace = true }
+# The `mrd test` scenario runner (U1.2): `^put` routes through the PRODUCTION
+# write path (`wire-serve` splice/create/remove over a real `fs` mount — no
+# in-memory double), and `^expect` runs fenced Starlark under FULL `EvalLimits`
+# (tick + heap + call-depth + source-size + nesting). `starlark`/`allocative` are
+# already in the graph via `effects`/`policy` (no new external crate enters,
+# `cargo deny` unchanged); `effects::validate` supplies the source-size + nesting
+# + parse guards so the harness reuses the tested kernel guard, never a fork.
+starlark = { workspace = true }
+allocative = "0.3"
+anyhow = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The `mrd test` scenario runner mounts each scenario's `base/` into a REAL
+# tmpdir (fidelity — the production write path lands actual bytes). `tempfile` is
+# already a graph dependency (dev-deps + other crates); no new external crate.
+tempfile = "3"
 # Foreground-daemon signal handling (SIGINT/SIGTERM → graceful shutdown).
 # libc is already a graph dependency (cache depends on it); no new crate enters
 # the graph and it passes `cargo deny` unchanged.
