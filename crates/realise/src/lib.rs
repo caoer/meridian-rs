@@ -136,10 +136,16 @@ impl Check for FieldEquals {
         Ok(match observed.as_deref() {
             Some(v) if v == self.expected => CheckOutcome::Converged,
             Some(v) => CheckOutcome::Drifted {
-                detail: format!("{}: '{}' is '{v}', expected '{}'", self.page, self.field, self.expected),
+                detail: format!(
+                    "{}: '{}' is '{v}', expected '{}'",
+                    self.page, self.field, self.expected
+                ),
             },
             None => CheckOutcome::Drifted {
-                detail: format!("{}: '{}' is unset, expected '{}'", self.page, self.field, self.expected),
+                detail: format!(
+                    "{}: '{}' is unset, expected '{}'",
+                    self.page, self.field, self.expected
+                ),
             },
         })
     }
@@ -429,9 +435,11 @@ fn converge(
         applies += 1;
         // No apply lands unrecorded: a committed batch MUST carry a receipt.
         if let Some(a) = committed {
-            let line = a.receipt_line.ok_or_else(|| RealiseError::UnrecordedApply {
-                selector: claim.selector.clone(),
-            })?;
+            let line = a
+                .receipt_line
+                .ok_or_else(|| RealiseError::UnrecordedApply {
+                    selector: claim.selector.clone(),
+                })?;
             receipts.push(line);
         }
         let outcome = claim.check.observe(root).map_err(RealiseError::Check)?;
@@ -512,7 +520,11 @@ fn mint_board_card(
     detail: &str,
     spec: &RealiseSpec,
 ) -> Result<Option<String>, RealiseError> {
-    let path = format!("{}/{}.md", spec.board_dir.trim_end_matches('/'), card_slug(selector));
+    let path = format!(
+        "{}/{}.md",
+        spec.board_dir.trim_end_matches('/'),
+        card_slug(selector)
+    );
     let body = render_card(selector, detail, spec.now.as_deref());
     let args = wire_serve::write::CreateArgs {
         id: None,
@@ -546,7 +558,13 @@ fn is_cas_mismatch(err: &wire::ErrorBody) -> bool {
 fn card_slug(selector: &str) -> String {
     selector
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -572,15 +590,19 @@ fn resolve_binding_caps(
         selector: selector.to_owned(),
         reason,
     };
-    let doc = run::address::load_page(root, Path::new(&binding.page))
-        .map_err(|e| err(e.to_string()))?;
-    let task = run::address::resolve_task(&doc, Some(&binding.task))
-        .map_err(|e| err(e.to_string()))?;
+    let doc =
+        run::address::load_page(root, Path::new(&binding.page)).map_err(|e| err(e.to_string()))?;
+    let task =
+        run::address::resolve_task(&doc, Some(&binding.task)).map_err(|e| err(e.to_string()))?;
     let explicit = run::caps::explicit_caps(&doc, &binding.task).map_err(|e| err(e.to_string()))?;
     let conventions = run::caps::load_conventions(&root.0).map_err(|e| err(e.to_string()))?;
-    let resolution =
-        run::caps::resolve_caps(&binding.task, task.block.lang, explicit.as_ref(), &conventions)
-            .map_err(|e| err(e.to_string()))?;
+    let resolution = run::caps::resolve_caps(
+        &binding.task,
+        task.block.lang,
+        explicit.as_ref(),
+        &conventions,
+    )
+    .map_err(|e| err(e.to_string()))?;
     Ok(resolution.effective)
 }
 
