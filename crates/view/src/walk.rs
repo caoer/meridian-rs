@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use model::Document;
 use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge};
 
-use crate::read_face::{LockItem, page_lock_items};
+use crate::read_face::{LockItem, corpus_index, page_lock_items_in_corpus};
 
 /// Which way the walk runs over the `^inputs` pin graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,10 +257,19 @@ struct Step {
     next_page: String,
 }
 
-/// Parse every page's `^inputs` edges once (the shared parser).
+/// Parse every page's `^inputs` edges once (the shared parser), each edge's
+/// `to_path` resolved against the corpus so a form-2 `[[wikilink]]`-by-NAME ref
+/// points at a real `node.path` (the U3.4 wikilink wiring — else the target is
+/// unfindable and a native-algo form-2 pin can never verify green).
 fn forward_edges(docs: &BTreeMap<String, Document>) -> BTreeMap<String, Vec<LockItem>> {
+    let index = corpus_index(docs);
     docs.iter()
-        .map(|(path, doc)| (path.clone(), page_lock_items(doc)))
+        .map(|(path, doc)| {
+            (
+                path.clone(),
+                page_lock_items_in_corpus(path, doc, &index, docs),
+            )
+        })
         .collect()
 }
 
@@ -314,19 +323,21 @@ fn steps_from(
 /// rev, and classify against the live target document.
 ///
 /// One check rides ahead of the rev compare: a pin minted under a NAMED
-/// `hash-algo` this engine does not compute (present and not
-/// [`model::NODE_REV_ALGO`]) is grey `superseded-algo` — readable, unverifiable
-/// here. A foreign rev can neither equal a live node-rev (a false green) nor be
-/// measured as drift (a false red), so it renders grey before classification
-/// (d2 §6.3; U0.2/U3.4). An absent header defaults to native (the engine mints
-/// `node-rev`); a declared-only item (no rev) has no algo to supersede — it
-/// stays declared-unpinned grey.
+/// `hash-algo` this engine does not compute (present and not engine-native per
+/// [`model::is_native_algo`] — the `{node-rev, v2}` set) is grey
+/// `superseded-algo` — readable, unverifiable here. A foreign rev can neither
+/// equal a live node-rev (a false green) nor be measured as drift (a false red),
+/// so it renders grey before classification (d2 §6.3; U0.2/U3.4). The v1→v2
+/// supersede keeps the node-rev value under the `v2` contract label, so a `v2`
+/// pin verifies through the SAME compare as `node-rev`. An absent header
+/// defaults to native (the engine mints `node-rev`); a declared-only item (no
+/// rev) has no algo to supersede — it stays declared-unpinned grey.
 fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
     if edge.pinned_rev.is_some()
         && edge
             .hash_algo
             .as_deref()
-            .is_some_and(|a| a != model::NODE_REV_ALGO)
+            .is_some_and(|a| !model::is_native_algo(a))
     {
         return Color::Grey(GreyReason::SupersededAlgo);
     }
@@ -823,6 +834,97 @@ mod tests {
                 .iter()
                 .all(|e| e.color == Color::Grey(GreyReason::SupersededAlgo)),
             "every v1-algo item is grey superseded-algo",
+        );
+    }
+
+    /// U3.4 (wikilink wiring): a form-2 ref is a `[[wikilink]]`-by-NAME, NOT a
+    /// path. Here the ref `[[target-page]]` must resolve to the real fixture path
+    /// `sources/target-page.md` (`getFirstLinkpathDest` by basename) for the walk
+    /// to find the target and verify. Native algo, `hash:` == the target's live
+    /// `node_rev` ⇒ GREEN. Pre-wiring the bare NAME matched no `node.path`, so the
+    /// same pin rendered red `selector-unresolved` — the wiring is load-bearing.
+    #[test]
+    fn form2_wikilink_by_name_resolves_and_verifies_green() {
+        let target = doc("# Target\n\nbody\n");
+        let target_rev = target.root.node_rev.0.clone();
+        // The ref is the bare NAME `target-page`, but the real path is nested.
+        let a_raw = format!(
+            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: node-rev\n```\n\n^inputs\n"
+        );
+        let mut docs = BTreeMap::new();
+        docs.insert("effects/a.md".to_string(), doc(&a_raw));
+        docs.insert("sources/target-page.md".to_string(), target);
+
+        let report = walk(&docs, "effects/a.md", Direction::Up, None).expect("walk");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(
+            report.entries[0].selector, "sources/target-page.md",
+            "the wikilink NAME resolved to the real corpus path",
+        );
+        assert_eq!(
+            report.entries[0].color,
+            Color::Green,
+            "resolved wikilink ref, rev == live node_rev ⇒ green",
+        );
+        assert!(!has_red(&report));
+    }
+
+    /// A `[[wikilink]]`-by-NAME ref that resolves to NOTHING keeps its bare name
+    /// and renders red `selector-unresolved` — unresolved is first-class, never a
+    /// false green (the resolver returns the input unchanged when the name is
+    /// absent from the corpus).
+    #[test]
+    fn form2_unresolvable_wikilink_is_red_unresolved_not_green() {
+        let a_raw =
+            "## Chain\n\n```yaml\n- ref: '[[no-such-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: node-rev\n```\n\n^inputs\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effects/a.md".to_string(), doc(a_raw));
+
+        let report = walk(&docs, "effects/a.md", Direction::Up, None).expect("walk");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].selector, "no-such-page");
+        assert_eq!(
+            report.entries[0].color,
+            Color::Red(RedReason::SelectorUnresolved { candidates: vec![] }),
+            "an unresolvable wikilink is red selector-unresolved, never a false green",
+        );
+    }
+
+    /// U3.4 (v1→v2 supersede): a form-2 pin RE-LABELED `hash-algo: v2` — the
+    /// design-2 §6.3 supersede keeps the node-rev VALUE under the effect-page `v2`
+    /// contract label — verifies through the SAME `node_rev` compare as native
+    /// `node-rev`: GREEN when the value equals live, red when it drifts. It is NOT
+    /// grey superseded-algo (v2 is in the native set `{node-rev, v2}`). This is
+    /// the post-sweep mrd-v2 leg of Gate B.
+    #[test]
+    fn form2_v2_algo_verifies_green_not_superseded() {
+        let target = doc("# Target\n\nbody\n");
+        let target_rev = target.root.node_rev.0.clone();
+        let a_green = doc(&format!(
+            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: '{target_rev}'\nhash-algo: v2\n```\n\n^inputs\n"
+        ));
+        let a_red = doc(
+            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: v2\n```\n\n^inputs\n",
+        );
+
+        let mut g = BTreeMap::new();
+        g.insert("effects/a.md".to_string(), a_green);
+        g.insert("sources/target-page.md".to_string(), doc("# Target\n\nbody\n"));
+        let gr = walk(&g, "effects/a.md", Direction::Up, None).expect("walk");
+        assert_eq!(
+            gr.entries[0].color,
+            Color::Green,
+            "v2 algo + rev == live node_rev ⇒ green (native compare, not superseded)",
+        );
+
+        let mut r = BTreeMap::new();
+        r.insert("effects/a.md".to_string(), a_red);
+        r.insert("sources/target-page.md".to_string(), target);
+        let rr = walk(&r, "effects/a.md", Direction::Up, None).expect("walk");
+        assert_eq!(
+            rr.entries[0].color,
+            Color::Red(RedReason::Drifted),
+            "v2 algo + mismatch ⇒ red drift (a v2 pin is verified, never greyed)",
         );
     }
 

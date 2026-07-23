@@ -432,6 +432,80 @@ fn gate_form2_chain_renders_superseded_algo_grey() {
 }
 
 // ---------------------------------------------------------------------------
+// Gate 3d — post-sweep: a v2 form-2 pin with a wikilink ref renders GREEN
+// ---------------------------------------------------------------------------
+
+/// U3.4 (the mrd-v2 leg of Gate B): after the v1→v2 supersede, a form-2 effect
+/// page carries `hash-algo: v2` and a `[[wikilink]]`-by-NAME ref pinned at the
+/// target's live `node_rev`. The board must render it GREEN — proving BOTH new
+/// pieces on the board plane: (1) the wikilink NAME resolves to the real corpus
+/// path (else the JOIN misses and it reds unresolved), and (2) `v2` is native
+/// `{node-rev, v2}` (else it greys superseded-algo). This is what conserves the
+/// pre-sweep-green pages green under mrd-v2. Negative controls: the SAME pin left
+/// at `hash-algo: v1` greys, and a drifted v2 rev reds.
+#[test]
+fn gate_form2_v2_wikilink_pin_renders_green() {
+    let target = "# Target\n\nsource body\n";
+    // The target lives at a nested path; the ref is the bare NAME.
+    let target_rev = live_node_rev("sources/target-page.md", target, "");
+    let effect_v2 = format!(
+        "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: v2\n```\n\n^inputs\n"
+    );
+
+    let mut docs = BTreeMap::new();
+    docs.insert("sources/target-page.md".to_string(), doc(target));
+    docs.insert("effects/e.md".to_string(), doc(&effect_v2));
+    let conn = open_board(&docs, &[]).expect("open board");
+
+    let (color, reason, to_path): (String, String, String) = conn
+        .query_row(
+            "SELECT color, reason, to_path FROM board WHERE src_path='effects/e.md'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("the v2 form-2 edge has a board row");
+    assert_eq!(
+        to_path, "sources/target-page.md",
+        "the wikilink NAME resolved to the real corpus path (else the JOIN misses)",
+    );
+    assert_eq!(color, "green", "v2 + wikilink + rev==live ⇒ green");
+    assert_eq!(reason, "attested");
+
+    // Negative control 1: the SAME pin still labeled v1 greys (not a false green).
+    let effect_v1 = format!(
+        "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: v1\n```\n\n^inputs\n"
+    );
+    let mut d1 = BTreeMap::new();
+    d1.insert("sources/target-page.md".to_string(), doc(target));
+    d1.insert("effects/e.md".to_string(), doc(&effect_v1));
+    let c1 = open_board(&d1, &[]).expect("open board v1");
+    assert_eq!(
+        scalar_i64(
+            &c1,
+            "SELECT count(*) FROM board WHERE src_path='effects/e.md' AND color='grey' AND reason='superseded-algo'",
+        ),
+        1,
+        "the pre-sweep v1 label greys — the sweep to v2 is what turns it green",
+    );
+
+    // Negative control 2: a v2 pin whose rev no longer matches live reds (drift),
+    // proving v2 is VERIFIED, never a blanket green.
+    let effect_v2_stale = "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: v2\n```\n\n^inputs\n";
+    let mut d2 = BTreeMap::new();
+    d2.insert("sources/target-page.md".to_string(), doc(target));
+    d2.insert("effects/e.md".to_string(), doc(effect_v2_stale));
+    let c2 = open_board(&d2, &[]).expect("open board v2 stale");
+    assert_eq!(
+        scalar_i64(
+            &c2,
+            "SELECT count(*) FROM board WHERE src_path='effects/e.md' AND color='red' AND reason='content-drifted'",
+        ),
+        1,
+        "a v2 pin that drifts reds — v2 is verified, not blanket-green",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Gate 4 — the locked-face guard holds with the board view loaded
 // ---------------------------------------------------------------------------
 
