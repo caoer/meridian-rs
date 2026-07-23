@@ -1,0 +1,36 @@
+[package]
+name = "migrate"
+description = "SELF-RETIRING (U3.2 migration kit, d1 § Migration plan): the ONE quarantined place the dead `draws-from` key is spelled in Rust. Renames the `draws-from:` frontmatter key to `inputs:` across the corpus, value bytes preserved, under CAS through the strict writer — minting ^r-NNNNNN wire audit rows and ZERO attestation receipts. Idempotent, dry-run-first, resumable. This crate dies with the migration (its deletion is in the pin leg's definition of done; the delete rides the U3.3 storm that consumes it)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# resolve the draws-from / inputs frontmatter fm_key grain (U2.11 block-sequence
+# grain) + the whole-file rev on the CAS guard.
+model = { workspace = true }
+# parse the corpus (domain_snapshot, build_corpus) + WorkspaceRoot.
+fs = { workspace = true }
+# the ONE write choke-point: migrate_key lands the computed rename + journals.
+wire-serve = { workspace = true }
+# wire value types on the write args (Path, NodeRev, Span) + ErrorBody render.
+wire = { workspace = true }
+# MigrateReport serializes to JSON for `mrd migrate inputs --json`.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# node_rev = blake3-256(grain bytes)[:16] — the renamed grain's journal rev,
+# matching model's node-rev law (contract §1), the same family pin uses.
+blake3 = "1"
+
+[dev-dependencies]
+# build Document fixtures + parse the corpus in tests.
+syntax = { workspace = true }
+# the receipt journal parser: gate asserts ^r rows + zero attestation receipts.
+receipt = { workspace = true }
+# real on-disk workspaces for the migrate write / journal / CAS gates.
+tempfile = "3"

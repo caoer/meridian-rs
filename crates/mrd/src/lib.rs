@@ -29,6 +29,7 @@ mod expect;
 mod gc;
 mod history_cmd;
 mod init;
+mod migrate_cmd;
 mod pin_cmd;
 mod resolve;
 mod run_cmd;
@@ -98,6 +99,13 @@ usage:
                            and splice the ^inputs lock in ONE CAS write (one
                            receipt). Idempotent. Exits: 0 pinned / 1 refused
                            (or dry would-refuse) / 2 bad invocation
+  mrd migrate inputs [--dry]
+                           one-shot mechanical corpus rename draws-from: ->
+                           inputs: (value bytes preserved), spliced through the
+                           strict writer under CAS — one ^r-NNNNNN wire audit row
+                           per page, zero attestation receipts. Idempotent,
+                           resumable. Exits: 0 clean / 1 a both-keys conflict / 2
+                           bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -194,6 +202,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::run(&args[1..]),
+        "migrate" => migrate_cmd::dispatch(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()

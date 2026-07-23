@@ -82,6 +82,9 @@ anyhow = { workspace = true }
 # writer. A local CLIENT of the pin op — `pin` orchestrates model/view/wire-serve
 # and is already in the graph via those crates; no new external crate enters.
 pin = { workspace = true }
+# `mrd migrate inputs` (U3.2, SELF-RETIRING): the one-shot draws-from -> inputs
+# corpus rename. A local CLIENT of the migrate kit; the crate dies at cutover.
+migrate = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
