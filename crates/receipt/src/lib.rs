@@ -30,6 +30,7 @@
 
 use std::fmt::Write;
 
+pub mod anchor;
 pub mod journal;
 
 /// The armed-fact set for one batch, borrowed from the request + armed
