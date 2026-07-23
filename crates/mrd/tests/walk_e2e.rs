@@ -38,12 +38,12 @@ fn chain() -> Chain {
     let c_rev = doc_rev(&c);
 
     let b = format!(
-        "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
+        "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
     );
     let b_rev = doc_rev(&b);
 
     let a = format!(
-        "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
+        "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
     );
     let a_rev = doc_rev(&a);
 

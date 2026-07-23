@@ -221,6 +221,7 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         Color::Grey(GreyReason::ImmutableRoot) => Some("immutable-root"),
         Color::Grey(GreyReason::DeclaredUnpinned) => Some("declared-unpinned"),
         Color::Grey(GreyReason::Ambiguous) => Some("ambiguous"),
+        Color::Grey(GreyReason::SupersededAlgo) => Some("superseded-algo"),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
         Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
         Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
@@ -311,7 +312,24 @@ fn steps_from(
 
 /// Color one edge with the U2.2 law: parse the target selector, wrap the pinned
 /// rev, and classify against the live target document.
+///
+/// One check rides ahead of the rev compare: a pin minted under a NAMED
+/// `hash-algo` this engine does not compute (present and not
+/// [`model::NODE_REV_ALGO`]) is grey `superseded-algo` — readable, unverifiable
+/// here. A foreign rev can neither equal a live node-rev (a false green) nor be
+/// measured as drift (a false red), so it renders grey before classification
+/// (d2 §6.3; U0.2/U3.4). An absent header defaults to native (the engine mints
+/// `node-rev`); a declared-only item (no rev) has no algo to supersede — it
+/// stays declared-unpinned grey.
 fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
+    if edge.pinned_rev.is_some()
+        && edge
+            .hash_algo
+            .as_deref()
+            .is_some_and(|a| a != model::NODE_REV_ALGO)
+    {
+        return Color::Grey(GreyReason::SupersededAlgo);
+    }
     let selector = Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel));
     let pinned = edge.pinned_rev.as_ref().map(|r| model::NodeRev(r.clone()));
     classify_edge(&selector, pinned.as_ref(), docs.get(&edge.to_path))
@@ -416,13 +434,13 @@ mod tests {
         let c_rev = c.root.node_rev.0.clone();
 
         let b_raw = format!(
-            "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
+            "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
         );
         let b = doc(&b_raw);
         let b_rev = b.root.node_rev.0.clone();
 
         let a_raw = format!(
-            "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
+            "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
         );
         let a = doc(&a_raw);
         let a_rev = a.root.node_rev.0.clone();
@@ -670,6 +688,73 @@ mod tests {
                 candidates: vec![]
             })),
             Some("selector-unresolved")
+        );
+        assert_eq!(
+            color_label(&Color::Grey(GreyReason::SupersededAlgo)),
+            "grey superseded-algo"
+        );
+    }
+
+    /// Archive fixture (U3.4): a pin minted under `hash-algo: v1` — merkle-v1, an
+    /// algo this engine does not compute — renders `grey superseded-algo`, NEVER
+    /// red. A v1 (sha256) rev can never equal a live node-rev, so without the
+    /// algo gate the engine would cry drift (a false red) over an archived block
+    /// it must leave grey forever (d2 §6.3; U0.2/U3.4).
+    #[test]
+    fn archived_v1_lock_renders_grey_superseded_algo() {
+        let a = doc(
+            "# A\n\n```yaml ^inputs\nhash-algo: v1\nitems:\n  - {ref: 'b.md', rev: 'a1b2c3d4e5f60718', rev_class: content}\n```\n",
+        );
+        let b = doc("# B\n\nbody\n");
+        let mut docs = BTreeMap::new();
+        docs.insert("a.md".to_string(), a);
+        docs.insert("b.md".to_string(), b);
+
+        let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
+        let b_entry = report
+            .entries
+            .iter()
+            .find(|e| e.selector == "b.md")
+            .expect("b edge present");
+        assert_eq!(
+            b_entry.color,
+            Color::Grey(GreyReason::SupersededAlgo),
+            "a v1-algo pin is grey superseded-algo, never red drift"
+        );
+        assert!(
+            !has_red(&report),
+            "a superseded-algo pin is never a walk finding"
+        );
+    }
+
+    /// Control: the SAME edge under the engine's native `hash-algo: node-rev` is
+    /// VERIFIED — green when the rev matches live, red drift when it does not.
+    /// The algo gate keys on the algo, not on any unfamiliar-looking rev.
+    #[test]
+    fn native_node_rev_lock_is_verified_not_superseded() {
+        let b = doc("# B\n\nbody\n");
+        let b_rev = b.root.node_rev.0.clone();
+        let a_green = doc(&format!(
+            "# A\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: content}}\n```\n"
+        ));
+        let a_red = doc(
+            "# A\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'b.md', rev: 'a1b2c3d4e5f60718', rev_class: content}\n```\n",
+        );
+
+        let mut g = BTreeMap::new();
+        g.insert("a.md".to_string(), a_green);
+        g.insert("b.md".to_string(), doc("# B\n\nbody\n"));
+        let gr = walk(&g, "a.md", Direction::Up, None).expect("walk");
+        assert_eq!(gr.entries[0].color, Color::Green, "native + match = green");
+
+        let mut r = BTreeMap::new();
+        r.insert("a.md".to_string(), a_red);
+        r.insert("b.md".to_string(), b);
+        let rr = walk(&r, "a.md", Direction::Up, None).expect("walk");
+        assert_eq!(
+            rr.entries[0].color,
+            Color::Red(RedReason::Drifted),
+            "native + mismatch = red drift"
         );
     }
 }

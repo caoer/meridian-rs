@@ -64,28 +64,35 @@ CREATE TABLE input_lock (
     to_sel       TEXT     NOT NULL,   -- [1] `to` selector ('' = the page/doc root)
     pinned_rev   TEXT,                -- [1] the `rev` field (NULL = declared-only -> grey)
     rev_class    TEXT,                -- [1] 'content' | 'object' (NULL = unstated)
+    hash_algo    TEXT,                -- [1] the block's `hash-algo:` header (NULL = absent); != 'node-rev' -> grey superseded-algo
     src_doc_rev  TEXT     NOT NULL,   -- [1] containing doc_rev — the rev-compare invalidation key
     PRIMARY KEY (src_path, seq)
 );
 
--- board_drift — RED in the default face: a pinned lock item whose live target
--- content rev differs from the pinned rev (§2.3 red; the doctored-verdict trace,
--- §5.3). Computed per query by joining the parse projection against live nodes.
+-- board_drift — RED in the default face: a pinned NATIVE-algo lock item whose
+-- live target content rev differs from the pinned rev (§2.3 red; the
+-- doctored-verdict trace, §5.3). A foreign-algo lock (hash_algo != 'node-rev')
+-- cannot drift — the engine never computed its rev — so it is excluded here and
+-- renders superseded-algo grey (U3.4). Computed per query by joining the parse
+-- projection against live nodes.
 CREATE VIEW board_drift AS
     SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
            il.pinned_rev, n.node_rev AS live_rev, 'content-drifted' AS reason
     FROM input_lock il
     JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND n.node_rev <> il.pinned_rev;
+    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+      AND n.node_rev <> il.pinned_rev;
 
--- board_unresolved — RED in the default face: a pinned lock item whose `to`
--- selector resolves to no live node (rename / delete / rewrite; §2.3, §2.5).
+-- board_unresolved — RED in the default face: a pinned NATIVE-algo lock item
+-- whose `to` selector resolves to no live node (rename / delete / rewrite; §2.3,
+-- §2.5). Foreign-algo locks render superseded-algo grey, never red — excluded.
 CREATE VIEW board_unresolved AS
     SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
            il.pinned_rev
     FROM input_lock il
     LEFT JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND n.path IS NULL;
+    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+      AND n.path IS NULL;
 
 -- board_red — the union board-red surface: drift + unresolved. Grey
 -- (declared-only, pinned_rev NULL) never appears here; green never appears here.
@@ -112,17 +119,26 @@ CREATE VIEW board_red AS
 -- close; the board compares the LIVE rev against that frozen rev, it never
 -- recomputes the verdict. A closed card color is a reading of the frozen pin.
 CREATE VIEW board AS
-    -- green: pinned + live rev still equals the frozen pinned rev.
+    -- green: pinned NATIVE-algo + live rev still equals the frozen pinned rev.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            n.node_rev AS live_rev, 'green' AS color, 'attested' AS reason
         FROM input_lock il
         JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-        WHERE il.pinned_rev IS NOT NULL AND n.node_rev = il.pinned_rev
+        WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo = 'node-rev')
+          AND n.node_rev = il.pinned_rev
     UNION ALL
     -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned target).
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            live_rev, 'red' AS color, reason
         FROM board_red
+    UNION ALL
+    -- grey superseded-algo: pinned under a hash-algo this engine does not compute
+    -- (v1/foreign). Readable, unverifiable here — never red, never green; an
+    -- archived v1 block renders this forever (d2 §6.3; U0.2/U3.4).
+    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
+           NULL AS live_rev, 'grey' AS color, 'superseded-algo' AS reason
+        FROM input_lock il
+        WHERE il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo <> 'node-rev'
     UNION ALL
     -- grey: declared-unpinned — the ungated close, never green.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
@@ -232,8 +248,8 @@ pub fn stale_paths(
 fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
     let mut stmt = conn.prepare(
         "INSERT INTO input_lock \
-         (src_path, seq, declared_ref, to_path, to_sel, pinned_rev, rev_class, src_doc_rev) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         (src_path, seq, declared_ref, to_path, to_sel, pinned_rev, rev_class, hash_algo, src_doc_rev) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
     for (path, doc) in docs {
         let src_doc_rev = doc.root.node_rev.0.clone();
@@ -247,6 +263,7 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
                     Value::Text(item.to_sel),
                     item.pinned_rev.map_or(Value::Null, Value::Text),
                     item.rev_class.map_or(Value::Null, Value::Text),
+                    item.hash_algo.map_or(Value::Null, Value::Text),
                     Value::Text(src_doc_rev.clone()),
                 ]
                 .iter(),
@@ -275,6 +292,11 @@ pub struct LockItem {
     pub pinned_rev: Option<String>,
     /// The `rev_class` field — `content` | `object` (`None` = unstated).
     pub rev_class: Option<String>,
+    /// The containing block's `hash-algo:` header (`None` = absent). A value
+    /// other than [`model::NODE_REV_ALGO`] means the pinned rev was minted under
+    /// an algo this engine does not compute — the read face renders it grey
+    /// `superseded-algo` (U3.4). Per-block, stamped onto every item of the block.
+    pub hash_algo: Option<String>,
 }
 
 /// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
@@ -315,6 +337,7 @@ fn is_inputs_lang(lang: &str) -> bool {
 /// engine-written and regular, so a bounded flow-mapping parse beats a full YAML
 /// dependency (keeps `view` a dependency-light leaf).
 fn parse_lock_body(body: &str, out: &mut Vec<LockItem>) {
+    let hash_algo = block_hash_algo(body);
     for line in body.lines() {
         let trimmed = line.trim();
         let Some(rest) = trimmed.strip_prefix('-') else {
@@ -324,10 +347,32 @@ fn parse_lock_body(body: &str, out: &mut Vec<LockItem>) {
         let Some(inner) = rest.strip_prefix('{').and_then(|s| s.strip_suffix('}')) else {
             continue;
         };
-        if let Some(item) = lock_item_from_flow(inner) {
+        if let Some(mut item) = lock_item_from_flow(inner) {
+            item.hash_algo.clone_from(&hash_algo);
             out.push(item);
         }
     }
+}
+
+/// The block's `hash-algo:` header value (the scalar after the first bare
+/// `hash-algo:` line), or `None` when the block omits it. A trailing `# comment`
+/// is stripped (the corpus carries `hash-algo: v1  # spec version …`). The
+/// engine writes exactly one header, before `items:`; item lines start with `-`
+/// and are never matched here.
+fn block_hash_algo(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('-') {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("hash-algo:") {
+            let value = value.split('#').next().unwrap_or(value).trim();
+            if !value.is_empty() {
+                return Some(unquote(value));
+            }
+        }
+    }
+    None
 }
 
 /// Parse one flow-mapping body (`ref: 'a.md', to: 'a.md#^c', rev: 'r1'`) into a
@@ -362,6 +407,7 @@ fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
         to_sel,
         pinned_rev,
         rev_class,
+        hash_algo: None, // stamped per-block by parse_lock_body
     })
 }
 
@@ -476,7 +522,7 @@ mod tests {
 
     #[test]
     fn project_reads_the_inputs_block_from_parse() {
-        let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: statusd-file-rev\nitems:\n  - {ref: 'a.md', to: 'a.md#^c', rev: 'deadbeef', rev_class: 'content'}\n  - {ref: 'b.md', claim: 'declared-only'}\n```\n";
+        let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', to: 'a.md#^c', rev: 'deadbeef', rev_class: 'content'}\n  - {ref: 'b.md', claim: 'declared-only'}\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("review.md".to_string(), doc(raw));
         let conn = open_board(&docs, &[]).expect("open board");
