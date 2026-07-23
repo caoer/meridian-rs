@@ -1,0 +1,35 @@
+[package]
+name = "realise"
+description = "The realise engine (S1, U3.5a): observe → check → apply per claim on the shipped run plane. Drives each claim's convergence loop, classifies the terminal state with the A4 mechanical classifier (pending-agent | non-convergent), mints a board card through the U2.6 guarded create for a pending-agent claim, and records every apply through the run plane's one write path. General — no per-consumer paths; the storm (U3.3) executes as an ordinary effect page through this loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Workspace root handle + page load for the built-in observe (check = value
+# compare over the current tree).
+fs = { workspace = true }
+# The parsed document + frontmatter map the built-in FieldEquals check reads.
+model = { workspace = true }
+# The shipped run plane: apply per claim goes through `runner::run` (the
+# ordinary loop), and caps resolution (`caps::resolve_caps`) computes the
+# per-claim declared caps whose union is this verb's authority.
+run = { workspace = true }
+# The U2.6 guarded create: a pending-agent claim mints one board card through
+# `wire_serve::write::create` (CAS if_absent, journaled birth, gate seam).
+wire-serve = { workspace = true }
+# The `Path` newtype the guarded create takes.
+wire = { workspace = true }
+# The `CompiledRuleset` slice the guarded create's gate seam evaluates (`&[]`
+# ⇒ the bare commit; U4.2 mounts the armed set later).
+policy = { workspace = true }
+# Kernel eval limits threaded into each apply run (§9 caller-supplied).
+effects = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
