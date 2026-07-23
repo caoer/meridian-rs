@@ -23,6 +23,20 @@
 //!
 //! `edge`/`claim` are NOT populated here — their population is owned by their
 //! source units (pin, run plane). U2.9 reads parse and locks the face only.
+//!
+//! # U5.1 — the board-view colors + the trace query (d2 §5.3)
+//! Two default-face views ride the SAME locked read face (no face widening — the
+//! blocked-`ATTACH` guard still holds with them loaded):
+//!
+//! - **`board`** — the colors layer: exactly one `green`/`red`/`grey` row per
+//!   `^inputs` edge. `grey` = declared-unpinned (an ungated close, never green);
+//!   `red` = drift or unresolved (a doctored verdict); `green` = the frozen pin
+//!   still equals live. "Verdicts freeze at close" is the `pinned_rev` compare —
+//!   the board reads the frozen pin, it never recomputes the verdict.
+//! - **`co_edit_trace`** — the traces layer: the reserved journal's mechanical
+//!   write-facts, per target path, convention-free. A doctored verdict shows the
+//!   subject written at the close and edited again afterwards (a co-edit),
+//!   visible before any pack reads it as red.
 
 use std::collections::BTreeMap;
 
@@ -83,6 +97,52 @@ CREATE VIEW board_red AS
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            NULL AS live_rev, 'selector-unresolved' AS reason
         FROM board_unresolved;
+
+-- board — U5.1's colors layer (d2 §5.3 'colors = board view'; wire-contract-v2
+-- colors-amendment § Colors). Exactly ONE color row per `^inputs` edge, in the
+-- DEFAULT face, no pack. The color is 'traces read through workflow vocabulary':
+--   green  — the pinned rev the verdict FROZE AT CLOSE still equals the live rev
+--            (nothing drifted since the close);
+--   red    — the pinned rev no longer equals live (a DOCTORED VERDICT: edited
+--            after close), OR the pinned target resolves to no live node;
+--   grey   — declared-unpinned (pinned_rev NULL): an UNGATED close (a bare flip
+--            that never froze a verdict rev). The ledger cannot verify it — grey,
+--            NEVER green, never silently clean.
+-- Verdicts-freeze-at-close: the pin (`pinned_rev`) IS the verdict frozen at
+-- close; the board compares the LIVE rev against that frozen rev, it never
+-- recomputes the verdict. A closed card color is a reading of the frozen pin.
+CREATE VIEW board AS
+    -- green: pinned + live rev still equals the frozen pinned rev.
+    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
+           n.node_rev AS live_rev, 'green' AS color, 'attested' AS reason
+        FROM input_lock il
+        JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
+        WHERE il.pinned_rev IS NOT NULL AND n.node_rev = il.pinned_rev
+    UNION ALL
+    -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned target).
+    SELECT src_path, seq, to_path, to_sel, pinned_rev,
+           live_rev, 'red' AS color, reason
+        FROM board_red
+    UNION ALL
+    -- grey: declared-unpinned — the ungated close, never green.
+    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
+           NULL AS live_rev, 'grey' AS color, 'declared-unpinned' AS reason
+        FROM input_lock il
+        WHERE il.pinned_rev IS NULL;
+
+-- co_edit_trace — U5.1's traces layer (d2 §5.3 'traces = core, source 3,
+-- default-face visible'). The MECHANICAL write-facts of the reserved journal,
+-- read convention-FREE: one row per guarded write, ordered per target path, with
+-- the write's position on that path (`edit_ord`) and the total (`edits_on_path`).
+-- A doctored verdict leaves the pack-free trace here: the subject was written at
+-- the close (edit_ord 1) and EDITED AGAIN afterwards (edit_ord 2) — a co-edit
+-- visible with no armed convention, before any board pack calls the later rev red.
+CREATE VIEW co_edit_trace AS
+    SELECT rj.path, rj.anchor, rj.op, rj.actor, rj.line_no,
+           rj.root_before, rj.root_after, rj.edits,
+           row_number() OVER (PARTITION BY rj.path ORDER BY rj.line_no) AS edit_ord,
+           count(*)     OVER (PARTITION BY rj.path)                     AS edits_on_path
+        FROM receipt_journal rj;
 ";
 
 /// Create the additive read-face schema (`input_lock` + board views) against
