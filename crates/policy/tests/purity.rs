@@ -1,5 +1,5 @@
 //! Purity guard for the `rulepack-api@2` change surface (U1.1) — the door-fact
-//! mirror of `crates/rules/tests/purity.rs`.
+//! mirror of `crates/effects/tests/purity.rs`.
 //!
 //! The rules-crate guard proves the effect sandbox exposes no I/O NAME. This
 //! guard proves the door's *fact vocabulary* names no git/clock/random/io
