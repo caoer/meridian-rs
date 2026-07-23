@@ -105,6 +105,10 @@ pub struct PresetDef {
     /// The `# Unfold` declared scaffold — the workspace-relative file paths
     /// [`unfold`] materializes, in declared order.
     pub scaffold: Vec<String>,
+    /// The `# Ephemeral` declared-disposable allowlist — path globs (`*.lock`)
+    /// or exact paths [`reconcile`] MAY prune (the subtractive allowlist, ZT
+    /// ruling #3). Empty ⇒ nothing is disposable, so reconcile prunes no file.
+    pub ephemeral: Vec<String>,
 }
 
 /// A tool-level failure (mrd exit 2): the def could not be loaded or a birth
@@ -216,7 +220,24 @@ pub fn load_def(root: &fs::WorkspaceRoot, def_path: &str) -> Result<PresetDef, P
         properties: parse_properties(&doc.raw),
         template: parse_template(&doc.raw),
         scaffold: parse_unfold(&doc.raw),
+        ephemeral: parse_ephemeral(&doc.raw),
     })
+}
+
+/// Parse the `# Ephemeral` section into the declared-disposable allowlist (each
+/// `- <glob-or-path>` list item). Empty ⇒ no `# Ephemeral` section or no items —
+/// reconcile then prunes NO file (the allowlist is empty by construction).
+fn parse_ephemeral(raw: &str) -> Vec<String> {
+    let Some(body) = title_section(raw, "Ephemeral") else {
+        return Vec::new();
+    };
+    body.lines()
+        .filter_map(|line| {
+            let item = line.trim().strip_prefix("- ")?;
+            let pat = item.trim().trim_matches(['"', '\'', '`']);
+            (!pat.is_empty()).then(|| pat.to_owned())
+        })
+        .collect()
 }
 
 /// Read a scalar frontmatter value off the parsed frontmatter map (the public
@@ -657,6 +678,361 @@ pub fn unfold(
         floor: def.inputs.clone(),
         files,
     })
+}
+
+// ---------------------------------------------------------------------------
+// reconcile-toward-scaffold (ZT ruling #3 — the asymmetric reconcile law)
+// ---------------------------------------------------------------------------
+
+/// The asymmetric reconcile plan — the ZT ruling #3 fold computed as a PURE
+/// function of the declared scaffold, the declared-ephemeral allowlist, and the
+/// live tree. The law, verbatim (design-3 §6; plan §4 Block 3 U3.5b):
+///
+/// - **Materialize (additive): ALL missing declared paths** (set-difference of
+///   declared scaffold − live tree).
+/// - **Remove (subtractive): ONLY declared-ephemeral files + empty-undeclared
+///   directories** — an ALLOWLIST, never set-difference. (The empty-dir half is
+///   computed by the apply, which has the tree; this plan carries the file half.)
+/// - **Everything else — undeclared content files — renders as [`findings`], never
+///   prune actions.** "Unused = no dependents" is a report, never an auto-delete.
+///
+/// [`findings`](ReconcilePlan::findings): reconcile is asymmetric — additive by
+/// set-difference, subtractive by allowlist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct ReconcilePlan {
+    /// Missing declared scaffold paths → materialize (guarded create). The
+    /// additive half: set-difference of declared − live.
+    pub materialize: Vec<String>,
+    /// Declared-ephemeral files present in the tree → prune (guarded remove).
+    /// The subtractive allowlist half — ONLY paths the def marks disposable.
+    pub prune: Vec<String>,
+    /// Undeclared content files present in the tree → check-plane FINDINGS,
+    /// NEVER prune actions. The load-bearing asymmetry (E&R map: "undeclared
+    /// non-empty path → never pruned → finding, not deletion").
+    pub findings: Vec<String>,
+}
+
+/// Compute the asymmetric reconcile plan (PURE — the fold, no I/O). `declared` is
+/// the def scaffold, `ephemeral` the declared-disposable allowlist (globs or exact
+/// paths), `live_files` every live file path in the reconcile scope.
+///
+/// A live file is: converged if declared; pruned if it matches the ephemeral
+/// allowlist; a FINDING otherwise (undeclared content is never pruned — the
+/// allowlist, never set-difference, governs subtraction). A declared path absent
+/// from the tree is materialized.
+#[must_use]
+pub fn reconcile_plan(
+    declared: &[String],
+    ephemeral: &[String],
+    live_files: &[String],
+) -> ReconcilePlan {
+    use std::collections::BTreeSet;
+    let declared_set: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
+    let live_set: BTreeSet<&str> = live_files.iter().map(String::as_str).collect();
+
+    let materialize = declared
+        .iter()
+        .filter(|d| !live_set.contains(d.as_str()))
+        .cloned()
+        .collect();
+
+    let mut prune = Vec::new();
+    let mut findings = Vec::new();
+    for file in live_files {
+        if declared_set.contains(file.as_str()) {
+            continue; // declared and present → converged, left byte-untouched
+        }
+        if ephemeral.iter().any(|pat| ephemeral_match(pat, file)) {
+            prune.push(file.clone()); // declared-ephemeral → the prune allowlist
+        } else {
+            findings.push(file.clone()); // undeclared content → finding, NEVER pruned
+        }
+    }
+    ReconcilePlan {
+        materialize,
+        prune,
+        findings,
+    }
+}
+
+/// Whether an ephemeral allowlist pattern matches a live path. `*.ext` matches any
+/// path whose basename ends `.ext`; a pattern with no `*` matches an exact
+/// workspace-relative path OR a bare basename. Deliberately minimal — the
+/// allowlist is small and author-declared, never a broad glob engine.
+fn ephemeral_match(pattern: &str, path: &str) -> bool {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        base.ends_with(suffix)
+    } else {
+        pattern == path || pattern == base
+    }
+}
+
+/// One reconcile outcome per acted-on path (materialize / prune), plus the
+/// findings the check plane renders.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReconcileReport {
+    /// The reconciled preset def path.
+    pub preset: String,
+    /// Materialize outcomes — one per missing declared path (born, or occupied).
+    pub materialized: Vec<FileOutcome>,
+    /// Prune outcomes — one per declared-ephemeral file the reconcile removed.
+    pub pruned: Vec<PruneOutcome>,
+    /// Empty-undeclared directories the reconcile removed (rmdir; the dir half of
+    /// the allowlist). Empty unless `--prune`.
+    pub pruned_dirs: Vec<String>,
+    /// Undeclared content files rendered as findings — reported, NEVER pruned.
+    pub findings: Vec<String>,
+}
+
+impl ReconcileReport {
+    /// Whether reconcile converged the tree to the scaffold with no residual
+    /// finding — every declared path materialized (or already present) and no
+    /// undeclared content file left drifting.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.findings.is_empty()
+            && self
+                .materialized
+                .iter()
+                .all(|f| !matches!(f, FileOutcome::Occupied { .. }))
+    }
+}
+
+/// One declared-ephemeral file's prune outcome.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PruneOutcome {
+    /// The file was removed (or, on `--dry`, would be) through the guarded remove.
+    Removed {
+        /// The removed file path.
+        path: String,
+        /// The death receipt (`r-NNNNNN`); `None` on a dry run.
+        receipt: Option<String>,
+    },
+    /// The removal refused at the guarded door (a CAS/root drift or reserved
+    /// path) — the file is left byte-untouched, the reason carried.
+    Refused {
+        /// The file path the prune targeted.
+        path: String,
+        /// The wire refusal, surfaced.
+        reason: String,
+    },
+}
+
+/// Reconcile the live tree toward a preset's declared scaffold (`mrd reconcile
+/// <preset> [--prune]`; ZT ruling #3). Materializes ALL missing declared paths
+/// through the U2.6 guarded create (each carries a birth receipt); with `prune`,
+/// removes ONLY declared-ephemeral files (guarded remove) and empty-undeclared
+/// directories (rmdir) — the subtractive allowlist. Undeclared content files are
+/// rendered as findings, NEVER pruned. Every write rides the ONE guarded path.
+///
+/// The reconcile scope is the set of directories the declared scaffold occupies —
+/// reconcile never scans or prunes outside the shape's own territory.
+///
+/// # Errors
+/// [`PresetError`] on a tool failure — the preset is unreadable / not a def, or a
+/// birth/death faults at the write door for a reason other than the guarded CAS.
+pub fn reconcile(
+    root: &fs::WorkspaceRoot,
+    preset_path: &str,
+    prune: bool,
+    opts: &BirthOptions,
+) -> Result<ReconcileReport, PresetError> {
+    let def = load_def(root, preset_path)?;
+    let live_files = scan_scope(root, &def.scaffold);
+    let plan = reconcile_plan(&def.scaffold, &def.ephemeral, &live_files);
+
+    // Additive: materialize every missing declared path (guarded create, byte
+    // -untouched on an occupied path — same door as unfold).
+    let mut materialized = Vec::with_capacity(plan.materialize.len());
+    for path in &plan.materialize {
+        let body = if *path == def.root_record {
+            render_root_record(&def, path, opts.now.as_deref())
+        } else {
+            render_stub(&def, path, opts.now.as_deref())
+        };
+        let outcome = match birth(root, path, &body, opts)? {
+            BirthResult::Born(receipt) => FileOutcome::Born {
+                path: path.clone(),
+                receipt,
+            },
+            BirthResult::Occupied(reason) => FileOutcome::Occupied {
+                path: path.clone(),
+                reason,
+            },
+        };
+        materialized.push(outcome);
+    }
+
+    // Subtractive (allowlist, ONLY under `--prune`): declared-ephemeral files
+    // through the guarded remove, then empty-undeclared directories (rmdir).
+    let mut pruned = Vec::new();
+    let mut pruned_dirs = Vec::new();
+    if prune {
+        for path in &plan.prune {
+            pruned.push(prune_file(root, path, opts)?);
+        }
+        pruned_dirs = prune_empty_dirs(root, &def.scaffold, &plan.findings, opts.dry);
+    }
+
+    Ok(ReconcileReport {
+        preset: preset_path.to_owned(),
+        materialized,
+        pruned_dirs,
+        pruned,
+        findings: plan.findings,
+    })
+}
+
+/// Remove one declared-ephemeral file through the U2.6 guarded remove
+/// (remove-what-you-read: read the live rev, then delete under that CAS). A
+/// guarded refusal is carried as a [`PruneOutcome::Refused`], never a tool fault.
+fn prune_file(
+    root: &fs::WorkspaceRoot,
+    path: &str,
+    opts: &BirthOptions,
+) -> Result<PruneOutcome, PresetError> {
+    let doc =
+        fs::load(root, std::path::Path::new(path)).map_err(|e| PresetError::Io(e.to_string()))?;
+    let if_file_rev = wire::NodeRev(doc.root.node_rev.0.clone());
+    let args = wire_serve::write::RemoveArgs {
+        id: None,
+        path: wire::Path(path.to_owned()),
+        if_file_rev,
+        actor: opts.actor.clone(),
+        now: opts.now.clone(),
+        if_root: None,
+        dry: opts.dry,
+    };
+    match wire_serve::write::remove(root, 0, &args, &[]) {
+        Ok(out) => Ok(PruneOutcome::Removed {
+            path: path.to_owned(),
+            receipt: out.journal_anchor,
+        }),
+        Err(e) => Ok(PruneOutcome::Refused {
+            path: path.to_owned(),
+            reason: format!(
+                "{:?}: {}",
+                e.code,
+                e.message.as_deref().unwrap_or("guarded remove refused")
+            ),
+        }),
+    }
+}
+
+/// Remove empty-undeclared directories in the scaffold scope (the dir half of the
+/// prune allowlist). A directory is prunable iff it is EMPTY, is not a prefix of a
+/// declared path, and holds no finding. Deepest-first so a nest of empty dirs
+/// collapses in one pass. Raw `rmdir` (a directory carries no governed rev); dry
+/// runs report without removing.
+fn prune_empty_dirs(
+    root: &fs::WorkspaceRoot,
+    declared: &[String],
+    findings: &[String],
+    dry: bool,
+) -> Vec<String> {
+    let mut dirs: Vec<String> = scope_dirs(declared).into_iter().collect();
+    // Deepest-first: more path separators = deeper.
+    dirs.sort_by(|a, b| {
+        b.matches('/')
+            .count()
+            .cmp(&a.matches('/').count())
+            .then(b.cmp(a))
+    });
+    let declared_prefixes: std::collections::BTreeSet<&str> =
+        declared.iter().flat_map(|d| ancestors_of(d)).collect();
+    let mut removed = Vec::new();
+    for dir in dirs {
+        if declared_prefixes.contains(dir.as_str()) {
+            continue; // a declared path lives under here — keep it
+        }
+        if findings.iter().any(|f| f.starts_with(&format!("{dir}/"))) {
+            continue; // holds undeclared content — never pruned
+        }
+        let abs = root.0.join(&dir);
+        let empty = std::fs::read_dir(&abs).is_ok_and(|mut it| it.next().is_none());
+        if empty {
+            if !dry {
+                let _ = std::fs::remove_dir(&abs);
+            }
+            removed.push(dir);
+        }
+    }
+    removed
+}
+
+/// Every workspace-relative ancestor directory of a path (`a/b/c.md` → `a`,
+/// `a/b`), the set a directory must avoid to be "undeclared".
+fn ancestors_of(path: &str) -> Vec<&str> {
+    path.char_indices()
+        .filter(|(_, ch)| *ch == '/')
+        .map(|(i, _)| &path[..i])
+        .collect()
+}
+
+/// The directories the scaffold occupies, walked live — the reconcile scope. Only
+/// these dirs are scanned for undeclared content and empty-dir prune.
+fn scope_dirs(declared: &[String]) -> std::collections::BTreeSet<String> {
+    declared
+        .iter()
+        .flat_map(|d| ancestors_of(d))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The direct parent directory of a workspace-relative path (`a/b/c.md` → `a/b`,
+/// `top.md` → `""` for the workspace root).
+fn parent_dir(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(idx) => &path[..idx],
+        None => "",
+    }
+}
+
+/// Scan the reconcile scope for every live file path (workspace-relative,
+/// forward-slashed). The scope is the set of directories that DIRECTLY hold a
+/// declared scaffold file (including the workspace root for a top-level file) —
+/// reconcile never reaches outside the shape's own territory.
+fn scan_scope(root: &fs::WorkspaceRoot, declared: &[String]) -> Vec<String> {
+    let scan_dirs: std::collections::BTreeSet<&str> =
+        declared.iter().map(|d| parent_dir(d)).collect();
+    let mut live = Vec::new();
+    for dir in scan_dirs {
+        let abs = if dir.is_empty() {
+            root.0.clone()
+        } else {
+            root.0.join(dir)
+        };
+        let Ok(entries) = std::fs::read_dir(&abs) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            // Skip engine/system files — a dotfile (`.meridian.toml`) or the
+            // reserved journal is never "undeclared content" to reconcile.
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = if dir.is_empty() {
+                name
+            } else {
+                format!("{dir}/{name}")
+            };
+            if rel == fs::domain::RESERVED_JOURNAL_PATH {
+                continue;
+            }
+            live.push(rel);
+        }
+    }
+    live.sort();
+    live.dedup();
+    live
 }
 
 /// Render the session root record's birth bytes: it pins the PRESET (`inputs:
