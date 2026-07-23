@@ -19,6 +19,11 @@ fs = { workspace = true }
 model = { workspace = true }
 # md.* effect descriptors in (executor input), ChangeEvent synthesis out.
 effects = { workspace = true }
+# U4.2: the armed-plane gate. The run plane lands bytes through fs::apply_batch
+# (not the wire choke-point), so it mounts the SAME `policy::gate` over the
+# change it produces — byte-landing parity with wire-serve. Policy stays I/O-free;
+# `crates/run/src/gate.rs` injects the disk reads.
+policy = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
 # `.meridian.toml` `[run.caps]` name-convention table.

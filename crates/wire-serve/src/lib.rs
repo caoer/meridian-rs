@@ -34,6 +34,7 @@
 //! reads whose logic is identical across hosts.
 
 pub mod decode;
+pub mod gate;
 pub mod read;
 pub mod rev;
 pub mod write;

@@ -1048,6 +1048,19 @@ pub enum ErrorCode {
     /// retry class (retryable, never silent). Extras: `required` (the
     /// demanded root) + `as_of_root`/`live_root` (the world as sampled).
     StaleView,
+    /// Refusal-amendment row 6 (U4.2 armed change plane): the armed law cannot
+    /// be honored — an attested INDEX is absent on an once-armed workspace, is
+    /// corrupt/unparseable, or an armed convention cannot load or evaluate. The
+    /// door fails CLOSED, bytes never land. Extras: `path` (the INDEX page) +
+    /// `message` (names the INDEX/convention). Env class — the workspace's own
+    /// armed state is broken, not one request. Additive by the tolerant-code
+    /// law (§8): a v2 client that never heard it dispatches on `recovery` alone.
+    ConventionFault,
+    /// Refusal-amendment row 7 (U4.2 gating / U1.4 arming): an armed
+    /// convention's live evidence rev no longer equals its pinned armed rev
+    /// (report-rev ≠ armed-rev). Extras: `expected` (`armed_rev`) + `actual`
+    /// (`report_rev`). Refresh class — re-arm at the live rev, or revert the law.
+    ArmedDrift,
 }
 
 impl ErrorCode {
@@ -1070,8 +1083,11 @@ impl ErrorCode {
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8
-            | ErrorCode::DaemonOnly => Recovery::Env,
-            ErrorCode::CasMismatch | ErrorCode::RefNotFound => Recovery::Refresh,
+            | ErrorCode::DaemonOnly
+            | ErrorCode::ConventionFault => Recovery::Env,
+            ErrorCode::CasMismatch | ErrorCode::RefNotFound | ErrorCode::ArmedDrift => {
+                Recovery::Refresh
+            }
             ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {

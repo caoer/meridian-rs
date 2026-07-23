@@ -118,6 +118,10 @@ fn recovery_bindings_match_frozen_table() {
         (C::BadFrame, R::Respawn),
         (C::UnsupportedProto, R::Respawn), // the declared rebind (was fix)
         (C::Internal, R::Respawn),
+        // refusal-amendment codes (U4.2 armed change plane), additive by the
+        // tolerant-code law — each statically bound to one existing class.
+        (C::ConventionFault, R::Env), // row 6: fail-closed on the armed law
+        (C::ArmedDrift, R::Refresh),  // row 7: report-rev ≠ armed-rev
     ];
     for (code, class) in table {
         assert_eq!(code.recovery(), class, "{code:?}");
