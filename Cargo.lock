@@ -2088,6 +2088,7 @@ dependencies = [
  "model",
  "pin",
  "policy",
+ "preset",
  "receipt",
  "registry",
  "run",
@@ -2376,6 +2377,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "preset"
+version = "0.0.0"
+dependencies = [
+ "fs",
+ "model",
+ "policy",
+ "serde",
+ "serde_json",
+ "syntax",
+ "tempfile",
+ "wire",
+ "wire-serve",
 ]
 
 [[package]]
