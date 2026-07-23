@@ -46,7 +46,10 @@
 use model::{CorpusIndex, Document};
 
 mod change;
+mod check_eval;
+mod convention;
 mod pack;
+mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
 /// `check_change(change)` predicate reads, its derivation from before/after
@@ -63,6 +66,24 @@ pub use change::{
 /// `syntax::`/`model::` type crosses the `build_facts` signature (the fence holds
 /// at the type level, P6-VERDICTS load-gate unification).
 pub use pack::{FactDoc, facts_from_document};
+
+/// The `rulepack-api@2` CHECK evaluation surface (U1.3): the full-`EvalLimits`
+/// `check_change(change)` evaluator behind the convention loader. [`CheckLimits`]
+/// meters all five guards (tick + heap + call-depth + source-size + nesting);
+/// [`CheckError`] is its typed failure surface.
+pub use check_eval::{CheckError, CheckLimits};
+
+/// The convention loader (U1.3): `conventions/<slug>/` folder grammar, the CHECK
+/// capability ceiling (FIX/HOOK/VIEW deferred), and `paths:` scope. A loaded
+/// [`Convention`] runs its `check_change` over a [`Change`], returning the
+/// [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its passing scenario.
+pub use convention::{
+    Capability, CheckOutcome, Convention, ConventionFiles, LoadError, Refusal, load_convention,
+};
+
+/// The throwaway seed convention (U1.3): a real `reviewer-not-owner` `check_change`
+/// the harness (U1.2) and the door (U4.2) pre-test against before U4.4's floor lands.
+pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_convention_files};
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
 /// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an

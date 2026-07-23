@@ -147,8 +147,9 @@ pub(crate) fn parse_fixture(name: &str, content: &str) -> Result<FixtureDoc, Com
 }
 
 /// Split a leading `---` fenced YAML frontmatter block from the body. Returns
-/// `None` when the content does not open with a frontmatter fence.
-fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
+/// `None` when the content does not open with a frontmatter fence. Shared with the
+/// convention loader (`CHECK.md` carries the same `---` frontmatter + body shape).
+pub(crate) fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
     let mut lines = content.split_inclusive('\n');
     let first = lines.next()?;
     if first.trim_end() != "---" {
@@ -397,8 +398,10 @@ pub(crate) fn extract_predicates(
 }
 
 /// Pull the first ` ```starlark … ``` ` fenced block's inner source from a literate
-/// rule page. Returns `None` when the page carries no such block.
-fn extract_fenced_starlark(page: &str) -> Option<String> {
+/// rule page. Returns `None` when the page carries no such block. Shared with the
+/// convention loader (`CHECK.md` carries its `def check_change` predicate the same
+/// way).
+pub(crate) fn extract_fenced_starlark(page: &str) -> Option<String> {
     let mut collecting = false;
     let mut buf = String::new();
     for line in page.lines() {
