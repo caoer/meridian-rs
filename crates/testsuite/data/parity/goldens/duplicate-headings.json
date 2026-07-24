@@ -1,0 +1,156 @@
+{
+  "doc": "duplicate-headings",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/duplicate-headings.md"
+      },
+      "text": "$SESSION/corpus/duplicate-headings.md  file_rev:ccac6e41ad942752  words:12\n1      Notes  words:3  rev:58975521e9081787\n2      Notes  words:7  rev:7bb32fb45b72f368\n2.1      Notes/Child  words:2  rev:d57aa6227705814a",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/duplicate-headings.md",
+        "ref": "corpus/duplicate-headings.md",
+        "rev": "ccac6e41ad942752",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "1",
+            "sec_rev": "58975521e9081787",
+            "title": "Notes",
+            "words": 3
+          },
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "2",
+            "sec_rev": "7bb32fb45b72f368",
+            "title": "Notes",
+            "words": 7
+          },
+          {
+            "depth": 2,
+            "hpath": "Notes/Child",
+            "n": "2.1",
+            "sec_rev": "d57aa6227705814a",
+            "title": "Child",
+            "words": 2
+          }
+        ],
+        "words_total": 12
+      }
+    },
+    {
+      "id": "r-first-wins",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/duplicate-headings.md",
+        "sections": [
+          "Notes"
+        ]
+      },
+      "text": "$SESSION/corpus/duplicate-headings.md  file_rev:ccac6e41ad942752  words:12\n\n== Notes (rev:58975521e9081787 words:3) ==\n\nfirst notes body",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/duplicate-headings.md",
+        "ref": "corpus/duplicate-headings.md",
+        "rev": "ccac6e41ad942752",
+        "sections": [
+          {
+            "content": "\nfirst notes body\n\n",
+            "hpath": "Notes",
+            "sec_rev": "58975521e9081787",
+            "sel": "Notes",
+            "words": 3
+          }
+        ],
+        "words_total": 12
+      }
+    },
+    {
+      "id": "p-append-last-wins",
+      "tool": "put",
+      "args": {
+        "body": "which notes gets this",
+        "op": "append",
+        "ref": "corpus/duplicate-headings.md#Notes"
+      },
+      "text": "put: def-conformance check could not run: E_AMBIGUOUS: \"Notes\" is ambiguous: 2 sections share this heading — qualify with the full heading path or an ordinal; candidates: 1 (line 6), 2 (line 10)",
+      "is_error": true,
+      "file_after": "---\ntype: note\n---\n\n# Notes\n\nfirst notes body\n\n# Notes\n\nsecond notes body\n\n## Child\n\nchild body\n"
+    },
+    {
+      "id": "r-child",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/duplicate-headings.md",
+        "sections": [
+          "Notes/Child"
+        ]
+      },
+      "text": "$SESSION/corpus/duplicate-headings.md  file_rev:ccac6e41ad942752  words:12\n\n== Notes/Child (rev:d57aa6227705814a words:2) ==\n\nchild body",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/duplicate-headings.md",
+        "ref": "corpus/duplicate-headings.md",
+        "rev": "ccac6e41ad942752",
+        "sections": [
+          {
+            "content": "\nchild body\n",
+            "hpath": "Notes/Child",
+            "sec_rev": "d57aa6227705814a",
+            "sel": "Notes/Child",
+            "words": 2
+          }
+        ],
+        "words_total": 12
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/duplicate-headings.md"
+      },
+      "text": "$SESSION/corpus/duplicate-headings.md  file_rev:ccac6e41ad942752  words:12\n1      Notes  words:3  rev:58975521e9081787\n2      Notes  words:7  rev:7bb32fb45b72f368\n2.1      Notes/Child  words:2  rev:d57aa6227705814a",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/duplicate-headings.md",
+        "ref": "corpus/duplicate-headings.md",
+        "rev": "ccac6e41ad942752",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "1",
+            "sec_rev": "58975521e9081787",
+            "title": "Notes",
+            "words": 3
+          },
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "2",
+            "sec_rev": "7bb32fb45b72f368",
+            "title": "Notes",
+            "words": 7
+          },
+          {
+            "depth": 2,
+            "hpath": "Notes/Child",
+            "n": "2.1",
+            "sec_rev": "d57aa6227705814a",
+            "title": "Child",
+            "words": 2
+          }
+        ],
+        "words_total": 12
+      }
+    }
+  ]
+}
