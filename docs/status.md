@@ -1,5 +1,5 @@
 ---
-updated: 2026-07-20
+updated: 2026-07-24
 ---
 
 # Status
@@ -10,16 +10,17 @@ from the commands shown — prefer running them over trusting this prose.
 ## Build
 
 - Toolchain: Rust edition 2024, `rust-version = 1.96`.
-- `cargo build` builds the sixteen default members (the sidecar plane plus the
-  `workspace` / `cache` / `registry` / `mrd` CLI foundation); `perfsuite` is out
-  of default-members and builds under `cargo build -p perfsuite`.
+- `cargo build` builds the twenty-six default members (the engine planes plus
+  the `workspace` / `cache` / `registry` / `mrd` CLI foundation); `perfsuite`
+  is out of default-members and builds under `cargo build -p perfsuite`.
 - Fork: `pulldown-cmark` is consumed via a `[patch.crates-io]` rev pin (the
   `obsidian` branch); see the workspace `Cargo.toml`.
 
 ## Wire surface
 
-The sidecar answers protocol 1 as `meridian-sidecar/2.0`. Armed capabilities,
-reported in the `hello` handshake (`crates/sidecar/src/lib.rs`, `CAPS`):
+The sidecar answers protocol 1 as `meridian-sidecar/2.0`. Armed v2
+capabilities, reported in the `hello` handshake (`crates/sidecar/src/lib.rs`,
+`CAPS`) — frozen:
 
 ```
 toc  cat  extract  resolve  resolve.content
@@ -29,10 +30,19 @@ root  diff  sub
 ```
 
 Every op in `docs/wire-contract-v2.md` is armed. `hello` answers but is not
-itself a capability. The `root` → `fingerprint` rename ships only under a
-client-declared contract v3 (`docs/wire-contract-v3-amendment.md`); a v2 session
-is byte-for-byte unchanged (a live-consumer trace pins this in
-`crates/sidecar/tests/v2_compat_e2e.rs`).
+itself a capability. A v2 session is byte-for-byte unchanged (a live-consumer
+trace pins this in `crates/sidecar/tests/v2_compat_e2e.rs`).
+
+A client-declared contract v3 session
+(`docs/wire-contract-v3-amendment.md`) additionally serves, on BOTH hosts
+(sidecar + registry daemon):
+
+- the `root` → `fingerprint` vocabulary,
+- the composed `read` op (advertised as the v3-only cap `read`): addressing +
+  content + rendered text at one engine snapshot,
+- `meta.duration_us` in-band timing on every dispatched response frame,
+- `extract` heading nodes enriched with the host-face addressing facts
+  (`n` / `hpath_text` / `words`).
 
 ## Workspace CLI
 
@@ -56,13 +66,15 @@ table otherwise; exit codes are 0 clean / 1 findings / 2 tool failure.
 
 ## Tests
 
-`cargo test --workspace` — full suite green. As of this snapshot: **357 tests
-passed, 0 failed** across unit, integration, and doc tests. The `testsuite`
-crate carries the frozen ground-truth pack; rung-1 parse truth (every node
-reproduced byte-for-byte) is gated there. The CLI foundation's own end-to-end
-gates live in `crates/mrd/tests/e2e.rs` (init/ls/unregister lifecycle, M2
-reconciliation, tier-4 ephemeral degrade, downgrade cold-start, deny ceiling,
-and a real `mrd daemon` resolve-adopt round-trip).
+`cargo test --workspace` — full suite green (0 failures; the M1 CI worktree
+gates every merge to `m1-bios`, most recently 1117 passed / 0 failed). The
+`testsuite` crate carries the frozen ground-truth pack (rung-1 parse truth:
+every node reproduced byte-for-byte) plus the U0 read/put parity pack
+(`data/parity/`, captured from the live Go host face): `u0_read_parity`
+(addressing facts), `u4a1_render_parity` (rendered text), and
+`u4a2_composed_read` (the composed op through the live serve loop, refusal
+texts included) replay it. The CLI foundation's end-to-end gates live in
+`crates/mrd/tests/e2e.rs`.
 
 ## Performance
 
@@ -79,6 +91,10 @@ cargo bench -p perfsuite
 
 ## Known gaps
 
+- The Workspace CLI verb list above is HELD at its pre-M1 shape: the
+  `mrd read` / `mrd put` verbs (and the u3-era verb additions) land with the
+  in-flight U1 unit, which owns that section's refresh so docs match the
+  shipped help text.
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
 - `policy` verdicts ride every splice response as `[]` until rule packs are
   loaded; where packs are sourced is the host's concern.

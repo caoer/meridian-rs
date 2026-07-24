@@ -135,12 +135,88 @@ violates no-dual-**emit** (emission is strict fingerprint-only under v3) and
 keeps the projection minimal. Strict rejection of mixed-vocabulary INPUT is not
 promised.
 
+## M1 additive surface (2026-07-24) — the v3 session grows three capabilities
+
+M1 (BIOS cut + data-model migration) adds three ADDITIVE surfaces to a v3
+session. All three are v3-ONLY: a v2 session stays byte-for-byte the frozen
+contract (`crates/wire/tests/contract_v2.rs` pins it), and both hosts — the
+per-workspace sidecar and the resident registry daemon — serve them through
+the one shared `wire-serve` implementation.
+
+### 1. The composed `read` op (decision D6)
+
+Addressing + content + render at ONE engine snapshot — one round trip
+replacing the `extract`→`cat`→render split whose non-atomicity would create a
+`fingerprint_mismatch` retry race. Advertised as the v3-only cap `read`
+(appended by the hello projection; the frozen v2 `caps` lists never carry it,
+and a v2 session's `read` answers `unknown_op` — §3.2 discovery honesty).
+
+Request (all beyond `path` optional):
+
+```
+{"id":7,"op":"read","path":"notes/plan.md",
+ "mode":"toc"|"sections",          // default "toc"
+ "frag":"Goals",                   // scope to one section subtree
+ "sections":["Goals/Q3","^b1","2"],// selectors: sanitized hpath | dewey | ^anchor
+ "display_path":"$SESSION/notes/plan.md"} // header spelling; defaults to path
+```
+
+Response body (`mode` decides `toc` XOR `sections`):
+
+```
+{"path":…,"file_rev":…,"fingerprint":…,"words_total":N,
+ "toc":[{"n":"1.2","depth":2,"title":…,"hpath":…,"words":N,"sec_rev":…}],
+ "sections":[{"sel":…,"hpath":…,"sec_rev":…,"words":N,"content":…}],
+ "truncated":true, "notice":"unresolved selectors (no rev minted): …",
+ "rendered_text":"…"}
+```
+
+`file_rev` + `fingerprint` come from the SAME borrowed snapshot (the
+atomicity witness). `rendered_text` is the token-efficient text projection,
+byte-parity with the Go host face's `readText` (gated against the U0 captured
+corpus). Unresolved selectors follow the PARTIAL-read rule (`truncated` +
+`notice`, no rev minted); ALL selectors missing refuses `ref_not_found`.
+Refusal `message` strings are the Go host face's VERBATIM texts, so a thin
+proxy forwards `error.message` without re-minting.
+
+### 2. In-band timing: `meta.duration_us`
+
+Every DISPATCHED response frame on a v3 session carries a top-level sibling
+`meta: {"duration_us": N}` — integer µs of engine work, measured around the
+dispatch call at each host (sidecar `arms::dispatch`; daemon `dispatch_read`).
+Success and refusal frames alike; frame-layer verdicts, the serve-layer
+`sub`, and the daemon's intercepted `hello` carry none. A safe additive slot
+under the tolerant-client law (unknown response fields are ignored).
+
+### 3. `extract` heading enrichment
+
+Under v3, `extract` heading nodes additionally carry the host-face
+addressing facts, computed engine-side with Go-exact semantics: `n` (dewey
+ordinal), `hpath_text` (the sanitized joined address), `words`
+(`strings.Fields` count over the subtree-inclusive content span). Absent on
+every non-heading node and on every v2 frame.
+
+### Error-code taxonomy additions (M1)
+
+| Code | Recovery | Raised by |
+|---|---|---|
+| `write_conflict` | `refresh` (re-read) | the splice choke-point: pre-rename verify detects a concurrent external change |
+| `workspace_busy` | `retry` | the cross-process write flock: another cooperating writer holds `.meridian/write.lock` |
+
+`render_failed` is the render plane's TYPED internal failure
+(`{node_kind, node_ref, reason}`, recovery: none — a bug, not a retry); on
+the wire it surfaces under `internal` with the `render_failed` spelling in
+`message`. No frame ever half-renders.
+
 ## Implementation shape
 
 The frozen `wire` types serialize byte-for-byte as contract v2 and are NOT
 touched (the only additive change is the optional `Op::Hello.contract` input
-field, which carries the declaration; absent ⇒ serialized away). v3 is a pure
-projection at the sidecar envelope layer (`crates/sidecar/src/rev.rs`):
+field, which carries the declaration; absent ⇒ serialized away; the M1
+additive fields ride `Option` + skip-serializing, so v2 frames never grow a
+key). v3 is a pure projection at the envelope layer — lifted from the
+sidecar into `crates/wire-serve/src/rev.rs` so BOTH hosts project through
+one implementation:
 
 - Outgoing v2-shaped frames are re-keyed `root` → `fingerprint` (`project_response`,
   `project_delta_frame`). The projection touches only the known fingerprint
@@ -159,9 +235,18 @@ byte-identical guarantee is structural, proven by the untouched frozen goldens.
   emits `root`/never `fingerprint` (bytes matched); a v3 session emits
   `fingerprint`/never `root` in every message class (hello, toc, the renamed op,
   splice before/after, links triple, the two error codes); unknown rev → typed
-  error; explicit `"v2"` ≡ absent.
-- `crates/sidecar/src/rev.rs` unit tests — the projection in isolation, incl. the
-  map-key collision guard (a `[[root]]` linkpath and a file named `root` survive).
+  error; explicit `"v2"` ≡ absent. M1 adds: `meta.duration_us` on every v3
+  dispatch frame + never on v2; extract enrichment on v3 headings + zero
+  addressing keys on v2.
+- `crates/wire-serve/src/rev.rs` unit tests — the projection in isolation, incl.
+  the map-key collision guard (a `[[root]]` linkpath and a file named `root`
+  survive) and the v3 caps `read` advertisement.
+- `crates/registry/tests/wire_vocab_rev.rs` — the same gates on the daemon
+  socket (the second host).
+- `crates/testsuite/tests/u4a2_composed_read.rs` — the composed `read` op
+  through the LIVE serve loop against the U0 captured goldens: rendered text
+  and refusal messages byte-equal the Go host face; v2 `read` → `unknown_op`
+  with frozen caps.
 - Frozen and unchanged, still green: `crates/wire/tests/contract_v2.rs`,
   `crates/testsuite/tests/wire_vocab.rs`, `crates/sidecar/tests/dispatch_v2.rs`,
   `crates/transport-proto/tests/wire_agreement.rs`.

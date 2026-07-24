@@ -20,14 +20,34 @@ op/request/response/error types. If a type is not in `wire`, it is not on the
 wire. The frozen contract in `wire-contract-v2.md` is exactly this crate's
 surface.
 
-## Law 3 — only two places see both worlds
+## Law 3 — the bridge has two named organs; everyone else is a consumer
 
-The Rust↔host bridge is auditable because exactly two components depend on both
-`wire` and `model`: the `wire-map` crate (the named projection seam, where the
-model tree is flattened into wire nodes as a tested library function) and the
-`sidecar` binary (which wires transport to dispatch). Projection *behavior*
-lives in `wire-map` and is tested there; the binary stays wiring-only. Nowhere
-else may wire and model meet.
+(As re-attested 2026-07-24. The original wording — "exactly two components
+depend on both `wire` and `model`" — stopped being true when the typed edge
+was extracted; ten crates now carry both deps. The law's INTENT is unchanged:
+the bridge stays auditable because bridge *behavior* lives in exactly two
+named places.)
+
+- **`wire-map` is the projection seam.** The model tree flattens into wire
+  shapes as a tested library function — projection behavior lives here and
+  nowhere else. M1 added the host-face read facts (`facts`: dewey ordinals,
+  sanitized hpath addresses, Go-exact word counts) to this seam.
+- **`wire-serve` is the serve choke-point.** The strict-decode pass, the read
+  arms (incl. the composed `read`), the `splice → commit` write choke-point,
+  and the v3 vocabulary projection are ONE implementation here. "One served
+  implementation, two hosts": the per-workspace `sidecar` and the resident
+  `registry` daemon both dispatch through these arms. (Aspirational note: the
+  hosts share the LEAVES, not the dispatch shell — sidecar drives
+  `arms::dispatch` per request over a fresh corpus; the daemon drives
+  `dispatch_read` over a resident warm engine. The shells stay host-owned.)
+
+Everything else that names both `wire` and `model` is a host, a client, or a
+test member consuming those two organs — never a second place where bridge
+behavior may live: `sidecar` and `registry` (the two hosts, wiring-only),
+`mrd` (a local client), `render` (consumes projection facts to produce the
+text face), `check`/`preset`/`realise` (engine planes over wire vocabulary),
+`testsuite` (observes). Growth pressure inside a host or client is the signal
+a capability is missing from one of the two organs.
 
 A corollary edge: `syntax` is the only crate that touches the pulldown-cmark
 fork, so fork churn is a one-crate event.
@@ -57,7 +77,17 @@ which laws it carries. In one line each:
 | `transport-proto` | Opt-in typed protobuf transport transcribing the wire contract |
 | `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate()` at the armed change plane (`policy::authorize`) — see § Amendment |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
-| `sidecar` | The NDJSON binary — the one place wire and model meet (Law 3) |
+| `wire-serve` | The shared typed edge (Law 3 choke-point): strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, two hosts |
+| `sidecar` | The per-workspace NDJSON host binary — wiring only; dispatches through `wire-serve` (Law 3) |
+| `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and link-decoration hook points |
+| `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` block-language namespace predicate |
+| `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
+| `run` | The mrd-local run plane: plan/execute under the workspace run lock |
+| `realise` | The realise engine: observe → check → apply per claim, on the run plane |
+| `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file |
+| `check` | The check engine: the pure READ verb of the reconciliation loop |
+| `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
+| `transcript` | Transcript cross-check: a corroborating (never authenticating) detector over the journal's actor claims |
 | `workspace` | Workspace identity: the discovery ladder, canonicalization, the deny ceiling — pure filesystem functions (a leaf, `std` + `cache` only) |
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
