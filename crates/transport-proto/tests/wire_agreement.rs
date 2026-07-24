@@ -380,6 +380,10 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
         wire::Op::Read { .. } => {
             unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
         }
+        // v3-only JSON-face op (M1 U8c): same rule as `read`.
+        wire::Op::CheckWrite { .. } => {
+            unreachable!("`check_write` is v3-JSON-face only — not in the proto agreement")
+        }
     }
 }
 
@@ -573,6 +577,10 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
         // surface — the pb mirror stays v2-shaped, no sample feeds it here.
         wire::ResponseBody::Read { .. } => {
             unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
+        }
+        // v3-only JSON-face body (M1 U8c): same rule as `read`.
+        wire::ResponseBody::CheckWrite { .. } => {
+            unreachable!("`check_write` is v3-JSON-face only — not in the proto agreement")
         }
     }
 }

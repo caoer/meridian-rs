@@ -143,6 +143,7 @@ pub fn project_response(frame: &mut Value) {
                     rewrite_cap(cap);
                 }
                 caps.push(Value::String("read".to_string()));
+                caps.push(Value::String("check_write".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -299,7 +300,8 @@ mod tests {
                 "fingerprint",
                 "links.require_fingerprint",
                 "diff",
-                "read"
+                "read",
+                "check_write"
             ])
         );
     }
