@@ -67,6 +67,10 @@ fn expected_text(doc_name: &str, step_id: &str, golden: &str) -> String {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one linear golden replay, split adds nothing"
+)]
 fn composed_read_matches_u0_goldens_over_the_wire() {
     let mut ok_steps = 0;
     let mut refusal_steps = 0;
@@ -81,9 +85,10 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
         )
         .expect("golden parses");
 
-        // collect the replayable pre-put read steps
+        // collect the replayable pre-put read steps:
+        // (id, text, is_error, golden structured.sections — the RAW body pin)
         let mut requests: Vec<Value> = Vec::new();
-        let mut expects: Vec<(String, String, bool)> = Vec::new(); // (id, text, is_error)
+        let mut expects: Vec<(String, String, bool, Option<Value>)> = Vec::new();
         for step in golden["steps"].as_array().expect("steps") {
             if step["tool"] == "put" {
                 break;
@@ -119,6 +124,8 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                 step_id.to_owned(),
                 expected_text(&doc_name, step_id, text),
                 step["is_error"] == Value::Bool(true),
+                (!step["structured"]["sections"].is_null())
+                    .then(|| step["structured"]["sections"].clone()),
             ));
         }
         if requests.is_empty() {
@@ -132,7 +139,7 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
             requests.len() + 1,
             "{doc_name}: one frame per request (hello + reads)"
         );
-        for (i, (step_id, want_text, want_err)) in expects.iter().enumerate() {
+        for (i, (step_id, want_text, want_err, want_sections)) in expects.iter().enumerate() {
             let frame = &frames[i + 1];
             let ctx = format!("{doc_name}/{step_id}");
             if *want_err {
@@ -151,6 +158,26 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                     "{ctx}: rendered_text byte-equals the pinned expectation \
                      (captured Go text, or the elided render-divergent pin)"
                 );
+                // Op-owner ruling pin: `sections[].content` is the RAW face —
+                // byte-equal to the CAPTURED golden structured sections even
+                // where rendered_text carries the elided pin (meridian-block:
+                // the fence bytes stay verbatim in the body; sec_rev/words
+                // pair with that raw content).
+                if let Some(want_sections) = want_sections {
+                    let got = frame["body"]["sections"]
+                        .as_array()
+                        .unwrap_or_else(|| panic!("{ctx}: body sections: {frame}"));
+                    let want = want_sections.as_array().expect("golden sections");
+                    assert_eq!(got.len(), want.len(), "{ctx}: section row count");
+                    for (g, w) in got.iter().zip(want) {
+                        for key in ["sel", "hpath", "sec_rev", "words", "content"] {
+                            assert_eq!(
+                                g[key], w[key],
+                                "{ctx}: RAW body `{key}` equals the captured golden"
+                            );
+                        }
+                    }
+                }
                 // D6 atomicity witness: file_rev + fingerprint at one snapshot
                 assert!(
                     frame["body"]["file_rev"].is_string()

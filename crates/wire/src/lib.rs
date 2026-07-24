@@ -593,8 +593,10 @@ pub struct ReadRow {
 }
 
 /// One composed-read resolved section (M1 U4a2, v3-only): the selector that
-/// hit, its address + CAS token, the RENDERED content (raw-face-identical in
-/// M1), and the word count recomputed over that content.
+/// hit, its address + CAS token, the RAW content — the verbatim bytes
+/// `sec_rev` was minted over, so the row is self-verifying and a `put` built
+/// from it round-trips (op-owner ruling 2026-07-24: elision applies to
+/// `rendered_text` ONLY) — and the word count over that raw content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadSectionOut {
     pub sel: String,
