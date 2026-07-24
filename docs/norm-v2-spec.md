@@ -48,7 +48,7 @@ hash-fn, digest}`):
 
 ```
 token   = version "." codec "." hashfn "." digest
-version = "fp1"                ; token-grammar version
+version = 1*(a-z / 0-9)        ; token-grammar version; "fp1" is the only LIVE value
 codec   = 1*(a-z / 0-9)        ; WHAT was hashed and HOW normalized (§2.2)
 hashfn  = 1*(a-z / 0-9)        ; hash family + width (§2.3)
 digest  = lowercase hex, length fixed by hashfn
@@ -104,8 +104,9 @@ reinterpretation of `span2`.
   charsets parses into `{version, codec, hashfn, digest}` — including codecs
   or hash-fns this build does not implement (self-describing survives its
   implementations). Digest LENGTH is validated only when the hashfn is known.
-- **Verify** (recompute + compare) requires an implemented `(codec, hashfn)`
-  pair. An unknown pair is **unverifiable** — a distinct outcome from
+- **Verify** (recompute + compare) requires an implemented `(version, codec,
+  hashfn)` triple. An unknown member — version included: a future `fp2` token
+  parses under this grammar — is **unverifiable**, a distinct outcome from
   malformed and from red; it renders grey (`superseded-algo` family), never
   green, never red.
 - Not tokens (never parse as fingerprints): bare 16-hex (`node_rev`),

@@ -484,6 +484,20 @@ pub struct Node {
     /// `splice ∈ caps`; clients MUST tolerate its absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_rev: Option<NodeRev>,
+    /// v3-ADDITIVE (M1 U2, host-face addressing): the dewey ordinal ("1.2.1")
+    /// on heading nodes. NEVER emitted on a v2 session — the frozen v2 bytes
+    /// carry no such key (`contract_v2.rs` goldens).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the sanitized joined hpath ADDRESS
+    /// ("Notes/Slash-Title-Here") on heading nodes — the Go
+    /// `sanitizeHeadingHost` semantics, computed engine-side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpath_text: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the `strings.Fields` word count over the
+    /// heading's SUBTREE-inclusive content span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<u64>,
 }
 
 /// One `toc` row (v2 §4.1): the complete write kit for one node. Row shapes,

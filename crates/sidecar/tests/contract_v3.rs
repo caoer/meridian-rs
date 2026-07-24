@@ -313,6 +313,72 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// U2 addressing facts: v3 extract enriches headings, v2 never
+// ---------------------------------------------------------------------------
+
+/// A v3 session's `extract` carries the host-face addressing facts on every
+/// heading node — dewey `n`, sanitized `hpath_text`, subtree `words` — the
+/// facts ccc-statusd re-derived host-side (U2). Non-heading nodes carry none.
+#[test]
+fn v3_extract_enriches_heading_nodes() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"extract\",\"path\":\"notes/plan.md\"}\n";
+    let frames = serve(&root, input);
+    let nodes = frames[1]["body"]["nodes"].as_array().expect("nodes");
+    let headings: Vec<&Value> = nodes
+        .iter()
+        .filter(|n| n["kind"] == json!("heading"))
+        .collect();
+    assert_eq!(headings.len(), 3, "S0 plan has 3 headings");
+    let facts: Vec<(&str, &str, u64)> = headings
+        .iter()
+        .map(|h| {
+            (
+                h["n"].as_str().expect("n"),
+                h["hpath_text"].as_str().expect("hpath_text"),
+                h["words"].as_u64().expect("words"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        facts,
+        vec![
+            ("1", "Goals", 20),
+            ("1.1", "Goals/Q3", 3),
+            ("1.2", "Goals/Q4", 10),
+        ]
+    );
+    // non-heading nodes never carry the addressing keys
+    for n in nodes.iter().filter(|n| n["kind"] != json!("heading")) {
+        for key in ["n", "hpath_text", "words"] {
+            assert!(
+                n.get(key).is_none(),
+                "non-heading node must not carry `{key}`: {n}"
+            );
+        }
+    }
+}
+
+/// A v2 session's `extract` is the frozen shape: ZERO `n`/`hpath_text`/
+/// `words` keys anywhere in the frame.
+#[test]
+fn v2_extract_never_carries_addressing_keys() {
+    let (_d, root) = s0();
+    let raw = serve_raw(
+        &root,
+        "{\"id\":1,\"op\":\"hello\",\"proto\":1}\n\
+         {\"id\":2,\"op\":\"extract\",\"path\":\"notes/plan.md\"}\n",
+    );
+    for key in ["\"hpath_text\"", "\"words\"", "\"n\":"] {
+        assert!(
+            !raw.contains(key),
+            "v2 extract must never emit {key}: {raw}"
+        );
+    }
+}
+
 /// A v2 session NEVER emits a `meta` key — the frozen contract is
 /// byte-identical, and timing is a v3-only additive slot.
 #[test]
