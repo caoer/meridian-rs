@@ -67,9 +67,11 @@ fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152
 - The prefix (`version.codec.hashfn`) fully determines interpretation. Hash or
   normalization migration = a NEW prefix; old tokens stay verifiable forever —
   migration lives inside the identifier, never beside it (#4 §1).
-- The token is a plain YAML scalar (dots only), so `meridian-lock` `pins:`
-  entries (#8 §2) carry it unquoted. Full-length tokens appear only in lock
-  blocks and receipts (pin-count objects, #4 §5); render planes abbreviate.
+- The token needs no escaping in any YAML context (dots and hex only); the
+  lock's canonical form still QUOTES it like every scalar (#8 §2,
+  `fingerprint: "<CID>"` — the `crates/lock` render law). Full-length tokens
+  appear only in lock blocks and receipts (pin-count objects, #4 §5); render
+  planes abbreviate.
 - Display short form (render/wire view, #6 §4): `@` + a digest prefix
   (e.g. `@40b167ed`, 8 hex). Non-normative here — the `@fp` grammar belongs to
   the claim-link view plane; it always abbreviates the DIGEST field.
