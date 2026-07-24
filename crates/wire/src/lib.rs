@@ -438,6 +438,13 @@ pub enum Op {
     /// or `^anchor`; `display_path` is the caller's path spelling for the
     /// rendered header line (defaults to `path`) — the engine renders the
     /// string the consumer expects, it never invents host paths.
+    ///
+    /// `actor` is the §9 read-provenance slot (D-Actor/B, review C4): the
+    /// DAEMON-derived actor stamped on the request — a wire input, never
+    /// ambient, never MCP-caller-settable (the mint door stays the host's).
+    /// M1 carries it so stage-2 read-mint receipts are additive (the engine
+    /// already knows which actor read what at which rev); no receipt is
+    /// minted in M1.
     Read {
         path: Path,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -448,6 +455,8 @@ pub enum Op {
         sections: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         display_path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
     /// publish `view.duckdb` (the daemon is the sole builder), and return the
