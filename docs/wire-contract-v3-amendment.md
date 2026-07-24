@@ -179,6 +179,13 @@ corpus). Unresolved selectors follow the PARTIAL-read rule (`truncated` +
 Refusal `message` strings are the Go host face's VERBATIM texts, so a thin
 proxy forwards `error.message` without re-minting.
 
+**The two content planes (op-owner ruling, 2026-07-24):** `sections[].content`
+is the RAW face — the verbatim bytes its `sec_rev` was minted over, so every
+row is self-verifying and a `put` built from it round-trips byte-identically.
+Block elision (decision #8: `meridian-*` fences hidden on the render face)
+applies to `rendered_text` ONLY. The one composed exchange therefore carries
+both planes: raw content to edit against, elided text to display.
+
 ### 2. In-band timing: `meta.duration_us`
 
 Every DISPATCHED response frame on a v3 session carries a top-level sibling
