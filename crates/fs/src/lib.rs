@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -201,6 +202,56 @@ pub fn write_conflict(path: &Path) -> io::Error {
     io::Error::other(WriteConflict {
         path: path.to_path_buf(),
     })
+}
+
+/// The cross-process WRITE lock (M1 D9, xproc-race fix): an exclusive advisory
+/// `flock(2)` on `.meridian/write.lock`, held by the wire write choke-point
+/// across its whole critical section (pre-batch read → validate → verify →
+/// renames), so two cooperating meridian writers — sidecar process, resident
+/// registry daemon, `mrd` — can never interleave read→rename (the lost-update
+/// window the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock
+/// is [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
+/// `workspace_busy` refusal — it never waits, so a hung holder can never make
+/// callers hang. Released on drop (fd close).
+///
+/// STATED residuals: out-of-band writers (editors, git, bash) do not take this
+/// lock — they are covered by DETECTION (the D8 pre-rename verify →
+/// `write_conflict`), not prevention (G3). The run plane serializes on its own
+/// `.meridian/run.lock`; run applies and wire splices do not serialize against
+/// each other until the two planes unify on one lock file (G4, named).
+///
+/// `flock` locks belong to the open file description, so two independent
+/// acquires contend even within one process — in-process concurrent writers
+/// refuse `workspace_busy` exactly like cross-process ones.
+#[derive(Debug)]
+pub struct WriteLock {
+    // Held open for its fd; flock releases when the fd closes on drop.
+    _file: File,
+}
+
+impl WriteLock {
+    /// Try to acquire the exclusive write lock, creating `.meridian/` and the
+    /// lockfile on first use. Never blocks: a held lock returns
+    /// [`io::ErrorKind::WouldBlock`] immediately.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when another writer holds the lock; any
+    /// other I/O failure creating or locking the lockfile (the caller maps it
+    /// to a typed engine error — G2: never unwrap).
+    pub fn acquire(root: &WorkspaceRoot) -> io::Result<Self> {
+        let dir = root.0.join(".meridian");
+        fs::create_dir_all(&dir)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("write.lock"))?;
+        // SAFETY: flock on a valid open fd; the fd outlives the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { _file: file })
+    }
 }
 
 /// Is this I/O error the typed write-conflict refusal ([`write_conflict`])?
@@ -1259,6 +1310,29 @@ mod tests {
             foreign.as_bytes(),
             "the foreign receipt row survives"
         );
+    }
+
+    /// D9: the write flock contends across independent acquires (flock is
+    /// per-open-file-description — even in one process), refuses fast with
+    /// `WouldBlock` (never waits), is re-acquirable after release, and mints
+    /// `.meridian/write.lock` on first use.
+    #[test]
+    fn write_lock_contends_releases_and_creates_sentinel() {
+        let (dir, root) = workspace();
+        let held = super::WriteLock::acquire(&root).expect("first acquire");
+        assert!(
+            dir.path().join(".meridian/write.lock").exists(),
+            "the lockfile is minted on first use"
+        );
+        let contend = super::WriteLock::acquire(&root)
+            .expect_err("a held write lock refuses a second acquire");
+        assert_eq!(
+            contend.kind(),
+            io::ErrorKind::WouldBlock,
+            "contention is WouldBlock (LOCK_NB — a fast refusal, never a wait)"
+        );
+        drop(held);
+        drop(super::WriteLock::acquire(&root).expect("released lock is re-acquirable"));
     }
 
     /// Seam contract: a REPLACING receipt span (non-empty) is misuse of the

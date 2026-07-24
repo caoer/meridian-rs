@@ -127,6 +127,14 @@ pub fn splice(
         )));
     }
 
+    // D9 (xproc-race fix): the cross-process write flock, held across the
+    // WHOLE critical section — read#1 below, validate, gate, the commit's
+    // read#2 → verify → renames, and the journal appends — so cooperating
+    // meridian writers (sidecar, resident daemon, mrd) serialize instead of
+    // interleaving read→rename. Dry runs take it too: a rehearsal refuses
+    // `workspace_busy` exactly where the real write would. Released on drop.
+    let _write_lock = acquire_write_lock(root)?;
+
     let doc = load_doc(root, &args.path)?;
     let root_before = ambient_root(root)?;
 
@@ -387,6 +395,10 @@ pub fn create(
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
 
+    // D9: births serialize on the same write flock as every meridian writer —
+    // this also closes the `if_absent` check→rename window for cooperators.
+    let _write_lock = acquire_write_lock(root)?;
+
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
@@ -505,6 +517,10 @@ pub fn remove(
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
+
+    // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
+    // a critical section like any other write).
+    let _write_lock = acquire_write_lock(root)?;
 
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
@@ -675,6 +691,11 @@ pub fn pin_lock(
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
 
+    // D9: the pin lock-write serializes on the same write flock (it lives
+    // until U12 removes it; unlocked it would be the one cooperating writer
+    // able to interleave read→rename past everyone else).
+    let _write_lock = acquire_write_lock(root)?;
+
     let before_doc = load_doc(root, &args.path)?;
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
 
@@ -783,6 +804,26 @@ fn pin_journal_write(
     fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
         .map_err(|e| io_to_wire(&e))?;
     Ok(receipt::anchor(seq))
+}
+
+/// Acquire the workspace write flock (D9, xproc-race fix) with the typed
+/// error split — G2: a held lock (`WouldBlock`, `LOCK_NB`) is the fast
+/// `workspace_busy` refusal (retry — transient), and any OTHER lock-file I/O
+/// failure maps to the typed `io_error{cause}` frame; nothing here unwraps.
+fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<ErrorBody>> {
+    fs::WriteLock::acquire(root).map_err(|e| {
+        if e.kind() == ErrorKind::WouldBlock {
+            let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
+            w.message = Some(
+                "another meridian writer holds .meridian/write.lock — transient; retry".into(),
+            );
+            Box::new(w)
+        } else {
+            let mut w = ErrorBody::new(ErrorCode::IoError);
+            w.cause = Some(format!("write lock: {e}"));
+            Box::new(w)
+        }
+    })
 }
 
 /// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): the same §1
@@ -1374,6 +1415,10 @@ pub enum CommitError {
 /// root advance). The frame's `seq` is `seq + 1` — the CALLER'S epoch seq
 /// advanced by one; the caller advances its own ring with the returned frame
 /// (this seam holds no ring, so the resident daemon can commit without one).
+///
+/// LOCK-FREE primitive (D9): the write flock is the CALLER's — `splice`
+/// acquires it around this whole call. A direct caller outside the choke-point
+/// (tests) runs unserialized; the D8 pre-image verify still refuses drift.
 ///
 /// # Errors
 /// [`CommitError`] — validation refusal, environment failure, or I/O; in

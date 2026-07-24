@@ -205,6 +205,7 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::BindingBreak => pb::ErrorCode::BindingBreak,
         wire::ErrorCode::IndexIntegrity => pb::ErrorCode::IndexIntegrity,
         wire::ErrorCode::WriteConflict => pb::ErrorCode::WriteConflict,
+        wire::ErrorCode::WorkspaceBusy => pb::ErrorCode::WorkspaceBusy,
     }
 }
 
@@ -917,6 +918,7 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::BindingBreak => wire::ErrorCode::BindingBreak,
         pb::ErrorCode::IndexIntegrity => wire::ErrorCode::IndexIntegrity,
         pb::ErrorCode::WriteConflict => wire::ErrorCode::WriteConflict,
+        pb::ErrorCode::WorkspaceBusy => wire::ErrorCode::WorkspaceBusy,
     }
 }
 
