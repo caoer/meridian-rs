@@ -3,11 +3,12 @@
 //! (plan U-SPEC; decision 2026-07-24-fingerprint-cid-representation).
 //!
 //! `reference` is the spec-verbatim implementation of norm-v2 (§4) and the
-//! fingerprint token (§2). U10 migrates `model::compose` onto this law and
-//! must reproduce every golden here through the PRODUCTION API; the reference
-//! stays as the conformance cross-check. The golden DATA (canonical bytes,
-//! digest hex, token literals) is the contract — moving it is a hash-domain
-//! migration (a new codec prefix), never an edit.
+//! fingerprint token (§2). The PRODUCTION implementation (U10:
+//! `syntax::{anchor_removals, norm_v2_slice, norm_v2}` +
+//! `model::fingerprint`) is asserted against reference AND golden in every
+//! test — three independent spellings of one law. The golden DATA (canonical
+//! bytes, digest hex, token literals) is the contract — moving it is a
+//! hash-domain migration (a new codec prefix), never an edit.
 
 use model::{Node, NodeKind, build};
 
@@ -237,6 +238,11 @@ fn canonical_goldens_hold() {
             "fixture `{name}`: canonical bytes diverge\n got: {:?}\nwant: {expected:?}",
             String::from_utf8_lossy(&got),
         );
+        assert_eq!(
+            syntax::norm_v2(input).as_slice(),
+            expected.as_bytes(),
+            "fixture `{name}`: PRODUCTION norm_v2 diverges from the golden"
+        );
     }
 }
 
@@ -257,6 +263,12 @@ fn neutrality_document_grain() {
         d0.root.node_rev, d1.root.node_rev,
         "CAS must see the promotion byte-change at document grain"
     );
+
+    // PRODUCTION mint agrees with reference and golden.
+    let pf0 = model::fingerprint::fingerprint(&d0, &d0.root);
+    let pf1 = model::fingerprint::fingerprint(&d1, &d1.root);
+    assert_eq!(pf0, pf1, "production: false drift at document grain");
+    assert_eq!(pf0.0, fp0, "production token != reference token");
 }
 
 /// §5 at section grain: the promoted paragraph lives in section A; section A's
@@ -274,6 +286,14 @@ fn neutrality_section_grain() {
     assert_eq!(c0, c1, "promotion caused false drift at section grain");
     assert_eq!(reference::fingerprint(&c0), reference::fingerprint(&c1));
     assert_ne!(a0.node_rev, a1.node_rev, "CAS must move at section grain");
+
+    // PRODUCTION section-grain mint agrees with reference.
+    let (p0, p1) = (
+        model::fingerprint::fingerprint(&d0, a0),
+        model::fingerprint::fingerprint(&d1, a1),
+    );
+    assert_eq!(p0, p1, "production: false drift at section grain");
+    assert_eq!(p0.0, reference::fingerprint(&c0));
 
     let (b0, b1) = (section(&d0.root, "B"), section(&d1.root, "B"));
     assert_eq!(b0.node_rev, b1.node_rev, "untouched section B moved");
@@ -299,6 +319,13 @@ fn neutrality_own_line_at_eof() {
         "R2b: own-line promotion at EOF caused false drift"
     );
     assert_ne!(apre.node_rev, apost.node_rev);
+
+    // PRODUCTION R2b agreement at section grain.
+    assert_eq!(
+        model::fingerprint::fingerprint(&dpre, apre),
+        model::fingerprint::fingerprint(&dpost, apost),
+        "production: R2b false drift"
+    );
 }
 
 /// §4.3 grain consistency — the model re-spans an Anchor node to its HOST
@@ -335,6 +362,13 @@ fn token_mint_and_roundtrip() {
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
     );
+
+    // PRODUCTION parse agrees field-for-field.
+    let parts = model::fingerprint::parse_fingerprint(&tok).expect("production parses");
+    assert_eq!(
+        (parts.version, parts.codec, parts.hashfn, parts.digest),
+        (version, codec, hashfn, digest)
+    );
 }
 
 #[test]
@@ -356,15 +390,23 @@ fn token_malformed_rejected() {
             reference::parse_token(&bad).is_none(),
             "malformed token accepted: {bad:?}"
         );
+        assert!(
+            model::fingerprint::parse_fingerprint(&bad).is_none(),
+            "PRODUCTION accepted malformed token: {bad:?}"
+        );
     }
 }
 
-/// §2.4 — self-describing survives its implementations: unknown codec or
-/// hashfn PARSES (grey `unverifiable` downstream), it is not malformed; digest
-/// length is unchecked for an unknown hashfn.
+/// §2.4 — self-describing survives its implementations: an unknown version,
+/// codec, or hashfn PARSES (grey `unverifiable` downstream), it is not
+/// malformed; digest length is unchecked for an unknown hashfn.
 #[test]
-fn token_unknown_codec_or_hashfn_parses() {
+fn token_unknown_version_codec_or_hashfn_parses() {
     let hex64 = "0".repeat(64);
+    let (version, ..) =
+        reference::parse_token(&format!("fp9.span2.b3.{hex64}")).expect("unknown version parses");
+    assert_eq!(version, "fp9");
+    assert!(model::fingerprint::parse_fingerprint(&format!("fp9.span2.b3.{hex64}")).is_some());
     let (_, codec, ..) =
         reference::parse_token(&format!("fp1.zzz9.b3.{hex64}")).expect("unknown codec parses");
     assert_eq!(codec, "zzz9");
@@ -372,6 +414,10 @@ fn token_unknown_codec_or_hashfn_parses() {
         reference::parse_token("fp1.span2.xx.0123abc").expect("unknown hashfn parses");
     assert_eq!(hashfn, "xx");
     assert_eq!(digest, "0123abc");
+
+    // PRODUCTION: unknown codec/hashfn parse (grey downstream), not malformed.
+    assert!(model::fingerprint::parse_fingerprint(&format!("fp1.zzz9.b3.{hex64}")).is_some());
+    assert!(model::fingerprint::parse_fingerprint("fp1.span2.xx.0123abc").is_some());
 }
 
 /// Regenerator for the pinned literals — `cargo test -p model --test
