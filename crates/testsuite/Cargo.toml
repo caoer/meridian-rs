@@ -23,6 +23,7 @@ syntax = { workspace = true }
 model = { workspace = true }
 wire = { workspace = true }
 wire-map = { workspace = true }
+render = { workspace = true }
 transport = { workspace = true }
 
 [dev-dependencies]
