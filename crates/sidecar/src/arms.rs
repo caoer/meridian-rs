@@ -28,6 +28,32 @@ pub(crate) fn dispatch(
         Op::Toc { path } => toc(root, &path),
         Op::Cat { path, sec } => cat(root, &path, sec),
         Op::Extract { path, kinds } => extract(root, &path, kinds, v3),
+        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
+        // caps; §3.2: an op is in `caps` or answers `unknown_op`).
+        Op::Read {
+            path,
+            mode,
+            frag,
+            sections,
+            display_path,
+        } => {
+            if !v3 {
+                return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
+            }
+            let doc = load_doc(root, &path)?;
+            let ambient = ambient_root(root)?;
+            wire_serve::read::composed_read(
+                &doc,
+                &path,
+                &ambient,
+                &wire_serve::read::ReadParams {
+                    mode,
+                    frag,
+                    sections,
+                    display_path,
+                },
+            )
+        }
         Op::Resolve {
             from,
             r#ref,

@@ -375,6 +375,11 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
         wire::Op::ViewPath { cwd, fresh } => {
             pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh })
         }
+        // v3-only JSON-face op (M1 U4a2): outside the proto agreement
+        // surface — the pb mirror stays v2-shaped, no sample feeds it here.
+        wire::Op::Read { .. } => {
+            unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
+        }
     }
 }
 
@@ -564,6 +569,11 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             refresh_in_progress,
             last_error: last_error.map(refresh_error_to_pb),
         }),
+        // v3-only JSON-face body (M1 U4a2): outside the proto agreement
+        // surface — the pb mirror stays v2-shaped, no sample feeds it here.
+        wire::ResponseBody::Read { .. } => {
+            unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
+        }
     }
 }
 

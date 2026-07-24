@@ -3659,9 +3659,11 @@ name = "testsuite"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "fs",
  "model",
  "render",
  "serde_json",
+ "sidecar",
  "syntax",
  "transport",
  "wire",
@@ -4420,6 +4422,7 @@ dependencies = [
  "policy",
  "query",
  "receipt",
+ "render",
  "serde_json",
  "syntax",
  "tempfile",

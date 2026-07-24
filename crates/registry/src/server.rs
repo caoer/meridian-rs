@@ -693,6 +693,10 @@ fn serve_wire(
 /// rebuilds). `hello` is intercepted upstream (the handshake binds the
 /// connection); `sub` (P2) is not served yet and answers `unknown_op` (§3.2
 /// discovery honesty). `id` rides only into the splice receipt line (§6.1).
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
+)]
 fn dispatch_read(
     registry: &Registry,
     attached: Option<&Path>,
@@ -735,6 +739,26 @@ fn dispatch_read(
                 .ok_or_else(|| file_not_found(&path))?;
             Ok(wire_serve::read::extract(doc, &path, kinds, v3))
         }),
+        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
+        // caps; §3.2 discovery honesty), served from the warm engine at ONE
+        // snapshot (D6 atomicity: file_rev + root from the same borrow).
+        Op::Read {
+            path,
+            mode,
+            frag,
+            sections,
+            display_path,
+        } if v3 => composed_read_warm(
+            registry,
+            ws,
+            &path,
+            &wire_serve::read::ReadParams {
+                mode,
+                frag,
+                sections,
+                display_path,
+            },
+        ),
         Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
             let as_of = engine_root(engine);
             wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
@@ -809,7 +833,11 @@ fn dispatch_read(
         // `hello` is intercepted upstream in `handle_line` (the handshake binds
         // the connection), so it never reaches here. `sub` = P2 is not served yet
         // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
-        Op::Hello { .. } | Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+        // `read` lands here only on a NON-v3 connection (the guarded arm
+        // above takes v3): absent from the frozen v2 caps → `unknown_op`.
+        Op::Hello { .. } | Op::Sub { .. } | Op::Read { .. } => {
+            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        }
     }
 }
 
@@ -817,6 +845,23 @@ fn dispatch_read(
 /// (the reuse key), re-homed into the wire `Root` token.
 fn engine_root(engine: &WorkspaceEngine) -> Root {
     Root(engine.at_fingerprint.0.clone())
+}
+
+/// The composed read (M1 U4a2) over the warm engine: one borrow supplies the
+/// doc, its `file_rev`, and the ambient root — the D6 one-snapshot guarantee.
+fn composed_read_warm(
+    registry: &Registry,
+    ws: &Path,
+    path: &wire::Path,
+    params: &wire_serve::read::ReadParams,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    warm_engine_read(registry, ws, |engine| {
+        let doc = engine
+            .docs
+            .get(&path.0)
+            .ok_or_else(|| file_not_found(path))?;
+        wire_serve::read::composed_read(doc, path, &engine_root(engine), params)
+    })
 }
 
 /// Warm the resident engine for `canonical` (idempotent — reflects current disk,
