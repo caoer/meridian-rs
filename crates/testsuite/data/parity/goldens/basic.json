@@ -1,0 +1,642 @@
+{
+  "doc": "basic",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/basic.md"
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:2d0909f52dbc304a  words:28\n1      Todo  words:11  rev:8f80d86eca3cbfa0\n2      Notes  words:13  rev:704a433131ad07a3\n2.1      Notes/Slash-Title-Here  words:2  rev:0a406e72fd298947\n3      Memo  words:2  rev:92f63b3396720ea6",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md",
+        "rev": "2d0909f52dbc304a",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Todo",
+            "n": "1",
+            "sec_rev": "8f80d86eca3cbfa0",
+            "title": "Todo",
+            "words": 11
+          },
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "2",
+            "sec_rev": "704a433131ad07a3",
+            "title": "Notes",
+            "words": 13
+          },
+          {
+            "depth": 2,
+            "hpath": "Notes/Slash-Title-Here",
+            "n": "2.1",
+            "sec_rev": "0a406e72fd298947",
+            "title": "Slash/Title Here",
+            "words": 2
+          },
+          {
+            "depth": 1,
+            "hpath": "Memo",
+            "n": "3",
+            "sec_rev": "92f63b3396720ea6",
+            "title": "Memo",
+            "words": 2
+          }
+        ],
+        "words_total": 28
+      }
+    },
+    {
+      "id": "r-frag-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:2d0909f52dbc304a  words:28\n2      Notes  words:13  rev:704a433131ad07a3\n2.1      Notes/Slash-Title-Here  words:2  rev:0a406e72fd298947",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md#Notes",
+        "rev": "2d0909f52dbc304a",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "2",
+            "sec_rev": "704a433131ad07a3",
+            "title": "Notes",
+            "words": 13
+          },
+          {
+            "depth": 2,
+            "hpath": "Notes/Slash-Title-Here",
+            "n": "2.1",
+            "sec_rev": "0a406e72fd298947",
+            "title": "Slash/Title Here",
+            "words": 2
+          }
+        ],
+        "words_total": 28
+      }
+    },
+    {
+      "id": "r-sections-partial",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/basic.md",
+        "sections": [
+          "Notes",
+          "^task1",
+          "NoSuch"
+        ]
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:2d0909f52dbc304a  words:28\n\n== Notes (rev:704a433131ad07a3 words:13) ==\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\n\n\nNOTICE: unresolved selectors (no rev minted): ^task1, NoSuch",
+      "is_error": false,
+      "structured": {
+        "notice": "unresolved selectors (no rev minted): ^task1, NoSuch",
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md",
+        "rev": "2d0909f52dbc304a",
+        "sections": [
+          {
+            "content": "\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\n",
+            "hpath": "Notes",
+            "sec_rev": "704a433131ad07a3",
+            "sel": "Notes",
+            "words": 13
+          }
+        ],
+        "truncated": true,
+        "words_total": 28
+      }
+    },
+    {
+      "id": "r-sections-all-missing",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/basic.md",
+        "sections": [
+          "Ghost"
+        ]
+      },
+      "text": "read: no section addressed by \"Ghost\" — read with mode toc to list the document's section paths",
+      "is_error": true
+    },
+    {
+      "id": "r-bad-mode",
+      "tool": "read",
+      "args": {
+        "mode": "shape",
+        "ref": "corpus/basic.md"
+      },
+      "text": "validating \"arguments\": validating root: validating /properties/mode: enum: shape does not equal any of: [toc sections]",
+      "is_error": true
+    },
+    {
+      "id": "r-frag-plus-sections",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/basic.md#Notes",
+        "sections": [
+          "Memo"
+        ]
+      },
+      "text": "read: pass either a #fragment on ref or sections[], not both — the fragment scopes the whole call; sections[] selects document-absolute paths",
+      "is_error": true
+    },
+    {
+      "id": "r-dewey",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/basic.md",
+        "sections": [
+          "2"
+        ]
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:2d0909f52dbc304a  words:28\n\n== Notes (rev:704a433131ad07a3 words:13) ==\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md",
+        "rev": "2d0909f52dbc304a",
+        "sections": [
+          {
+            "content": "\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\n",
+            "hpath": "Notes",
+            "sec_rev": "704a433131ad07a3",
+            "sel": "2",
+            "words": 13
+          }
+        ],
+        "words_total": 28
+      }
+    },
+    {
+      "id": "p-append",
+      "tool": "put",
+      "args": {
+        "body": "parity append line",
+        "op": "append",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:50082a583989e0ad",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\nparity append line\n# Memo\n\nseed memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "50082a583989e0ad"
+      }
+    },
+    {
+      "id": "p-append-dupe",
+      "tool": "put",
+      "args": {
+        "body": "parity append line",
+        "op": "append",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:50082a583989e0ad\n  WARNING: append_deduped:Notes",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\nparity append line\n# Memo\n\nseed memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "50082a583989e0ad",
+        "warnings": [
+          "append_deduped:Notes"
+        ]
+      }
+    },
+    {
+      "id": "r-notes-rev",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/basic.md",
+        "sections": [
+          "Notes"
+        ]
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:50082a583989e0ad  words:34\n\n== Notes (rev:191b3e18940d3c34 words:16) ==\n\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\nparity append line",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md",
+        "rev": "50082a583989e0ad",
+        "sections": [
+          {
+            "content": "\nseed note line one\nseed note line two\n\n## Slash/Title Here\n\ndeep content\n\nparity append line\n",
+            "hpath": "Notes",
+            "sec_rev": "191b3e18940d3c34",
+            "sel": "Notes",
+            "words": 16
+          }
+        ],
+        "words_total": 34
+      }
+    },
+    {
+      "id": "p-replace-section-fresh",
+      "tool": "put",
+      "args": {
+        "body": "replaced notes body",
+        "op": "replace_section",
+        "ref": "corpus/basic.md#Notes",
+        "rev": "191b3e18940d3c34"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:7dd00ba7a49c863d",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\nseed memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "7dd00ba7a49c863d"
+      }
+    },
+    {
+      "id": "p-replace-section-stale",
+      "tool": "put",
+      "args": {
+        "body": "clobber attempt",
+        "op": "replace_section",
+        "ref": "corpus/basic.md#Notes",
+        "rev": "deadbeefdeadbeef"
+      },
+      "text": "put: CAS conflict (cas_mismatch) — the section changed since your read; re-read it and retry with the fresh rev",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\nseed memo\n"
+    },
+    {
+      "id": "p-replace",
+      "tool": "put",
+      "args": {
+        "body": "amended memo",
+        "find": "seed memo",
+        "op": "replace",
+        "ref": "corpus/basic.md#Memo"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:cc317c168a600aed",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "cc317c168a600aed"
+      }
+    },
+    {
+      "id": "p-replace-nomatch",
+      "tool": "put",
+      "args": {
+        "body": "x",
+        "find": "absent anchor",
+        "op": "replace",
+        "ref": "corpus/basic.md#Memo"
+      },
+      "text": "put: def-conformance check could not run: E_NO_MATCH: anchor \"absent anchor\" not found in section \"Memo\" — read the section (md read) and copy the exact bytes; Find is byte-exact (no normalization)",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\namended memo\n"
+    },
+    {
+      "id": "p-replace-all",
+      "tool": "put",
+      "args": {
+        "all": true,
+        "body": "rewritten",
+        "find": "replaced",
+        "op": "replace",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "put: def-conformance check could not run: ECAS: an all-occurrence replace requires a rev — read the section (md read) and pass its rev (aa2da174) to confirm the current content",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\namended memo\n"
+    },
+    {
+      "id": "p-replace-all-nomatch",
+      "tool": "put",
+      "args": {
+        "all": true,
+        "body": "x",
+        "find": "nowhere",
+        "op": "replace",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "put: def-conformance check could not run: E_NO_MATCH: anchor \"nowhere\" not found in section \"Notes\" — read the section (md read) and copy the exact bytes; Find is byte-exact (no normalization)",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\namended memo\n"
+    },
+    {
+      "id": "p-replace-notunique",
+      "tool": "put",
+      "args": {
+        "body": "thing",
+        "find": "item",
+        "op": "replace",
+        "ref": "corpus/basic.md#Todo"
+      },
+      "text": "put: def-conformance check could not run: E_AMBIGUOUS: anchor \"item\" occurs 2 times in section \"Todo\" — extend Find to a unique span, or set All to edit every occurrence",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n# Memo\n\namended memo\n"
+    },
+    {
+      "id": "p-create-nested",
+      "tool": "put",
+      "args": {
+        "at": "Notes/Fresh",
+        "body": "fresh section body",
+        "op": "create_section",
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:205a5f9828358cf7",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "205a5f9828358cf7"
+      }
+    },
+    {
+      "id": "p-create-top",
+      "tool": "put",
+      "args": {
+        "at": "Brand",
+        "body": "top level attempt",
+        "op": "create_section",
+        "ref": "corpus/basic.md"
+      },
+      "text": "put: cannot place new section \"Brand\" — its parent is not in the document",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: seeded\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n"
+    },
+    {
+      "id": "p-props-existing",
+      "tool": "put",
+      "args": {
+        "properties": {
+          "status": "parity-tested"
+        },
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:89df389b23acc176",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: parity-tested\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "89df389b23acc176"
+      }
+    },
+    {
+      "id": "p-props-new",
+      "tool": "put",
+      "args": {
+        "properties": {
+          "owner": "worker-d"
+        },
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:e95ea85943e28de1",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: parity-tested\nowner: worker-d\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "e95ea85943e28de1"
+      }
+    },
+    {
+      "id": "p-props-colon",
+      "tool": "put",
+      "args": {
+        "properties": {
+          "status": "review: pending verdict"
+        },
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:886e59daa735999e",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "886e59daa735999e"
+      }
+    },
+    {
+      "id": "p-props-typed",
+      "tool": "put",
+      "args": {
+        "properties": {
+          "priority": "3"
+        },
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:a6e6702ece6451c8",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "a6e6702ece6451c8"
+      }
+    },
+    {
+      "id": "p-props-plus-body",
+      "tool": "put",
+      "args": {
+        "body": "note beside property",
+        "op": "append",
+        "properties": {
+          "phase": "u0"
+        },
+        "ref": "corpus/basic.md#Memo"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:90e06dcea83f14b1",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "90e06dcea83f14b1"
+      }
+    },
+    {
+      "id": "p-append-anchor",
+      "tool": "put",
+      "args": {
+        "at": "^task1",
+        "body": "anchor append attempt",
+        "op": "append",
+        "ref": "corpus/basic.md"
+      },
+      "text": "put: def-conformance check could not run: E_FAIL_LOUD: append to a block anchor \"^task1\" is not supported: it would splice before the block's \" ^id\" marker and orphan it — append targets a section (pass the containing heading path); to change the block's line use replace with a Find anchor",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-op-and-edits",
+      "tool": "put",
+      "args": {
+        "body": "x",
+        "edits": [
+          {
+            "at": "Notes",
+            "body": "y",
+            "op": "append"
+          }
+        ],
+        "op": "append",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "put: op and edits are mutually exclusive — fold the single op into edits[]",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-at-and-frag",
+      "tool": "put",
+      "args": {
+        "at": "Notes",
+        "body": "x",
+        "op": "append",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "put: both at (\"Notes\") and ref '#Notes' name a target — pass one, not both",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-at-no-op",
+      "tool": "put",
+      "args": {
+        "at": "Notes",
+        "properties": {
+          "status": "x"
+        },
+        "ref": "corpus/basic.md"
+      },
+      "text": "put: at names the single-op target — pass op, or use edits[] with per-edit targets",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-nothing",
+      "tool": "put",
+      "args": {
+        "ref": "corpus/basic.md"
+      },
+      "text": "put: nothing to write — pass op (with at or ref '#Fragment'), edits[], and/or properties",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-bad-op",
+      "tool": "put",
+      "args": {
+        "body": "x",
+        "op": "obliterate",
+        "ref": "corpus/basic.md#Notes"
+      },
+      "text": "validating \"arguments\": validating root: validating /properties/op: enum: obliterate does not equal any of: [replace append replace_section create_section]",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-edit-no-at",
+      "tool": "put",
+      "args": {
+        "edits": [
+          {
+            "body": "x",
+            "op": "append"
+          }
+        ],
+        "ref": "corpus/basic.md"
+      },
+      "text": "validating \"arguments\": validating root: validating /properties/edits: validating /properties/edits/items: required: missing properties: [\"at\"]",
+      "is_error": true,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\n# Memo\n\namended memo\nnote beside property\n"
+    },
+    {
+      "id": "p-batch",
+      "tool": "put",
+      "args": {
+        "edits": [
+          {
+            "at": "Todo",
+            "body": "- [ ] batch item",
+            "op": "append"
+          },
+          {
+            "at": "Memo",
+            "body": "batch memo line",
+            "op": "append"
+          },
+          {
+            "at": "Notes/Fresh",
+            "body": "fresh batch line",
+            "op": "append"
+          }
+        ],
+        "ref": "corpus/basic.md"
+      },
+      "text": "wrote $SESSION/corpus/basic.md  file_rev:1c72a3a1d5d925c4",
+      "is_error": false,
+      "file_after": "---\ntype: note\nstatus: 'review: pending verdict'\nowner: worker-d\npriority: 3\nphase: u0\n---\n\n# Todo\n\n- [ ] first item\n- [ ] second item ^task1\n\n- [ ] batch item\n# Notes\nreplaced notes body\n\n## Fresh\n\nfresh section body\nfresh batch line\n# Memo\n\namended memo\nnote beside property\nbatch memo line\n",
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "rev": "1c72a3a1d5d925c4"
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/basic.md"
+      },
+      "text": "$SESSION/corpus/basic.md  file_rev:1c72a3a1d5d925c4  words:41\n1      Todo  words:16  rev:aa4a02661b30607a\n2      Notes  words:11  rev:9948c5de93d49f6e\n2.1      Notes/Fresh  words:6  rev:74f6627fad0edb5e\n3      Memo  words:8  rev:9c121711fcf5cd06",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/basic.md",
+        "ref": "corpus/basic.md",
+        "rev": "1c72a3a1d5d925c4",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Todo",
+            "n": "1",
+            "sec_rev": "aa4a02661b30607a",
+            "title": "Todo",
+            "words": 16
+          },
+          {
+            "depth": 1,
+            "hpath": "Notes",
+            "n": "2",
+            "sec_rev": "9948c5de93d49f6e",
+            "title": "Notes",
+            "words": 11
+          },
+          {
+            "depth": 2,
+            "hpath": "Notes/Fresh",
+            "n": "2.1",
+            "sec_rev": "74f6627fad0edb5e",
+            "title": "Fresh",
+            "words": 6
+          },
+          {
+            "depth": 1,
+            "hpath": "Memo",
+            "n": "3",
+            "sec_rev": "9c121711fcf5cd06",
+            "title": "Memo",
+            "words": 8
+          }
+        ],
+        "words_total": 41
+      }
+    }
+  ]
+}

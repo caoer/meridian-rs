@@ -54,8 +54,19 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
 
 /// wire §4.3: the full node inventory via the `wire-map` projection, `kinds`
 /// filtered (values already validated against the closed enum at decode).
+///
+/// `enrich` (M1 U2, v3 sessions ONLY): attach the host-face addressing facts
+/// — dewey `n`, sanitized `hpath_text`, subtree `words` — to heading nodes,
+/// so `extract` serves every addressing fact ccc-statusd re-derived
+/// host-side. A v2 session never enriches: the new keys are v3-additive and
+/// the frozen v2 bytes stay byte-identical (`contract_v2.rs`).
 #[must_use]
-pub fn extract(doc: &model::Document, path: &Path, kinds: Option<Vec<String>>) -> ResponseBody {
+pub fn extract(
+    doc: &model::Document,
+    path: &Path,
+    kinds: Option<Vec<String>>,
+    enrich: bool,
+) -> ResponseBody {
     let mut nodes = wire_map::project(doc);
     if let Some(kinds) = kinds {
         let keep: Vec<wire::NodeKind> = kinds
@@ -64,10 +75,228 @@ pub fn extract(doc: &model::Document, path: &Path, kinds: Option<Vec<String>>) -
             .collect();
         nodes.retain(|n| keep.contains(&n.kind));
     }
+    if enrich {
+        let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
+        let by_span: BTreeMap<(u64, u64), &wire_map::facts::ReadFact> = facts
+            .iter()
+            .filter(|f| f.depth > 0)
+            .map(|f| ((f.span.0, f.span.1), f))
+            .collect();
+        for node in &mut nodes {
+            if node.kind == wire::NodeKind::Heading
+                && let Some(fact) = by_span.get(&(node.span.0, node.span.1))
+            {
+                node.n = Some(fact.n.clone());
+                node.hpath_text = Some(fact.hpath.clone());
+                node.words = Some(fact.words);
+            }
+        }
+    }
     ResponseBody::Nodes {
         path: path.clone(),
         nodes,
     }
+}
+
+/// The composed-read parameters (M1 U4a2), decoded from the v3-only `read`
+/// op — the host face's read-tool vocabulary, engine-side.
+#[derive(Debug, Clone, Default)]
+pub struct ReadParams {
+    pub mode: Option<String>,
+    pub frag: Option<String>,
+    pub sections: Option<Vec<String>>,
+    pub display_path: Option<String>,
+    /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
+    /// carried to THIS seam — the future stage-2 read-mint site (the one
+    /// place holding the document, each `sec_rev`, and the actor together)
+    /// — and deliberately UNREAD in M1 (reads mint no receipt yet).
+    /// Carrying it now is the point: stage-2 becomes additive, never an op
+    /// re-shape.
+    pub actor: Option<String>,
+}
+
+/// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
+/// render served from ONE borrowed document snapshot — `file_rev`, the
+/// ambient `root`, the toc/sections facts, and the `readText` projection in
+/// one exchange. Refusal messages are the Go host face's VERBATIM strings,
+/// so the thin proxy (U8a) forwards `error.message` without re-minting.
+///
+/// # Errors
+/// `bad_request` (fix): `frag` and `sections` both present; sections mode
+/// with no selectors; an unknown `mode` (decode already gates it — this is
+/// the belt). `ref_not_found` (fix): a toc `frag` naming no section; ALL
+/// sections-mode selectors missing. `internal` carrying the typed
+/// `render_failed` spelling (G1) when the walker refuses.
+pub fn composed_read(
+    doc: &model::Document,
+    path: &Path,
+    ambient: &Root,
+    params: &ReadParams,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
+    let file_rev = doc.root.node_rev.0.clone();
+    let words_total: u64 = facts.iter().map(|f| f.words).sum();
+    let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
+    let frag = params.frag.as_deref().unwrap_or("");
+    let has_sections = params.sections.as_ref().is_some_and(|s| !s.is_empty());
+    if !frag.is_empty() && has_sections {
+        return Err(bad_request(
+            "read: pass either a #fragment on ref or sections[], not both — \
+             the fragment scopes the whole call; sections[] selects document-absolute paths",
+        ));
+    }
+    let header = render::Header {
+        display_path: display,
+        file_rev: &file_rev,
+        words_total,
+    };
+
+    match params.mode.as_deref().unwrap_or("toc") {
+        "toc" => {
+            let rows = wire_map::facts::toc_rows(&facts, frag);
+            if !frag.is_empty() && rows.is_empty() {
+                let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+                e.message = Some(format!(
+                    "read: no section at \"{frag}\" in {display} — read with mode toc \
+                     (no fragment) to see the section map"
+                ));
+                return Err(Box::new(e));
+            }
+            let rendered_text = render::toc_text(&header, &rows);
+            Ok(ResponseBody::Read {
+                path: path.clone(),
+                file_rev: NodeRev(file_rev),
+                root: ambient.clone(),
+                words_total,
+                toc: Some(
+                    rows.iter()
+                        .map(|f| wire::ReadRow {
+                            n: f.n.clone(),
+                            depth: f.depth,
+                            title: f.title.clone(),
+                            hpath: f.hpath.clone(),
+                            words: f.words,
+                            sec_rev: NodeRev(f.sec_rev.clone()),
+                        })
+                        .collect(),
+                ),
+                sections: None,
+                truncated: None,
+                notice: None,
+                rendered_text,
+            })
+        }
+        "sections" => {
+            let sels: Vec<String> = if frag.is_empty() {
+                params.sections.clone().unwrap_or_default()
+            } else {
+                vec![frag.to_owned()]
+            };
+            let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
+            Ok(ResponseBody::Read {
+                path: path.clone(),
+                file_rev: NodeRev(file_rev),
+                root: ambient.clone(),
+                words_total,
+                toc: None,
+                sections: Some(rendered_sections),
+                truncated: body.notice.is_some().then_some(true),
+                notice: body.notice,
+                rendered_text: body.text,
+            })
+        }
+        other => Err(bad_request(format!("read: invalid mode \"{other}\""))),
+    }
+}
+
+/// The rendered sections-mode pieces the `Read` body carries.
+struct SectionsRender {
+    text: String,
+    notice: Option<String>,
+}
+
+/// The sections-mode leg of [`composed_read`]: selector resolution (FIRST
+/// match; PARTIAL-read notice), the walker-emitted content, and the rendered
+/// text — refusal messages in the Go host face's verbatim spelling.
+fn composed_sections(
+    doc: &model::Document,
+    facts: &[wire_map::facts::ReadFact],
+    sels: &[String],
+    header: render::Header<'_>,
+) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
+    if sels.is_empty() {
+        return Err(bad_request(
+            "read: mode sections needs selectors — pass sections[] \
+             (heading paths or ^block ids) or a '#Fragment' on ref",
+        ));
+    }
+    let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+    for sel in sels {
+        match wire_map::facts::resolve_selector(facts, sel) {
+            Some(fact) => rows.push(render::SectionRow { sel, fact }),
+            None => missing.push(sel),
+        }
+    }
+    if rows.is_empty() && !missing.is_empty() {
+        let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+        e.message = Some(format!(
+            "read: no section addressed by \"{}\" — read with mode toc \
+             to list the document's section paths",
+            missing[0]
+        ));
+        return Err(Box::new(e));
+    }
+    let notice = (!missing.is_empty()).then(|| {
+        format!(
+            "unresolved selectors (no rev minted): {}",
+            missing.join(", ")
+        )
+    });
+    let job = render::RenderJob::Sections {
+        header,
+        rows: &rows,
+        notice: notice.as_deref(),
+    };
+    // U4b: the render face's production configuration — engine (`meridian-*`)
+    // blocks are elided from RENDERED output (`rendered_text`) only.
+    let rendered =
+        render::Renderer::render(&render::TextRenderer::with_meridian_elision(), doc, &job)
+            .map_err(|e| {
+                let mut err = ErrorBody::new(ErrorCode::Internal);
+                err.message = Some(e.to_string());
+                Box::new(err)
+            })?;
+    // Op-owner ruling (2026-07-24, D concurring, pin #4): `sections[].content`
+    // is the RAW face — the verbatim bytes `sec_rev` was minted over — so each
+    // row is self-verifying and a put built from its content round-trips
+    // without silently dropping an elided block (the A-K1 data-loss class).
+    // Elision lives in `rendered_text` alone; the composed op carries content
+    // and render as DISTINCT legs (D6). `words` pairs with the raw content it
+    // describes (Go `renderSectionsSidecar` semantics, golden structured
+    // parity).
+    let sections: Vec<wire::ReadSectionOut> = rows
+        .iter()
+        .map(|row| {
+            let content = wire_map::facts::section_content(row.fact, doc.raw.as_bytes());
+            let content = String::from_utf8_lossy(&content).into_owned();
+            let words = wire_map::gotext::fields_count(&content) as u64;
+            wire::ReadSectionOut {
+                sel: row.sel.to_owned(),
+                hpath: row.fact.hpath.clone(),
+                sec_rev: NodeRev(row.fact.sec_rev.clone()),
+                words,
+                content,
+            }
+        })
+        .collect();
+    Ok((
+        SectionsRender {
+            text: rendered.text,
+            notice,
+        },
+        sections,
+    ))
 }
 
 /// wire §10.2 the opt-in strictness guard for `links`: refuse when the caller

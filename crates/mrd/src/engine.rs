@@ -221,13 +221,41 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     }
 }
 
+/// Map an engine refusal to the CLI exit triad (shared by `read`/`put`):
+/// `bad_request` is a bad invocation (exit 2); every other refusal is a
+/// finding (exit 1). When the engine minted a `message`, it is printed
+/// VERBATIM — the refusal strings are golden-pinned (U0), never reworded.
+/// A message-less refusal renders its code plus the §8 comparison tokens.
+pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
+    let text = if let Some(message) = &error.message {
+        message.clone()
+    } else {
+        let code = serde_json::to_value(error.code)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "error".to_owned());
+        match (&error.expected, &error.actual, &error.path) {
+            (Some(expected), Some(actual), _) => {
+                format!("{code}: expected {}, actual {}", expected.0, actual.0)
+            }
+            (_, _, Some(path)) => format!("{code}: {}", path.0),
+            _ => code,
+        }
+    };
+    if error.code == wire::ErrorCode::BadRequest {
+        Fail::tool(text)
+    } else {
+        Fail::findings(text)
+    }
+}
+
 /// One NDJSON round trip on an open connection: write the request line, read one
 /// response line, parse it.
 ///
 /// # Errors
 /// The write fails, the daemon closes without a response, or the response line
 /// is not valid JSON.
-fn call(
+pub(crate) fn call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
     request: &Value,

@@ -133,12 +133,21 @@ pub fn project_response(frame: &mut Value) {
             rename_key(body, v2, v3);
         }
         // hello body: rewrite the fingerprint caps + echo the negotiated rev.
-        // `server` is present on the hello body alone.
+        // `server` is present on the hello body alone. The v3-only composed
+        // `read` op (M1 U4a2) is advertised HERE — the frozen v2 caps lists
+        // never carry it, so a v2 session's hello stays byte-identical and a
+        // v2 `read` answers `unknown_op` (§3.2 discovery honesty).
         if body.contains_key("server") {
             if let Some(caps) = body.get_mut("caps").and_then(Value::as_array_mut) {
                 for cap in caps.iter_mut() {
                     rewrite_cap(cap);
                 }
+                caps.push(Value::String("read".to_string()));
+                caps.push(Value::String("check_write".to_string()));
+                // M1 U8b rider 2: ONE composite cap for the plan-level splice
+                // batch — v3-only, projection-advertised (the frozen v2 caps
+                // never carry it).
+                caps.push(Value::String("splice.plan_edits".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -161,6 +170,26 @@ pub fn project_response(frame: &mut Value) {
                 }
             }
         }
+    }
+}
+
+/// Insert the in-band timing block `meta: {duration_us}` beside `body`/`error`
+/// on an outgoing frame — the U7 enforcement channel for the ratified
+/// sub-second budget (per-op engine duration, integer µs).
+///
+/// v3-ONLY by call discipline: both hosts invoke this on their v3 branch
+/// alone, AFTER [`project_response`], so the frozen v2 path stays the direct
+/// typed serialization, byte-for-byte (`crates/wire/tests/contract_v2.rs`).
+/// For v3 consumers the new top-level key is a safe additive slot under the
+/// tolerant-client law (unknown response fields are ignored). The callers
+/// convert with `u64::try_from(elapsed.as_micros())` — checked, never a
+/// lossy `as`.
+pub fn attach_meta(frame: &mut Value, duration_us: u64) {
+    if let Some(obj) = frame.as_object_mut() {
+        obj.insert(
+            "meta".to_string(),
+            serde_json::json!({ "duration_us": duration_us }),
+        );
     }
 }
 
@@ -265,6 +294,8 @@ mod tests {
         project_response(&mut frame);
         assert_eq!(frame["body"]["fingerprint"], json!("b3:a"));
         assert_eq!(frame["body"]["contract"], json!("v3"));
+        // the v3-only composed `read` op is advertised by the projection —
+        // appended after the re-spelled v2 caps (never present on v2)
         assert_eq!(
             frame["body"]["caps"],
             json!([
@@ -272,9 +303,30 @@ mod tests {
                 "splice.if_fingerprint",
                 "fingerprint",
                 "links.require_fingerprint",
-                "diff"
+                "diff",
+                "read",
+                "check_write",
+                "splice.plan_edits"
             ])
         );
+    }
+
+    #[test]
+    fn attach_meta_rides_beside_body() {
+        let mut frame = json!({"id":1,"ok":true,"body":{"fingerprint":"b3:x","seq":0}});
+        attach_meta(&mut frame, 412);
+        assert_eq!(frame["meta"], json!({"duration_us": 412}));
+        // the body is untouched — meta is a sibling, never a body field
+        assert_eq!(frame["body"], json!({"fingerprint":"b3:x","seq":0}));
+    }
+
+    #[test]
+    fn attach_meta_rides_beside_error() {
+        let mut frame = json!({"id":2,"ok":false,"error":{
+            "code":"fingerprint_mismatch","recovery":"resync"}});
+        attach_meta(&mut frame, u64::MAX);
+        assert_eq!(frame["meta"]["duration_us"], json!(u64::MAX));
+        assert_eq!(frame["error"]["code"], json!("fingerprint_mismatch"));
     }
 
     #[test]

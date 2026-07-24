@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cache::DrawerLock;
 use serde::Serialize;
@@ -442,8 +442,10 @@ fn handle_line(
             }
         }
         // `hello` negotiates the rev; its OWN response is then shaped for it (the
-        // caps + binding follow the negotiated vocabulary immediately).
-        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev),
+        // caps + binding follow the negotiated vocabulary immediately). The
+        // handshake is intercepted BEFORE the dispatch shell, so it carries no
+        // U7 duration (the daemon measure point is `dispatch_read` alone).
+        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev, None),
         _ => {
             // v3 connection: re-key the request into its v2 form so the strict
             // decoder + arms stay v2-only. A v2 spelling passes through untouched
@@ -451,7 +453,8 @@ fn handle_line(
             if *rev == Rev::V3 {
                 wire_serve::rev::rename_request(&mut obj);
             }
-            wire_line(&serve_wire(registry, attached.as_deref(), &obj), *rev)
+            let (response, duration_us) = serve_wire(registry, attached.as_deref(), &obj, *rev);
+            wire_line(&response, *rev, duration_us)
         }
     }
 }
@@ -459,11 +462,16 @@ fn handle_line(
 /// Render one wire response line (`\n`-terminated), shaped per the negotiated
 /// rev. v2 serializes the typed `wire::Response` directly — the frozen path,
 /// byte-identical. v3 projects the serialized frame `root` → `fingerprint` at the
-/// envelope layer (the typed layer never changes).
-fn wire_line(response: &wire::Response, rev: Rev) -> String {
+/// envelope layer (the typed layer never changes), then attaches the in-band
+/// timing block `meta: {duration_us}` when this frame answered a dispatched op
+/// (U7: the daemon measure point is the `dispatch_read` call — engine work only).
+fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
     let mut out = if rev == Rev::V3 {
         let mut v = serde_json::to_value(response).expect("wire response serializes");
         wire_serve::rev::project_response(&mut v);
+        if let Some(us) = duration_us {
+            wire_serve::rev::attach_meta(&mut v, us);
+        }
         serde_json::to_string(&v).expect("wire response serializes")
     } else {
         serde_json::to_string(response).expect("wire response serializes")
@@ -560,7 +568,7 @@ fn hello(
     obj: &Map<String, Value>,
 ) -> wire::Response {
     let id = obj.get("id").and_then(Value::as_u64);
-    let body = match wire_serve::decode::decode(obj) {
+    let body = match wire_serve::decode::decode(obj, *rev) {
         Ok(Op::Hello {
             contract,
             workspace,
@@ -639,15 +647,29 @@ fn hello_body(
 
 /// Strict-decode one wire read op and serve it from the attached workspace's
 /// resident engine, rendering the frozen `wire::Response` frame (echoing `id`).
+///
+/// Returns the response plus the U7 in-band duration: `Some(µs)` exactly when
+/// the frame reached `dispatch_read` (the daemon measure point — engine work
+/// only, success or refusal alike; a decode refusal carries none).
 fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
     obj: &Map<String, Value>,
-) -> wire::Response {
+    rev: Rev,
+) -> (wire::Response, Option<u64>) {
     let id = obj.get("id").and_then(Value::as_u64);
-    let body =
-        wire_serve::decode::decode(obj).and_then(|op| dispatch_read(registry, attached, id, op));
-    match body {
+    let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
+        Ok(op) => {
+            // U7 measure point: the dispatch call alone (after decode, before
+            // the response render) — checked µs, never a lossy `as`.
+            let started = Instant::now();
+            let body = dispatch_read(registry, attached, id, op, rev == Rev::V3);
+            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            (body, Some(duration_us))
+        }
+        Err(error) => (Err(error), None),
+    };
+    let response = match body {
         Ok(body) => wire::Response {
             id,
             ok: true,
@@ -658,7 +680,8 @@ fn serve_wire(
             ok: false,
             payload: ResponsePayload::Error { error: *error },
         },
-    }
+    };
+    (response, duration_us)
 }
 
 /// Route one decoded wire op to its arm against the attached workspace. Reads
@@ -670,11 +693,16 @@ fn serve_wire(
 /// rebuilds). `hello` is intercepted upstream (the handshake binds the
 /// connection); `sub` (P2) is not served yet and answers `unknown_op` (§3.2
 /// discovery honesty). `id` rides only into the splice receipt line (§6.1).
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
+)]
 fn dispatch_read(
     registry: &Registry,
     attached: Option<&Path>,
     id: Option<u64>,
     op: Op,
+    v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     // V2 §Q2: `view_path` carries its own `cwd`, so it self-resolves the
     // workspace + drawer and needs NO `hello`-bound workspace — it is routed
@@ -709,8 +737,30 @@ fn dispatch_read(
                 .docs
                 .get(&path.0)
                 .ok_or_else(|| file_not_found(&path))?;
-            Ok(wire_serve::read::extract(doc, &path, kinds))
+            Ok(wire_serve::read::extract(doc, &path, kinds, v3))
         }),
+        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
+        // caps; §3.2 discovery honesty), served from the warm engine at ONE
+        // snapshot (D6 atomicity: file_rev + root from the same borrow).
+        Op::Read {
+            path,
+            mode,
+            frag,
+            sections,
+            display_path,
+            actor,
+        } if v3 => composed_read_warm(
+            registry,
+            ws,
+            &path,
+            &wire_serve::read::ReadParams {
+                mode,
+                frag,
+                sections,
+                display_path,
+                actor,
+            },
+        ),
         Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
             let as_of = engine_root(engine);
             wire_serve::read::require_root_check(require_root.as_ref(), &as_of)?;
@@ -767,6 +817,7 @@ fn dispatch_read(
             dry,
             force,
             edits,
+            plan_edits,
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
@@ -779,13 +830,36 @@ fn dispatch_read(
                 dry: dry.unwrap_or(false),
                 force: force.unwrap_or(false),
                 edits,
+                plan_edits,
             };
             wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
         }
+        // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
+        // warm engine's doc (read-only: never a write path).
+        Op::CheckWrite {
+            path,
+            target,
+            actor,
+            now,
+            edits,
+        } if v3 => warm_engine_read(registry, ws, |engine| {
+            let doc = engine
+                .docs
+                .get(&path.0)
+                .ok_or_else(|| file_not_found(&path))?;
+            Ok(wire_serve::check_write::check_write(
+                doc, &target, &actor, &now, &edits,
+            ))
+        }),
         // `hello` is intercepted upstream in `handle_line` (the handshake binds
         // the connection), so it never reaches here. `sub` = P2 is not served yet
         // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
-        Op::Hello { .. } | Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+        // `read`/`check_write` land here only on a NON-v3 connection (the
+        // guarded arms above take v3): absent from the frozen v2 caps →
+        // `unknown_op`.
+        Op::Hello { .. } | Op::Sub { .. } | Op::Read { .. } | Op::CheckWrite { .. } => {
+            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        }
     }
 }
 
@@ -793,6 +867,23 @@ fn dispatch_read(
 /// (the reuse key), re-homed into the wire `Root` token.
 fn engine_root(engine: &WorkspaceEngine) -> Root {
     Root(engine.at_fingerprint.0.clone())
+}
+
+/// The composed read (M1 U4a2) over the warm engine: one borrow supplies the
+/// doc, its `file_rev`, and the ambient root — the D6 one-snapshot guarantee.
+fn composed_read_warm(
+    registry: &Registry,
+    ws: &Path,
+    path: &wire::Path,
+    params: &wire_serve::read::ReadParams,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    warm_engine_read(registry, ws, |engine| {
+        let doc = engine
+            .docs
+            .get(&path.0)
+            .ok_or_else(|| file_not_found(path))?;
+        wire_serve::read::composed_read(doc, path, &engine_root(engine), params)
+    })
 }
 
 /// Warm the resident engine for `canonical` (idempotent — reflects current disk,

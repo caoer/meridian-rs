@@ -1,5 +1,6 @@
-//! Thin NDJSON serve loop + the typed edge — the only place wire and model meet
-//! (with the named `wire-map` seam, law 3 as amended by review C1).
+//! Thin NDJSON serve loop — ONE of the two HOSTS of the shared typed edge
+//! (`wire-serve`; the resident `registry` daemon is the other), wiring only
+//! (law 3 as re-attested 2026-07-24, `docs/laws.md`).
 //!
 //! # Charter
 //! **Owns:** the typed edge: untyped `transport` frames validated into `wire`
@@ -127,8 +128,9 @@ pub fn serve(
             eprintln!("watch reconcile: {e:?}");
         }
         flush_subs(&mut output, &epoch, &mut subs, rev)?;
-        let response = respond_line(root, &mut epoch, &mut subs, rulesets, &mut rev, &line);
-        write_response(&mut output, &response, rev)?;
+        let (response, duration_us) =
+            respond_line(root, &mut epoch, &mut subs, rulesets, &mut rev, &line);
+        write_response(&mut output, &response, rev, duration_us)?;
         // Post-dispatch reconcile: internal commits sync the baseline
         // silently; an external landing mid-dispatch is emitted here.
         if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
@@ -180,11 +182,21 @@ fn flush_subs(
 /// Write one response frame, shaped per the negotiated rev. v2 serializes the
 /// typed `wire::Response` directly — the frozen path, byte-identical. v3
 /// projects the serialized frame `root` → `fingerprint` at the envelope layer
-/// (the typed layer never changes).
-fn write_response(output: &mut impl Write, response: &Response, rev: rev::Rev) -> io::Result<()> {
+/// (the typed layer never changes), then attaches the in-band timing block
+/// `meta: {duration_us}` when this frame answered a dispatched op (U7: the
+/// sidecar measure point is the `arms::dispatch` call — engine work only).
+fn write_response(
+    output: &mut impl Write,
+    response: &Response,
+    rev: rev::Rev,
+    duration_us: Option<u64>,
+) -> io::Result<()> {
     if rev == rev::Rev::V3 {
         let mut v = serde_json::to_value(response)?;
         rev::project_response(&mut v);
+        if let Some(us) = duration_us {
+            rev::attach_meta(&mut v, us);
+        }
         serde_json::to_writer(&mut *output, &v)?;
     } else {
         serde_json::to_writer(&mut *output, response)?;
@@ -230,6 +242,11 @@ fn subscribe(
 /// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
 /// corrupt frame classification.
+///
+/// Returns the response plus the U7 in-band duration: `Some(µs)` exactly when
+/// the frame reached `arms::dispatch` (the sidecar measure point — engine work
+/// only, success or refusal alike). Frame-layer verdicts and the serve-layer
+/// `sub` never carry one.
 fn respond_line(
     root: &fs::WorkspaceRoot,
     epoch: &mut ring::RootRing,
@@ -237,15 +254,15 @@ fn respond_line(
     rulesets: &[policy::CompiledRuleset],
     rev: &mut rev::Rev,
     line: &str,
-) -> Response {
+) -> (Response, Option<u64>) {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
-        Err(_) => return error_frame(None, ErrorBody::new(ErrorCode::BadFrame)),
+        Err(_) => return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None),
         // §3.1 emission: id:null + the offending lexeme verbatim in id_raw
         Ok(IdScan::BadId(lexeme)) => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
             e.id_raw = Some(lexeme);
-            return error_frame(None, e);
+            return (error_frame(None, e), None);
         }
         Ok(IdScan::Request(n)) => Some(n),
         // id key absent: a legal id-less request if `op` rides the frame
@@ -254,12 +271,12 @@ fn respond_line(
     };
     // scan_id proved the line is a JSON object.
     let Ok(mut obj) = serde_json::from_str::<Map<String, Value>>(line) else {
-        return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
+        return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None);
     };
     if !obj.contains_key("op") {
         // Inbound frames that aren't requests (responses, notifications) are
         // protocol misuse → bad_frame; un-correlatable by design.
-        return error_frame(None, ErrorBody::new(ErrorCode::BadFrame));
+        return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None);
     }
     // v3 session: re-key the request into its v2 form so the strict decoder
     // and every arm stay v2-only. `hello` itself always arrives in the base
@@ -268,16 +285,19 @@ fn respond_line(
     if *rev == rev::Rev::V3 {
         rev::rename_request(&mut obj);
     }
-    match wire_serve::decode::decode(&obj) {
+    match wire_serve::decode::decode(&obj, *rev) {
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
         Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
-            Ok(body) => Response {
-                id,
-                ok: true,
-                payload: ResponsePayload::Body { body },
-            },
-            Err(e) => error_frame(id, *e),
+            Ok(body) => (
+                Response {
+                    id,
+                    ok: true,
+                    payload: ResponsePayload::Body { body },
+                },
+                None,
+            ),
+            Err(e) => (error_frame(id, *e), None),
         },
         Ok(op) => {
             // Negotiate the session rev from the hello declaration, so THIS
@@ -285,16 +305,23 @@ fn respond_line(
             if let wire::Op::Hello { contract, .. } = &op {
                 *rev = rev::Rev::from_contract(contract.as_deref());
             }
-            match arms::dispatch(root, epoch, id, op, rulesets) {
+            // U7 measure point: the dispatch call alone (after decode, before
+            // the response write) — checked µs, never a lossy `as`.
+            let started = std::time::Instant::now();
+            let outcome = arms::dispatch(root, epoch, id, op, rulesets, *rev == rev::Rev::V3);
+            let duration_us =
+                Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+            let response = match outcome {
                 Ok(body) => Response {
                     id,
                     ok: true,
                     payload: ResponsePayload::Body { body },
                 },
                 Err(e) => error_frame(id, *e),
-            }
+            };
+            (response, duration_us)
         }
-        Err(e) => error_frame(id, *e),
+        Err(e) => (error_frame(id, *e), None),
     }
 }
 

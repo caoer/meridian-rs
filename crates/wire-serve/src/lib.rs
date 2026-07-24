@@ -33,8 +33,10 @@
 //! two responses from its own `seq`/history. This crate holds only the corpus
 //! reads whose logic is identical across hosts.
 
+pub mod check_write;
 pub mod decode;
 pub mod gate;
+pub mod plan;
 pub mod read;
 pub mod rev;
 pub mod write;
@@ -150,16 +152,22 @@ mod tests {
 
     #[test]
     fn decode_accepts_a_read_op() {
-        let op =
-            super::decode::decode(&obj(json!({"op": "toc", "path": "a.md"}))).expect("toc decodes");
+        let op = super::decode::decode(
+            &obj(json!({"op": "toc", "path": "a.md"})),
+            super::rev::Rev::V2,
+        )
+        .expect("toc decodes");
         assert!(matches!(op, Op::Toc { path } if path.0 == "a.md"));
     }
 
     #[test]
     fn decode_rejects_an_unknown_field_by_name() {
         // serde would silently drop `bogus`; the strict pass refuses it loud.
-        let e = super::decode::decode(&obj(json!({"op": "toc", "path": "a.md", "bogus": 1})))
-            .expect_err("unknown field is refused");
+        let e = super::decode::decode(
+            &obj(json!({"op": "toc", "path": "a.md", "bogus": 1})),
+            super::rev::Rev::V2,
+        )
+        .expect_err("unknown field is refused");
         assert_eq!(e.code, ErrorCode::BadRequest);
         assert!(
             e.message.as_deref().is_some_and(|m| m.contains("bogus")),
@@ -170,7 +178,107 @@ mod tests {
 
     #[test]
     fn decode_answers_unknown_op_for_an_unarmed_name() {
-        let e = super::decode::decode(&obj(json!({"op": "nope"}))).expect_err("unknown op refused");
+        let e = super::decode::decode(&obj(json!({"op": "nope"})), super::rev::Rev::V2)
+            .expect_err("unknown op refused");
         assert_eq!(e.code, ErrorCode::UnknownOp);
+    }
+
+    // ------------------------------------------------------------------
+    // M1 U8b rider-1 fixtures: the rev-threaded splice field wall.
+    // ------------------------------------------------------------------
+
+    fn plan_splice() -> Value {
+        json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]})
+    }
+
+    /// The FROZEN v2 negative (rider 1): `plan_edits` under a v2 session hits
+    /// the existing unknown-field wall, byte-for-byte.
+    #[test]
+    fn v2_splice_plan_edits_refuses_on_the_frozen_wall() {
+        let e = super::decode::decode(&obj(plan_splice()), super::rev::Rev::V2)
+            .expect_err("v2 plan_edits refused");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `plan_edits` on `splice`"),
+            "the frozen check_fields refusal, verbatim"
+        );
+    }
+
+    /// v3 decodes all five plan shapes into the typed union.
+    #[test]
+    fn v3_splice_plan_edits_decodes_all_shapes() {
+        let frame = json!({"op": "splice", "path": "a.md", "plan_edits": [
+            {"append": {"hpath": "A", "body": "x"}},
+            {"match": {"hpath": "A", "old": "a", "new": "b", "all": true, "rev": "r"}},
+            {"replace_section": {"hpath": "A", "body": "x", "rev": "r"}},
+            {"create": {"parent_hpath": "A", "title": "B", "body": "x"}},
+            {"set_property": {"key": "k", "value": "v"}},
+        ]});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
+        let Op::Splice {
+            edits, plan_edits, ..
+        } = op
+        else {
+            panic!("splice op");
+        };
+        assert!(edits.is_empty(), "plan form carries no native edits");
+        assert_eq!(plan_edits.len(), 5);
+        assert!(matches!(&plan_edits[1],
+            wire::PlanEdit::Match { all: true, rev: Some(r), .. } if r == "r"));
+    }
+
+    /// Mutual exclusion + the explicit empty-array law (C note 6) + the
+    /// strict per-shape wall.
+    #[test]
+    fn v3_plan_edits_strict_negatives() {
+        // both edits and plan_edits → bad_request
+        let both = json!({"op": "splice", "path": "a.md",
+            "edits": [{"target": {"hpath": ["A"]}, "edit": {"put": {"at": "end", "text": "x"}}}],
+            "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]});
+        let e = super::decode::decode(&obj(both), super::rev::Rev::V3).expect_err("both refused");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("`edits` and `plan_edits` are mutually exclusive on `splice`")
+        );
+
+        // present-but-empty plan_edits → the explicit empty-batch refusal
+        let empty = json!({"op": "splice", "path": "a.md", "plan_edits": []});
+        let e = super::decode::decode(&obj(empty), super::rev::Rev::V3).expect_err("empty refused");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("`plan_edits` must carry at least one edit")
+        );
+
+        // neither edits nor plan_edits → the frozen v2 missing-edits refusal
+        let neither = json!({"op": "splice", "path": "a.md"});
+        let e =
+            super::decode::decode(&obj(neither), super::rev::Rev::V3).expect_err("neither refused");
+        assert_eq!(e.message.as_deref(), Some("missing `edits` on `splice`"));
+
+        // unknown field inside a shape → named refusal
+        let bad_field = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": "A", "body": "x", "bogus": 1}}]});
+        let e = super::decode::decode(&obj(bad_field), super::rev::Rev::V3)
+            .expect_err("shape field wall");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown field `bogus` in `append`")
+        );
+
+        // two tags on one item → exactly-one refusal
+        let two_tags = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": "A", "body": "x"},
+                            "match": {"hpath": "A", "old": "a", "new": "b"}}]});
+        let e = super::decode::decode(&obj(two_tags), super::rev::Rev::V3)
+            .expect_err("two tags refused");
+        assert!(
+            e.message
+                .as_deref()
+                .is_some_and(|m| m.contains("exactly one")),
+            "{:?}",
+            e.message
+        );
     }
 }

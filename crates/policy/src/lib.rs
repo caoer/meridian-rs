@@ -39,6 +39,10 @@ mod binding;
 mod change;
 mod check_eval;
 mod convention;
+/// I4 def-conformance (U8c): the engine-side port of meridian-go's write-time
+/// def validator — the pure verdict over (prev, candidate) documents the put
+/// path consults before any splice. Byte-exact against the U0 defs goldens.
+pub mod defs;
 mod gate;
 mod index;
 mod pack;

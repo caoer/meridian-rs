@@ -22,7 +22,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-mod attest_cmd;
 mod cache_cmd;
 mod check_cmd;
 mod corpus_tier;
@@ -33,8 +32,9 @@ mod gc;
 mod history_cmd;
 mod init;
 mod new_cmd;
-mod pin_cmd;
 mod preset_cmd;
+mod put_cmd;
+mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
@@ -67,6 +67,29 @@ usage:
   mrd resolve [PATH]       report how a path resolves (read-only, writes nothing)
   mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                            answered by the daemon (auto-spawned) or in-process
+  mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
+                           the composed read: addressing + content + render at
+                           ONE engine snapshot, answered by the daemon (auto
+                           -spawned) or in-process. Default mode toc = the
+                           section map (dewey ordinal, depth, title, hpath,
+                           words, sec_rev) + the rendered text; --section
+                           (repeatable: a heading path, dewey ordinal, or
+                           ^anchor) selects sections and implies mode sections.
+                           Human output is the rendered text verbatim. Exits:
+                           0 served / 1 the engine refused (its message,
+                           verbatim) / 2 bad invocation
+  mrd put <PATH> [--dry] [--force] [--actor A] [--now T]
+          [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+                           the batch write: edits JSON on STDIN (the wire §4.4
+                           grammar, [{target, edit, if_node_rev?}]), routed
+                           through the production splice choke-point (CAS +
+                           armed gate + write flock — never bypassed). --dry:
+                           everything except disk. --force: escape an armed
+                           binding-break/block refusal (the skip is journaled
+                           and rendered, never silent). --if-fingerprint: the
+                           world-grain guard. Exits: 0 committed (or dry) /
+                           1 refused (the engine's message, verbatim) / 2 bad
+                           invocation
   mrd walk <PAGE> [--down] [--depth N]
                            the context-assembly listing over the ^inputs pin
                            graph: up (default) = what PAGE draws from, --down =
@@ -121,19 +144,6 @@ usage:
                            TASK omitted: one declared task runs, several list
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
-  mrd pin <PAGE> [--dry]   read PAGE's inputs: manifest, resolve + compose every
-                           ref atomically, evaluate declared check: predicates,
-                           and splice the ^inputs lock in ONE CAS write (one
-                           receipt). Idempotent. Exits: 0 pinned / 1 refused
-                           (or dry would-refuse) / 2 bad invocation
-  mrd attest <PAGE> [--dry] [--board DIR]
-                           attest = realised-gate + pin + receipt. Refuse iff (a)
-                           resolution fails, (b) the realised-gate is unmet (a
-                           pending-agent / non-convergent claim on the board,
-                           default board/), or (c) a declared check: is false.
-                           Drifted pins re-pin; grey greens; a refused attest
-                           writes nothing. Exits: 0 attested / 1 refused (or dry
-                           would-refuse) / 2 bad invocation
   mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
                            file birth (U5.3): resolve the def (presets/<KIND>.md
                            or a page path), fill its ^template, validate the
@@ -174,8 +184,6 @@ options:
   --dry                    (run) starlark: evaluate hermetically and print the
                            full effect set, apply nothing; bash: show the block
                            + resolved caps, refuse to exec
-  --board DIR              (attest) the realise board dir the realised-gate reads
-                           (default board/)
   --list                   (run) list the page's tasks with contracts and caps
   --history                (test) the history tier over WORKSPACE (a git repo)
   --convention SLUG        (test --history) the conventions/SLUG folder to run
@@ -258,6 +266,8 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
             engine::run_command(p.positional.as_deref(), p.format())
         }
+        "read" => read_cmd::dispatch(&args[1..]),
+        "put" => put_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
@@ -266,8 +276,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "view" => dispatch_view(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
-        "pin" => pin_cmd::run(&args[1..]),
-        "attest" => attest_cmd::run(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),

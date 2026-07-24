@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -170,6 +171,96 @@ pub fn build_corpus(
 /// file name.
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// The typed write-conflict marker (M1 TOCTOU-gap fix, D8): the splice
+/// target's live disk bytes no longer equal the validated pre-image — an
+/// out-of-band writer landed between validate and commit. Carried inside an
+/// [`io::Error`] (via [`write_conflict`]); callers split it from ordinary I/O
+/// failure with [`is_write_conflict`] and map it to their typed refusal.
+#[derive(Debug)]
+pub struct WriteConflict {
+    /// The workspace-relative (or staged destination) path that drifted.
+    pub path: PathBuf,
+}
+
+impl std::fmt::Display for WriteConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "write conflict: {} changed on disk between validate and commit — \
+             refusing to splice validated spans into drifted bytes; re-read and retry",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for WriteConflict {}
+
+/// Mint the write-conflict [`io::Error`] for `path` — the ONE constructor, so
+/// the [`is_write_conflict`] split cannot drift from the mint.
+#[must_use]
+pub fn write_conflict(path: &Path) -> io::Error {
+    io::Error::other(WriteConflict {
+        path: path.to_path_buf(),
+    })
+}
+
+/// The cross-process WRITE lock (M1 D9, xproc-race fix): an exclusive advisory
+/// `flock(2)` on `.meridian/write.lock`, held by the wire write choke-point
+/// across its whole critical section (pre-batch read → validate → verify →
+/// renames), so two cooperating meridian writers — sidecar process, resident
+/// registry daemon, `mrd` — can never interleave read→rename (the lost-update
+/// window the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock
+/// is [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
+/// `workspace_busy` refusal — it never waits, so a hung holder can never make
+/// callers hang. Released on drop (fd close).
+///
+/// STATED residuals: out-of-band writers (editors, git, bash) do not take this
+/// lock — they are covered by DETECTION (the D8 pre-rename verify →
+/// `write_conflict`), not prevention (G3). The run plane serializes on its own
+/// `.meridian/run.lock`; run applies and wire splices do not serialize against
+/// each other until the two planes unify on one lock file (G4, named).
+///
+/// `flock` locks belong to the open file description, so two independent
+/// acquires contend even within one process — in-process concurrent writers
+/// refuse `workspace_busy` exactly like cross-process ones.
+#[derive(Debug)]
+pub struct WriteLock {
+    // Held open for its fd; flock releases when the fd closes on drop.
+    _file: File,
+}
+
+impl WriteLock {
+    /// Try to acquire the exclusive write lock, creating `.meridian/` and the
+    /// lockfile on first use. Never blocks: a held lock returns
+    /// [`io::ErrorKind::WouldBlock`] immediately.
+    ///
+    /// # Errors
+    /// [`io::ErrorKind::WouldBlock`] when another writer holds the lock; any
+    /// other I/O failure creating or locking the lockfile (the caller maps it
+    /// to a typed engine error — G2: never unwrap).
+    pub fn acquire(root: &WorkspaceRoot) -> io::Result<Self> {
+        let dir = root.0.join(".meridian");
+        fs::create_dir_all(&dir)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join("write.lock"))?;
+        // SAFETY: flock on a valid open fd; the fd outlives the call.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { _file: file })
+    }
+}
+
+/// Is this I/O error the typed write-conflict refusal ([`write_conflict`])?
+#[must_use]
+pub fn is_write_conflict(e: &io::Error) -> bool {
+    e.get_ref()
+        .is_some_and(|inner| inner.downcast_ref::<WriteConflict>().is_some())
+}
+
 /// Execute a validated batch as a two-file atomic commit (contract §6.5, §6.1).
 ///
 /// The batch is the sealed [`model::ValidatedBatch`] — the ONLY entry to disk.
@@ -181,6 +272,19 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// are threaded separately because the seal is deliberately path-less (M4) —
 /// this is the seam D4 consumes when it folds the receipt address onto the
 /// batch.
+///
+/// # The validated pre-image — the TOCTOU-gap fix (M1 D8)
+/// `expected_content` is the content file's EXACT bytes the caller validated
+/// the batch against (the bytes whose offsets `batch.edits` spans index). The
+/// splice SOURCE is these bytes — this function never re-reads the file to
+/// splice into, so validated spans can never land in drifted bytes. Before the
+/// renames commit anything, the live destination is compared against this
+/// pre-image (and the receipt file against its stage-time read): a mismatch —
+/// an out-of-band writer landed between validate and commit — refuses with the
+/// typed [`write_conflict`] error and no file is touched. The residual window
+/// (verify → rename) is stated: cooperating engine writers are serialized by
+/// the write flock; out-of-band writers in that gap are a detectable-at-next-
+/// read lost update, never a torn or corrupted file.
 ///
 /// # Commit discipline — the atomic-write law (§6.5 + §14)
 /// Every byte reaches disk via **tmp + fsync + rename**; no in-place write path
@@ -202,18 +306,22 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 /// `receipt_path` MUST differ from `content_path` — a same-file receipt would
 /// let the second rename clobber the first, and the frozen text models two
 /// distinct files (§6.5 "two files", §6.1 "both files"). Both violations return
-/// [`io::ErrorKind::InvalidInput`] before any byte is written.
+/// [`io::ErrorKind::InvalidInput`] before any byte is written. The receipt
+/// append must be an empty span (an EOF append) — a replacing receipt span is
+/// the same `InvalidInput` refusal.
 ///
 /// # Errors
-/// The seam-contract violations above (`InvalidInput`), or any I/O failure at a
-/// tmp-write, fsync, or rename step.
+/// The seam-contract violations above (`InvalidInput`), the typed
+/// [`write_conflict`] refusal (live bytes ≠ validated pre-image — nothing
+/// landed), or any I/O failure at a tmp-write, fsync, or rename step.
 pub fn apply_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
     receipt_path: Option<&Path>,
     batch: &model::ValidatedBatch,
+    expected_content: &[u8],
 ) -> io::Result<()> {
-    stage_batch(root, content_path, receipt_path, batch)?.commit()
+    stage_batch(root, content_path, receipt_path, batch, expected_content)?.commit()
 }
 
 /// Birth one file: write `body` to `rel_path` atomically (tmp+fsync+rename, the
@@ -300,10 +408,20 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
 
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the two
 /// renames. Separating staging from the renames is what lets the crash-honesty
-/// test drive a kill BETWEEN the renames deterministically (§6.5).
+/// test drive a kill BETWEEN the renames deterministically (§6.5). Each staged
+/// file carries the pre-image its new bytes were derived from — the D8
+/// pre-rename verify compares the live destination against it.
 struct StagedCommit {
     content: StagedFile,
+    /// The content file's validated pre-image (read#2's bytes — what the
+    /// sealed spans index). The live destination must still equal this at
+    /// commit, or the commit refuses [`write_conflict`].
+    content_expected: Vec<u8>,
     receipt: Option<StagedFile>,
+    /// The receipt file's stage-time bytes (absent file ⇒ empty). Verified the
+    /// same way; absence at commit still equals an empty pre-image (the first
+    /// append creates the file).
+    receipt_expected: Option<Vec<u8>>,
 }
 
 /// One file staged for atomic replace: the temp path holding the new bytes
@@ -313,16 +431,20 @@ struct StagedFile {
     dst: PathBuf,
 }
 
-/// Stage both files: read each pre-batch file, apply its validated span
-/// replacements, and write the result to a fsync'd temp beside the destination.
-/// No destination is touched here — staging is entirely off to the side, so a
-/// failure (or a crash) before [`StagedCommit::commit`] leaves every real file
-/// intact (the property gate 2 checks).
+/// Stage both files: apply each file's validated span replacements to its
+/// PRE-IMAGE bytes (the content pre-image is the caller's `expected_content` —
+/// read#2's validated bytes, never a fresh disk read; the receipt pre-image is
+/// read here, reconciled against the append's EOF span) and write the result to
+/// a fsync'd temp beside the destination. No destination is touched here —
+/// staging is entirely off to the side, so a failure (or a crash) before
+/// [`StagedCommit::commit`] leaves every real file intact (the property gate 2
+/// checks).
 fn stage_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
     receipt_path: Option<&Path>,
     batch: &model::ValidatedBatch,
+    expected_content: &[u8],
 ) -> io::Result<StagedCommit> {
     // Seam contract, enforced BEFORE any disk write (fail-loud for D4).
     match (receipt_path, batch.receipt.as_ref()) {
@@ -341,42 +463,72 @@ fn stage_batch(
         _ => {}
     }
 
-    // Content file: read pre-batch bytes, apply the validated span edits verbatim.
+    // Content file: apply the validated span edits verbatim to the VALIDATED
+    // pre-image (D8) — the spans index exactly these bytes by construction, so
+    // the splice can never land in drifted bytes. The live destination is
+    // verified against this pre-image at commit, before any rename.
     let content_dst = root.0.join(content_path);
-    let content_old = fs::read(&content_dst)?;
     let content_new = apply_spans(
-        &content_old,
+        expected_content,
         batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
     );
     let content = stage_file(&content_dst, &content_new)?;
 
     // Receipt file (when named): read pre-batch bytes (absent ⇒ empty, a create),
-    // apply the single pre-rendered append verbatim, stage it. On any failure the
-    // already-staged content temp is cleaned up so a failed apply leaves no litter.
-    let receipt = match (receipt_path, batch.receipt.as_ref()) {
+    // reconcile the append against them, stage. On any failure the already-staged
+    // content temp is cleaned up so a failed apply leaves no litter.
+    let (receipt, receipt_expected) = match (receipt_path, batch.receipt.as_ref()) {
         (Some(rp), Some(append)) => {
             let receipt_dst = root.0.join(rp);
             match stage_receipt(&receipt_dst, append) {
-                Ok(staged) => Some(staged),
+                Ok((staged, old)) => (Some(staged), Some(old)),
                 Err(e) => {
                     let _ = fs::remove_file(&content.tmp);
                     return Err(e);
                 }
             }
         }
-        _ => None,
+        _ => (None, None),
     };
 
-    Ok(StagedCommit { content, receipt })
+    Ok(StagedCommit {
+        content,
+        content_expected: expected_content.to_vec(),
+        receipt,
+        receipt_expected,
+    })
 }
 
-/// Stage the receipt file: read its pre-batch bytes (missing ⇒ empty) and apply
-/// the single append span. Factored out so content-temp cleanup on error has one
-/// site.
-fn stage_receipt(receipt_dst: &Path, append: &model::ReceiptAppend) -> io::Result<StagedFile> {
+/// Stage the receipt file: read its pre-batch bytes (missing ⇒ empty),
+/// reconcile the append span against them, and stage the appended bytes.
+/// Returns the staged handle plus the pre-image read (the commit's verify
+/// baseline). Factored out so content-temp cleanup on error has one site.
+///
+/// # The append reconcile (D8, receipt half)
+/// The append span was computed as `len..len` when the receipt line was
+/// rendered — against the receipt file as it stood THEN. A non-empty span is
+/// seam misuse (`InvalidInput`); an empty span whose offset no longer equals
+/// the live length means the receipt file moved between render and commit (an
+/// out-of-band append or truncation) — the typed [`write_conflict`] refusal,
+/// never a blind splice that would misplace the row (or panic on a shrunk
+/// file).
+fn stage_receipt(
+    receipt_dst: &Path,
+    append: &model::ReceiptAppend,
+) -> io::Result<(StagedFile, Vec<u8>)> {
+    if append.span.start != append.span.end {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "receipt append span must be empty (an EOF append), not a replacement",
+        ));
+    }
     let old = read_or_empty(receipt_dst)?;
+    if append.span.start != old.len() {
+        return Err(write_conflict(receipt_dst));
+    }
     let new = apply_spans(&old, std::iter::once((&append.span, append.text.as_str())));
-    stage_file(receipt_dst, &new)
+    let staged = stage_file(receipt_dst, &new)?;
+    Ok((staged, old))
 }
 
 /// Read a file's bytes, treating a missing file as empty — the receipt file may
@@ -449,13 +601,55 @@ fn apply_spans<'a>(
 }
 
 impl StagedCommit {
-    /// Commit both files: rename the content file (which COMMITS it), then the
-    /// receipt file. The gap between the two renames is the STATED §6.5 crash
-    /// window; nothing here narrows it away — it is honestly the limit.
+    /// Commit both files: verify both live destinations still equal their
+    /// pre-images (the D8 final pre-rename check — refuse [`write_conflict`]
+    /// on drift, cleaning the staged temps), then rename the content file
+    /// (which COMMITS it), then the receipt file. The gap between the two
+    /// renames is the STATED §6.5 crash window; nothing here narrows it away —
+    /// it is honestly the limit. The verify→rename gap is the D8 residual
+    /// window: cooperating writers are serialized by the write flock;
+    /// out-of-band writers in that gap lose their update detectably (each file
+    /// is still fully-old-or-fully-new — never torn).
     fn commit(self) -> io::Result<()> {
+        if let Err(conflict) = self.verify_pre_images() {
+            self.discard();
+            return Err(conflict);
+        }
         self.rename_content()?;
         // ┄┄ §6.5 crash window: a crash HERE lands content-without-receipt ┄┄
         self.rename_receipt()
+    }
+
+    /// The D8 verify: the content destination must still hold the validated
+    /// pre-image (gone ⇒ conflict too — read#2 saw a real file), and the
+    /// receipt destination must still hold its stage-time bytes (absent stays
+    /// legal only while the pre-image is empty — the first append creates it).
+    /// Both checks run BEFORE the first rename, so a refusal commits nothing.
+    fn verify_pre_images(&self) -> io::Result<()> {
+        let live = match fs::read(&self.content.dst) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(write_conflict(&self.content.dst));
+            }
+            Err(e) => return Err(e),
+        };
+        if live != self.content_expected {
+            return Err(write_conflict(&self.content.dst));
+        }
+        if let (Some(staged), Some(expected)) = (&self.receipt, &self.receipt_expected)
+            && read_or_empty(&staged.dst)? != *expected
+        {
+            return Err(write_conflict(&staged.dst));
+        }
+        Ok(())
+    }
+
+    /// Remove the staged temps (hygiene on a refused commit — no litter).
+    fn discard(&self) {
+        let _ = fs::remove_file(&self.content.tmp);
+        if let Some(staged) = &self.receipt {
+            let _ = fs::remove_file(&staged.tmp);
+        }
     }
 
     /// Rename the content temp onto its destination (atomic) and fsync the
@@ -564,7 +758,9 @@ impl Watcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{TEMP_SEQ, WorkspaceRoot, apply_batch, stage_batch, temp_path_for, walk};
+    use super::{
+        TEMP_SEQ, WorkspaceRoot, apply_batch, is_write_conflict, stage_batch, temp_path_for, walk,
+    };
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -686,7 +882,14 @@ mod tests {
         // Stage both temps, commit ONLY the content rename, then "crash" before
         // the receipt rename (drop the staged commit — the receipt is never
         // renamed). This is the §6.5 window, driven deterministically.
-        let staged = stage_batch(&root, &content_rel(), Some(&receipt_rel()), &vb).unwrap();
+        let staged = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .unwrap();
         staged.rename_content().unwrap();
         drop(staged);
 
@@ -740,7 +943,14 @@ mod tests {
         let (dir, root) = workspace();
         let vb = validated(Some(receipt_append()));
 
-        let staged = stage_batch(&root, &content_rel(), Some(&receipt_rel()), &vb).unwrap();
+        let staged = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .unwrap();
 
         // Destinations untouched while the batch is staged (pre-rename "crash").
         assert_eq!(
@@ -773,7 +983,14 @@ mod tests {
         let (dir, root) = workspace();
         let vb = validated(Some(receipt_append()));
 
-        apply_batch(&root, &content_rel(), Some(&receipt_rel()), &vb).unwrap();
+        apply_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .unwrap();
 
         assert_eq!(
             fs::read(dir.path().join(content_rel())).unwrap(),
@@ -805,7 +1022,7 @@ mod tests {
         let (dir, root) = workspace();
         let vb = validated(None);
 
-        apply_batch(&root, &content_rel(), None, &vb).unwrap();
+        apply_batch(&root, &content_rel(), None, &vb, PLAN_S0.as_bytes()).unwrap();
 
         assert_eq!(
             fs::read(dir.path().join(content_rel())).unwrap(),
@@ -831,23 +1048,41 @@ mod tests {
 
         // (1) batch has a receipt but no path supplied.
         assert_eq!(
-            apply_batch(&root, &content_rel(), None, &with_receipt)
-                .unwrap_err()
-                .kind(),
+            apply_batch(
+                &root,
+                &content_rel(),
+                None,
+                &with_receipt,
+                PLAN_S0.as_bytes()
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidInput,
         );
         // (2) path supplied but the batch has no receipt.
         assert_eq!(
-            apply_batch(&root, &content_rel(), Some(&receipt_rel()), &no_receipt)
-                .unwrap_err()
-                .kind(),
+            apply_batch(
+                &root,
+                &content_rel(),
+                Some(&receipt_rel()),
+                &no_receipt,
+                PLAN_S0.as_bytes()
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidInput,
         );
         // (3) same-file receipt would clobber the content rename.
         assert_eq!(
-            apply_batch(&root, &content_rel(), Some(&content_rel()), &with_receipt)
-                .unwrap_err()
-                .kind(),
+            apply_batch(
+                &root,
+                &content_rel(),
+                Some(&content_rel()),
+                &with_receipt,
+                PLAN_S0.as_bytes()
+            )
+            .unwrap_err()
+            .kind(),
             io::ErrorKind::InvalidInput,
         );
     }
@@ -919,6 +1154,207 @@ mod tests {
             b"- op=create ^r-000001\n- op=remove ^r-000002\n",
             "each rendered row is appended verbatim with one terminator",
         );
+    }
+
+    // ---- D8 TOCTOU-gap fix: external-writer conflicts, driven ----
+    // ---- DETERMINISTICALLY through the stage/commit seam (A-C2: ----
+    // ---- the replay harness cannot contain these interleaves).  ----
+
+    /// D8 GATE (external overwrite): an out-of-band writer replaces the content
+    /// file between staging (validate) and the rename — the commit refuses the
+    /// typed write-conflict, the external bytes SURVIVE untouched (never
+    /// clobbered by stale validated spans), the receipt never lands, and no
+    /// staged temp litters the tree. Pre-fix behavior: the stale splice landed
+    /// over the external bytes silently.
+    #[test]
+    fn d8_external_overwrite_refuses_write_conflict() {
+        const EXTERNAL: &str = "# Rewritten by an external editor\n";
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append()));
+        let staged = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .unwrap();
+
+        // The out-of-band writer lands AFTER validate/stage, BEFORE the rename.
+        fs::write(dir.path().join(content_rel()), EXTERNAL).unwrap();
+
+        let err = staged.commit().expect_err("drifted bytes must refuse");
+        assert!(
+            is_write_conflict(&err),
+            "the refusal is the TYPED write-conflict, not a generic io error: {err}"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            EXTERNAL.as_bytes(),
+            "the external writer's bytes survive — nothing was renamed over them"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            RECEIPT_OLD.as_bytes(),
+            "the receipt never lands on a refused commit (no half-commit)"
+        );
+        assert!(
+            !any_tmp_in(&dir.path().join("notes")) && !any_tmp_in(&dir.path().join("receipts")),
+            "a refused commit cleans its staged temps"
+        );
+    }
+
+    /// D8 GATE (external delete): the content file VANISHES between staging and
+    /// the rename. A blind rename would silently resurrect the (stale-derived)
+    /// bytes over the deletion — instead the commit refuses the typed conflict
+    /// and the path stays deleted.
+    #[test]
+    fn d8_external_delete_refuses_write_conflict() {
+        let (dir, root) = workspace();
+        let vb = validated(None);
+        let staged = stage_batch(&root, &content_rel(), None, &vb, PLAN_S0.as_bytes()).unwrap();
+
+        fs::remove_file(dir.path().join(content_rel())).unwrap();
+
+        let err = staged.commit().expect_err("a vanished target must refuse");
+        assert!(is_write_conflict(&err), "typed write-conflict: {err}");
+        assert!(
+            !dir.path().join(content_rel()).exists(),
+            "the deletion survives — the commit did not resurrect stale bytes"
+        );
+        assert!(!any_tmp_in(&dir.path().join("notes")));
+    }
+
+    /// D8 GATE (receipt moved before staging): the receipt file gained rows
+    /// between the append's render (span = len..len against the THEN bytes)
+    /// and the commit. Blind application would land the row MID-file; the
+    /// reconcile refuses the typed conflict and nothing — content included —
+    /// lands.
+    #[test]
+    fn d8_receipt_grown_before_stage_refuses_write_conflict() {
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append())); // span pinned to RECEIPT_OLD's EOF
+
+        // An out-of-band append moves the receipt EOF past the rendered span.
+        fs::write(
+            dir.path().join(receipt_rel()),
+            format!("{RECEIPT_OLD}- foreign row ^r-000042\n"),
+        )
+        .unwrap();
+
+        let err = apply_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .expect_err("a moved receipt must refuse");
+        assert!(is_write_conflict(&err), "typed write-conflict: {err}");
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            PLAN_S0.as_bytes(),
+            "content did not land either — the refusal commits NOTHING"
+        );
+    }
+
+    /// D8 GATE (receipt shrunk): the receipt file was truncated below the
+    /// rendered span offset. Pre-fix this PANICKED (slice out of bounds in
+    /// `apply_spans`); now it is the same typed conflict refusal.
+    #[test]
+    fn d8_receipt_shrunk_refuses_write_conflict_not_panic() {
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append()));
+        fs::write(dir.path().join(receipt_rel()), "#").unwrap(); // shorter than span.start
+
+        let err = apply_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .expect_err("a truncated receipt must refuse, not panic");
+        assert!(is_write_conflict(&err), "typed write-conflict: {err}");
+    }
+
+    /// D8 GATE (receipt drifts between stage and rename): the receipt gains a
+    /// row after staging but before the renames. The pre-rename verify catches
+    /// it BEFORE the content rename — refusing the whole commit, never landing
+    /// content while dropping the foreign receipt row.
+    #[test]
+    fn d8_receipt_grown_after_stage_refuses_before_content_rename() {
+        let (dir, root) = workspace();
+        let vb = validated(Some(receipt_append()));
+        let staged = stage_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .unwrap();
+
+        let foreign = format!("{RECEIPT_OLD}- foreign row ^r-000042\n");
+        fs::write(dir.path().join(receipt_rel()), &foreign).unwrap();
+
+        let err = staged.commit().expect_err("a drifted receipt must refuse");
+        assert!(is_write_conflict(&err), "typed write-conflict: {err}");
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            PLAN_S0.as_bytes(),
+            "content was NOT renamed — both verifies run before the first rename"
+        );
+        assert_eq!(
+            fs::read(dir.path().join(receipt_rel())).unwrap(),
+            foreign.as_bytes(),
+            "the foreign receipt row survives"
+        );
+    }
+
+    /// D9: the write flock contends across independent acquires (flock is
+    /// per-open-file-description — even in one process), refuses fast with
+    /// `WouldBlock` (never waits), is re-acquirable after release, and mints
+    /// `.meridian/write.lock` on first use.
+    #[test]
+    fn write_lock_contends_releases_and_creates_sentinel() {
+        let (dir, root) = workspace();
+        let held = super::WriteLock::acquire(&root).expect("first acquire");
+        assert!(
+            dir.path().join(".meridian/write.lock").exists(),
+            "the lockfile is minted on first use"
+        );
+        let contend = super::WriteLock::acquire(&root)
+            .expect_err("a held write lock refuses a second acquire");
+        assert_eq!(
+            contend.kind(),
+            io::ErrorKind::WouldBlock,
+            "contention is WouldBlock (LOCK_NB — a fast refusal, never a wait)"
+        );
+        drop(held);
+        drop(super::WriteLock::acquire(&root).expect("released lock is re-acquirable"));
+    }
+
+    /// Seam contract: a REPLACING receipt span (non-empty) is misuse of the
+    /// EOF-append discipline — `InvalidInput` fail-loud, distinct from the
+    /// conflict class.
+    #[test]
+    fn receipt_replacing_span_is_invalid_input() {
+        let (_dir, root) = workspace();
+        let vb = validated(Some(model::ReceiptAppend {
+            span: 0..RECEIPT_OLD.len(), // replaces, not appends
+            text: RECEIPT_LINE.to_string(),
+        }));
+        let err = apply_batch(
+            &root,
+            &content_rel(),
+            Some(&receipt_rel()),
+            &vb,
+            PLAN_S0.as_bytes(),
+        )
+        .expect_err("a replacing receipt span must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!is_write_conflict(&err), "misuse is not the conflict class");
     }
 
     /// The staging path is uniquely named per call (pid + nanos + monotone seq)

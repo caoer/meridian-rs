@@ -1,0 +1,240 @@
+{
+  "doc": "unicode-ws",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/unicode-ws.md"
+      },
+      "text": "$SESSION/corpus/unicode-ws.md  file_rev:8122448672a68dea  words:24\n1      Alpha Beta  words:4  rev:08a2993383f5348e\n2      Gamma​Delta  words:7  rev:4476fa544ac21fe4\n3      Trailing-NBSP  words:4  rev:ab4e70959aa0c5d7\n4      Trailing-ZWSP​  words:4  rev:ee985285c0b7c5e5\n5      NELInside  words:3  rev:655dcefbc9dc8d4a\n6      Em Space  words:2  rev:0eaf306c8f3ce35d",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/unicode-ws.md",
+        "ref": "corpus/unicode-ws.md",
+        "rev": "8122448672a68dea",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Alpha Beta",
+            "n": "1",
+            "sec_rev": "08a2993383f5348e",
+            "title": "Alpha Beta",
+            "words": 4
+          },
+          {
+            "depth": 1,
+            "hpath": "Gamma​Delta",
+            "n": "2",
+            "sec_rev": "4476fa544ac21fe4",
+            "title": "Gamma​Delta",
+            "words": 7
+          },
+          {
+            "depth": 1,
+            "hpath": "Trailing-NBSP",
+            "n": "3",
+            "sec_rev": "ab4e70959aa0c5d7",
+            "title": "Trailing NBSP",
+            "words": 4
+          },
+          {
+            "depth": 1,
+            "hpath": "Trailing-ZWSP​",
+            "n": "4",
+            "sec_rev": "ee985285c0b7c5e5",
+            "title": "Trailing ZWSP​",
+            "words": 4
+          },
+          {
+            "depth": 1,
+            "hpath": "NELInside",
+            "n": "5",
+            "sec_rev": "655dcefbc9dc8d4a",
+            "title": "NELInside",
+            "words": 3
+          },
+          {
+            "depth": 1,
+            "hpath": "Em Space",
+            "n": "6",
+            "sec_rev": "0eaf306c8f3ce35d",
+            "title": "Em Space",
+            "words": 2
+          }
+        ],
+        "words_total": 24
+      }
+    },
+    {
+      "id": "r-sections-exotic",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/unicode-ws.md",
+        "sections": [
+          "Alpha Beta",
+          "Gamma​Delta",
+          "NELInside",
+          "Em Space"
+        ]
+      },
+      "text": "$SESSION/corpus/unicode-ws.md  file_rev:8122448672a68dea  words:24\n\n== Alpha Beta (rev:08a2993383f5348e words:4) ==\n\nnbsp joined words here\n\n\n\n== Gamma​Delta (rev:4476fa544ac21fe4 words:7) ==\n\nzwsp​joined and ideo　split plus ogham split\n\n\n\n== NELInside (rev:655dcefbc9dc8d4a words:3) ==\n\nnelseparated words\n\n\n\n== Em Space (rev:0eaf306c8f3ce35d words:2) ==\n\nem separated",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/unicode-ws.md",
+        "ref": "corpus/unicode-ws.md",
+        "rev": "8122448672a68dea",
+        "sections": [
+          {
+            "content": "\nnbsp joined words here\n\n",
+            "hpath": "Alpha Beta",
+            "sec_rev": "08a2993383f5348e",
+            "sel": "Alpha Beta",
+            "words": 4
+          },
+          {
+            "content": "\nzwsp​joined and ideo　split plus ogham split\n\n",
+            "hpath": "Gamma​Delta",
+            "sec_rev": "4476fa544ac21fe4",
+            "sel": "Gamma​Delta",
+            "words": 7
+          },
+          {
+            "content": "\nnelseparated words\n\n",
+            "hpath": "NELInside",
+            "sec_rev": "655dcefbc9dc8d4a",
+            "sel": "NELInside",
+            "words": 3
+          },
+          {
+            "content": "\nem separated\n",
+            "hpath": "Em Space",
+            "sec_rev": "0eaf306c8f3ce35d",
+            "sel": "Em Space",
+            "words": 2
+          }
+        ],
+        "words_total": 24
+      }
+    },
+    {
+      "id": "r-sections-trailing",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/unicode-ws.md",
+        "sections": [
+          "Trailing-NBSP",
+          "Trailing-ZWSP​"
+        ]
+      },
+      "text": "$SESSION/corpus/unicode-ws.md  file_rev:8122448672a68dea  words:24\n\n== Trailing-NBSP (rev:ab4e70959aa0c5d7 words:4) ==\n\ncontent under trailing-nbsp heading\n\n\n\n== Trailing-ZWSP​ (rev:ee985285c0b7c5e5 words:4) ==\n\ncontent under trailing-zwsp heading",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/unicode-ws.md",
+        "ref": "corpus/unicode-ws.md",
+        "rev": "8122448672a68dea",
+        "sections": [
+          {
+            "content": "\ncontent under trailing-nbsp heading\n\n",
+            "hpath": "Trailing-NBSP",
+            "sec_rev": "ab4e70959aa0c5d7",
+            "sel": "Trailing-NBSP",
+            "words": 4
+          },
+          {
+            "content": "\ncontent under trailing-zwsp heading\n\n",
+            "hpath": "Trailing-ZWSP​",
+            "sec_rev": "ee985285c0b7c5e5",
+            "sel": "Trailing-ZWSP​",
+            "words": 4
+          }
+        ],
+        "words_total": 24
+      }
+    },
+    {
+      "id": "p-append-exotic",
+      "tool": "put",
+      "args": {
+        "body": "appended under exotic heading",
+        "op": "append",
+        "ref": "corpus/unicode-ws.md#Trailing-NBSP"
+      },
+      "text": "wrote $SESSION/corpus/unicode-ws.md  file_rev:e6c03517e13c6296",
+      "is_error": false,
+      "file_after": "---\ntype: note\n---\n\n# Alpha Beta\n\nnbsp joined words here\n\n# Gamma​Delta\n\nzwsp​joined and ideo　split plus ogham split\n\n# Trailing NBSP \n\ncontent under trailing-nbsp heading\n\nappended under exotic heading\n# Trailing ZWSP​\n\ncontent under trailing-zwsp heading\n\n# NELInside\n\nnelseparated words\n\n# Em Space\n\nem separated\n",
+      "structured": {
+        "path": "$SESSION/corpus/unicode-ws.md",
+        "rev": "e6c03517e13c6296"
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/unicode-ws.md"
+      },
+      "text": "$SESSION/corpus/unicode-ws.md  file_rev:e6c03517e13c6296  words:28\n1      Alpha Beta  words:4  rev:08a2993383f5348e\n2      Gamma​Delta  words:7  rev:4476fa544ac21fe4\n3      Trailing-NBSP  words:8  rev:310493ef8be6074b\n4      Trailing-ZWSP​  words:4  rev:ee985285c0b7c5e5\n5      NELInside  words:3  rev:655dcefbc9dc8d4a\n6      Em Space  words:2  rev:0eaf306c8f3ce35d",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/unicode-ws.md",
+        "ref": "corpus/unicode-ws.md",
+        "rev": "e6c03517e13c6296",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Alpha Beta",
+            "n": "1",
+            "sec_rev": "08a2993383f5348e",
+            "title": "Alpha Beta",
+            "words": 4
+          },
+          {
+            "depth": 1,
+            "hpath": "Gamma​Delta",
+            "n": "2",
+            "sec_rev": "4476fa544ac21fe4",
+            "title": "Gamma​Delta",
+            "words": 7
+          },
+          {
+            "depth": 1,
+            "hpath": "Trailing-NBSP",
+            "n": "3",
+            "sec_rev": "310493ef8be6074b",
+            "title": "Trailing NBSP",
+            "words": 8
+          },
+          {
+            "depth": 1,
+            "hpath": "Trailing-ZWSP​",
+            "n": "4",
+            "sec_rev": "ee985285c0b7c5e5",
+            "title": "Trailing ZWSP​",
+            "words": 4
+          },
+          {
+            "depth": 1,
+            "hpath": "NELInside",
+            "n": "5",
+            "sec_rev": "655dcefbc9dc8d4a",
+            "title": "NELInside",
+            "words": 3
+          },
+          {
+            "depth": 1,
+            "hpath": "Em Space",
+            "n": "6",
+            "sec_rev": "0eaf306c8f3ce35d",
+            "title": "Em Space",
+            "words": 2
+          }
+        ],
+        "words_total": 28
+      }
+    }
+  ]
+}
