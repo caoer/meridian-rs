@@ -449,6 +449,27 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         display_path: Option<String>,
     },
+    /// M1 U8c the I4 def-conformance verdict op (v3-only, like `read`): the
+    /// Go `meridiandefs.CheckWrite` seam served by the engine — rebuild the
+    /// candidate from put-plan-vocabulary `edits` over the CURRENT bytes at
+    /// `path`, judge prev→candidate against the def layer, return the
+    /// refuse/repairs/forced verdict. NEVER a write path: no flock, no CAS,
+    /// no journal, no disk mutation.
+    ///
+    /// `target` is the caller's ABSOLUTE path spelling (a raw host string
+    /// like `view_path.cwd`, not a wire [`Path`]): it labels the refusal
+    /// strings verbatim AND anchors the def-layer discovery walk — exactly
+    /// the `target` the Go daemon passed to `CheckWrite`. `now` is the caller's
+    /// clock (RFC3339); close-stamp repairs derive from it (§9: the engine
+    /// mints no time). `actor` rides for verdict context, never authz (I3 is
+    /// the host's).
+    CheckWrite {
+        path: Path,
+        target: String,
+        actor: String,
+        now: String,
+        edits: Vec<CheckWriteEdit>,
+    },
     /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
     /// publish `view.duckdb` (the daemon is the sole builder), and return the
     /// stamped filesystem PATH plus a pre-open freshness hint. It marshals
@@ -583,6 +604,44 @@ pub struct ReadSectionOut {
     pub content: String,
 }
 
+/// One `check_write` plan edit (M1 U8c, v3-only): the put-plan vocabulary the
+/// daemon face speaks (Go `body.Edit` as `plansToBodyEdits` builds it). `at`
+/// is a heading path, `^id`/`#^id` block, new section name, or fm key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteEdit {
+    pub op: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub find: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rev: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
+}
+
+/// The `check_write` refusal (M1 U8c): `class` picks the host's render template
+/// — `rebuild` (the candidate could not be built: resolve/anchor/ECAS/
+/// would-corrupt, Go's `cerr` wrap) vs `verdict` (the I4 severity ladder
+/// refused). `code`/`message`/`remedy` are the Go strings VERBATIM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteRefuse {
+    pub class: String,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remedy: String,
+}
+
+/// One close-stamp autofill (M1 U8c): the host folds it into the SAME atomic
+/// write as a system-authored property set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteRepair {
+    pub key: String,
+    pub value: String,
+}
+
 /// Per-kind `info` payloads (v1 §5.2 table). Untagged: the sibling `kind`
 /// field discriminates; kinds with no `info` shape simply omit the key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -670,6 +729,17 @@ pub enum ResponseBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         notice: Option<String>,
         rendered_text: String,
+    },
+    /// M1 U8c the `check_write` verdict (v3-only). `refuse` absent = the write
+    /// may proceed; `repairs` are autofill edits the host folds into the SAME
+    /// atomic write; `forced` echoes overridden warn rule-ids (empty while
+    /// the face pins force=false). `repairs`/`forced` always serialize so the
+    /// body is never shapeless.
+    CheckWrite {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refuse: Option<CheckWriteRefuse>,
+        repairs: Vec<CheckWriteRepair>,
+        forced: Vec<String>,
     },
     /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),

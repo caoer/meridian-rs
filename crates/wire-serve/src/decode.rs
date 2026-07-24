@@ -118,6 +118,7 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             })
         }
         "read" => decode_read(obj),
+        "check_write" => decode_check_write(obj),
         "view_path" => {
             // V2 §Q2 the view-organ path forwarder. `cwd` is a RAW host path
             // (absolute) the daemon resolves to a workspace — NOT a
@@ -182,6 +183,44 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         frag: opt_str(obj, op, "frag")?,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
+    })
+}
+
+/// M1 U8c the I4 def-conformance verdict op (v3-only at DISPATCH, like
+/// `read`). `target` is a RAW host path string (the caller's absolute
+/// spelling — labels refusal strings + anchors def-layer discovery), so it
+/// takes `req_str`, never `req_path`. `edits` is the put-plan vocabulary.
+fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "check_write";
+    check_fields(obj, op, &["path", "target", "actor", "now", "edits"])?;
+    let Some(Value::Array(items)) = obj.get("edits") else {
+        return Err(bad_request(
+            "`edits` must be an array of edit objects on `check_write`",
+        ));
+    };
+    let mut edits = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(e) = item.as_object() else {
+            return Err(bad_request(
+                "`edits` must be an array of edit objects on `check_write`",
+            ));
+        };
+        check_fields(e, op, &["op", "at", "find", "body", "rev", "all"])?;
+        edits.push(wire::CheckWriteEdit {
+            op: req_str(e, op, "op")?,
+            at: req_str(e, op, "at")?,
+            find: opt_str(e, op, "find")?.unwrap_or_default(),
+            body: opt_str(e, op, "body")?.unwrap_or_default(),
+            rev: opt_str(e, op, "rev")?.unwrap_or_default(),
+            all: opt_bool(e, op, "all")?.unwrap_or(false),
+        });
+    }
+    Ok(Op::CheckWrite {
+        path: req_path(obj, op, "path")?,
+        target: req_str(obj, op, "target")?,
+        actor: req_str(obj, op, "actor")?,
+        now: req_str(obj, op, "now")?,
+        edits,
     })
 }
 

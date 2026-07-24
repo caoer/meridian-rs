@@ -53,6 +53,7 @@ mod fm;
 mod go_fmt;
 mod i4;
 mod load;
+mod rebuild;
 mod shape;
 
 pub use cascade::{ResolveOutcome, discover_layers, resolve};
@@ -63,6 +64,7 @@ pub use check::{
 pub use fm::{FmMeta, FmValue, parse_meta, string_field};
 pub use i4::{ConformanceRequest, ConformanceResult, Repair, conformance};
 pub use load::{Def, DefError, PropSpec, SectionRule, parse_def};
+pub use rebuild::{PlanEdit, rebuild, rev8};
 
 /// One validator finding (Go `types.Finding`), delta-scored by (rule, message).
 #[derive(Debug, Clone, PartialEq)]
