@@ -255,6 +255,12 @@ fn node_to_pb(n: wire::Node) -> pb::Node {
         unterminated,
         info,
         node_rev,
+        // v3-additive JSON-face addressing facts (M1 U2): deliberately
+        // OUTSIDE the proto agreement surface — the pb mirror stays
+        // v2-shaped; a future amendment adds them to both sides at once.
+        n: _,
+        hpath_text: _,
+        words: _,
     } = n;
     pb::Node {
         kind: kind_to_pb(kind).into(),
@@ -976,6 +982,11 @@ fn node_from_pb(n: pb::Node) -> wire::Node {
         unterminated,
         info: info.map(|i| info_from_pb(i.info.expect("info oneof set"))),
         node_rev: node_rev.map(wire::NodeRev),
+        // v3-additive JSON-face addressing facts (M1 U2): outside the proto
+        // agreement surface — the pb mirror stays v2-shaped.
+        n: None,
+        hpath_text: None,
+        words: None,
     }
 }
 
@@ -1441,6 +1452,10 @@ fn sample_nodes() -> Vec<wire::Node> {
         unterminated: None,
         info,
         node_rev: Some(wire::NodeRev("26796ebec5d0bf1a".into())),
+        // v3-additive JSON-face facts: not part of the proto agreement.
+        n: None,
+        hpath_text: None,
+        words: None,
     };
     vec![
         mk(

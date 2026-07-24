@@ -1,0 +1,224 @@
+{
+  "doc": "level-jumps",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/level-jumps.md"
+      },
+      "text": "$SESSION/corpus/level-jumps.md  file_rev:7019f4f6182b7728  words:43\n1      One  words:20  rev:c02980391074e041\n1.1        One/Jump-Three  words:6  rev:2bf39a4424c75eb2\n1.1.1        One/Jump-Three/Four  words:1  rev:bbb6c75f7978dbde\n1.1      One/Back-Two  words:7  rev:e492f408f5ac17e4\n1.1.1            One/Back-Two/Six  words:2  rev:7922effb7ccc118c\n2      Reset-One  words:6  rev:c7774e6b1068edb3\n2.1      Reset-One/Two-After-Reset  words:1  rev:8bbb4004ed8f2c0e",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/level-jumps.md",
+        "ref": "corpus/level-jumps.md",
+        "rev": "7019f4f6182b7728",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "One",
+            "n": "1",
+            "sec_rev": "c02980391074e041",
+            "title": "One",
+            "words": 20
+          },
+          {
+            "depth": 3,
+            "hpath": "One/Jump-Three",
+            "n": "1.1",
+            "sec_rev": "2bf39a4424c75eb2",
+            "title": "Jump Three",
+            "words": 6
+          },
+          {
+            "depth": 4,
+            "hpath": "One/Jump-Three/Four",
+            "n": "1.1.1",
+            "sec_rev": "bbb6c75f7978dbde",
+            "title": "Four",
+            "words": 1
+          },
+          {
+            "depth": 2,
+            "hpath": "One/Back-Two",
+            "n": "1.1",
+            "sec_rev": "e492f408f5ac17e4",
+            "title": "Back Two",
+            "words": 7
+          },
+          {
+            "depth": 6,
+            "hpath": "One/Back-Two/Six",
+            "n": "1.1.1",
+            "sec_rev": "7922effb7ccc118c",
+            "title": "Six",
+            "words": 2
+          },
+          {
+            "depth": 1,
+            "hpath": "Reset-One",
+            "n": "2",
+            "sec_rev": "c7774e6b1068edb3",
+            "title": "Reset One",
+            "words": 6
+          },
+          {
+            "depth": 2,
+            "hpath": "Reset-One/Two-After-Reset",
+            "n": "2.1",
+            "sec_rev": "8bbb4004ed8f2c0e",
+            "title": "Two After Reset",
+            "words": 1
+          }
+        ],
+        "words_total": 43
+      }
+    },
+    {
+      "id": "r-dewey-ambiguous",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/level-jumps.md",
+        "sections": [
+          "1.1"
+        ]
+      },
+      "text": "$SESSION/corpus/level-jumps.md  file_rev:7019f4f6182b7728  words:43\n\n== One/Jump-Three (rev:2bf39a4424c75eb2 words:6) ==\n\ndeep without two\n\n#### Four\n\ndeeper",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/level-jumps.md",
+        "ref": "corpus/level-jumps.md",
+        "rev": "7019f4f6182b7728",
+        "sections": [
+          {
+            "content": "\ndeep without two\n\n#### Four\n\ndeeper\n\n",
+            "hpath": "One/Jump-Three",
+            "sec_rev": "2bf39a4424c75eb2",
+            "sel": "1.1",
+            "words": 6
+          }
+        ],
+        "words_total": 43
+      }
+    },
+    {
+      "id": "r-dewey-reset",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/level-jumps.md",
+        "sections": [
+          "2"
+        ]
+      },
+      "text": "$SESSION/corpus/level-jumps.md  file_rev:7019f4f6182b7728  words:43\n\n== Reset-One (rev:c7774e6b1068edb3 words:6) ==\n\nreset\n\n## Two After Reset\n\ntail",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/level-jumps.md",
+        "ref": "corpus/level-jumps.md",
+        "rev": "7019f4f6182b7728",
+        "sections": [
+          {
+            "content": "\nreset\n\n## Two After Reset\n\ntail\n",
+            "hpath": "Reset-One",
+            "sec_rev": "c7774e6b1068edb3",
+            "sel": "2",
+            "words": 6
+          }
+        ],
+        "words_total": 43
+      }
+    },
+    {
+      "id": "p-append-reset",
+      "tool": "put",
+      "args": {
+        "body": "appended after reset",
+        "op": "append",
+        "ref": "corpus/level-jumps.md#Reset-One"
+      },
+      "text": "wrote $SESSION/corpus/level-jumps.md  file_rev:e7218ab8280d19e8",
+      "is_error": false,
+      "file_after": "# One\n\nalpha\n\n### Jump Three\n\ndeep without two\n\n#### Four\n\ndeeper\n\n## Back Two\n\npop to two\n\n###### Six\n\nmax depth\n\n# Reset One\n\nreset\n\n## Two After Reset\n\ntail\nappended after reset\n",
+      "structured": {
+        "path": "$SESSION/corpus/level-jumps.md",
+        "rev": "e7218ab8280d19e8"
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/level-jumps.md"
+      },
+      "text": "$SESSION/corpus/level-jumps.md  file_rev:e7218ab8280d19e8  words:49\n1      One  words:20  rev:c02980391074e041\n1.1        One/Jump-Three  words:6  rev:2bf39a4424c75eb2\n1.1.1        One/Jump-Three/Four  words:1  rev:bbb6c75f7978dbde\n1.1      One/Back-Two  words:7  rev:e492f408f5ac17e4\n1.1.1            One/Back-Two/Six  words:2  rev:7922effb7ccc118c\n2      Reset-One  words:9  rev:53121514cdba2ca1\n2.1      Reset-One/Two-After-Reset  words:4  rev:3efa25ba39af732b",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/level-jumps.md",
+        "ref": "corpus/level-jumps.md",
+        "rev": "e7218ab8280d19e8",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "One",
+            "n": "1",
+            "sec_rev": "c02980391074e041",
+            "title": "One",
+            "words": 20
+          },
+          {
+            "depth": 3,
+            "hpath": "One/Jump-Three",
+            "n": "1.1",
+            "sec_rev": "2bf39a4424c75eb2",
+            "title": "Jump Three",
+            "words": 6
+          },
+          {
+            "depth": 4,
+            "hpath": "One/Jump-Three/Four",
+            "n": "1.1.1",
+            "sec_rev": "bbb6c75f7978dbde",
+            "title": "Four",
+            "words": 1
+          },
+          {
+            "depth": 2,
+            "hpath": "One/Back-Two",
+            "n": "1.1",
+            "sec_rev": "e492f408f5ac17e4",
+            "title": "Back Two",
+            "words": 7
+          },
+          {
+            "depth": 6,
+            "hpath": "One/Back-Two/Six",
+            "n": "1.1.1",
+            "sec_rev": "7922effb7ccc118c",
+            "title": "Six",
+            "words": 2
+          },
+          {
+            "depth": 1,
+            "hpath": "Reset-One",
+            "n": "2",
+            "sec_rev": "53121514cdba2ca1",
+            "title": "Reset One",
+            "words": 9
+          },
+          {
+            "depth": 2,
+            "hpath": "Reset-One/Two-After-Reset",
+            "n": "2.1",
+            "sec_rev": "3efa25ba39af732b",
+            "title": "Two After Reset",
+            "words": 4
+          }
+        ],
+        "words_total": 49
+      }
+    }
+  ]
+}
