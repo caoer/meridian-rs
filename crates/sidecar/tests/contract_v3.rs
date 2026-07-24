@@ -361,6 +361,30 @@ fn v3_extract_enriches_heading_nodes() {
     }
 }
 
+/// D-Actor/B (review C4): the daemon-derived `actor` RIDES the composed
+/// read request — decode accepts it (same §9 law as splice's actor slot)
+/// and the op serves normally. M1 mints no read receipt; the test pins that
+/// the wire already carries the provenance stage-2 read-mint consumes, so
+/// receipts land additively, never as an op re-shape.
+#[test]
+fn v3_read_carries_the_derived_actor() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"read\",\"path\":\"notes/plan.md\",\"actor\":\"agent:b0864fb2\"}\n";
+    let frames = serve(&root, input);
+    assert_eq!(
+        frames[1]["ok"],
+        json!(true),
+        "an actor-stamped read serves: {}",
+        frames[1]
+    );
+    assert!(
+        frames[1]["body"]["rendered_text"].is_string(),
+        "the composed body rides: {}",
+        frames[1]
+    );
+}
+
 /// A v2 session's `extract` is the frozen shape: ZERO `n`/`hpath_text`/
 /// `words` keys anywhere in the frame.
 #[test]

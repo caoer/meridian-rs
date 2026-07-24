@@ -225,6 +225,9 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         frag: r.frag.clone(),
         sections: (!r.sections.is_empty()).then(|| r.sections.clone()),
         display_path: Some(r.path.clone()),
+        // §9 read provenance is the DAEMON's to stamp; the local CLI sends
+        // none on both warm and degrade paths (symmetry with the wire call).
+        actor: None,
     };
     let body = wire_serve::read::composed_read(&doc, &wpath, &ambient, &params)
         .map_err(|e| engine::refusal_fail(&e))?;

@@ -106,6 +106,13 @@ pub struct ReadParams {
     pub frag: Option<String>,
     pub sections: Option<Vec<String>>,
     pub display_path: Option<String>,
+    /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
+    /// carried to THIS seam — the future stage-2 read-mint site (the one
+    /// place holding the document, each `sec_rev`, and the actor together)
+    /// — and deliberately UNREAD in M1 (reads mint no receipt yet).
+    /// Carrying it now is the point: stage-2 becomes additive, never an op
+    /// re-shape.
+    pub actor: Option<String>,
 }
 
 /// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
