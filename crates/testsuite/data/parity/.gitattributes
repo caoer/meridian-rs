@@ -1,0 +1,3 @@
+# U0 parity corpus + goldens are BYTE-EXACT fixtures (CRLF, NBSP/ZWSP/NEL,
+# trailing whitespace). No EOL conversion, no whitespace fixing, ever.
+* -text

@@ -30,6 +30,14 @@ pub fn harness_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/harness")
 }
 
+/// The U0 read/put parity pack (corpus + captured goldens) — a byte-exact
+/// copy of ccc-statusd's `testdata/parity/`; see `data/parity/README.md`
+/// for provenance. The authoritative cutover gate is the Go-side harness.
+#[must_use]
+pub fn parity_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/parity")
+}
+
 /// Path to the CHARSET-GUARD discrimination pack (the single block-id charset,
 /// §2.4) — per-mint-position `_`-refusal inputs plus the pack-pinned walk
 /// answer, for downstream units to ride.

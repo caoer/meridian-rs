@@ -453,7 +453,7 @@ fn handle_line(
             if *rev == Rev::V3 {
                 wire_serve::rev::rename_request(&mut obj);
             }
-            let (response, duration_us) = serve_wire(registry, attached.as_deref(), &obj);
+            let (response, duration_us) = serve_wire(registry, attached.as_deref(), &obj, *rev);
             wire_line(&response, *rev, duration_us)
         }
     }
@@ -655,6 +655,7 @@ fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
     obj: &Map<String, Value>,
+    rev: Rev,
 ) -> (wire::Response, Option<u64>) {
     let id = obj.get("id").and_then(Value::as_u64);
     let (body, duration_us) = match wire_serve::decode::decode(obj) {
@@ -662,7 +663,7 @@ fn serve_wire(
             // U7 measure point: the dispatch call alone (after decode, before
             // the response render) — checked µs, never a lossy `as`.
             let started = Instant::now();
-            let body = dispatch_read(registry, attached, id, op);
+            let body = dispatch_read(registry, attached, id, op, rev == Rev::V3);
             let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             (body, Some(duration_us))
         }
@@ -697,6 +698,7 @@ fn dispatch_read(
     attached: Option<&Path>,
     id: Option<u64>,
     op: Op,
+    v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     // V2 §Q2: `view_path` carries its own `cwd`, so it self-resolves the
     // workspace + drawer and needs NO `hello`-bound workspace — it is routed
@@ -731,7 +733,7 @@ fn dispatch_read(
                 .docs
                 .get(&path.0)
                 .ok_or_else(|| file_not_found(&path))?;
-            Ok(wire_serve::read::extract(doc, &path, kinds))
+            Ok(wire_serve::read::extract(doc, &path, kinds, v3))
         }),
         Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
             let as_of = engine_root(engine);
