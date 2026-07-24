@@ -164,6 +164,26 @@ pub fn project_response(frame: &mut Value) {
     }
 }
 
+/// Insert the in-band timing block `meta: {duration_us}` beside `body`/`error`
+/// on an outgoing frame — the U7 enforcement channel for the ratified
+/// sub-second budget (per-op engine duration, integer µs).
+///
+/// v3-ONLY by call discipline: both hosts invoke this on their v3 branch
+/// alone, AFTER [`project_response`], so the frozen v2 path stays the direct
+/// typed serialization, byte-for-byte (`crates/wire/tests/contract_v2.rs`).
+/// For v3 consumers the new top-level key is a safe additive slot under the
+/// tolerant-client law (unknown response fields are ignored). The callers
+/// convert with `u64::try_from(elapsed.as_micros())` — checked, never a
+/// lossy `as`.
+pub fn attach_meta(frame: &mut Value, duration_us: u64) {
+    if let Some(obj) = frame.as_object_mut() {
+        obj.insert(
+            "meta".to_string(),
+            serde_json::json!({ "duration_us": duration_us }),
+        );
+    }
+}
+
 /// Re-shape one live notification frame (`{"delta":{…}}`) into v3 in place:
 /// the two Delta fingerprint slots only, never the `files` array beneath.
 pub fn project_delta_frame(frame: &mut Value) {
@@ -275,6 +295,24 @@ mod tests {
                 "diff"
             ])
         );
+    }
+
+    #[test]
+    fn attach_meta_rides_beside_body() {
+        let mut frame = json!({"id":1,"ok":true,"body":{"fingerprint":"b3:x","seq":0}});
+        attach_meta(&mut frame, 412);
+        assert_eq!(frame["meta"], json!({"duration_us": 412}));
+        // the body is untouched — meta is a sibling, never a body field
+        assert_eq!(frame["body"], json!({"fingerprint":"b3:x","seq":0}));
+    }
+
+    #[test]
+    fn attach_meta_rides_beside_error() {
+        let mut frame = json!({"id":2,"ok":false,"error":{
+            "code":"fingerprint_mismatch","recovery":"resync"}});
+        attach_meta(&mut frame, u64::MAX);
+        assert_eq!(frame["meta"]["duration_us"], json!(u64::MAX));
+        assert_eq!(frame["error"]["code"], json!("fingerprint_mismatch"));
     }
 
     #[test]
