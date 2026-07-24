@@ -1093,6 +1093,12 @@ pub enum ErrorCode {
     /// class — re-read the file and re-plan the batch. Additive by the
     /// tolerant-code law: an unknown code dispatches on `recovery` alone.
     WriteConflict,
+    /// M1 xproc-race fix (D9): another cooperating meridian writer holds the
+    /// workspace write lock (`.meridian/write.lock`) — the choke-point refuses
+    /// fast (`LOCK_NB`, never a wait) instead of interleaving read→rename.
+    /// Extras: `message`. Retry class — transient; the same request may
+    /// succeed. Additive by the tolerant-code law.
+    WorkspaceBusy,
 }
 
 impl ErrorCode {
@@ -1123,7 +1129,9 @@ impl ErrorCode {
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift
             | ErrorCode::WriteConflict => Recovery::Refresh,
-            ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
+            ErrorCode::LockTimeout | ErrorCode::StaleView | ErrorCode::WorkspaceBusy => {
+                Recovery::Retry
+            }
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn
