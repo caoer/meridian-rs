@@ -1,0 +1,14 @@
+$SESSION/corpus/meridian-block.md  file_rev:6011a5575be88e55  words:20
+
+== Config (rev:8aeaba3d663dafa3 words:4) ==
+
+
+body after lock block
+
+
+
+== Code (rev:db13a8030399b10d words:5) ==
+
+```rust
+fn main() {}
+```
