@@ -12,19 +12,68 @@ use wire_serve::{ambient_root, domain_snapshot, load_doc};
 
 /// Route one validated request to its arm. `id` is the frame's correlation
 /// token — the splice choke-point records it into the receipt line (§6.1 fact
-/// list); no other arm reads it.
+/// list); no other arm reads it. `v3` is the session's negotiated rev: the
+/// extract arm enriches heading nodes with the U2 addressing facts under v3
+/// only (v3-additive keys; the frozen v2 bytes never change).
 pub(crate) fn dispatch(
     root: &fs::WorkspaceRoot,
     epoch: &mut crate::ring::RootRing,
     id: Option<u64>,
     op: Op,
     rulesets: &[policy::CompiledRuleset],
+    v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     match op {
         Op::Hello { .. } => Ok(hello(root)),
         Op::Toc { path } => toc(root, &path),
         Op::Cat { path, sec } => cat(root, &path, sec),
-        Op::Extract { path, kinds } => extract(root, &path, kinds),
+        Op::Extract { path, kinds } => extract(root, &path, kinds, v3),
+        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
+        // caps; §3.2: an op is in `caps` or answers `unknown_op`).
+        Op::Read {
+            path,
+            mode,
+            frag,
+            sections,
+            display_path,
+            actor,
+        } => {
+            if !v3 {
+                return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
+            }
+            let doc = load_doc(root, &path)?;
+            let ambient = ambient_root(root)?;
+            wire_serve::read::composed_read(
+                &doc,
+                &path,
+                &ambient,
+                &wire_serve::read::ReadParams {
+                    mode,
+                    frag,
+                    sections,
+                    display_path,
+                    actor,
+                },
+            )
+        }
+        // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the
+        // frozen v2 caps; §3.2 discovery honesty). Read-only: loads the prev
+        // bytes, never writes.
+        Op::CheckWrite {
+            path,
+            target,
+            actor,
+            now,
+            edits,
+        } => {
+            if !v3 {
+                return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
+            }
+            let doc = load_doc(root, &path)?;
+            Ok(wire_serve::check_write::check_write(
+                &doc, &target, &actor, &now, &edits,
+            ))
+        }
         Op::Resolve {
             from,
             r#ref,
@@ -61,6 +110,7 @@ pub(crate) fn dispatch(
             dry,
             force,
             edits,
+            plan_edits,
         } => {
             let out = wire_serve::write::splice(
                 root,
@@ -75,6 +125,7 @@ pub(crate) fn dispatch(
                     dry: dry.unwrap_or(false),
                     force: force.unwrap_or(false),
                     edits,
+                    plan_edits,
                 },
                 rulesets,
             )?;
@@ -192,13 +243,15 @@ fn cat(
 
 /// v2 §4.3: the full node inventory via the `wire-map` projection, `kinds`
 /// filtered (values already validated against the closed enum at decode).
+/// Under v3 the heading nodes carry the U2 addressing facts.
 fn extract(
     root: &fs::WorkspaceRoot,
     path: &Path,
     kinds: Option<Vec<String>>,
+    enrich: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
-    Ok(wire_serve::read::extract(&doc, path, kinds))
+    Ok(wire_serve::read::extract(&doc, path, kinds, enrich))
 }
 
 /// v2 §4.5: the walk plane — best-effort app-compatible two-stage walk over

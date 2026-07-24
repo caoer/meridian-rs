@@ -13,11 +13,13 @@
 //! only, by law — this crate must be consumable by any future client (tests, Go
 //! codegen, fixture tooling) without dragging a runtime.
 //!
-//! # Law enforcement (this crate's part), law 3 as amended by review C1
+//! # Law enforcement (this crate's part), law 3 as re-attested 2026-07-24
 //! `model`'s types carry no serde derives; only this crate's types serialize.
-//! **Only the named `wire-map` seam and the `sidecar` bin see wire and model
-//! together** — projection is a tested library function in `wire-map`, never bin
-//! code; the bin stays wiring-only.
+//! **Bridge behavior lives in the two named organs** — the `wire-map`
+//! projection seam and the `wire-serve` serve choke-point; the hosts
+//! (`sidecar`, `registry`), clients, and test members consume those organs
+//! and never grow a second home for projection or dispatch behavior
+//! (`docs/laws.md` Law 3).
 //!
 //! # Rungs (contract v2 §4 op table)
 //! - Rung 1 (`hello`, error envelope, node object): v1 FROZEN 2026-07-18
@@ -35,6 +37,12 @@
 //!   retirement §18 row 6): FROZEN.
 //! - Rung 5 (`links` §4.6 view-shaped fact op + the §10.1 staleness triple +
 //!   `stale_view` §10.2): contract v2 §4.6, §10 — FROZEN (Q5-LINKS).
+//! - M1 v3-only additive amendments (`docs/wire-contract-v3-amendment.md`,
+//!   never on a v2 frame): the composed `read` op (D6 — addressing, content,
+//!   and render at one engine snapshot); `check_write` (M1 U8c) serves the
+//!   I4 def-conformance verdict — candidate rebuild and severity ladder over
+//!   the def layer — engine-side; NEVER a write path (no flock, no CAS, no
+//!   journal).
 //!
 //! # Build-out obligations (contract laws the types alone cannot enforce)
 //! - **v2 §3.2 evolution, server side:** unknown request fields MUST be rejected
@@ -281,6 +289,56 @@ pub struct ReceiptAddr {
     pub anchor: String,
 }
 
+/// One v3 PLAN-level splice edit (M1 U8b, `splice.plan_edits`): the put-plan
+/// vocabulary the Go daemon's `buildSpliceEdit`/`buildPropertyEdits` emulation
+/// spoke, moved behind the wire. Externally tagged; addresses are the HOST-face
+/// sanitized forms (`"A/B"` joined sanitized hpath, `"^id"` blocks refuse per
+/// arm). The engine LOWERS each shape to native [`Edit`]s at the splice intake
+/// (`wire-serve::plan`) — byte-faithful to the deleted Go arms, so the lowered
+/// batch is identical to what the host used to build. v3-only AT DECODE
+/// (rider 1): a v2 session's `plan_edits` hits the frozen unknown-field wall.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanEdit {
+    /// Append to a section's content end — `ensureTrailingNL` + the
+    /// leading-`\n` discipline applied ENGINE-side (the U8b directive).
+    Append { hpath: String, body: String },
+    /// Anchored replace; `all: true` replaces EVERY occurrence (the host's
+    /// read-modify-write moved engine-side). `rev` is the v2-domain node rev
+    /// (blake3) threaded to `if_node_rev`; empty/absent = the relaxed write.
+    Match {
+        hpath: String,
+        old: String,
+        new: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
+    /// Whole-section rewrite (destructive — requires `rev`).
+    ReplaceSection {
+        hpath: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
+    /// Create a new section — PARENT-APPEND placement (emulation-faithful;
+    /// the `check_write` candidate's EOF placement is the U8b NAMED residual,
+    /// G-class: invisible while no def governs created sections). An empty
+    /// `parent_hpath` (top-level create) refuses — M2 note carried forward.
+    Create {
+        parent_hpath: String,
+        title: String,
+        body: String,
+    },
+    /// Frontmatter set — value-span replace / insert-after-last-key /
+    /// conditional quote (`yaml_safe_value`), the `buildPropertyEdits` dance
+    /// reproduced engine-side (NOT native `at:upsert`: model's upsert inserts
+    /// absent keys at FIRST-key position; the Go dance inserts after the LAST
+    /// key — divergent bytes).
+    SetProperty { key: String, value: String },
+}
+
 // ---------------------------------------------------------------------------
 // v2 §4 requests — the op vocabulary
 // ---------------------------------------------------------------------------
@@ -389,6 +447,13 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
         edits: Vec<Edit>,
+        /// M1 U8b `splice.plan_edits` (v3-only at decode, rider 1): the
+        /// plan-level batch, mutually exclusive with `edits` — the engine
+        /// lowers these to native edits at the splice intake. Empty = the
+        /// native form; serialization skips it so the frozen v2 request
+        /// bytes never change.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plan_edits: Vec<PlanEdit>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
@@ -418,6 +483,59 @@ pub enum Op {
     /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
     /// law); outside the retained history → `root_unknown` → diff-by-root.
     Sub { from_seq: u64 },
+    /// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
+    /// render at ONE engine snapshot — one round trip replacing the
+    /// `extract`→`cat`→render 3-hop split (whose non-atomicity created the
+    /// `fingerprint_mismatch` retry race, A-K5). **v3-ONLY**: absent from the
+    /// frozen v2 `caps`, so a v2 session answers `unknown_op` (§3.2 discovery
+    /// honesty); the v3 hello projection advertises it.
+    ///
+    /// `mode` is `"toc"` (default) or `"sections"`; `frag` scopes to one
+    /// section subtree; `sections` selects by sanitized hpath, dewey ordinal,
+    /// or `^anchor`; `display_path` is the caller's path spelling for the
+    /// rendered header line (defaults to `path`) — the engine renders the
+    /// string the consumer expects, it never invents host paths.
+    ///
+    /// `actor` is the §9 read-provenance slot (D-Actor/B, review C4): the
+    /// DAEMON-derived actor stamped on the request — a wire input, never
+    /// ambient, never MCP-caller-settable (the mint door stays the host's).
+    /// M1 carries it so stage-2 read-mint receipts are additive (the engine
+    /// already knows which actor read what at which rev); no receipt is
+    /// minted in M1.
+    Read {
+        path: Path,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display_path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+    },
+    /// M1 U8c the I4 def-conformance verdict op (v3-only, like `read`): the
+    /// Go `meridiandefs.CheckWrite` seam served by the engine — rebuild the
+    /// candidate from put-plan-vocabulary `edits` over the CURRENT bytes at
+    /// `path`, judge prev→candidate against the def layer, return the
+    /// refuse/repairs/forced verdict. NEVER a write path: no flock, no CAS,
+    /// no journal, no disk mutation.
+    ///
+    /// `target` is the caller's ABSOLUTE path spelling (a raw host string
+    /// like `view_path.cwd`, not a wire [`Path`]): it labels the refusal
+    /// strings verbatim AND anchors the def-layer discovery walk — exactly
+    /// the `target` the Go daemon passed to `CheckWrite`. `now` is the caller's
+    /// clock (RFC3339); close-stamp repairs derive from it (§9: the engine
+    /// mints no time). `actor` rides for verdict context, never authz (I3 is
+    /// the host's).
+    CheckWrite {
+        path: Path,
+        target: String,
+        actor: String,
+        now: String,
+        edits: Vec<CheckWriteEdit>,
+    },
     /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
     /// publish `view.duckdb` (the daemon is the sole builder), and return the
     /// stamped filesystem PATH plus a pre-open freshness hint. It marshals
@@ -484,6 +602,20 @@ pub struct Node {
     /// `splice ∈ caps`; clients MUST tolerate its absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_rev: Option<NodeRev>,
+    /// v3-ADDITIVE (M1 U2, host-face addressing): the dewey ordinal ("1.2.1")
+    /// on heading nodes. NEVER emitted on a v2 session — the frozen v2 bytes
+    /// carry no such key (`contract_v2.rs` goldens).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the sanitized joined hpath ADDRESS
+    /// ("Notes/Slash-Title-Here") on heading nodes — the Go
+    /// `sanitizeHeadingHost` semantics, computed engine-side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpath_text: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the `strings.Fields` word count over the
+    /// heading's SUBTREE-inclusive content span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<u64>,
 }
 
 /// One `toc` row (v2 §4.1): the complete write kit for one node. Row shapes,
@@ -510,6 +642,72 @@ pub struct TocNode {
     pub text_prefix_16b: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keys: Option<Vec<String>>,
+}
+
+/// One composed-read toc row (M1 U4a2, v3-only): the host-face addressing
+/// facts — dewey ordinal `n`, heading `depth`, RAW `title`, the sanitized
+/// joined `hpath` ADDRESS, `strings.Fields` `words` over the
+/// subtree-inclusive content span, and the section CAS token `sec_rev`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadRow {
+    pub n: String,
+    pub depth: u32,
+    pub title: String,
+    pub hpath: String,
+    pub words: u64,
+    pub sec_rev: NodeRev,
+}
+
+/// One composed-read resolved section (M1 U4a2, v3-only): the selector that
+/// hit, its address + CAS token, the RAW content — the verbatim bytes
+/// `sec_rev` was minted over, so the row is self-verifying and a `put` built
+/// from it round-trips (op-owner ruling 2026-07-24: elision applies to
+/// `rendered_text` ONLY) — and the word count over that raw content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadSectionOut {
+    pub sel: String,
+    pub hpath: String,
+    pub sec_rev: NodeRev,
+    pub words: u64,
+    pub content: String,
+}
+
+/// One `check_write` plan edit (M1 U8c, v3-only): the put-plan vocabulary the
+/// daemon face speaks (Go `body.Edit` as `plansToBodyEdits` builds it). `at`
+/// is a heading path, `^id`/`#^id` block, new section name, or fm key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteEdit {
+    pub op: String,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub find: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rev: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
+}
+
+/// The `check_write` refusal (M1 U8c): `class` picks the host's render template
+/// — `rebuild` (the candidate could not be built: resolve/anchor/ECAS/
+/// would-corrupt, Go's `cerr` wrap) vs `verdict` (the I4 severity ladder
+/// refused). `code`/`message`/`remedy` are the Go strings VERBATIM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteRefuse {
+    pub class: String,
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remedy: String,
+}
+
+/// One close-stamp autofill (M1 U8c): the host folds it into the SAME atomic
+/// write as a system-authored property set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckWriteRepair {
+    pub key: String,
+    pub value: String,
 }
 
 /// Per-kind `info` payloads (v1 §5.2 table). Untagged: the sibling `kind`
@@ -574,10 +772,43 @@ pub enum ResponsePayload {
 /// Success bodies per op. Untagged: field shape discriminates on the wire;
 /// typed clients match on what they asked for. Variant ORDER is load-bearing
 /// for deserialization: a shape-superset variant must precede its subset
-/// (Toc before Nodes, Cat before Splice).
+/// (Toc before Nodes, Cat before Splice; Read first — `rendered_text` is
+/// unique to it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
+    /// The composed-read reply (M1 U4a2, v3-only): every fact at ONE engine
+    /// snapshot — `file_rev` + ambient `root` (the atomicity witness), the
+    /// host-face addressing table (`toc`, mode toc) or the selected sections
+    /// (`sections`, mode sections; `truncated`+`notice` = the PARTIAL-read
+    /// rule), and `rendered_text` (the `readText` projection, byte-parity
+    /// with the U0 goldens).
+    Read {
+        path: Path,
+        file_rev: NodeRev,
+        root: Root,
+        words_total: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        toc: Option<Vec<ReadRow>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<ReadSectionOut>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        notice: Option<String>,
+        rendered_text: String,
+    },
+    /// M1 U8c the `check_write` verdict (v3-only). `refuse` absent = the write
+    /// may proceed; `repairs` are autofill edits the host folds into the SAME
+    /// atomic write; `forced` echoes overridden warn rule-ids (empty while
+    /// the face pins force=false). `repairs`/`forced` always serialize so the
+    /// body is never shapeless.
+    CheckWrite {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        refuse: Option<CheckWriteRefuse>,
+        repairs: Vec<CheckWriteRepair>,
+        forced: Vec<String>,
+    },
     /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
     /// optional first ambient `root`.
@@ -1085,6 +1316,20 @@ pub enum ErrorCode {
     /// is the attack this defeats). Extras: `path` (the protected file) +
     /// `message`. Fix class. Additive by the tolerant-code law.
     IndexIntegrity,
+    /// M1 TOCTOU-gap fix (D8): the splice target's live disk bytes no longer
+    /// equal the bytes the sealed batch validated against — an out-of-band
+    /// writer landed between validate and commit. The engine refuses rather
+    /// than blind-splice validated spans into drifted bytes (silent mid-file
+    /// corruption). Extras: `path` (the drifted file) + `message`. Refresh
+    /// class — re-read the file and re-plan the batch. Additive by the
+    /// tolerant-code law: an unknown code dispatches on `recovery` alone.
+    WriteConflict,
+    /// M1 xproc-race fix (D9): another cooperating meridian writer holds the
+    /// workspace write lock (`.meridian/write.lock`) — the choke-point refuses
+    /// fast (`LOCK_NB`, never a wait) instead of interleaving read→rename.
+    /// Extras: `message`. Retry class — transient; the same request may
+    /// succeed. Additive by the tolerant-code law.
+    WorkspaceBusy,
 }
 
 impl ErrorCode {
@@ -1111,10 +1356,13 @@ impl ErrorCode {
             | ErrorCode::InvalidUtf8
             | ErrorCode::DaemonOnly
             | ErrorCode::ConventionFault => Recovery::Env,
-            ErrorCode::CasMismatch | ErrorCode::RefNotFound | ErrorCode::ArmedDrift => {
-                Recovery::Refresh
+            ErrorCode::CasMismatch
+            | ErrorCode::RefNotFound
+            | ErrorCode::ArmedDrift
+            | ErrorCode::WriteConflict => Recovery::Refresh,
+            ErrorCode::LockTimeout | ErrorCode::StaleView | ErrorCode::WorkspaceBusy => {
+                Recovery::Retry
             }
-            ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn

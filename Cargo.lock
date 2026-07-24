@@ -344,17 +344,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "attest"
-version = "0.0.0"
-dependencies = [
- "fs",
- "model",
- "pin",
- "serde",
- "tempfile",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1961,6 +1950,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
+name = "lock"
+version = "0.0.0"
+dependencies = [
+ "model",
+ "syntax",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2094,7 +2091,6 @@ version = "0.0.0"
 dependencies = [
  "allocative",
  "anyhow",
- "attest",
  "cache",
  "check",
  "duckdb",
@@ -2102,7 +2098,6 @@ dependencies = [
  "fs",
  "libc",
  "model",
- "pin",
  "policy",
  "preset",
  "realise",
@@ -2315,27 +2310,6 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
-]
-
-[[package]]
-name = "pin"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "blake3",
- "duckdb",
- "effects",
- "fs",
- "model",
- "receipt",
- "serde",
- "serde_json",
- "starlark",
- "syntax",
- "tempfile",
- "view",
- "wire",
- "wire-serve",
 ]
 
 [[package]]
@@ -2872,6 +2846,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71fe3824f5629716b1589be05dacd749f6aa084c87e00e016714a8cdfccc997c"
 dependencies = [
  "bytecheck",
+]
+
+[[package]]
+name = "render"
+version = "0.0.0"
+dependencies = [
+ "lock",
+ "model",
+ "syntax",
+ "wire",
+ "wire-map",
 ]
 
 [[package]]
@@ -3641,12 +3626,18 @@ name = "testsuite"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "fs",
+ "lock",
  "model",
+ "render",
  "serde_json",
+ "sidecar",
  "syntax",
+ "tempfile",
  "transport",
  "wire",
  "wire-map",
+ "wire-serve",
 ]
 
 [[package]]
@@ -4397,10 +4388,12 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "lock",
  "model",
  "policy",
  "query",
  "receipt",
+ "render",
  "serde_json",
  "syntax",
  "tempfile",

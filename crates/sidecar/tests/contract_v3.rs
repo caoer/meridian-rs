@@ -170,9 +170,18 @@ fn v3_session_emits_fingerprint_never_root() {
     assert_eq!(frames[1]["body"]["fingerprint"], json!(R0));
     assert!(frames[1]["body"].as_object().unwrap().get("root").is_none());
 
-    // the renamed op returns the fingerprint body
+    // the renamed op returns the fingerprint body (plus the U7 in-band timing
+    // block — nondeterministic value, so it is asserted by shape and peeled
+    // before the exact comparison)
+    let mut cursor_frame = frames[2].clone();
+    let meta = cursor_frame
+        .as_object_mut()
+        .unwrap()
+        .remove("meta")
+        .expect("v3 dispatch frames carry meta");
+    assert!(meta["duration_us"].is_u64(), "meta carries µs: {meta}");
     assert_eq!(
-        frames[2],
+        cursor_frame,
         json!({"id":3,"ok":true,"body":{"fingerprint":R0,"seq":0}})
     );
 
@@ -261,6 +270,157 @@ fn unknown_contract_rev_is_typed_error() {
             .contains("unknown contract rev"),
         "{}",
         frames[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// U7 in-band timing: v3 dispatch frames carry meta.duration_us, v2 never
+// ---------------------------------------------------------------------------
+
+/// A v3 session's dispatched frames — success AND refusal alike — carry the
+/// in-band timing block `meta: {duration_us}` (integer µs, the sidecar
+/// measure point is `arms::dispatch`). The body/error shape is untouched:
+/// meta is a top-level sibling.
+#[test]
+fn v3_dispatch_frames_carry_meta_duration_us() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n\
+         {\"id\":3,\"op\":\"toc\",\"path\":\"no/such/file.md\"}\n";
+    let frames = serve(&root, input);
+    // hello + toc ride arms::dispatch → both timed
+    for frame in &frames[..2] {
+        assert!(
+            frame["meta"]["duration_us"].is_u64(),
+            "v3 dispatch frame carries meta.duration_us: {frame}"
+        );
+    }
+    // a refusal is engine work too — the error frame is timed as well
+    assert_eq!(frames[2]["ok"], json!(false));
+    assert!(
+        frames[2]["meta"]["duration_us"].is_u64(),
+        "v3 error frame carries meta.duration_us: {}",
+        frames[2]
+    );
+    // meta rides beside body/error, never inside them
+    assert!(frames[1]["body"].as_object().unwrap().get("meta").is_none());
+    assert!(
+        frames[2]["error"]
+            .as_object()
+            .unwrap()
+            .get("meta")
+            .is_none()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// U2 addressing facts: v3 extract enriches headings, v2 never
+// ---------------------------------------------------------------------------
+
+/// A v3 session's `extract` carries the host-face addressing facts on every
+/// heading node — dewey `n`, sanitized `hpath_text`, subtree `words` — the
+/// facts ccc-statusd re-derived host-side (U2). Non-heading nodes carry none.
+#[test]
+fn v3_extract_enriches_heading_nodes() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"extract\",\"path\":\"notes/plan.md\"}\n";
+    let frames = serve(&root, input);
+    let nodes = frames[1]["body"]["nodes"].as_array().expect("nodes");
+    let headings: Vec<&Value> = nodes
+        .iter()
+        .filter(|n| n["kind"] == json!("heading"))
+        .collect();
+    assert_eq!(headings.len(), 3, "S0 plan has 3 headings");
+    let facts: Vec<(&str, &str, u64)> = headings
+        .iter()
+        .map(|h| {
+            (
+                h["n"].as_str().expect("n"),
+                h["hpath_text"].as_str().expect("hpath_text"),
+                h["words"].as_u64().expect("words"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        facts,
+        vec![
+            ("1", "Goals", 20),
+            ("1.1", "Goals/Q3", 3),
+            ("1.2", "Goals/Q4", 10),
+        ]
+    );
+    // non-heading nodes never carry the addressing keys
+    for n in nodes.iter().filter(|n| n["kind"] != json!("heading")) {
+        for key in ["n", "hpath_text", "words"] {
+            assert!(
+                n.get(key).is_none(),
+                "non-heading node must not carry `{key}`: {n}"
+            );
+        }
+    }
+}
+
+/// D-Actor/B (review C4): the daemon-derived `actor` RIDES the composed
+/// read request — decode accepts it (same §9 law as splice's actor slot)
+/// and the op serves normally. M1 mints no read receipt; the test pins that
+/// the wire already carries the provenance stage-2 read-mint consumes, so
+/// receipts land additively, never as an op re-shape.
+#[test]
+fn v3_read_carries_the_derived_actor() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"read\",\"path\":\"notes/plan.md\",\"actor\":\"agent:b0864fb2\"}\n";
+    let frames = serve(&root, input);
+    assert_eq!(
+        frames[1]["ok"],
+        json!(true),
+        "an actor-stamped read serves: {}",
+        frames[1]
+    );
+    assert!(
+        frames[1]["body"]["rendered_text"].is_string(),
+        "the composed body rides: {}",
+        frames[1]
+    );
+}
+
+/// A v2 session's `extract` is the frozen shape: ZERO `n`/`hpath_text`/
+/// `words` keys anywhere in the frame.
+#[test]
+fn v2_extract_never_carries_addressing_keys() {
+    let (_d, root) = s0();
+    let raw = serve_raw(
+        &root,
+        "{\"id\":1,\"op\":\"hello\",\"proto\":1}\n\
+         {\"id\":2,\"op\":\"extract\",\"path\":\"notes/plan.md\"}\n",
+    );
+    for key in ["\"hpath_text\"", "\"words\"", "\"n\":"] {
+        assert!(
+            !raw.contains(key),
+            "v2 extract must never emit {key}: {raw}"
+        );
+    }
+}
+
+/// A v2 session NEVER emits a `meta` key — the frozen contract is
+/// byte-identical, and timing is a v3-only additive slot.
+#[test]
+fn v2_session_never_emits_meta() {
+    let (_d, root) = s0();
+    let raw = serve_raw(
+        &root,
+        "{\"id\":1,\"op\":\"hello\",\"proto\":1}\n\
+         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n\
+         {\"id\":3,\"op\":\"toc\",\"path\":\"no/such/file.md\"}\n",
+    );
+    assert!(
+        !raw.contains("\"meta\""),
+        "v2 must never emit a meta key: {raw}"
+    );
+    assert!(
+        !raw.contains("duration_us"),
+        "v2 must never emit duration_us: {raw}"
     );
 }
 

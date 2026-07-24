@@ -93,7 +93,7 @@ fn apply_plan(root: &fs::WorkspaceRoot, plan: &RenamePlan) {
         let doc = build_doc(&read(root, path));
         match model::validate_batch(&doc, None, batch, None) {
             SpliceVerdict::Validated(sealed) => {
-                fs::apply_batch(root, FsPath::new(path), None, &sealed)
+                fs::apply_batch(root, FsPath::new(path), None, &sealed, doc.raw.as_bytes())
                     .expect("apply_batch lands the rename splice");
             }
             other => panic!("rename splice for {path} did not validate: {other:?}"),
@@ -216,7 +216,14 @@ fn gate1_falsification_body_dropping_rename_loses_block_id() {
     let SpliceVerdict::Validated(sealed) = model::validate_batch(&doc, None, &bad, None) else {
         panic!("the body-dropping put validates (it is a legal splice, just wrong)");
     };
-    fs::apply_batch(&root, FsPath::new("page.md"), None, &sealed).expect("apply");
+    fs::apply_batch(
+        &root,
+        FsPath::new("page.md"),
+        None,
+        &sealed,
+        doc.raw.as_bytes(),
+    )
+    .expect("apply");
 
     let after_raw = read(&root, "page.md");
     // The guard the real rename upholds is exactly this negation: a body-dropping
@@ -321,6 +328,7 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
         dry: false,
         force: false,
         edits,
+        plan_edits: Vec::new(),
     }
 }
 

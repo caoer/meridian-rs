@@ -629,6 +629,8 @@ enum ErrorCode {
   ERROR_CODE_ARMED_DRIFT = 23; // armed change plane (U4.2), refusal-amendment row 7, refresh
   ERROR_CODE_BINDING_BREAK = 24; // binding law (U4.3), refusal-amendment row 9, fix
   ERROR_CODE_INDEX_INTEGRITY = 25; // INDEX-integrity floor (U4.3), refusal-amendment row 10, fix
+  ERROR_CODE_WRITE_CONFLICT = 26; // splice TOCTOU-gap fix (M1 D8), refresh
+  ERROR_CODE_WORKSPACE_BUSY = 27; // cross-process write flock (M1 D9), retry
 }
 
 // v2 §8: the CLOSED six-class recovery enum; every error frame carries one.

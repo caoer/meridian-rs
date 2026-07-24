@@ -736,6 +736,9 @@ fn absent_actor_now_absent_on_the_wire() {
                 },
                 if_node_rev: None,
             }],
+            // U8b: empty plan_edits serializes AWAY — the frozen v2 request
+            // bytes this test pins stay byte-identical.
+            plan_edits: Vec::new(),
         },
     };
     let v = serde_json::to_value(&request).unwrap();

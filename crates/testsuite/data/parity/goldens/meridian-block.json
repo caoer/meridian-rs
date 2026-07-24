@@ -1,0 +1,124 @@
+{
+  "doc": "meridian-block",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/meridian-block.md"
+      },
+      "text": "$SESSION/corpus/meridian-block.md  file_rev:6011a5575be88e55  words:20\n1      Config  words:10  rev:8aeaba3d663dafa3\n2      Code  words:10  rev:db13a8030399b10d",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/meridian-block.md",
+        "ref": "corpus/meridian-block.md",
+        "rev": "6011a5575be88e55",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Config",
+            "n": "1",
+            "sec_rev": "8aeaba3d663dafa3",
+            "title": "Config",
+            "words": 10
+          },
+          {
+            "depth": 1,
+            "hpath": "Code",
+            "n": "2",
+            "sec_rev": "db13a8030399b10d",
+            "title": "Code",
+            "words": 10
+          }
+        ],
+        "words_total": 20
+      }
+    },
+    {
+      "id": "r-sections",
+      "tool": "read",
+      "args": {
+        "mode": "sections",
+        "ref": "corpus/meridian-block.md",
+        "sections": [
+          "Config",
+          "Code"
+        ]
+      },
+      "text": "$SESSION/corpus/meridian-block.md  file_rev:6011a5575be88e55  words:20\n\n== Config (rev:8aeaba3d663dafa3 words:10) ==\n\n```meridian-lock\nversion: 1\nobjects: {}\n```\n\nbody after lock block\n\n\n\n== Code (rev:db13a8030399b10d words:10) ==\n\n```rust\nfn main() {}\n```\n\n```meridian-journal\n- ts: 2026-01-01\n```",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/meridian-block.md",
+        "ref": "corpus/meridian-block.md",
+        "rev": "6011a5575be88e55",
+        "sections": [
+          {
+            "content": "\n```meridian-lock\nversion: 1\nobjects: {}\n```\n\nbody after lock block\n\n",
+            "hpath": "Config",
+            "sec_rev": "8aeaba3d663dafa3",
+            "sel": "Config",
+            "words": 10
+          },
+          {
+            "content": "\n```rust\nfn main() {}\n```\n\n```meridian-journal\n- ts: 2026-01-01\n```\n",
+            "hpath": "Code",
+            "sec_rev": "db13a8030399b10d",
+            "sel": "Code",
+            "words": 10
+          }
+        ],
+        "words_total": 20
+      }
+    },
+    {
+      "id": "p-append-config",
+      "tool": "put",
+      "args": {
+        "body": "line after config",
+        "op": "append",
+        "ref": "corpus/meridian-block.md#Config"
+      },
+      "text": "wrote $SESSION/corpus/meridian-block.md  file_rev:357719c7fe54214e",
+      "is_error": false,
+      "file_after": "---\ntype: note\n---\n\n# Config\n\n```meridian-lock\nversion: 1\nobjects: {}\n```\n\nbody after lock block\n\nline after config\n# Code\n\n```rust\nfn main() {}\n```\n\n```meridian-journal\n- ts: 2026-01-01\n```\n",
+      "structured": {
+        "path": "$SESSION/corpus/meridian-block.md",
+        "rev": "357719c7fe54214e"
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/meridian-block.md"
+      },
+      "text": "$SESSION/corpus/meridian-block.md  file_rev:357719c7fe54214e  words:23\n1      Config  words:13  rev:1c8f49ff99a9b5eb\n2      Code  words:10  rev:db13a8030399b10d",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/meridian-block.md",
+        "ref": "corpus/meridian-block.md",
+        "rev": "357719c7fe54214e",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Config",
+            "n": "1",
+            "sec_rev": "1c8f49ff99a9b5eb",
+            "title": "Config",
+            "words": 13
+          },
+          {
+            "depth": 1,
+            "hpath": "Code",
+            "n": "2",
+            "sec_rev": "db13a8030399b10d",
+            "title": "Code",
+            "words": 10
+          }
+        ],
+        "words_total": 23
+      }
+    }
+  ]
+}

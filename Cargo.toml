@@ -18,6 +18,7 @@ default-members = [
     "crates/policy",
     "crates/query",
     "crates/wire-serve",
+    "crates/render",
     "crates/sidecar",
     "crates/testsuite",
     "crates/workspace",
@@ -28,11 +29,10 @@ default-members = [
     "crates/realise",
     "crates/mrd",
     "crates/view",
-    "crates/pin",
-    "crates/attest",
     "crates/transcript",
     "crates/preset",
     "crates/check",
+    "crates/lock",
 ]
 
 [workspace.package]
@@ -50,6 +50,8 @@ fs = { path = "crates/fs", version = "0.0.0" }
 wire = { path = "crates/wire", version = "0.0.0" }
 wire-map = { path = "crates/wire-map", version = "0.0.0" }
 wire-serve = { path = "crates/wire-serve", version = "0.0.0" }
+render = { path = "crates/render", version = "0.0.0" }
+sidecar = { path = "crates/sidecar", version = "0.1.0" }
 receipt = { path = "crates/receipt", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
 transport-proto = { path = "crates/transport-proto", version = "0.0.0" }
@@ -62,8 +64,7 @@ effects = { path = "crates/effects", version = "0.0.0" }
 run = { path = "crates/run", version = "0.0.0" }
 realise = { path = "crates/realise", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
-pin = { path = "crates/pin", version = "0.0.0" }
-attest = { path = "crates/attest", version = "0.0.0" }
+lock = { path = "crates/lock", version = "0.0.0" }
 transcript = { path = "crates/transcript", version = "0.0.0" }
 preset = { path = "crates/preset", version = "0.0.0" }
 check = { path = "crates/check", version = "0.0.0" }

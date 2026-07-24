@@ -62,6 +62,11 @@ pub struct SpliceArgs {
     pub force: bool,
     /// The requested edits, 1:1 with the armed edits in the response.
     pub edits: Vec<Edit>,
+    /// M1 U8b `splice.plan_edits`: the plan-level batch (mutually exclusive
+    /// with `edits`, decode-enforced). Lowered to native edits at the intake
+    /// below (`crate::plan::lower` — byte-faithful to the deleted Go arms);
+    /// armed facts align 1:1 with the LOWERED edits. Empty = the native form.
+    pub plan_edits: Vec<wire::PlanEdit>,
 }
 
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
@@ -127,6 +132,14 @@ pub fn splice(
         )));
     }
 
+    // D9 (xproc-race fix): the cross-process write flock, held across the
+    // WHOLE critical section — read#1 below, validate, gate, the commit's
+    // read#2 → verify → renames, and the journal appends — so cooperating
+    // meridian writers (sidecar, resident daemon, mrd) serialize instead of
+    // interleaving read→rename. Dry runs take it too: a rehearsal refuses
+    // `workspace_busy` exactly where the real write would. Released on drop.
+    let _write_lock = acquire_write_lock(root)?;
+
     let doc = load_doc(root, &args.path)?;
     let root_before = ambient_root(root)?;
 
@@ -141,7 +154,19 @@ pub fn splice(
         return Err(Box::new(e));
     }
 
-    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, &args.edits)?;
+    // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
+    // (under the flock, against the just-loaded pre-batch doc), then the whole
+    // path below runs unchanged on the lowered batch. Target-class refusals
+    // (the deleted Go arms' teachings) fire before any per-target resolution.
+    let lowered;
+    let effective_edits = if args.plan_edits.is_empty() {
+        &args.edits
+    } else {
+        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
+        &lowered
+    };
+
+    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
     let batch = model::SpliceRequest {
         if_root: args
             .if_root
@@ -160,7 +185,14 @@ pub fn splice(
         None,
     ) {
         model::SpliceVerdict::Validated(b) => b,
-        refused => return Err(verdict_to_wire(&refused, args, &doc, &before_facts)),
+        refused => {
+            return Err(verdict_to_wire(
+                &refused,
+                effective_edits,
+                &doc,
+                &before_facts,
+            ));
+        }
     };
 
     // Build the post-batch document state ONCE, shared by BOTH the armed AFTER
@@ -169,7 +201,7 @@ pub fn splice(
     // one-reparse law; advisor Ruling 2). The real commit writes exactly these
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
     let after_doc = build_after_doc(&doc, &sealed, &args.path);
-    let armed_edits = simulate_armed_edits(&after_doc, &args.edits, &before_facts)?;
+    let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
     // ADVISORY §11.1 verdicts from any caller packs (W1) — never a decision; the
     // caller-supplied packs do not gate, only the armed law below does.
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
@@ -219,7 +251,14 @@ pub fn splice(
     // ARMED — §6.1), fold the append, honor the parent-dir obligation,
     // then drive the D4 commit seam (validate → apply → emit).
     let receipt_input = match &args.receipt {
-        Some(addr) => Some(receipt_input(root, args, &root_before, &armed_edits, addr)?),
+        Some(addr) => Some(receipt_input(
+            root,
+            args,
+            effective_edits,
+            &root_before,
+            &armed_edits,
+            addr,
+        )?),
         None => None,
     };
     let frame = commit_batch(
@@ -234,13 +273,9 @@ pub fn splice(
         },
     )
     .map_err(|e| match e {
-        CommitError::Refused(v) => verdict_to_wire(&v, args, &doc, &before_facts),
+        CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &before_facts),
         CommitError::Env(err) => err,
-        CommitError::Io(err) => {
-            let mut w = ErrorBody::new(ErrorCode::IoError);
-            w.cause = Some(err.to_string());
-            Box::new(w)
-        }
+        CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;
 
     // The receipt FACT from the true post-state (host-block-leaf grain).
@@ -391,6 +426,10 @@ pub fn create(
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
 
+    // D9: births serialize on the same write flock as every meridian writer —
+    // this also closes the `if_absent` check→rename window for cooperators.
+    let _write_lock = acquire_write_lock(root)?;
+
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
@@ -510,6 +549,10 @@ pub fn remove(
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
 
+    // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
+    // a critical section like any other write).
+    let _write_lock = acquire_write_lock(root)?;
+
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
@@ -594,90 +637,106 @@ pub fn remove(
     })
 }
 
+// The old `^inputs` pin lock-write (superseded design, 22-01 module) lived
+// here until M1 U12 removed it with `crates/pin`/`crates/attest`; the NEW
+// lock method is the `meridian-lock` block below (U11, decision #8).
+
 // ---------------------------------------------------------------------------
-// Guarded pin lock-write — the `^inputs` splice (d2 §2.5, U2.4)
+// Guarded `meridian-lock` write — the NEW lock method (M1 U11, decision #8)
 // ---------------------------------------------------------------------------
 //
-// `pin` reads a page's `inputs:` manifest, resolves + composes every ref, and
-// splices the `^inputs` lock in ONE CAS-guarded write minting one receipt (d2
-// §2.5). The manifest read, resolve, compose, `check:` evaluation, merge law,
-// and the lock's byte rendering all live in `crates/pin` (the orchestration).
-// This is the WRITE choke-point half: a core span splice that lands the
-// engine-COMPUTED block bytes and journals the write — mirroring the
-// create/remove shape, so the one-write-shape law holds (no second write path).
+// The lock is a machine-owned lockfile IN the page: a fenced `meridian-lock`
+// block (versioned root object, `objects:`/`pins:` planes). The FORMAT —
+// types, strict parse, canonical render, locate — lives in `crates/lock`;
+// this is the ENGINE-SOLE-WRITER path (#8 §3): the one place lock bytes reach
+// disk, mirroring the create/remove shape so the one-write-shape law holds.
+// Callers hand in the TYPED `lock::Lock` — never raw block bytes — so a
+// hand-forged block cannot enter through this door by construction. M1 lands
+// format + this write path ONLY; the read-mint gate, drift verify-on-read,
+// and vibe mode are stage 2 (nothing reads the lock to gate yet). Lock-is-
+// content (#8 §5): the block sits inside the page span, so the page's
+// fingerprint covers its lock and the write is one atomic file replace —
+// content and lock land together or not at all.
 
-/// One `pin` lock-write request (d2 §2.5): a COMPUTED span edit that splices the
-/// `^inputs` lock into `path`. `span` is the pre-batch byte range the new block
-/// replaces — an empty range (`start == end`) at the append point BIRTHS the
-/// block. The span is engine-computed from parse (source 1), never
-/// client-supplied, so the D-C1 "no request-side span" law holds: `pin` is a
-/// core op, not a wire `splice`. `if_file_rev` is the pinning page's whole-file
-/// rev the pin read (write-what-you-read CAS); `if_root` the §5.1 world guard;
-/// `before_rev`/`after_rev` the lock block's node rev transition for the journal.
+/// One guarded `meridian-lock` write request (U11): upsert the page's ONE
+/// lock block from a typed [`lock::Lock`]. `if_file_rev` is the page's
+/// whole-file rev the caller read (write-what-you-read CAS); `if_root` the
+/// §5.1 world guard; `dry` runs everything except disk.
 #[derive(Debug, Clone)]
-pub struct PinLockArgs {
+pub struct LockWriteArgs {
     /// Frame correlation token — recorded only.
     pub id: Option<u64>,
-    /// The pinning page the `^inputs` lock lives in (workspace-confined).
+    /// The pinning page the `meridian-lock` block lives in (workspace-confined).
     pub path: Path,
+    /// The typed lock object — the SOLE input form (engine-sole-writer #8 §3:
+    /// raw block bytes never cross this seam; rendering is `lock::render`'s).
+    pub lock: lock::Lock,
     pub actor: Option<String>,
     pub now: Option<String>,
     /// The optional §5.1 world guard: refuse if the ambient root differs.
     pub if_root: Option<Root>,
-    /// The pinning page's whole-file rev the pin computed against — the
-    /// write-what-you-read CAS; a drift refuses `cas_mismatch`.
+    /// The page's whole-file rev the caller read — write-what-you-read CAS.
     pub if_file_rev: NodeRev,
-    /// The pre-batch byte range the new block replaces (`start == end` = birth).
-    pub span: Span,
-    /// The new `^inputs` block bytes (fence to fence), engine-rendered by `pin`.
-    pub new_text: String,
-    /// The lock block's node rev BEFORE the write (empty-span rev on a birth).
-    pub before_rev: NodeRev,
-    /// The lock block's node rev AFTER the write.
-    pub after_rev: NodeRev,
     /// Dry run — everything except disk (no bytes, no journal row, no advance).
     pub dry: bool,
 }
 
-/// The outcome of a guarded `pin` lock-write. Absences mirror [`CreateOutcome`]:
+/// The outcome of a guarded lock write. Absences mirror [`CreateOutcome`]:
 /// `root_after`/`journal_anchor`/`committed` are `None` on a dry run.
 #[derive(Debug)]
-pub struct PinLockOutcome {
+pub struct LockWriteOutcome {
     pub root_before: Root,
     pub root_after: Option<Root>,
-    /// The pinning page's whole-file rev before the write (the CAS-confirmed rev).
+    /// The page's whole-file rev before the write (the CAS-confirmed rev).
     pub file_rev_before: NodeRev,
-    /// The pinning page's whole-file rev after the lock landed.
+    /// The page's whole-file rev after the lock landed (computed on dry too —
+    /// a fact about the spec, not the disk).
     pub file_rev_after: NodeRev,
     pub journal_anchor: Option<String>,
     pub committed: Option<DeltaFrame>,
+    /// `true` when the write BIRTHED the block (EOF append — no lock existed);
+    /// `false` when it replaced the existing block in place.
+    pub created: bool,
     pub dry: bool,
 }
 
-/// **Guarded `pin` lock-write** (d2 §2.5, U2.4): splice the engine-computed
-/// `^inputs` lock into `path` under CAS write-what-you-read + workspace-root,
-/// journal ONE `splice` row, and emit the `modified` change surface.
+/// **Guarded `meridian-lock` write** (U11, decision #8): land the page's one
+/// lock block — replace it in place when present, birth it at EOF when absent
+/// — under CAS write-what-you-read + workspace-root + the D9 write flock,
+/// journal ONE `op=lock` row (whole-file transition, chain-continuous), and
+/// emit the `modified` change surface.
 ///
-/// Order: path confinement → reserved-journal guard → world guard (§5.1) → load
-/// the page → the write-what-you-read CAS (the live rev must equal `if_file_rev`)
-/// → span-bound + char-boundary guard → apply the span replacement in memory →
-/// [`fs::replace_file`] (the atomic overwrite) → root advance → splice Delta →
-/// journal row (`op=splice`, `edits=1` naming the `^inputs` lock). `dry: true`
-/// runs everything except disk.
+/// Order: path confinement → reserved-journal guard → the write flock (D9) →
+/// load the page → world guard (§5.1) → the write-what-you-read CAS → locate
+/// the block (`lock::find` — MULTIPLE blocks refuse loud: sole-writer mints
+/// exactly one, two is a hand-edit/corruption signal) → render via
+/// `lock::render` (canonical bytes; terminators are THIS path's) → in-memory
+/// splice → [`fs::replace_file`] (atomic; lock-is-content — one commit) →
+/// root advance → Delta → journal row. `dry: true` runs everything except
+/// disk.
+///
+/// # Placement law (fresh lock)
+/// A birthed block appends at EOF — lockfile-at-bottom posture — separated
+/// from existing content by exactly one blank line, and the file ends with
+/// one terminator. A replaced block keeps its exact span (fence-to-fence).
 ///
 /// # Errors
-/// `bad_path`, `bad_request` (reserved journal, or a bad computed span),
-/// `root_mismatch` (stale world guard), `cas_mismatch` (the page drifted from
-/// the read rev), or an I/O failure. In every error case nothing was written and
-/// no journal row was appended.
-pub fn pin_lock(
+/// `bad_path`, `bad_request` (reserved journal, or a malformed/duplicated
+/// existing lock block — surfaced, never silently adopted), `workspace_busy`
+/// (D9), `file_not_found` (the page must exist — a lock pins content),
+/// `root_mismatch`, `cas_mismatch`, or an I/O failure. In every error case
+/// nothing was written and no journal row was appended.
+pub fn lock_write(
     root: &fs::WorkspaceRoot,
     seq: u64,
-    args: &PinLockArgs,
-) -> Result<PinLockOutcome, Box<ErrorBody>> {
+    args: &LockWriteArgs,
+) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
     reserved_journal_guard(fs_path)?;
+
+    // D9: the lock write serializes on the same write flock as every writer.
+    let _write_lock = acquire_write_lock(root)?;
 
     let before_doc = load_doc(root, &args.path)?;
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
@@ -685,38 +744,54 @@ pub fn pin_lock(
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
-    // write-what-you-read CAS: the page must still carry the rev the pin read
-    // (a drift means the compose the lock records was against stale bytes).
+    // write-what-you-read CAS: the page must still carry the rev the caller
+    // read (drift means the lock's facts were computed against stale bytes).
     if args.if_file_rev != file_rev_before {
         return Err(cas_mismatch(&args.if_file_rev, &file_rev_before));
     }
 
-    // The span is engine-computed, but guard it defensively: in bounds and on
-    // char boundaries so the splice can never corrupt bytes.
-    let start = usize::try_from(args.span.0).unwrap_or(usize::MAX);
-    let end = usize::try_from(args.span.1).unwrap_or(usize::MAX);
+    // Locate the ONE block (or the EOF birth point). `lock::find` fails loud
+    // on duplicates and malformed YAML — a sole-writer page can only reach
+    // that state by hand-editing, and adopting it would launder corruption.
     let raw = &before_doc.raw;
-    if start > end || end > raw.len() || !raw.is_char_boundary(start) || !raw.is_char_boundary(end)
-    {
-        return Err(bad_request(
-            "pin lock span is out of bounds or splits a character",
-        ));
-    }
-    let mut new_raw = String::with_capacity(raw.len() + args.new_text.len());
-    new_raw.push_str(&raw[..start]);
-    new_raw.push_str(&args.new_text);
-    new_raw.push_str(&raw[end..]);
+    let (span, created) = match locate_lock(&before_doc)? {
+        Some(existing) => (existing, false),
+        None => (raw.len()..raw.len(), true),
+    };
+
+    // Render the canonical block (fence-to-fence, no trailing newline — the
+    // surrounding terminators are THIS path's, per the crates/lock contract).
+    let block = lock::render(&args.lock);
+    let new_text = if created {
+        // Placement law: EOF, one blank line before, one terminator after.
+        let sep = if raw.is_empty() || raw.ends_with("\n\n") {
+            ""
+        } else if raw.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        format!("{sep}{block}\n")
+    } else {
+        block
+    };
+
+    let mut new_raw = String::with_capacity(raw.len() + new_text.len());
+    new_raw.push_str(&raw[..span.start]);
+    new_raw.push_str(&new_text);
+    new_raw.push_str(&raw[span.end..]);
     let after_doc = build_doc(&args.path, &new_raw);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
 
     if args.dry {
-        return Ok(PinLockOutcome {
+        return Ok(LockWriteOutcome {
             root_before,
             root_after: None,
             file_rev_before,
             file_rev_after,
             journal_anchor: None,
             committed: None,
+            created,
             dry: true,
         });
     }
@@ -735,58 +810,70 @@ pub fn pin_lock(
         args.now.clone(),
         files,
     );
-    let journal_anchor = pin_journal_write(root, args, &root_before, &root_after)?;
+    // ONE `op=lock` journal row: whole-file rev transition (the lock is
+    // content — the page moved), both roots, edits=0. The create/remove row
+    // shape, not pin's fake-anchor edit row.
+    let journal_anchor = journal_write(
+        root,
+        "lock",
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &root_before,
+        &root_after,
+        receipt::journal::FileTransition {
+            before: Some(&file_rev_before.0),
+            after: Some(&file_rev_after.0),
+        },
+    )?;
 
-    Ok(PinLockOutcome {
+    Ok(LockWriteOutcome {
         root_before,
         root_after: Some(root_after),
         file_rev_before,
         file_rev_after,
         journal_anchor: Some(journal_anchor),
         committed: Some(committed),
+        created,
         dry: false,
     })
 }
 
-/// Journal one guarded `pin`: an `op=splice` row with a single edit naming the
-/// `^inputs` lock (target `^inputs`, the block's before→after rev). The row
-/// carries BOTH roots (chain continuity) and appends to the reserved
-/// root-EXCLUDED journal via the receipt-engine append. Returns the row anchor.
-fn pin_journal_write(
-    root: &fs::WorkspaceRoot,
-    args: &PinLockArgs,
-    root_before: &Root,
-    root_after: &Root,
-) -> Result<String, Box<ErrorBody>> {
-    let seq = next_journal_seq(root)?;
-    // The lock block has no request-side ref grammar; name it by its `^inputs`
-    // anchor for the journal display (a whole-slot write of the lock).
-    let target = SecRef::Anchor {
-        anchor: "inputs".to_string(),
-    };
-    let shape = EditShape::Put {
-        at: PutAt::All,
-        text: String::new(),
-    };
-    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
-        seq,
-        op: "splice",
-        path: &args.path.0,
-        actor: args.actor.as_deref(),
-        now: args.now.as_deref(),
-        root_before: &root_before.0,
-        root_after: &root_after.0,
-        file: None,
-        edits: vec![receipt::EditFact {
-            target: &target,
-            shape: &shape,
-            before: &args.before_rev,
-            after: &args.after_rev,
-        }],
-    });
-    fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
-        .map_err(|e| io_to_wire(&e))?;
-    Ok(receipt::anchor(seq))
+/// The one `crates/lock` locate adapter: the page's existing block span
+/// (fence-to-fence, terminator-exclusive), `None` when the page has no lock,
+/// or a teaching `bad_request` when the page's lock state is corrupt (MULTIPLE
+/// blocks — sole-writer mints exactly one — or unparseable YAML). Surfacing
+/// beats adopting: a hand-edited lock must be repaired deliberately, never
+/// silently rewritten over.
+fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, Box<ErrorBody>> {
+    match lock::find(doc) {
+        Ok(Some(found)) => Ok(Some(found.span)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(bad_request(format!(
+            "the page's meridian-lock state is corrupt ({e:?}) — the engine is the sole \
+             writer (#8 §3); repair the block by hand-removing it, then re-mint"
+        ))),
+    }
+}
+
+/// Acquire the workspace write flock (D9, xproc-race fix) with the typed
+/// error split — G2: a held lock (`WouldBlock`, `LOCK_NB`) is the fast
+/// `workspace_busy` refusal (retry — transient), and any OTHER lock-file I/O
+/// failure maps to the typed `io_error{cause}` frame; nothing here unwraps.
+fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<ErrorBody>> {
+    fs::WriteLock::acquire(root).map_err(|e| {
+        if e.kind() == ErrorKind::WouldBlock {
+            let mut w = ErrorBody::new(ErrorCode::WorkspaceBusy);
+            w.message = Some(
+                "another meridian writer holds .meridian/write.lock — transient; retry".into(),
+            );
+            Box::new(w)
+        } else {
+            let mut w = ErrorBody::new(ErrorCode::IoError);
+            w.cause = Some(format!("write lock: {e}"));
+            Box::new(w)
+        }
+    })
 }
 
 /// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): the same §1
@@ -877,6 +964,22 @@ fn cas_mismatch(expected: &NodeRev, actual: &NodeRev) -> Box<ErrorBody> {
     e.expected = Some(expected.clone());
     e.actual = Some(actual.clone());
     Box::new(e)
+}
+
+/// Map a commit-path I/O error onto its wire envelope: the typed fs
+/// write-conflict (D8 — live bytes drifted from the validated pre-image
+/// between validate and rename) becomes `write_conflict` (refresh: re-read,
+/// re-plan) carrying the drifted path; everything else is `io_error{cause}`.
+fn commit_io_to_wire(err: &std::io::Error, path: &Path) -> Box<ErrorBody> {
+    if fs::is_write_conflict(err) {
+        let mut w = ErrorBody::new(ErrorCode::WriteConflict);
+        w.path = Some(path.clone());
+        w.message = Some(err.to_string());
+        return Box::new(w);
+    }
+    let mut w = ErrorBody::new(ErrorCode::IoError);
+    w.cause = Some(err.to_string());
+    Box::new(w)
 }
 
 /// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
@@ -1170,6 +1273,7 @@ fn simulate_armed_edits(
 fn receipt_input(
     root: &fs::WorkspaceRoot,
     args: &SpliceArgs,
+    edits: &[Edit],
     root_before: &Root,
     armed_edits: &[ArmedEdit],
     addr: &ReceiptAddr,
@@ -1186,8 +1290,7 @@ fn receipt_input(
         now: args.now.as_deref(),
         root_before,
         anchor: &addr.anchor,
-        edits: args
-            .edits
+        edits: edits
             .iter()
             .zip(armed_edits)
             .map(|(req, armed)| receipt::EditFact {
@@ -1229,10 +1332,11 @@ fn apply_validated(raw: &str, sealed: &model::ValidatedBatch) -> String {
 }
 
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
-/// (code + REQUIRED recovery + the frozen extras).
+/// (code + REQUIRED recovery + the frozen extras). `edits` is the EFFECTIVE
+/// batch (post-lowering, U8b) — the request targets the extras echo.
 fn verdict_to_wire(
     verdict: &model::SpliceVerdict,
-    args: &SpliceArgs,
+    edits: &[Edit],
     doc: &model::Document,
     before_facts: &[model::Target],
 ) -> Box<ErrorBody> {
@@ -1254,7 +1358,7 @@ fn verdict_to_wire(
             // `model_edits_and_before_facts`; routing it through `ambiguous` keeps
             // both refusal sites identical. The offending target is the first
             // edit that resolves ambiguously.
-            let offending = args.edits.iter().map(|e| &e.target).find(|t| {
+            let offending = edits.iter().map(|e| &e.target).find(|t| {
                 to_model_ref(t).is_ok_and(|r| {
                     matches!(
                         model::resolve(doc, &r),
@@ -1291,8 +1395,7 @@ fn verdict_to_wire(
             e.message = Some("batch targets must be disjoint (§4.4)".into());
             // Echo the overlapping REQUEST targets (§2.1 grammar): the
             // targets whose resolved pre-batch spans are the overlap pair.
-            let overlapping: Vec<SecRef> = args
-                .edits
+            let overlapping: Vec<SecRef> = edits
                 .iter()
                 .zip(before_facts)
                 .filter(|(_, fact)| spans.contains(&fact.span))
@@ -1363,6 +1466,10 @@ pub enum CommitError {
 /// advanced by one; the caller advances its own ring with the returned frame
 /// (this seam holds no ring, so the resident daemon can commit without one).
 ///
+/// LOCK-FREE primitive (D9): the write flock is the CALLER's — `splice`
+/// acquires it around this whole call. A direct caller outside the choke-point
+/// (tests) runs unserialized; the D8 pre-image verify still refuses drift.
+///
 /// # Errors
 /// [`CommitError`] — validation refusal, environment failure, or I/O; in
 /// every error case nothing was emitted (a Delta exists only for a batch that
@@ -1392,12 +1499,17 @@ pub fn commit_batch(
     };
 
     // Commit: the two-file atomic write (§6.5). fs enforces the pairing
-    // contract fail-loud; a refusal here means no byte landed.
+    // contract fail-loud; a refusal here means no byte landed. The splice
+    // SOURCE is read#2's validated bytes (`before_content.raw` — the bytes the
+    // sealed spans index), and fs verifies the live file still carries them
+    // before any rename (the D8 TOCTOU-gap fix): drift refuses the typed
+    // write-conflict instead of blind-splicing stale spans into moved bytes.
     fs::apply_batch(
         root,
         FsPath::new(&req.content_path),
         req.receipt.as_ref().map(|(rp, _)| FsPath::new(rp.as_str())),
         &sealed,
+        before_content.raw.as_bytes(),
     )
     .map_err(CommitError::Io)?;
 
@@ -1525,9 +1637,44 @@ fn violation_to_verdict(v: policy::Violation) -> Verdict {
 mod tests {
     use std::path::PathBuf;
 
-    use wire::{Edit, EditShape, ErrorCode, Path, SecRef};
+    use wire::{Edit, EditShape, ErrorCode, Path, Recovery, SecRef};
 
-    use super::{SpliceArgs, splice};
+    use super::{SpliceArgs, commit_io_to_wire, splice};
+
+    /// D8: the fs write-conflict marker maps to the TYPED `write_conflict`
+    /// frame (refresh — re-read, re-plan) carrying the request path; ordinary
+    /// commit I/O failure keeps its `io_error{cause}` shape.
+    #[test]
+    fn commit_io_write_conflict_maps_to_typed_frame() {
+        let page = Path("notes/plan.md".into());
+        let conflict = commit_io_to_wire(
+            &fs::write_conflict(std::path::Path::new("notes/plan.md")),
+            &page,
+        );
+        assert_eq!(conflict.code, ErrorCode::WriteConflict);
+        assert_eq!(
+            conflict.recovery,
+            Recovery::Refresh,
+            "write_conflict → refresh"
+        );
+        assert_eq!(
+            conflict.path.as_ref(),
+            Some(&page),
+            "echoes the drifted path"
+        );
+        assert!(
+            conflict
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("write conflict")),
+            "teaching message survives the map: {:?}",
+            conflict.message
+        );
+
+        let plain = commit_io_to_wire(&std::io::Error::other("disk on fire"), &page);
+        assert_eq!(plain.code, ErrorCode::IoError, "ordinary io keeps io_error");
+        assert_eq!(plain.cause.as_deref(), Some("disk on fire"));
+    }
 
     fn journal_splice(dry: bool) -> SpliceArgs {
         SpliceArgs {
@@ -1548,6 +1695,7 @@ mod tests {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         }
     }
 

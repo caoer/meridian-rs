@@ -204,6 +204,8 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::ArmedDrift => pb::ErrorCode::ArmedDrift,
         wire::ErrorCode::BindingBreak => pb::ErrorCode::BindingBreak,
         wire::ErrorCode::IndexIntegrity => pb::ErrorCode::IndexIntegrity,
+        wire::ErrorCode::WriteConflict => pb::ErrorCode::WriteConflict,
+        wire::ErrorCode::WorkspaceBusy => pb::ErrorCode::WorkspaceBusy,
     }
 }
 
@@ -253,6 +255,12 @@ fn node_to_pb(n: wire::Node) -> pb::Node {
         unterminated,
         info,
         node_rev,
+        // v3-additive JSON-face addressing facts (M1 U2): deliberately
+        // OUTSIDE the proto agreement surface — the pb mirror stays
+        // v2-shaped; a future amendment adds them to both sides at once.
+        n: _,
+        hpath_text: _,
+        words: _,
     } = n;
     pb::Node {
         kind: kind_to_pb(kind).into(),
@@ -344,16 +352,26 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             dry,
             force,
             edits,
-        } => pb::request::Op::Splice(pb::SpliceRequest {
-            path: path.0,
-            actor,
-            now,
-            receipt: receipt.map(receipt_addr_to_pb),
-            if_root: if_root.map(|r| r.0),
-            dry,
-            force,
-            edits: edits.into_iter().map(edit_to_pb).collect(),
-        }),
+            plan_edits,
+        } => {
+            // v3-only JSON-face field (M1 U8b): outside the proto agreement
+            // surface, same rule as `read`/`check_write` — the v2 samples
+            // never carry it.
+            assert!(
+                plan_edits.is_empty(),
+                "`plan_edits` is v3-JSON-face only — not in the proto agreement"
+            );
+            pb::request::Op::Splice(pb::SpliceRequest {
+                path: path.0,
+                actor,
+                now,
+                receipt: receipt.map(receipt_addr_to_pb),
+                if_root: if_root.map(|r| r.0),
+                dry,
+                force,
+                edits: edits.into_iter().map(edit_to_pb).collect(),
+            })
+        }
         wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
         wire::Op::Diff { from_root, to_root } => pb::request::Op::Diff(pb::DiffRequest {
             from_root: from_root.0,
@@ -366,6 +384,15 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
         wire::Op::Sub { from_seq } => pb::request::Op::Sub(pb::SubRequest { from_seq }),
         wire::Op::ViewPath { cwd, fresh } => {
             pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh })
+        }
+        // v3-only JSON-face op (M1 U4a2): outside the proto agreement
+        // surface — the pb mirror stays v2-shaped, no sample feeds it here.
+        wire::Op::Read { .. } => {
+            unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
+        }
+        // v3-only JSON-face op (M1 U8c): same rule as `read`.
+        wire::Op::CheckWrite { .. } => {
+            unreachable!("`check_write` is v3-JSON-face only — not in the proto agreement")
         }
     }
 }
@@ -556,6 +583,15 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             refresh_in_progress,
             last_error: last_error.map(refresh_error_to_pb),
         }),
+        // v3-only JSON-face body (M1 U4a2): outside the proto agreement
+        // surface — the pb mirror stays v2-shaped, no sample feeds it here.
+        wire::ResponseBody::Read { .. } => {
+            unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
+        }
+        // v3-only JSON-face body (M1 U8c): same rule as `read`.
+        wire::ResponseBody::CheckWrite { .. } => {
+            unreachable!("`check_write` is v3-JSON-face only — not in the proto agreement")
+        }
     }
 }
 
@@ -909,6 +945,8 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::ArmedDrift => wire::ErrorCode::ArmedDrift,
         pb::ErrorCode::BindingBreak => wire::ErrorCode::BindingBreak,
         pb::ErrorCode::IndexIntegrity => wire::ErrorCode::IndexIntegrity,
+        pb::ErrorCode::WriteConflict => wire::ErrorCode::WriteConflict,
+        pb::ErrorCode::WorkspaceBusy => wire::ErrorCode::WorkspaceBusy,
     }
 }
 
@@ -972,6 +1010,11 @@ fn node_from_pb(n: pb::Node) -> wire::Node {
         unterminated,
         info: info.map(|i| info_from_pb(i.info.expect("info oneof set"))),
         node_rev: node_rev.map(wire::NodeRev),
+        // v3-additive JSON-face addressing facts (M1 U2): outside the proto
+        // agreement surface — the pb mirror stays v2-shaped.
+        n: None,
+        hpath_text: None,
+        words: None,
     }
 }
 
@@ -1055,6 +1098,8 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             dry,
             force,
             edits: edits.into_iter().map(edit_from_pb).collect(),
+            // v3-only JSON-face field (M1 U8b): the pb mirror stays v2-shaped.
+            plan_edits: Vec::new(),
         },
         pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
         pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
@@ -1437,6 +1482,10 @@ fn sample_nodes() -> Vec<wire::Node> {
         unterminated: None,
         info,
         node_rev: Some(wire::NodeRev("26796ebec5d0bf1a".into())),
+        // v3-additive JSON-face facts: not part of the proto agreement.
+        n: None,
+        hpath_text: None,
+        words: None,
     };
     vec![
         mk(
@@ -1590,6 +1639,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 },
                 if_node_rev: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
             }],
+            plan_edits: Vec::new(),
         },
         // splice: guardless append (legal at the wire forever) — put at:end
         wire::Op::Splice {
@@ -1610,6 +1660,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         },
         // splice: dry run, fm_key target, put at:all and at:content coverage
         wire::Op::Splice {
@@ -1654,6 +1705,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                     if_node_rev: None,
                 },
             ],
+            plan_edits: Vec::new(),
         },
     ]
 }
