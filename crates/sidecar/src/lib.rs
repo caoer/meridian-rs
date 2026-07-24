@@ -285,7 +285,7 @@ fn respond_line(
     if *rev == rev::Rev::V3 {
         rev::rename_request(&mut obj);
     }
-    match wire_serve::decode::decode(&obj) {
+    match wire_serve::decode::decode(&obj, *rev) {
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
         Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {

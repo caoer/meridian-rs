@@ -110,6 +110,7 @@ pub(crate) fn dispatch(
             dry,
             force,
             edits,
+            plan_edits,
         } => {
             let out = wire_serve::write::splice(
                 root,
@@ -124,6 +125,7 @@ pub(crate) fn dispatch(
                     dry: dry.unwrap_or(false),
                     force: force.unwrap_or(false),
                     edits,
+                    plan_edits,
                 },
                 rulesets,
             )?;

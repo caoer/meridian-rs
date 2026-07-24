@@ -10,9 +10,10 @@
 //! `unknown_op` (§3.2: an op is in `caps` or answers `unknown_op`).
 
 use serde_json::{Map, Value};
-use wire::{ErrorBody, ErrorCode, HpathSeg, Op, Path, SecRef};
+use wire::{ErrorBody, ErrorCode, HpathSeg, Op, Path, PlanEdit, SecRef};
 
 use crate::bad_request;
+use crate::rev::Rev;
 
 /// Envelope keys every request may carry beside the op fields.
 const ENVELOPE: [&str; 2] = ["id", "op"];
@@ -22,12 +23,18 @@ const ENVELOPE: [&str; 2] = ["id", "op"];
 /// and the resident daemon over its socket — so the strict pass is one
 /// implementation.
 ///
+/// `rev` is the session's negotiated contract rev, threaded in by BOTH hosts
+/// (M1 U8b rider 1): the ONE rev-dependent decode surface is `splice`'s field
+/// list — `plan_edits` decodes under v3 and hits the frozen unknown-field wall
+/// under v2 (fixture-pinned). Every other op decodes rev-agnostically (v3-only
+/// ops like `read`/`check_write` gate at DISPATCH, unchanged).
+///
 /// # Errors
 /// A `bad_request` for an unknown field, an unknown enum value, a mistyped
 /// value, a malformed path/anchor/`now`, or an unknown declared contract rev; a
 /// `bad_path` for a path-law violation; `unsupported_proto` for a `hello` whose
 /// `proto` this server does not speak; `unknown_op` for an unrecognized op name.
-pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let Some(op) = obj.get("op").and_then(Value::as_str) else {
         return Err(bad_request("`op` must be a string"));
     };
@@ -131,7 +138,7 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 fresh: opt_bool(obj, op, "fresh")?,
             })
         }
-        "splice" => decode_splice(obj),
+        "splice" => decode_splice(obj, rev),
         // §3.2 discovery honesty: every op is armed as of T5-SUB — only
         // genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
@@ -230,15 +237,32 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,
 /// format-VALIDATED never generated — a malformed `now` is the server's
 /// `bad_request` (the pass W4 left to this build-out).
-fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+///
+/// M1 U8b (rider 1): under a v3 session the field list additionally admits
+/// `plan_edits` — the plan-level batch, mutually exclusive with `edits`. Under
+/// v2 the list is FROZEN, so a v2 `plan_edits` refuses on the existing
+/// unknown-field wall byte-for-byte (fixture-pinned negative).
+fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
+    const V2_FIELDS: [&str; 8] = [
+        "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
+    ];
+    const V3_FIELDS: [&str; 9] = [
+        "path",
+        "actor",
+        "now",
+        "receipt",
+        "if_root",
+        "dry",
+        "force",
+        "edits",
+        "plan_edits",
+    ];
     let op = "splice";
-    check_fields(
-        obj,
-        op,
-        &[
-            "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
-        ],
-    )?;
+    if rev == Rev::V3 {
+        check_fields(obj, op, &V3_FIELDS)?;
+    } else {
+        check_fields(obj, op, &V2_FIELDS)?;
+    }
     let now = opt_str(obj, op, "now")?;
     if let Some(n) = &now
         && !wire::now_is_rfc3339(n)
@@ -247,8 +271,25 @@ fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
         )));
     }
-    let Some(edits_v) = obj.get("edits") else {
-        return Err(bad_request("missing `edits` on `splice`"));
+    let plan_edits = match obj.get("plan_edits") {
+        None => Vec::new(),
+        Some(v) => decode_plan_edits(v)?,
+    };
+    let edits = match obj.get("edits") {
+        Some(edits_v) => {
+            if !plan_edits.is_empty() {
+                return Err(bad_request(
+                    "`edits` and `plan_edits` are mutually exclusive on `splice`",
+                ));
+            }
+            decode_edits(edits_v)?
+        }
+        None if plan_edits.is_empty() => {
+            // The frozen v2 refusal, verbatim — a plan-less, edit-less splice
+            // reads exactly as before (C note 6: never a serde accident).
+            return Err(bad_request("missing `edits` on `splice`"));
+        }
+        None => Vec::new(),
     };
     Ok(Op::Splice {
         path: req_path(obj, op, "path")?,
@@ -258,8 +299,100 @@ fn decode_splice(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
         dry: opt_bool(obj, op, "dry")?,
         force: opt_bool(obj, op, "force")?,
-        edits: decode_edits(edits_v)?,
+        edits,
+        plan_edits,
     })
+}
+
+/// M1 U8b `plan_edits` (v3-only; the caller gated on rev before calling):
+/// externally tagged items, exactly one tag each, every shape's field set
+/// validated by hand — the same strict wall as the native edit union. An
+/// empty array refuses like the native empty batch (a batch IS its edits).
+fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
+    let Value::Array(items) = v else {
+        return Err(bad_request("`plan_edits` must be an array"));
+    };
+    if items.is_empty() {
+        return Err(bad_request("`plan_edits` must carry at least one edit"));
+    }
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::Object(e) = item else {
+            return Err(bad_request("each plan edit must be an object"));
+        };
+        if e.len() != 1 {
+            return Err(bad_request(
+                "a plan edit must carry exactly one of `append`/`match`/`replace_section`/`create`/`set_property`",
+            ));
+        }
+        let (tag, body_v) = e.iter().next().expect("len checked");
+        let Value::Object(b) = body_v else {
+            return Err(bad_request(format!("`{tag}` must be an object")));
+        };
+        out.push(match tag.as_str() {
+            "append" => {
+                plan_fields(b, "append", &["hpath", "body"])?;
+                PlanEdit::Append {
+                    hpath: req_str(b, "append", "hpath")?,
+                    body: req_str(b, "append", "body")?,
+                }
+            }
+            "match" => {
+                plan_fields(b, "match", &["hpath", "old", "new", "all", "rev"])?;
+                PlanEdit::Match {
+                    hpath: req_str(b, "match", "hpath")?,
+                    old: req_str(b, "match", "old")?,
+                    new: req_str(b, "match", "new")?,
+                    all: opt_bool(b, "match", "all")?.unwrap_or(false),
+                    rev: opt_str(b, "match", "rev")?,
+                }
+            }
+            "replace_section" => {
+                plan_fields(b, "replace_section", &["hpath", "body", "rev"])?;
+                PlanEdit::ReplaceSection {
+                    hpath: req_str(b, "replace_section", "hpath")?,
+                    body: req_str(b, "replace_section", "body")?,
+                    rev: opt_str(b, "replace_section", "rev")?,
+                }
+            }
+            "create" => {
+                plan_fields(b, "create", &["parent_hpath", "title", "body"])?;
+                PlanEdit::Create {
+                    parent_hpath: req_str(b, "create", "parent_hpath")?,
+                    title: req_str(b, "create", "title")?,
+                    body: req_str(b, "create", "body")?,
+                }
+            }
+            "set_property" => {
+                plan_fields(b, "set_property", &["key", "value"])?;
+                PlanEdit::SetProperty {
+                    key: req_str(b, "set_property", "key")?,
+                    value: req_str(b, "set_property", "value")?,
+                }
+            }
+            other => {
+                return Err(bad_request(format!(
+                    "unknown plan edit shape `{other}` — one of append/match/replace_section/create/set_property"
+                )));
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// The strict field wall for one plan-edit shape body (no envelope keys ride
+/// inside a shape, so this is a plain closed-set check).
+fn plan_fields(
+    obj: &Map<String, Value>,
+    shape: &str,
+    allowed: &[&str],
+) -> Result<(), Box<ErrorBody>> {
+    for key in obj.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(bad_request(format!("unknown field `{key}` in `{shape}`")));
+        }
+    }
+    Ok(())
 }
 
 /// §6.1 receipt address: `{path, anchor}` exactly — path law on `path`, the

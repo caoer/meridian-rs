@@ -568,7 +568,7 @@ fn hello(
     obj: &Map<String, Value>,
 ) -> wire::Response {
     let id = obj.get("id").and_then(Value::as_u64);
-    let body = match wire_serve::decode::decode(obj) {
+    let body = match wire_serve::decode::decode(obj, *rev) {
         Ok(Op::Hello {
             contract,
             workspace,
@@ -658,7 +658,7 @@ fn serve_wire(
     rev: Rev,
 ) -> (wire::Response, Option<u64>) {
     let id = obj.get("id").and_then(Value::as_u64);
-    let (body, duration_us) = match wire_serve::decode::decode(obj) {
+    let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
         Ok(op) => {
             // U7 measure point: the dispatch call alone (after decode, before
             // the response render) — checked µs, never a lossy `as`.
@@ -817,6 +817,7 @@ fn dispatch_read(
             dry,
             force,
             edits,
+            plan_edits,
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
@@ -829,6 +830,7 @@ fn dispatch_read(
                 dry: dry.unwrap_or(false),
                 force: force.unwrap_or(false),
                 edits,
+                plan_edits,
             };
             wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
         }

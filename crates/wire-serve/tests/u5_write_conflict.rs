@@ -49,6 +49,7 @@ fn racer_args(i: usize) -> SpliceArgs {
             },
             if_node_rev: None,
         }],
+        plan_edits: Vec::new(),
     }
 }
 

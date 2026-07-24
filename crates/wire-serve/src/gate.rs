@@ -518,6 +518,7 @@ mod scenarios {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         };
         let before = std::fs::read(dir.path().join("tasks/fix.md")).unwrap();
         let err = splice(&root, 0, &args, &[]).expect_err("owner self-splice refuses");
@@ -580,6 +581,7 @@ mod scenarios {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         }
     }
 
@@ -649,6 +651,7 @@ mod scenarios {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         };
         let out = splice(&root, 0, &args, &[]).expect("--force escapes the armed refusal");
 
