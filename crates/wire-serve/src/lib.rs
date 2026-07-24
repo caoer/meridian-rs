@@ -33,6 +33,7 @@
 //! two responses from its own `seq`/history. This crate holds only the corpus
 //! reads whose logic is identical across hosts.
 
+pub mod check_write;
 pub mod decode;
 pub mod gate;
 pub mod read;
