@@ -64,6 +64,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         dry: parsed.dry,
         force: parsed.force,
         edits,
+        plan_edits: Vec::new(),
     };
     // seq 0, like the resident daemon (no epoch ring); the emitted DeltaFrame
     // has no subscriber here, so it is dropped with the outcome.

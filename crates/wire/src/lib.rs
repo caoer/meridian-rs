@@ -289,6 +289,56 @@ pub struct ReceiptAddr {
     pub anchor: String,
 }
 
+/// One v3 PLAN-level splice edit (M1 U8b, `splice.plan_edits`): the put-plan
+/// vocabulary the Go daemon's `buildSpliceEdit`/`buildPropertyEdits` emulation
+/// spoke, moved behind the wire. Externally tagged; addresses are the HOST-face
+/// sanitized forms (`"A/B"` joined sanitized hpath, `"^id"` blocks refuse per
+/// arm). The engine LOWERS each shape to native [`Edit`]s at the splice intake
+/// (`wire-serve::plan`) — byte-faithful to the deleted Go arms, so the lowered
+/// batch is identical to what the host used to build. v3-only AT DECODE
+/// (rider 1): a v2 session's `plan_edits` hits the frozen unknown-field wall.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanEdit {
+    /// Append to a section's content end — `ensureTrailingNL` + the
+    /// leading-`\n` discipline applied ENGINE-side (the U8b directive).
+    Append { hpath: String, body: String },
+    /// Anchored replace; `all: true` replaces EVERY occurrence (the host's
+    /// read-modify-write moved engine-side). `rev` is the v2-domain node rev
+    /// (blake3) threaded to `if_node_rev`; empty/absent = the relaxed write.
+    Match {
+        hpath: String,
+        old: String,
+        new: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
+    /// Whole-section rewrite (destructive — requires `rev`).
+    ReplaceSection {
+        hpath: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
+    /// Create a new section — PARENT-APPEND placement (emulation-faithful;
+    /// the `check_write` candidate's EOF placement is the U8b NAMED residual,
+    /// G-class: invisible while no def governs created sections). An empty
+    /// `parent_hpath` (top-level create) refuses — M2 note carried forward.
+    Create {
+        parent_hpath: String,
+        title: String,
+        body: String,
+    },
+    /// Frontmatter set — value-span replace / insert-after-last-key /
+    /// conditional quote (`yaml_safe_value`), the `buildPropertyEdits` dance
+    /// reproduced engine-side (NOT native `at:upsert`: model's upsert inserts
+    /// absent keys at FIRST-key position; the Go dance inserts after the LAST
+    /// key — divergent bytes).
+    SetProperty { key: String, value: String },
+}
+
 // ---------------------------------------------------------------------------
 // v2 §4 requests — the op vocabulary
 // ---------------------------------------------------------------------------
@@ -397,6 +447,13 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
         edits: Vec<Edit>,
+        /// M1 U8b `splice.plan_edits` (v3-only at decode, rider 1): the
+        /// plan-level batch, mutually exclusive with `edits` — the engine
+        /// lowers these to native edits at the splice intake. Empty = the
+        /// native form; serialization skips it so the frozen v2 request
+        /// bytes never change.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        plan_edits: Vec<PlanEdit>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
