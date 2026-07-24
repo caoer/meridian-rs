@@ -33,9 +33,19 @@ registry daemon.
 | `receipt` | Receipt rendering: outcome-as-fact lines committed in the same batch as the edit |
 | `transport` | Untyped NDJSON message envelope + codec seam (knows framing, never meaning) |
 | `transport-proto` | Opt-in typed protobuf transport: `meridian.proto` + length-delimited framing |
-| `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts |
+| `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts and the blocking armed-plane gate |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
-| `sidecar` (bin) | The thin NDJSON stdin/stdout binary — the only place wire and model meet |
+| `wire-serve` | The shared typed edge: strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, two hosts |
+| `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and link-decoration hook points |
+| `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` namespace predicate |
+| `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
+| `run` | The mrd-local run plane: plan/execute under the workspace run lock |
+| `realise` | The realise engine: observe → check → apply per claim, on the run plane |
+| `check` | The check engine: the pure READ verb of the reconciliation loop |
+| `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file |
+| `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
+| `transcript` | Transcript cross-check: a corroborating (never authenticating) detector over the journal's actor claims |
+| `sidecar` (bin) | The per-workspace NDJSON stdin/stdout host — wiring only; dispatches through `wire-serve` |
 | `workspace` | Workspace identity: the discovery ladder (env → `.meridian.toml` → git root → bare), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
 | `cache` | The central hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade GC sweep |
 | `registry` | The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server + client, first-writer-wins registration, atomic state file, idle-reap |
@@ -54,23 +64,34 @@ graph TD
     MOD --> QRY[query]
     MOD --> WMAP[wire-map<br/>the projection seam]
     WIRE[wire<br/>serde-only] --> WMAP
+    WMAP --> RND[render<br/>text projection]
+    WMAP --> WSRV[wire-serve<br/>the serve choke-point]
+    WIRE --> WSRV
+    MOD --> WSRV
+    FS --> WSRV
+    QRY --> WSRV
+    RND --> WSRV
     TR[transport] --> SC((sidecar bin))
-    MOD --> SC
-    FS --> SC
+    WSRV --> SC
     WIRE --> SC
-    WMAP --> SC
+    FS --> SC
     POL --> SC
+    WSRV --> REG[registry<br/>daemon + wire host]
     CACHE[cache] --> WS[workspace]
-    WS --> REG[registry]
+    WS --> REG
     CACHE --> REG
     WS --> MRD((mrd bin))
     CACHE --> MRD
     REG --> MRD
+    WSRV --> MRD
 ```
 
-The `workspace` / `cache` / `registry` / `mrd` cluster is the CLI foundation:
-identity, storage, and the daemon-held registry, disjoint from the sidecar's
-wire↔model plane. The dependency edges enforce three laws — see `docs/laws.md`.
+Both hosts — the per-workspace `sidecar` and the resident `registry` daemon —
+dispatch through the ONE `wire-serve` typed edge ("one served implementation,
+two hosts"); `mrd` is a local client of the same edge. The
+`workspace` / `cache` / `registry` / `mrd` cluster remains the CLI foundation:
+identity, storage, and the daemon-held registry. The dependency edges enforce
+the three laws — see `docs/laws.md`.
 
 ## Build & run
 
