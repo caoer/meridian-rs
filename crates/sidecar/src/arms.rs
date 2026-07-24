@@ -36,6 +36,7 @@ pub(crate) fn dispatch(
             frag,
             sections,
             display_path,
+            actor,
         } => {
             if !v3 {
                 return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
@@ -51,6 +52,7 @@ pub(crate) fn dispatch(
                     frag,
                     sections,
                     display_path,
+                    actor,
                 },
             )
         }

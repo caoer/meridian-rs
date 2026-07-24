@@ -158,7 +158,12 @@ Request (all beyond `path` optional):
  "mode":"toc"|"sections",          // default "toc"
  "frag":"Goals",                   // scope to one section subtree
  "sections":["Goals/Q3","^b1","2"],// selectors: sanitized hpath | dewey | ^anchor
- "display_path":"$SESSION/notes/plan.md"} // header spelling; defaults to path
+ "display_path":"$SESSION/notes/plan.md", // header spelling; defaults to path
+ "actor":"agent:b0864fb2"}         // §9 read provenance (D-Actor/B): the
+                                   // DAEMON-derived actor, never
+                                   // MCP-caller-settable; carried now so
+                                   // stage-2 read-mint receipts are additive
+                                   // (no receipt is minted in M1)
 ```
 
 Response body (`mode` decides `toc` XOR `sections`):

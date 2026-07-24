@@ -145,7 +145,7 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     check_fields(
         obj,
         op,
-        &["path", "mode", "frag", "sections", "display_path"],
+        &["path", "mode", "frag", "sections", "display_path", "actor"],
     )?;
     let mode = opt_str(obj, op, "mode")?;
     if let Some(m) = &mode
@@ -182,6 +182,9 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         frag: opt_str(obj, op, "frag")?,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
+        // §9 read-provenance slot (D-Actor/B): opaque string, same law as
+        // splice's actor — a wire input, never ambient.
+        actor: opt_str(obj, op, "actor")?,
     })
 }
 

@@ -748,6 +748,7 @@ fn dispatch_read(
             frag,
             sections,
             display_path,
+            actor,
         } if v3 => composed_read_warm(
             registry,
             ws,
@@ -757,6 +758,7 @@ fn dispatch_read(
                 frag,
                 sections,
                 display_path,
+                actor,
             },
         ),
         Op::Links { path, require_root } => warm_engine_read(registry, ws, |engine| {
