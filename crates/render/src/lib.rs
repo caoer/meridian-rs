@@ -8,9 +8,13 @@
 //! byte format ccc-statusd rendered host-side (`read.go:118`), reproduced
 //! byte-for-byte against the U0 captured goldens — and the two decoration
 //! hook points the marathon decisions reserve (seam now, behavior later):
-//! block elision by fenced-language tag (#8) at the walker, and the
-//! `Link/Wikilink` visitor point (#6) — both NO-OP passthrough in M1 (A-K1:
-//! stored bytes and the raw read face never change).
+//! block elision by fenced-language tag (#8) at the walker — BUILT in U4b,
+//! opt-in via [`TextRenderer::with_meridian_elision`] (the render-face
+//! production configuration; `default()` stays inert for the U0 goldens) —
+//! and the `Link/Wikilink` visitor point (#6), NO-OP passthrough in M1
+//! (A-K1: stored bytes and the raw read/cat face never change — byte pin
+//! #4: `meridian-*` blocks ride the raw face VERBATIM, elision is
+//! RENDER-face only).
 //!
 //! **Never does:** wire shapes (the composed read op is `wire-serve`'s),
 //! addressing computation (`wire-map::facts`), parsing (`syntax`), disk
@@ -115,29 +119,47 @@ pub trait Renderer {
 }
 
 /// The production text renderer: `readText` byte format, with the block
-/// elision predicate as the U4b hook point (M1 default: elide NOTHING —
-/// Go-parity; the `meridian-*` law arrives with the lock block in stage 2).
+/// elision predicate as the U4b hook. `default()` is INERT (elide nothing)
+/// — the U0 goldens pin Go-parity bytes and the golden gates construct it;
+/// the render-face production configuration is
+/// [`TextRenderer::with_meridian_elision`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TextRenderer {
     /// The block-elision hook (#8 seam): a fenced block whose info-string
     /// matches is dropped from RENDERED section content — never from the
-    /// raw read/cat face. `None` = emit everything (the M1 default; the U0
-    /// goldens pin Go-parity bytes).
+    /// raw read/cat face. `None` = emit everything (the golden-pinned
+    /// default).
     pub elide_lang: Option<ElideBy>,
 }
 
-/// The one elision law shape reserved by decision #8: match the fenced
-/// info-string by prefix (`meridian-*` is `Prefix("meridian-")`).
+impl TextRenderer {
+    /// The render-face production configuration (U4b): engine blocks
+    /// (`meridian-*`) are elided from rendered section content. The raw
+    /// read/cat face never routes through render and stays verbatim (byte
+    /// pin #4).
+    #[must_use]
+    pub fn with_meridian_elision() -> Self {
+        TextRenderer {
+            elide_lang: Some(ElideBy::MeridianNamespace),
+        }
+    }
+}
+
+/// The one elision law reserved by decision #8: drop fenced blocks whose
+/// info-string is an ENGINE block. The predicate is
+/// [`lock::is_meridian_lang`] — the sole owner of the reserved `meridian-*`
+/// namespace (#8 §1); render never grows its own list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElideBy {
-    /// Elide fenced blocks whose info-string starts with this prefix.
-    Prefix(&'static str),
+    /// Elide engine blocks: info-strings in the reserved `meridian-*`
+    /// namespace, decided by [`lock::is_meridian_lang`].
+    MeridianNamespace,
 }
 
 impl ElideBy {
     fn matches(self, lang: &str) -> bool {
         match self {
-            ElideBy::Prefix(p) => lang.starts_with(p),
+            ElideBy::MeridianNamespace => lock::is_meridian_lang(lang),
         }
     }
 }
@@ -304,10 +326,10 @@ mod tests {
         assert!(out.sections[0].content.contains("## Slash/Title Here"));
     }
 
-    /// The U4b hook point exists and is INERT by default: a `meridian-*`
-    /// fenced block renders verbatim (Go parity, the U0 meridian-block
-    /// golden), and an explicit predicate elides exactly that block from the
-    /// RENDERED face only.
+    /// The U4b hook is INERT by default: a `meridian-*` fenced block renders
+    /// verbatim (Go parity, the U0 meridian-block golden), and the named
+    /// production configuration elides exactly that block from the RENDERED
+    /// face only.
     #[test]
     fn elision_hook_inert_by_default_active_by_predicate() {
         let raw = "# H\n\nbefore\n\n```meridian-lock\nv: 1\n```\n\nafter\n";
@@ -332,10 +354,9 @@ mod tests {
             inert.sections[0].content
         );
 
-        let eliding = TextRenderer {
-            elide_lang: Some(ElideBy::Prefix("meridian-")),
-        };
-        let out = eliding.render(&doc, &job).expect("renders");
+        let out = TextRenderer::with_meridian_elision()
+            .render(&doc, &job)
+            .expect("renders");
         assert!(
             !out.sections[0].content.contains("meridian-lock"),
             "predicate elides the block: {}",

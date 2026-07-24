@@ -10,6 +10,7 @@ mod pf_frozen_sweep;
 mod u0_read_parity;
 mod u4a1_render_parity;
 mod u4a2_composed_read;
+mod u4b_real_lock;
 mod walk_resolve;
 mod wire_vocab;
 mod wsfix_oracle;

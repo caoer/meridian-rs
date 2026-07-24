@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+lock = { workspace = true }
 model = { workspace = true }
 wire = { workspace = true }
 wire-map = { workspace = true }

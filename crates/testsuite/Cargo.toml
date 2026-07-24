@@ -33,3 +33,10 @@ serde_json = { workspace = true }
 # test-only: recompute file_rev independently of the model tree for the M2-BUILD
 # oracle gate (conforming per gate 3 — blake3 stays a dev-edge outside `model`).
 blake3 = "1"
+# test-only (U4b real-lock gate): drive the ENGINE lock write (wire-serve
+# U11) against a real on-disk workspace, then validate the render-face
+# elision vs the raw face over the engine-written page.
+wire-serve = { workspace = true }
+fs = { workspace = true }
+lock = { workspace = true }
+tempfile = "3"

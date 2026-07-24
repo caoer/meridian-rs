@@ -9,6 +9,15 @@
 //!   host-side and are skipped.
 //!
 //! Pre-put steps only (state never moves); one v3 session per doc.
+//!
+//! # Render-divergent-by-design steps (U4b, G5 class)
+//! The render face's production configuration elides `meridian-*` blocks
+//! (predicate: `lock::is_meridian_lang`), an INTENDED divergence from the
+//! captured Go face on steps whose sections carry engine blocks. The raw
+//! captured truth stays untouched in `goldens/`; the elided expectation is
+//! pinned alongside in `render-elided/<doc>.<step>.txt` and used INSTEAD
+//! for exactly those steps. Raw-face gates (`u0_read_parity`, cat) never
+//! elide — byte pin #4.
 
 use serde_json::{Value, json};
 
@@ -45,6 +54,18 @@ fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// The expected `rendered_text` for a step: the pinned elided expectation
+/// (`render-elided/<doc>.<step>.txt`, U4b render-divergent-by-design) when
+/// present, else the captured Go golden text.
+fn expected_text(doc_name: &str, step_id: &str, golden: &str) -> String {
+    std::fs::read_to_string(
+        testsuite::parity_dir()
+            .join("render-elided")
+            .join(format!("{doc_name}.{step_id}.txt")),
+    )
+    .unwrap_or_else(|_| golden.to_owned())
+}
+
 #[test]
 fn composed_read_matches_u0_goldens_over_the_wire() {
     let mut ok_steps = 0;
@@ -62,7 +83,7 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
 
         // collect the replayable pre-put read steps
         let mut requests: Vec<Value> = Vec::new();
-        let mut expects: Vec<(&str, &str, bool)> = Vec::new(); // (id, text, is_error)
+        let mut expects: Vec<(String, String, bool)> = Vec::new(); // (id, text, is_error)
         for step in golden["steps"].as_array().expect("steps") {
             if step["tool"] == "put" {
                 break;
@@ -93,9 +114,10 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                 req["sections"] = json!(sections);
             }
             requests.push(req);
+            let step_id = step["id"].as_str().unwrap_or("?");
             expects.push((
-                step["id"].as_str().unwrap_or("?"),
-                text,
+                step_id.to_owned(),
+                expected_text(&doc_name, step_id, text),
                 step["is_error"] == Value::Bool(true),
             ));
         }
@@ -117,7 +139,7 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                 assert_eq!(frame["ok"], json!(false), "{ctx}: refusal frame: {frame}");
                 assert_eq!(
                     frame["error"]["message"].as_str(),
-                    Some(*want_text),
+                    Some(want_text.as_str()),
                     "{ctx}: verbatim refusal message"
                 );
                 refusal_steps += 1;
@@ -125,8 +147,9 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                 assert_eq!(frame["ok"], json!(true), "{ctx}: ok frame: {frame}");
                 assert_eq!(
                     frame["body"]["rendered_text"].as_str(),
-                    Some(*want_text),
-                    "{ctx}: rendered_text byte-equals the captured Go text"
+                    Some(want_text.as_str()),
+                    "{ctx}: rendered_text byte-equals the pinned expectation \
+                     (captured Go text, or the elided render-divergent pin)"
                 );
                 // D6 atomicity witness: file_rev + fingerprint at one snapshot
                 assert!(
