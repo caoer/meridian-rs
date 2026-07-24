@@ -251,12 +251,16 @@ fn composed_sections(
         rows: &rows,
         notice: notice.as_deref(),
     };
+    // U4b: the render face's production configuration — engine (`meridian-*`)
+    // blocks are elided from rendered output; the raw read/cat face never
+    // routes through render and stays verbatim (byte pin #4).
     let rendered =
-        render::Renderer::render(&render::TextRenderer::default(), doc, &job).map_err(|e| {
-            let mut err = ErrorBody::new(ErrorCode::Internal);
-            err.message = Some(e.to_string());
-            Box::new(err)
-        })?;
+        render::Renderer::render(&render::TextRenderer::with_meridian_elision(), doc, &job)
+            .map_err(|e| {
+                let mut err = ErrorBody::new(ErrorCode::Internal);
+                err.message = Some(e.to_string());
+                Box::new(err)
+            })?;
     let sections: Vec<wire::ReadSectionOut> = rows
         .iter()
         .zip(&rendered.sections)
