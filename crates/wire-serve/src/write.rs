@@ -236,11 +236,7 @@ pub fn splice(
     .map_err(|e| match e {
         CommitError::Refused(v) => verdict_to_wire(&v, args, &doc, &before_facts),
         CommitError::Env(err) => err,
-        CommitError::Io(err) => {
-            let mut w = ErrorBody::new(ErrorCode::IoError);
-            w.cause = Some(err.to_string());
-            Box::new(w)
-        }
+        CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;
 
     // The receipt FACT from the true post-state (host-block-leaf grain).
@@ -879,6 +875,22 @@ fn cas_mismatch(expected: &NodeRev, actual: &NodeRev) -> Box<ErrorBody> {
     Box::new(e)
 }
 
+/// Map a commit-path I/O error onto its wire envelope: the typed fs
+/// write-conflict (D8 — live bytes drifted from the validated pre-image
+/// between validate and rename) becomes `write_conflict` (refresh: re-read,
+/// re-plan) carrying the drifted path; everything else is `io_error{cause}`.
+fn commit_io_to_wire(err: &std::io::Error, path: &Path) -> Box<ErrorBody> {
+    if fs::is_write_conflict(err) {
+        let mut w = ErrorBody::new(ErrorCode::WriteConflict);
+        w.path = Some(path.clone());
+        w.message = Some(err.to_string());
+        return Box::new(w);
+    }
+    let mut w = ErrorBody::new(ErrorCode::IoError);
+    w.cause = Some(err.to_string());
+    Box::new(w)
+}
+
 /// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
 /// (env), otherwise `io_error{cause}`.
 fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
@@ -1392,12 +1404,17 @@ pub fn commit_batch(
     };
 
     // Commit: the two-file atomic write (§6.5). fs enforces the pairing
-    // contract fail-loud; a refusal here means no byte landed.
+    // contract fail-loud; a refusal here means no byte landed. The splice
+    // SOURCE is read#2's validated bytes (`before_content.raw` — the bytes the
+    // sealed spans index), and fs verifies the live file still carries them
+    // before any rename (the D8 TOCTOU-gap fix): drift refuses the typed
+    // write-conflict instead of blind-splicing stale spans into moved bytes.
     fs::apply_batch(
         root,
         FsPath::new(&req.content_path),
         req.receipt.as_ref().map(|(rp, _)| FsPath::new(rp.as_str())),
         &sealed,
+        before_content.raw.as_bytes(),
     )
     .map_err(CommitError::Io)?;
 
@@ -1525,9 +1542,44 @@ fn violation_to_verdict(v: policy::Violation) -> Verdict {
 mod tests {
     use std::path::PathBuf;
 
-    use wire::{Edit, EditShape, ErrorCode, Path, SecRef};
+    use wire::{Edit, EditShape, ErrorCode, Path, Recovery, SecRef};
 
-    use super::{SpliceArgs, splice};
+    use super::{SpliceArgs, commit_io_to_wire, splice};
+
+    /// D8: the fs write-conflict marker maps to the TYPED `write_conflict`
+    /// frame (refresh — re-read, re-plan) carrying the request path; ordinary
+    /// commit I/O failure keeps its `io_error{cause}` shape.
+    #[test]
+    fn commit_io_write_conflict_maps_to_typed_frame() {
+        let page = Path("notes/plan.md".into());
+        let conflict = commit_io_to_wire(
+            &fs::write_conflict(std::path::Path::new("notes/plan.md")),
+            &page,
+        );
+        assert_eq!(conflict.code, ErrorCode::WriteConflict);
+        assert_eq!(
+            conflict.recovery,
+            Recovery::Refresh,
+            "write_conflict → refresh"
+        );
+        assert_eq!(
+            conflict.path.as_ref(),
+            Some(&page),
+            "echoes the drifted path"
+        );
+        assert!(
+            conflict
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("write conflict")),
+            "teaching message survives the map: {:?}",
+            conflict.message
+        );
+
+        let plain = commit_io_to_wire(&std::io::Error::other("disk on fire"), &page);
+        assert_eq!(plain.code, ErrorCode::IoError, "ordinary io keeps io_error");
+        assert_eq!(plain.cause.as_deref(), Some("disk on fire"));
+    }
 
     fn journal_splice(dry: bool) -> SpliceArgs {
         SpliceArgs {

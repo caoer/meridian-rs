@@ -1085,6 +1085,14 @@ pub enum ErrorCode {
     /// is the attack this defeats). Extras: `path` (the protected file) +
     /// `message`. Fix class. Additive by the tolerant-code law.
     IndexIntegrity,
+    /// M1 TOCTOU-gap fix (D8): the splice target's live disk bytes no longer
+    /// equal the bytes the sealed batch validated against — an out-of-band
+    /// writer landed between validate and commit. The engine refuses rather
+    /// than blind-splice validated spans into drifted bytes (silent mid-file
+    /// corruption). Extras: `path` (the drifted file) + `message`. Refresh
+    /// class — re-read the file and re-plan the batch. Additive by the
+    /// tolerant-code law: an unknown code dispatches on `recovery` alone.
+    WriteConflict,
 }
 
 impl ErrorCode {
@@ -1111,9 +1119,10 @@ impl ErrorCode {
             | ErrorCode::InvalidUtf8
             | ErrorCode::DaemonOnly
             | ErrorCode::ConventionFault => Recovery::Env,
-            ErrorCode::CasMismatch | ErrorCode::RefNotFound | ErrorCode::ArmedDrift => {
-                Recovery::Refresh
-            }
+            ErrorCode::CasMismatch
+            | ErrorCode::RefNotFound
+            | ErrorCode::ArmedDrift
+            | ErrorCode::WriteConflict => Recovery::Refresh,
             ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {

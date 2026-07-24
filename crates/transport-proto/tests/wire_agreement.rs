@@ -204,6 +204,7 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::ArmedDrift => pb::ErrorCode::ArmedDrift,
         wire::ErrorCode::BindingBreak => pb::ErrorCode::BindingBreak,
         wire::ErrorCode::IndexIntegrity => pb::ErrorCode::IndexIntegrity,
+        wire::ErrorCode::WriteConflict => pb::ErrorCode::WriteConflict,
     }
 }
 
@@ -909,6 +910,7 @@ fn code_from_pb(c: pb::ErrorCode) -> wire::ErrorCode {
         pb::ErrorCode::ArmedDrift => wire::ErrorCode::ArmedDrift,
         pb::ErrorCode::BindingBreak => wire::ErrorCode::BindingBreak,
         pb::ErrorCode::IndexIntegrity => wire::ErrorCode::IndexIntegrity,
+        pb::ErrorCode::WriteConflict => wire::ErrorCode::WriteConflict,
     }
 }
 
