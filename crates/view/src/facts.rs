@@ -53,7 +53,7 @@ CREATE TABLE edge (
     to_path     TEXT,               -- [2] pin-time resolved path (NULL = unresolved)
     to_sel      TEXT,               -- [2] pin-time resolved selector
     pinned_rev  TEXT,               -- [2] the rev recorded in the lock (NULL = declared-only -> grey)
-    rev_class   TEXT,               -- [2] 'content' (compose_rev) | 'object' (git object id)
+    rev_class   TEXT,               -- [2] 'content' (fingerprint token) | 'object' (git object id)
     hash_algo   TEXT                -- [2] the hash algo the pin was taken under
 );
 
