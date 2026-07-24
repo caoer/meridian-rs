@@ -5,7 +5,11 @@
 /// ASCII-ish addresses (hpaths, selectors, entry lines); this covers the Go
 /// escape table for printable + the C escapes, and falls back to \u escapes the
 /// way strconv does for non-printables.
-pub(super) fn go_quote(s: &str) -> String {
+///
+/// SHARED (U8b): the splice plan-lowering's host-face refusal strings (`%q`
+/// spellings) mint through THIS quoter — neutral data, no wire types.
+#[must_use]
+pub fn go_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

@@ -135,10 +135,10 @@ violates no-dual-**emit** (emission is strict fingerprint-only under v3) and
 keeps the projection minimal. Strict rejection of mixed-vocabulary INPUT is not
 promised.
 
-## M1 additive surface (2026-07-24) — the v3 session grows three capabilities
+## M1 additive surface (2026-07-24) — the v3 session grows five capabilities
 
-M1 (BIOS cut + data-model migration) adds three ADDITIVE surfaces to a v3
-session. All three are v3-ONLY: a v2 session stays byte-for-byte the frozen
+M1 (BIOS cut + data-model migration) adds five ADDITIVE surfaces to a v3
+session. All are v3-ONLY: a v2 session stays byte-for-byte the frozen
 contract (`crates/wire/tests/contract_v2.rs` pins it), and both hosts — the
 per-workspace sidecar and the resident registry daemon — serve them through
 the one shared `wire-serve` implementation.
@@ -207,6 +207,50 @@ addressing facts, computed engine-side with Go-exact semantics: `n` (dewey
 ordinal), `hpath_text` (the sanitized joined address), `words`
 (`strings.Fields` count over the subtree-inclusive content span). Absent on
 every non-heading node and on every v2 frame.
+
+### 4. The `check_write` op (M1 U8c)
+
+The engine-side I4 def-conformance verdict (`meridiandefs.CheckWrite`):
+`{path, target, actor, now, edits[]}` where `edits` is the put-plan
+vocabulary `{op, at, find?, body?, rev?, all?}`. Pure verdict — no flock, no
+CAS, no disk mutation; the host owns authz and sequencing. Refusals come back
+in the body (`refuse: {class: "rebuild"|"verdict", code, message, remedy}`),
+never as a wire error frame. v3-only at DISPATCH (a v2 session answers
+`unknown_op`); advertised by the hello projection.
+
+### 5. `splice.plan_edits` (M1 U8b)
+
+`splice` gains ONE optional top-level field, `plan_edits` — the plan-level
+batch (the Go daemon's deleted `buildSpliceEdit`/`buildPropertyEdits`
+emulation, moved behind the wire), mutually exclusive with `edits` (both →
+`bad_request`; neither → the frozen `missing `edits` on `splice``). v3-only
+AT DECODE: the session rev threads into the strict decoder
+(`decode(obj, rev)`), and under v2 the field hits the FROZEN unknown-field
+wall byte-for-byte. Items are externally tagged, exactly one of:
+
+```jsonc
+{"append":          {"hpath": s, "body": s}}
+{"match":           {"hpath": s, "old": s, "new": s, "all": bool?, "rev": s?}}
+{"replace_section": {"hpath": s, "body": s, "rev": s?}}
+{"create":          {"parent_hpath": s, "title": s, "body": s}}
+{"set_property":    {"key": s, "value": s}}
+```
+
+Addresses are the HOST-face sanitized hpath forms. The engine lowers each
+shape to native edits at the splice intake (`wire-serve::plan`,
+emulation-byte-faithful: append newline discipline, match-all
+read-modify-write, create = parent-append, set_property = the property-group
+dance with conditional quoting); armed facts align 1:1 with the LOWERED
+edits. `rev` values thread to `if_node_rev` (the v2 CAS domain). Cap:
+`splice.plan_edits`, projection-advertised.
+
+Target-class refusals (unresolvable section, block-anchor append, top-level
+create, no-frontmatter property) are `bad_request` whose `message` is the
+Go-face teaching WITHOUT the host's `put: ` verb prefix. NOTE the deliberate
+asymmetry (op-owner ruling 2026-07-24): the composed `read` op mints its
+`read: ` prefixes ENGINE-side, while `plan_edits` refusals are prefix-less
+and the put host renders the verb — each face is internally consistent and
+golden-arbitrated.
 
 ### Error-code taxonomy additions (M1)
 

@@ -62,6 +62,11 @@ pub struct SpliceArgs {
     pub force: bool,
     /// The requested edits, 1:1 with the armed edits in the response.
     pub edits: Vec<Edit>,
+    /// M1 U8b `splice.plan_edits`: the plan-level batch (mutually exclusive
+    /// with `edits`, decode-enforced). Lowered to native edits at the intake
+    /// below (`crate::plan::lower` — byte-faithful to the deleted Go arms);
+    /// armed facts align 1:1 with the LOWERED edits. Empty = the native form.
+    pub plan_edits: Vec<wire::PlanEdit>,
 }
 
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
@@ -149,7 +154,19 @@ pub fn splice(
         return Err(Box::new(e));
     }
 
-    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, &args.edits)?;
+    // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
+    // (under the flock, against the just-loaded pre-batch doc), then the whole
+    // path below runs unchanged on the lowered batch. Target-class refusals
+    // (the deleted Go arms' teachings) fire before any per-target resolution.
+    let lowered;
+    let effective_edits = if args.plan_edits.is_empty() {
+        &args.edits
+    } else {
+        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
+        &lowered
+    };
+
+    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
     let batch = model::SpliceRequest {
         if_root: args
             .if_root
@@ -168,7 +185,14 @@ pub fn splice(
         None,
     ) {
         model::SpliceVerdict::Validated(b) => b,
-        refused => return Err(verdict_to_wire(&refused, args, &doc, &before_facts)),
+        refused => {
+            return Err(verdict_to_wire(
+                &refused,
+                effective_edits,
+                &doc,
+                &before_facts,
+            ));
+        }
     };
 
     // Build the post-batch document state ONCE, shared by BOTH the armed AFTER
@@ -177,7 +201,7 @@ pub fn splice(
     // one-reparse law; advisor Ruling 2). The real commit writes exactly these
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
     let after_doc = build_after_doc(&doc, &sealed, &args.path);
-    let armed_edits = simulate_armed_edits(&after_doc, &args.edits, &before_facts)?;
+    let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
     // ADVISORY §11.1 verdicts from any caller packs (W1) — never a decision; the
     // caller-supplied packs do not gate, only the armed law below does.
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
@@ -227,7 +251,14 @@ pub fn splice(
     // ARMED — §6.1), fold the append, honor the parent-dir obligation,
     // then drive the D4 commit seam (validate → apply → emit).
     let receipt_input = match &args.receipt {
-        Some(addr) => Some(receipt_input(root, args, &root_before, &armed_edits, addr)?),
+        Some(addr) => Some(receipt_input(
+            root,
+            args,
+            effective_edits,
+            &root_before,
+            &armed_edits,
+            addr,
+        )?),
         None => None,
     };
     let frame = commit_batch(
@@ -242,7 +273,7 @@ pub fn splice(
         },
     )
     .map_err(|e| match e {
-        CommitError::Refused(v) => verdict_to_wire(&v, args, &doc, &before_facts),
+        CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &before_facts),
         CommitError::Env(err) => err,
         CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;
@@ -1242,6 +1273,7 @@ fn simulate_armed_edits(
 fn receipt_input(
     root: &fs::WorkspaceRoot,
     args: &SpliceArgs,
+    edits: &[Edit],
     root_before: &Root,
     armed_edits: &[ArmedEdit],
     addr: &ReceiptAddr,
@@ -1258,8 +1290,7 @@ fn receipt_input(
         now: args.now.as_deref(),
         root_before,
         anchor: &addr.anchor,
-        edits: args
-            .edits
+        edits: edits
             .iter()
             .zip(armed_edits)
             .map(|(req, armed)| receipt::EditFact {
@@ -1301,10 +1332,11 @@ fn apply_validated(raw: &str, sealed: &model::ValidatedBatch) -> String {
 }
 
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
-/// (code + REQUIRED recovery + the frozen extras).
+/// (code + REQUIRED recovery + the frozen extras). `edits` is the EFFECTIVE
+/// batch (post-lowering, U8b) — the request targets the extras echo.
 fn verdict_to_wire(
     verdict: &model::SpliceVerdict,
-    args: &SpliceArgs,
+    edits: &[Edit],
     doc: &model::Document,
     before_facts: &[model::Target],
 ) -> Box<ErrorBody> {
@@ -1326,7 +1358,7 @@ fn verdict_to_wire(
             // `model_edits_and_before_facts`; routing it through `ambiguous` keeps
             // both refusal sites identical. The offending target is the first
             // edit that resolves ambiguously.
-            let offending = args.edits.iter().map(|e| &e.target).find(|t| {
+            let offending = edits.iter().map(|e| &e.target).find(|t| {
                 to_model_ref(t).is_ok_and(|r| {
                     matches!(
                         model::resolve(doc, &r),
@@ -1363,8 +1395,7 @@ fn verdict_to_wire(
             e.message = Some("batch targets must be disjoint (§4.4)".into());
             // Echo the overlapping REQUEST targets (§2.1 grammar): the
             // targets whose resolved pre-batch spans are the overlap pair.
-            let overlapping: Vec<SecRef> = args
-                .edits
+            let overlapping: Vec<SecRef> = edits
                 .iter()
                 .zip(before_facts)
                 .filter(|(_, fact)| spans.contains(&fact.span))
@@ -1664,6 +1695,7 @@ mod tests {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         }
     }
 

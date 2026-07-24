@@ -40,6 +40,7 @@ fn splice_args(text: &str) -> SpliceArgs {
             },
             if_node_rev: None,
         }],
+        plan_edits: Vec::new(),
     }
 }
 

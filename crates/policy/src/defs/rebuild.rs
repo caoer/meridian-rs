@@ -604,7 +604,11 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
 /// raw so the I4 nested-frontmatter law (not a shape check) judges it. The
 /// error class is approximated by its two live shapes: an unquoted mid-value
 /// `": "` (mapping in value position) and an unterminated leading quote.
-fn yaml_safe_value(val: &str) -> String {
+/// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
+/// THIS predicate — single-owner discipline, so the `check_write` candidate and
+/// the written bytes cannot drift.
+#[must_use]
+pub fn yaml_safe_value(val: &str) -> String {
     if val.is_empty() {
         return String::new();
     }
@@ -773,7 +777,11 @@ fn apply_splices(src: &[u8], ops: &[SpliceOp]) -> Vec<u8> {
     out
 }
 
-fn ensure_trailing_nl(s: &str) -> Vec<u8> {
+/// Go `ensureTrailingNL` — SHARED write-discipline helper (U8b: the splice
+/// plan-lowering in `wire-serve` composes the same payload bytes this rebuild
+/// composes; one owner, two consumers). Neutral data only — no wire types.
+#[must_use]
+pub fn ensure_trailing_nl(s: &str) -> Vec<u8> {
     if s.is_empty() || s.ends_with('\n') {
         return s.as_bytes().to_vec();
     }

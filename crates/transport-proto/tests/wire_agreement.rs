@@ -352,16 +352,26 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             dry,
             force,
             edits,
-        } => pb::request::Op::Splice(pb::SpliceRequest {
-            path: path.0,
-            actor,
-            now,
-            receipt: receipt.map(receipt_addr_to_pb),
-            if_root: if_root.map(|r| r.0),
-            dry,
-            force,
-            edits: edits.into_iter().map(edit_to_pb).collect(),
-        }),
+            plan_edits,
+        } => {
+            // v3-only JSON-face field (M1 U8b): outside the proto agreement
+            // surface, same rule as `read`/`check_write` — the v2 samples
+            // never carry it.
+            assert!(
+                plan_edits.is_empty(),
+                "`plan_edits` is v3-JSON-face only — not in the proto agreement"
+            );
+            pb::request::Op::Splice(pb::SpliceRequest {
+                path: path.0,
+                actor,
+                now,
+                receipt: receipt.map(receipt_addr_to_pb),
+                if_root: if_root.map(|r| r.0),
+                dry,
+                force,
+                edits: edits.into_iter().map(edit_to_pb).collect(),
+            })
+        }
         wire::Op::Root => pb::request::Op::Root(pb::RootRequest {}),
         wire::Op::Diff { from_root, to_root } => pb::request::Op::Diff(pb::DiffRequest {
             from_root: from_root.0,
@@ -1088,6 +1098,8 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             dry,
             force,
             edits: edits.into_iter().map(edit_from_pb).collect(),
+            // v3-only JSON-face field (M1 U8b): the pb mirror stays v2-shaped.
+            plan_edits: Vec::new(),
         },
         pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
         pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
@@ -1627,6 +1639,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 },
                 if_node_rev: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
             }],
+            plan_edits: Vec::new(),
         },
         // splice: guardless append (legal at the wire forever) — put at:end
         wire::Op::Splice {
@@ -1647,6 +1660,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 },
                 if_node_rev: None,
             }],
+            plan_edits: Vec::new(),
         },
         // splice: dry run, fm_key target, put at:all and at:content coverage
         wire::Op::Splice {
@@ -1691,6 +1705,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                     if_node_rev: None,
                 },
             ],
+            plan_edits: Vec::new(),
         },
     ]
 }
