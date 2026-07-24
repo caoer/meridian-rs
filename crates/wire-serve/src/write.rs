@@ -806,6 +806,221 @@ fn pin_journal_write(
     Ok(receipt::anchor(seq))
 }
 
+// ---------------------------------------------------------------------------
+// Guarded `meridian-lock` write — the NEW lock method (M1 U11, decision #8)
+// ---------------------------------------------------------------------------
+//
+// The lock is a machine-owned lockfile IN the page: a fenced `meridian-lock`
+// block (versioned root object, `objects:`/`pins:` planes). The FORMAT —
+// types, strict parse, canonical render, locate — lives in `crates/lock`;
+// this is the ENGINE-SOLE-WRITER path (#8 §3): the one place lock bytes reach
+// disk, mirroring the create/remove shape so the one-write-shape law holds.
+// Callers hand in the TYPED `lock::Lock` — never raw block bytes — so a
+// hand-forged block cannot enter through this door by construction. M1 lands
+// format + this write path ONLY; the read-mint gate, drift verify-on-read,
+// and vibe mode are stage 2 (nothing reads the lock to gate yet). Lock-is-
+// content (#8 §5): the block sits inside the page span, so the page's
+// fingerprint covers its lock and the write is one atomic file replace —
+// content and lock land together or not at all.
+
+/// One guarded `meridian-lock` write request (U11): upsert the page's ONE
+/// lock block from a typed [`lock::Lock`]. `if_file_rev` is the page's
+/// whole-file rev the caller read (write-what-you-read CAS); `if_root` the
+/// §5.1 world guard; `dry` runs everything except disk.
+#[derive(Debug, Clone)]
+pub struct LockWriteArgs {
+    /// Frame correlation token — recorded only.
+    pub id: Option<u64>,
+    /// The pinning page the `meridian-lock` block lives in (workspace-confined).
+    pub path: Path,
+    /// The typed lock object — the SOLE input form (engine-sole-writer #8 §3:
+    /// raw block bytes never cross this seam; rendering is `lock::render`'s).
+    pub lock: lock::Lock,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    /// The optional §5.1 world guard: refuse if the ambient root differs.
+    pub if_root: Option<Root>,
+    /// The page's whole-file rev the caller read — write-what-you-read CAS.
+    pub if_file_rev: NodeRev,
+    /// Dry run — everything except disk (no bytes, no journal row, no advance).
+    pub dry: bool,
+}
+
+/// The outcome of a guarded lock write. Absences mirror [`CreateOutcome`]:
+/// `root_after`/`journal_anchor`/`committed` are `None` on a dry run.
+#[derive(Debug)]
+pub struct LockWriteOutcome {
+    pub root_before: Root,
+    pub root_after: Option<Root>,
+    /// The page's whole-file rev before the write (the CAS-confirmed rev).
+    pub file_rev_before: NodeRev,
+    /// The page's whole-file rev after the lock landed (computed on dry too —
+    /// a fact about the spec, not the disk).
+    pub file_rev_after: NodeRev,
+    pub journal_anchor: Option<String>,
+    pub committed: Option<DeltaFrame>,
+    /// `true` when the write BIRTHED the block (EOF append — no lock existed);
+    /// `false` when it replaced the existing block in place.
+    pub created: bool,
+    pub dry: bool,
+}
+
+/// **Guarded `meridian-lock` write** (U11, decision #8): land the page's one
+/// lock block — replace it in place when present, birth it at EOF when absent
+/// — under CAS write-what-you-read + workspace-root + the D9 write flock,
+/// journal ONE `op=lock` row (whole-file transition, chain-continuous), and
+/// emit the `modified` change surface.
+///
+/// Order: path confinement → reserved-journal guard → the write flock (D9) →
+/// load the page → world guard (§5.1) → the write-what-you-read CAS → locate
+/// the block (`lock::find` — MULTIPLE blocks refuse loud: sole-writer mints
+/// exactly one, two is a hand-edit/corruption signal) → render via
+/// `lock::render` (canonical bytes; terminators are THIS path's) → in-memory
+/// splice → [`fs::replace_file`] (atomic; lock-is-content — one commit) →
+/// root advance → Delta → journal row. `dry: true` runs everything except
+/// disk.
+///
+/// # Placement law (fresh lock)
+/// A birthed block appends at EOF — lockfile-at-bottom posture — separated
+/// from existing content by exactly one blank line, and the file ends with
+/// one terminator. A replaced block keeps its exact span (fence-to-fence).
+///
+/// # Errors
+/// `bad_path`, `bad_request` (reserved journal, or a malformed/duplicated
+/// existing lock block — surfaced, never silently adopted), `workspace_busy`
+/// (D9), `file_not_found` (the page must exist — a lock pins content),
+/// `root_mismatch`, `cas_mismatch`, or an I/O failure. In every error case
+/// nothing was written and no journal row was appended.
+pub fn lock_write(
+    root: &fs::WorkspaceRoot,
+    seq: u64,
+    args: &LockWriteArgs,
+) -> Result<LockWriteOutcome, Box<ErrorBody>> {
+    let fs_path = FsPath::new(&args.path.0);
+    path_confined(&args.path)?;
+    reserved_journal_guard(fs_path)?;
+
+    // D9: the lock write serializes on the same write flock as every writer.
+    let _write_lock = acquire_write_lock(root)?;
+
+    let before_doc = load_doc(root, &args.path)?;
+    let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
+
+    let root_before = ambient_root(root)?;
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    // write-what-you-read CAS: the page must still carry the rev the caller
+    // read (drift means the lock's facts were computed against stale bytes).
+    if args.if_file_rev != file_rev_before {
+        return Err(cas_mismatch(&args.if_file_rev, &file_rev_before));
+    }
+
+    // Locate the ONE block (or the EOF birth point). `lock::find` fails loud
+    // on duplicates and malformed YAML — a sole-writer page can only reach
+    // that state by hand-editing, and adopting it would launder corruption.
+    let raw = &before_doc.raw;
+    let (span, created) = match locate_lock(&before_doc)? {
+        Some(existing) => (existing, false),
+        None => (raw.len()..raw.len(), true),
+    };
+
+    // Render the canonical block (fence-to-fence, no trailing newline — the
+    // surrounding terminators are THIS path's, per the crates/lock contract).
+    let block = lock::render(&args.lock);
+    let new_text = if created {
+        // Placement law: EOF, one blank line before, one terminator after.
+        let sep = if raw.is_empty() || raw.ends_with("\n\n") {
+            ""
+        } else if raw.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        format!("{sep}{block}\n")
+    } else {
+        block
+    };
+
+    let mut new_raw = String::with_capacity(raw.len() + new_text.len());
+    new_raw.push_str(&raw[..span.start]);
+    new_raw.push_str(&new_text);
+    new_raw.push_str(&raw[span.end..]);
+    let after_doc = build_doc(&args.path, &new_raw);
+    let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+
+    if args.dry {
+        return Ok(LockWriteOutcome {
+            root_before,
+            root_after: None,
+            file_rev_before,
+            file_rev_after,
+            journal_anchor: None,
+            committed: None,
+            created,
+            dry: true,
+        });
+    }
+
+    fs::replace_file(root, fs_path, &new_raw).map_err(|e| io_to_wire(&e))?;
+    let root_after = ambient_root(root)?;
+
+    let files = model::delta::file_delta(Some(&before_doc), Some(&after_doc))
+        .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
+        .unwrap_or_default();
+    let committed = assemble_delta(
+        seq,
+        root_before.clone(),
+        root_after.clone(),
+        args.actor.clone(),
+        args.now.clone(),
+        files,
+    );
+    // ONE `op=lock` journal row: whole-file rev transition (the lock is
+    // content — the page moved), both roots, edits=0. The create/remove row
+    // shape, not pin's fake-anchor edit row.
+    let journal_anchor = journal_write(
+        root,
+        "lock",
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &root_before,
+        &root_after,
+        receipt::journal::FileTransition {
+            before: Some(&file_rev_before.0),
+            after: Some(&file_rev_after.0),
+        },
+    )?;
+
+    Ok(LockWriteOutcome {
+        root_before,
+        root_after: Some(root_after),
+        file_rev_before,
+        file_rev_after,
+        journal_anchor: Some(journal_anchor),
+        committed: Some(committed),
+        created,
+        dry: false,
+    })
+}
+
+/// The one `crates/lock` locate adapter: the page's existing block span
+/// (fence-to-fence, terminator-exclusive), `None` when the page has no lock,
+/// or a teaching `bad_request` when the page's lock state is corrupt (MULTIPLE
+/// blocks — sole-writer mints exactly one — or unparseable YAML). Surfacing
+/// beats adopting: a hand-edited lock must be repaired deliberately, never
+/// silently rewritten over.
+fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, Box<ErrorBody>> {
+    match lock::find(doc) {
+        Ok(Some(found)) => Ok(Some(found.span)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(bad_request(format!(
+            "the page's meridian-lock state is corrupt ({e:?}) — the engine is the sole \
+             writer (#8 §3); repair the block by hand-removing it, then re-mint"
+        ))),
+    }
+}
+
 /// Acquire the workspace write flock (D9, xproc-race fix) with the typed
 /// error split — G2: a held lock (`WouldBlock`, `LOCK_NB`) is the fast
 /// `workspace_busy` refusal (retry — transient), and any OTHER lock-file I/O
