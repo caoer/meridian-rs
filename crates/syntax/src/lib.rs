@@ -467,6 +467,105 @@ fn is_callout_type_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
 }
 
+// ---------------------------------------------------------------------------
+// norm-v2 — the fingerprint plane's canonicalization (docs/norm-v2-spec.md §4)
+// ---------------------------------------------------------------------------
+//
+// Lives HERE because the one normative anchor grammar is this crate's lexer
+// ([`scan_anchors`], ruling 011): norm-v2 is identity except anchor-token
+// removal, and the removal law must never re-derive the grammar it consumes.
+// No hashing happens in this crate (charter) — `model` hashes the canonical
+// bytes. A grammar change that alters anchor recognition is a CODEC BUMP for
+// the fingerprint plane (spec §2.2), never a silent reinterpretation.
+
+/// The §4.2 removal ranges for every anchor token in `input`, file
+/// coordinates, sorted and overlap-merged. Identification runs over the WHOLE
+/// file (the document parse) — a slice can never re-classify an anchor (§4.1).
+///
+/// - **R1** tail anchor: the marker plus exactly ONE immediately-preceding
+///   space/tab — the exact inverse of what pin promotion inserts.
+/// - **R2** own-line anchor: the entire line including its terminator (a
+///   CRLF's `\r` sits inside the removed line).
+/// - **R2b** own-line anchor on an unterminated last line: the line plus the
+///   PRECEDING line's terminator, so terminator-exclusive slices stay neutral
+///   under own-line promotion at EOF.
+#[must_use]
+pub fn anchor_removals(input: &str) -> Vec<Range<usize>> {
+    let file = input.as_bytes();
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for node in parse(input) {
+        if !matches!(node.kind, DialectKind::Anchor { .. }) {
+            continue;
+        }
+        let m = node.span;
+        let line_start = file[..m.start]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |p| p + 1);
+        let own_line = file[line_start..m.start]
+            .iter()
+            .all(|&b| b == b' ' || b == b'\t');
+        if own_line {
+            if let Some(p) = file[m.end..].iter().position(|&b| b == b'\n') {
+                out.push(line_start..m.end + p + 1); // R2
+            } else {
+                // R2b — consume the preceding terminator instead.
+                let mut t = line_start;
+                if t >= 1 && file[t - 1] == b'\n' {
+                    t -= 1;
+                    if t >= 1 && file[t - 1] == b'\r' {
+                        t -= 1;
+                    }
+                }
+                out.push(t..file.len());
+            }
+        } else {
+            // R1 — the lexer guarantees the byte before `^` is a space/tab here.
+            out.push(m.start - 1..m.end);
+        }
+    }
+    out.sort_by_key(|r| r.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for r in out {
+        match merged.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => merged.push(r),
+        }
+    }
+    merged
+}
+
+/// §4.3 — apply file-level `removals` to one node span: the span's bytes minus
+/// every removal∩span. Removals partially outside the span remove only the
+/// intersection (determinism guard).
+#[must_use]
+pub fn norm_v2_slice(input: &str, span: &Range<usize>, removals: &[Range<usize>]) -> Vec<u8> {
+    let file = input.as_bytes();
+    let mut out = Vec::with_capacity(span.len());
+    let mut pos = span.start;
+    for r in removals {
+        let s = r.start.max(span.start);
+        let e = r.end.min(span.end);
+        if s >= e {
+            continue;
+        }
+        if pos < s {
+            out.extend_from_slice(&file[pos..s]);
+        }
+        pos = pos.max(e);
+    }
+    if pos < span.end {
+        out.extend_from_slice(&file[pos..span.end]);
+    }
+    out
+}
+
+/// Whole-input canonicalization — the document grain of [`norm_v2_slice`].
+#[must_use]
+pub fn norm_v2(input: &str) -> Vec<u8> {
+    norm_v2_slice(input, &(0..input.len()), &anchor_removals(input))
+}
+
 /// Is `pos` inside any range of a sorted, non-overlapping mask?
 fn in_mask(mask: &[Range<usize>], pos: usize) -> bool {
     let i = mask.partition_point(|r| r.end <= pos);
@@ -923,5 +1022,33 @@ mod tests {
         let ords: Vec<u8> = parse(src).iter().map(|n| kind_ordinal(&n.kind)).collect();
         // heading [0,19] starts before anchor [10,19]
         assert_eq!(ords, vec![1, 4]);
+    }
+
+    // ---- norm-v2 crate-local smoke (the conformance suite is
+    // crates/model/tests/norm_v2_fixtures.rs — golden data lives THERE) ----
+
+    #[test]
+    fn norm_v2_tail_and_own_line() {
+        // R1: marker + one preceding space; content otherwise untouched.
+        assert_eq!(norm_v2("para one ^goal\n"), b"para one\n");
+        // R2: own-line anchor removed with its terminator.
+        assert_eq!(norm_v2("|a|\n^tbl\n\nafter\n"), b"|a|\n\nafter\n");
+        // masked: fenced code keeps its caret bytes.
+        assert_eq!(
+            norm_v2("```\ncode ^notanchor\n```\n"),
+            b"```\ncode ^notanchor\n```\n"
+        );
+    }
+
+    #[test]
+    fn norm_v2_r2b_preceding_terminator_at_eof() {
+        // R2b: unterminated last line consumes the PRECEDING terminator, so a
+        // terminator-exclusive slice is neutral under promotion at EOF.
+        assert_eq!(norm_v2("|a|\n|b|\n^tbl"), b"|a|\n|b|");
+        // slice application: removals computed file-level, applied to a span.
+        let src = "# A\nintro ^goal\n\n# B\n";
+        let removals = anchor_removals(src);
+        // [0,15) = `# A\nintro ^goal` (the terminator-exclusive line span).
+        assert_eq!(norm_v2_slice(src, &(0..15), &removals), b"# A\nintro");
     }
 }
