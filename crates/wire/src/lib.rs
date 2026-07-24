@@ -418,6 +418,29 @@ pub enum Op {
     /// (A6). `from_seq` catchup is valid only within one epoch (§7.1 late
     /// law); outside the retained history → `root_unknown` → diff-by-root.
     Sub { from_seq: u64 },
+    /// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
+    /// render at ONE engine snapshot — one round trip replacing the
+    /// `extract`→`cat`→render 3-hop split (whose non-atomicity created the
+    /// `fingerprint_mismatch` retry race, A-K5). **v3-ONLY**: absent from the
+    /// frozen v2 `caps`, so a v2 session answers `unknown_op` (§3.2 discovery
+    /// honesty); the v3 hello projection advertises it.
+    ///
+    /// `mode` is `"toc"` (default) or `"sections"`; `frag` scopes to one
+    /// section subtree; `sections` selects by sanitized hpath, dewey ordinal,
+    /// or `^anchor`; `display_path` is the caller's path spelling for the
+    /// rendered header line (defaults to `path`) — the engine renders the
+    /// string the consumer expects, it never invents host paths.
+    Read {
+        path: Path,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frag: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        display_path: Option<String>,
+    },
     /// V2 §Q2 the view-organ **path forwarder** — resolve `cwd` → workspace,
     /// publish `view.duckdb` (the daemon is the sole builder), and return the
     /// stamped filesystem PATH plus a pre-open freshness hint. It marshals
@@ -526,6 +549,32 @@ pub struct TocNode {
     pub keys: Option<Vec<String>>,
 }
 
+/// One composed-read toc row (M1 U4a2, v3-only): the host-face addressing
+/// facts — dewey ordinal `n`, heading `depth`, RAW `title`, the sanitized
+/// joined `hpath` ADDRESS, `strings.Fields` `words` over the
+/// subtree-inclusive content span, and the section CAS token `sec_rev`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadRow {
+    pub n: String,
+    pub depth: u32,
+    pub title: String,
+    pub hpath: String,
+    pub words: u64,
+    pub sec_rev: NodeRev,
+}
+
+/// One composed-read resolved section (M1 U4a2, v3-only): the selector that
+/// hit, its address + CAS token, the RENDERED content (raw-face-identical in
+/// M1), and the word count recomputed over that content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadSectionOut {
+    pub sel: String,
+    pub hpath: String,
+    pub sec_rev: NodeRev,
+    pub words: u64,
+    pub content: String,
+}
+
 /// Per-kind `info` payloads (v1 §5.2 table). Untagged: the sibling `kind`
 /// field discriminates; kinds with no `info` shape simply omit the key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -588,10 +637,32 @@ pub enum ResponsePayload {
 /// Success bodies per op. Untagged: field shape discriminates on the wire;
 /// typed clients match on what they asked for. Variant ORDER is load-bearing
 /// for deserialization: a shape-superset variant must precede its subset
-/// (Toc before Nodes, Cat before Splice).
+/// (Toc before Nodes, Cat before Splice; Read first — `rendered_text` is
+/// unique to it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ResponseBody {
+    /// The composed-read reply (M1 U4a2, v3-only): every fact at ONE engine
+    /// snapshot — `file_rev` + ambient `root` (the atomicity witness), the
+    /// host-face addressing table (`toc`, mode toc) or the selected sections
+    /// (`sections`, mode sections; `truncated`+`notice` = the PARTIAL-read
+    /// rule), and `rendered_text` (the `readText` projection, byte-parity
+    /// with the U0 goldens).
+    Read {
+        path: Path,
+        file_rev: NodeRev,
+        root: Root,
+        words_total: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        toc: Option<Vec<ReadRow>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<ReadSectionOut>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncated: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        notice: Option<String>,
+        rendered_text: String,
+    },
     /// v2 §3.2: `proto` in effect, server name, the COMPLETE op-name set
     /// (`caps` includes dotted `op.field` strings for field-only amendments),
     /// optional first ambient `root`.
