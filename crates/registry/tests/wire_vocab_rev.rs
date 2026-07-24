@@ -320,7 +320,64 @@ fn v2_session_emits_root_and_never_fingerprint() {
                 "a v2 frame must emit ZERO `{fp_key}` keys: {frame}"
             );
         }
+        // U7: the in-band timing block is a v3-only additive slot — the frozen
+        // v2 contract never grows a `meta` key.
+        assert!(
+            !frame_keys.iter().any(|k| k == "meta" || k == "duration_us"),
+            "a v2 frame must emit ZERO timing keys: {frame}"
+        );
     }
+
+    server.shutdown();
+}
+
+/// U7 in-band timing on the daemon socket: a v3 session's dispatched frames —
+/// reads, the write, and a refusal alike — carry `meta: {duration_us}` (integer
+/// µs, the daemon measure point is `dispatch_read`). The `hello` handshake is
+/// intercepted BEFORE the dispatch shell and carries none.
+#[test]
+fn v3_dispatch_frames_carry_meta_duration_us() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("plan.md", PLAN), ("b.md", "# B\n")]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.hello(&ws, Some("v3"));
+    assert_eq!(hi["ok"], json!(true), "v3 hello ok: {hi}");
+    assert!(
+        hi.get("meta").is_none(),
+        "hello is intercepted before dispatch_read — no timing: {hi}"
+    );
+
+    let toc = conn.call(&json!({"op": "toc", "path": "plan.md"}));
+    let fp = conn.call(&json!({"op": "fingerprint"}));
+    let missing = conn.call(&json!({"op": "toc", "path": "no/such/file.md"}));
+    let splice = conn.call(&json!({
+        "id": 9,
+        "op": "splice",
+        "path": "plan.md",
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+        }],
+    }));
+
+    for (name, frame) in [
+        ("toc", &toc),
+        ("fingerprint", &fp),
+        ("splice", &splice),
+        ("refusal", &missing),
+    ] {
+        assert!(
+            frame["meta"]["duration_us"].is_u64(),
+            "v3 {name} frame carries meta.duration_us: {frame}"
+        );
+    }
+    assert_eq!(
+        missing["ok"],
+        json!(false),
+        "refusal is an error: {missing}"
+    );
 
     server.shutdown();
 }
