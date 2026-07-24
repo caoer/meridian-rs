@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cache::DrawerLock;
 use serde::Serialize;
@@ -442,8 +442,10 @@ fn handle_line(
             }
         }
         // `hello` negotiates the rev; its OWN response is then shaped for it (the
-        // caps + binding follow the negotiated vocabulary immediately).
-        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev),
+        // caps + binding follow the negotiated vocabulary immediately). The
+        // handshake is intercepted BEFORE the dispatch shell, so it carries no
+        // U7 duration (the daemon measure point is `dispatch_read` alone).
+        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev, None),
         _ => {
             // v3 connection: re-key the request into its v2 form so the strict
             // decoder + arms stay v2-only. A v2 spelling passes through untouched
@@ -451,7 +453,8 @@ fn handle_line(
             if *rev == Rev::V3 {
                 wire_serve::rev::rename_request(&mut obj);
             }
-            wire_line(&serve_wire(registry, attached.as_deref(), &obj), *rev)
+            let (response, duration_us) = serve_wire(registry, attached.as_deref(), &obj);
+            wire_line(&response, *rev, duration_us)
         }
     }
 }
@@ -459,11 +462,16 @@ fn handle_line(
 /// Render one wire response line (`\n`-terminated), shaped per the negotiated
 /// rev. v2 serializes the typed `wire::Response` directly — the frozen path,
 /// byte-identical. v3 projects the serialized frame `root` → `fingerprint` at the
-/// envelope layer (the typed layer never changes).
-fn wire_line(response: &wire::Response, rev: Rev) -> String {
+/// envelope layer (the typed layer never changes), then attaches the in-band
+/// timing block `meta: {duration_us}` when this frame answered a dispatched op
+/// (U7: the daemon measure point is the `dispatch_read` call — engine work only).
+fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
     let mut out = if rev == Rev::V3 {
         let mut v = serde_json::to_value(response).expect("wire response serializes");
         wire_serve::rev::project_response(&mut v);
+        if let Some(us) = duration_us {
+            wire_serve::rev::attach_meta(&mut v, us);
+        }
         serde_json::to_string(&v).expect("wire response serializes")
     } else {
         serde_json::to_string(response).expect("wire response serializes")
@@ -639,15 +647,28 @@ fn hello_body(
 
 /// Strict-decode one wire read op and serve it from the attached workspace's
 /// resident engine, rendering the frozen `wire::Response` frame (echoing `id`).
+///
+/// Returns the response plus the U7 in-band duration: `Some(µs)` exactly when
+/// the frame reached `dispatch_read` (the daemon measure point — engine work
+/// only, success or refusal alike; a decode refusal carries none).
 fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
     obj: &Map<String, Value>,
-) -> wire::Response {
+) -> (wire::Response, Option<u64>) {
     let id = obj.get("id").and_then(Value::as_u64);
-    let body =
-        wire_serve::decode::decode(obj).and_then(|op| dispatch_read(registry, attached, id, op));
-    match body {
+    let (body, duration_us) = match wire_serve::decode::decode(obj) {
+        Ok(op) => {
+            // U7 measure point: the dispatch call alone (after decode, before
+            // the response render) — checked µs, never a lossy `as`.
+            let started = Instant::now();
+            let body = dispatch_read(registry, attached, id, op);
+            let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+            (body, Some(duration_us))
+        }
+        Err(error) => (Err(error), None),
+    };
+    let response = match body {
         Ok(body) => wire::Response {
             id,
             ok: true,
@@ -658,7 +679,8 @@ fn serve_wire(
             ok: false,
             payload: ResponsePayload::Error { error: *error },
         },
-    }
+    };
+    (response, duration_us)
 }
 
 /// Route one decoded wire op to its arm against the attached workspace. Reads

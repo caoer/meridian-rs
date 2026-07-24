@@ -170,9 +170,18 @@ fn v3_session_emits_fingerprint_never_root() {
     assert_eq!(frames[1]["body"]["fingerprint"], json!(R0));
     assert!(frames[1]["body"].as_object().unwrap().get("root").is_none());
 
-    // the renamed op returns the fingerprint body
+    // the renamed op returns the fingerprint body (plus the U7 in-band timing
+    // block — nondeterministic value, so it is asserted by shape and peeled
+    // before the exact comparison)
+    let mut cursor_frame = frames[2].clone();
+    let meta = cursor_frame
+        .as_object_mut()
+        .unwrap()
+        .remove("meta")
+        .expect("v3 dispatch frames carry meta");
+    assert!(meta["duration_us"].is_u64(), "meta carries µs: {meta}");
     assert_eq!(
-        frames[2],
+        cursor_frame,
         json!({"id":3,"ok":true,"body":{"fingerprint":R0,"seq":0}})
     );
 
@@ -261,6 +270,67 @@ fn unknown_contract_rev_is_typed_error() {
             .contains("unknown contract rev"),
         "{}",
         frames[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// U7 in-band timing: v3 dispatch frames carry meta.duration_us, v2 never
+// ---------------------------------------------------------------------------
+
+/// A v3 session's dispatched frames — success AND refusal alike — carry the
+/// in-band timing block `meta: {duration_us}` (integer µs, the sidecar
+/// measure point is `arms::dispatch`). The body/error shape is untouched:
+/// meta is a top-level sibling.
+#[test]
+fn v3_dispatch_frames_carry_meta_duration_us() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n\
+         {\"id\":3,\"op\":\"toc\",\"path\":\"no/such/file.md\"}\n";
+    let frames = serve(&root, input);
+    // hello + toc ride arms::dispatch → both timed
+    for frame in &frames[..2] {
+        assert!(
+            frame["meta"]["duration_us"].is_u64(),
+            "v3 dispatch frame carries meta.duration_us: {frame}"
+        );
+    }
+    // a refusal is engine work too — the error frame is timed as well
+    assert_eq!(frames[2]["ok"], json!(false));
+    assert!(
+        frames[2]["meta"]["duration_us"].is_u64(),
+        "v3 error frame carries meta.duration_us: {}",
+        frames[2]
+    );
+    // meta rides beside body/error, never inside them
+    assert!(frames[1]["body"].as_object().unwrap().get("meta").is_none());
+    assert!(
+        frames[2]["error"]
+            .as_object()
+            .unwrap()
+            .get("meta")
+            .is_none()
+    );
+}
+
+/// A v2 session NEVER emits a `meta` key — the frozen contract is
+/// byte-identical, and timing is a v3-only additive slot.
+#[test]
+fn v2_session_never_emits_meta() {
+    let (_d, root) = s0();
+    let raw = serve_raw(
+        &root,
+        "{\"id\":1,\"op\":\"hello\",\"proto\":1}\n\
+         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n\
+         {\"id\":3,\"op\":\"toc\",\"path\":\"no/such/file.md\"}\n",
+    );
+    assert!(
+        !raw.contains("\"meta\""),
+        "v2 must never emit a meta key: {raw}"
+    );
+    assert!(
+        !raw.contains("duration_us"),
+        "v2 must never emit duration_us: {raw}"
     );
 }
 
