@@ -18,8 +18,10 @@
 //! # Rungs
 //! Rung 1: `project` (toc/extract node lists). Rung 2+: projection of resolve
 //! targets and splice verdicts joins additively; M1 U2 adds the Go-exact
-//! host-face addressing semantics ([`gotext`]).
+//! host-face addressing semantics ([`gotext`]) and the read-fact table
+//! ([`facts`]) built from them.
 
+pub mod facts;
 pub mod gotext;
 
 /// Project a parsed document onto the wire node list: flatten the governed
@@ -64,6 +66,11 @@ fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
             unterminated: unterminated.then_some(true),
             info,
             node_rev: Some(wire::NodeRev(node.node_rev.0.clone())),
+            // U2 addressing facts are attached by the extract arm under v3
+            // sessions only — the projection itself stays rev-agnostic.
+            n: None,
+            hpath_text: None,
+            words: None,
         });
     }
     for child in &node.children {
