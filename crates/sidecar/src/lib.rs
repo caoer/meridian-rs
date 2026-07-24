@@ -1,5 +1,6 @@
-//! Thin NDJSON serve loop + the typed edge — the only place wire and model meet
-//! (with the named `wire-map` seam, law 3 as amended by review C1).
+//! Thin NDJSON serve loop — ONE of the two HOSTS of the shared typed edge
+//! (`wire-serve`; the resident `registry` daemon is the other), wiring only
+//! (law 3 as re-attested 2026-07-24, `docs/laws.md`).
 //!
 //! # Charter
 //! **Owns:** the typed edge: untyped `transport` frames validated into `wire`
