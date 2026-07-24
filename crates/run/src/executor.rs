@@ -476,6 +476,10 @@ pub fn apply_under(
             .as_ref()
             .map(|(path, _, _)| Path::new(path.as_str())),
         &sealed,
+        // The validated pre-image (D8): the sealed spans index `doc.raw` (the
+        // step-2 load under the lock); fs splices exactly these bytes and
+        // verifies the live page still carries them before the rename.
+        doc.raw.as_bytes(),
     )
     .map_err(|e| ExecError::Io {
         reason: e.to_string(),
