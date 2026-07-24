@@ -29,8 +29,6 @@ default-members = [
     "crates/realise",
     "crates/mrd",
     "crates/view",
-    "crates/pin",
-    "crates/attest",
     "crates/transcript",
     "crates/preset",
     "crates/check",
@@ -65,9 +63,7 @@ effects = { path = "crates/effects", version = "0.0.0" }
 run = { path = "crates/run", version = "0.0.0" }
 realise = { path = "crates/realise", version = "0.0.0" }
 view = { path = "crates/view", version = "0.0.0" }
-pin = { path = "crates/pin", version = "0.0.0" }
 lock = { path = "crates/lock", version = "0.0.0" }
-attest = { path = "crates/attest", version = "0.0.0" }
 transcript = { path = "crates/transcript", version = "0.0.0" }
 preset = { path = "crates/preset", version = "0.0.0" }
 check = { path = "crates/check", version = "0.0.0" }
