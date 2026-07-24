@@ -54,6 +54,24 @@ pub(crate) fn dispatch(
                 },
             )
         }
+        // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the
+        // frozen v2 caps; §3.2 discovery honesty). Read-only: loads the prev
+        // bytes, never writes.
+        Op::CheckWrite {
+            path,
+            target,
+            actor,
+            now,
+            edits,
+        } => {
+            if !v3 {
+                return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
+            }
+            let doc = load_doc(root, &path)?;
+            Ok(wire_serve::check_write::check_write(
+                &doc, &target, &actor, &now, &edits,
+            ))
+        }
         Op::Resolve {
             from,
             r#ref,

@@ -830,12 +830,30 @@ fn dispatch_read(
             };
             wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
         }
+        // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
+        // warm engine's doc (read-only: never a write path).
+        Op::CheckWrite {
+            path,
+            target,
+            actor,
+            now,
+            edits,
+        } if v3 => warm_engine_read(registry, ws, |engine| {
+            let doc = engine
+                .docs
+                .get(&path.0)
+                .ok_or_else(|| file_not_found(&path))?;
+            Ok(wire_serve::check_write::check_write(
+                doc, &target, &actor, &now, &edits,
+            ))
+        }),
         // `hello` is intercepted upstream in `handle_line` (the handshake binds
         // the connection), so it never reaches here. `sub` = P2 is not served yet
         // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
-        // `read` lands here only on a NON-v3 connection (the guarded arm
-        // above takes v3): absent from the frozen v2 caps → `unknown_op`.
-        Op::Hello { .. } | Op::Sub { .. } | Op::Read { .. } => {
+        // `read`/`check_write` land here only on a NON-v3 connection (the
+        // guarded arms above take v3): absent from the frozen v2 caps →
+        // `unknown_op`.
+        Op::Hello { .. } | Op::Sub { .. } | Op::Read { .. } | Op::CheckWrite { .. } => {
             Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
         }
     }
