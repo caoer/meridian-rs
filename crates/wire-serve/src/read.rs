@@ -252,8 +252,7 @@ fn composed_sections(
         notice: notice.as_deref(),
     };
     // U4b: the render face's production configuration — engine (`meridian-*`)
-    // blocks are elided from rendered output; the raw read/cat face never
-    // routes through render and stays verbatim (byte pin #4).
+    // blocks are elided from RENDERED output (`rendered_text`) only.
     let rendered =
         render::Renderer::render(&render::TextRenderer::with_meridian_elision(), doc, &job)
             .map_err(|e| {
@@ -261,15 +260,27 @@ fn composed_sections(
                 err.message = Some(e.to_string());
                 Box::new(err)
             })?;
+    // Op-owner ruling (2026-07-24, D concurring, pin #4): `sections[].content`
+    // is the RAW face — the verbatim bytes `sec_rev` was minted over — so each
+    // row is self-verifying and a put built from its content round-trips
+    // without silently dropping an elided block (the A-K1 data-loss class).
+    // Elision lives in `rendered_text` alone; the composed op carries content
+    // and render as DISTINCT legs (D6). `words` pairs with the raw content it
+    // describes (Go `renderSectionsSidecar` semantics, golden structured
+    // parity).
     let sections: Vec<wire::ReadSectionOut> = rows
         .iter()
-        .zip(&rendered.sections)
-        .map(|(row, out)| wire::ReadSectionOut {
-            sel: row.sel.to_owned(),
-            hpath: out.hpath.clone(),
-            sec_rev: NodeRev(out.sec_rev.clone()),
-            words: out.words,
-            content: out.content.clone(),
+        .map(|row| {
+            let content = wire_map::facts::section_content(row.fact, doc.raw.as_bytes());
+            let content = String::from_utf8_lossy(&content).into_owned();
+            let words = wire_map::gotext::fields_count(&content) as u64;
+            wire::ReadSectionOut {
+                sel: row.sel.to_owned(),
+                hpath: row.fact.hpath.clone(),
+                sec_rev: NodeRev(row.fact.sec_rev.clone()),
+                words,
+                content,
+            }
         })
         .collect();
     Ok((
