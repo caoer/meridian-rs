@@ -1961,6 +1961,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
+name = "lock"
+version = "0.0.0"
+dependencies = [
+ "model",
+ "syntax",
+]
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2875,6 +2883,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "render"
+version = "0.0.0"
+dependencies = [
+ "model",
+ "syntax",
+ "wire",
+ "wire-map",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3642,6 +3660,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "model",
+ "render",
  "serde_json",
  "syntax",
  "transport",
@@ -4397,6 +4416,7 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "lock",
  "model",
  "policy",
  "query",

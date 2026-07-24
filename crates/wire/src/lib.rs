@@ -484,6 +484,20 @@ pub struct Node {
     /// `splice ∈ caps`; clients MUST tolerate its absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_rev: Option<NodeRev>,
+    /// v3-ADDITIVE (M1 U2, host-face addressing): the dewey ordinal ("1.2.1")
+    /// on heading nodes. NEVER emitted on a v2 session — the frozen v2 bytes
+    /// carry no such key (`contract_v2.rs` goldens).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the sanitized joined hpath ADDRESS
+    /// ("Notes/Slash-Title-Here") on heading nodes — the Go
+    /// `sanitizeHeadingHost` semantics, computed engine-side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hpath_text: Option<String>,
+    /// v3-ADDITIVE (M1 U2): the `strings.Fields` word count over the
+    /// heading's SUBTREE-inclusive content span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub words: Option<u64>,
 }
 
 /// One `toc` row (v2 §4.1): the complete write kit for one node. Row shapes,
@@ -1093,6 +1107,12 @@ pub enum ErrorCode {
     /// class — re-read the file and re-plan the batch. Additive by the
     /// tolerant-code law: an unknown code dispatches on `recovery` alone.
     WriteConflict,
+    /// M1 xproc-race fix (D9): another cooperating meridian writer holds the
+    /// workspace write lock (`.meridian/write.lock`) — the choke-point refuses
+    /// fast (`LOCK_NB`, never a wait) instead of interleaving read→rename.
+    /// Extras: `message`. Retry class — transient; the same request may
+    /// succeed. Additive by the tolerant-code law.
+    WorkspaceBusy,
 }
 
 impl ErrorCode {
@@ -1123,7 +1143,9 @@ impl ErrorCode {
             | ErrorCode::RefNotFound
             | ErrorCode::ArmedDrift
             | ErrorCode::WriteConflict => Recovery::Refresh,
-            ErrorCode::LockTimeout | ErrorCode::StaleView => Recovery::Retry,
+            ErrorCode::LockTimeout | ErrorCode::StaleView | ErrorCode::WorkspaceBusy => {
+                Recovery::Retry
+            }
             ErrorCode::RootMismatch | ErrorCode::RootUnknown => Recovery::Resync,
             ErrorCode::BadFrame | ErrorCode::UnsupportedProto | ErrorCode::Internal => {
                 Recovery::Respawn

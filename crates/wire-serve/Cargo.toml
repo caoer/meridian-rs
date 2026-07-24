@@ -31,6 +31,10 @@ syntax = { workspace = true }
 # CALL-ONLY (advisor ruling, d4-splice): the splice choke-point renders receipt
 # lines through it; edits to the crate itself need an ownership ruling.
 receipt = { workspace = true }
+# The meridian-lock FORMAT law (U11, decision #8): types, strict parse,
+# canonical render, locate. This crate is the format's SOLE writer — the
+# guarded `lock_write` path splices `lock::render` bytes and nothing else.
+lock = { workspace = true }
 # The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the write
 # choke-point evaluates whatever admitted rule packs the CALLER hands in over the
 # post-batch doc and projects §11.1 findings to `wire::Verdict`. Zero edges run

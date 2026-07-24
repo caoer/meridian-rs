@@ -1,0 +1,17 @@
+[package]
+name = "lock"
+description = "The meridian-lock fenced block: versioned root object, objects/pins planes, engine-sole-writer canonical format (decision 2026-07-24-meridian-lock-block; pin fingerprints are norm-v2-spec CID-tokens)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+model = { workspace = true }
+
+[dev-dependencies]
+syntax = { workspace = true }

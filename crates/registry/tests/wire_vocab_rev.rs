@@ -382,6 +382,53 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
     server.shutdown();
 }
 
+/// U2 addressing facts on the daemon socket: a v3 `extract` enriches heading
+/// nodes with `n`/`hpath_text`/`words`; a v2 `extract` against the SAME warm
+/// engine carries ZERO such keys (frozen shape).
+#[test]
+fn v3_extract_enriches_headings_v2_never() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(
+        &tmp,
+        "ws",
+        &[("plan.md", "# Goals\n\nship by August\n\n## Q3\n\nx y z\n")],
+    );
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    let mut v3 = Conn::open(server.socket_path());
+    v3.hello(&ws, Some("v3"));
+    let ex3 = v3.call(&json!({"op": "extract", "path": "plan.md"}));
+    let heads: Vec<&Value> = ex3["body"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .filter(|n| n["kind"] == json!("heading"))
+        .collect();
+    assert_eq!(heads.len(), 2, "two headings: {ex3}");
+    assert_eq!(heads[0]["n"], json!("1"));
+    assert_eq!(heads[0]["hpath_text"], json!("Goals"));
+    assert_eq!(
+        heads[0]["words"],
+        json!(8),
+        "subtree words incl ## Q3 tokens"
+    );
+    assert_eq!(heads[1]["n"], json!("1.1"));
+    assert_eq!(heads[1]["hpath_text"], json!("Goals/Q3"));
+    assert_eq!(heads[1]["words"], json!(3));
+
+    let mut v2 = Conn::open(server.socket_path());
+    v2.hello(&ws, Some("v2"));
+    let ex2 = v2.call(&json!({"op": "extract", "path": "plan.md"}));
+    for key in ["n", "hpath_text", "words"] {
+        assert!(
+            !all_keys(&ex2).iter().any(|k| k == key),
+            "a v2 extract frame must emit ZERO `{key}` keys: {ex2}"
+        );
+    }
+
+    server.shutdown();
+}
+
 /// Byte-identical, mechanized: v3 is EXACTLY v2 re-keyed — for the read ops that
 /// carry the cursor, a v2 connection and a v3 connection against the SAME warm
 /// engine answer the same DATA under the two vocabularies. The v2 `root` value
