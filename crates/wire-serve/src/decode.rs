@@ -117,6 +117,7 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
                 from_seq: req_u64(obj, op, "from_seq")?,
             })
         }
+        "read" => decode_read(obj),
         "view_path" => {
             // V2 §Q2 the view-organ path forwarder. `cwd` is a RAW host path
             // (absolute) the daemon resolves to a workspace — NOT a
@@ -134,6 +135,54 @@ pub fn decode(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         // genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
+}
+
+/// M1 U4a2 the composed read op (v3-only at DISPATCH — decode is
+/// rev-agnostic; a v2 session's dispatch answers `unknown_op`, §3.2
+/// discovery honesty against the frozen v2 caps).
+fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "read";
+    check_fields(
+        obj,
+        op,
+        &["path", "mode", "frag", "sections", "display_path"],
+    )?;
+    let mode = opt_str(obj, op, "mode")?;
+    if let Some(m) = &mode
+        && m != "toc"
+        && m != "sections"
+    {
+        return Err(bad_request(format!(
+            "`mode` must be `toc` or `sections` on `read`: `{m}`"
+        )));
+    }
+    let sections = match obj.get("sections") {
+        None => None,
+        Some(Value::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(s) = item.as_str() else {
+                    return Err(bad_request(
+                        "`sections` must be an array of strings on `read`",
+                    ));
+                };
+                out.push(s.to_owned());
+            }
+            Some(out)
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "`sections` must be an array of strings on `read`",
+            ));
+        }
+    };
+    Ok(Op::Read {
+        path: req_path(obj, op, "path")?,
+        mode,
+        frag: opt_str(obj, op, "frag")?,
+        sections,
+        display_path: opt_str(obj, op, "display_path")?,
+    })
 }
 
 /// v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,

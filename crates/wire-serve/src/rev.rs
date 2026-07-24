@@ -133,12 +133,16 @@ pub fn project_response(frame: &mut Value) {
             rename_key(body, v2, v3);
         }
         // hello body: rewrite the fingerprint caps + echo the negotiated rev.
-        // `server` is present on the hello body alone.
+        // `server` is present on the hello body alone. The v3-only composed
+        // `read` op (M1 U4a2) is advertised HERE — the frozen v2 caps lists
+        // never carry it, so a v2 session's hello stays byte-identical and a
+        // v2 `read` answers `unknown_op` (§3.2 discovery honesty).
         if body.contains_key("server") {
             if let Some(caps) = body.get_mut("caps").and_then(Value::as_array_mut) {
                 for cap in caps.iter_mut() {
                     rewrite_cap(cap);
                 }
+                caps.push(Value::String("read".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -285,6 +289,8 @@ mod tests {
         project_response(&mut frame);
         assert_eq!(frame["body"]["fingerprint"], json!("b3:a"));
         assert_eq!(frame["body"]["contract"], json!("v3"));
+        // the v3-only composed `read` op is advertised by the projection —
+        // appended after the re-spelled v2 caps (never present on v2)
         assert_eq!(
             frame["body"]["caps"],
             json!([
@@ -292,7 +298,8 @@ mod tests {
                 "splice.if_fingerprint",
                 "fingerprint",
                 "links.require_fingerprint",
-                "diff"
+                "diff",
+                "read"
             ])
         );
     }

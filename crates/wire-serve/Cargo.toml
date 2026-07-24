@@ -15,6 +15,7 @@ workspace = true
 wire = { workspace = true }
 # The named wire<->model projection seam (toc/extract node rows, delta files).
 wire-map = { workspace = true }
+render = { workspace = true }
 # Tree law + resolution: the read arms operate on borrowed `model::Document`s
 # and the `CorpusIndex`; `model::resolve`/`model::walk` back cat/resolve, and the
 # write choke-point validates + simulates the after-doc through `model`.
