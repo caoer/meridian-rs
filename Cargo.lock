@@ -344,17 +344,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "attest"
-version = "0.0.0"
-dependencies = [
- "fs",
- "model",
- "pin",
- "serde",
- "tempfile",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2102,7 +2091,6 @@ version = "0.0.0"
 dependencies = [
  "allocative",
  "anyhow",
- "attest",
  "cache",
  "check",
  "duckdb",
@@ -2110,7 +2098,6 @@ dependencies = [
  "fs",
  "libc",
  "model",
- "pin",
  "policy",
  "preset",
  "realise",
@@ -2323,27 +2310,6 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
-]
-
-[[package]]
-name = "pin"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "blake3",
- "duckdb",
- "effects",
- "fs",
- "model",
- "receipt",
- "serde",
- "serde_json",
- "starlark",
- "syntax",
- "tempfile",
- "view",
- "wire",
- "wire-serve",
 ]
 
 [[package]]
@@ -4418,6 +4384,7 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "lock",
  "model",
  "policy",
  "query",
