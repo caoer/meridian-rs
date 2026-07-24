@@ -307,7 +307,7 @@ fn respond_line(
             // U7 measure point: the dispatch call alone (after decode, before
             // the response write) — checked µs, never a lossy `as`.
             let started = std::time::Instant::now();
-            let outcome = arms::dispatch(root, epoch, id, op, rulesets);
+            let outcome = arms::dispatch(root, epoch, id, op, rulesets, *rev == rev::Rev::V3);
             let duration_us =
                 Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
             let response = match outcome {

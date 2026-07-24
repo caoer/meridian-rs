@@ -1,0 +1,85 @@
+{
+  "doc": "no-frontmatter",
+  "note": "captured from the LIVE Go readText/putText path (U0). Parity surface = text + is_error + file_after; structured is audit-only (U3 kills the dual-emit).",
+  "steps": [
+    {
+      "id": "r-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/no-frontmatter.md"
+      },
+      "text": "$SESSION/corpus/no-frontmatter.md  file_rev:8492f4e24af65a08  words:2\n1      Solo  words:2  rev:33840c3e4f131f95",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/no-frontmatter.md",
+        "ref": "corpus/no-frontmatter.md",
+        "rev": "8492f4e24af65a08",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Solo",
+            "n": "1",
+            "sec_rev": "33840c3e4f131f95",
+            "title": "Solo",
+            "words": 2
+          }
+        ],
+        "words_total": 2
+      }
+    },
+    {
+      "id": "p-props-refused",
+      "tool": "put",
+      "args": {
+        "properties": {
+          "status": "x"
+        },
+        "ref": "corpus/no-frontmatter.md"
+      },
+      "text": "put: def-conformance check could not run: E_NO_MATCH: the document has no frontmatter block to set \"status\" in — add a frontmatter block (--- ... ---) at the top of the file, then retry",
+      "is_error": true,
+      "file_after": "plain paragraph before any heading\n\n# Solo\n\nbody text\n"
+    },
+    {
+      "id": "p-append",
+      "tool": "put",
+      "args": {
+        "body": "appended without frontmatter",
+        "op": "append",
+        "ref": "corpus/no-frontmatter.md#Solo"
+      },
+      "text": "wrote $SESSION/corpus/no-frontmatter.md  file_rev:981158991cdac8a8",
+      "is_error": false,
+      "file_after": "plain paragraph before any heading\n\n# Solo\n\nbody text\nappended without frontmatter\n",
+      "structured": {
+        "path": "$SESSION/corpus/no-frontmatter.md",
+        "rev": "981158991cdac8a8"
+      }
+    },
+    {
+      "id": "r-final-toc",
+      "tool": "read",
+      "args": {
+        "ref": "corpus/no-frontmatter.md"
+      },
+      "text": "$SESSION/corpus/no-frontmatter.md  file_rev:981158991cdac8a8  words:5\n1      Solo  words:5  rev:d0e94c4ae18d6ed5",
+      "is_error": false,
+      "structured": {
+        "path": "$SESSION/corpus/no-frontmatter.md",
+        "ref": "corpus/no-frontmatter.md",
+        "rev": "981158991cdac8a8",
+        "toc": [
+          {
+            "depth": 1,
+            "hpath": "Solo",
+            "n": "1",
+            "sec_rev": "d0e94c4ae18d6ed5",
+            "title": "Solo",
+            "words": 5
+          }
+        ],
+        "words_total": 5
+      }
+    }
+  ]
+}

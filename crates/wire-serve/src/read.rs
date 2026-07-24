@@ -54,8 +54,19 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
 
 /// wire §4.3: the full node inventory via the `wire-map` projection, `kinds`
 /// filtered (values already validated against the closed enum at decode).
+///
+/// `enrich` (M1 U2, v3 sessions ONLY): attach the host-face addressing facts
+/// — dewey `n`, sanitized `hpath_text`, subtree `words` — to heading nodes,
+/// so `extract` serves every addressing fact ccc-statusd re-derived
+/// host-side. A v2 session never enriches: the new keys are v3-additive and
+/// the frozen v2 bytes stay byte-identical (`contract_v2.rs`).
 #[must_use]
-pub fn extract(doc: &model::Document, path: &Path, kinds: Option<Vec<String>>) -> ResponseBody {
+pub fn extract(
+    doc: &model::Document,
+    path: &Path,
+    kinds: Option<Vec<String>>,
+    enrich: bool,
+) -> ResponseBody {
     let mut nodes = wire_map::project(doc);
     if let Some(kinds) = kinds {
         let keep: Vec<wire::NodeKind> = kinds
@@ -63,6 +74,23 @@ pub fn extract(doc: &model::Document, path: &Path, kinds: Option<Vec<String>>) -
             .filter_map(|s| serde_json::from_value(serde_json::Value::String(s.clone())).ok())
             .collect();
         nodes.retain(|n| keep.contains(&n.kind));
+    }
+    if enrich {
+        let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
+        let by_span: BTreeMap<(u64, u64), &wire_map::facts::ReadFact> = facts
+            .iter()
+            .filter(|f| f.depth > 0)
+            .map(|f| ((f.span.0, f.span.1), f))
+            .collect();
+        for node in &mut nodes {
+            if node.kind == wire::NodeKind::Heading
+                && let Some(fact) = by_span.get(&(node.span.0, node.span.1))
+            {
+                node.n = Some(fact.n.clone());
+                node.hpath_text = Some(fact.hpath.clone());
+                node.words = Some(fact.words);
+            }
+        }
     }
     ResponseBody::Nodes {
         path: path.clone(),
