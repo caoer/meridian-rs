@@ -38,10 +38,10 @@
 //! - Rung 5 (`links` §4.6 view-shaped fact op + the §10.1 staleness triple +
 //!   `stale_view` §10.2): contract v2 §4.6, §10 — FROZEN (Q5-LINKS).
 //! - M1 v3-only additive amendments (`docs/wire-contract-v3-amendment.md`,
-//!   never on a v2 frame): the composed `read` op (D6 — addressing + content
-//!   + render at one engine snapshot); `check_write` (M1 U8c) serves the I4
-//!   def-conformance verdict — candidate rebuild + severity ladder over the
-//!   def layer — engine-side; NEVER a write path (no flock, no CAS, no
+//!   never on a v2 frame): the composed `read` op (D6 — addressing, content,
+//!   and render at one engine snapshot); `check_write` (M1 U8c) serves the
+//!   I4 def-conformance verdict — candidate rebuild and severity ladder over
+//!   the def layer — engine-side; NEVER a write path (no flock, no CAS, no
 //!   journal).
 //!
 //! # Build-out obligations (contract laws the types alone cannot enforce)
