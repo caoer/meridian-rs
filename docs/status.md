@@ -53,10 +53,41 @@ mrd init [PATH]          mark a workspace, register its drawer, reconcile
                          shadowed tier-4 drawers (amendment M2)
 mrd unregister [PATH]    drop the daemon entry (if a daemon answers) + the drawer
 mrd resolve [PATH]       report how a path resolves (read-only; writes nothing)
+mrd links [PATH]         the corpus edge map (whole corpus, or one file),
+                         answered by the daemon (auto-spawned) or in-process
+mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
+                         the composed read: addressing + content + render at
+                         ONE engine snapshot (daemon or in-process; human
+                         output is the rendered text verbatim)
+mrd put <PATH> [--dry] [--force] [--actor A] [--now T]
+        [--if-fingerprint FP] [--receipt PATH#ANCHOR]
+                         the batch write: edits JSON on stdin (wire §4.4
+                         grammar), through the production splice choke-point
+                         (CAS + armed gate + write flock)
+mrd walk <PAGE> [--down] [--depth N]
+                         the context-assembly listing over the pin graph;
+                         every answer cites the revs it read
+mrd check [--core]       the pure READ validity verb: receipt-chain continuity
+                         + the foreign_edit trace; writes nothing
+mrd status [--cwd PATH]  the bare drift + freshness summary (pure-local,
+                         O(armed), fetch-less)
+mrd sql <QUERY>          client-side SQL over the daemon-published DuckDB view
+mrd view status          per-workspace view freshness + refresh telemetry
+mrd test <PATH>          the scenario runner (also --corpus / --history tiers)
+mrd run <PAGE> [TASK]    run a task block declared in the page's frontmatter
+mrd new <KIND> <ID>      file birth: fill the def's template, validate, birth
+                         the first rev through the guarded create
+mrd unfold <PRESET>      materialize a preset's declared scaffold
+mrd reconcile <PRESET>   reconcile the tree toward a preset's declared scaffold
+mrd realise <PAGE>       the reconciliation loop: observe -> check -> apply
+                         (only on drift, once) -> re-check
 mrd cache ls             list the on-disk cache drawers
 mrd cache clean [--all]  reap stale / orphaned / retired drawers
 mrd daemon               run the registry daemon in the foreground
 ```
+
+`mrd help` is the authoritative surface — flags, refusal legs, and per-verb
+exit codes live there.
 
 Resolution follows the settled ladder: tiers 1-3 (env override → `.meridian.toml`
 marker → git root) open the hashed drawer directly; a tier-4 bare tree adopts a
@@ -91,10 +122,6 @@ cargo bench -p perfsuite
 
 ## Known gaps
 
-- The Workspace CLI verb list above is HELD at its pre-M1 shape: the
-  `mrd read` / `mrd put` verbs (and the u3-era verb additions) land with the
-  in-flight U1 unit, which owns that section's refresh so docs match the
-  shipped help text.
 - Perf rungs are largely UNTESTED pending baselines (see the tally above).
 - `policy` verdicts ride every splice response as `[]` until rule packs are
   loaded; where packs are sourced is the host's concern.
