@@ -17,7 +17,10 @@
 //!
 //! # Rungs
 //! Rung 1: `project` (toc/extract node lists). Rung 2+: projection of resolve
-//! targets and splice verdicts joins additively.
+//! targets and splice verdicts joins additively; M1 U2 adds the Go-exact
+//! host-face addressing semantics ([`gotext`]).
+
+pub mod gotext;
 
 /// Project a parsed document onto the wire node list: flatten the governed
 /// tree to the contract's flat kinds, compute `text_prefix_16b` from the raw
