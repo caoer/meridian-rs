@@ -1,20 +1,19 @@
-//! U5 (M1 D8): DIRECT concurrent-writer coverage for the splice TOCTOU-gap
-//! fix, OUTSIDE the replay harness (A-C2: a single-threaded replay corpus can
-//! never contain the interleaves this unit exists to close — the gate would
+//! U5+U6 (M1 D8/D9): DIRECT concurrent-writer coverage for the write path,
+//! OUTSIDE the replay harness (A-C2: a single-threaded replay corpus can
+//! never contain the interleaves these units exist to close — the gate would
 //! pass precisely because it never exercises the change).
 //!
-//! What the fix guarantees under concurrency, and what this test pins:
+//! What the combined fix guarantees under concurrency, and what this test pins:
 //! - the committed file is NEVER torn: every landed state is a validated
 //!   pre-image plus whole span edits (each token intact on its own line);
-//! - a splice that loses the race refuses with the TYPED `write_conflict`
-//!   frame (refresh) — never a panic, never a stale blind splice;
+//! - a racer that finds the write flock held refuses the TYPED
+//!   `workspace_busy` frame (retry) — never a wait, never a panic;
+//! - under the flock cooperating racers cannot reach the D8 conflict at all
+//!   (read#2→verify→rename is serialized), so NO lost update remains:
+//!   `present == ok` EXACTLY. (`write_conflict` still guards out-of-band
+//!   writers — pinned deterministically by the fs-seam gates in
+//!   `crates/fs`, which drive drift between stage and rename by hand.)
 //! - a refused splice landed NOTHING (its token is absent).
-//!
-//! Pre-U6 residual (STATED, security-lens): the verify→rename window means a
-//! racer that passed its verify can still be overwritten by a same-instant
-//! rename — a LOST update (both return ok), never a torn file. So this test
-//! asserts `present ⊆ ok`, not equality; U6's flock serializes cooperating
-//! writers and upgrades the guarantee (its two-process test owns that half).
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Barrier};
@@ -73,7 +72,7 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
         .collect();
 
     let mut ok = BTreeSet::new();
-    let mut conflicts = 0usize;
+    let mut busy = 0usize;
     for handle in handles {
         // A panicking racer fails the join — the panic-free law, checked free.
         let (i, outcome) = handle.join().expect("no racer may panic");
@@ -82,23 +81,25 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
                 ok.insert(i);
             }
             Err(e) => {
-                // EVERY concurrency refusal is the one typed conflict frame.
+                // EVERY concurrency refusal is the one typed busy frame (U6:
+                // the flock serializes cooperating writers; the D8 conflict is
+                // unreachable for them, and nothing else may leak through).
                 assert_eq!(
                     e.code,
-                    ErrorCode::WriteConflict,
-                    "racer {i}: concurrency refusals are write_conflict only, got {:?} ({:?})",
+                    ErrorCode::WorkspaceBusy,
+                    "racer {i}: cooperating-racer refusals are workspace_busy only, got {:?} ({:?})",
                     e.code,
                     e.message
                 );
-                assert_eq!(e.recovery, Recovery::Refresh, "write_conflict → refresh");
-                conflicts += 1;
+                assert_eq!(e.recovery, Recovery::Retry, "workspace_busy → retry");
+                busy += 1;
             }
         }
     }
-    assert_eq!(ok.len() + conflicts, RACERS, "every racer resolved");
+    assert_eq!(ok.len() + busy, RACERS, "every racer resolved");
     assert!(!ok.is_empty(), "at least one racer lands (someone wins)");
     // Observability (run with --nocapture): how the race resolved this run.
-    eprintln!("u5 race: ok={} write_conflict={conflicts}", ok.len());
+    eprintln!("u5/u6 race: ok={} workspace_busy={busy}", ok.len());
 
     // The landed state is NEVER torn: the base page survives intact and every
     // extra line is one COMPLETE token (a stale blind splice would interleave
@@ -122,11 +123,12 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
             "token-{token} landed twice — a double splice"
         );
     }
-    // No refused racer's token may be present (a refusal lands NOTHING).
-    // Lost updates (ok minus present) are the STATED pre-U6 residual.
-    assert!(
-        present.is_subset(&ok),
-        "present tokens {present:?} must all come from ok racers {ok:?}"
+    // U6 upgrade: EXACT equality — every ok racer's token landed (the flock
+    // leaves NO lost-update window for cooperating writers) and no refused
+    // racer's token is present (a refusal lands NOTHING).
+    assert_eq!(
+        present, ok,
+        "under the flock, landed tokens equal ok racers exactly (no lost update)"
     );
 
     // Refused commits clean their staged temps — no litter beside the page.
