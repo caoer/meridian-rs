@@ -530,6 +530,7 @@ fn splice_put(
             edit: shape,
             if_node_rev,
         }],
+        plan_edits: Vec::new(),
     };
     Ok(match splice(root, 0, &args, &[]) {
         Ok(out) => {

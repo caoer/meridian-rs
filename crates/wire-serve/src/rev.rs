@@ -144,6 +144,10 @@ pub fn project_response(frame: &mut Value) {
                 }
                 caps.push(Value::String("read".to_string()));
                 caps.push(Value::String("check_write".to_string()));
+                // M1 U8b rider 2: ONE composite cap for the plan-level splice
+                // batch — v3-only, projection-advertised (the frozen v2 caps
+                // never carry it).
+                caps.push(Value::String("splice.plan_edits".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -301,7 +305,8 @@ mod tests {
                 "links.require_fingerprint",
                 "diff",
                 "read",
-                "check_write"
+                "check_write",
+                "splice.plan_edits"
             ])
         );
     }

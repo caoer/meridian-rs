@@ -62,9 +62,10 @@ pub use check::{
     doc_sections, scan_nested,
 };
 pub use fm::{FmMeta, FmValue, parse_meta, string_field};
+pub use go_fmt::go_quote;
 pub use i4::{ConformanceRequest, ConformanceResult, Repair, conformance};
 pub use load::{Def, DefError, PropSpec, SectionRule, parse_def};
-pub use rebuild::{PlanEdit, rebuild, rev8};
+pub use rebuild::{PlanEdit, ensure_trailing_nl, rebuild, rev8, yaml_safe_value};
 
 /// One validator finding (Go `types.Finding`), delta-scored by (rule, message).
 #[derive(Debug, Clone, PartialEq)]

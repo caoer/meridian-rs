@@ -328,6 +328,7 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
         dry: false,
         force: false,
         edits,
+        plan_edits: Vec::new(),
     }
 }
 
