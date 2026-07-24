@@ -22,7 +22,6 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-mod attest_cmd;
 mod cache_cmd;
 mod check_cmd;
 mod corpus_tier;
@@ -33,7 +32,6 @@ mod gc;
 mod history_cmd;
 mod init;
 mod new_cmd;
-mod pin_cmd;
 mod preset_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
@@ -121,19 +119,6 @@ usage:
                            TASK omitted: one declared task runs, several list
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
-  mrd pin <PAGE> [--dry]   read PAGE's inputs: manifest, resolve + compose every
-                           ref atomically, evaluate declared check: predicates,
-                           and splice the ^inputs lock in ONE CAS write (one
-                           receipt). Idempotent. Exits: 0 pinned / 1 refused
-                           (or dry would-refuse) / 2 bad invocation
-  mrd attest <PAGE> [--dry] [--board DIR]
-                           attest = realised-gate + pin + receipt. Refuse iff (a)
-                           resolution fails, (b) the realised-gate is unmet (a
-                           pending-agent / non-convergent claim on the board,
-                           default board/), or (c) a declared check: is false.
-                           Drifted pins re-pin; grey greens; a refused attest
-                           writes nothing. Exits: 0 attested / 1 refused (or dry
-                           would-refuse) / 2 bad invocation
   mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
                            file birth (U5.3): resolve the def (presets/<KIND>.md
                            or a page path), fill its ^template, validate the
@@ -174,8 +159,6 @@ options:
   --dry                    (run) starlark: evaluate hermetically and print the
                            full effect set, apply nothing; bash: show the block
                            + resolved caps, refuse to exec
-  --board DIR              (attest) the realise board dir the realised-gate reads
-                           (default board/)
   --list                   (run) list the page's tasks with contracts and caps
   --history                (test) the history tier over WORKSPACE (a git repo)
   --convention SLUG        (test --history) the conventions/SLUG folder to run
@@ -266,8 +249,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "view" => dispatch_view(&args[1..]),
         "test" => test_cmd::dispatch(&args[1..]),
         "run" => run_cmd::dispatch(&args[1..]),
-        "pin" => pin_cmd::run(&args[1..]),
-        "attest" => attest_cmd::run(&args[1..]),
         "new" => new_cmd::run(&args[1..]),
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
