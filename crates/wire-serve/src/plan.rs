@@ -26,9 +26,10 @@
 //! - **`set_property` = the property-group dance**, NOT native `at:upsert`:
 //!   model's upsert inserts an absent key at FIRST-key position
 //!   (`plan_fm_upsert`), the Go dance inserts after the LAST key — divergent
-//!   bytes. Values quote through the ONE shared predicate
-//!   (`policy::defs::yaml_safe_value`), so the `check_write` candidate and the
-//!   written bytes cannot drift.
+//!   bytes. BOTH halves of the composed line pass the ONE shared owner —
+//!   keys through `policy::defs::yaml_safe_key`, values through
+//!   `policy::defs::yaml_safe_value` — so the `check_write` candidate and the
+//!   written bytes cannot drift, and neither door can forge frontmatter.
 //! - **Refusals**: `bad_request` + `message` = the exact Go-face teaching
 //!   MINUS the `put: ` verb prefix (the host renders the prefix; op-owner
 //!   ruling 2026-07-24 — engine owns the sentence, host owns the verb).
@@ -360,42 +361,61 @@ fn lower_create(
 /// as `"\n{k}: {v}"` lines AFTER the last existing key — folded into that
 /// key's `Put{all}` when it is itself being set (the carrier), else a
 /// `Put{end}` after it. No frontmatter to anchor on refuses the host teaching.
-/// Values pass through the ONE shared conditional-quote predicate, which
-/// REFUSES a multi-line value (D11) before any byte is composed.
+/// BOTH halves of the composed `{key}: {value}` line pass their ONE shared
+/// fallible owner before any byte is built: the key through `yaml_safe_key`
+/// (charset — the pre-flight's own refusal, `rebuild::plan_set_property`), the
+/// value through the conditional-quote predicate, which REFUSES a multi-line
+/// value (D11).
 fn lower_property_group(
     idx: &PlanIndex,
     props: &std::collections::BTreeMap<&str, &str>,
 ) -> Result<Vec<Edit>, Box<ErrorBody>> {
+    // The KEY owner first, in the pre-flight's ordering: an unvalidated key is
+    // composed into the frontmatter line exactly as an unvalidated value is,
+    // so this door must refuse what `rebuild::plan_set_property` refuses.
+    let mut keyed: std::collections::BTreeMap<policy::defs::SafeKey<'_>, &str> =
+        std::collections::BTreeMap::new();
+    for (k, v) in props {
+        let key = policy::defs::yaml_safe_key(k).map_err(|_| {
+            bad_request(format!(
+                "invalid frontmatter key {} — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')",
+                policy::defs::go_quote(k)
+            ))
+        })?;
+        keyed.insert(key, v);
+    }
+
     let fm_key_set: std::collections::HashSet<&str> =
         idx.fm_keys.iter().map(String::as_str).collect();
     if idx.fm_keys.is_empty() {
-        for k in props.keys() {
-            if !fm_key_set.contains(*k) {
+        for k in keyed.keys() {
+            if !fm_key_set.contains(k.as_str()) {
                 return Err(bad_request(
                     "cannot set a new property — the file has no frontmatter to anchor it (add a '---' block first)",
                 ));
             }
         }
     }
-    let mut quoted: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
-    for (k, v) in props {
+    let mut quoted: std::collections::BTreeMap<policy::defs::SafeKey<'_>, String> =
+        std::collections::BTreeMap::new();
+    for (k, v) in &keyed {
         // D11: the composed line is `{key}: {value}`, so a newline in the value
         // forges frontmatter keys — and a single-quoted YAML scalar cannot
         // escape one. Refuse, never sanitize; the shared predicate owns the law.
         let safe = policy::defs::yaml_safe_value(v).map_err(|_| {
             bad_request(format!(
                 "property value for {} contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
-                policy::defs::go_quote(k)
+                policy::defs::go_quote(k.as_str())
             ))
         })?;
         quoted.insert(*k, safe);
     }
-    let line = |k: &str| format!("{k}: {}", quoted[k]);
+    let line = |k: policy::defs::SafeKey<'_>| format!("{k}: {}", quoted[&k]);
 
     let mut existing = Vec::new();
     let mut absent = Vec::new();
     for k in quoted.keys() {
-        if fm_key_set.contains(*k) {
+        if fm_key_set.contains(k.as_str()) {
             existing.push(*k);
         } else {
             absent.push(*k);
@@ -416,7 +436,7 @@ fn lower_property_group(
         let mut absent_lines = String::new();
         for k in &absent {
             absent_lines.push('\n');
-            absent_lines.push_str(&line(k));
+            absent_lines.push_str(&line(*k));
         }
         // pkg/body inserts a new key immediately before the closing '---' —
         // the END of frontmatter, after the LAST key. If the last key is
@@ -427,11 +447,11 @@ fn lower_property_group(
             .last()
             .expect("fm_keys non-empty when keys are absent")
             .as_str();
-        if quoted.contains_key(last) {
+        if let Some(carrier_key) = quoted.keys().copied().find(|k| k.as_str() == last) {
             edits.push(fm_put(
                 last,
                 PutAt::All,
-                format!("{}{absent_lines}", line(last)),
+                format!("{}{absent_lines}", line(carrier_key)),
             ));
             carrier = Some(last);
         } else {
@@ -439,10 +459,10 @@ fn lower_property_group(
         }
     }
     for k in existing {
-        if carrier == Some(k) {
+        if carrier == Some(k.as_str()) {
             continue;
         }
-        edits.push(fm_put(k, PutAt::All, line(k)));
+        edits.push(fm_put(k.as_str(), PutAt::All, line(k)));
     }
     Ok(edits)
 }

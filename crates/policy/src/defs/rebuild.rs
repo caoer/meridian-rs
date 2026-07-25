@@ -530,18 +530,15 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
 
 fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, BodyError> {
     let (key, val) = (&e.target, &e.body);
-    if key.is_empty()
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    {
-        return Err(BodyError {
-            code: "E_FAIL_LOUD".to_string(),
-            message: format!("invalid frontmatter key {}", go_quote(key)),
-            remedy: "a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')".to_string(),
-            context: vec![("key".to_string(), key.clone())],
-        });
-    }
+    // The key passes the ONE charset owner here — the composed line is
+    // `{key}: {value}`, so an unvalidated KEY forges frontmatter exactly as an
+    // unvalidated VALUE does.
+    let safe_key = yaml_safe_key(key).map_err(|InvalidPropertyKey| BodyError {
+        code: "E_FAIL_LOUD".to_string(),
+        message: format!("invalid frontmatter key {}", go_quote(key)),
+        remedy: "a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')".to_string(),
+        context: vec![("key".to_string(), key.clone())],
+    })?;
     // The value passes the ONE quoting owner here — BEFORE the frontmatter
     // probe — so the multi-line refusal keeps its Go-golden ordering.
     let safe = yaml_safe_value(val).map_err(|MultiLineValue| BodyError {
@@ -582,15 +579,68 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
         }
     }
     let line = if val.is_empty() {
-        format!("{key}:\n")
+        format!("{safe_key}:\n")
     } else {
-        format!("{key}: {safe}\n")
+        format!("{safe_key}: {safe}\n")
     };
     Ok(vec![SpliceOp {
         start: view.fm_end,
         end: view.fm_end,
         replacement: line.into_bytes(),
     }])
+}
+
+/// A `set_property` key outside the frontmatter charset: the ONE refusal
+/// `yaml_safe_key` mints. Each caller renders it in its own vocabulary
+/// (`BodyError` here, a wire `bad_request` at the splice face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidPropertyKey;
+
+impl std::fmt::Display for InvalidPropertyKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a frontmatter key is [A-Za-z0-9_-]+")
+    }
+}
+
+/// A frontmatter key that has passed `yaml_safe_key` — the ONLY spelling the
+/// `{key}: {value}` composition accepts. The field is private, so this type
+/// cannot be minted outside this module: a call site that composes a key
+/// without discharging `yaml_safe_key`'s `Result` does not compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SafeKey<'a>(&'a str);
+
+impl SafeKey<'_> {
+    /// The validated key bytes (address use — lookups and edit targets).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0
+    }
+}
+
+impl std::fmt::Display for SafeKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// The `set_property` KEY owner, S4b's sibling for the other half of the
+/// composed `{key}: {value}` line. A key outside `[A-Za-z0-9_-]+` carries
+/// `: `, a newline or a `---` fence into frontmatter bytes and forges keys the
+/// caller never named, so it is REFUSED, never sanitized. Fallibility is the
+/// guard: `SafeKey` has no other constructor.
+///
+/// # Errors
+/// `InvalidPropertyKey` when the key is empty or carries a byte outside
+/// `[A-Za-z0-9_-]`.
+pub fn yaml_safe_key(key: &str) -> Result<SafeKey<'_>, InvalidPropertyKey> {
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err(InvalidPropertyKey);
+    }
+    Ok(SafeKey(key))
 }
 
 /// A multi-line `set_property` value: the ONE refusal `yaml_safe_value` mints.

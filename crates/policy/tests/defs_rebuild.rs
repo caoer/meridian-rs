@@ -224,6 +224,44 @@ fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
     );
 }
 
+/// Finding 5 / R5: the KEY half of the composed `{key}: {value}` line gets the
+/// same shape S4b gave the value — a fallible owner. `SafeKey`'s field is
+/// private, so the only way to obtain the spelling the composition accepts is
+/// to discharge `yaml_safe_key`'s `Result`; the refusal cannot be forgotten at
+/// a call site the way a boolean helper can (R5).
+#[test]
+fn set_property_keys_pass_a_fallible_owner_that_refuses_the_forged_spelling() {
+    // The reviewer's repro key: a space, a ": " and a newline, each of which
+    // composes a frontmatter line the caller never named.
+    assert_eq!(
+        policy::defs::yaml_safe_key("ti tle: forged\nevil"),
+        Err(policy::defs::InvalidPropertyKey)
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_key(""),
+        Err(policy::defs::InvalidPropertyKey),
+        "an empty key composes a bare ': value' line"
+    );
+    // Refusal, never sanitization: the legal charset passes VERBATIM.
+    assert_eq!(
+        policy::defs::yaml_safe_key("review-state_2").map(|k| k.as_str().to_string()),
+        Ok("review-state_2".to_string())
+    );
+
+    // And the refusal reaches the rebuild door as the golden's own bytes.
+    assert_err(
+        run(
+            DOC,
+            &[PlanEdit {
+                body: "x".into(),
+                ..edit("set_property", "ti tle: forged\nevil")
+            }],
+        ),
+        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')",
+        "prop-forged-key",
+    );
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // one sequential Go-semantics script by design
 fn rebuild_candidate_bytes_match_go_plan_semantics() {
