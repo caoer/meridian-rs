@@ -63,13 +63,18 @@ pub fn check_write(
     now: &str,
     edits: &[CheckWriteEdit],
 ) -> ResponseBody {
+    // Stage-2 S10: the `@fp` strip runs HERE too, at the same intake, for the
+    // same reason the ladder has one owner — a pre-flight that judges different
+    // bytes from the ones `splice` commits is two answers to one question. An
+    // agent copying a decorated link into `find`/`body` must get the same
+    // verdict from both entry points.
     let plan: Vec<policy::defs::PlanEdit> = edits
         .iter()
         .map(|e| policy::defs::PlanEdit {
             op: e.op.clone(),
             target: e.at.clone(),
-            find: e.find.clone(),
-            body: e.body.clone(),
+            find: syntax::strip_fp(&e.find).into_owned(),
+            body: syntax::strip_fp(&e.body).into_owned(),
             rev: e.rev.clone(),
             all: e.all,
         })
