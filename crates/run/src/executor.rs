@@ -368,6 +368,24 @@ impl EditTarget {
             EditTarget::Section(segs) => format!("section:{}", segs.join("#")),
         }
     }
+
+    /// This target with its identifier strings rendered for a receipt line
+    /// (fix9 F1). A field name comes from the task block's author and a heading
+    /// chain is read off the page — `serde_json` escapes neither `[` nor `@`,
+    /// so an undecorated pass-through lands a claim link in a claim-link
+    /// POSITION in the receipt file. The heading case is not hypothetical: a
+    /// pre-existing token is left exactly as found on the page (R32 (1)), and
+    /// copying it into the receipt would be this write INTRODUCING it there.
+    fn rendered(&self) -> Self {
+        match self {
+            EditTarget::FmKey(k) => EditTarget::FmKey(receipt::render_field(k).into_owned()),
+            EditTarget::Section(segs) => EditTarget::Section(
+                segs.iter()
+                    .map(|s| receipt::render_field(s).into_owned())
+                    .collect(),
+            ),
+        }
+    }
 }
 
 /// One planned edit: the model edit plus the identity/target facts the receipt,
@@ -743,11 +761,17 @@ fn check_foreign_edits(
 ) -> Result<(), ExecError> {
     let anchors = last_governed_revs(root, addr, page)?;
     for p in planned {
-        if let Some(last) = anchors.get(&p.identity.describe())
+        // Keyed on the RENDERED identity (fix9 F1), because that is what the
+        // receipt stores and this reads back. Keying the two sides differently
+        // would make every lookup miss for a target whose name needed
+        // rendering — the #26 guard lapsing silently for exactly the names that
+        // motivated the guard. Identical for every identifier target.
+        let key = p.identity.rendered().describe();
+        if let Some(last) = anchors.get(&key)
             && *last != p.before.node_rev.0
         {
             return Err(ExecError::ForeignEdit {
-                target: p.identity.describe(),
+                target: key,
                 last_governed: last.clone(),
                 current: p.before.node_rev.0.clone(),
             });
@@ -771,6 +795,10 @@ fn last_governed_revs(
     let dir: PathBuf = abs
         .parent()
         .map_or_else(|| root.0.clone(), Path::to_path_buf);
+    // The receipt stores the RENDERED page (fix9 F1), so the scan matches on
+    // the rendered spelling — same reason the target key is rendered above, and
+    // identical for every path that is already an identifier.
+    let page = receipt::render_field(page);
     let mut out = BTreeMap::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -821,8 +849,14 @@ fn render_receipt(
     let io_err = |e: io::Error| ExecError::Io {
         reason: format!("receipt: {e}"),
     };
+    // fix9 F1: the free-text fields go through the receipt crate's field law.
+    // `task` (and the `run:<task>` actor derived from it) is already an
+    // identifier by the time it reaches here — `address::bindings` refuses any
+    // other shape at the name boundary — and `invocation`/`now` are minted by
+    // `run_cmd::mint_identity`, `root_pin`/`task_rev`/the revs are engine hex.
+    // `page` and the edit targets are the two that arrive as arbitrary bytes.
     let facts = ReceiptFacts {
-        page: req.page.to_owned(),
+        page: receipt::render_field(req.page).into_owned(),
         task: req.task.to_owned(),
         invocation: req.invocation_id.to_owned(),
         actor: format!("run:{}", req.task),
@@ -833,7 +867,7 @@ fn render_receipt(
             .iter()
             .zip(after_revs)
             .map(|(p, after)| ReceiptEdit {
-                target: p.identity.clone(),
+                target: p.identity.rendered(),
                 before: p.before.node_rev.0.clone(),
                 after: after.0.clone(),
             })
