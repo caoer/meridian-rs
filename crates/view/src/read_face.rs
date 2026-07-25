@@ -44,30 +44,46 @@ use std::collections::BTreeMap;
 
 use duckdb::Connection;
 use duckdb::types::Value;
+use model::selector::Color;
 use model::{CorpusIndex, Document, Node, NodeKind};
 
 use crate::ViewError;
 use crate::facts;
+use crate::walk;
 
 /// The additive read-face DDL: the `^inputs` parse projection + the board-red
 /// views. A separate schema from the frozen [`crate::facts`] contract —
-/// additive, never an edit to what U2.1 shipped. Every `input_lock` column is a
-/// source-1 (parse) fact; the board views compute color per query, never stored.
+/// additive, never an edit to what U2.1 shipped.
+///
+/// Every `input_lock` ADDRESS column is a source-1 (parse) fact. The three
+/// `verdict_*` columns are the exception, and the exception is named: a
+/// `meridian-lock` pin's color is a blake3 re-hash of the target's bytes, which
+/// this face's SQL cannot express, so the ONE color plane
+/// ([`crate::walk::lock_pin_colors`]) computes it and
+/// [`project_input_locks`] carries the answer into the row. Not a second color
+/// computer, and not a stored verdict: the whole read face is built per query
+/// from the same `docs` snapshot and thrown away with the connection.
 pub const READ_FACE_SCHEMA_SQL: &str = r"
 -- input_lock — the parse projection of each page's `^inputs` lock block. One row
 -- per lock item, exactly as written in the vault bytes (source 1). Distinct from
 -- `edge` (owned by pin: the manifest LEFT-joined with live resolution). Every
 -- row carries the containing page's doc_rev — the rev-compare invalidation key.
+-- A `meridian-lock` (form-3) row additionally carries the fingerprint VERDICT
+-- the color plane computed for it, so the board renders the SAME color the walk
+-- renders for the same pin — one question, one answer, on both planes.
 CREATE TABLE input_lock (
     src_path     TEXT     NOT NULL,   -- [1] page whose ^inputs block declares the item
     seq          UBIGINT  NOT NULL,   -- [1] item order within the lock block
-    declared_ref TEXT     NOT NULL,   -- [1] the `ref` field, verbatim
-    to_path      TEXT     NOT NULL,   -- [1] `to` page path (the `ref` path when `to` is absent)
+    declared_ref TEXT     NOT NULL,   -- [1] the `ref` field, verbatim ('' on a lock-refusal row, which declares no ref)
+    to_path      TEXT     NOT NULL,   -- [1] `to` page path (the `ref` path when `to` is absent; '' on a lock-refusal row, which names no target)
     to_sel       TEXT     NOT NULL,   -- [1] `to` selector ('' = the page/doc root)
     pinned_rev   TEXT,                -- [1] the pinned value as written (NULL = declared-only -> grey): a `rev` for the legacy forms, the `fingerprint` CID-token for a meridian-lock pin
     rev_class    TEXT,                -- [1] 'content' | 'object' (NULL = unstated)
     hash_algo    TEXT,                -- [1] the algo the pinned value was minted under (NULL = absent): the block's `hash-algo:` header for the legacy forms, the fingerprint token's own version field for a meridian-lock pin; != 'node-rev' -> grey superseded-algo
     src_doc_rev  TEXT     NOT NULL,   -- [1] containing doc_rev — the rev-compare invalidation key
+    verdict_color  TEXT,              -- [color plane] a meridian-lock row's verdict tone ('green'|'red'|'grey'); NULL on EVERY legacy ^inputs row, which the board colors by the node_rev compare below
+    verdict_reason TEXT,              -- [color plane] the verdict's stable reason word ('content-drifted', 'dangling-anchor', 'unverifiable-fingerprint', 'malformed-fingerprint', 'lock-refused', …); NULL for green
+    verdict_detail TEXT,              -- [color plane] the reason's own detail — WHICH fingerprint-triple member is unknown, or WHY the lock refused; NULL when the reason word says it all
     PRIMARY KEY (src_path, seq)
 );
 
@@ -79,12 +95,17 @@ CREATE TABLE input_lock (
 -- v1→v2 supersede keeps the node-rev value under the `v2` label, so a `v2` pin
 -- drifts/greens through the SAME node_rev compare. Computed per query by joining
 -- the parse projection against live nodes.
+--
+-- `verdict_color IS NULL` fences this compare to the LEGACY rows: a row that
+-- already carries the color plane's verdict is answered there and here, and the
+-- two answers could disagree. The partition is structural, not a convention.
 CREATE VIEW board_drift AS
     SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
            il.pinned_rev, n.node_rev AS live_rev, 'content-drifted' AS reason
     FROM input_lock il
     JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
+    WHERE il.verdict_color IS NULL
+      AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
       AND n.node_rev <> il.pinned_rev;
 
 -- board_unresolved — RED in the default face: a pinned NATIVE-algo lock item
@@ -96,19 +117,33 @@ CREATE VIEW board_unresolved AS
            il.pinned_rev
     FROM input_lock il
     LEFT JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
+    WHERE il.verdict_color IS NULL
+      AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
       AND n.path IS NULL;
 
--- board_red — the union board-red surface: drift + unresolved. Grey
--- (declared-only, pinned_rev NULL) never appears here; green never appears here.
--- A reader renders red iff a row is present, in the DEFAULT face, no pack.
+-- board_red — the union board-red surface: drift + unresolved + the fingerprint
+-- plane's reds. Grey (declared-only, pinned_rev NULL) never appears here; green
+-- never appears here. A reader renders red iff a row is present, in the DEFAULT
+-- face, no pack — so this is the ONE red surface, and a `meridian-lock` pin the
+-- color plane measured as drift must be present here too. Absent, a reader
+-- asking `board_red` whether anything is red would be told no while `board` and
+-- `mrd walk` both say red: the under-report, on the surface most likely to be
+-- glanced at rather than read.
 CREATE VIEW board_red AS
     SELECT src_path, seq, to_path, to_sel, pinned_rev, live_rev, reason
         FROM board_drift
     UNION ALL
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            NULL AS live_rev, 'selector-unresolved' AS reason
-        FROM board_unresolved;
+        FROM board_unresolved
+    UNION ALL
+    -- the fingerprint plane's reds, carrying the color plane's own reason word
+    -- (`content-drifted` / `dangling-anchor` / `selector-unresolved`, never
+    -- conflated). No `live_rev`: a fingerprint pin has no node_rev to compare.
+    SELECT src_path, seq, to_path, to_sel, pinned_rev,
+           NULL AS live_rev, verdict_reason AS reason
+        FROM input_lock
+        WHERE verdict_color = 'red';
 
 -- board — U5.1's colors layer (d2 §5.3 'colors = board view'; wire-contract-v2
 -- colors-amendment § Colors). Exactly ONE color row per `^inputs` edge, in the
@@ -123,6 +158,12 @@ CREATE VIEW board_red AS
 -- Verdicts-freeze-at-close: the pin (`pinned_rev`) IS the verdict frozen at
 -- close; the board compares the LIVE rev against that frozen rev, it never
 -- recomputes the verdict. A closed card color is a reading of the frozen pin.
+--
+-- The arms partition `input_lock` on `verdict_color`: a row WITHOUT a verdict is
+-- a legacy `^inputs` row, colored by the four node_rev arms below exactly as
+-- U5.1 shipped; a row WITH one is a `meridian-lock` row, colored by the ONE
+-- color plane. Still exactly one row per lock item, and no item can be colored
+-- twice by two compares.
 CREATE VIEW board AS
     -- green: pinned NATIVE-algo ({node-rev, v2}) + live rev still equals the
     -- frozen pinned rev. The v1→v2 supersede keeps the node-rev value under the
@@ -131,10 +172,12 @@ CREATE VIEW board AS
            n.node_rev AS live_rev, 'green' AS color, 'attested' AS reason
         FROM input_lock il
         JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-        WHERE il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
+        WHERE il.verdict_color IS NULL
+          AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
           AND n.node_rev = il.pinned_rev
     UNION ALL
-    -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned target).
+    -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned
+    -- target) + the fingerprint plane's reds — all through the ONE red surface.
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            live_rev, 'red' AS color, reason
         FROM board_red
@@ -146,13 +189,25 @@ CREATE VIEW board AS
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            NULL AS live_rev, 'grey' AS color, 'superseded-algo' AS reason
         FROM input_lock il
-        WHERE il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo NOT IN ('node-rev', 'v2')
+        WHERE il.verdict_color IS NULL
+          AND il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo NOT IN ('node-rev', 'v2')
     UNION ALL
     -- grey: declared-unpinned — the ungated close, never green.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            NULL AS live_rev, 'grey' AS color, 'declared-unpinned' AS reason
         FROM input_lock il
-        WHERE il.pinned_rev IS NULL;
+        WHERE il.verdict_color IS NULL AND il.pinned_rev IS NULL
+    UNION ALL
+    -- the fingerprint plane, NON-red arms: a `meridian-lock` row's green and its
+    -- greys (unverifiable-fingerprint / malformed-fingerprint / lock-refused),
+    -- read straight off the projected verdict. The reds ride `board_red` above,
+    -- so no row is colored twice. Green carries the board's own `attested`
+    -- reason word, as every other green row does.
+    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
+           NULL AS live_rev, il.verdict_color AS color,
+           COALESCE(il.verdict_reason, 'attested') AS reason
+        FROM input_lock il
+        WHERE il.verdict_color IS NOT NULL AND il.verdict_color <> 'red';
 
 -- co_edit_trace — U5.1's traces layer (d2 §5.3 'traces = core, source 3,
 -- default-face visible'). The MECHANICAL write-facts of the reserved journal,
@@ -250,29 +305,67 @@ pub fn stale_paths(
 // the `^inputs` parse projection
 // ---------------------------------------------------------------------------
 
+/// A `meridian-lock` row's identity — the page it is declared on, its ref
+/// verbatim, and its pinned CID-token. The key both planes address the row by:
+/// a color is a pure function of it (plus the live corpus), so a lookup can
+/// never hand a row the wrong verdict.
+type PinKey = (String, String, Option<String>);
+
+/// The color of every `meridian-lock` row in `docs`, keyed by [`PinKey`].
+///
+/// This face computes NO color of its own: it asks [`crate::walk::lock_pin_colors`]
+/// — the same `edge_color` a `mrd walk` listing renders — and carries the answer
+/// into the SQL row. A fingerprint verdict is a blake3 re-hash of the target's
+/// bytes, which this face's SQL cannot express, so projecting the one plane's
+/// answer is the only way the board can agree with the walk instead of guessing
+/// beside it.
+fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
+    walk::lock_pin_colors(docs)
+        .into_iter()
+        .map(|pin| ((pin.src_path, pin.declared_ref, pin.fingerprint), pin.color))
+        .collect()
+}
+
 /// Project every page's `^inputs` lock items into `input_lock`. The lock block
 /// is a fenced code block whose info string carries the `^inputs` anchor
-/// (`` ```yaml ^inputs ``) — parsed here from the vault bytes alone (source 1).
+/// (`` ```yaml ^inputs ``) — parsed here from the vault bytes alone (source 1) —
+/// or the engine's own `meridian-lock` block, whose rows additionally carry the
+/// color plane's verdict ([`pin_verdicts`]).
+///
+/// The lock-REFUSAL row projects too. It is a PAGE-level fact, not an `^inputs`
+/// edge — no ref, no target, no pinned rev — and before the `verdict_*` columns
+/// existed the table could only spell it as a declared-unpinned EDGE, the wrong
+/// reason on a row that declares no edge; so it was held back to the color plane
+/// alone. It now spells itself: grey `lock-refused`, carrying the refusal. Its
+/// `to_path` stays EMPTY, so it is still a leaf no walk traverses and no reverse
+/// index reaches.
 fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
     let index = corpus_index(docs);
+    let verdicts = pin_verdicts(docs);
     let mut stmt = conn.prepare(
         "INSERT INTO input_lock \
-         (src_path, seq, declared_ref, to_path, to_sel, pinned_rev, rev_class, hash_algo, src_doc_rev) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (src_path, seq, declared_ref, to_path, to_sel, pinned_rev, rev_class, hash_algo, src_doc_rev, \
+          verdict_color, verdict_reason, verdict_detail) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )?;
     for (path, doc) in docs {
         let src_doc_rev = doc.root.node_rev.0.clone();
-        // The lock-refusal row is a PAGE-level fact, not an `^inputs` edge: it
-        // declares no ref, no target and no pinned rev, and `input_lock`'s
-        // frozen columns can only spell it as a declared-unpinned edge — the
-        // wrong reason. It is carried on the color plane (`view::walk`), which
-        // has a reason-carrying grey; teaching the board its own column is a
-        // DDL change this unit does not make.
         for (seq, item) in page_lock_items_in_corpus(path, doc, &index, docs)
             .into_iter()
-            .filter(|item| item.lock_refusal.is_none())
             .enumerate()
         {
+            // Look the verdict up for exactly the rows the color plane colors —
+            // a legacy `^inputs` row carries neither a fingerprint nor a refusal
+            // and is answered by the board's node_rev compare instead.
+            let verdict = (item.fingerprint.is_some() || item.lock_refusal.is_some())
+                .then(|| {
+                    verdicts.get(&(
+                        path.clone(),
+                        item.declared_ref.clone(),
+                        item.fingerprint.clone(),
+                    ))
+                })
+                .flatten();
             stmt.execute(duckdb::params_from_iter(
                 [
                     Value::Text(path.clone()),
@@ -284,6 +377,15 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
                     item.rev_class.map_or(Value::Null, Value::Text),
                     item.hash_algo.map_or(Value::Null, Value::Text),
                     Value::Text(src_doc_rev.clone()),
+                    verdict.map_or(Value::Null, |c| {
+                        Value::Text(walk::color_tone(c).to_string())
+                    }),
+                    verdict
+                        .and_then(walk::color_reason)
+                        .map_or(Value::Null, |r| Value::Text(r.to_string())),
+                    verdict
+                        .and_then(walk::color_detail)
+                        .map_or(Value::Null, Value::Text),
                 ]
                 .iter(),
             ))?;
@@ -701,12 +803,13 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
 /// the token is self-describing (#4 §2), so the label is derived, never invented.
 ///
 /// Both this label and [`FP_ALGO_UNKNOWN`] sit outside the engine-native set
-/// ([`model::is_native_algo`] — `{node-rev, v2}`), so the ONE existing algo gate
-/// (the walk's edge coloring, the `board` view's `hash_algo NOT IN (…)` arm)
-/// renders a lock pin grey: readable, unverifiable HERE. This unit exposes the
-/// row — the fingerprint VERDICT (green / red / grey) is computed from
-/// [`LockItem::fingerprint`] through `model::fingerprint::verify_content` by the
-/// unit that owns pin color; no second color computer is born here.
+/// ([`model::is_native_algo`] — `{node-rev, v2}`), and that is now the SAFE
+/// FALLBACK rather than the answer: a form-3 row's color comes from its
+/// projected verdict on both planes (the walk's `edge_color` routes a
+/// fingerprint to `model::selector::classify_pin`; the `board` view reads
+/// `verdict_color`). Should a row ever reach SQL without a verdict, the algo
+/// label keeps it out of the `node_rev` compare — it renders grey
+/// `superseded-algo`, never a false green.
 fn fingerprint_algo(token: &str) -> String {
     match model::fingerprint::parse_fingerprint(token) {
         // A hand-written token could spell a version that collides with the
@@ -1066,21 +1169,26 @@ mod tests {
         );
     }
 
-    /// The board sees it: a meridian-lock-only page projects an `input_lock` row
-    /// and colors it grey — VISIBLE and honestly unverified at this layer, never
-    /// a false green and never a false drift (the fingerprint verdict is the
-    /// pin-color unit's). Pre-S3 both counts here were 0.
+    /// The board sees it AND judges it: a meridian-lock-only page projects an
+    /// `input_lock` row carrying the color plane's verdict, and the board renders
+    /// that verdict. `fp("cd")` is a well-formed token holding the WRONG digest,
+    /// so the honest answer is `red content-drifted` — and the same pin at the
+    /// target's LIVE token is green, proving the red is measured, not blanket.
+    ///
+    /// SUPERSEDES S3's `lock_only_page_is_visible_to_the_board_as_grey`, which
+    /// asserted `grey superseded-algo` and `board_red` empty. That was honest
+    /// while `input_lock` had no verdict column — the board could see the pin but
+    /// not judge it — and dishonest the moment the walk plane could say red
+    /// (S9): two planes, two colors, one question.
     #[test]
-    fn lock_only_page_is_visible_to_the_board_as_grey() {
+    fn lock_only_page_renders_its_pin_verdict_on_the_board() {
+        let target = "# Target\n\nbody\n";
         let mut docs = BTreeMap::new();
         docs.insert(
             "effect.md".to_string(),
             doc(&lock_page(&[("sources/target-page.md", &fp("cd"))])),
         );
-        docs.insert(
-            "sources/target-page.md".to_string(),
-            doc("# Target\n\nbody\n"),
-        );
+        docs.insert("sources/target-page.md".to_string(), doc(target));
         let conn = open_board(&docs, &[]).expect("open board");
 
         let n: i64 = conn
@@ -1101,13 +1209,42 @@ mod tests {
             .unwrap();
         assert_eq!(
             (color.as_str(), reason.as_str()),
-            ("grey", "superseded-algo"),
-            "readable, unverifiable HERE — one color row, no new color computer",
+            ("red", "content-drifted"),
+            "the wrong digest is measured drift — the same word `mrd walk` prints",
         );
+        // The ONE red surface agrees: a reader asking board_red "is anything
+        // red?" is not told no while `board` says red.
         let reds: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM board_red WHERE src_path='effect.md' AND reason='content-drifted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reds, 1, "a measured fingerprint drift IS a board red");
+
+        // The same pin at the target's LIVE token greens — the red above is a
+        // measurement, never a blanket verdict on the form.
+        let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root).0;
+        let mut green_docs = BTreeMap::new();
+        green_docs.insert(
+            "effect.md".to_string(),
+            doc(&lock_page(&[("sources/target-page.md", &live)])),
+        );
+        green_docs.insert("sources/target-page.md".to_string(), doc(target));
+        let gconn = open_board(&green_docs, &[]).expect("open board green");
+        let (gcolor, greason): (String, String) = gconn
+            .query_row(
+                "SELECT color, reason FROM board WHERE src_path='effect.md'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((gcolor.as_str(), greason.as_str()), ("green", "attested"));
+        let greds: i64 = gconn
             .query_row("SELECT count(*) FROM board_red", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(reds, 0, "a lock pin is never a false drift");
+        assert_eq!(greds, 0, "a verifying pin is never a board red");
     }
 
     /// The three forms stay separated: a legacy row never grows a fingerprint,
@@ -1198,19 +1335,61 @@ mod tests {
         );
     }
 
-    /// The refusal row stays OFF the `^inputs` SQL board: its columns can only
-    /// spell it as a declared-unpinned EDGE, which would be a wrong reason on a
-    /// row that declares no edge. The color plane carries it instead.
+    /// The refusal row reaches the SQL board and spells itself correctly: grey
+    /// `lock-refused`, carrying WHY, with no ref and no target — so it is
+    /// visible without ever being readable as an edge. It is NOT a board red
+    /// (nothing was measured) and NOT `declared-unpinned` (the page did not
+    /// decline to pin; its pins are unreadable).
+    ///
+    /// SUPERSEDES S3's `refusal_row_is_not_projected_into_the_input_lock_table`,
+    /// which asserted zero rows. Holding the row back was right while the table
+    /// could only spell it as a declared-unpinned EDGE — the wrong reason. With
+    /// `verdict_*` the row spells itself, and zero rows would make a CORRUPT
+    /// lock byte-identical, on the board, to a page that never pinned anything.
     #[test]
-    fn refusal_row_is_not_projected_into_the_input_lock_table() {
+    fn refusal_row_projects_one_grey_lock_refused_row() {
         let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("a.md".to_string(), doc(malformed));
         let conn = open_board(&docs, &[]).expect("board");
-        let rows: i64 = conn
-            .query_row("SELECT count(*) FROM input_lock", [], |r| r.get(0))
+
+        let (declared_ref, to_path, color, reason, detail): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT declared_ref, to_path, verdict_color, verdict_reason, verdict_detail \
+                 FROM input_lock",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("exactly one refusal row");
+        assert_eq!(declared_ref, "", "a refusal declares no ref");
+        assert_eq!(to_path, "", "a refusal names no target — never a self-edge");
+        assert_eq!((color.as_str(), reason.as_str()), ("grey", "lock-refused"));
+        assert_eq!(
+            detail,
+            "malformed at line 3: unrecognized line (canonical order: version, objects, pins)",
+            "the board carries WHY, the same words the walk plane prints",
+        );
+
+        let (bcolor, breason): (String, String) = conn
+            .query_row("SELECT color, reason FROM board", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("exactly one board row");
+        assert_eq!(
+            (bcolor.as_str(), breason.as_str()),
+            ("grey", "lock-refused"),
+            "never `declared-unpinned` — the page's pins are unreadable, not absent",
+        );
+        let reds: i64 = conn
+            .query_row("SELECT count(*) FROM board_red", [], |r| r.get(0))
             .expect("count");
-        assert_eq!(rows, 0, "a page-level refusal is not an ^inputs edge row");
+        assert_eq!(reds, 0, "an unreadable lock measures nothing — never red");
     }
 
     /// The algo label is derived, and it can never collide with the native set:
