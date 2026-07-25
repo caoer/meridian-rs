@@ -818,6 +818,7 @@ fn dispatch_read(
             force,
             edits,
             plan_edits,
+            pin,
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
@@ -831,8 +832,15 @@ fn dispatch_read(
                 force: force.unwrap_or(false),
                 edits,
                 plan_edits,
+                pin,
             };
-            wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
+            // S7: this is the ONE host that holds a session, so it is the one
+            // host whose pin gate can answer — the workspace's read-mint ledger
+            // rides in beside the write. The handle is taken outside any engine
+            // borrow (H1: the ledger is not the engine's, and the pin's own
+            // write must not evaporate it).
+            let mints = registry.read_mints(ws);
+            wire_serve::write::splice(&ws_root, 0, &args, &[], Some(&mints)).map(|out| out.body)
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
         // warm engine's doc (read-only: never a write path).
@@ -871,18 +879,38 @@ fn engine_root(engine: &WorkspaceEngine) -> Root {
 
 /// The composed read (M1 U4a2) over the warm engine: one borrow supplies the
 /// doc, its `file_rev`, and the ambient root — the D6 one-snapshot guarantee.
+///
+/// Stage-2 S6: this is the one host that holds a session, so it hands the arm
+/// the workspace's read-mint ledger ([`Registry::read_mints`]) — a
+/// daemon-derived actor's read mints a receipt there. The handle is taken
+/// BEFORE the engine borrow and lives outside it: the ledger is not the
+/// engine's, and no `warm_or_build` rebuild touches it (H1).
 fn composed_read_warm(
     registry: &Registry,
     ws: &Path,
     path: &wire::Path,
     params: &wire_serve::read::ReadParams,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
+    let mints = registry.read_mints(ws);
     warm_engine_read(registry, ws, |engine| {
         let doc = engine
             .docs
             .get(&path.0)
             .ok_or_else(|| file_not_found(path))?;
-        wire_serve::read::composed_read(doc, path, &engine_root(engine), params)
+        // Stage-2 S10: this is also the one host that holds a CORPUS, and a
+        // claim-link's color is a fact about the PINNED page, not the page
+        // being read — so the decorations are built here, from the same warm
+        // snapshot the read is served from (D6: one snapshot, one answer).
+        let decorations =
+            wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
+        wire_serve::read::composed_read(
+            doc,
+            path,
+            &engine_root(engine),
+            params,
+            Some(&mints),
+            &decorations,
+        )
     })
 }
 

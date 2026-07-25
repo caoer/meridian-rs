@@ -72,6 +72,7 @@ fn e3_request() -> wire_serve::write::CommitRequest {
                 },
                 if_node_rev: Some(model::NodeRev("33d5b0e1b27cb48b".into())),
             }],
+            engine: None,
         },
         receipt: Some((
             "receipts/2026-07-18.md".into(),
@@ -102,6 +103,7 @@ fn e4_request() -> wire_serve::write::CommitRequest {
                 },
                 if_node_rev: Some(model::NodeRev("4b8bc385a58da0e0".into())),
             }],
+            engine: None,
         },
         receipt: Some((
             "receipts/2026-07-18.md".into(),

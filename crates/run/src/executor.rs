@@ -400,6 +400,7 @@ pub fn apply_under(
     let batch = SpliceRequest {
         if_root: Some(req.pin_root.clone()),
         edits: planned.iter().map(|p| p.edit.clone()).collect(),
+        engine: None,
     };
     let sealed = match model::validate_batch(&doc, Some(req.live_root), &batch, None) {
         SpliceVerdict::Validated(b) => b,

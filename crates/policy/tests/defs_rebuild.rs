@@ -164,6 +164,66 @@ fn rebuild_refusals_match_the_u0_goldens() {
     );
 }
 
+/// S4b/D11: a `set_property` value carrying a newline forges frontmatter keys
+/// (`{key}: {value}` is composed literally, and a single-quoted YAML scalar
+/// cannot escape a raw newline) — so the shared predicate REFUSES it, and the
+/// rebuild yields NO candidate for any injection spelling.
+#[test]
+fn set_property_refuses_multiline_values_that_forge_frontmatter_keys() {
+    // The forged-key spelling: no ": " anywhere, so the conditional quote would
+    // never have fired — the value would have landed raw as a second FM line.
+    let res = run(
+        DOC,
+        &[PlanEdit {
+            body: "seeded\ninjected:pwned".into(),
+            ..edit("set_property", "status")
+        }],
+    );
+    assert_err(
+        res,
+        "E_FAIL_LOUD: property value for \"status\" contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
+        "prop-injection-forged-key",
+    );
+
+    // The quoted spelling: a mid-value ": " DOES trigger the single quote, and
+    // the quote leaks across the newline — refused for the same reason.
+    assert_err(
+        run(
+            DOC,
+            &[PlanEdit {
+                body: "seeded\nowner: mallory".into(),
+                ..edit("set_property", "status")
+            }],
+        ),
+        "E_FAIL_LOUD: property value for \"status\" contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
+        "prop-injection-quoted-scalar",
+    );
+
+    // A bare \r counts (CRLF frontmatter is line-split on \r too).
+    assert_err(
+        run(
+            DOC,
+            &[PlanEdit {
+                body: "seeded\rinjected:pwned".into(),
+                ..edit("set_property", "status")
+            }],
+        ),
+        "E_FAIL_LOUD: property value for \"status\" contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
+        "prop-injection-carriage-return",
+    );
+
+    // The predicate itself is the owner: no caller can mint a quoted value for
+    // a multi-line input, and single-line values still quote unchanged.
+    assert_eq!(
+        policy::defs::yaml_safe_value("seeded\ninjected:pwned"),
+        Err(policy::defs::MultiLineValue)
+    );
+    assert_eq!(
+        policy::defs::yaml_safe_value("review: pending"),
+        Ok("'review: pending'".to_string())
+    );
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // one sequential Go-semantics script by design
 fn rebuild_candidate_bytes_match_go_plan_semantics() {

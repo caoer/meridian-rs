@@ -169,13 +169,54 @@ pub fn strip_anchor_marker(b: &[u8], anchor: &str) -> Vec<u8> {
 /// rows are Depth-0, shape-table-excluded), optionally scoped to the `frag`
 /// subtree — the section itself plus descendants by hpath prefix. An empty
 /// result under a non-empty `frag` is the caller's "no section at" refusal.
+///
+/// This is the HEADING plane, whole: `toc_text` renders exactly these rows and
+/// the composed read's `toc` array carries exactly these rows, so the captured
+/// Go toc bytes stay frozen AND no `toc` consumer can meet a second row class.
+/// The `^id` anchor plane is [`anchor_rows`], served in its own array.
 #[must_use]
 pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
     facts
         .iter()
         .filter(|f| f.depth > 0)
-        .filter(|f| frag.is_empty() || f.hpath == frag || f.hpath.starts_with(&format!("{frag}/")))
+        .filter(|f| in_frag(f, frag))
         .collect()
+}
+
+/// The `^id` ANCHOR plane (stage-2 s1c): the block-anchor facts alone, in
+/// document order — the authz plane the host reads. Put derives a write's
+/// governing sections by byte containment (`containingSectionTitles`,
+/// `puttoc.go:86`: every heading whose span contains the anchor block's start
+/// byte), which needs the anchor spans and the heading spans — but NOT in one
+/// array: containment is absolute-byte arithmetic, so the two planes are
+/// independent. Serving these rows is what retires the host's
+/// `sanitizeHeadingHost` markdown mirror.
+///
+/// s1c moved them OUT of the [`toc_rows`] array (S1 mixed both classes there).
+/// A row class an iterating consumer cannot receive is the only guard that
+/// holds: ccc-statusd's `readText` indents by `depth-1` and panicked "negative
+/// Repeat count" on an anchor row's `depth 0` — a documented discriminator
+/// would have rested on every future client remembering to check it.
+///
+/// Under a non-empty `frag` the anchor rows are scoped by the SAME byte
+/// containment the host applies (start byte inside a scoped heading's
+/// subtree-inclusive span), so a scoped read never leaks a row from outside
+/// the requested subtree. An empty `frag` is the whole document: every anchor
+/// row rides, including anchors above the first heading.
+#[must_use]
+pub fn anchor_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
+    let scope: Vec<wire::Span> = toc_rows(facts, frag).iter().map(|f| f.span).collect();
+    facts
+        .iter()
+        .filter(|f| f.depth == 0)
+        .filter(|f| frag.is_empty() || scope.iter().any(|s| s.0 <= f.span.0 && f.span.0 < s.1))
+        .collect()
+}
+
+/// The `frag` subtree predicate for a heading row: the section itself plus
+/// descendants by hpath prefix; an empty `frag` is the whole document.
+fn in_frag(f: &ReadFact, frag: &str) -> bool {
+    frag.is_empty() || f.hpath == frag || f.hpath.starts_with(&format!("{frag}/"))
 }
 
 #[cfg(test)]
@@ -245,6 +286,102 @@ mod tests {
         assert_eq!(hit.n, "1", "first occurrence");
         // subtree words: second + ## + Child + child + body
         assert_eq!(resolve_selector(&got, "2").map(|f| f.words), Some(5));
+    }
+
+    /// s1c (supersedes S1's `read_rows_surface_anchors_contained_in_their_
+    /// governing_headings`, which asserted ONE interleaved row set): the two
+    /// planes are disjoint — `toc_rows` is heading-only, `anchor_rows` is
+    /// anchor-only — and containment still resolves across them, because it is
+    /// absolute-byte arithmetic and never needed the interleaving.
+    #[test]
+    fn the_two_planes_are_disjoint_and_containment_still_crosses_them() {
+        let raw = "# Tasks\n\n- top item ^t1\n\n## Sub\n\n- nested item ^n1\n\n# Notes\n\nbody\n";
+        let got = facts(raw);
+        let headings: Vec<&str> = toc_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(
+            headings,
+            vec!["Tasks", "Tasks/Sub", "Notes"],
+            "the heading plane carries every heading and NOTHING else"
+        );
+        assert!(
+            toc_rows(&got, "").iter().all(|f| f.anchor.is_none()),
+            "no anchor fact can reach a `toc` consumer"
+        );
+        let anchors: Vec<&str> = anchor_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(
+            anchors,
+            vec!["^t1", "^n1"],
+            "the anchor plane carries every addressable block anchor, in document order"
+        );
+
+        // `containingSectionTitles` (puttoc.go:86) across the two planes.
+        let governing = |anchor: &str| -> Vec<String> {
+            let block = anchor_rows(&got, "")
+                .into_iter()
+                .find(|f| f.anchor.as_deref() == Some(anchor))
+                .expect("anchor row");
+            toc_rows(&got, "")
+                .into_iter()
+                .filter(|h| h.span.0 <= block.span.0 && block.span.0 < h.span.1)
+                .map(|h| h.title.clone())
+                .collect()
+        };
+        assert_eq!(governing("t1"), vec!["Tasks".to_owned()]);
+        assert_eq!(
+            governing("n1"),
+            vec!["Tasks".to_owned(), "Sub".to_owned()],
+            "a nested block answers BOTH its ancestor sections"
+        );
+    }
+
+    /// Frag scoping of anchor rows is the host's own byte containment: the
+    /// scoped subtree's anchors ride, a sibling subtree's never do.
+    #[test]
+    fn anchor_rows_frag_scopes_anchors_by_byte_containment() {
+        let raw = "# Tasks\n\n- item ^t1\n\n# Notes\n\n- other ^o1\n";
+        let got = facts(raw);
+        let scoped: Vec<&str> = anchor_rows(&got, "Tasks")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(scoped, vec!["^t1"]);
+        let other: Vec<&str> = anchor_rows(&got, "Notes")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(other, vec!["^o1"]);
+        assert!(
+            anchor_rows(&got, "Ghost").is_empty(),
+            "a frag naming nothing scopes nothing — the caller's refusal"
+        );
+    }
+
+    /// An anchor above the first heading has no governing section; the
+    /// whole-document anchor plane still carries it (the host must see the
+    /// block to authorize a write to it).
+    #[test]
+    fn anchor_rows_carry_anchors_above_the_first_heading() {
+        let raw = "- orphan item ^o1\n\n# Tasks\n\nbody\n";
+        let got = facts(raw);
+        let anchors: Vec<&str> = anchor_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(anchors, vec!["^o1"]);
+        assert_eq!(
+            toc_rows(&got, "")
+                .iter()
+                .map(|f| f.hpath.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Tasks"],
+            "and the heading plane is unaffected by it"
+        );
     }
 
     /// Frag scoping: the section itself + descendants by hpath prefix;

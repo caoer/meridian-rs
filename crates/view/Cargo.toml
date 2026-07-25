@@ -13,6 +13,9 @@ workspace = true
 [dependencies]
 # read the parsed corpus (Document/Node/NodeKind) — the projector's only source
 model = { workspace = true }
+# the `meridian-lock` block format — ONE owner for the lock grammar (`lock::find`
+# parses it; this crate only projects its `pins:` into the read face)
+lock = { workspace = true }
 # drawer path resolution (CacheDrawer::dir) for the persistent publish path
 cache = { workspace = true }
 # the DuckDB sink. `bundled` compiles the vendored amalgamation, so the gate SQL

@@ -54,6 +54,16 @@ pub(crate) fn dispatch(
                     display_path,
                     actor,
                 },
+                // S6: the sidecar builds its state per REQUEST and holds no
+                // session, so there is no daemon-session layer for a read
+                // receipt to live in — it mints none (the registry daemon is
+                // the one host that does).
+                None,
+                // S10: and it holds no corpus either — one document per
+                // request cannot color a pin whose target is another page, so
+                // it decorates nothing rather than guessing (an undecorated
+                // link claims nothing; a wrongly-colored one lies).
+                &wire_serve::read::NO_DECORATIONS,
             )
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the
@@ -111,6 +121,7 @@ pub(crate) fn dispatch(
             force,
             edits,
             plan_edits,
+            pin,
         } => {
             let out = wire_serve::write::splice(
                 root,
@@ -126,8 +137,14 @@ pub(crate) fn dispatch(
                     force: force.unwrap_or(false),
                     edits,
                     plan_edits,
+                    pin,
                 },
                 rulesets,
+                // S7: the per-request sidecar HOLDS NO SESSION, so it holds no
+                // read-receipt ledger. A pin from a session actor therefore
+                // refuses `read_mint_required` here, naming that reason — the
+                // honest answer, since this host cannot know what was read.
+                None,
             )?;
             if let Some(frame) = out.committed {
                 epoch.advance(frame);

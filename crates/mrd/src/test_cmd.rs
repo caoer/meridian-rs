@@ -531,8 +531,10 @@ fn splice_put(
             if_node_rev,
         }],
         plan_edits: Vec::new(),
+        // A scenario `^put` is a content write; the pin verb has its own path.
+        pin: None,
     };
-    Ok(match splice(root, 0, &args, &[]) {
+    Ok(match splice(root, 0, &args, &[], None) {
         Ok(out) => {
             let verdicts = match &out.body {
                 ResponseBody::Splice { verdicts, .. } => {

@@ -72,6 +72,10 @@ fn rendered_text_matches_u0_goldens() {
                 display_path: &display_path,
                 file_rev: &doc.root.node_rev.0,
                 words_total,
+                // U0 Go-parity bytes: the S10 claim-link hook is INERT here,
+                // exactly as the elision hook is. The goldens are the M1
+                // contract and no stage-2 input may move them.
+                decorations: &render::NO_DECORATIONS,
             };
 
             let mode = args["mode"].as_str().unwrap_or("toc");

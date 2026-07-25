@@ -360,7 +360,8 @@ fn lower_create(
 /// as `"\n{k}: {v}"` lines AFTER the last existing key — folded into that
 /// key's `Put{all}` when it is itself being set (the carrier), else a
 /// `Put{end}` after it. No frontmatter to anchor on refuses the host teaching.
-/// Values pass through the ONE shared conditional-quote predicate.
+/// Values pass through the ONE shared conditional-quote predicate, which
+/// REFUSES a multi-line value (D11) before any byte is composed.
 fn lower_property_group(
     idx: &PlanIndex,
     props: &std::collections::BTreeMap<&str, &str>,
@@ -376,10 +377,19 @@ fn lower_property_group(
             }
         }
     }
-    let quoted: std::collections::BTreeMap<&str, String> = props
-        .iter()
-        .map(|(k, v)| (*k, policy::defs::yaml_safe_value(v)))
-        .collect();
+    let mut quoted: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
+    for (k, v) in props {
+        // D11: the composed line is `{key}: {value}`, so a newline in the value
+        // forges frontmatter keys — and a single-quoted YAML scalar cannot
+        // escape one. Refuse, never sanitize; the shared predicate owns the law.
+        let safe = policy::defs::yaml_safe_value(v).map_err(|_| {
+            bad_request(format!(
+                "property value for {} contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section",
+                policy::defs::go_quote(k)
+            ))
+        })?;
+        quoted.insert(*k, safe);
+    }
     let line = |k: &str| format!("{k}: {}", quoted[k]);
 
     let mut existing = Vec::new();

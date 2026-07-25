@@ -141,6 +141,28 @@ pub enum LockError {
     MultipleBlocks,
 }
 
+/// The refusal reason, one line — THE spelling of why a lock is unreadable, so
+/// a write refusal and a read face's `grey lock-refused` row name the damage
+/// identically.
+impl std::fmt::Display for LockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LockError::NotALockBlock => write!(f, "not a meridian-lock block"),
+            LockError::UnsupportedVersion { found } => {
+                write!(f, "unsupported lock version: {found}")
+            }
+            LockError::Malformed { line, reason } => {
+                write!(f, "malformed at line {line}: {reason}")
+            }
+            LockError::MultipleBlocks => {
+                write!(f, "more than one meridian-lock block on the page")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LockError {}
+
 /// A lock located in a document: the fence-to-fence byte span (the model
 /// `CodeBlock` span, final terminator excluded — splice-ready) + the parsed
 /// root object.

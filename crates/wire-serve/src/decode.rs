@@ -246,7 +246,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
     const V2_FIELDS: [&str; 8] = [
         "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
     ];
-    const V3_FIELDS: [&str; 9] = [
+    const V3_FIELDS: [&str; 10] = [
         "path",
         "actor",
         "now",
@@ -256,6 +256,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         "force",
         "edits",
         "plan_edits",
+        "pin",
     ];
     let op = "splice";
     if rev == Rev::V3 {
@@ -275,6 +276,12 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         None => Vec::new(),
         Some(v) => decode_plan_edits(v)?,
     };
+    // S7: a `pin` is itself a write, so a pin-only splice is a complete batch.
+    // Decoded BEFORE the edits gate because that gate reads its presence.
+    let pin = match obj.get("pin") {
+        None => None,
+        Some(v) => Some(decode_pin(v)?),
+    };
     let edits = match obj.get("edits") {
         Some(edits_v) => {
             if !plan_edits.is_empty() {
@@ -284,7 +291,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
             }
             decode_edits(edits_v)?
         }
-        None if plan_edits.is_empty() => {
+        None if plan_edits.is_empty() && pin.is_none() => {
             // The frozen v2 refusal, verbatim — a plan-less, edit-less splice
             // reads exactly as before (C note 6: never a serde accident).
             return Err(bad_request("missing `edits` on `splice`"));
@@ -301,6 +308,29 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         force: opt_bool(obj, op, "force")?,
         edits,
         plan_edits,
+        pin,
+    })
+}
+
+/// Strict-decode `splice.pin` (S7): `{target, selector, vibe?}` and nothing
+/// else. There is deliberately no `actor` key — a pin's mint identity IS the
+/// splice's own daemon-derived actor (D13), so admitting one here would let a
+/// caller forge a pin as another actor.
+fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
+    let Some(obj) = v.as_object() else {
+        return Err(bad_request("`pin` must be an object on `splice`"));
+    };
+    check_fields(obj, "pin", &["target", "selector", "vibe"])?;
+    let selector = req_str(obj, "pin", "selector")?;
+    if selector.trim().is_empty() {
+        return Err(bad_request(
+            "`pin.selector` must name a section (a sanitized heading path or `^id`)",
+        ));
+    }
+    Ok(wire::PinSpec {
+        target: req_path(obj, "pin", "target")?,
+        selector,
+        vibe: opt_bool(obj, "pin", "vibe")?,
     })
 }
 
@@ -629,9 +659,24 @@ fn decode_anchor(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     let Value::String(id) = v else {
         return Err(bad_request("`anchor` must be a string"));
     };
+    // Stage-2 S10: the `@fp` strip is ordered BEFORE the mint-guard here, and
+    // this is the FIRST of the two guard sites a wire address meets (the other
+    // is `read::to_model_ref`, the belt for in-process callers that build a
+    // `SecRef` directly). Decoding to the STORED spelling is what makes the
+    // decorated address agent-plane rather than display-only: an agent that
+    // read `[[guide#^goal@green.b3af12cd]]` can address `^goal@green.b3af12cd`
+    // and reach exactly the node `^goal` names.
+    //
+    // Additive on the frozen v2 plane by construction: the only inputs whose
+    // outcome moves are shaped tokens, which every pre-S10 build refused and no
+    // v2 client can produce (the grammar did not exist). An `@` the shape does
+    // NOT recognize still refuses, verbatim, below.
+    let id = syntax::split_fp(id).0;
     // the mint-guard: one block-id charset, both planes (§2.4)
-    match model::Ref::anchor(id.clone()) {
-        Ok(_) => Ok(SecRef::Anchor { anchor: id.clone() }),
+    match model::Ref::anchor(id.to_owned()) {
+        Ok(_) => Ok(SecRef::Anchor {
+            anchor: id.to_owned(),
+        }),
         Err(bad) => Err(bad_request(format!(
             "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
             id = bad.id
