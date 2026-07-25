@@ -4033,6 +4033,7 @@ version = "0.0.0"
 dependencies = [
  "cache",
  "duckdb",
+ "lock",
  "model",
  "syntax",
  "tempfile",
