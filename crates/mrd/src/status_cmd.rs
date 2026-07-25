@@ -592,19 +592,29 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
 ///
 /// A corpus that references no blobs asks git nothing: nothing is referenced, so
 /// nothing can be owed, and the gauge reads a true `0` even outside a repository.
+///
+/// A value that is not an object id at all is UNKNOWN, never skipped: git cannot
+/// be asked about it, so the entry's debt is unmeasurable, and a gauge that
+/// dropped it read a corrupt retrieval plane as a true zero — the same false
+/// clean the `unknown` slot exists to prevent.
 fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
     // Distinct blob ids, first-sighting order: one blob referenced by two pages
-    // is ONE object on disk, and counting it twice would double its bytes. A
-    // value that is not an object id at all is not a blob git could hold — the
-    // lock is machine-written, so that is damage the lock plane names, not a
-    // debt this gauge can price.
+    // is ONE object on disk, and counting it twice would double its bytes.
     let mut seen: HashSet<String> = HashSet::new();
     let mut oids: Vec<String> = Vec::new();
+    let mut malformed: Vec<String> = Vec::new();
     for object in view::walk::lock_objects(docs) {
         let oid = object.blob_sha.to_ascii_lowercase();
-        if git::is_oid(&oid) && seen.insert(oid.clone()) {
+        if !git::is_oid(&oid) {
+            malformed.push(format!("{} objects.{}", object.src_path, object.key));
+            continue;
+        }
+        if seen.insert(oid.clone()) {
             oids.push(oid);
         }
+    }
+    if let Some(detail) = malformed_detail(&malformed) {
+        return VibeDebt::unknown(detail);
     }
     if oids.is_empty() {
         return VibeDebt::clear();
@@ -637,6 +647,19 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
         }
     }
     debt
+}
+
+/// The `unknown` detail for `objects:` entries whose value is not an object id —
+/// the count plus the first offender's page and key, so the reading names WHERE
+/// the retrieval plane is damaged instead of just refusing to answer. `None`
+/// when every entry is well-formed.
+fn malformed_detail(malformed: &[String]) -> Option<String> {
+    let first = malformed.first()?;
+    let n = malformed.len();
+    let unit = if n == 1 { "entry" } else { "entries" };
+    Some(format!(
+        "{n} `objects:` {unit} not an object id, so git cannot be asked (first: {first})"
+    ))
 }
 
 /// One armed convention read from the INDEX: the pinned `armed_rev` per slug, plus
