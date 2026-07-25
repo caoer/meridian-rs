@@ -2769,6 +2769,7 @@ dependencies = [
 name = "receipt"
 version = "0.0.0"
 dependencies = [
+ "syntax",
  "wire",
 ]
 
