@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use model::Document;
-use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge};
+use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge, classify_pin};
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_corpus};
 
@@ -193,6 +193,50 @@ pub fn walk(
     })
 }
 
+/// One `meridian-lock` row with its computed color — the row shape a status
+/// surface rolls up, and the surface a link decorator reads a pin's color from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinColor {
+    /// The page whose `meridian-lock` block declares this row.
+    pub src_path: String,
+    /// The pin's declared ref, verbatim — EMPTY on a lock-refusal row (which
+    /// declares no ref; `color` then carries the refusal).
+    pub declared_ref: String,
+    /// The pinned `fp1.…` CID-token — `None` on a lock-refusal row.
+    pub fingerprint: Option<String>,
+    /// The computed color, reason-carrying ([`color_label`] renders it).
+    pub color: Color,
+}
+
+/// Every `meridian-lock` (form-3) row in `docs` with its color — corpus order,
+/// then block order. THE surface for a whole-corpus pin roll-up (`mrd status`)
+/// and for per-pin decoration; it colors through the same [`edge_color`] the
+/// walk uses, so no second computer can disagree with a walk listing.
+///
+/// The legacy `^inputs` forms are excluded: they are the SQL board's plane and
+/// answer a different compare (`node_rev`, not a fingerprint). A page whose lock
+/// REFUSED contributes its one grey `lock-refused` row — a corrupt lock is
+/// visible here, never silently absent.
+#[must_use]
+pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
+    let index = corpus_index(docs);
+    let mut out = Vec::new();
+    for (path, doc) in docs {
+        for item in page_lock_items_in_corpus(path, doc, &index, docs) {
+            if item.fingerprint.is_none() && item.lock_refusal.is_none() {
+                continue; // a legacy `^inputs` row — the board's plane, not this one
+            }
+            out.push(PinColor {
+                src_path: path.clone(),
+                declared_ref: item.declared_ref.clone(),
+                fingerprint: item.fingerprint.clone(),
+                color: edge_color(docs, &item),
+            });
+        }
+    }
+    out
+}
+
 /// Whether the listing carries any red edge — the finding signal (a broken pin
 /// in the context, or a dependent whose pin no longer resolves).
 #[must_use]
@@ -223,19 +267,40 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         Color::Grey(GreyReason::DeclaredUnpinned) => Some("declared-unpinned"),
         Color::Grey(GreyReason::Ambiguous) => Some("ambiguous"),
         Color::Grey(GreyReason::SupersededAlgo) => Some("superseded-algo"),
+        Color::Grey(GreyReason::UnverifiableFingerprint { .. }) => Some("unverifiable-fingerprint"),
+        Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
+        Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
         Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
         Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
     }
 }
 
+/// The detail a reason carries beyond its word (`None` when the word says it
+/// all) — WHICH fingerprint-triple member is unknown, or WHY the lock refused.
+/// Split from [`color_reason`] so the reason stays a stable enum-like token for
+/// machines while the human render still names the specific damage.
+#[must_use]
+pub fn color_detail(color: &Color) -> Option<String> {
+    match color {
+        Color::Grey(GreyReason::UnverifiableFingerprint { unknown }) => {
+            Some(format!("unknown {}", unknown.join(", ")))
+        }
+        Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
+        _ => None,
+    }
+}
+
 /// The full color label (`green`, `red content-drifted`, `grey immutable-root`,
-/// …) — tone plus reason, the human-render word.
+/// `grey unverifiable-fingerprint (unknown version)`, …) — tone, reason, and the
+/// reason's detail when it carries one. The human-render word.
 #[must_use]
 pub fn color_label(color: &Color) -> String {
-    match color_reason(color) {
-        Some(reason) => format!("{} {reason}", color_tone(color)),
-        None => color_tone(color).to_string(),
+    let tone = color_tone(color);
+    match (color_reason(color), color_detail(color)) {
+        (Some(reason), Some(detail)) => format!("{tone} {reason} ({detail})"),
+        (Some(reason), None) => format!("{tone} {reason}"),
+        (None, _) => tone.to_string(),
     }
 }
 
@@ -294,7 +359,7 @@ fn steps_from(
             .into_iter()
             .flatten()
             .map(|edge| Step {
-                selector: canonical_ref(&edge.to_path, &edge.to_sel),
+                selector: step_selector(page, edge),
                 pinned_rev: edge.pinned_rev.clone(),
                 color: edge_color(docs, edge),
                 color_target: edge.to_path.clone(),
@@ -321,6 +386,19 @@ fn steps_from(
     }
 }
 
+/// The listing name of one hop out of `src`: the edge's canonical target
+/// address, or — for a lock-refusal row, which declares no target — the PAGE
+/// whose lock refused, so the entry says WHICH page is unreadable instead of
+/// rendering a blank address. The refusal row's empty `to_path` also keeps it
+/// out of the reverse index and the page adjacency by construction: a refused
+/// lock names no edge, so it is a leaf the walk never traverses.
+fn step_selector(src: &str, edge: &LockItem) -> String {
+    if edge.lock_refusal.is_some() {
+        return src.to_string();
+    }
+    canonical_ref(&edge.to_path, &edge.to_sel)
+}
+
 /// Color one edge with the U2.2 law: parse the target selector, wrap the pinned
 /// rev, and classify against the live target document.
 ///
@@ -335,13 +413,29 @@ fn steps_from(
 /// defaults to native (the engine mints `node-rev`); a declared-only item (no
 /// rev) has no algo to supersede — it stays declared-unpinned grey.
 ///
-/// A `meridian-lock` pin (form-3) reaches this gate carrying its fingerprint
-/// token's own version as the algo label (`fp1`) — likewise non-native, because
-/// a `fp1.…` CID-token is not `node_rev`-comparable in either direction. So a
-/// lock pin renders grey here: VISIBLE and honestly unverified, never a false
-/// green and never a false drift. Turning that grey into the real fingerprint
-/// verdict is the pin-color unit's job, over [`LockItem::fingerprint`].
+/// Two rows never reach the rev compare, because neither declares a
+/// `node_rev`-comparable edge:
+///
+/// - a **lock-refusal row** ([`LockItem::lock_refusal`]) — the page's whole
+///   `meridian-lock` block is unreadable, so it is grey `lock-refused` with the
+///   refusal carried; and
+/// - a **`meridian-lock` pin** (form-3), which pins a `fp1.…` CID-token. That
+///   token is not `node_rev`-comparable in either direction, so the FINGERPRINT
+///   plane answers it ([`model::selector::classify_pin`] over
+///   [`LockItem::fingerprint`], the typed slot) — the same address law, a
+///   different compare. Before this, such a pin fell into the foreign-algo
+///   short-circuit below and rendered grey `superseded-algo` — visible but
+///   permanently unverified.
 fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
+    if let Some(reason) = &edge.lock_refusal {
+        return Color::Grey(GreyReason::LockRefused {
+            reason: reason.clone(),
+        });
+    }
+    let selector = Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel));
+    if let Some(token) = &edge.fingerprint {
+        return classify_pin(&selector, token, docs.get(&edge.to_path));
+    }
     if edge.pinned_rev.is_some()
         && edge
             .hash_algo
@@ -350,7 +444,6 @@ fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
     {
         return Color::Grey(GreyReason::SupersededAlgo);
     }
-    let selector = Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel));
     let pinned = edge.pinned_rev.as_ref().map(|r| model::NodeRev(r.clone()));
     classify_edge(&selector, pinned.as_ref(), docs.get(&edge.to_path))
 }
@@ -944,9 +1037,11 @@ mod tests {
     /// listing was empty, `mrd walk` printed `(nothing)` and exited 0 (clean),
     /// so a real pin looked like a page with no inputs at all.
     ///
-    /// The edge lands grey: a `fp1.…` fingerprint is not `node_rev`-comparable,
-    /// so it is honestly unverified HERE (the fingerprint verdict belongs to the
-    /// pin-color unit) — visible, never a false green, never a false drift.
+    /// The edge is now VERIFIED, not greyed: S9 routes a row carrying a
+    /// `fingerprint` to the fingerprint plane, so a token that does not equal
+    /// the target's live fingerprint is measured drift. (S3 asserted grey
+    /// `superseded-algo` here — the placeholder this unit replaced, which could
+    /// never distinguish a correct pin from a drifted one.)
     #[test]
     fn meridian_lock_page_is_visible_to_the_walk() {
         let token = format!("fp1.span2.b3.{}", "ab".repeat(32));
@@ -974,12 +1069,15 @@ mod tests {
             vec![WalkEntry {
                 selector: "sources/target-page.md".to_string(),
                 rev: Some(token.clone()),
-                color: Color::Grey(GreyReason::SupersededAlgo),
+                color: Color::Red(RedReason::Drifted),
                 depth: 1,
             }],
             "the lock pin IS the edge — pre-S3 this vec was empty",
         );
-        assert!(!has_red(&report), "an unverified lock pin is not a finding");
+        assert!(
+            has_red(&report),
+            "a pin that no longer matches its target IS a finding",
+        );
 
         // And the reverse direction sees it too: the target's dependents now
         // include the page that pinned it (the blast radius was blind pre-S3).
@@ -1018,5 +1116,272 @@ mod tests {
             "native-algo form-2, rev == live node_rev ⇒ green (normal verify path)",
         );
         assert!(!has_red(&report));
+    }
+
+    // ── S9: the `meridian-lock` pin color (green / red / grey) ───────────────
+
+    /// A corpus of one effect page pinning `sources/target.md` at `token`, and
+    /// the target page built from `target_raw`.
+    fn pinned_corpus(token: &str, target_raw: &str) -> BTreeMap<String, Document> {
+        pinned_corpus_ref("sources/target.md", token, target_raw)
+    }
+
+    /// [`pinned_corpus`] with the declared ref spelled explicitly (so a test can
+    /// pin a selector, or a target that is not there at all).
+    fn pinned_corpus_ref(
+        declared_ref: &str,
+        token: &str,
+        target_raw: &str,
+    ) -> BTreeMap<String, Document> {
+        let mut lock_block = lock::Lock::new();
+        lock_block.upsert_pin(lock::PinEntry {
+            declared_ref: declared_ref.to_string(),
+            fingerprint: token.to_string(),
+        });
+        let effect = format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock::render(&lock_block)
+        );
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(&effect));
+        docs.insert("sources/target.md".to_string(), doc(target_raw));
+        docs
+    }
+
+    /// The one entry a single-pin corpus walks up to.
+    fn only_entry(docs: &BTreeMap<String, Document>) -> WalkEntry {
+        let report = walk(docs, "effect.md", Direction::Up, None).expect("walk up");
+        assert_eq!(report.entries.len(), 1, "one pin, one entry");
+        report.entries[0].clone()
+    }
+
+    /// The live fingerprint token of a page root — what a CORRECT pin holds.
+    fn live_token(raw: &str) -> String {
+        let d = doc(raw);
+        model::fingerprint::fingerprint(&d, &d.root).0
+    }
+
+    /// GATE 1 — the five rendered states are DISTINCT: no two of green /
+    /// red(drifted) / red(dangling) / grey(unverifiable) / grey(malformed) share
+    /// a label, and each names its own reason. A drift face whose states collide
+    /// cannot be acted on.
+    #[test]
+    fn the_five_pin_states_each_render_distinctly() {
+        let body = "# Target\n\nbody v1\n";
+        let hex64 = "0".repeat(64);
+
+        let green = only_entry(&pinned_corpus(&live_token(body), body));
+        let drifted = only_entry(&pinned_corpus(&live_token(body), "# Target\n\nbody v2\n"));
+        let dangling = only_entry(&pinned_corpus_ref(
+            "sources/target.md#^goal",
+            &format!("fp1.span2.b3.{hex64}"),
+            body,
+        ));
+        let unverifiable = only_entry(&pinned_corpus(&format!("fp9.span2.b3.{hex64}"), body));
+        let malformed = only_entry(&pinned_corpus("780d2fb4cf68f60f", body));
+
+        let labels: Vec<String> = [&green, &drifted, &dangling, &unverifiable, &malformed]
+            .iter()
+            .map(|e| color_label(&e.color))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "green",
+                "red content-drifted",
+                "red dangling-anchor",
+                "grey unverifiable-fingerprint (unknown version)",
+                "grey malformed-fingerprint",
+            ],
+        );
+        let distinct: BTreeSet<&String> = labels.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            labels.len(),
+            "two states collided: {labels:?}"
+        );
+
+        // The tones roll up honestly: the two reds are findings, the two greys
+        // are not (grey = never measured, so never a claim of breakage either).
+        assert_eq!(
+            labels
+                .iter()
+                .map(|l| l.split(' ').next().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["green", "red", "red", "grey", "grey"],
+        );
+    }
+
+    /// GATE 2 (LOAD-BEARING) — grey never renders green. Each token below
+    /// carries the target's CORRECT live digest under a version / codec / hashfn
+    /// this build does not implement, plus the superseded bare-digest spelling.
+    /// A digest that happens to match is not a verification.
+    #[test]
+    fn an_unverifiable_pin_never_renders_green() {
+        let body = "# Target\n\nbody v1\n";
+        let live = live_token(body);
+        let digest = live.rsplit('.').next().expect("digest");
+
+        for token in [
+            format!("fp9.span2.b3.{digest}"),
+            format!("fp1.zzz9.b3.{digest}"),
+            format!("fp1.span2.xx.{digest}"),
+            digest.to_string(),
+        ] {
+            let entry = only_entry(&pinned_corpus(&token, body));
+            assert_eq!(
+                color_tone(&entry.color),
+                "grey",
+                "{token} must render grey, got {}",
+                color_label(&entry.color),
+            );
+            assert_ne!(entry.color, Color::Green, "{token} rendered a false green");
+        }
+
+        // The control: the SAME digest under the implemented triple is green —
+        // the greys above are about the triple, not about a broken compare.
+        assert_eq!(only_entry(&pinned_corpus(&live, body)).color, Color::Green);
+    }
+
+    /// GATE 3 — an `fp9.span2.b3` grey NAMES the version as the unknown member.
+    /// Reporting only `codec=span2, hashfn=b3` (both live-looking) could not say
+    /// which member this build does not implement.
+    #[test]
+    fn the_unverifiable_grey_names_the_unknown_triple_member() {
+        let body = "# Target\n\nbody v1\n";
+        let hex64 = "0".repeat(64);
+        let cases = [
+            (
+                "fp9.span2.b3",
+                "grey unverifiable-fingerprint (unknown version)",
+            ),
+            (
+                "fp1.zzz9.b3",
+                "grey unverifiable-fingerprint (unknown codec)",
+            ),
+            (
+                "fp1.span2.xx",
+                "grey unverifiable-fingerprint (unknown hashfn)",
+            ),
+            (
+                "fp9.zzz9.xx",
+                "grey unverifiable-fingerprint (unknown version, codec, hashfn)",
+            ),
+        ];
+        for (triple, expected) in cases {
+            let entry = only_entry(&pinned_corpus(&format!("{triple}.{hex64}"), body));
+            assert_eq!(color_label(&entry.color), expected, "{triple}");
+        }
+    }
+
+    /// D8 — an unreadable target is RED with its reason, never grey and never
+    /// green: the vanished-anchor and vanished-page cases both.
+    #[test]
+    fn a_dangling_pin_target_renders_red_never_green() {
+        let hex64 = "0".repeat(64);
+        let token = format!("fp1.span2.b3.{hex64}");
+
+        // The pinned anchor is gone from a live page.
+        let gone = only_entry(&pinned_corpus_ref(
+            "sources/target.md#^goal",
+            &token,
+            "# Target\n\nbody with no anchor\n",
+        ));
+        assert!(matches!(
+            gone.color,
+            Color::Red(RedReason::DanglingAnchor { .. })
+        ));
+
+        // The pinned PAGE is not in the corpus at all.
+        let mut lock_block = lock::Lock::new();
+        lock_block.upsert_pin(lock::PinEntry {
+            declared_ref: "sources/vanished.md#^goal".to_string(),
+            fingerprint: token.clone(),
+        });
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "effect.md".to_string(),
+            doc(&format!("# E\n\n{}\n", lock::render(&lock_block))),
+        );
+        let entry = only_entry(&docs);
+        assert_eq!(color_label(&entry.color), "red dangling-anchor");
+    }
+
+    /// GATE 2b — a MALFORMED lock renders grey `lock-refused`, NOT absent.
+    /// Before this, `lock::find`'s refusal projected zero rows, so a corrupt
+    /// lock and a page that never pinned anything were the same walk output:
+    /// `(nothing)`, exit 0.
+    #[test]
+    fn a_malformed_lock_renders_grey_not_absent() {
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(malformed));
+
+        let entry = only_entry(&docs);
+        assert_eq!(
+            entry.selector, "effect.md",
+            "the row names the damaged page"
+        );
+        assert_eq!(
+            color_label(&entry.color),
+            "grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins))",
+            "the refusal reason is carried, not just the tone",
+        );
+        assert!(entry.rev.is_none(), "a refusal pins nothing");
+
+        // Grey, so it is not a finding — the ledger measured nothing here.
+        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
+        assert!(!has_red(&report));
+    }
+
+    /// GATE 2b — TWO lock blocks on one page renders grey `lock-refused`, NOT
+    /// absent. `lock::find` calls two blocks corruption; the read face reports
+    /// that verdict rather than guessing which block is the lock.
+    #[test]
+    fn a_double_block_lock_renders_grey_not_absent() {
+        let block = lock::render(&{
+            let mut l = lock::Lock::new();
+            l.upsert_pin(lock::PinEntry {
+                declared_ref: "sources/target.md".to_string(),
+                fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
+            });
+            l
+        });
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "effect.md".to_string(),
+            doc(&format!("# Effect\n\n{block}\n\n{block}\n")),
+        );
+        docs.insert("sources/target.md".to_string(), doc("# T\n\nbody\n"));
+
+        let entry = only_entry(&docs);
+        assert_eq!(entry.selector, "effect.md");
+        assert_eq!(
+            color_label(&entry.color),
+            "grey lock-refused (more than one meridian-lock block on the page)",
+        );
+    }
+
+    /// A refusal row declares NO edge: it never enters the reverse index, never
+    /// enters the page adjacency, and is never traversed. Without this a
+    /// refusal row pointing at its own page would make every walk over that page
+    /// refuse as an in-snapshot cycle.
+    #[test]
+    fn a_refusal_row_is_a_leaf_never_an_edge() {
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(malformed));
+        docs.insert("sources/target.md".to_string(), doc("# T\n\nbody\n"));
+
+        // Up terminates (no cycle refusal) at depth 1 and expands no further.
+        let up = walk(&docs, "effect.md", Direction::Up, None).expect("up must not cycle");
+        assert_eq!(up.entries.len(), 1);
+        assert_eq!(up.entries[0].depth, 1);
+
+        // Down from any page never sees the refusal — it names no target.
+        let down = walk(&docs, "sources/target.md", Direction::Down, None).expect("down");
+        assert!(down.entries.is_empty(), "a refusal is nobody's dependent");
+        let down_self = walk(&docs, "effect.md", Direction::Down, None).expect("down self");
+        assert!(down_self.entries.is_empty());
     }
 }

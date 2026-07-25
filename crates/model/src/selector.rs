@@ -32,8 +32,26 @@
 //! Both address-failure reds carry a **nearest-candidate hint** (d1 § selector
 //! ambiguity F6b): the live toc's nearest names, a hint an author confirms by
 //! re-pinning — never an auto-repair (the engine holds no rename history).
+//!
+//! # Two compares, ONE color law
+//! The law splits into an ADDRESS half and a COMPARE half. [`resolve_selector`]
+//! owns the address half; two compares are built on it, and there is no third
+//! color computer:
+//!
+//! - [`classify_edge`] — the legacy `^inputs` plane: `live node_rev` vs the
+//!   pinned `rev`.
+//! - [`classify_pin`] — the `meridian-lock` plane: the pinned `fp1.…`
+//!   CID-token through [`crate::fingerprint::verify_content_span`], whose four
+//!   arms map onto these same tones (green / red `content-drifted` / grey
+//!   `unverifiable-fingerprint` / grey `malformed-fingerprint`).
+//!
+//! **Grey never renders green.** Every grey means the ledger did not measure
+//! this edge — an unverified claim dressed as attested is the one dishonest
+//! color, so an unknown codec, an unreadable token, and a refused lock block all
+//! stay grey no matter what their digest says.
 
-use crate::{Document, Node, NodeKind, NodeRev, Ref, ResolveError, resolve};
+use crate::fingerprint::ContentVerdict;
+use crate::{Document, Node, NodeKind, NodeRev, Ref, ResolveError, Target, resolve};
 
 /// The four selector classes (d2 §2.2). Parsed from a ref string by
 /// [`Selector::parse`]; the transcript class is recognized by its `#seq-N`
@@ -126,6 +144,23 @@ pub enum GreyReason {
     /// Archived v1 blocks render this forever (d2 §6.3; U0.2/U3.4;
     /// wire-contract-v2-colors-amendment § Colors).
     SupersededAlgo,
+    /// A `meridian-lock` pin whose fingerprint token PARSES but names a
+    /// version / codec / hashfn this build does not implement
+    /// ([`crate::fingerprint::ContentVerdict::Unverifiable`]). `unknown` names
+    /// WHICH triple members are unknown, so the render never prints a
+    /// live-looking triple. The fingerprint plane's `superseded-algo`: grey,
+    /// never green (an unverified claim dressed as attested) and never red (a
+    /// drift nobody measured).
+    UnverifiableFingerprint { unknown: Vec<&'static str> },
+    /// A `meridian-lock` pin whose pinned value is not a fingerprint token at
+    /// all ([`crate::fingerprint::ContentVerdict::Malformed`]). Unreadable, so
+    /// it was never measured — grey, never red.
+    MalformedFingerprint,
+    /// The page's whole `meridian-lock` block REFUSED to parse — malformed, or
+    /// more than one block on one page. The lock is outside sight, so the page
+    /// projects THIS row instead of zero rows: a corrupt lock must never read
+    /// as "no pins". Carries the refusal reason verbatim.
+    LockRefused { reason: String },
 }
 
 /// Why an edge renders red — the three reasons kept distinct (decision #9).
@@ -166,45 +201,120 @@ pub fn classify_edge(
     let Some(pinned) = pinned_rev else {
         return Color::Grey(GreyReason::DeclaredUnpinned);
     };
-    // A vanished target PAGE: the whole selector is unresolved. A block address
-    // dangles; a heading/page address is selector-unresolved. Candidates are
-    // empty — no live doc to draw them from.
+    match resolve_selector(selector, target) {
+        // Resolves — the only question left is content drift (source 2).
+        Ok((_, t)) if &t.node_rev == pinned => Color::Green,
+        Ok(_) => Color::Red(RedReason::Drifted),
+        Err(color) => color,
+    }
+}
+
+/// Resolve a pinned selector against the live target — the ADDRESS half of the
+/// color law, shared by the two compares built on it: the `node_rev` compare
+/// ([`classify_edge`], the legacy `^inputs` plane) and the fingerprint compare
+/// ([`classify_pin`], the `meridian-lock` plane). One owner, so an address
+/// failure can never render one color on one plane and another on the other.
+///
+/// `Ok` carries the live document and the resolved [`Target`] (span + rev);
+/// `Err` carries the color the address failure itself dictates:
+///
+/// - the transcript class is grey `immutable-root` — never resolved (d2 §2.2);
+/// - a vanished target PAGE, or a fragment that resolves to nothing: a block
+///   address dangles, a heading/page address is selector-unresolved (decision
+///   #9, each with the live toc's nearest candidates — empty when there is no
+///   live doc to draw them from);
+/// - an ambiguous selector is grey, unknowable (d1 point 3).
+///
+/// # Errors
+/// The [`Color`] an unresolvable address renders — see above.
+pub fn resolve_selector<'a>(
+    selector: &Selector,
+    target: Option<&'a Document>,
+) -> Result<(&'a Document, Target), Color> {
+    if selector.is_immutable_root() {
+        return Err(Color::Grey(GreyReason::ImmutableRoot));
+    }
     let Some(doc) = target else {
-        return match selector {
+        return Err(match selector {
             Selector::Block(_) => Color::Red(RedReason::DanglingAnchor {
                 candidates: Vec::new(),
             }),
             _ => Color::Red(RedReason::SelectorUnresolved {
                 candidates: Vec::new(),
             }),
-        };
+        });
     };
     // The whole-page selector resolves to the DOCUMENT ROOT (== `file_rev`); it
-    // has no mint-plane `Ref` form, so its rev is read directly. A present page
-    // never dangles — only drifts (a vanished page is the `target: None` case).
+    // has no mint-plane `Ref` form, so it is read directly. A present page never
+    // dangles — only drifts (a vanished page is the `target: None` case).
     if matches!(selector, Selector::Page) {
-        return if &doc.root.node_rev == pinned {
-            Color::Green
-        } else {
-            Color::Red(RedReason::Drifted)
-        };
+        return Ok((
+            doc,
+            Target {
+                span: doc.root.span.clone(),
+                node_rev: doc.root.node_rev.clone(),
+            },
+        ));
     }
     match resolve(doc, &selector_ref(selector)) {
-        // Resolves — the only question left is content drift (source 2).
-        Ok(t) if &t.node_rev == pinned => Color::Green,
-        Ok(_) => Color::Red(RedReason::Drifted),
+        Ok(t) => Ok((doc, t)),
         // The address failed. Block → dangling-anchor; heading/page →
         // selector-unresolved. Each with the live toc's nearest candidates.
-        Err(ResolveError::NotFound) => match selector {
+        Err(ResolveError::NotFound) => Err(match selector {
             Selector::Block(id) => Color::Red(RedReason::DanglingAnchor {
                 candidates: nearest(id, &live_anchors(doc)),
             }),
             _ => Color::Red(RedReason::SelectorUnresolved {
                 candidates: nearest(&selector_display(selector), &live_headings(doc)),
             }),
-        },
+        }),
         // The pinned selector became ambiguous — grey, unknowable (d1 point 3).
-        Err(ResolveError::Ambiguous(_)) => Color::Grey(GreyReason::Ambiguous),
+        Err(ResolveError::Ambiguous(_)) => Err(Color::Grey(GreyReason::Ambiguous)),
+    }
+}
+
+/// Compute a **`meridian-lock` pin's** color: the same address law as
+/// [`classify_edge`] ([`resolve_selector`]), then the FINGERPRINT compare
+/// instead of the `node_rev` compare.
+///
+/// `pinned_token` is the lock's `fingerprint` CID-token verbatim. A `fp1.…`
+/// token is not `node_rev`-comparable in either direction, so routing a lock pin
+/// through [`classify_edge`] could only ever produce a false red or a grey; the
+/// verdict belongs to [`fingerprint::verify_content_span`], whose four arms map
+/// onto this one color model:
+///
+/// | verdict | color |
+/// |---|---|
+/// | `Green` | green |
+/// | `Red{actual}` | red `content-drifted` |
+/// | `Unverifiable` | grey `unverifiable-fingerprint`, NAMING the unknown triple member |
+/// | `Malformed` | grey `malformed-fingerprint` |
+///
+/// Both unverifiable arms are grey and NEVER green — an unreadable or
+/// unimplemented pin was never measured, so claiming it verified would be the
+/// one dishonest color (grey = outside sight).
+///
+/// **D8:** a target that no longer resolves is red-with-reason
+/// (`dangling-anchor` / `selector-unresolved`), never grey and never green —
+/// [`resolve_selector`]'s answer, unchanged for this plane.
+///
+/// **D12:** the verdict is content-addressed and per-pin — the token and the
+/// target's own bytes, nothing root-scoped. A later `root:` prefix changes which
+/// document the caller hands in, never this computation.
+#[must_use]
+pub fn classify_pin(selector: &Selector, pinned_token: &str, target: Option<&Document>) -> Color {
+    let (doc, resolved) = match resolve_selector(selector, target) {
+        Ok(found) => found,
+        Err(color) => return color,
+    };
+    let verdict = crate::fingerprint::verify_content_span(doc, &resolved.span, pinned_token);
+    match verdict {
+        ContentVerdict::Green => Color::Green,
+        ContentVerdict::Red { .. } => Color::Red(RedReason::Drifted),
+        ContentVerdict::Unverifiable { .. } => Color::Grey(GreyReason::UnverifiableFingerprint {
+            unknown: verdict.unknown_members(),
+        }),
+        ContentVerdict::Malformed => Color::Grey(GreyReason::MalformedFingerprint),
     }
 }
 
@@ -602,5 +712,109 @@ mod tests {
         let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
         let span = resolve(&d, &selector_ref(&sel)).unwrap().span;
         assert_eq!(first_anchor_in_span(&d, &span), Some("a1b2c3".to_string()));
+    }
+
+    // ── the `meridian-lock` pin plane (`classify_pin`) ───────────────────────
+
+    /// The live fingerprint token of a resolvable selector — what a correct pin
+    /// holds (mint through the SAME owner the verdict recomputes with).
+    fn live_token(d: &Document, sel: &Selector) -> String {
+        let (_, t) = resolve_selector(sel, Some(d)).expect("resolves");
+        crate::fingerprint::fingerprint_span(d, &t.span, &syntax::anchor_removals(&d.raw)).0
+    }
+
+    /// All four `ContentVerdict` arms map onto the ONE color model, each with
+    /// its own reason — and the two unverifiable arms are GREY, never green.
+    #[test]
+    fn classify_pin_maps_every_content_verdict_arm() {
+        let d = doc("# Task\n\n## Objective\n\nbody v1\n");
+        let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
+        let token = live_token(&d, &sel);
+
+        assert_eq!(classify_pin(&sel, &token, Some(&d)), Color::Green);
+
+        // The content moved — the verdict is measured drift.
+        let drifted = doc("# Task\n\n## Objective\n\nbody v2 edited\n");
+        assert_eq!(
+            classify_pin(&sel, &token, Some(&drifted)),
+            Color::Red(RedReason::Drifted)
+        );
+
+        // An unimplemented triple member — grey, NAMING which member.
+        let hex64 = "0".repeat(64);
+        assert_eq!(
+            classify_pin(&sel, &format!("fp9.span2.b3.{hex64}"), Some(&d)),
+            Color::Grey(GreyReason::UnverifiableFingerprint {
+                unknown: vec!["version"]
+            })
+        );
+
+        // Not a fingerprint token at all — grey, unreadable.
+        assert_eq!(
+            classify_pin(&sel, "780d2fb4cf68f60f", Some(&d)),
+            Color::Grey(GreyReason::MalformedFingerprint)
+        );
+    }
+
+    /// LOAD-BEARING (grey = outside sight): no unverifiable pin — unknown
+    /// version, codec, or hashfn, or an unreadable token — may render green,
+    /// even when its digest happens to equal the live one.
+    #[test]
+    fn an_unverifiable_pin_never_renders_green() {
+        let d = doc("# A\n\nbody\n");
+        let sel = Selector::Page;
+        let live = live_token(&d, &sel);
+        let digest = live.rsplit('.').next().expect("digest");
+
+        // Each token carries the CORRECT live digest under an unknown member.
+        for token in [
+            format!("fp9.span2.b3.{digest}"),
+            format!("fp1.zzz9.b3.{digest}"),
+            format!("fp1.span2.xx.{digest}"),
+            digest.to_string(), // the superseded bare-digest spelling
+        ] {
+            let color = classify_pin(&sel, &token, Some(&d));
+            assert!(
+                matches!(color, Color::Grey(_)),
+                "{token} must render grey, got {color:?}"
+            );
+            assert_ne!(color, Color::Green, "{token} rendered a false green");
+        }
+    }
+
+    /// D8 — an address that no longer resolves is RED with its reason, never
+    /// grey and never green: a vanished block dangles, a vanished heading is
+    /// selector-unresolved, a vanished PAGE fails by its selector's class.
+    #[test]
+    fn classify_pin_reds_a_dangling_target() {
+        let d = doc("# Task\n\nbody ^goal\n");
+        let hex64 = "0".repeat(64);
+        let token = format!("fp1.span2.b3.{hex64}");
+
+        // The anchor vanished from a live page.
+        let gone = doc("# Task\n\nbody\n");
+        assert!(matches!(
+            classify_pin(&Selector::Block("goal".into()), &token, Some(&gone)),
+            Color::Red(RedReason::DanglingAnchor { .. })
+        ));
+        // The whole page vanished — a block address still dangles.
+        assert!(matches!(
+            classify_pin(&Selector::Block("goal".into()), &token, None),
+            Color::Red(RedReason::DanglingAnchor { .. })
+        ));
+        // A heading that resolves to nothing is selector-unresolved, with the
+        // live toc's nearest candidates as the re-pin hint.
+        let Color::Red(RedReason::SelectorUnresolved { candidates }) =
+            classify_pin(&Selector::Heading(vec!["Taskk".into()]), &token, Some(&d))
+        else {
+            panic!("a vanished heading must render red selector-unresolved");
+        };
+        assert_eq!(candidates, vec!["Task".to_string()]);
+
+        // The pin plane shares the address law with the rev plane (one owner).
+        assert!(matches!(
+            classify_pin(&Selector::parse("22-01-session#seq-9"), &token, Some(&d)),
+            Color::Grey(GreyReason::ImmutableRoot)
+        ));
     }
 }
