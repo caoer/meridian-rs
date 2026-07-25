@@ -3,13 +3,17 @@
 //! ONE implementation (arch map A6/W1: "lift, don't duplicate").
 //!
 //! # The single choke-point (decision 0002 W1)
-//! [`splice`] is THE one function the write path flows through: load → §5.1 world
-//! guard → validate → build the post-batch doc ONCE → evaluate verdicts → dry
+//! [`splice`] is THE one function the write path flows through: flock → load →
+//! §5.1 world guard → validate → build the post-batch doc ONCE → I4
+//! def-conformance (S4a: refuse) → evaluate verdicts → armed gate (refuse) → dry
 //! short-circuit → (real) render the receipt + [`commit_batch`] (the D4 seam:
-//! validate → `fs::apply_batch` → one Delta). Both hosts call `splice`; a later
-//! per-session rule-evaluation hook carves in at the ONE marked verdict site,
-//! never a rewrite. This unit builds NO hook, NO rule types — a BARE meridian-fs
-//! commit (Advisor R3 ruling); the resident rule-engine placement is reserved.
+//! validate → `fs::apply_batch` → one Delta). Every rung from the flock down
+//! reads the SAME loaded pre-image and the SAME post-batch doc, which is what
+//! makes a verdict binding on the bytes it authorized. Both hosts call `splice`;
+//! a later per-session rule-evaluation hook carves in at the ONE marked verdict
+//! site, never a rewrite. This unit builds NO hook, NO rule types — a BARE
+//! meridian-fs commit (Advisor R3 ruling); the resident rule-engine placement is
+//! reserved.
 //!
 //! # Verdicts are the frozen §11.1 surface, not rule machinery
 //! [`evaluate_verdicts`] runs whatever admitted `policy::CompiledRuleset`s the
@@ -202,6 +206,31 @@ pub fn splice(
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
     let after_doc = build_after_doc(&doc, &sealed, &args.path);
     let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
+
+    // S4a/D4 (TOCTOU close): the I4 def-conformance verdict runs HERE — inside
+    // the D9 flock, over the very `after_doc` this splice is about to write,
+    // against the `doc` the flock loaded. The standalone `check_write` op stays
+    // as the host's pre-flight, but the verdict that AUTHORIZES bytes is this
+    // one: a foreign writer landing between a host's check and its apply used to
+    // split the two (the check judged bytes the write no longer wrote); it can
+    // no longer, because the ladder judges the same pre-image the batch
+    // validated against. Ordered BEFORE the armed gate so the refusal a host
+    // used to see from its pre-flight stays the first one it sees, and before
+    // the dry short-circuit so a rehearsal refuses exactly where the real write
+    // does. Repairs/`forced` stay the standalone op's channel — the internalized
+    // run only GATES, it never mutates the sealed batch.
+    if let Some(refusal) = crate::check_write::verdict(
+        &doc,
+        &after_doc,
+        &conformance_target(root, &args.path),
+        args.actor.as_deref().unwrap_or_default(),
+        args.now.as_deref().unwrap_or_default(),
+    )
+    .refuse
+    {
+        return Err(conformance_to_wire(&refusal, &args.path));
+    }
+
     // ADVISORY §11.1 verdicts from any caller packs (W1) — never a decision; the
     // caller-supplied packs do not gate, only the armed law below does.
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
@@ -980,6 +1009,26 @@ fn commit_io_to_wire(err: &std::io::Error, path: &Path) -> Box<ErrorBody> {
     let mut w = ErrorBody::new(ErrorCode::IoError);
     w.cause = Some(err.to_string());
     Box::new(w)
+}
+
+/// The I4 def-layer discovery anchor and refusal label (S4a): the target file's
+/// ABSOLUTE spelling — exactly what a host passes the standalone `check_write`
+/// op. `policy::defs` walks upward from it for `defs/` layers, so a
+/// workspace-relative path would anchor the ladder at the process cwd instead of
+/// the workspace.
+fn conformance_target(root: &fs::WorkspaceRoot, path: &Path) -> String {
+    root.0.join(&path.0).display().to_string()
+}
+
+/// Map an I4 conformance refusal onto its wire envelope: a `bad_request`
+/// teaching frame (recovery `fix`) carrying the ladder's `CODE: message —
+/// remedy` render verbatim, plus the refused path. Same closed-taxonomy
+/// discipline as the reserved-journal refusal at the top of [`splice`] — no new
+/// §8 reason is minted, so the frozen v2 error surface keeps its shape.
+fn conformance_to_wire(refusal: &policy::defs::BodyError, path: &Path) -> Box<ErrorBody> {
+    let mut e = bad_request(refusal.render());
+    e.path = Some(path.clone());
+    e
 }
 
 /// Map an `fs` I/O error onto its wire envelope: `NotFound` ⇒ `file_not_found`
