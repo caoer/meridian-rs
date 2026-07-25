@@ -510,6 +510,24 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
         Some(ErrorCode::BadRequest),
         "deleting the attestation through an ordinary put must refuse"
     );
+    // R24/R32: a refusal that names the law and not the way out teaches the
+    // caller nothing but that they are stuck. This one is the LEGITIMATE case —
+    // a whole-section rewrite of the last section is an ordinary thing to want —
+    // so the message must carry what it would destroy AND what to do instead,
+    // naming only remedies that exist today.
+    let taught = wiped.as_ref().err().and_then(|e| e.message.clone());
+    let taught = taught.as_deref().unwrap_or_default();
+    for clause in [
+        "WHAT THIS WOULD DESTROY",
+        "WHAT TO DO INSTEAD",
+        "put at:end",
+        "does not exist yet",
+    ] {
+        assert!(
+            taught.contains(clause),
+            "the refusal must teach the remedy — missing {clause:?} in: {taught}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
         minted,

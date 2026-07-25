@@ -250,6 +250,65 @@ fn a_token_composed_out_of_retained_bytes_refuses() {
     assert_eq!(on_disk(&dir), before, "nothing was written");
 }
 
+/// **A LIVE FALSE-RED in the shipped strip, found by fix8 on the run plane and
+/// fixed here at its source.** Sections are contiguous, so a `put{at:end}`
+/// replaces an EMPTY region sitting exactly on the byte where the next sibling
+/// begins: two request targets contain it, and attribution by containment alone
+/// called that ambiguous and refused. A legitimate decorated append into any
+/// section whose sibling is also edited therefore could not land — the mirror
+/// image of the defect this loop exists to close, and the reason the boundary
+/// rule (the target that ENDS there owns it) is part of the law.
+///
+/// Its control is [`a_token_composed_out_of_retained_bytes_refuses`]: a token
+/// that genuinely has no payload to strip still refuses. The rule narrows
+/// ambiguity, it does not remove it.
+#[test]
+fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
+    let seed = "# Plan\n\nbody\n\n## Alpha\n\nalpha body\n\n## Beta\n\nbeta body\n";
+    let (dir, root) = ws(seed);
+    splice(
+        &root,
+        0,
+        &args(
+            vec![
+                Edit {
+                    target: hpath("Plan/Alpha"),
+                    edit: EditShape::Put {
+                        at: PutAt::End,
+                        text: format!("see [[guide#^task1{TOKEN}|Task One]]\n"),
+                    },
+                    if_node_rev: None,
+                },
+                // The sibling that shares Alpha's end byte, edited in the SAME
+                // batch — which is what puts two containers on that byte.
+                Edit {
+                    target: hpath("Plan/Beta"),
+                    edit: EditShape::Put {
+                        at: PutAt::End,
+                        text: "beta gains a line.\n".into(),
+                    },
+                    if_node_rev: None,
+                },
+            ],
+            Vec::new(),
+        ),
+        &[],
+        None,
+    )
+    .expect("a decorated append beside an edited sibling is legitimate and must LAND");
+
+    let text = on_disk(&dir);
+    assert!(
+        !text.contains(TOKEN),
+        "the token was attributed and stripped, not refused:\n{text}"
+    );
+    assert!(
+        text.contains("see [[guide#^task1|Task One]]"),
+        "the author's link survives, decoration removed:\n{text}"
+    );
+    assert!(text.contains("beta gains a line."), "{text}");
+}
+
 /// A token already on disk is not this write's to remove: deleting bytes the
 /// batch never addressed would move the fingerprint of a node this write does not
 /// own — reddening pins that have nothing to do with it. The write proceeds, and
