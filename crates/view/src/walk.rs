@@ -1,8 +1,9 @@
 //! U2.3 — the walk plane: the context-assembly listing (d2 §2.4 / §3).
 //!
 //! The walk computes — **per query, never stored** — the reachability listing
-//! over the `^inputs` pin graph (the edges [`crate::read_face::page_lock_items`]
-//! parses). One traversal, two directions:
+//! over the declared pin graph: every edge [`crate::read_face::page_lock_items`]
+//! parses, in all three forms it reads (the legacy `^inputs` form-1/form-2 and
+//! the engine's own `meridian-lock` block). One traversal, two directions:
 //!
 //! - **[`Direction::Up`]** — ancestors: what the root draws from, transitively —
 //!   d2 §2.4's context-assembly walk (the retired "pack" noun avoided).
@@ -257,10 +258,11 @@ struct Step {
     next_page: String,
 }
 
-/// Parse every page's `^inputs` edges once (the shared parser), each edge's
-/// `to_path` resolved against the corpus so a form-2 `[[wikilink]]`-by-NAME ref
-/// points at a real `node.path` (the U3.4 wikilink wiring — else the target is
-/// unfindable and a native-algo form-2 pin can never verify green).
+/// Parse every page's declared pin edges once (the shared parser — all three
+/// forms), each edge's `to_path` resolved against the corpus so a form-2
+/// `[[wikilink]]`-by-NAME ref points at a real `node.path` (the U3.4 wikilink
+/// wiring — else the target is unfindable and a native-algo form-2 pin can never
+/// verify green).
 fn forward_edges(docs: &BTreeMap<String, Document>) -> BTreeMap<String, Vec<LockItem>> {
     let index = corpus_index(docs);
     docs.iter()
@@ -332,6 +334,13 @@ fn steps_from(
 /// pin verifies through the SAME compare as `node-rev`. An absent header
 /// defaults to native (the engine mints `node-rev`); a declared-only item (no
 /// rev) has no algo to supersede — it stays declared-unpinned grey.
+///
+/// A `meridian-lock` pin (form-3) reaches this gate carrying its fingerprint
+/// token's own version as the algo label (`fp1`) — likewise non-native, because
+/// a `fp1.…` CID-token is not `node_rev`-comparable in either direction. So a
+/// lock pin renders grey here: VISIBLE and honestly unverified, never a false
+/// green and never a false drift. Turning that grey into the real fingerprint
+/// verdict is the pin-color unit's job, over [`LockItem::fingerprint`].
 fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
     if edge.pinned_rev.is_some()
         && edge
@@ -927,6 +936,61 @@ mod tests {
             rr.entries[0].color,
             Color::Red(RedReason::Drifted),
             "v2 algo + mismatch ⇒ red drift (a v2 pin is verified, never greyed)",
+        );
+    }
+
+    /// S3 (form-3): a page whose ONLY declared inputs live in a `meridian-lock`
+    /// block is visible to the walk. Pre-S3 this walk was a SILENT ABSENCE — the
+    /// listing was empty, `mrd walk` printed `(nothing)` and exited 0 (clean),
+    /// so a real pin looked like a page with no inputs at all.
+    ///
+    /// The edge lands grey: a `fp1.…` fingerprint is not `node_rev`-comparable,
+    /// so it is honestly unverified HERE (the fingerprint verdict belongs to the
+    /// pin-color unit) — visible, never a false green, never a false drift.
+    #[test]
+    fn meridian_lock_page_is_visible_to_the_walk() {
+        let token = format!("fp1.span2.b3.{}", "ab".repeat(32));
+        let mut lock_block = lock::Lock::new();
+        lock_block.set_object("sources/target-page.md", "9ae3f1deadbeef");
+        lock_block.upsert_pin(lock::PinEntry {
+            declared_ref: "sources/target-page.md".to_string(),
+            fingerprint: token.clone(),
+        });
+        let effect = format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock::render(&lock_block)
+        );
+
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(&effect));
+        docs.insert(
+            "sources/target-page.md".to_string(),
+            doc("# Target\n\nbody\n"),
+        );
+
+        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk up");
+        assert_eq!(
+            report.entries,
+            vec![WalkEntry {
+                selector: "sources/target-page.md".to_string(),
+                rev: Some(token.clone()),
+                color: Color::Grey(GreyReason::SupersededAlgo),
+                depth: 1,
+            }],
+            "the lock pin IS the edge — pre-S3 this vec was empty",
+        );
+        assert!(!has_red(&report), "an unverified lock pin is not a finding");
+
+        // And the reverse direction sees it too: the target's dependents now
+        // include the page that pinned it (the blast radius was blind pre-S3).
+        let down =
+            walk(&docs, "sources/target-page.md", Direction::Down, Some(1)).expect("walk down d1");
+        assert_eq!(
+            down.entries
+                .iter()
+                .map(|e| e.selector.as_str())
+                .collect::<Vec<_>>(),
+            vec!["effect.md"],
         );
     }
 
