@@ -320,3 +320,142 @@ fn status_wall_time_under_1s_on_3k_corpus() {
         "status must be O(armed), <1s on the 3k corpus — measured {ms} ms"
     );
 }
+
+// ── S9: the meridian-lock axis, end to end over the real binary ─────────────
+
+/// The canonical `meridian-lock` fence bytes for one pin — the exact form
+/// `lock::render` emits (`crates/lock`), written by hand so this gate depends on
+/// the CLI's own reader, not on the writer that produced the bytes.
+fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
+    format!(
+        "```meridian-lock\nversion: 1\npins:\n  - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\"\n```"
+    )
+}
+
+/// The LIVE fingerprint token of a page's document root — what a correct pin
+/// holds. Computed through the engine's own mint over the same parse
+/// `fs::build_corpus` runs, so the fixture cannot pin a token the reader would
+/// not recompute.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root).0
+}
+
+/// The composed multi-axis line of a human `status` render (the U6.2 legend).
+fn composed_line(human: &str) -> &str {
+    human
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("pin "))
+        .expect("the composed line")
+}
+
+/// The `composed.lock` object of a `status --json` run.
+fn lock_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
+    let out = sb.run(ws, &["status", "--json"]);
+    assert!(
+        out.status.success() || code(&out) == 1,
+        "status --json ran: {}",
+        stderr(&out)
+    );
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    doc["composed"]["lock"].clone()
+}
+
+/// S9 GATE — a real `meridian-lock` pin is VISIBLE to `mrd status` on its own
+/// axis, green when the pinned fingerprint still matches and red when the target
+/// content moved. Before S9 `mrd status` did not read page pins at all: it
+/// printed `pin green` identically whether the corpus held a correct pin, a
+/// drifted one, or none.
+#[test]
+fn status_renders_the_meridian_lock_axis_green_then_red() {
+    let sb = sandbox();
+    let ws = sb.workspace("lockaxis");
+    std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
+
+    let target_v1 = "# Target\n\nbody v1\n";
+    std::fs::write(ws.join("sources/target.md"), target_v1).expect("write target");
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock_block("sources/target.md", &live_fingerprint(target_v1))
+        ),
+    )
+    .expect("write effect");
+
+    let green = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        green.contains("lock green [1 pin]"),
+        "a matching pin renders green on its own axis: {green}"
+    );
+    // The armed-set `pin` axis is untouched beside it (U6.2: never merged).
+    assert!(green.contains("pin green · lock green"), "{green}");
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["pins"], serde_json::json!(1));
+    assert_eq!(j["color"], serde_json::json!("green"));
+    assert_eq!(j["reason"], serde_json::Value::Null);
+
+    // Move the target's content — the pin now measures drift.
+    std::fs::write(ws.join("sources/target.md"), "# Target\n\nbody v2 edited\n")
+        .expect("rewrite target");
+    let red = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        red.contains("lock red content-drifted [1 pin]"),
+        "a drifted pin reddens: {red}"
+    );
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["color"], serde_json::json!("red"));
+    assert_eq!(j["reason"], serde_json::json!("content-drifted"));
+
+    eprintln!("S9 composed (green): {}", composed_line(&green));
+    eprintln!("S9 composed (red):   {}", composed_line(&red));
+}
+
+/// S9 GATE — a REFUSED lock block is visible as `grey lock-refused` with its
+/// reason, not as a clean workspace. A corrupt lock reading as "no pins" is the
+/// one answer a drift face must never give.
+#[test]
+fn status_renders_a_refused_lock_as_grey_not_silence() {
+    let sb = sandbox();
+    let ws = sb.workspace("lockrefused");
+    std::fs::write(
+        ws.join("effect.md"),
+        "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n",
+    )
+    .expect("write effect");
+
+    let out = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        out.contains(
+            "lock grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins)) [1 pin]"
+        ),
+        "a refused lock names its damage: {out}"
+    );
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["color"], serde_json::json!("grey"));
+    assert_eq!(j["reason"], serde_json::json!("lock-refused"));
+    assert_eq!(j["pins"], serde_json::json!(1));
+    eprintln!("S9 composed (lock-refused): {}", composed_line(&out));
+}
+
+/// S9 GATE — `status --json` ALWAYS emits the lock fields. A workspace with no
+/// lock pins reports `0` and a null color, never an absent object a reader could
+/// mistake for "not checked" (and never a green it did not verify).
+#[test]
+fn status_json_always_emits_the_lock_axis_even_with_no_pins() {
+    let sb = sandbox();
+    let ws = sb.workspace("nopins");
+    std::fs::write(ws.join("note.md"), "# Note\n\nno lock here\n").expect("write note");
+
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["pins"], serde_json::json!(0));
+    assert_eq!(j["color"], serde_json::Value::Null, "0 pins is not a color");
+    assert_eq!(j["label"], serde_json::json!("none"));
+    assert_eq!(j["unreadable"], serde_json::Value::Null);
+
+    let human = stdout(&sb.run(&ws, &["status"]));
+    assert!(human.contains("lock none"), "{human}");
+    eprintln!("S9 composed (no pins): {}", composed_line(&human));
+    eprintln!("S9 json     (no pins): {j}");
+}
