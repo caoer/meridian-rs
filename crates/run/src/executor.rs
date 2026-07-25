@@ -448,47 +448,8 @@ pub fn apply_under(
         check_foreign_edits(root, addr, req.page, &planned)?;
     }
 
-    // 5. Validate — mints the sealed batch; the `if_root` pin runs against
-    // the REQUIRED live root (gate #19).
-    let mut batch = SpliceRequest {
-        if_root: Some(req.pin_root.clone()),
-        edits: planned.iter().map(|p| p.edit.clone()).collect(),
-        engine: None,
-    };
-    let mut sealed = match model::validate_batch(&doc, Some(req.live_root), &batch, None) {
-        SpliceVerdict::Validated(b) => b,
-        SpliceVerdict::RootMismatch { expected, actual } => {
-            return Err(ExecError::RootMismatch {
-                expected: expected.0,
-                actual: actual.0,
-            });
-        }
-        refused => {
-            return Err(ExecError::Refused {
-                verdict: format!("{refused:?}"),
-            });
-        }
-    };
-
-    // 6. Armed facts: dry-apply the sealed edits in memory — the SAME bytes
-    // fs will write.
-    let mut after_doc = crate::fp::candidate(&doc, &sealed);
-
-    // 6a. THE `@fp` STRIP, at document grain (advisor R32 (3)): this door bypasses
-    // the wire choke-point, so it carries the choke-point's law itself — every
-    // token this batch introduces is removed from the payload that carries it and
-    // the batch re-sealed, so the receipt revs and every judgment below read the
-    // bytes that actually commit. A token the strip cannot place refuses.
-    let before_facts: Vec<model::Target> = planned.iter().map(|p| p.before.clone()).collect();
-    crate::fp::strip_candidate(
-        &doc,
-        &before_facts,
-        req.page,
-        req.live_root,
-        &mut batch,
-        &mut sealed,
-        &mut after_doc,
-    )?;
+    // 5-6. Seal the batch and the bytes it will write, `@fp`-stripped.
+    let (batch, after_doc) = seal_stripped_candidate(&doc, &planned, req)?;
 
     // Each target's post-apply rev, read off the (post-strip) reparse.
     let after_revs: Vec<NodeRev> = planned
@@ -565,6 +526,59 @@ pub fn apply_under(
         receipt_line,
         file_rev_after: after_doc.root.node_rev.0.clone(),
     })
+}
+
+/// Steps 5-6: mint the sealed batch and the candidate document it will write,
+/// with the `@fp` strip already applied — the request batch, its seal, and the
+/// bytes, all three agreeing.
+///
+/// The `if_root` pin runs against the REQUIRED live root (gate #19). The
+/// candidate is then dry-applied in memory (the SAME bytes `fs` will write) and
+/// the `@fp` strip (advisor R32 (3)) rewrites the REQUEST batch: this door
+/// bypasses the wire choke-point, so it carries the choke-point's law itself, and
+/// every judgment after it — the post-apply revs the receipt commits, the lock
+/// artifact guard, the armed gate — reads the bytes that actually land.
+///
+/// # Errors
+/// [`ExecError::RootMismatch`] / [`ExecError::Refused`] from validation, or
+/// [`ExecError::FpClaim`] from a claim token the strip cannot place. Nothing has
+/// been applied at this point in any case.
+fn seal_stripped_candidate(
+    doc: &Document,
+    planned: &[PlannedEdit],
+    req: &ApplyRequest<'_>,
+) -> Result<(SpliceRequest, Document), ExecError> {
+    let mut batch = SpliceRequest {
+        if_root: Some(req.pin_root.clone()),
+        edits: planned.iter().map(|p| p.edit.clone()).collect(),
+        engine: None,
+    };
+    let mut sealed = match model::validate_batch(doc, Some(req.live_root), &batch, None) {
+        SpliceVerdict::Validated(b) => b,
+        SpliceVerdict::RootMismatch { expected, actual } => {
+            return Err(ExecError::RootMismatch {
+                expected: expected.0,
+                actual: actual.0,
+            });
+        }
+        refused => {
+            return Err(ExecError::Refused {
+                verdict: format!("{refused:?}"),
+            });
+        }
+    };
+    let mut after_doc = crate::fp::candidate(doc, &sealed);
+    let before_facts: Vec<model::Target> = planned.iter().map(|p| p.before.clone()).collect();
+    crate::fp::strip_candidate(
+        doc,
+        &before_facts,
+        req.page,
+        req.live_root,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+    Ok((batch, after_doc))
 }
 
 /// **The lock ARTIFACT guard** (advisor R25) — guard the artifact, not the verb.
