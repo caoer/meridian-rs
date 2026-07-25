@@ -465,6 +465,36 @@ learns of `pin` from this amendment.
 key. Nothing on this path parses it, so a later `root:` prefix rides through
 untouched.
 
+#### The lock ARTIFACT is guarded, not just the pin verb (advisor R25)
+
+The read-mint gate above guards the `splice.pin` DOOR. The `meridian-lock` block
+it protects is ordinary page text, so every put shape can compose those bytes
+without the `pin` field ever being set. **A write whose candidate document
+changes the page's lock bytes is REFUSED (`bad_request`) unless those bytes are
+exactly the block this call minted.** The comparison is byte-identity over the
+raw block, so a change from one unparseable block to another is still a change.
+
+This binds every door to those bytes, not one verb: native `edits`, a lowered
+`plan_edits` batch, `create` (a birth carrying a lock block), the pin's own
+anchor promotion (which must be lock-neutral), and the run plane's
+`fs::apply_batch` — which bypasses the write choke-point entirely and therefore
+mounts the same guard (`run::executor`, refusing before any byte lands). No
+actor is consulted: the CLI is local-operator-trusted for the pin VERB (D16), and
+is refused here like anyone else, because "the engine is the lock's sole writer"
+is a statement about the artifact.
+
+Two behaviors follow and are stated rather than discovered:
+
+- **A pin that lands unchanged bytes is fine** — a re-pin of unchanged content is
+  byte-idempotent, so the guard never fires on it.
+- **A whole-section rewrite that would DELETE the lock refuses.** The block is
+  birthed at EOF, so it lives inside the page's last section: `put at:content`,
+  `put at:all` and `replace_section` on that section would erase the attestation,
+  and erasing a RED pin to leave a page reading clean is exactly what the guard
+  exists to prevent. Append (`put at:end`) into the same section is unaffected;
+  deliberate removal is a hand edit, the same repair path a corrupt lock already
+  documents (#8 §3).
+
 ### 9. Error-code taxonomy additions (stage 2)
 
 | Code | Recovery | When it fires | What the caller does |
@@ -508,13 +538,28 @@ would eat authored text.
   and the bare CLI pass the one spelling of "nothing to decorate", because a
   host with one document cannot color a pin whose target is another page. An
   undecorated link claims nothing; a wrongly-colored one lies.
-- **Strip is ordered, not remembered.** The payload strip runs at the ONE
-  content intake, above plan lowering and validation, so a future put shape is
-  stripped by construction. The address strip is ordered immediately before
-  `model::Ref::anchor` at both guard sites — the wire decoder and the single
-  wire→model bridge — two adjacent lines in each
-  (`crates/wire-serve/src/decode.rs:674-676`,
-  `crates/wire-serve/src/read.rs:663-664`).
+- **The strip runs at DOCUMENT grain, and what it cannot remove it refuses**
+  (advisor R25). It is not a walk of named payload fields — that list missed
+  `plan_edits.create.title`, and it judged each payload OUT of the document it
+  lands in. The write path builds the candidate document once, identifies tokens
+  in it through the ONE dialect parse, removes them from the payload that carries
+  them, and then re-checks: a token this write would still INTRODUCE refuses
+  `bad_request` rather than landing (`crates/wire-serve/src/write.rs`,
+  `strip_fp_candidate`). Two consequences worth stating: a token composed out of
+  bytes the batch did not supply (an edit that merely closes a link around them)
+  refuses, and a token already on disk is left exactly as found — removing bytes
+  this write does not own would move a fingerprint it does not own. `create`
+  strips its whole body, which is the same grain by construction, and
+  `check_write` builds and strips the same candidate, so the pre-flight judges the
+  bytes the committer lands.
+- **Addresses are peeled at their own owner, not by the document strip.** An
+  address is compared, never stored: `model::Ref::anchor`'s two guard sites (the
+  wire decoder and the single wire→model bridge —
+  `crates/wire-serve/src/decode.rs`, `crates/wire-serve/src/read.rs`), the
+  `match.old` NEEDLE at the one funnel every native and lowered edit passes
+  through, the plan lowering's own needle search, and `check_write.at`. A needle
+  copied from the decorated render face must find its undecorated bytes, and both
+  entry points must resolve the same spelling.
 - **The decorated address is addressable, not display-only.** An agent that read
   `[[guide#^goal@green.b3af12cd]]` may address `^goal@green.b3af12cd` and reach
   exactly the node `^goal` names.
@@ -558,6 +603,15 @@ one. The engine declines to touch it for the same reason it declines to touch
 What survives inside a fence is inert. It is not a claim link, so nothing
 decorates it, nothing resolves it, and no verdict is minted from it. The
 narrower claim above holds precisely because the wider one was never the target.
+
+**Three further positions are outside the claim for the same reason, and are now
+tested as explicit exclusions**: frontmatter, HTML comments, and indented code.
+The one dialect parse mints no wikilink node in any of them, so a token-shaped
+string there is not a claim-link position — and the DECORATE side reads that same
+tree, so the engine can never mint a token into a position the strip does not
+reach. That symmetry is what makes the exclusion safe rather than a hole; it is
+asserted directly, tree-shape and all, in
+`crates/wire-serve/tests/s2fix_fp_document_grain.rs`.
 
 #### The one true ambiguity, stated as a limit
 
@@ -666,6 +720,18 @@ byte-identical guarantee is structural, proven by the untouched frozen goldens.
   bound: heading fragments, labels, prose, and FENCED CODE all survive),
   `crates/view/tests/board_pin_verdict_gates.rs` (the board's verdict equals the
   walk's, value for value, over all six outcomes).
+- Stage-2 fix loop (R25): `crates/wire-serve/tests/s2fix_artifact_guard.rs` — the
+  lock ARTIFACT guard driven door by door (an un-read actor's forged pin through
+  ordinary `edits`, the lowered `plan_edits` batch, a birth carrying a lock, a
+  hand rewrite of a minted fingerprint, a whole-section rewrite that would delete
+  the block), each asserting the WRITE refuses and the file is byte-unchanged,
+  with the minted pin and its idempotent re-pin as controls;
+  `crates/run/tests/executor.rs` for the run-plane door;
+  `crates/wire-serve/tests/s2fix_fp_document_grain.rs` — the strip at document
+  grain (`create.title`, every payload shape without a field list, a token
+  composed out of retained bytes refusing, a token landing inside a fence
+  surviving, the frontmatter / comment / indented-code exclusions with their
+  decorate-side control, and `check_write` agreeing with the committer).
 - Frozen and unchanged, still green: `crates/wire/tests/contract_v2.rs`,
   `crates/testsuite/tests/wire_vocab.rs`, `crates/sidecar/tests/dispatch_v2.rs`,
   `crates/transport-proto/tests/wire_agreement.rs`.

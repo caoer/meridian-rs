@@ -119,6 +119,27 @@ fn pin_free_args(path: &str) -> SpliceArgs {
     }
 }
 
+/// A `put at:end` on a section — appends INSIDE the section without rewriting
+/// what is already there (so an engine block living in it is untouched).
+fn put_end(path: &str, hpath: &str, text: &str) -> SpliceArgs {
+    SpliceArgs {
+        edits: vec![Edit {
+            target: SecRef::Hpath {
+                hpath: vec![wire::HpathSeg {
+                    h: hpath.into(),
+                    n: None,
+                }],
+            },
+            edit: EditShape::Put {
+                at: PutAt::End,
+                text: text.into(),
+            },
+            if_node_rev: None,
+        }],
+        ..pin_free_args(path)
+    }
+}
+
 /// One `Put{content}` edit on a section — the whole-section replace.
 fn put_content(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     SpliceArgs {
@@ -285,14 +306,12 @@ fn a_heading_fragment_at_is_never_touched() {
         - [[guide#^leaders-guideline|ping @zt]]\n\
         - [[guide#^other@green.nothex1]]\n\
         - plain text me@example.com\n\n";
-    splice(
-        &root,
-        0,
-        &put_content("plan.md", "Plan", authored),
-        &[],
-        None,
-    )
-    .expect("the put commits");
+    // `put at:end`, not `at:content`: the minted lock block sits at EOF inside
+    // this very section, and a whole-section rewrite would DELETE it. The R25
+    // artifact guard refuses that (asserted by name in
+    // `s2fix_artifact_guard::a_whole_section_rewrite_that_would_delete_the_lock_refuses`)
+    // — this test's claim is about the `@` shapes, so it appends instead.
+    splice(&root, 0, &put_end("plan.md", "Plan", authored), &[], None).expect("the put commits");
 
     let on_disk = read_page(&root, "plan.md");
     for line in authored.lines().filter(|l| l.contains('@')) {

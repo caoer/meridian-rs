@@ -26,6 +26,10 @@ effects = { workspace = true }
 policy = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
+# R25 artifact guard: `lock::block_texts` locates the `meridian-lock` bytes so
+# the run plane can refuse changing them. The grammar has ONE owner — re-deriving
+# "which bytes are the lock" here would be a second spelling of it.
+lock = { workspace = true }
 # `.meridian.toml` `[run.caps]` name-convention table.
 toml = { workspace = true }
 # Run-plane receipt line body (machine-re-readable — the decision-#26
