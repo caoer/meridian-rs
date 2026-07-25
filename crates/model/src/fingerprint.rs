@@ -49,8 +49,49 @@ pub const HASHFN_B3: &str = "b3";
 /// `fp1.span2.b3.<64hex>`. Full-length tokens live in `meridian-lock` blocks
 /// and receipts (#4 §5); render planes abbreviate the DIGEST field
 /// (`@40b167ed`-style, the #6 §4 view grammar).
+///
+/// # The field is PRIVATE, and that is the other half of R31
+///
+/// [`fingerprint_span`] is fallible so that no caller can mint over an empty
+/// normalized span. A public constructor would leave that guard discharged but
+/// holed: `Fingerprint(some_string)` reintroduces exactly the token the owner
+/// refuses to produce, and the type would then mean only *"the digest came from
+/// `fingerprint_span`, because nobody currently bypasses it"* — a property of
+/// today's call sites rather than of the type. Sealing makes it a property of
+/// the type: **the only way to hold a `Fingerprint` is to have minted one, and
+/// the only mint refuses the empty span.**
+///
+/// This is a MAINTAINER-facing invariant, not an attacker-facing door — the
+/// engine is not defending against its own crates. It earns its keep at stage
+/// 3, where receipt unification and cross-root both touch fingerprints and a
+/// future author would otherwise reach for the tuple constructor without ever
+/// meeting the rule.
+///
+/// Read the token with [`Fingerprint::as_str`], take it with
+/// [`Fingerprint::into_string`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fingerprint(pub String);
+pub struct Fingerprint(String);
+
+impl Fingerprint {
+    /// The token text, borrowed — for comparison and rendering.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The token text, taken — for a caller that stores it (a lock block, a
+    /// receipt, a wire fact). Consumes the fingerprint, so nothing is cloned.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 /// A grammar-parsed token (spec §2.4): parse is codec-agnostic, so tokens
 /// minted by newer codecs/hash-fns still parse — self-describing survives its

@@ -82,7 +82,7 @@ fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
         .expect("the fixture page has content")
-        .0
+        .into_string()
 }
 
 /// A well-formed `fp1.…` token that is NOT the live one — a pin that measures
