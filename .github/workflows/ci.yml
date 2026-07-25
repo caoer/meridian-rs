@@ -54,6 +54,12 @@ jobs:
         run: cargo fmt --all --check
       - name: clippy (workspace lint policy, escalated)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The perf lane's wall-time target is feature-gated, so --all-targets above
+      # skips it. Lint it here so it cannot bit-rot: this COMPILES the assert, it
+      # never runs it — the 1000 ms number stays perf.yml's to gate. Metadata-only
+      # (clippy does not link), so it costs no test-binary disk.
+      - name: clippy the perf-lane wall-time target (compiled here, gated in perf.yml)
+        run: cargo clippy -p mrd --features perf-walltime --test status_walltime -- -D warnings
       - name: free space before the full-workspace test link (disk-exhaustion diagnostic)
         run: df -h /
       - name: tests (all members incl. perfsuite harness)
