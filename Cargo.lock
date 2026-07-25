@@ -2963,6 +2963,7 @@ dependencies = [
  "lock",
  "model",
  "policy",
+ "receipt",
  "serde",
  "serde_json",
  "sha2",
