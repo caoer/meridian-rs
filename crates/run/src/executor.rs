@@ -161,6 +161,11 @@ pub enum ExecError {
     /// choke-point), so it mounts the SAME gate — byte-landing parity. `detail`
     /// names the convention/INDEX and cites the legal path.
     ArmedRefusal { detail: String },
+    /// The apply would change the page's `meridian-lock` bytes (advisor R25):
+    /// the run plane mints no pin, so any change to the attestation artifact is
+    /// a claim nobody computed. The wire choke-point carries the same guard —
+    /// this door bypasses `splice`, so the guard is mounted here too.
+    LockArtifact { page: String },
 }
 
 impl std::fmt::Display for ExecError {
@@ -201,6 +206,10 @@ impl std::fmt::Display for ExecError {
             ExecError::ArmedRefusal { detail } => {
                 write!(f, "armed change refused: {detail}")
             }
+            ExecError::LockArtifact { page } => write!(
+                f,
+                "meridian-lock refused: the lock block in {page} is the engine's attestation artifact (#8 §3) and the run plane mints no pin — a pin is minted by `mrd pin`, which fingerprints the target behind the read-mint gate. Nothing applied"
+            ),
         }
     }
 }
@@ -462,6 +471,10 @@ pub fn apply_under(
         .map(|p| after_rev(&after_doc, &p.edit.target))
         .collect::<Result<_, _>>()?;
 
+    // 6a. THE LOCK ARTIFACT GUARD (advisor R25), over the same candidate the gate
+    // below reads and ordered before it: a forged claim is not a policy question.
+    guard_lock_artifact(&doc, &after_doc, req.page)?;
+
     // 6b. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
     // bytes through `fs::apply_batch` below (not the wire choke-point), so it
     // mounts the SAME `policy::gate` over the change it produces: read the
@@ -526,6 +539,25 @@ pub fn apply_under(
         event,
         receipt_line,
         file_rev_after: after_doc.root.node_rev.0.clone(),
+    })
+}
+
+/// **The lock ARTIFACT guard** (advisor R25) — guard the artifact, not the verb.
+///
+/// The read-mint gate guards `splice.pin`; this door bypasses `splice` entirely
+/// and mints no pin, so ANY change to the page's `meridian-lock` bytes is an
+/// attestation nobody computed. Byte-identity over `lock::block_texts`, which is
+/// the one owner of "which bytes are the lock" — re-deriving that here would be a
+/// second spelling of the grammar.
+///
+/// # Errors
+/// [`ExecError::LockArtifact`] — nothing was applied.
+fn guard_lock_artifact(before: &Document, after: &Document, page: &str) -> Result<(), ExecError> {
+    if lock::block_texts(after) == lock::block_texts(before) {
+        return Ok(());
+    }
+    Err(ExecError::LockArtifact {
+        page: page.to_owned(),
     })
 }
 

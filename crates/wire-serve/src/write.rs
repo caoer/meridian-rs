@@ -192,41 +192,36 @@ pub fn splice(
     // `commit_batch` — one flock, one rename — instead of a second flocked
     // `lock_write` call, which would self-refuse `workspace_busy` (the flock is
     // non-reentrant per open-file-description).
-    let pin_engine = match &pin {
-        Some(p) => Some(lock_engine_edit(&doc, &args.path, p)?),
-        None => None,
+    // `pin_block` is the canonical block this call MINTED — the one byte form
+    // the artifact guard below admits as a lock change (R25).
+    let (pin_engine, pin_block) = match &pin {
+        Some(p) => {
+            let (edit, block) = lock_engine_edit(&doc, &args.path, p)?;
+            (Some(edit), Some(block))
+        }
+        None => (None, None),
     };
-
-    // Stage-2 S10: the `@fp` STRIP, at the ONE content intake — before plan
-    // lowering, before target resolution, before validation, before anything
-    // reads a byte of it. An agent's context is the DECORATED render face, so
-    // the link it copies into its next edit carries a token no author wrote;
-    // stripping it here is what keeps stored bytes free of a fingerprint claim
-    // the engine never minted.
-    //
-    // Ordering, not vigilance, is the guarantee: everything below this line
-    // operates on `plan_edits`/`edits` and never on `args.plan_edits`/
-    // `args.edits`, so a new put shape lowered from either is stripped by
-    // construction. The address half is ordered the same way one layer down —
-    // `read::to_model_ref` strips before `model::Ref::anchor` validates, and it
-    // is the only bridge to a `model::Ref`.
-    let plan_edits = strip_fp_plan_edits(&args.plan_edits);
-    let edits = strip_fp_edits(&args.edits);
 
     // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
     // (under the flock, against the just-loaded pre-batch doc), then the whole
     // path below runs unchanged on the lowered batch. Target-class refusals
     // (the deleted Go arms' teachings) fire before any per-target resolution.
+    //
+    // Stage-2 S10, re-grained by advisor R25: payloads ride through here
+    // VERBATIM. The `@fp` strip is no longer a walk of named payload fields
+    // (that list missed `create.title` and could not see a token two fields
+    // compose between them) — it runs once, at DOCUMENT grain, over the
+    // candidate this splice is about to commit ([`strip_fp_candidate`] below).
     let lowered;
-    let effective_edits = if plan_edits.is_empty() {
-        &edits
+    let effective_edits = if args.plan_edits.is_empty() {
+        &args.edits
     } else {
-        lowered = crate::plan::lower(&doc, &plan_edits)?;
+        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
         &lowered
     };
 
     let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
-    let batch = model::SpliceRequest {
+    let mut batch = model::SpliceRequest {
         // The CLIENT's world guard was honored above, against the root it
         // actually pinned. The batch re-guards on the CURRENT root instead of
         // that value: a pin's own rev-neutral promotion advances the root, and
@@ -267,7 +262,38 @@ pub fn splice(
     // that makes the dry twin incapable of diverging from the real one (§4.4
     // one-reparse law; advisor Ruling 2). The real commit writes exactly these
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
-    let after_doc = build_after_doc(&doc, &sealed, &args.path);
+    let mut after_doc = build_after_doc(&doc, &sealed, &args.path);
+
+    // Stage-2 S10 re-grained (advisor R25, structural fix 2): the `@fp` strip
+    // runs HERE, over the CANDIDATE — one grammar, one grain. It rewrites the
+    // batch's payloads (so `commit_batch`'s re-validation lands the same bytes
+    // judged here) and leaves a document-grain assertion behind it: any token
+    // still standing in a claim-link position refuses LOUD instead of landing
+    // silently. A door that grows a new payload field is covered by
+    // construction; a door that reaches these bytes another way is refused.
+    let mut sealed = sealed;
+    strip_fp_candidate(
+        &doc,
+        &root_before,
+        &args.path,
+        &before_facts,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+
+    // Advisor R25, structural fix 1 — GUARD THE ARTIFACT, not the verb. The
+    // read-mint gate guards the `splice.pin` door; the `meridian-lock` bytes it
+    // protects are ordinary page text every put shape can reach. This rung reads
+    // the SAME candidate every rung below reads and refuses any lock-byte change
+    // that is not exactly the block THIS call minted — so an actor with no
+    // receipt cannot write a pin through native `edits`, a lowered `plan_edits`
+    // batch, or any put shape added later. Ordered before the ladder and the
+    // advisory verdicts (a forged attestation is not a policy question) and above
+    // the dry short-circuit, so a rehearsal refuses exactly where the real write
+    // does.
+    lock_artifact_guard(&doc, &after_doc, pin_block.as_deref(), &args.path)?;
+
     let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
 
     // S4a/D4 (TOCTOU close): the I4 def-conformance verdict runs HERE — inside
@@ -529,16 +555,39 @@ pub fn create(
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
-    // Stage-2 S10: a birth is a put too — the whole file is caller-supplied
-    // content, so its `@fp` tokens are stripped at the same intake, BEFORE the
-    // after-state is built. The rev the birth reports is therefore the rev of
-    // the bytes that land, never of a decorated draft.
+    // Stage-2 S10: a birth is a put too — and here the payload IS the candidate
+    // document, so `strip_fp` over the whole body already runs at document grain
+    // (advisor R25): one grammar, the same one `strip_fp_candidate` applies to a
+    // splice. The rev the birth reports is therefore the rev of the bytes that
+    // land, never of a decorated draft.
     let body = syntax::strip_fp(&args.body);
 
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
     let after_doc = build_doc(&args.path, &body);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+
+    // THE ASSERTION (R25), live on the birth path: a token still standing in a
+    // claim-link position refuses instead of landing. A birth has no pre-image,
+    // so "introduced" and "present" are the same set here.
+    if !syntax::fp_removals(&after_doc.raw).is_empty() {
+        return Err(bad_request(format!(
+            "refused: an @fp claim token survived the document-grain strip in {} — the birth was \
+             refused rather than landing a fingerprint claim the engine never minted",
+            args.path.0
+        )));
+    }
+
+    // The lock ARTIFACT guard (R25) at the birth door: a newborn page has no
+    // pre-image and this op mints no pin, so ANY `meridian-lock` bytes in the
+    // body are a claim nobody computed — `write::create` is one of the four
+    // ungated doors the review names.
+    lock_artifact_guard(
+        &crate::gate::absent_doc(&args.path),
+        &after_doc,
+        None,
+        &args.path,
+    )?;
 
     // Advisory §11.1 findings from any caller packs (never a decision).
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
@@ -1054,9 +1103,16 @@ fn mint_pin(
     let promotion_landed = promote && !dry;
     let target_doc = if promotion_landed {
         let promoted = promote_anchor(&target_doc.raw, slot, &anchor);
+        let promoted_doc = build_doc(&spec.target, &promoted);
+        // R25 (finding 9, artifact half): the promotion is a RAW file replace
+        // outside the batch, on a page this actor may not own. It writes one
+        // marker line and must be lock-NEUTRAL — the same guard the batch door
+        // carries, so the one write path that skips `commit_batch` cannot become
+        // the fifth door to the artifact.
+        lock_artifact_guard(&target_doc, &promoted_doc, None, &spec.target)?;
         fs::replace_file(root, FsPath::new(&spec.target.0), &promoted)
             .map_err(|e| io_to_wire(&e))?;
-        build_doc(&spec.target, &promoted)
+        promoted_doc
     } else {
         target_doc
     };
@@ -1390,7 +1446,8 @@ fn blob_oid(
 /// engine-minted span edit: union the pin into the page's existing lock
 /// (`upsert_pin`/`set_object` — position-preserving, so a re-pin never drops or
 /// reorders a sibling claim), render the canonical bytes, and hand back the span
-/// they replace.
+/// they replace plus THE MINTED BLOCK ITSELF — the one byte form
+/// [`lock_artifact_guard`] admits as a lock change (R25).
 ///
 /// # Errors
 /// `bad_request` when the page's existing lock state is corrupt (malformed, or
@@ -1400,7 +1457,7 @@ fn lock_engine_edit(
     doc: &model::Document,
     pinning_path: &Path,
     pin: &PinMint,
-) -> Result<model::EngineEdit, Box<ErrorBody>> {
+) -> Result<(model::EngineEdit, String), Box<ErrorBody>> {
     let found = find_lock(doc)?;
     let mut lock = found
         .as_ref()
@@ -1436,7 +1493,7 @@ fn lock_engine_edit(
             pin.fact.selector
         )));
     }
-    Ok(edit)
+    Ok((edit, lock::render(&lock)))
 }
 
 /// The `meridian-lock` block's byte form and its placement law, in ONE place —
@@ -1814,83 +1871,311 @@ fn resolve_receipt_fact(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// The `@fp` strip at DOCUMENT grain + the lock ARTIFACT guard (advisor R25)
+// ---------------------------------------------------------------------------
+//
+// Both rungs read the SAME candidate `after_doc` the ladder, the armed gate and
+// the commit read, because both answer a question about BYTES, not about a verb:
+//
+// - The strip was a walk of named payload fields. A field list is the defect
+//   shape: it missed `plan_edits.create.title`, it could not see a token two
+//   fields compose between them, and it judged a payload OUT of the document it
+//   lands in — stripping a token the document law calls a code sample. One
+//   grammar, one grain: identify tokens in the candidate, remove them from the
+//   payloads that carry them, and refuse what is left.
+// - The read-mint gate guards `splice.pin`. The `meridian-lock` bytes it protects
+//   are ordinary page text, so every put shape is a door to them. A guard on the
+//   verb is not a guard on the file.
+
+/// One `@fp` token run in the candidate, classified by WHO put it there.
+enum FpOrigin {
+    /// Bytes THIS batch supplies: request edit `edit`, at `local` inside its
+    /// payload. Removable — this is the strip.
+    Introduced {
+        edit: usize,
+        local: std::ops::Range<usize>,
+    },
+    /// A token already on disk, retained verbatim by this batch. NOT this
+    /// write's to remove: deleting bytes the batch never addressed would move
+    /// the fingerprint of a node this write does not own, reddening pins that
+    /// have nothing to do with it.
+    Retained,
+}
+
+/// Classify every `@fp` token run in `after` — the ONE identification, shared by
+/// the strip and by the assertion that follows it.
+///
+/// # Errors
+/// `bad_request` when a token can be attributed to no single payload: the batch
+/// COMPOSED it out of retained bytes plus its own (a claim minted by an edit that
+/// never carried it), or two request edits contest the same region.
+fn classify_fp(
+    doc: &model::Document,
+    after: &model::Document,
+    sealed: &model::ValidatedBatch,
+    before_facts: &[model::Target],
+    path: &Path,
+) -> Result<Vec<FpOrigin>, Box<ErrorBody>> {
+    let removals = syntax::fp_removals(&after.raw);
+    if removals.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The after image, walked ONCE. The sealed spans index the pre-image and are
+    // sorted and disjoint, so a single forward scan places every inserted text
+    // AND every surviving run in after coordinates — no shift arithmetic.
+    // `inserted` carries each insertion with the pre-image REGION that produced
+    // it; `retained` carries each surviving run with the pre-image offset it came
+    // from.
+    let mut inserted: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> =
+        Vec::with_capacity(sealed.edits.len());
+    let mut retained: Vec<(std::ops::Range<usize>, usize)> =
+        Vec::with_capacity(sealed.edits.len() + 1);
+    let mut after_pos = 0usize;
+    let mut pre_pos = 0usize;
+    for e in &sealed.edits {
+        let gap = e.span.start.saturating_sub(pre_pos);
+        if gap > 0 {
+            retained.push((after_pos..after_pos + gap, pre_pos));
+            after_pos += gap;
+        }
+        inserted.push((after_pos..after_pos + e.text.len(), e.span.clone()));
+        after_pos += e.text.len();
+        pre_pos = e.span.end;
+    }
+    let tail = doc.raw.len().saturating_sub(pre_pos);
+    if tail > 0 {
+        retained.push((after_pos..after_pos + tail, pre_pos));
+    }
+    let pre_existing = syntax::fp_removals(&doc.raw);
+
+    let mut out = Vec::with_capacity(removals.len());
+    for r in removals {
+        if let Some((after_range, region)) = inserted
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+        {
+            let edit = attribute_region(region, before_facts).ok_or_else(|| {
+                bad_request(format!(
+                    "refused: an @fp decoration token in {} cannot be attributed to any edit \
+                     in this batch — the engine will not remove a claim token it cannot place",
+                    path.0
+                ))
+            })?;
+            out.push(FpOrigin::Introduced {
+                edit,
+                local: r.start - after_range.start..r.end - after_range.start,
+            });
+            continue;
+        }
+        let was_already_there = retained
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+            .is_some_and(|(after_range, pre_start)| {
+                let start = pre_start + (r.start - after_range.start);
+                pre_existing.contains(&(start..start + (r.end - r.start)))
+            });
+        if was_already_there {
+            out.push(FpOrigin::Retained);
+        } else {
+            return Err(bad_request(format!(
+                "refused: this write would COMPOSE an @fp claim token in {} out of bytes it \
+                 does not supply — `@green.…` after a block ref is a render-face decoration the \
+                 engine mints on read, never storable content (S10). Write the plain \
+                 `[[page#^id]]` address; the tone and digest are computed, never authored",
+                path.0
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// Which request edit produced the sealed region — by the TARGET SPAN model
+/// itself resolved, never by text similarity. `validate_batch` refuses a batch
+/// whose target spans are not pairwise disjoint (containment counts), so at most
+/// one target can contain a region; a boundary insertion contested by two
+/// adjacent targets is `None` (refuse, never guess).
+fn attribute_region(
+    region: &std::ops::Range<usize>,
+    before_facts: &[model::Target],
+) -> Option<usize> {
+    let mut hit = None;
+    for (i, t) in before_facts.iter().enumerate() {
+        if t.span.start <= region.start && region.end <= t.span.end {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(i);
+        }
+    }
+    hit
+}
+
+/// `text` with `ranges` (payload-local, non-overlapping, ascending) removed.
+fn remove_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for r in ranges {
+        if r.start < cursor || r.end > text.len() {
+            continue;
+        }
+        out.push_str(&text[cursor..r.start]);
+        cursor = r.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// **The `@fp` strip, at document grain** (advisor R25, structural fix 2): remove
+/// every token this batch INTRODUCES from the payload that carries it, re-seal so
+/// the commit lands exactly the judged bytes, and assert the candidate introduces
+/// none — the loud refusal that catches the next missed door.
+///
+/// The batch is rewritten rather than the sealed copy because [`commit_batch`]
+/// re-validates the REQUEST: a strip applied only to the sealed batch would judge
+/// bytes the commit does not write, which is the divergence S4a closed.
+///
+/// # Errors
+/// `bad_request` — an unattributable token (see [`classify_fp`]), a token in a
+/// composed frontmatter line (unreachable: frontmatter is not a claim-link
+/// position), a re-validation refusal, or a token still standing after the strip.
+fn strip_fp_candidate(
+    doc: &model::Document,
+    root_before: &Root,
+    path: &Path,
+    before_facts: &[model::Target],
+    batch: &mut model::SpliceRequest,
+    sealed: &mut model::ValidatedBatch,
+    after_doc: &mut model::Document,
+) -> Result<(), Box<ErrorBody>> {
+    let mut per_edit: Vec<Vec<std::ops::Range<usize>>> = vec![Vec::new(); batch.edits.len()];
+    let mut introduced = 0usize;
+    for origin in classify_fp(doc, after_doc, sealed, before_facts, path)? {
+        if let FpOrigin::Introduced { edit, local } = origin {
+            introduced += 1;
+            per_edit
+                .get_mut(edit)
+                .map(|v| v.push(local))
+                .ok_or_else(|| {
+                    bad_request(format!(
+                        "refused: an @fp token in {} attributes to the engine's own minted span, \
+                     which composes no claim link",
+                        path.0
+                    ))
+                })?;
+        }
+    }
+    if introduced == 0 {
+        return Ok(());
+    }
+
+    for (i, ranges) in per_edit.iter().enumerate() {
+        if ranges.is_empty() {
+            continue;
+        }
+        let payload = match &mut batch.edits[i].edit {
+            // The composed `{key}: {value}` frontmatter line: its payload offsets
+            // are not the sealed line's, and frontmatter carries no claim-link
+            // position in the one grammar — so a token attributed here means the
+            // grammar moved under this code. Refuse rather than splice blind.
+            model::EditKind::Put {
+                at: model::PutAt::Upsert,
+                ..
+            } => {
+                return Err(bad_request(format!(
+                    "refused: an @fp token attributed to a frontmatter property line in {} — \
+                     frontmatter is not a claim-link position (S10/R22); the strip cannot place it",
+                    path.0
+                )));
+            }
+            model::EditKind::Put { text, .. } => text,
+            model::EditKind::Match { new, .. } => new,
+        };
+        *payload = remove_ranges(payload, ranges);
+    }
+
+    *sealed = match model::validate_batch(
+        doc,
+        Some(&model::MerkleRoot(root_before.0.clone())),
+        batch,
+        None,
+    ) {
+        model::SpliceVerdict::Validated(b) => b,
+        refused => {
+            return Err(bad_request(format!(
+                "refused: the batch no longer validates after its @fp decoration tokens were \
+                 stripped ({refused:?}) — nothing was written"
+            )));
+        }
+    };
+    *after_doc = build_after_doc(doc, sealed, path);
+
+    // THE ASSERTION (R25): the candidate introduces no token. Live on every
+    // write path, dry and real alike — a door that reaches these bytes without
+    // passing the strip refuses here instead of landing silently.
+    if classify_fp(doc, after_doc, sealed, before_facts, path)?
+        .iter()
+        .any(|o| matches!(o, FpOrigin::Introduced { .. }))
+    {
+        return Err(bad_request(format!(
+            "refused: an @fp claim token survived the document-grain strip in {} — the write \
+             was refused rather than landing a fingerprint claim the engine never minted",
+            path.0
+        )));
+    }
+    Ok(())
+}
+
+/// **The lock ARTIFACT guard** (advisor R25, structural fix 1): the
+/// `meridian-lock` bytes change ONLY as the pin this call minted.
+///
+/// `minted` is the canonical block this splice's pin composed, or `None` when the
+/// call carries no pin. The comparison is over RAW block bytes
+/// ([`lock::block_texts`]) rather than parsed values, so a change from one
+/// unparseable block to another is still a change, and a page whose lock is
+/// already corrupt can still be edited elsewhere without laundering it.
+///
+/// # Errors
+/// `bad_request` — the candidate's lock bytes differ from the pre-image's and are
+/// not exactly the minted block.
+fn lock_artifact_guard(
+    before: &model::Document,
+    after: &model::Document,
+    minted: Option<&str>,
+    path: &Path,
+) -> Result<(), Box<ErrorBody>> {
+    let before_blocks = lock::block_texts(before);
+    let after_blocks = lock::block_texts(after);
+    if after_blocks == before_blocks {
+        return Ok(());
+    }
+    if let Some(block) = minted
+        && after_blocks == vec![block]
+    {
+        return Ok(());
+    }
+    Err(bad_request(format!(
+        "refused: this write changes the meridian-lock block in {} without minting it. The lock \
+         is the ATTESTATION artifact and the engine is its sole writer (#8 §3) — a pin is minted \
+         by `splice.pin` (mrd pin), which fingerprints the target's real bytes behind the \
+         read-mint gate. Lock bytes reaching disk as ordinary page text would be a claim nobody \
+         computed",
+        path.0
+    )))
+}
+
 /// Per-target BEFORE facts + the wire→model edit conversion, request order
 /// (§4.4: armed edits align 1:1 with request edits) — resolution failures
 /// name the failing target exactly (candidates in THE grammar).
-/// Stage-2 S10: every caller-supplied string in a native edit, with its `@fp`
-/// tokens stripped ([`syntax::strip_fp`]).
 ///
-/// `Match{old}` is stripped too, and that is not cosmetic: `old` is a NEEDLE
-/// matched against stored bytes, which never carry a token, so an agent that
-/// copied a decorated link as its needle would otherwise never match its own
-/// document.
-fn strip_fp_edits(edits: &[Edit]) -> Vec<Edit> {
-    edits
-        .iter()
-        .map(|e| Edit {
-            target: e.target.clone(),
-            edit: match &e.edit {
-                EditShape::Match { old, new } => EditShape::Match {
-                    old: syntax::strip_fp(old).into_owned(),
-                    new: syntax::strip_fp(new).into_owned(),
-                },
-                EditShape::Put { at, text } => EditShape::Put {
-                    at: *at,
-                    text: syntax::strip_fp(text).into_owned(),
-                },
-            },
-            if_node_rev: e.if_node_rev.clone(),
-        })
-        .collect()
-}
-
-/// [`strip_fp_edits`] for the plan-level batch: the payload of each shape, at
-/// the same intake, so lowering never sees a token. Addresses (`hpath`,
-/// `parent_hpath`, `key`) are NOT payloads and are left verbatim — a heading
-/// path is not a claim-link slot.
-fn strip_fp_plan_edits(edits: &[wire::PlanEdit]) -> Vec<wire::PlanEdit> {
-    edits
-        .iter()
-        .map(|e| match e {
-            wire::PlanEdit::Append { hpath, body } => wire::PlanEdit::Append {
-                hpath: hpath.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-            },
-            wire::PlanEdit::Match {
-                hpath,
-                old,
-                new,
-                all,
-                rev,
-            } => wire::PlanEdit::Match {
-                hpath: hpath.clone(),
-                old: syntax::strip_fp(old).into_owned(),
-                new: syntax::strip_fp(new).into_owned(),
-                all: *all,
-                rev: rev.clone(),
-            },
-            wire::PlanEdit::ReplaceSection { hpath, body, rev } => wire::PlanEdit::ReplaceSection {
-                hpath: hpath.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-                rev: rev.clone(),
-            },
-            wire::PlanEdit::SetProperty { key, value } => wire::PlanEdit::SetProperty {
-                key: key.clone(),
-                value: syntax::strip_fp(value).into_owned(),
-            },
-            wire::PlanEdit::Create {
-                parent_hpath,
-                title,
-                body,
-            } => wire::PlanEdit::Create {
-                parent_hpath: parent_hpath.clone(),
-                title: title.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-            },
-        })
-        .collect()
-}
-
+/// **The ADDRESS half of the `@fp` law is ordered here** (the payload half is
+/// [`strip_fp_candidate`]'s, at document grain). `Match{old}` is a NEEDLE matched
+/// against stored bytes, which never carry a token, so a needle copied from the
+/// decorated render face would otherwise never match its own document. It is
+/// stripped for the same reason `read::to_model_ref` strips a `SecRef::Anchor`
+/// before the mint-guard sees it: an address is compared, never stored. This is
+/// the ONE funnel every native and lowered edit passes through, so no put shape
+/// can skip it.
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
@@ -1936,7 +2221,7 @@ fn model_edits_and_before_facts(
             target,
             edit: match &edit.edit {
                 EditShape::Match { old, new } => model::EditKind::Match {
-                    old: old.clone(),
+                    old: syntax::strip_fp(old).into_owned(),
                     new: new.clone(),
                 },
                 EditShape::Put { at, text } => model::EditKind::Put {
