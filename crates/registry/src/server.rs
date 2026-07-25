@@ -871,18 +871,25 @@ fn engine_root(engine: &WorkspaceEngine) -> Root {
 
 /// The composed read (M1 U4a2) over the warm engine: one borrow supplies the
 /// doc, its `file_rev`, and the ambient root — the D6 one-snapshot guarantee.
+///
+/// Stage-2 S6: this is the one host that holds a session, so it hands the arm
+/// the workspace's read-mint ledger ([`Registry::read_mints`]) — a
+/// daemon-derived actor's read mints a receipt there. The handle is taken
+/// BEFORE the engine borrow and lives outside it: the ledger is not the
+/// engine's, and no `warm_or_build` rebuild touches it (H1).
 fn composed_read_warm(
     registry: &Registry,
     ws: &Path,
     path: &wire::Path,
     params: &wire_serve::read::ReadParams,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
+    let mints = registry.read_mints(ws);
     warm_engine_read(registry, ws, |engine| {
         let doc = engine
             .docs
             .get(&path.0)
             .ok_or_else(|| file_not_found(path))?;
-        wire_serve::read::composed_read(doc, path, &engine_root(engine), params)
+        wire_serve::read::composed_read(doc, path, &engine_root(engine), params, Some(&mints))
     })
 }
 

@@ -39,6 +39,13 @@ syntax = { workspace = true }
 # from the resident engine's borrowed state (one implementation with the sidecar).
 wire = { workspace = true }
 wire-serve = { workspace = true }
+# Stage-2 S6: the read-is-the-mint ledger type (`receipt::read_mint`). The daemon
+# HOLDS one per workspace — the in-memory session layer a composed read mints
+# into — deliberately outside the warm engine, whose rebuild would otherwise
+# evaporate the receipt a pin's own write depends on. A path crate already in the
+# graph via `wire-serve`, so no new external crate enters and `cargo deny` is
+# unchanged.
+receipt = { workspace = true }
 # V2 §Q2 the view-organ (write-only leaf): the daemon is the SOLE persistent
 # builder (OD6), so the `view_path` op publishes `view.duckdb` from the warm
 # engine's docs via `view::publish` under the per-workspace publish mutex this

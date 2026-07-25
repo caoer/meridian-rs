@@ -229,7 +229,9 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
         // none on both warm and degrade paths (symmetry with the wire call).
         actor: None,
     };
-    let body = wire_serve::read::composed_read(&doc, &wpath, &ambient, &params)
+    // S6: no actor (above) and no session store — the local CLI mints no read
+    // receipt on either path, and the CLI pin is local-operator-trusted (D16).
+    let body = wire_serve::read::composed_read(&doc, &wpath, &ambient, &params, None)
         .map_err(|e| engine::refusal_fail(&e))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;

@@ -54,6 +54,11 @@ pub(crate) fn dispatch(
                     display_path,
                     actor,
                 },
+                // S6: the sidecar builds its state per REQUEST and holds no
+                // session, so there is no daemon-session layer for a read
+                // receipt to live in — it mints none (the registry daemon is
+                // the one host that does).
+                None,
             )
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the
