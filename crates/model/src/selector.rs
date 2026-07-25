@@ -757,7 +757,7 @@ mod tests {
         let (_, t) = resolve_selector(sel, Some(d)).expect("resolves");
         crate::fingerprint::fingerprint_span(d, &t.span, &syntax::anchor_removals(&d.raw))
             .expect("fixture target has content")
-            .0
+            .into_string()
     }
 
     /// All four `ContentVerdict` arms map onto the ONE color model, each with

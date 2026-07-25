@@ -264,7 +264,7 @@ fn the_owner_refuses_every_empty_form_and_mints_every_other() {
             (Ok(fp), true) => panic!(
                 "{}: minted {} over an EMPTY normalized span — a token that matches \
                  every document",
-                row.name, fp.0
+                row.name, fp
             ),
             (Err(EmptySpan), false) => {
                 panic!("{}: refused a span that has content", row.name)
@@ -372,7 +372,7 @@ fn the_pin_that_could_never_drift_now_reddens_and_stays_red() {
     let inline_v2 = "# H\n\n- edited content ^guideline\n";
     let honest = mint(inline_v1, &sel)
         .expect("an inline anchor has content")
-        .0;
+        .into_string();
     assert_eq!(
         classify_pin(&sel, &honest, Some(&doc(inline_v1))),
         Color::Green

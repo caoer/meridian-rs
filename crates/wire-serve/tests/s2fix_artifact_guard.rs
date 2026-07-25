@@ -81,7 +81,7 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
     let removals = syntax::anchor_removals(&d.raw);
     model::fingerprint::fingerprint_span(d, &resolved.span, &removals)
         .expect("the fixture target has content")
-        .0
+        .into_string()
 }
 
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {

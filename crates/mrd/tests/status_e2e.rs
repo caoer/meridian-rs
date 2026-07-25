@@ -340,7 +340,7 @@ fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
         .expect("the fixture page has content")
-        .0
+        .into_string()
 }
 
 /// The composed multi-axis line of a human `status` render (the U6.2 legend).

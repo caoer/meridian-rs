@@ -167,7 +167,7 @@ fn an_inline_anchor_on_the_same_shape_still_mints() {
         fact.fingerprint,
         model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
             .expect("an inline anchor has content")
-            .0,
+            .into_string(),
         "the minted token is the one verify recomputes over the item's real bytes"
     );
 }

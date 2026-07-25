@@ -38,7 +38,7 @@ fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
     let doc = fs::load(root, std::path::Path::new("page.md")).expect("load");
     model::fingerprint::fingerprint(&doc, &doc.root)
         .expect("page.md has content")
-        .0
+        .into_string()
 }
 
 /// One lock object for the tests: one `objects:` entry + one pin carrying a

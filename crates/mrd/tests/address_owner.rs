@@ -78,7 +78,7 @@ fn live_fingerprint(docs: &BTreeMap<String, Document>, path: &str, selector: &st
     let removals = syntax::anchor_removals(&doc.raw);
     model::fingerprint::fingerprint_span(doc, &target.span, &removals)
         .expect("the fixture target has content")
-        .0
+        .into_string()
 }
 
 /// F18 GATE — the walk color and the `@fp` tone word are computed over the SAME

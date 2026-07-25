@@ -1496,7 +1496,7 @@ fn mint_fingerprint(
 ) -> Result<String, Box<ErrorBody>> {
     let removals = syntax::anchor_removals(&doc.raw);
     model::fingerprint::fingerprint_span(doc, span, &removals)
-        .map(|fp| fp.0)
+        .map(model::fingerprint::Fingerprint::into_string)
         .map_err(|model::fingerprint::EmptySpan| {
             pin_target_missing(
                 target,
