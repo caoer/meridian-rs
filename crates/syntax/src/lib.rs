@@ -551,14 +551,73 @@ pub fn fp_token(tone: &str, digest: &str) -> Option<String> {
     is_fp_body(&body).then(|| format!("@{body}"))
 }
 
-/// Every well-formed `@fp` token's byte range in `input`, sorted — the ranges a
-/// strip removes.
+/// The byte range of one wikilink/embed's BLOCK-REF slot in `input` — the
+/// fragment bytes after `#^`, up to the alias pipe or the closing `]]`.
+///
+/// `span` is the node's own span and `block` its parsed fragment. The slot is
+/// LOCATED from the link's structure — open delimiter, then the dest up to the
+/// first `|`, then the dest's first `#^` — which are the same two splits the
+/// parse itself makes. It is never searched for: a label that quotes its own
+/// block ref (`[[guide#^goal|guide#^goal in full]]`) is ordinary prose, and a
+/// byte search over the whole node hands that prose the address's slot.
+///
+/// The located range is then checked verbatim against `block`, so a link whose
+/// bytes do not present their own parsed fragment yields `None` rather than a
+/// guess: an undecorated link claims nothing, while a misplaced token claims
+/// something false.
+#[must_use]
+pub fn block_slot(input: &str, span: &Range<usize>, block: &str) -> Option<Range<usize>> {
+    let node = input.get(span.clone())?;
+    // `![[…]]` folds its bang into the embed span (see `parse`).
+    let open = if node.starts_with("![[") {
+        "![[".len()
+    } else if node.starts_with("[[") {
+        "[[".len()
+    } else {
+        return None;
+    };
+    let close = node.strip_suffix("]]").map(str::len)?;
+    let dest = node.get(open..close)?;
+    let dest = &dest[..dest.find('|').unwrap_or(dest.len())];
+    let frag = dest.split_once('#')?.1.strip_prefix('^')?;
+    // `frag` is a suffix of `dest`, so its offset is a length difference.
+    let start = span.start + open + (dest.len() - frag.len());
+    let slot = start..start + frag.len();
+    (input.get(slot.clone()) == Some(block)).then_some(slot)
+}
+
+/// The stored block id at the head of `block` — EVERY trailing well-formed `@fp`
+/// token peeled off, not just the last one.
+///
+/// A doubled token (`goal@green.b3af12cd@green.b3af12cd`) is what makes this a
+/// loop rather than one [`split_fp`]: peel only the last and the residue is
+/// ITSELF a well-formed token, so a strip would emit the very shape it exists to
+/// remove — a forged claim indistinguishable from a mint, laundered through the
+/// removal law. Peeling the whole run makes that shape unreachable by
+/// construction instead of by a second pass.
+fn fp_base(block: &str) -> &str {
+    let mut base = block;
+    while let (peeled, Some(_)) = split_fp(base) {
+        base = peeled;
+    }
+    base
+}
+
+/// Every `@fp` token RUN's byte range in `input`, sorted — the ranges a strip
+/// removes. Document-grained: pass whole file bytes and
+/// `fp_removals(…).is_empty()` is the checkable spelling of "no token in a
+/// claim-link position on disk".
 ///
 /// Identification runs over the one dialect parse: a token is recognized only
 /// inside a `Wikilink`/`Embed` node's block-ref slot, so text that merely looks
-/// like one (inside a code fence, in a heading fragment, in prose) is never a
-/// token. That is the same discipline [`anchor_removals`] follows, and for the
-/// same reason: the removal law must never re-derive the grammar it consumes.
+/// like one (inside a code fence, in a heading fragment, in a label, in prose)
+/// is never a token. That is the same discipline [`anchor_removals`] follows,
+/// and for the same reason: the removal law must never re-derive the grammar it
+/// consumes.
+///
+/// A range covers the token RUN whole, never just its last token, which is what
+/// makes the single-pass [`strip_fp`] a fixpoint —
+/// `fp_removals(&strip_fp(x)).is_empty()` holds for every `x`.
 #[must_use]
 pub fn fp_removals(input: &str) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
@@ -568,16 +627,14 @@ pub fn fp_removals(input: &str) -> Vec<Range<usize>> {
         else {
             continue;
         };
-        let (base, Some(_)) = split_fp(b) else {
+        let base = fp_base(b);
+        if base.len() == b.len() {
+            continue;
+        }
+        let Some(slot) = block_slot(input, &node.span, b) else {
             continue;
         };
-        // The parsed fragment is a verbatim substring of the node's own bytes,
-        // so its position is located, never reconstructed.
-        let Some(at) = input[node.span.clone()].rfind(&format!("#^{b}")) else {
-            continue;
-        };
-        let id_start = node.span.start + at + "#^".len();
-        out.push(id_start + base.len()..id_start + b.len());
+        out.push(slot.start + base.len()..slot.end);
     }
     out.sort_by_key(|r| r.start);
     out
@@ -586,6 +643,9 @@ pub fn fp_removals(input: &str) -> Vec<Range<usize>> {
 /// `input` with every well-formed `@fp` token removed — the strip-on-put
 /// transform. Borrowed (zero-copy) when there is nothing to remove, which is
 /// every ordinary write.
+///
+/// One pass is the fixpoint: [`fp_removals`] reports each token run whole, so
+/// the output can never itself carry a token in a claim-link position.
 #[must_use]
 pub fn strip_fp(input: &str) -> std::borrow::Cow<'_, str> {
     if !input.contains('@') {
@@ -1308,6 +1368,112 @@ mod fp_tests {
             strip_fp("[[guide#^goal@green.b3af12cd]]"),
             std::borrow::Cow::Owned(_)
         ));
+    }
+
+    /// The slot is the ADDRESS's, wherever the link sits and whatever the label
+    /// says — the one position decorate writes and strip removes. The `None`
+    /// arms are the honest refusals: no block-ref slot exists to point at.
+    #[test]
+    fn block_slot_locates_the_address_not_a_look_alike() {
+        let slot_of = |raw: &str| -> Option<(Range<usize>, String)> {
+            parse(raw).into_iter().find_map(|n| {
+                let (DialectKind::Wikilink { block: Some(b), .. }
+                | DialectKind::Embed { block: Some(b), .. }) = &n.kind
+                else {
+                    return None;
+                };
+                block_slot(raw, &n.span, b).map(|s| (s.clone(), raw[s].to_string()))
+            })
+        };
+        for (raw, want) in [
+            ("[[guide#^goal|G]]", Some(9..13)),
+            // the label quotes the ref: the slot is still the address's
+            ("[[guide#^goal|guide#^goal]]", Some(9..13)),
+            ("![[guide#^goal]]", Some(10..14)),
+            ("prose [[guide#^goal]] after", Some(15..19)),
+            ("| [[guide#^goal|G]] |", Some(11..15)),
+            // no block-ref slot at all
+            ("[[guide#Heading]]", None),
+            ("[[guide]]", None),
+            ("[[Page#Q@Home]]", None),
+        ] {
+            assert_eq!(slot_of(raw).map(|(s, _)| s), want, "input: {raw}");
+        }
+        assert_eq!(
+            slot_of("[[guide#^goal|guide#^goal]]").map(|(_, text)| text),
+            Some("goal".into()),
+            "and the slot's bytes are the stored id, never the label's copy"
+        );
+    }
+
+    /// F3 — the slot is LOCATED, not searched for. A label that repeats its own
+    /// decorated block ref used to win a whole-node `rfind`, so the strip ate the
+    /// authored label text and left the address token on disk: a forged claim
+    /// plus a corrupted label from one ordinary sentence.
+    #[test]
+    fn strip_removes_the_address_token_not_a_label_that_repeats_it() {
+        let input = "[[guide#^goal@green.b3af12cd|see #^goal@green.b3af12cd here]]";
+        assert_eq!(
+            strip_fp(input),
+            "[[guide#^goal|see #^goal@green.b3af12cd here]]",
+            "the block-ref slot is the only slot; the label is authored text"
+        );
+        assert!(
+            fp_removals(&strip_fp(input)).is_empty(),
+            "and no token survives in claim-link position"
+        );
+    }
+
+    /// F2 — a strip that can EMIT a well-formed token is the defect. A doubled
+    /// token used to strip to a SINGLE one: a forged claim indistinguishable from
+    /// a mint, laundered by the strip that was supposed to remove it. The whole
+    /// token run is one removal, so one pass is already the fixpoint.
+    #[test]
+    fn a_doubled_token_cannot_strip_into_a_well_formed_one() {
+        for (input, want) in [
+            (
+                "[[guide#^goal@green.b3af12cd@green.b3af12cd]]",
+                "[[guide#^goal]]",
+            ),
+            (
+                "[[guide#^goal@red.00000000@green.b3af12cd|G]]",
+                "[[guide#^goal|G]]",
+            ),
+            (
+                "![[guide#^goal@grey.ffffffff@grey.ffffffff@grey.ffffffff]]",
+                "![[guide#^goal]]",
+            ),
+        ] {
+            let out = strip_fp(input).into_owned();
+            assert_eq!(out, want, "input: {input}");
+            assert!(
+                fp_removals(&out).is_empty(),
+                "the strip is a fixpoint, so it can never mint what it removes: {out}"
+            );
+        }
+    }
+
+    /// The document-grained post-condition fix2a asserts: whatever went in, the
+    /// stripped bytes carry NO token in claim-link position. One grammar, one
+    /// grain — including the shapes R22 deliberately leaves alone (a fenced code
+    /// sample, a heading fragment's `@`), which are not claim-link positions and
+    /// so are already empty here.
+    #[test]
+    fn fp_removals_is_empty_after_a_strip_whatever_the_shape() {
+        for input in [
+            "[[guide#^goal@green.b3af12cd|G]]",
+            "[[guide#^goal@green.b3af12cd|see #^goal@green.b3af12cd]]",
+            "[[guide#^goal@green.b3af12cd@red.00000000]]",
+            "![[a#^x@green.00000000]] and [[b#^y@red.ffffffff]]",
+            "[[Page#Q@green.b3af12cd]]",
+            "```\n[[guide#^goal@green.b3af12cd]]\n```\n",
+            "mail me@example.com",
+        ] {
+            assert!(
+                fp_removals(&strip_fp(input)).is_empty(),
+                "a token in claim-link position survived: {input}"
+            );
+        }
     }
 
     /// The strip is IDEMPOTENT and its output re-parses to the stored address —
