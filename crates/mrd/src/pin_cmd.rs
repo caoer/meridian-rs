@@ -81,8 +81,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     // seq 0, like the resident daemon (no epoch ring); no read-mint ledger
     // exists in a CLI process, which is why the gate is bypassed above.
-    let outcome =
-        splice(&root, 0, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
+    let outcome = splice(&root, 0, &splice_args, &[], None).map_err(|e| refusal_with_cause(&e))?;
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
@@ -105,6 +104,22 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Format::Human => print_human(&parsed, &body),
     }
     Ok(())
+}
+
+/// The engine's refusal with its `cause` carried, in the same `class (cause)`
+/// shape [`crate::status_cmd`] degrades in (`unknown (not a git repository: …)`).
+///
+/// [`engine::refusal_fail`] renders `message` and the ref-carrying extras, but
+/// an `io_error` names its reason in `cause` alone (v2 §8) — so the
+/// `--vibe`-without-git refusal, whose whole content is that cause, printed a
+/// bare `mrd: io_error` and threw the explanation away. This header promises the
+/// engine's message verbatim; carrying the cause is what keeps that promise.
+fn refusal_with_cause(error: &wire::ErrorBody) -> Fail {
+    let mut fail = engine::refusal_fail(error);
+    if let Some(cause) = &error.cause {
+        fail.message = format!("{} ({cause})", fail.message);
+    }
+    fail
 }
 
 /// The human summary: what was pinned, at which digest, with the stable anchor
