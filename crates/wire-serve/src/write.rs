@@ -114,8 +114,13 @@ pub struct SpliceOutcome {
 ///
 /// # Errors
 /// A typed validation refusal (§5.2 failure split) mapped to its wire frame, an
-/// ambient-root/domain failure, or an I/O error — in every error case nothing was
-/// committed and no Delta exists.
+/// ambient-root/domain failure, or an I/O error — in every error case no Delta
+/// exists and nothing was committed, with ONE named exception that is a disk
+/// fault rather than a refusal: a pin's anchor promotion is a second inode and
+/// therefore a second rename (residual G3), so an I/O failure in the commit
+/// AFTER the promotion's own rename lands can leave that marker behind. It is
+/// fingerprint-neutral and idempotently reused by the next pin. Every REFUSAL
+/// rung, including all of the pin's, runs before that rename.
 // THE single write choke-point (decision 0002 W1): its length is the deliberate
 // one-linear-flow this crate is built around; the U4.2 gate mount grew it past
 // the 100-line lint, but splitting the flow would obscure it.
@@ -163,27 +168,38 @@ pub fn splice(
     // + blob → anchor promotion. It runs INSIDE the flock this splice already
     // holds, so the receipt's rev-recheck reads the same pre-image the batch
     // will validate against, and the promotion needs no second flock.
-    let pin = match &args.pin {
+    let mut pin = match &args.pin {
         Some(spec) => Some(mint_pin(
             root,
             spec,
             args.actor.as_deref(),
-            args.dry,
+            args.force,
             mints,
         )?),
         None => None,
     };
-    // The promotion is the ONE write ordered before the commit (residual G3:
-    // two inodes are two renames). It lands rev-NEUTRALLY — norm-v2 removes the
-    // marker plus its one leading space, so the target's fingerprint cannot
-    // move and no other page pinning that target reddens — which is exactly why
-    // promoting into a possibly-unowned target is permitted (D14). It did move
-    // the target's BYTES, so it moved the corpus root, and the pinning page
-    // itself when it IS the target: re-read both, or every rung below would
-    // validate against a stale pre-image.
-    if pin.as_ref().is_some_and(|p| p.promotion_landed) {
-        doc = load_doc(root, &args.path)?;
-        root_before = ambient_root(root)?;
+    // The promotion's own gate ran at mint time — it must refuse before any byte
+    // is written, and on the dry path too (§4.4: a rehearsal refuses exactly
+    // where the real write does). Its advisory findings and forced skips ride
+    // this response and this journal, merged below with the batch's own.
+    let mut pin_gate = pin
+        .as_mut()
+        .map(|p| std::mem::take(&mut p.gate))
+        .unwrap_or_default();
+    // The promotion is COMPUTED by the prologue and LANDS far below, after the
+    // last rung that can refuse (R25, finding 12): it is the ONE write that does
+    // not ride the batch (residual G3: two inodes are two renames), so ordering
+    // it last is what makes a refused pin leave every file byte-unchanged.
+    //
+    // Nothing has moved on disk yet, so `root_before` and the pinning page's
+    // pre-image both still stand — with one exception: when the promotion's
+    // target IS the pinning page, those promoted bytes are the pre-image this
+    // batch must be composed against, because they are what disk will carry when
+    // `commit_batch` reads it back.
+    if let Some(p) = pin.as_ref().and_then(|p| p.promotion.as_ref())
+        && same_file(root, &p.target, &args.path)
+    {
+        doc = build_doc(&args.path, &p.bytes);
     }
     // The lock block is composed against the POST-promotion pinning page and
     // rides the batch as the one engine-minted span edit (`model::EngineEdit`):
@@ -341,6 +357,7 @@ pub fn splice(
         &after_doc,
     )?;
     verdicts.extend(gate_pass.verdicts);
+    verdicts.extend(std::mem::take(&mut pin_gate.verdicts));
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -366,6 +383,46 @@ pub fn splice(
             },
             committed: None,
         });
+    }
+
+    // THE PROMOTION LANDS HERE — genuinely last (R25, finding 12). Everything
+    // above it can still refuse; below it there is only the commit's own I/O. So
+    // "a refused pin leaves the target byte-unchanged" is true by ORDERING, not
+    // by cleanup: the read-mint gate, the slug collision, the ref grammar, the
+    // artifact guard, the `@fp` law, def-conformance and BOTH armed gates have
+    // all already answered. The unchanged residual (G3) is a crash between this
+    // rename and the commit's: a fingerprint-neutral marker the next pin reuses.
+    //
+    // The write is rev-NEUTRAL — norm-v2 removes the marker line whole, so the
+    // target's fingerprint cannot move and no other page pinning that target
+    // reddens. That exactness is what permits promoting into a possibly-unowned
+    // target at all (D14), and it is asserted, not assumed (`s2fix_promotion`).
+    if let Some(minted) = pin.as_ref()
+        && let Some(p) = minted.promotion.as_ref()
+    {
+        fs::replace_file(root, FsPath::new(&p.target.0), &p.bytes).map_err(|e| io_to_wire(&e))?;
+        // D16: refresh the actor's receipt to the rev THIS engine write created.
+        // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
+        // and a line was inserted) without moving one byte of what the actor
+        // READ, so leaving the old rev would fail the actor's own gate on its
+        // next pin. Only this path refreshes, and only for a receipt that
+        // already passed the gate at mint time; a foreign content change still
+        // refuses.
+        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(args.actor.as_deref()))
+        {
+            store.mint(actor, &p.target.0, &minted.fact.selector, &p.sec_rev);
+        }
+        // The promotion moved the corpus root — this splice's OWN write. Re-read
+        // it so the receipt records the root the commit reports, and re-guard the
+        // batch on the current value: re-comparing the client's pre-promotion
+        // token would self-refuse `root_mismatch` on our own write. The client's
+        // guard was already honored above, against the root it actually pinned,
+        // and nothing else can move the root under the flock.
+        root_before = ambient_root(root)?;
+        batch.if_root = args
+            .if_root
+            .as_ref()
+            .map(|_| model::MerkleRoot(root_before.0.clone()));
     }
 
     // REAL commit: render the receipt line (facts about what is being
@@ -405,6 +462,10 @@ pub fn splice(
     // U4.3: journal every `--force`-escaped skip — a permanent force-row per
     // bypassed rule (the render carries the same detail). The reserved journal is
     // root-EXCLUDED, so appending it never perturbs the root the splice advanced.
+    // Both gates' skips, in one journal pass: a promotion forced past the armed
+    // law is as permanent a record as a batch edit forced past it.
+    let mut forced_skips = gate_pass.forced_skips;
+    forced_skips.extend(pin_gate.forced_skips);
     force_journal_write(
         root,
         &args.path,
@@ -412,7 +473,7 @@ pub fn splice(
         args.now.as_deref(),
         &frame.delta.root_before,
         &frame.delta.root_after,
-        &gate_pass.forced_skips,
+        &forced_skips,
     )?;
 
     Ok(SpliceOutcome {
@@ -996,49 +1057,94 @@ pub fn lock_write(
 // edit would read as green. The slug is the STABLE HANDLE (D15) a claim link
 // decorates and a later rename-heal relocates by, minted beside the claim.
 
-/// What a pin minted, plus the one disk fact the caller needs: whether a
-/// promotion actually landed (so the pre-image is re-read).
+/// What a pin minted, plus what it still OWES to disk. Nothing here has been
+/// written: the prologue computes, the caller lands (see [`PendingPromotion`]).
 #[derive(Debug)]
 struct PinMint {
     /// The wire fact returned to the client.
     fact: wire::PinFact,
     /// The pinned selector's span in the target — the exact bytes the
-    /// fingerprint covers.
+    /// fingerprint covers, in the POST-promotion document (the promotion widens
+    /// the selector's node by the marker line).
     span: std::ops::Range<usize>,
-    /// `true` only when this call WROTE the anchor to disk (never on dry).
-    promotion_landed: bool,
+    /// The anchor promotion this pin decided on, or `None` when the stable
+    /// handle already existed and nothing needs writing.
+    promotion: Option<PendingPromotion>,
+    /// The promotion's armed-gate pass — advisory verdicts and forced skips the
+    /// caller merges into its own (the gate itself already ran; a refusal never
+    /// reached here).
+    gate: crate::gate::GatePass,
+}
+
+/// An anchor promotion that has been DECIDED and not written: the exact bytes,
+/// the page they belong to, and the receipt refresh the write owes.
+///
+/// Separating the decision from the write is the whole point (R25, finding 12).
+/// The promotion touches a DIFFERENT file from the one the request names, so a
+/// rung refusing after it would leave bytes in a page the caller never asked to
+/// change — deterministically, and therefore unhealably. Held here, it lands
+/// after the last such rung.
+#[derive(Debug)]
+struct PendingPromotion {
+    /// The page the marker lands in — the pin's target, which may be the pinning
+    /// page itself.
+    target: Path,
+    /// The exact bytes to write. Also the pinning page's pre-image when the
+    /// target IS the pinning page.
+    bytes: String,
+    /// The promoted section's `sec_rev` in those bytes — the D16 receipt refresh
+    /// the write owes (a rev this ENGINE moved, invisible to the fingerprint).
+    sec_rev: String,
 }
 
 /// The pin prologue: resolve the target, gate it against the read-mint ledger,
-/// mint the fingerprint + blob oid, and promote the stable anchor.
+/// decide the stable anchor, and mint the fingerprint + blob oid over the bytes
+/// the promotion WILL land.
 ///
-/// Order is plan §6's, and it is load-bearing: the gate refuses before any byte
-/// is composed, and the promotion is the LAST step so a refusal never leaves a
-/// promoted target behind. `dry` promotes nothing (a rehearsal has zero disk
-/// effects) while still reporting the plan.
+/// **This function writes nothing.** It used to promote the anchor in the middle
+/// of its own ladder, which put engine bytes in a page the request does not name
+/// before the rungs that can still refuse had run — deterministically, so unlike
+/// the accepted G3 crash orphan it never healed (R25, finding 12). The promotion
+/// now travels back as a [`PendingPromotion`] and the caller lands it after its
+/// last refusal rung. Two consequences worth stating:
+///
+/// - The fingerprint, the ref and the blob oid are all computed over the
+///   POST-promotion bytes, on the dry path exactly as on the real one — a
+///   rehearsal reports what a real run mints (§4.4), and the fingerprint agrees
+///   either way only because the promotion is rev-neutral.
+/// - The promotion's armed gate runs HERE (finding 9): the marker is a change to
+///   a page like any other, so it passes [`crate::gate::gate_write`] — the same
+///   mount, the same INDEX-integrity floor — before it can be handed back as
+///   pending.
 ///
 /// # Errors
 /// `bad_path` / `bad_request` (the target escapes the workspace, is the reserved
 /// journal, or its slug id is taken), `pin_target_missing` (no such page or
 /// selector), `read_mint_required` (D16 — a session actor pinning unread
-/// content), `write_conflict` (the receipt's rev is stale), `io_error`.
+/// content), `write_conflict` (the receipt's rev is stale), a
+/// `convention_fault` / `armed_drift` / `index_integrity` gate refusal on the
+/// promotion, `io_error`.
 fn mint_pin(
     root: &fs::WorkspaceRoot,
     spec: &wire::PinSpec,
     actor: Option<&str>,
-    dry: bool,
+    force: bool,
     mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<PinMint, Box<ErrorBody>> {
     path_confined(&spec.target)?;
     reserved_journal_guard(FsPath::new(&spec.target.0))?;
 
-    let target_doc = load_doc(root, &spec.target).map_err(|e| {
+    let mut target_doc = load_doc(root, &spec.target).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
             pin_target_missing(&spec.target, format!("no page at {} to pin", spec.target.0))
         } else {
             e
         }
     })?;
+    // The armed gate SCOPES its rules by the document's path, and `fs::load`
+    // leaves that empty — an unstamped pre-image is a page no path-scoped
+    // convention can see.
+    stamp_path(&mut target_doc, &spec.target);
 
     // The CANONICAL selector, from the target's own read facts — one hpath
     // owner (`wire_map::facts` → `model::gotext::sanitize_heading`). A dewey
@@ -1069,61 +1175,41 @@ fn mint_pin(
     // a receipt answers "was it read", never "is it current".
     read_mint_gate(mints, actor, &spec.target, &selector, &fact.sec_rev)?;
 
-    // D15: the stable block id. An id already in the selector's promotion slot is
-    // REUSED verbatim — that is what makes a re-pin idempotent and keeps a benign
-    // orphan from accumulating instead of growing one marker per pin.
     let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
-    // The selector IS a block anchor, or the promotion slot already carries one:
-    // either way the stable handle exists and nothing is written.
-    let existing = fact_anchor
-        .clone()
-        .or_else(|| anchor_on_line(&target_doc, slot));
-    let (anchor, promote) = if let Some(id) = existing {
-        (id, false)
+    let (anchor, promote) = decide_anchor(
+        &target_doc,
+        &spec.target,
+        fact_anchor.as_deref(),
+        slot,
+        &title,
+        &selector,
+    )?;
+
+    // Compose the promotion IN MEMORY (nothing is written here — see this
+    // function's own contract) and mint from those bytes. Minting from the
+    // post-promotion state is not a convenience: the blob oid is the WHOLE FILE's
+    // content id, so taking it from the pre-promotion bytes would record an oid
+    // for a state that ceases to exist the moment the marker lands (and `--vibe`
+    // would eagerly write that unreachable blob). The fingerprint agrees either
+    // way, because the promotion is rev-neutral.
+    let mut gate = crate::gate::GatePass::default();
+    let (pinned_doc, promoted_bytes) = if promote {
+        let (promoted_doc, bytes, pass) =
+            plan_promotion(root, &spec.target, &target_doc, slot, &anchor, actor, force)?;
+        gate = pass;
+        (promoted_doc, Some(bytes))
     } else {
-        let slug = slug_id(&title)?;
-        if !matches!(
-            model::resolve(&target_doc, &model::Ref::Anchor(slug.clone())),
-            Err(model::ResolveError::NotFound)
-        ) {
-            return Err(bad_request(format!(
-                "the slug id ^{slug} derived from \"{selector}\" is already taken by \
-                 another node in {} — give that node's own ^id as the selector instead",
-                spec.target.0
-            )));
-        }
-        (slug, true)
+        (target_doc, None)
     };
 
-    // Promote, then mint from the POST-promotion bytes: the fingerprint is
-    // rev-neutral across the promotion by construction (tested), but the blob
-    // oid is NOT — it is the whole file's content id, so it must be taken from
-    // the bytes that are actually on disk.
-    let promotion_landed = promote && !dry;
-    let target_doc = if promotion_landed {
-        let promoted = promote_anchor(&target_doc.raw, slot, &anchor);
-        let promoted_doc = build_doc(&spec.target, &promoted);
-        // R25 (finding 9, artifact half): the promotion is a RAW file replace
-        // outside the batch, on a page this actor may not own. It writes one
-        // marker line and must be lock-NEUTRAL — the same guard the batch door
-        // carries, so the one write path that skips `commit_batch` cannot become
-        // the fifth door to the artifact.
-        lock_artifact_guard(&target_doc, &promoted_doc, None, &spec.target)?;
-        fs::replace_file(root, FsPath::new(&spec.target.0), &promoted)
-            .map_err(|e| io_to_wire(&e))?;
-        promoted_doc
-    } else {
-        target_doc
-    };
-
-    // Re-resolve the span: a landed promotion widened the selector's node by the
-    // marker line. Fingerprinting the stale span would hash bytes that are no
-    // longer the selector's.
-    let span = if promotion_landed {
+    // Re-resolve the span against the bytes the fingerprint will cover: a
+    // promotion widens the selector's node by the marker line, so the
+    // pre-promotion span would hash bytes that are no longer the selector's.
+    let (span, promoted_sec_rev) = if promote {
         let facts = wire_map::facts::read_facts(
-            &wire_map::project_toc(&target_doc),
-            target_doc.raw.as_bytes(),
+            &wire_map::project_toc(&pinned_doc),
+            pinned_doc.raw.as_bytes(),
         );
         let Some(fresh) = wire_map::facts::resolve_selector(&facts, &selector) else {
             return Err(pin_target_missing(
@@ -1131,33 +1217,28 @@ fn mint_pin(
                 format!("\"{selector}\" no longer resolves after promotion"),
             ));
         };
-        // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
-        // and a line was inserted) without moving one byte of what the actor
-        // READ — norm-v2 removes the marker line whole. So the actor's receipt is
-        // refreshed to the new rev rather than left to fail its own gate on the
-        // next pin: this write is the ENGINE's, and the only thing it changed is
-        // invisible to the fingerprint. A foreign content change still refuses,
-        // because only THIS path refreshes, and only for a receipt that already
-        // passed the gate above.
-        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(actor)) {
-            store.mint(actor, &spec.target.0, &selector, &fresh.sec_rev);
-        }
-        span_range(fresh.span)
+        (span_range(fresh.span), fresh.sec_rev.clone())
     } else {
-        fact_span
+        (fact_span, String::new())
     };
 
-    let removals = syntax::anchor_removals(&target_doc.raw);
-    let fingerprint = model::fingerprint::fingerprint_span(&target_doc, &span, &removals).0;
-    let blob = blob_oid(root, &spec.target, spec.vibe.unwrap_or(false))?;
+    let removals = syntax::anchor_removals(&pinned_doc.raw);
+    let fingerprint = model::fingerprint::fingerprint_span(&pinned_doc, &span, &removals).0;
+    let blob = blob_oid(
+        root,
+        &spec.target,
+        promoted_bytes.as_deref(),
+        spec.vibe.unwrap_or(false),
+    )?;
+    let declared_ref = format!(
+        "{}#{}",
+        spec.target.0,
+        lock_ref_fragment(&pinned_doc, &span, fact_anchor.as_deref(), &selector)?
+    );
 
     Ok(PinMint {
         fact: wire::PinFact {
-            declared_ref: format!(
-                "{}#{}",
-                spec.target.0,
-                lock_ref_fragment(&target_doc, &span, fact_anchor.as_deref(), &selector)?
-            ),
+            declared_ref,
             target: spec.target.clone(),
             selector,
             fingerprint,
@@ -1166,7 +1247,12 @@ fn mint_pin(
             promoted: promote,
         },
         span,
-        promotion_landed,
+        promotion: promoted_bytes.map(|bytes| PendingPromotion {
+            target: spec.target.clone(),
+            bytes,
+            sec_rev: promoted_sec_rev,
+        }),
+        gate,
     })
 }
 
@@ -1218,6 +1304,89 @@ fn span_range(span: Span) -> std::ops::Range<usize> {
     let lo = usize::try_from(span.0).unwrap_or(usize::MAX);
     let hi = usize::try_from(span.1).unwrap_or(usize::MAX);
     lo..hi
+}
+
+/// The D15 stable handle for a pinned selector, and whether it must be promoted.
+///
+/// An id already in the selector's promotion slot is REUSED verbatim — that is
+/// what makes a re-pin idempotent and keeps a benign orphan from accumulating
+/// instead of growing one marker per pin. The selector may also BE a block anchor;
+/// either way the handle exists and nothing needs writing.
+///
+/// # Errors
+/// `bad_request` when the title yields no id ([`slug_id`]), or when the derived
+/// slug is already taken by another node — refused rather than uniquified, so the
+/// id stays a function of the title alone (D15).
+fn decide_anchor(
+    target_doc: &model::Document,
+    target: &Path,
+    fact_anchor: Option<&str>,
+    slot: usize,
+    title: &str,
+    selector: &str,
+) -> Result<(String, bool), Box<ErrorBody>> {
+    if let Some(id) = fact_anchor
+        .map(ToOwned::to_owned)
+        .or_else(|| anchor_on_line(target_doc, slot))
+    {
+        return Ok((id, false));
+    }
+    let slug = slug_id(title)?;
+    if !matches!(
+        model::resolve(target_doc, &model::Ref::Anchor(slug.clone())),
+        Err(model::ResolveError::NotFound)
+    ) {
+        return Err(bad_request(format!(
+            "the slug id ^{slug} derived from \"{selector}\" is already taken by \
+             another node in {} — give that node's own ^id as the selector instead",
+            target.0
+        )));
+    }
+    Ok((slug, true))
+}
+
+/// Compose one anchor promotion and put it through the two rungs a target write
+/// owes, without writing it: the promoted document, its exact bytes, and the
+/// armed gate's pass (whose verdicts and forced skips the caller merges).
+///
+/// The promotion is the ONE write in a pin that does not ride `commit_batch`, so
+/// both rungs live here rather than at the write site — they must answer while a
+/// refusal still costs nothing:
+///
+/// - **the artifact guard** (fix2a): a marker line must be lock-NEUTRAL, or this
+///   door reaches the attestation bytes the batch door refuses to.
+/// - **the armed gate** (R25, finding 9): the SAME `gate::gate_write` mount every
+///   other target write passes, over this promotion's own before/after states,
+///   carrying the armed conventions, the `--force` escape and the
+///   never-escapable INDEX-integrity floor. Rev-neutral is not ungated: it is
+///   still a write to a page this actor may not own.
+///
+/// # Errors
+/// The artifact guard's `bad_request`, or a `convention_fault` / `armed_drift` /
+/// `binding_break` / `index_integrity` gate refusal.
+fn plan_promotion(
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+    target_doc: &model::Document,
+    slot: usize,
+    anchor: &str,
+    actor: Option<&str>,
+    force: bool,
+) -> Result<(model::Document, String, crate::gate::GatePass), Box<ErrorBody>> {
+    let bytes = promote_anchor(&target_doc.raw, slot, anchor);
+    let promoted_doc = build_doc(target, &bytes);
+    lock_artifact_guard(target_doc, &promoted_doc, None, target)?;
+    let gate = crate::gate::gate_write(
+        root,
+        target_doc,
+        &promoted_doc,
+        &[],
+        policy::ChangeOp::Splice,
+        actor,
+        force,
+        &promoted_doc,
+    )?;
+    Ok((promoted_doc, bytes, gate))
 }
 
 /// The RAW heading chain of the section starting at `start` — `model` carries it
@@ -1394,26 +1563,58 @@ fn promotion_slot(raw: &str, line_start: usize) -> usize {
 
 /// Write `^id` on its own line at `slot` (see [`promotion_slot`]), matching the
 /// file's own line terminator so a CRLF page stays CRLF.
+///
+/// # The file's EOF terminator state is preserved (finding 7)
+/// Rev-neutrality is a claim about EVERY pinned span in the target, not just the
+/// one being pinned, so the promotion may not move a single byte outside the
+/// marker line. At EOF that is a real constraint: this used to append a
+/// terminator after the marker unconditionally, which on a file whose last line
+/// carried none added one — and norm-v2 masks the MARKER line, not that byte. The
+/// enclosing spans' canonical bytes moved, so another page's green pin over the
+/// same target went red on somebody else's pin.
+///
+/// So a marker landing at an unterminated EOF stays unterminated, and norm-v2's
+/// R2b takes it: an own-line anchor with no terminator of its own is removed
+/// together with the terminator BEFORE it — which is exactly the terminator this
+/// function had to add to give the marker its own line. The canonical bytes come
+/// out byte-identical, and `promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical`
+/// holds the claim.
 fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
     let head = &raw[..slot];
+    let tail = &raw[slot..];
     let nl = if head.ends_with("\r\n") { "\r\n" } else { "\n" };
     let mut out = String::with_capacity(raw.len() + id.len() + 4);
     out.push_str(head);
     // An unterminated last line (the heading is the file's final line) needs its
-    // own terminator before the marker line can start.
+    // own terminator before the marker line can start. norm-v2 R2b removes it
+    // again with the marker, so it is inside the mask, not outside it.
     if !head.is_empty() && !head.ends_with('\n') {
         out.push_str(nl);
     }
     out.push('^');
     out.push_str(id);
-    out.push_str(nl);
-    out.push_str(&raw[slot..]);
+    if tail.is_empty() {
+        // At EOF: terminate the marker line only if the file was terminated.
+        // Adding a terminator to a file that had none is a byte OUTSIDE the
+        // marker line and outside norm-v2's mask (see this function's contract).
+        if raw.ends_with('\n') {
+            out.push_str(nl);
+        }
+    } else {
+        out.push_str(nl);
+        out.push_str(tail);
+    }
     out
 }
 
 /// The target file's git blob oid for the lock's `objects:` plane (D5: git owns
 /// content-addressing, so shell out). `vibe` additionally WRITES the blob into
 /// the object store, so the pin is retrievable before any commit references it.
+///
+/// `pending` is the bytes the caller has DECIDED to write to `target` and not
+/// written yet (an anchor promotion) — the oid must describe the state the file
+/// will carry, so those bytes are hashed as if they were already there. `None`
+/// asks about the file on disk, which is the same thing when nothing is pending.
 ///
 /// A normal pin degrades honestly when git cannot answer (no repo, no git on
 /// PATH): the `objects:` entry is simply absent and the claim plane still lands
@@ -1425,12 +1626,18 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
 fn blob_oid(
     root: &fs::WorkspaceRoot,
     target: &Path,
+    pending: Option<&str>,
     vibe: bool,
 ) -> Result<Option<String>, Box<ErrorBody>> {
     let repo = git::Repo::at(root.0.clone());
     let abs = root.0.join(&target.0);
+    let ask = |write: bool| match pending {
+        Some(bytes) => repo.blob_oid_of_bytes(&abs, bytes.as_bytes(), write),
+        None if write => repo.write_blob(&abs),
+        None => repo.blob_oid(&abs),
+    };
     if vibe {
-        return repo.write_blob(&abs).map(Some).map_err(|e| {
+        return ask(true).map(Some).map_err(|e| {
             let mut err = ErrorBody::new(ErrorCode::IoError);
             err.cause = Some(format!(
                 "--vibe asked for an eager blob write of {} and git refused: {e}",
@@ -1439,7 +1646,7 @@ fn blob_oid(
             Box::new(err)
         });
     }
-    Ok(repo.blob_oid(&abs).ok())
+    Ok(ask(false).ok())
 }
 
 /// Compose the pinning page's `meridian-lock` block as the batch's one
@@ -1629,10 +1836,38 @@ fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<Err
 /// the path empty, so stamp it, mirroring `build_after_doc`).
 fn build_doc(path: &Path, body: &str) -> model::Document {
     let mut doc = model::build(body.to_string(), syntax::parse(body));
+    stamp_path(&mut doc, path);
+    doc
+}
+
+/// Stamp a document's own path (`model::build` is I/O-free and leaves it empty).
+/// The ONE writer of that field in this crate, because two callers reaching into
+/// `NodeKind::Document` by hand is how one of them forgets: the armed gate SCOPES
+/// its rules by this value, so an unstamped pre-image is a page no path-scoped
+/// convention can see.
+fn stamp_path(doc: &mut model::Document, path: &Path) {
     if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
         p.clone_from(&path.0);
     }
-    doc
+}
+
+/// Same FILE, not the same spelling. A pin whose target is the pinning page
+/// reached through a DIFFERENT spelling of that one path still writes the page
+/// the batch is being composed against, and composing against the pre-promotion
+/// bytes would splice the lock block at an offset the file no longer has.
+///
+/// String equality answers the common case with no I/O; when the spellings differ
+/// the filesystem answers, because two address owners is a known open finding and
+/// this call adopts neither of them.
+fn same_file(root: &fs::WorkspaceRoot, a: &Path, b: &Path) -> bool {
+    if a.0 == b.0 {
+        return true;
+    }
+    let resolved = |p: &Path| std::fs::canonicalize(root.0.join(&p.0)).ok();
+    match (resolved(a), resolved(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// The occupant's whole-file rev when `path` is occupied, else `None`. Occupancy
@@ -1990,18 +2225,44 @@ fn classify_fp(
     Ok(out)
 }
 
-/// Which request edit produced the sealed region — by the TARGET SPAN model
+/// Which request edit produced the sealed region — by the TARGET SPAN the model
 /// itself resolved, never by text similarity. `validate_batch` refuses a batch
-/// whose target spans are not pairwise disjoint (containment counts), so at most
-/// one target can contain a region; a boundary insertion contested by two
-/// adjacent targets is `None` (refuse, never guess).
+/// whose target spans are not pairwise disjoint (containment counts), so a
+/// non-empty region has at most one container; a region contested past the
+/// boundary rule below is `None` (refuse, never guess).
+///
+/// # The boundary rule, which containment alone cannot decide
+/// Sections are contiguous: a section's span ENDS on the byte where its next
+/// sibling's span BEGINS. An `md.append_section` plans `put{at:"end"}`, whose
+/// replaced region is EMPTY and sits exactly on that shared byte (§4.4), so both
+/// siblings contain it. The one the model planned it from is the one that ENDS
+/// there — the other merely begins there. Empty regions are the only ones that
+/// can land on a shared byte, and `put{at:"end"}` is the only shape that produces
+/// one (a `match` needle is non-empty by validation), so this decides every case
+/// it applies to and touches no other.
+///
+/// Ported verbatim from `run::fp::attribute_region` (fix8, `9953cf3b`), where the
+/// same false-red was found: without the rule, a decorated `put{at:end}` into any
+/// section with a following sibling refuses a legitimate write.
 fn attribute_region(
     region: &std::ops::Range<usize>,
     before_facts: &[model::Target],
 ) -> Option<usize> {
+    let containers: Vec<usize> = before_facts
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.span.start <= region.start && region.end <= t.span.end)
+        .map(|(i, _)| i)
+        .collect();
+    if let [only] = containers.as_slice() {
+        return Some(*only);
+    }
+    if !region.is_empty() {
+        return None;
+    }
     let mut hit = None;
-    for (i, t) in before_facts.iter().enumerate() {
-        if t.span.start <= region.start && region.end <= t.span.end {
+    for &i in &containers {
+        if before_facts[i].span.end == region.end {
             if hit.is_some() {
                 return None;
             }
@@ -2159,8 +2420,14 @@ fn lock_artifact_guard(
          is the ATTESTATION artifact and the engine is its sole writer (#8 §3) — a pin is minted \
          by `splice.pin` (mrd pin), which fingerprints the target's real bytes behind the \
          read-mint gate. Lock bytes reaching disk as ordinary page text would be a claim nobody \
-         computed",
-        path.0
+         computed. WHAT THIS WOULD DESTROY: the {} attestation claim(s) already minted on this \
+         page. WHAT TO DO INSTEAD: the block is birthed at the page's END, so a whole-section \
+         rewrite of the LAST section deletes it — write that section with `put at:end` or an \
+         append, or rewrite a section that does not hold the block, and the claims survive \
+         untouched. Retiring a claim on purpose needs an unpin verb, which does not exist yet \
+         (stage 3) — until it does, remove the block by hand and re-mint",
+        path.0,
+        before_blocks.len()
     )))
 }
 
@@ -2256,9 +2523,7 @@ fn build_after_doc(
     let after_raw = apply_validated(&doc.raw, sealed);
     let after_tree = syntax::parse(&after_raw);
     let mut after_doc = model::build(after_raw, after_tree);
-    if let model::NodeKind::Document { path: p, .. } = &mut after_doc.root.kind {
-        p.clone_from(&path.0);
-    }
+    stamp_path(&mut after_doc, path);
     after_doc
 }
 
