@@ -252,6 +252,83 @@ fn plan_rev_threads_into_the_native_cas_guard() {
     );
 }
 
+/// S4b/D11: `set_property` through the plan face composes `{key}: {value}` into
+/// the frontmatter line, so a multi-line value FORGES keys — this path skips
+/// `check_write`'s rebuild, so it must refuse on its own. Both spellings refuse
+/// `bad_request` and the file stays byte-identical.
+#[test]
+fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
+    let (dir, root) = ws(&[("card.md", DOC)]);
+
+    // Forged-key spelling: no ": " in the value, so the conditional quote never
+    // fires — before the fix this landed a literal `injected:pwned` FM line.
+    let err = splice(
+        &root,
+        0,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::SetProperty {
+                key: "status".into(),
+                value: "closed\ninjected:pwned".into(),
+            }],
+        ),
+        &[],
+    )
+    .expect_err("a multi-line property value refuses");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+    assert_eq!(
+        err.message.as_deref(),
+        Some(
+            "property value for \"status\" contains a newline — frontmatter values are single-line in v1; put multi-line content in a body section"
+        )
+    );
+
+    // Quoted spelling: the mid-value ": " DOES trigger the single quote, and a
+    // single-quoted YAML scalar cannot escape the raw newline — same refusal.
+    let err = splice(
+        &root,
+        0,
+        &plan_args(
+            "card.md",
+            vec![PlanEdit::SetProperty {
+                key: "status".into(),
+                value: "closed\nowner: mallory".into(),
+            }],
+        ),
+        &[],
+    )
+    .expect_err("a quoted-scalar injection refuses too");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+
+    // A refused batch REFUSES WHOLE: the legal sibling edit lands nothing.
+    let err = splice(
+        &root,
+        0,
+        &plan_args(
+            "card.md",
+            vec![
+                PlanEdit::SetProperty {
+                    key: "owner".into(),
+                    value: "alice".into(),
+                },
+                PlanEdit::SetProperty {
+                    key: "status".into(),
+                    value: "closed\ninjected:pwned".into(),
+                },
+            ],
+        ),
+        &[],
+    )
+    .expect_err("the batch refuses whole");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("card.md")).expect("read"),
+        DOC,
+        "no bytes reach disk: the file is byte-unchanged after every refusal"
+    );
+}
+
 /// The two golden MUST-CARRY refusals fire from the ENGINE now, with the file
 /// untouched: p-replace-on-block + p-create-top (message = the Go-face bytes
 /// minus the host's `put: ` prefix).
