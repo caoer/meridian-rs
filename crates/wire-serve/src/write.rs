@@ -1175,67 +1175,29 @@ fn mint_pin(
     // a receipt answers "was it read", never "is it current".
     read_mint_gate(mints, actor, &spec.target, &selector, &fact.sec_rev)?;
 
-    // D15: the stable block id. An id already in the selector's promotion slot is
-    // REUSED verbatim — that is what makes a re-pin idempotent and keeps a benign
-    // orphan from accumulating instead of growing one marker per pin.
     let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
-    // The selector IS a block anchor, or the promotion slot already carries one:
-    // either way the stable handle exists and nothing is written.
-    let existing = fact_anchor
-        .clone()
-        .or_else(|| anchor_on_line(&target_doc, slot));
-    let (anchor, promote) = if let Some(id) = existing {
-        (id, false)
-    } else {
-        let slug = slug_id(&title)?;
-        if !matches!(
-            model::resolve(&target_doc, &model::Ref::Anchor(slug.clone())),
-            Err(model::ResolveError::NotFound)
-        ) {
-            return Err(bad_request(format!(
-                "the slug id ^{slug} derived from \"{selector}\" is already taken by \
-                 another node in {} — give that node's own ^id as the selector instead",
-                spec.target.0
-            )));
-        }
-        (slug, true)
-    };
+    let (anchor, promote) = decide_anchor(
+        &target_doc,
+        &spec.target,
+        fact_anchor.as_deref(),
+        slot,
+        &title,
+        &selector,
+    )?;
 
-    // Compose the promoted bytes IN MEMORY and mint from them. Nothing is
-    // written here (see this function's own contract): the promotion is the one
-    // write that does not ride the batch, so it lands after the caller's last
-    // refusal rung.
-    //
-    // Minting from the post-promotion bytes is not a convenience — the blob oid
-    // is the WHOLE FILE's content id, so taking it from the pre-promotion bytes
-    // would record an oid for a state that never exists once the marker lands
-    // (and `--vibe` would eagerly write that unreachable blob). The fingerprint
-    // agrees either way, because the promotion is rev-neutral.
+    // Compose the promotion IN MEMORY (nothing is written here — see this
+    // function's own contract) and mint from those bytes. Minting from the
+    // post-promotion state is not a convenience: the blob oid is the WHOLE FILE's
+    // content id, so taking it from the pre-promotion bytes would record an oid
+    // for a state that ceases to exist the moment the marker lands (and `--vibe`
+    // would eagerly write that unreachable blob). The fingerprint agrees either
+    // way, because the promotion is rev-neutral.
     let mut gate = crate::gate::GatePass::default();
     let (pinned_doc, promoted_bytes) = if promote {
-        let bytes = promote_anchor(&target_doc.raw, slot, &anchor);
-        let promoted_doc = build_doc(&spec.target, &bytes);
-        // fix2a's artifact guard on the one write that skips `commit_batch`: a
-        // marker line must be lock-NEUTRAL, so this door cannot reach the
-        // attestation bytes either.
-        lock_artifact_guard(&target_doc, &promoted_doc, None, &spec.target)?;
-        // R25 (finding 9): and the armed law judges it, through the SAME mount
-        // every other target write passes — `gate::gate_write` over this
-        // promotion's own before/after states, carrying the armed conventions,
-        // the `--force` escape (journaled by the caller) and the
-        // never-escapable INDEX-integrity floor. A rev-neutral write is still a
-        // write to a page this actor may not own.
-        gate = crate::gate::gate_write(
-            root,
-            &target_doc,
-            &promoted_doc,
-            &[],
-            policy::ChangeOp::Splice,
-            actor,
-            force,
-            &promoted_doc,
-        )?;
+        let (promoted_doc, bytes, pass) =
+            plan_promotion(root, &spec.target, &target_doc, slot, &anchor, actor, force)?;
+        gate = pass;
         (promoted_doc, Some(bytes))
     } else {
         (target_doc, None)
@@ -1342,6 +1304,89 @@ fn span_range(span: Span) -> std::ops::Range<usize> {
     let lo = usize::try_from(span.0).unwrap_or(usize::MAX);
     let hi = usize::try_from(span.1).unwrap_or(usize::MAX);
     lo..hi
+}
+
+/// The D15 stable handle for a pinned selector, and whether it must be promoted.
+///
+/// An id already in the selector's promotion slot is REUSED verbatim — that is
+/// what makes a re-pin idempotent and keeps a benign orphan from accumulating
+/// instead of growing one marker per pin. The selector may also BE a block anchor;
+/// either way the handle exists and nothing needs writing.
+///
+/// # Errors
+/// `bad_request` when the title yields no id ([`slug_id`]), or when the derived
+/// slug is already taken by another node — refused rather than uniquified, so the
+/// id stays a function of the title alone (D15).
+fn decide_anchor(
+    target_doc: &model::Document,
+    target: &Path,
+    fact_anchor: Option<&str>,
+    slot: usize,
+    title: &str,
+    selector: &str,
+) -> Result<(String, bool), Box<ErrorBody>> {
+    if let Some(id) = fact_anchor
+        .map(ToOwned::to_owned)
+        .or_else(|| anchor_on_line(target_doc, slot))
+    {
+        return Ok((id, false));
+    }
+    let slug = slug_id(title)?;
+    if !matches!(
+        model::resolve(target_doc, &model::Ref::Anchor(slug.clone())),
+        Err(model::ResolveError::NotFound)
+    ) {
+        return Err(bad_request(format!(
+            "the slug id ^{slug} derived from \"{selector}\" is already taken by \
+             another node in {} — give that node's own ^id as the selector instead",
+            target.0
+        )));
+    }
+    Ok((slug, true))
+}
+
+/// Compose one anchor promotion and put it through the two rungs a target write
+/// owes, without writing it: the promoted document, its exact bytes, and the
+/// armed gate's pass (whose verdicts and forced skips the caller merges).
+///
+/// The promotion is the ONE write in a pin that does not ride `commit_batch`, so
+/// both rungs live here rather than at the write site — they must answer while a
+/// refusal still costs nothing:
+///
+/// - **the artifact guard** (fix2a): a marker line must be lock-NEUTRAL, or this
+///   door reaches the attestation bytes the batch door refuses to.
+/// - **the armed gate** (R25, finding 9): the SAME `gate::gate_write` mount every
+///   other target write passes, over this promotion's own before/after states,
+///   carrying the armed conventions, the `--force` escape and the
+///   never-escapable INDEX-integrity floor. Rev-neutral is not ungated: it is
+///   still a write to a page this actor may not own.
+///
+/// # Errors
+/// The artifact guard's `bad_request`, or a `convention_fault` / `armed_drift` /
+/// `binding_break` / `index_integrity` gate refusal.
+fn plan_promotion(
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+    target_doc: &model::Document,
+    slot: usize,
+    anchor: &str,
+    actor: Option<&str>,
+    force: bool,
+) -> Result<(model::Document, String, crate::gate::GatePass), Box<ErrorBody>> {
+    let bytes = promote_anchor(&target_doc.raw, slot, anchor);
+    let promoted_doc = build_doc(target, &bytes);
+    lock_artifact_guard(target_doc, &promoted_doc, None, target)?;
+    let gate = crate::gate::gate_write(
+        root,
+        target_doc,
+        &promoted_doc,
+        &[],
+        policy::ChangeOp::Splice,
+        actor,
+        force,
+        &promoted_doc,
+    )?;
+    Ok((promoted_doc, bytes, gate))
 }
 
 /// The RAW heading chain of the section starting at `start` — `model` carries it

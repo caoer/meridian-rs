@@ -232,6 +232,23 @@ fn promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical() {
         live_fingerprint(&root, "guide.md#Guide/Omega"),
         "and the newly minted claim is green too"
     );
+
+    // The marker at an unterminated EOF must still READ as an anchor, or D15's
+    // idempotency would break exactly where the neutrality fix applies: a re-pin
+    // would fail to see it and try to promote a second one.
+    let promoted_target = read(&root, "guide.md");
+    let again = pin_fact(
+        &splice(&root, 0, &pin_args("plan.md", "Guide/Omega"), &[], None)
+            .expect("the re-pin commits")
+            .body,
+    );
+    assert_eq!(again.anchor, second.anchor, "the same slug, recomputed");
+    assert!(!again.promoted, "and nothing is promoted a second time");
+    assert_eq!(
+        read(&root, "guide.md"),
+        promoted_target,
+        "the target is byte-unchanged by the re-pin"
+    );
 }
 
 /// CONTROL for the gate above, and the reason the fix is what it is: norm-v2
