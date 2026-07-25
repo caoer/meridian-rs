@@ -98,17 +98,27 @@ pub struct FileTransition<'a> {
 #[must_use]
 pub fn render_row(row: &JournalRow<'_>) -> String {
     let mut out = String::new();
-    let _ = write!(out, "- op={} path={}", row.op, row.path);
+    // Every field through the ONE field law (fix9): this row's own parser
+    // ([`parse_rows`]) splits on whitespace and reads the FIRST `key=value`, so
+    // an unguarded value carrying ` root_after=b3:FORGED` would shadow the real
+    // root and hand [`check_chain`] — the forgery detector — a forged input.
+    let _ = write!(
+        out,
+        "- op={} path={}",
+        crate::render_field(row.op),
+        crate::render_field(row.path)
+    );
     if let Some(actor) = row.actor {
-        let _ = write!(out, " actor={actor}");
+        let _ = write!(out, " actor={}", crate::render_field(actor));
     }
     if let Some(now) = row.now {
-        let _ = write!(out, " now={now}");
+        let _ = write!(out, " now={}", crate::render_field(now));
     }
     let _ = write!(
         out,
         " root_before={} root_after={}",
-        row.root_before, row.root_after
+        crate::render_field(row.root_before),
+        crate::render_field(row.root_after)
     );
     // Whole-file birth/death token (create/remove): an absent side renders as
     // the literal `absent`, so a birth reads `before=absent` and a death reads
@@ -119,8 +129,8 @@ pub fn render_row(row: &JournalRow<'_>) -> String {
         let _ = write!(
             out,
             " before={} after={}",
-            file.before.unwrap_or("absent"),
-            file.after.unwrap_or("absent")
+            crate::render_field(file.before.unwrap_or("absent")),
+            crate::render_field(file.after.unwrap_or("absent"))
         );
     }
     let _ = write!(out, " edits={}", row.edits.len());
@@ -128,10 +138,10 @@ pub fn render_row(row: &JournalRow<'_>) -> String {
         let _ = write!(
             out,
             " {}:{}:{}->{}",
-            target_display(edit.target),
+            crate::render_field(&target_display(edit.target)),
             shape_display(edit.shape),
-            edit.before.0,
-            edit.after.0
+            crate::render_field(&edit.before.0),
+            crate::render_field(&edit.after.0)
         );
     }
     let _ = write!(out, " ^{}", anchor(row.seq));
