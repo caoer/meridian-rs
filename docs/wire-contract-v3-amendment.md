@@ -176,6 +176,11 @@ Response body (`mode` decides `toc` XOR `sections`):
  "rendered_text":"…"}
 ```
 
+> **This M1 sketch is superseded by § Stage-2 additive surface below.** The read
+> body now also carries an always-emitted `anchors[]` array and per-`toc`-row
+> `span` / `content_span`, and the `actor` slot below — UNREAD in M1 — now mints
+> a read receipt. The current shape is § Stage-2 item 6.
+
 `file_rev` + `fingerprint` come from the SAME borrowed snapshot (the
 atomicity witness). `rendered_text` is the token-efficient text projection,
 byte-parity with the Go host face's `readText` (gated against the U0 captured
@@ -264,6 +269,353 @@ golden-arbitrated.
 the wire it surfaces under `internal` with the `render_failed` spelling in
 `message`. No frame ever half-renders.
 
+## Stage-2 additive surface (2026-07-25) — the attestation core loop
+
+Stage 2 adds the attestation CORE LOOP: the pin verb, the read-is-the-mint
+receipt, the meridian-lock drift color, and the `@fp` claim-link view grammar.
+Everything below is v3-ONLY and additive. A v2 session stays byte-for-byte the
+frozen contract — `crates/wire/tests/contract_v2.rs` pins it, and every new
+request field rides `Option` + `skip_serializing_if` so an absent value
+serializes away.
+
+### 6. The composed `read` grows authz facts and its own anchor plane (S1, s1c)
+
+The current response body, superseding the §1 sketch:
+
+```jsonc
+{"path":…,"file_rev":…,"fingerprint":…,"words_total":N,
+ // mode toc only — the HEADING plane, whole
+ "toc":[{"n":"1.2","depth":2,"title":…,"hpath":…,"words":N,"sec_rev":…,
+         "span":[S,E],"content_span":[S,E]}],
+ // ALWAYS emitted, in BOTH modes — the `^id` BLOCK-ANCHOR plane
+ "anchors":[{"anchor":"b1","span":[S,E]}],
+ // mode sections only
+ "sections":[{"sel":…,"hpath":…,"sec_rev":…,"words":N,"content":…}],
+ "truncated":true, "notice":"unresolved selectors (no rev minted): …",
+ "rendered_text":"…"}
+```
+
+**Two row classes, two arrays. The discriminator is the ARRAY, never a field.**
+`toc[]` carries headings only and `depth >= 1` always; `anchors[]` carries block
+anchors, with `anchor` spelling the id WITHOUT its `^` marker. S1 first shipped
+both classes interleaved in `toc[]`, discriminated by anchor-present
+(equivalently `depth == 0`); that panicked ccc-statusd's `readText`, which
+indents by `strings.Repeat("  ", depth-1)`, with "negative Repeat count". s1c
+split the planes on the rule that *a field a caller may forget to check is not a
+guard; a shape it cannot receive is* (`crates/wire-map/src/facts.rs:186-205`).
+
+**The anchor plane is a property of the RESPONSE, not the mode.** `anchors` is a
+`Vec` with `#[serde(default)]` and no `skip_serializing_if`
+(`crates/wire/src/lib.rs:899-907`), so it is emitted unconditionally — toc mode
+and sections mode alike. An empty `anchors[]` means "this scope holds no
+addressable block anchor", and it means only that. A mode-conditional array
+would make `[]` mean two things, and a caller cannot tell "no anchors here" from
+"you asked in the wrong mode". `toc` and `sections` stay `Option` and vanish
+when the other mode is in force.
+
+The two byte facts, both half-open `[start,end)` offsets into the RAW on-disk
+bytes of the file this response names:
+
+| field | covers |
+|---|---|
+| `toc[].span` | the heading line INCLUSIVE and the whole subtree INCLUSIVE — so heading spans NEST, and one anchor answers every ancestor section |
+| `toc[].content_span` | heading-EXCLUDED, subtree-inclusive. Typed `Option` (a content-less heading may omit it); present on every shipped row, possibly as a zero-width span at EOF |
+| `anchors[].span` | the block-leaf span, marker included |
+
+Together they answer governing-section derivation by BYTE CONTAINMENT: keep
+every heading row whose `span` contains an anchor's start byte. That is the fact
+that retired ccc-statusd's `sanitizeHeadingHost` markdown mirror — the host now
+holds zero markdown semantics on the put authz plane (exit criterion 1).
+
+Three consequences a consumer must not guess at:
+
+- `sec_rev` is minted over the FULL `span` (heading INCLUDED), while
+  `sections[].content` is `raw[content_span]` (heading EXCLUDED). For a heading
+  section the content and the rev cover different byte ranges.
+- Only heading and list-item nodes become rows. A `^id` hosted by a task,
+  callout, fence, or table is addressable on NEITHER plane
+  (`crates/wire-map/src/facts.rs:8-17`).
+- `frag` scopes the two planes by different rules, deliberately: headings by
+  hpath prefix, anchors by the same byte containment the host applies. A scoped
+  read never leaks an anchor from outside the requested subtree.
+
+**D12:** spans are intra-file byte offsets, root-independent by construction. A
+later `root:` prefix changes which file is named, never this arithmetic.
+
+### 7. `read.actor` mints a read receipt — read IS the mint (S6)
+
+The `actor` slot §1 carried UNREAD now mints a read receipt at the composed-read
+seam. The receipt is a minimal mechanical fact (D9) — `{actor, path, selector,
+sec_rev}` — with no verdict envelope and no `predicate_type`; that
+representation unification is stage-3.
+
+- **No wire shape changes.** The receipt never leaves the engine. It is daemon
+  session memory, held beside the workspace engines rather than inside one, so
+  the pin's own write cannot evaporate the receipt that authorized it
+  (`crates/registry/src/registry.rs:91-100`).
+- **Sections mode only.** A `toc`-mode read serves the section map, not content,
+  so it mints nothing — it must never gate an attestation over bytes nobody saw.
+  The rev bound is the raw face's `sec_rev`, never anything derived from the
+  elided `rendered_text` (`crates/wire-serve/src/read.rs:235-254`).
+- **`actor` absent or blank mints nothing** (D16). The bare CLI sends no actor
+  and is local-operator-trusted, exactly as `mrd put` skips the host's authz.
+  The per-request sidecar holds no session and so mints nothing either; the
+  resident daemon is the one host that mints.
+- **The key is the CANONICAL selector**, `toc`-row `hpath` — not the caller's
+  spelling. A read addressed by dewey ordinal `1.1` mints under `Goals/Q3`; an
+  anchor read mints under `^b1`, caret INCLUDED. Note the deliberate asymmetry
+  with `anchors[].anchor`, which carries no caret.
+- **Lookup is EXACT on all three key parts, and fails CLOSED.** Reading
+  `Notes/Plan` does not cover `Notes/Plan/Q3`, nor a `^anchor` inside the served
+  subtree (`crates/receipt/src/read_mint.rs:121-134`). Widening to span
+  containment is a permissive authz answer that would need its own ratified
+  decision.
+- **Lifecycle:** no TTL. The ledger is dropped when the daemon exits or the
+  workspace is idle-reaped, and nothing is ever persisted. A per-actor cap of
+  1024 distinct `(path, selector)` pairs is the memory backstop; a re-read
+  replaces its receipt in place rather than adding one.
+- **The grain is per-session, and that is a named relaxation.** A per-turn grain
+  would be tighter. Per-session is what the engine can honestly express, because
+  the engine has no turn concept; the rev-recheck under the pin's own flock
+  (item 8) mitigates CONTENT staleness, and does not mitigate the temporal
+  question of whether the content is still in the actor's context.
+
+A receipt answers "was it read", never "is it current". A caller gating a write
+re-checks the rev against disk inside its own flock — a receipt is not a lease.
+
+### 8. `splice.pin` — the pin rides the write choke-point (S7)
+
+`splice` gains ONE optional top-level field, `pin`. There is no `Op::Pin` and no
+second flocked `lock_write` call (D7): the flock is non-reentrant per open file
+description, so composing two flocked calls would self-refuse `workspace_busy`.
+The pin instead rides the existing `commit_batch` primitive, which already
+writes two files under one flock.
+
+Request:
+
+```jsonc
+{"id":9,"op":"splice","path":"notes/plan.md",   // the PINNING page
+ "pin":{"target":"guide.md",                    // the page holding the content
+        "selector":"Guide/Leader's-Guideline",  // sanitized hpath, or "^id"
+        "vibe":true}}                           // optional; absent ⇒ read-only oid
+```
+
+A pin is itself a write, so a pin-only splice is a COMPLETE batch — `edits` may
+be absent without raising the frozen ``missing `edits` on `splice``` refusal.
+
+Response — `ResponseBody::Splice` gains a sibling `pin` object, absent unless
+the request carried one:
+
+```jsonc
+{"pin":{"target":"guide.md",
+        "selector":"Guide/Leader's-Guideline",     // the CANONICAL selector
+        "declared_ref":"guide.md#Guide/Leader's Guideline",  // the lock ref
+        "fingerprint":"fp1.span2.b3.<64 hex>",
+        "blob":"<40 hex>",                          // OMITTED when git could not answer
+        "anchor":"leaders-guideline",
+        "promoted":true}}
+```
+
+**There is deliberately NO `pin.actor` field (D13).** A pin's mint identity IS
+its gate identity IS the splice's own daemon-derived `actor`. The sibling
+`check_write` op carries a caller-settable actor; a pin must not, or a caller
+forges a pin as somebody else. `pin.actor` is refused at decode with ``unknown
+request field `actor` on `pin` ``.
+
+**Two spellings of one address, and they are not interchangeable.** `selector`
+is the SANITIZED host-face hpath — what callers pass, and what the read receipt
+is keyed on. `declared_ref` is what lands in the lock, and its fragment is the
+RAW `/`-joined heading chain, because `model::selector::Selector::parse` is the
+verify plane's front door and matches heading text byte-exactly. Writing the
+sanitized spelling into the lock would mint a ref that resolves to nothing for
+any heading containing a space — a pin that reads `red(dangling)` the moment it
+lands (`crates/wire-serve/src/write.rs:1117-1155`).
+
+**The fingerprint is minted over exactly the span the ref RESOLVES to** — the
+full node span, heading-inclusive and subtree-inclusive — because that is the
+span the verify plane recomputes. The promoted `^slug` is deliberately NOT the
+ref: an anchor node's model span is its HOST LINE, so an `^id` ref over a
+promoted heading would narrow a section pin to its heading text and read green
+on every body edit.
+
+Ordered under the ONE flock the splice already holds:
+
+1. **read-mint gate** (D16) — the receipt lookup, then a rev-recheck of that
+   receipt against the bytes on disk right now. An absent actor bypasses both.
+2. **slug decision** (D15) — an id already in the promotion slot is REUSED
+   verbatim, which is what makes a re-pin idempotent.
+3. **anchor promotion** — the ONE write ordered before the commit. It is
+   rev-NEUTRAL, because norm-v2 removes the marker and its leading space, so the
+   target's fingerprint cannot move and no other page pinning that target
+   reddens. That rev-neutrality is what makes promotion into a possibly-unowned
+   target honest (D14).
+4. **fingerprint + blob oid** — over the RE-RESOLVED span, since a landed
+   promotion widened the node by one line. `--vibe` adds `git hash-object -w`;
+   without it the oid is computed read-only. When git cannot answer, `blob` is
+   ABSENT — never a fabricated sha (D5).
+5. **`commit_batch(content + lock)`** — the lock block rides the batch as the
+   one engine-minted span edit, so content and lock land in ONE `apply_batch`:
+   one flock, one rename.
+
+**`splice.pin` is not advertised in the hello `caps` list.** The v3 caps
+projection appends `read`, `check_write`, and `splice.plan_edits` only. A client
+learns of `pin` from this amendment.
+
+**D12:** `pin.target` is carried VERBATIM into the lock's `ref` and `objects:`
+key. Nothing on this path parses it, so a later `root:` prefix rides through
+untouched.
+
+### 9. Error-code taxonomy additions (stage 2)
+
+| Code | Recovery | When it fires | What the caller does |
+|---|---|---|---|
+| `read_mint_required` | `fix` | A pin on the agent path whose actor holds no read receipt for that exact `(path, selector)` — or a host with no receipt ledger at all (the per-request sidecar) | Read the selector first, in mode `sections`, with that exact spelling; then pin. Against a sidecar, pin through the resident daemon or the local CLI instead |
+| `pin_target_missing` | `fix` | The pin target page does not exist, its selector addresses no section, or the selector stopped resolving after anchor promotion | Re-read the target with mode `toc` to list its section paths, then pin an address that exists. The drift surface renders the same condition as `red(dangling)`, never silent green |
+| `write_conflict` | `refresh` | Two sites: the pin's rev-recheck finds the receipt covers one rev and the section now carries another; and the splice choke-point's pre-rename verify detects a concurrent external change | Re-read the one node (re-reading also re-mints the receipt), then retry. `expected` and `actual` carry the two revs |
+| `workspace_busy` | `retry` | Another cooperating writer holds `.meridian/write.lock`. The flock is non-reentrant, so this also fires if a caller composes two flocked writes | Retry the same request; it is transient. Never compose two flocked calls — a pin rides ONE |
+
+`write_conflict` and `workspace_busy` were minted in M1 (§ Error-code taxonomy
+additions above); stage 2 adds the pin firing conditions to both. Recovery
+classes are unchanged and remain statically bound in `crates/wire/src/lib.rs`.
+
+### 10. The `@fp` claim-link decoration (S10) — agent-plane, never in a claim-link position on disk
+
+A claim link is decorated with its drift color on the way OUT and stripped on
+the way IN.
+
+**The claim, stated exactly as wide as the proof: NO `@fp` TOKEN SURVIVES IN A
+CLAIM-LINK POSITION ON DISK.** That is the block-ref slot of a wikilink or
+embed, and only that. It is deliberately NOT the wider claim "no `@fp` token is
+ever in stored bytes", and NOT "no `@` anywhere" — both are false, and § The
+bound on that claim below says why. Within the claim's scope the guarantee is
+total: the engine never mints a fingerprint claim an author did not write, and
+no put path can land one in a claim-link position.
+
+The grammar is SHAPED, not opaque (D10): `@<tone-word>.<8 lowercase hex>`, where
+`tone` is up to 12 lowercase ASCII letters and the digest is exactly 8 lowercase
+hex characters (`crates/syntax/src/lib.rs:505-524`). A fully-opaque
+"everything after `@`" rule would be unparseable against a heading fragment and
+would eat authored text.
+
+- **It rides the BLOCK-REF slot alone** — `[[target#^id@green.b3af12cd|label]]`.
+  A heading fragment is a different slot, so `[[Page#Q@Home]]` is never even
+  examined. The D10 ambiguity is closed structurally, not by luck of spelling.
+- **Decoration lands in `rendered_text` ALONE.** `sections[].content` stays the
+  raw face a put is built from — a read-decorated view feeding a write is the
+  data-loss class.
+- **It is capability-gated, not a flag.** There is no opt-in switch. The
+  resident daemon decorates because it holds a corpus; the per-request sidecar
+  and the bare CLI pass the one spelling of "nothing to decorate", because a
+  host with one document cannot color a pin whose target is another page. An
+  undecorated link claims nothing; a wrongly-colored one lies.
+- **Strip is ordered, not remembered.** The payload strip runs at the ONE
+  content intake, above plan lowering and validation, so a future put shape is
+  stripped by construction. The address strip is ordered immediately before
+  `model::Ref::anchor` at both guard sites — the wire decoder and the single
+  wire→model bridge — two adjacent lines in each
+  (`crates/wire-serve/src/decode.rs:674-676`,
+  `crates/wire-serve/src/read.rs:663-664`).
+- **The decorated address is addressable, not display-only.** An agent that read
+  `[[guide#^goal@green.b3af12cd]]` may address `^goal@green.b3af12cd` and reach
+  exactly the node `^goal` names.
+- **The tone word ALWAYS rides, green included.** A token is never abbreviated
+  to its digest for the green case. The consistency argument is the point: if
+  the marker were present only when a pin is non-green, then an absent marker
+  would mean either "green" or "nobody computed this", and a reader could not
+  tell which. That is exactly the two-meanings-for-one-shape ambiguity s1c
+  removed from the anchor plane, and the same discipline applies here — the
+  decorator calls the minter unconditionally on the tone the color model
+  returns (`crates/wire-serve/src/read.rs:376-378`).
+- **An `@` the shape does NOT recognize refuses.** The block-id charset
+  (`[A-Za-z0-9-]`, §2.4) has no `@`, so an unshaped tail survives to validation
+  and raises `bad_request`: ``block id outside the one charset [A-Za-z0-9-]
+  (§2.4): `<id>` ``. In a claim-link position there is no third outcome:
+  shaped-and-stripped, or unshaped-and-refused.
+
+#### The bound on that claim — a fenced code sample is not a claim link
+
+**A token-shaped string inside a code fence is NOT stripped, and stored bytes
+therefore CAN contain one.** A document whose body carries
+
+````
+```
+[[guide#^goal@green.b3af12cd]]
+```
+````
+
+round-trips through a put with those bytes intact
+(`crates/syntax/src/lib.rs:1284-1287` pins exactly this case).
+
+This is correct behavior, not a leak to apologize for. A token-shaped string
+inside a fence is a **code sample** — documentation of the grammar, a test
+fixture, this very amendment. Stripping it would be corruption: the engine would
+silently edit an author's illustration of a claim link into something that is no
+longer the thing being illustrated. The strip identifies tokens through the ONE
+dialect parse, so it sees only real block-ref slots, and a fenced sample is not
+one. The engine declines to touch it for the same reason it declines to touch
+`[[Page#Q@Home]]` — neither is a claim-link position.
+
+What survives inside a fence is inert. It is not a claim link, so nothing
+decorates it, nothing resolves it, and no verdict is minted from it. The
+narrower claim above holds precisely because the wider one was never the target.
+
+#### The one true ambiguity, stated as a limit
+
+**An author cannot write a literal `@green.deadbeef` immediately after a block
+ref inside a wikilink.** Authored `[[guide#^goal@green.deadbeef]]` is
+shape-recognized on the way in and stored as `[[guide#^goal]]` — the author's
+literal text is lost, with no refusal.
+
+This is the price of a shaped grammar and it is bounded to one position. It does
+not spread, because the STORED plane stays unambiguous by construction: the
+block-id charset is `[A-Za-z0-9-]` and contains no `@`, so no legitimate stored
+block id can hold one, and there is no authored construct in that slot the strip
+could be confusing for a token. Outside that slot — heading fragments, link
+labels, prose, code fences — an author writes any `@` text freely. An author who
+genuinely needs to show the decorated spelling puts it in a fence, which is what
+this document does.
+
+**D12:** the link target is opaque to the decorator. A later `root:` prefix
+rides inside it untouched — the slot is reserved by not being parsed.
+
+### 11. Drift color is NOT a wire field
+
+The meridian-lock drift color (green / red / grey, each carrying its reason) is
+computed per query run and never rides a frame. `model::selector::GreyReason`
+has ZERO presence in `crates/wire`. Colors reach a consumer only as CLI human or
+`--json` text (`mrd walk`, `mrd status`) and as an in-memory read-face column
+that is never persisted. The color law is
+`docs/wire-contract-v2-colors-amendment.md`; the shipped `mrd status` surface is
+`docs/status.md`.
+
+One consequence a reader will otherwise get backwards: **a green `lock` axis
+does NOT imply the tree is current.** See `docs/status.md` § The composed status
+line.
+
+### Named residuals carried by this surface
+
+Accepted, documented, not prevented. A doc that hides a residual is worse than
+no doc.
+
+- **G1 — pending-anchor durability is `gc.pruneExpire`.** A `--vibe` blob is
+  written eagerly but reachable from no ref, so git may prune it (default two
+  weeks). Committing the file is the only durable anchor. A pruned blob honestly
+  re-classifies as `never-anchored` rather than reading as anchored. The
+  `mrd status` vibe-debt gauge measures the size of this window.
+- **G2 — the flock serializes COOPERATING writers only.** An out-of-band write
+  is DETECTED by the drift color, never prevented. The git pre-commit hook fence
+  is stage-3.
+- **G3 — the two-inode commit is not all-or-nothing.** A pin writes the promoted
+  anchor before the batch. If the lock write then fails, what remains is a
+  rev-neutral, slug-derived anchor — a benign orphan that a re-pin reuses and
+  heals (D15). It is never silent corruption.
+- **G4 — refs are intra-root only** (D12). Cross-root addressing is stage-3;
+  stage 2 only keeps the seam open.
+- **G5 — anchor promotion into an unowned target churns that file's
+  `node_rev`/CAS**, a griefing surface. It is accepted for the core loop because
+  the promotion is rev-neutral. The hook fence and the authz tightening are
+  stage-3.
+
 ## Implementation shape
 
 The frozen `wire` types serialize byte-for-byte as contract v2 and are NOT
@@ -303,6 +655,17 @@ byte-identical guarantee is structural, proven by the untouched frozen goldens.
   through the LIVE serve loop against the U0 captured goldens: rendered text
   and refusal messages byte-equal the Go host face; v2 `read` → `unknown_op`
   with frozen caps.
+- Stage-2: `crates/wire-serve/tests/s7_pin.rs` (the pin under one flock — gate,
+  rev-recheck, promotion idempotence, vibe blob, the refusal set),
+  `crates/registry/tests/read_mint.rs` (the ledger survives the write that
+  rebuilds the warm engine, and mints nothing to disk),
+  `crates/wire-serve/tests/s10_fp_decorate.rs` (decorate → strip round-trip
+  leaving no token in a claim-link position; heading-`@` intact; an unshaped
+  `@fp` refuses and writes nothing) and
+  `crates/syntax/src/lib.rs`'s `strip_fp_removes_block_ref_tokens_only` (the
+  bound: heading fragments, labels, prose, and FENCED CODE all survive),
+  `crates/view/tests/board_pin_verdict_gates.rs` (the board's verdict equals the
+  walk's, value for value, over all six outcomes).
 - Frozen and unchanged, still green: `crates/wire/tests/contract_v2.rs`,
   `crates/testsuite/tests/wire_vocab.rs`, `crates/sidecar/tests/dispatch_v2.rs`,
   `crates/transport-proto/tests/wire_agreement.rs`.

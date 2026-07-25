@@ -521,6 +521,9 @@ fn worked_splice_frames_match_contract() {
                 seq: Some(1),
                 dry: None,
                 verdicts: vec![],
+                // S7: an absent pin serializes AWAY — the frozen v2
+                // response bytes below are the proof.
+                pin: None,
             },
         },
     };
@@ -603,6 +606,9 @@ fn worked_dry_splice_frame_matches_contract() {
                 seq: None,
                 dry: Some(true),
                 verdicts: vec![],
+                // S7: an absent pin serializes AWAY — the frozen v2
+                // response bytes below are the proof.
+                pin: None,
             },
         },
     };
@@ -739,6 +745,8 @@ fn absent_actor_now_absent_on_the_wire() {
             // U8b: empty plan_edits serializes AWAY — the frozen v2 request
             // bytes this test pins stay byte-identical.
             plan_edits: Vec::new(),
+            // S7: same law for `pin` — absent, so it never reaches the wire.
+            pin: None,
         },
     };
     let v = serde_json::to_value(&request).unwrap();

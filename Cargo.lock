@@ -1381,6 +1381,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "git"
+version = "0.0.0"
+dependencies = [
+ "receipt",
+ "tempfile",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2096,6 +2104,7 @@ dependencies = [
  "duckdb",
  "effects",
  "fs",
+ "git",
  "libc",
  "model",
  "policy",
@@ -2829,6 +2838,7 @@ dependencies = [
  "fs",
  "model",
  "query",
+ "receipt",
  "serde",
  "serde_json",
  "syntax",
@@ -4033,6 +4043,7 @@ version = "0.0.0"
 dependencies = [
  "cache",
  "duckdb",
+ "lock",
  "model",
  "syntax",
  "tempfile",
@@ -4388,6 +4399,7 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "git",
  "lock",
  "model",
  "policy",

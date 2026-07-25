@@ -82,7 +82,17 @@ pub fn fingerprint_with_removals(
     node: &Node,
     removals: &[ByteSpan],
 ) -> Fingerprint {
-    let canonical = syntax::norm_v2_slice(&doc.raw, &node.span, removals);
+    fingerprint_span(doc, &node.span, removals)
+}
+
+/// [`fingerprint_with_removals`] over a resolved SPAN rather than a `&Node`
+/// handle. `span2` hashes the span's own bytes (spec §3), so the node
+/// contributes nothing else — a caller holding a resolved [`crate::Target`]
+/// mints without a second tree walk. THE owner of the mint expression; the
+/// `&Node` forms delegate here.
+#[must_use]
+pub fn fingerprint_span(doc: &Document, span: &ByteSpan, removals: &[ByteSpan]) -> Fingerprint {
+    let canonical = syntax::norm_v2_slice(&doc.raw, span, removals);
     Fingerprint(format!(
         "{FP_VERSION}.{CODEC_SPAN2}.{HASHFN_B3}.{}",
         blake3::hash(&canonical).to_hex()
@@ -133,11 +143,50 @@ pub enum ContentVerdict {
     /// Recomputed and compared — the content drifted; `actual` is the current
     /// fingerprint (the re-pin candidate).
     Red { actual: Fingerprint },
-    /// Parses, but the `(codec, hashfn)` pair is not implemented here — grey,
-    /// never green, never red.
-    Unverifiable { codec: String, hashfn: String },
+    /// Parses, but some member of the self-describing triple is not
+    /// implemented here — grey, never green, never red. All THREE members are
+    /// carried verbatim so a render names WHICH one is unknown: an
+    /// `fp9.span2.b3` token that reported only `(codec, hashfn)` would print a
+    /// live-looking pair and hide that the VERSION is the unknown member
+    /// ([`ContentVerdict::unknown_members`]).
+    Unverifiable {
+        version: String,
+        codec: String,
+        hashfn: String,
+    },
     /// Not a fingerprint token.
     Malformed,
+}
+
+impl ContentVerdict {
+    /// The triple members THIS build does not implement, in token order
+    /// (`version` / `codec` / `hashfn`) — empty for every verdict but
+    /// [`ContentVerdict::Unverifiable`].
+    ///
+    /// The single owner of "what this build implements": a grey render asks
+    /// HERE rather than re-comparing against [`FP_VERSION`] / [`CODEC_SPAN2`] /
+    /// [`HASHFN_B3`] itself, so the answer cannot drift from
+    /// [`verify_content`]'s own dispatch.
+    #[must_use]
+    pub fn unknown_members(&self) -> Vec<&'static str> {
+        let ContentVerdict::Unverifiable {
+            version,
+            codec,
+            hashfn,
+        } = self
+        else {
+            return Vec::new();
+        };
+        [
+            ("version", version.as_str(), FP_VERSION),
+            ("codec", codec.as_str(), CODEC_SPAN2),
+            ("hashfn", hashfn.as_str(), HASHFN_B3),
+        ]
+        .into_iter()
+        .filter(|(_, found, live)| found != live)
+        .map(|(member, _, _)| member)
+        .collect()
+    }
 }
 
 /// Verify a **content-class** pin: parse the pinned token, dispatch on its
@@ -146,16 +195,26 @@ pub enum ContentVerdict {
 /// grey — migration lives inside the identifier (#4 §1).
 #[must_use]
 pub fn verify_content(doc: &Document, node: &Node, pinned: &str) -> ContentVerdict {
+    verify_content_span(doc, &node.span, pinned)
+}
+
+/// [`verify_content`] over a resolved SPAN rather than a `&Node` handle — the
+/// same law, for a caller holding a resolved [`crate::Target`] (the pin-color
+/// plane, [`crate::selector::classify_pin`]). THE owner of the verdict
+/// dispatch; [`verify_content`] delegates here.
+#[must_use]
+pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> ContentVerdict {
     let Some(parts) = parse_fingerprint(pinned) else {
         return ContentVerdict::Malformed;
     };
     if parts.version != FP_VERSION || parts.codec != CODEC_SPAN2 || parts.hashfn != HASHFN_B3 {
         return ContentVerdict::Unverifiable {
+            version: parts.version,
             codec: parts.codec,
             hashfn: parts.hashfn,
         };
     }
-    let actual = fingerprint(doc, node);
+    let actual = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw));
     if actual.0 == pinned {
         ContentVerdict::Green
     } else {
@@ -324,6 +383,7 @@ mod tests {
         assert_eq!(
             verify_content(&d1, &d1.root, &format!("fp1.zzz9.b3.{hex64}")),
             ContentVerdict::Unverifiable {
+                version: "fp1".to_string(),
                 codec: "zzz9".to_string(),
                 hashfn: "b3".to_string()
             }
@@ -333,6 +393,7 @@ mod tests {
         assert_eq!(
             verify_content(&d1, &d1.root, &format!("fp9.span2.b3.{hex64}")),
             ContentVerdict::Unverifiable {
+                version: "fp9".to_string(),
                 codec: "span2".to_string(),
                 hashfn: "b3".to_string()
             }
@@ -340,6 +401,7 @@ mod tests {
         assert_eq!(
             verify_content(&d1, &d1.root, "fp1.span2.xx.0123abc"),
             ContentVerdict::Unverifiable {
+                version: "fp1".to_string(),
                 codec: "span2".to_string(),
                 hashfn: "xx".to_string()
             }
@@ -358,6 +420,46 @@ mod tests {
                 "{malformed:?} must be Malformed"
             );
         }
+    }
+
+    /// The `Unverifiable` arm NAMES the unknown triple member. Before the
+    /// version was carried, an `fp9.span2.b3` grey reported codec=span2 /
+    /// hashfn=b3 — both live-looking — and could not say WHICH member this
+    /// build does not implement.
+    #[test]
+    fn unverifiable_names_the_unknown_triple_member() {
+        let d = doc("# A\nbody\n");
+        let hex64 = "0".repeat(64);
+        let cases = [
+            (format!("fp9.span2.b3.{hex64}"), vec!["version"]),
+            (format!("fp1.zzz9.b3.{hex64}"), vec!["codec"]),
+            ("fp1.span2.xx.0123abc".to_string(), vec!["hashfn"]),
+            (
+                "fp9.zzz9.xx.0123abc".to_string(),
+                vec!["version", "codec", "hashfn"],
+            ),
+        ];
+        for (token, expected) in cases {
+            let verdict = verify_content(&d, &d.root, &token);
+            assert_eq!(
+                verdict.unknown_members(),
+                expected,
+                "{token} must name {expected:?} as unknown"
+            );
+        }
+
+        // A verifiable verdict names nothing — the list is the grey's alone.
+        let pin = fingerprint(&d, &d.root).0;
+        assert!(
+            verify_content(&d, &d.root, &pin)
+                .unknown_members()
+                .is_empty()
+        );
+        assert!(
+            verify_content(&d, &d.root, "not-a-token")
+                .unknown_members()
+                .is_empty()
+        );
     }
 
     /// OBJECT-CLASS REV — an object-class pin verifies against THE git object

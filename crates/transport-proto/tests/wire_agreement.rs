@@ -206,6 +206,12 @@ fn code_to_pb(c: wire::ErrorCode) -> pb::ErrorCode {
         wire::ErrorCode::IndexIntegrity => pb::ErrorCode::IndexIntegrity,
         wire::ErrorCode::WriteConflict => pb::ErrorCode::WriteConflict,
         wire::ErrorCode::WorkspaceBusy => pb::ErrorCode::WorkspaceBusy,
+        // Stage-2 S7: v3-pin-path-only codes, outside the proto agreement
+        // surface — the same rule `plan_edits` follows. No v2 sample can
+        // carry one, so the frozen proto enum is untouched.
+        wire::ErrorCode::ReadMintRequired | wire::ErrorCode::PinTargetMissing => {
+            panic!("{c:?} is v3-pin-face only — not in the proto agreement")
+        }
     }
 }
 
@@ -353,6 +359,7 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             force,
             edits,
             plan_edits,
+            pin,
         } => {
             // v3-only JSON-face field (M1 U8b): outside the proto agreement
             // surface, same rule as `read`/`check_write` — the v2 samples
@@ -360,6 +367,11 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
             assert!(
                 plan_edits.is_empty(),
                 "`plan_edits` is v3-JSON-face only — not in the proto agreement"
+            );
+            // Stage-2 S7 `splice.pin`: same rule.
+            assert!(
+                pin.is_none(),
+                "`pin` is v3-JSON-face only — not in the proto agreement"
             );
             pb::request::Op::Splice(pb::SpliceRequest {
                 path: path.0,
@@ -533,15 +545,24 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             seq,
             dry,
             verdicts,
-        } => pb::response::Body::Splice(pb::SpliceResponse {
-            armed: Some(armed_to_pb(armed)),
-            receipt: receipt.map(receipt_fact_to_pb),
-            root_before: root_before.0,
-            root_after: root_after.map(|r| r.0),
-            seq,
-            dry,
-            verdicts: verdicts.into_iter().map(verdict_to_pb).collect(),
-        }),
+            pin,
+        } => {
+            // Stage-2 S7: the pin FACT is v3-JSON-face only, like the request
+            // field that mints it.
+            assert!(
+                pin.is_none(),
+                "`pin` is v3-JSON-face only — not in the proto agreement"
+            );
+            pb::response::Body::Splice(pb::SpliceResponse {
+                armed: Some(armed_to_pb(armed)),
+                receipt: receipt.map(receipt_fact_to_pb),
+                root_before: root_before.0,
+                root_after: root_after.map(|r| r.0),
+                seq,
+                dry,
+                verdicts: verdicts.into_iter().map(verdict_to_pb).collect(),
+            })
+        }
         wire::ResponseBody::Root { root, seq } => {
             pb::response::Body::Root(pb::RootResponse { root: root.0, seq })
         }
@@ -1100,6 +1121,7 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
             edits: edits.into_iter().map(edit_from_pb).collect(),
             // v3-only JSON-face field (M1 U8b): the pb mirror stays v2-shaped.
             plan_edits: Vec::new(),
+            pin: None,
         },
         pb::request::Op::Root(pb::RootRequest {}) => wire::Op::Root,
         pb::request::Op::Diff(pb::DiffRequest { from_root, to_root }) => wire::Op::Diff {
@@ -1276,6 +1298,7 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             seq,
             dry,
             verdicts: verdicts.into_iter().map(verdict_from_pb).collect(),
+            pin: None,
         },
         pb::response::Body::Root(pb::RootResponse { root, seq }) => wire::ResponseBody::Root {
             root: wire::Root(root),
@@ -1640,6 +1663,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 if_node_rev: Some(wire::NodeRev("33d5b0e1b27cb48b".into())),
             }],
             plan_edits: Vec::new(),
+            pin: None,
         },
         // splice: guardless append (legal at the wire forever) — put at:end
         wire::Op::Splice {
@@ -1661,6 +1685,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 if_node_rev: None,
             }],
             plan_edits: Vec::new(),
+            pin: None,
         },
         // splice: dry run, fm_key target, put at:all and at:content coverage
         wire::Op::Splice {
@@ -1706,6 +1731,7 @@ fn sample_splice_requests() -> Vec<wire::Op> {
                 },
             ],
             plan_edits: Vec::new(),
+            pin: None,
         },
     ]
 }
@@ -1971,6 +1997,9 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
                 node_rev: wire::NodeRev("5a8faa717fbcdb04".into()),
                 message: "section has no blurb line".into(),
             }],
+            // S7: the pin fact is v3-JSON-face only — the proto samples never
+            // carry one.
+            pin: None,
         },
         // splice: the dry shape — root_after null, no receipt, no seq
         wire::ResponseBody::Splice {
@@ -1995,6 +2024,7 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
             seq: None,
             dry: Some(true),
             verdicts: vec![],
+            pin: None,
         },
     ]
 }

@@ -468,6 +468,144 @@ fn is_callout_type_char(b: u8) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// the claim-link `@fp` decoration token (stage-2 S10, D10)
+// ---------------------------------------------------------------------------
+//
+// The AGENT-PLANE spelling of a claim link: `[[guide#^leaders-guideline@green.
+// b3af12cd|Leader's Guideline]]`. It is minted onto a READ and stripped off a
+// PUT — stored bytes never carry one — so this crate owns only its SHAPE, and
+// the shape is what makes the strip safe:
+//
+// - **It rides the BLOCK-REF slot alone** (`#^id@…`). A heading fragment is a
+//   different slot, so `[[Page#Q@Home]]` is not even looked at — the D10
+//   ambiguity is closed structurally, not by luck of spelling.
+// - **It is SHAPED, never opaque** — `@<tone-word>.<8 lowercase hex>`. A
+//   fully-opaque "everything after `@`" rule is unparseable against a heading
+//   `@` and would eat authored text.
+// - **The VOCABULARY is the caller's, the SHAPE is this crate's.** The tone
+//   word is `view::walk::color_tone`'s output and the digest is a
+//   `model::fingerprint` CID-token's; neither meaning is re-derived here (D10:
+//   value-semantics opaque). This crate answers exactly one question — is this
+//   tail a well-formed token, and where does it sit.
+//
+// The block-id charset (§2.4) has no `@`, so anything this grammar does NOT
+// recognize survives to `model::Ref::anchor` and refuses `bad_request` there.
+// Shaped-and-stripped or unshaped-and-refused: there is no third outcome, and
+// no path that writes an `@fp` to disk.
+
+/// The token's digest field width: the leading hex of the pinned CID-token,
+/// enough to recognize a claim across a render without being an address (a
+/// decorated form is NEVER resolved back into one — S7's two-spellings trap).
+pub const FP_DIGEST_LEN: usize = 8;
+
+/// The longest tone word the shape admits (`green` / `grey` / `red` today —
+/// the vocabulary is the caller's, so the bound is generous, not a list).
+const FP_TONE_MAX: usize = 12;
+
+/// Is `body` a well-formed `@fp` token body — `<tone-word>.<8 lowercase hex>`,
+/// the text AFTER the `@`?
+///
+/// This is the whole shape law. It is deliberately narrow: an authored `@`
+/// tail (`Q@Home`, `@zt`, `@example.com`) fails it, so the strip can never
+/// reach authored bytes.
+#[must_use]
+pub fn is_fp_body(body: &str) -> bool {
+    let Some((tone, digest)) = body.split_once('.') else {
+        return false;
+    };
+    !tone.is_empty()
+        && tone.len() <= FP_TONE_MAX
+        && tone.bytes().all(|b| b.is_ascii_lowercase())
+        && digest.len() == FP_DIGEST_LEN
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
+/// Split a wikilink BLOCK-REF fragment (the text after `#^`) into its stored
+/// block id and its `@fp` token body, if it carries a well-formed one.
+///
+/// `("leaders-guideline@green.b3af12cd")` → `("leaders-guideline",
+/// Some("green.b3af12cd"))`; anything else → `(input, None)`. The split is on
+/// the LAST `@` so a block id may not be silently truncated by an earlier one —
+/// and since the block-id charset has no `@` at all, a stored id never reaches
+/// here with one.
+#[must_use]
+pub fn split_fp(block: &str) -> (&str, Option<&str>) {
+    match block.rsplit_once('@') {
+        Some((base, body)) if !base.is_empty() && is_fp_body(body) => (base, Some(body)),
+        _ => (block, None),
+    }
+}
+
+/// Mint the token text (`@green.b3af12cd`) for a tone word and a digest, or
+/// `None` when the pair does not make a well-formed one.
+///
+/// `digest` is the CID-token's hex digest; the token carries its first
+/// [`FP_DIGEST_LEN`] characters. Minting through the same predicate the strip
+/// uses is what keeps decorate and strip from drifting apart.
+#[must_use]
+pub fn fp_token(tone: &str, digest: &str) -> Option<String> {
+    let head: String = digest.chars().take(FP_DIGEST_LEN).collect();
+    let body = format!("{tone}.{head}");
+    is_fp_body(&body).then(|| format!("@{body}"))
+}
+
+/// Every well-formed `@fp` token's byte range in `input`, sorted — the ranges a
+/// strip removes.
+///
+/// Identification runs over the one dialect parse: a token is recognized only
+/// inside a `Wikilink`/`Embed` node's block-ref slot, so text that merely looks
+/// like one (inside a code fence, in a heading fragment, in prose) is never a
+/// token. That is the same discipline [`anchor_removals`] follows, and for the
+/// same reason: the removal law must never re-derive the grammar it consumes.
+#[must_use]
+pub fn fp_removals(input: &str) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for node in parse(input) {
+        let (DialectKind::Wikilink { block: Some(b), .. }
+        | DialectKind::Embed { block: Some(b), .. }) = &node.kind
+        else {
+            continue;
+        };
+        let (base, Some(_)) = split_fp(b) else {
+            continue;
+        };
+        // The parsed fragment is a verbatim substring of the node's own bytes,
+        // so its position is located, never reconstructed.
+        let Some(at) = input[node.span.clone()].rfind(&format!("#^{b}")) else {
+            continue;
+        };
+        let id_start = node.span.start + at + "#^".len();
+        out.push(id_start + base.len()..id_start + b.len());
+    }
+    out.sort_by_key(|r| r.start);
+    out
+}
+
+/// `input` with every well-formed `@fp` token removed — the strip-on-put
+/// transform. Borrowed (zero-copy) when there is nothing to remove, which is
+/// every ordinary write.
+#[must_use]
+pub fn strip_fp(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.contains('@') {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let removals = fp_removals(input);
+    if removals.is_empty() {
+        return std::borrow::Cow::Borrowed(input);
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0;
+    for r in removals {
+        out.push_str(&input[cursor..r.start]);
+        cursor = r.end;
+    }
+    out.push_str(&input[cursor..]);
+    std::borrow::Cow::Owned(out)
+}
+
+// ---------------------------------------------------------------------------
 // norm-v2 — the fingerprint plane's canonicalization (docs/norm-v2-spec.md §4)
 // ---------------------------------------------------------------------------
 //
@@ -1050,5 +1188,143 @@ mod tests {
         let removals = anchor_removals(src);
         // [0,15) = `# A\nintro ^goal` (the terminator-exclusive line span).
         assert_eq!(norm_v2_slice(src, &(0..15), &removals), b"# A\nintro");
+    }
+}
+
+#[cfg(test)]
+mod fp_tests {
+    use super::*;
+
+    /// The SHAPE law, exhaustively: what is a token and what is authored text.
+    /// The right column is the whole reason D10 rejected an opaque token — every
+    /// `false` row is a spelling a human legitimately writes.
+    #[test]
+    fn the_shape_admits_only_a_well_formed_token() {
+        for body in [
+            "green.b3af12cd",
+            "red.00000000",
+            "grey.ffffffff",
+            "x.0123abcd",
+        ] {
+            assert!(is_fp_body(body), "well-formed: {body}");
+        }
+        for body in [
+            "Home",            // the D10 case: a heading fragment's `@`
+            "zt",              // a mention
+            "example.com",     // an address
+            "green.b3af12c",   // 7 hex — width is part of the shape
+            "green.b3af12cd0", // 9 hex
+            "green.B3AF12CD",  // uppercase: one spelling only
+            "green.b3af12cg",  // not hex
+            "Green.b3af12cd",  // tone words are lowercase
+            "green_b3af12cd",  // the separator is a dot
+            ".b3af12cd",       // empty tone
+            "green.",          // empty digest
+            "verylongtoneword.b3af12cd",
+        ] {
+            assert!(!is_fp_body(body), "authored, not a token: {body}");
+        }
+    }
+
+    /// The split is on the LAST `@` and only when the tail is well-formed, so a
+    /// block id is never silently truncated.
+    #[test]
+    fn split_fp_separates_the_stored_id_from_the_token() {
+        assert_eq!(
+            split_fp("leaders-guideline@green.b3af12cd"),
+            ("leaders-guideline", Some("green.b3af12cd"))
+        );
+        // no token: the whole thing is the id (and will refuse at Ref::anchor)
+        assert_eq!(split_fp("leaders-guideline"), ("leaders-guideline", None));
+        assert_eq!(split_fp("id@nope"), ("id@nope", None));
+        // an `@`-only tail is not a token, and an empty base is not an id
+        assert_eq!(split_fp("@green.b3af12cd"), ("@green.b3af12cd", None));
+    }
+
+    /// Minting goes through the same predicate the strip recognizes: a mint the
+    /// strip could not remove is not mintable.
+    #[test]
+    fn fp_token_mints_only_what_the_strip_recognizes() {
+        let hex64 = "b3af12cd".repeat(8);
+        let token = fp_token("green", &hex64).expect("well-formed");
+        assert_eq!(token, "@green.b3af12cd", "the digest is truncated to 8");
+        assert_eq!(
+            split_fp(&format!("id{token}")),
+            ("id", Some("green.b3af12cd"))
+        );
+        assert_eq!(fp_token("green", "abc"), None, "too short a digest");
+        assert_eq!(fp_token("GREEN", &hex64), None, "not a tone word");
+    }
+
+    /// The strip removes tokens from BLOCK-REF slots and nothing else. The
+    /// heading-fragment rows are D10's whole point; the code-fence row is the
+    /// consequence of identifying tokens through the one dialect parse.
+    #[test]
+    fn strip_fp_removes_block_ref_tokens_only() {
+        let cases = [
+            // (input, expected)
+            (
+                "see [[guide#^leaders-guideline@green.b3af12cd|Guideline]] now",
+                "see [[guide#^leaders-guideline|Guideline]] now",
+            ),
+            ("![[guide#^goal@red.00112233]]", "![[guide#^goal]]"),
+            // heading fragment: NOT a block-ref slot, even when fp-shaped
+            ("[[Page#Q@Home]]", "[[Page#Q@Home]]"),
+            ("[[Page#Q@green.b3af12cd]]", "[[Page#Q@green.b3af12cd]]"),
+            // label `@` is parsed separately
+            ("[[guide#^goal|ping @zt]]", "[[guide#^goal|ping @zt]]"),
+            // an unshaped tail is authored text — it survives, and refuses at
+            // the address boundary rather than being silently eaten here
+            ("[[guide#^goal@nope]]", "[[guide#^goal@nope]]"),
+            // prose and code are not links
+            ("mail me@example.com", "mail me@example.com"),
+            (
+                "```\n[[guide#^goal@green.b3af12cd]]\n```\n",
+                "```\n[[guide#^goal@green.b3af12cd]]\n```\n",
+            ),
+            // multiple tokens on one line, all removed
+            (
+                "[[a#^x@green.00000000]] and [[b#^y@red.ffffffff]]",
+                "[[a#^x]] and [[b#^y]]",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(strip_fp(input), want, "input: {input}");
+        }
+    }
+
+    /// Zero-copy when there is nothing to remove — every ordinary write.
+    #[test]
+    fn strip_fp_borrows_when_there_is_no_token() {
+        assert!(matches!(
+            strip_fp("plain [[guide#^goal]] text"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            strip_fp("an @ that is not a token"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            strip_fp("[[guide#^goal@green.b3af12cd]]"),
+            std::borrow::Cow::Owned(_)
+        ));
+    }
+
+    /// The strip is IDEMPOTENT and its output re-parses to the stored address —
+    /// which is what makes "stored bytes never carry a token" checkable.
+    #[test]
+    fn stripped_bytes_carry_the_stored_address() {
+        let decorated = "[[guide#^leaders-guideline@green.b3af12cd|G]]";
+        let once = strip_fp(decorated).into_owned();
+        assert_eq!(strip_fp(&once), once, "idempotent");
+        let node = parse(&once)
+            .into_iter()
+            .find(|n| matches!(n.kind, DialectKind::Wikilink { .. }))
+            .expect("a wikilink");
+        let DialectKind::Wikilink { block, .. } = node.kind else {
+            unreachable!()
+        };
+        assert_eq!(block.as_deref(), Some("leaders-guideline"));
+        assert!(is_block_id("leaders-guideline"), "and it is a legal id");
     }
 }

@@ -134,7 +134,7 @@ fn parse_depth(raw: &str) -> Result<u32, Fail> {
 /// Build the corpus in-process from the workspace on disk — the same U1 builder
 /// (`fs::build_corpus`) the daemon and the `links` degrade use, so the walk reads
 /// exactly the served projection. The wire/daemon walk leg is U3.1.
-fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
+pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
             "cannot resolve workspace {} ({e})",
@@ -200,7 +200,10 @@ fn render_human(report: &WalkReport) -> String {
 
 /// The `--json` shape: the workspace plus the walk object (direction, root,
 /// depth bound, entries, rev citations). Colors split into a stable
-/// `color`/`reason` pair.
+/// `color`/`reason` pair plus the reason's `detail` — which fingerprint-triple
+/// member is unknown, or why a lock refused — so a machine reader sees exactly
+/// what [`walk::color_label`] renders for a human, never a reason word stripped
+/// of the damage it names.
 fn to_json(workspace: &Path, report: &WalkReport) -> Value {
     let entries: Vec<Value> = report
         .entries
@@ -212,6 +215,7 @@ fn to_json(workspace: &Path, report: &WalkReport) -> Value {
                 "rev": entry.rev,
                 "color": walk::color_tone(&entry.color),
                 "reason": walk::color_reason(&entry.color),
+                "detail": walk::color_detail(&entry.color),
             })
         })
         .collect();

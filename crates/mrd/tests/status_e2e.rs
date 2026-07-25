@@ -320,3 +320,337 @@ fn status_wall_time_under_1s_on_3k_corpus() {
         "status must be O(armed), <1s on the 3k corpus — measured {ms} ms"
     );
 }
+
+// ── S9: the meridian-lock axis, end to end over the real binary ─────────────
+
+/// The canonical `meridian-lock` fence bytes for one pin — the exact form
+/// `lock::render` emits (`crates/lock`), written by hand so this gate depends on
+/// the CLI's own reader, not on the writer that produced the bytes.
+fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
+    format!(
+        "```meridian-lock\nversion: 1\npins:\n  - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\"\n```"
+    )
+}
+
+/// The LIVE fingerprint token of a page's document root — what a correct pin
+/// holds. Computed through the engine's own mint over the same parse
+/// `fs::build_corpus` runs, so the fixture cannot pin a token the reader would
+/// not recompute.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root).0
+}
+
+/// The composed multi-axis line of a human `status` render (the U6.2 legend).
+fn composed_line(human: &str) -> &str {
+    human
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with("pin "))
+        .expect("the composed line")
+}
+
+/// The `composed.lock` object of a `status --json` run.
+fn lock_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
+    let out = sb.run(ws, &["status", "--json"]);
+    assert!(
+        out.status.success() || code(&out) == 1,
+        "status --json ran: {}",
+        stderr(&out)
+    );
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    doc["composed"]["lock"].clone()
+}
+
+/// S9 GATE — a real `meridian-lock` pin is VISIBLE to `mrd status` on its own
+/// axis, green when the pinned fingerprint still matches and red when the target
+/// content moved. Before S9 `mrd status` did not read page pins at all: it
+/// printed `pin green` identically whether the corpus held a correct pin, a
+/// drifted one, or none.
+#[test]
+fn status_renders_the_meridian_lock_axis_green_then_red() {
+    let sb = sandbox();
+    let ws = sb.workspace("lockaxis");
+    std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
+
+    let target_v1 = "# Target\n\nbody v1\n";
+    std::fs::write(ws.join("sources/target.md"), target_v1).expect("write target");
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock_block("sources/target.md", &live_fingerprint(target_v1))
+        ),
+    )
+    .expect("write effect");
+
+    let green = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        green.contains("lock green [1 pin]"),
+        "a matching pin renders green on its own axis: {green}"
+    );
+    // The armed-set `pin` axis is untouched beside it (U6.2: never merged).
+    assert!(green.contains("pin green · lock green"), "{green}");
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["pins"], serde_json::json!(1));
+    assert_eq!(j["color"], serde_json::json!("green"));
+    assert_eq!(j["reason"], serde_json::Value::Null);
+
+    // Move the target's content — the pin now measures drift.
+    std::fs::write(ws.join("sources/target.md"), "# Target\n\nbody v2 edited\n")
+        .expect("rewrite target");
+    let red = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        red.contains("lock red content-drifted [1 pin]"),
+        "a drifted pin reddens: {red}"
+    );
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["color"], serde_json::json!("red"));
+    assert_eq!(j["reason"], serde_json::json!("content-drifted"));
+
+    eprintln!("S9 composed (green): {}", composed_line(&green));
+    eprintln!("S9 composed (red):   {}", composed_line(&red));
+}
+
+/// S9 GATE — a REFUSED lock block is visible as `grey lock-refused` with its
+/// reason, not as a clean workspace. A corrupt lock reading as "no pins" is the
+/// one answer a drift face must never give.
+#[test]
+fn status_renders_a_refused_lock_as_grey_not_silence() {
+    let sb = sandbox();
+    let ws = sb.workspace("lockrefused");
+    std::fs::write(
+        ws.join("effect.md"),
+        "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n",
+    )
+    .expect("write effect");
+
+    let out = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        out.contains(
+            "lock grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins)) [1 pin]"
+        ),
+        "a refused lock names its damage: {out}"
+    );
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["color"], serde_json::json!("grey"));
+    assert_eq!(j["reason"], serde_json::json!("lock-refused"));
+    assert_eq!(j["pins"], serde_json::json!(1));
+    eprintln!("S9 composed (lock-refused): {}", composed_line(&out));
+}
+
+// ── S11: the vibe-debt gauge, end to end over the real binary + real git ────
+
+/// Run `git` in `ws` with a fixed identity, and fail loudly with git's own
+/// stderr — a fixture that silently skipped its git setup would prove nothing.
+fn git(ws: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(ws)
+        .args([
+            "-c",
+            "user.name=S11 fixture",
+            "-c",
+            "user.email=s11@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .expect("spawn git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// The canonical `meridian-lock` fence bytes for one `objects:` entry — the
+/// retrieval plane the gauge measures, written by hand so this gate depends on
+/// the CLI's own reader.
+fn lock_block_with_object(key: &str, blob_sha: &str) -> String {
+    format!("```meridian-lock\nversion: 1\nobjects:\n  \"{key}\": \"{blob_sha}\"\n```")
+}
+
+/// The `composed.vibe_debt` object of a `status --json` run.
+fn vibe_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
+    let out = sb.run(ws, &["status", "--json"]);
+    assert!(
+        out.status.success() || code(&out) == 1,
+        "status --json ran: {}",
+        stderr(&out)
+    );
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("status json");
+    doc["composed"]["vibe_debt"].clone()
+}
+
+/// S11 GATE 1 — a NEVER-COMMITTED vibe blob increments the gauge in both count
+/// and bytes. The fixture reproduces `--vibe`'s eager write exactly
+/// (`git hash-object -w`): the blob is in the object database, reachable from no
+/// ref, and the lock references it.
+#[test]
+fn status_vibe_debt_counts_a_never_committed_blob() {
+    let sb = sandbox();
+    let ws = sb.workspace("vibedebt");
+    git(&ws, &["init"]);
+
+    let vibe = "# Vibe\n\nnever committed\n";
+    std::fs::write(ws.join("vibe.md"), vibe).expect("write vibe");
+    // The eager write S7's `--vibe` performs: the blob exists before any commit.
+    let oid = git(&ws, &["hash-object", "-w", "--", "vibe.md"]);
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock_block_with_object("vibe.md", &oid)
+        ),
+    )
+    .expect("write effect");
+
+    let out = sb.run(&ws, &["status"]);
+    let human = stdout(&out);
+    let expected = format!("vibe-debt 1 blob ({} bytes)", vibe.len());
+    assert!(
+        human.contains(&expected),
+        "an unreachable vibe blob is debt ({expected}): {human}"
+    );
+    // METER, NOT A GATE: debt alone never turns the exit triad.
+    assert_eq!(code(&out), 0, "debt is not a finding: {}", stderr(&out));
+
+    let j = vibe_json(&sb, &ws);
+    assert_eq!(j["blobs"], serde_json::json!(1));
+    assert_eq!(j["bytes"], serde_json::json!(vibe.len()));
+    assert_eq!(j["unknown"], serde_json::Value::Null);
+    eprintln!("S11 composed (1 blob owed): {}", composed_line(&human));
+    eprintln!("S11 json     (1 blob owed): {j}");
+}
+
+/// S11 GATE 2 — a COMMITTED blob contributes nothing. Same lock, same sha: the
+/// only change is that a commit now reaches the object, which is exactly what
+/// paying the debt means.
+#[test]
+fn status_vibe_debt_ignores_a_committed_blob() {
+    let sb = sandbox();
+    let ws = sb.workspace("vibepaid");
+    git(&ws, &["init"]);
+
+    let vibe = "# Vibe\n\ncommitted after all\n";
+    std::fs::write(ws.join("vibe.md"), vibe).expect("write vibe");
+    let oid = git(&ws, &["hash-object", "-w", "--", "vibe.md"]);
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\ndraws from it\n\n{}\n",
+            lock_block_with_object("vibe.md", &oid)
+        ),
+    )
+    .expect("write effect");
+
+    // Before the commit: owed.
+    let owed = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        owed.contains(&format!("vibe-debt 1 blob ({} bytes)", vibe.len())),
+        "the unpaid reading, for contrast: {owed}"
+    );
+
+    git(&ws, &["add", "vibe.md"]);
+    git(&ws, &["commit", "-m", "anchor the vibe blob"]);
+    // The SAME oid — committing anchors the blob, it does not re-hash it.
+    assert_eq!(
+        git(&ws, &["rev-parse", "HEAD:vibe.md"]),
+        oid,
+        "the committed blob is the pinned one"
+    );
+
+    let paid = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        paid.contains("vibe-debt 0 blobs (0 bytes)"),
+        "an anchored blob is not debt: {paid}"
+    );
+    let j = vibe_json(&sb, &ws);
+    assert_eq!(j["blobs"], serde_json::json!(0));
+    assert_eq!(j["bytes"], serde_json::json!(0));
+    eprintln!("S11 composed (paid): {}", composed_line(&paid));
+}
+
+/// S11 GATE 3 — ZERO RENDERS. A corpus that owes nothing still shows the gauge
+/// on the human line and still emits `0` in `--json`: a gauge that hides at zero
+/// is not a gauge, and an absent field reads as "not measured".
+#[test]
+fn status_vibe_debt_zero_renders_and_json_emits_it() {
+    let sb = sandbox();
+    let ws = sb.workspace("vibezero");
+    std::fs::write(ws.join("note.md"), "# Note\n\nno lock here\n").expect("write note");
+
+    let human = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        human.contains("vibe-debt 0 blobs (0 bytes)"),
+        "zero holds its segment: {human}"
+    );
+    let j = vibe_json(&sb, &ws);
+    assert_eq!(j["blobs"], serde_json::json!(0));
+    assert_eq!(j["bytes"], serde_json::json!(0));
+    assert_eq!(j["label"], serde_json::json!("0 blobs (0 bytes)"));
+    assert_eq!(
+        j["unknown"],
+        serde_json::Value::Null,
+        "nothing referenced is a MEASURED zero, not an unknown"
+    );
+    eprintln!("S11 composed (zero): {}", composed_line(&human));
+    eprintln!("S11 json     (zero): {j}");
+}
+
+/// S11 — the gauge degrades honestly. A lock referencing a blob in a workspace
+/// that is not a git repository reports `unknown` with git's own wording, never
+/// a `0` a reader would take for clean.
+#[test]
+fn status_vibe_debt_outside_a_repository_is_unknown_not_zero() {
+    let sb = sandbox();
+    let ws = sb.workspace("vibenorepo");
+    std::fs::write(
+        ws.join("effect.md"),
+        format!(
+            "# Effect\n\n{}\n",
+            lock_block_with_object("vibe.md", &"a".repeat(40))
+        ),
+    )
+    .expect("write effect");
+
+    let human = stdout(&sb.run(&ws, &["status"]));
+    assert!(
+        human.contains("vibe-debt unknown (not a git repository"),
+        "unmeasurable says so: {human}"
+    );
+    let j = vibe_json(&sb, &ws);
+    assert_eq!(j["blobs"], serde_json::json!(0));
+    assert!(
+        j["unknown"]
+            .as_str()
+            .is_some_and(|d| d.contains("not a git repository")),
+        "the reason is carried: {j}"
+    );
+    eprintln!("S11 composed (unknown): {}", composed_line(&human));
+}
+
+/// S9 GATE — `status --json` ALWAYS emits the lock fields. A workspace with no
+/// lock pins reports `0` and a null color, never an absent object a reader could
+/// mistake for "not checked" (and never a green it did not verify).
+#[test]
+fn status_json_always_emits_the_lock_axis_even_with_no_pins() {
+    let sb = sandbox();
+    let ws = sb.workspace("nopins");
+    std::fs::write(ws.join("note.md"), "# Note\n\nno lock here\n").expect("write note");
+
+    let j = lock_json(&sb, &ws);
+    assert_eq!(j["pins"], serde_json::json!(0));
+    assert_eq!(j["color"], serde_json::Value::Null, "0 pins is not a color");
+    assert_eq!(j["label"], serde_json::json!("none"));
+    assert_eq!(j["unreadable"], serde_json::Value::Null);
+
+    let human = stdout(&sb.run(&ws, &["status"]));
+    assert!(human.contains("lock none"), "{human}");
+    eprintln!("S9 composed (no pins): {}", composed_line(&human));
+    eprintln!("S9 json     (no pins): {j}");
+}

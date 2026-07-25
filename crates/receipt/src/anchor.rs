@@ -54,6 +54,16 @@
 //! probes agree on: **a local-only or restored pin never reads as pointed-fresh
 //! green.** Where a single glyph is needed, freshness-grey dominates a pointed
 //! claim (fail-safe — show the weakest asserted axis; [`TwoBadge::dominant`]).
+//!
+//! # The second anchor: is the pinned BLOB anchored? (S5)
+//! The axis above answers "how stale is our knowledge of origin". A pinned
+//! `objects:` entry asks a different, local question: **does the blob this pin
+//! names exist, and is it reachable from a commit?** [`ObjectAnchor`] carries
+//! that as three states — [`ObjectAnchor::Anchored`] /
+//! [`ObjectAnchor::PendingAnchor`] / [`ObjectAnchor::NeverAnchored`] — and the
+//! same fact/classify split applies: the `git` crate gathers
+//! [`ObjectAnchorFacts`] by asking git, this module classifies them, and no
+//! state is ever inferred from a fabricated object id.
 
 use std::time::Duration;
 
@@ -256,6 +266,104 @@ pub fn human_age(age: Duration) -> String {
         format!("{}h", secs / 3_600)
     } else {
         format!("{}d", secs / 86_400)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// object anchoring — the three states of a pinned blob (S5)
+// ---------------------------------------------------------------------------
+
+/// The git-object facts ONE anchoring check gathers about ONE blob. The caller
+/// (the `git` crate's `Repo` handle, driven from `mrd status` / the pin path)
+/// asks git; this crate never computes an object id and never shells out — the
+/// same split the origin axis uses, where [`AnchorFacts`] are gathered by the
+/// status surface and classified here.
+///
+/// Both facts come from the same run: `reachable_from_commit` is answered from
+/// the ONE `git rev-list --objects --all` set the check computed up front (O(1)
+/// membership, never a per-blob git call), and `object_present` from the batched
+/// `git cat-file --batch-check` over every pinned oid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectAnchorFacts {
+    /// Whether the object exists in the repository's object database.
+    pub object_present: bool,
+    /// Whether the object is reachable from a ref — i.e. some commit carries
+    /// it, so `git gc` will keep it.
+    pub reachable_from_commit: bool,
+}
+
+/// The three anchoring states of a pinned blob.
+///
+/// # Grain
+/// Stage-2 grain is M1's **anchor-is-a-line**: the lock rides in a fence and the
+/// pin anchor is a slug line, which this classification is sufficient for. The
+/// anchor-after-fence receipt grain is stage-3 and is NOT modeled here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectAnchor {
+    /// Reachable from a ref: a commit carries the blob, so it survives `git gc`
+    /// and any clone of that ref sees it. The only durable state.
+    Anchored,
+    /// The object is in the database but no ref reaches it — the vibe eager
+    /// write (`git hash-object -w`) before the file is committed. Verifiable
+    /// locally, durable only until the TTL: see [`PENDING_ANCHOR_TTL`].
+    PendingAnchor,
+    /// No such object: nothing was ever written (a read-only blob-sha compute),
+    /// the repository was re-cloned, or `git gc` has already pruned a
+    /// pending-anchor blob past its TTL. A pin over it can be verified against
+    /// nothing.
+    NeverAnchored,
+}
+
+/// **Named residual G1 — the pending-anchor TTL is `gc.pruneExpire`.** A
+/// pending-anchor blob is unreachable from every ref, so `git gc` prunes it once
+/// it ages past the repository's local `gc.pruneExpire` (git's default
+/// `2.weeks.ago`). The engine **documents this and does not prevent it**: the
+/// eager write buys local verifiability, committing the file is the only durable
+/// anchor, and a pruned blob honestly re-classifies as
+/// [`ObjectAnchor::NeverAnchored`] rather than silently reading as anchored.
+pub const PENDING_ANCHOR_TTL: &str = "pending-anchor durability is the repository's local `gc.pruneExpire` \
+     (git default 2.weeks.ago): an uncommitted vibe blob is unreachable, so git may prune it — \
+     commit the file to anchor it durably";
+
+impl ObjectAnchor {
+    /// Classify the anchoring state from the run's gathered facts.
+    ///
+    /// Reachability is the stronger fact and decides first: an object a ref
+    /// reaches IS in the database, so a `reachable_from_commit` fact gathered
+    /// against a stale presence answer still classifies as
+    /// [`ObjectAnchor::Anchored`] — the classification never invents a state the
+    /// facts do not support.
+    #[must_use]
+    pub fn classify(facts: &ObjectAnchorFacts) -> ObjectAnchor {
+        if facts.reachable_from_commit {
+            ObjectAnchor::Anchored
+        } else if facts.object_present {
+            ObjectAnchor::PendingAnchor
+        } else {
+            ObjectAnchor::NeverAnchored
+        }
+    }
+
+    /// The render word for this state — one spelling, shared by every surface
+    /// so the status line and the gauge never drift apart.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            ObjectAnchor::Anchored => "anchored",
+            ObjectAnchor::PendingAnchor => "pending-anchor",
+            ObjectAnchor::NeverAnchored => "never-anchored",
+        }
+    }
+
+    /// The hint to render beside this state, if any. Only
+    /// [`ObjectAnchor::PendingAnchor`] carries one — [`PENDING_ANCHOR_TTL`], the
+    /// named residual G1.
+    #[must_use]
+    pub fn nudge(self) -> Option<&'static str> {
+        match self {
+            ObjectAnchor::PendingAnchor => Some(PENDING_ANCHOR_TTL),
+            _ => None,
+        }
     }
 }
 
@@ -693,6 +801,63 @@ mod tests {
         assert_eq!(
             freshness_badge(TipPosition::AtTip, &AnchorState::Unverified),
             FreshnessBadge::Grey
+        );
+    }
+
+    /// The three object-anchoring states, each from the facts that produce it
+    /// (S5). The end-to-end proof against a real repository lives in the `git`
+    /// crate's `tests/plumbing.rs`; this is the classification law alone.
+    #[test]
+    fn object_anchor_classifies_three_states() {
+        let anchored = ObjectAnchor::classify(&ObjectAnchorFacts {
+            object_present: true,
+            reachable_from_commit: true,
+        });
+        assert_eq!(anchored, ObjectAnchor::Anchored);
+        assert_eq!(anchored.word(), "anchored");
+        assert!(anchored.nudge().is_none());
+
+        // The vibe eager write: in the database, no ref reaches it.
+        let pending = ObjectAnchor::classify(&ObjectAnchorFacts {
+            object_present: true,
+            reachable_from_commit: false,
+        });
+        assert_eq!(pending, ObjectAnchor::PendingAnchor);
+        assert_eq!(pending.word(), "pending-anchor");
+        assert_eq!(pending.nudge(), Some(PENDING_ANCHOR_TTL));
+
+        // Nothing was ever written — or gc pruned it past the G1 TTL.
+        let never = ObjectAnchor::classify(&ObjectAnchorFacts {
+            object_present: false,
+            reachable_from_commit: false,
+        });
+        assert_eq!(never, ObjectAnchor::NeverAnchored);
+        assert_eq!(never.word(), "never-anchored");
+        assert!(never.nudge().is_none());
+    }
+
+    /// Reachability is the stronger fact: a reachable object classifies as
+    /// anchored even if the presence fact says otherwise (it cannot honestly —
+    /// a reachable object exists — so the classification must not invent
+    /// `never-anchored` out of the contradiction).
+    #[test]
+    fn reachable_wins_over_a_contradictory_presence_fact() {
+        assert_eq!(
+            ObjectAnchor::classify(&ObjectAnchorFacts {
+                object_present: false,
+                reachable_from_commit: true,
+            }),
+            ObjectAnchor::Anchored
+        );
+    }
+
+    /// G1 is named where a reader of the code finds it: the pending-anchor
+    /// nudge says `gc.pruneExpire` in words.
+    #[test]
+    fn pending_anchor_ttl_names_gc_prune_expire() {
+        assert!(
+            PENDING_ANCHOR_TTL.contains("gc.pruneExpire"),
+            "the G1 residual names the git config that is the TTL: {PENDING_ANCHOR_TTL}"
         );
     }
 
