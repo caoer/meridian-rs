@@ -169,6 +169,15 @@ pub fn composed_read(
         file_rev: &file_rev,
         words_total,
     };
+    // The `^id` ANCHOR plane (stage-2 s1c) — computed once, emitted by BOTH
+    // modes, scoped by the same `frag` that scopes the whole call. It rides
+    // its own array because a consumer iterating `toc` must not be able to
+    // meet a second row class: S1 mixed the two and ccc-statusd's `readText`
+    // panicked on an anchor row's `depth 0` ("negative Repeat count").
+    let anchors: Vec<wire::ReadAnchor> = wire_map::facts::anchor_rows(&facts, frag)
+        .iter()
+        .filter_map(|f| read_anchor(f))
+        .collect();
 
     match params.mode.as_deref().unwrap_or("toc") {
         "toc" => {
@@ -181,22 +190,19 @@ pub fn composed_read(
                 ));
                 return Err(Box::new(e));
             }
-            // The RENDERED set is heading-only (frozen Go toc bytes); the
-            // STRUCTURED set additionally carries the `^id` anchor rows —
-            // stage-2 S1, the authz facts the host derives governing sections
-            // from by byte containment.
+            // ONE row set for the heading plane: `rendered_text` renders these
+            // rows and `toc` carries these rows, so the captured Go toc bytes
+            // stay frozen and the structured face never diverges from the
+            // rendered one. The authz facts (`span`, `content_span`) ride the
+            // same rows; the anchor plane is `anchors`.
             let rendered_text = render::toc_text(&header, &rows);
             Ok(ResponseBody::Read {
                 path: path.clone(),
                 file_rev: NodeRev(file_rev),
                 root: ambient.clone(),
                 words_total,
-                toc: Some(
-                    wire_map::facts::read_rows(&facts, frag)
-                        .iter()
-                        .map(|f| read_row(f))
-                        .collect(),
-                ),
+                toc: Some(rows.iter().map(|f| read_row(f)).collect()),
+                anchors,
                 sections: None,
                 truncated: None,
                 notice: None,
@@ -237,6 +243,7 @@ pub fn composed_read(
                 root: ambient.clone(),
                 words_total,
                 toc: None,
+                anchors,
                 sections: Some(rendered_sections),
                 truncated: body.notice.is_some().then_some(true),
                 notice: body.notice,
@@ -247,9 +254,9 @@ pub fn composed_read(
     }
 }
 
-/// One read fact → one wire composed-read row: the M1 addressing facts plus
-/// the stage-2 S1 authz facts (`span`, `content_span`, `anchor`), carried
-/// verbatim off the fact — the engine has ONE hpath owner
+/// One heading fact → one wire composed-read row: the M1 addressing facts
+/// plus the stage-2 S1 authz facts (`span`, `content_span`), carried verbatim
+/// off the fact — the engine has ONE hpath owner
 /// (`model::gotext::sanitize_heading`, through `wire_map::facts`), and this
 /// seam never re-derives an address.
 fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
@@ -262,8 +269,19 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
         sec_rev: NodeRev(f.sec_rev.clone()),
         span: f.span,
         content_span: f.content_span,
-        anchor: f.anchor.clone(),
     }
+}
+
+/// One anchor fact → one wire `anchors[]` entry (stage-2 s1c): the block id
+/// and the block-leaf span, which is everything the host's containment join
+/// consumes. `None` is unreachable (`read_facts` mints an anchor fact only
+/// from an anchor-bearing `list_item`) and is DROPPED rather than serialized
+/// as an empty id — an entry no caller can address is worse than no entry.
+fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
+    f.anchor.as_ref().map(|id| wire::ReadAnchor {
+        anchor: id.clone(),
+        span: f.span,
+    })
 }
 
 /// The rendered sections-mode pieces the `Read` body carries.

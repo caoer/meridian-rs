@@ -1,7 +1,7 @@
-//! S1 gate (stage-2): the composed-read row set carries the AUTHZ FACTS —
-//! canonical hpaths, byte spans, and the `^id` ANCHOR rows — so ccc-statusd's
-//! put authz derives governing sections from the engine's rows instead of its
-//! own markdown mirror (`sanitizeHeadingHost`, M1 residual #4).
+//! S1 gate (stage-2), as amended by s1c: the composed read carries the AUTHZ
+//! FACTS — canonical hpaths, byte spans, and the `^id` ANCHORS — so
+//! ccc-statusd's put authz derives governing sections from the engine's facts
+//! instead of its own markdown mirror (`sanitizeHeadingHost`, M1 residual #4).
 //!
 //! Shaped after the Go-side drift guard the mirror-removal retires
 //! (`ccc-statusd/internal/mcpserver/sanitize_drift_guard_test.go`): over the
@@ -12,16 +12,25 @@
 //!
 //! It then gates what the guard could not, because the row did not carry it:
 //!
-//! - every row (heading AND anchor) carries a `span`, byte-equal to the v2
-//!   toc node's span for the same node — so the substitution the host makes
-//!   is fact-for-fact, not merely address-for-address;
-//! - the `^id` anchor rows are SURFACED (toc mode served headings only), with
-//!   the Go switch's drops intact (task/paragraph-hosted anchors stay
+//! - every heading row and every anchor carries a `span`, byte-equal to the
+//!   v2 toc node's span for the same node — so the substitution the host
+//!   makes is fact-for-fact, not merely address-for-address;
+//! - the `^id` anchors are SURFACED (toc mode served headings only), with the
+//!   Go switch's drops intact (task/paragraph-hosted anchors stay
 //!   unaddressable);
-//! - `containingSectionTitles` (`puttoc.go:104`) computed from the v3 rows
+//! - `containingSectionTitles` (`puttoc.go:86`) computed from the v3 facts
 //!   ALONE equals the same walk over the v2 nodes the host reads today;
 //! - `rendered_text` never grows an anchor row — the captured Go toc bytes
-//!   are frozen, the new facts are structured-only.
+//!   are frozen.
+//!
+//! **s1c amends S1's ONE assertion that was wrong.** S1 put the anchor rows
+//! in the `toc` array beside the headings, discriminated by `depth == 0`;
+//! ccc-statusd's `readText` indents by `strings.Repeat("  ", depth-1)` and
+//! panicked "negative Repeat count" on the first file with a block anchor.
+//! The anchors now ride their own always-emitted `anchors[]`, so this file
+//! gates the SHAPE, not a discriminator: `toc` is heading-only over the whole
+//! corpus, `anchors[]` is present on every read, and the containment join
+//! still agrees with the v2 nodes across the two planes.
 
 use model::gotext::sanitize_heading;
 use serde_json::{Value, json};
@@ -156,15 +165,36 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 .len();
             let nodes = toc["body"]["nodes"].as_array().expect("toc nodes");
             let rows = read["body"]["toc"].as_array().expect("read rows");
+            // s1c gate: `anchors[]` is ALWAYS emitted — a document with no
+            // addressable block anchor answers `[]`, never an absent field a
+            // caller has to negotiate for.
+            let anchors = read["body"]["anchors"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{ctx}: `anchors` rides every composed read: {read}"));
             files_checked += 1;
 
             // --- headings: the drift-guard equality, engine-side ------------
+            // s1c gate: `toc` is the HEADING plane, whole. Nothing filters
+            // here — an anchor row reaching this array is the panic that
+            // shipped, so the assertion is that the array cannot hold one.
             let v2_headings: Vec<&Value> =
                 nodes.iter().filter(|n| n["kind"] == "heading").collect();
-            let v3_headings: Vec<&Value> = rows
-                .iter()
-                .filter(|r| r["depth"].as_u64().expect("depth") > 0)
-                .collect();
+            for r in rows {
+                assert!(
+                    r["depth"].as_u64().expect("depth") > 0,
+                    "{ctx}: a depth-0 row reached `toc` — ccc-statusd's readText \
+                     indents by depth-1 and panics on it: {r}"
+                );
+                assert!(
+                    r.get("anchor").is_none(),
+                    "{ctx}: an anchor fact reached a `toc` row: {r}"
+                );
+                assert!(
+                    !r["hpath"].as_str().expect("row hpath").starts_with('^'),
+                    "{ctx}: a `^id` address reached `toc`: {r}"
+                );
+            }
+            let v3_headings: Vec<&Value> = rows.iter().collect();
             assert_eq!(
                 v2_headings.len(),
                 v3_headings.len(),
@@ -184,10 +214,6 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                     r.get("content_span"),
                     "{ctx}: heading row content_span != node content_span"
                 );
-                assert!(
-                    r.get("anchor").is_none(),
-                    "{ctx}: a heading row carries no anchor: {r}"
-                );
                 let (start, end) = span(&r["span"]);
                 assert!(
                     start < end && end <= raw_len,
@@ -196,36 +222,23 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 headings_checked += 1;
             }
 
-            // --- anchor rows: surfaced, with the Go switch's drops intact ---
+            // --- the anchor plane: surfaced, with the Go switch's drops intact
             let v2_anchors: Vec<&Value> = nodes
                 .iter()
                 .filter(|n| n["kind"] == "list_item" && n["anchor"].is_string())
                 .collect();
-            let v3_anchors: Vec<&Value> = rows
-                .iter()
-                .filter(|r| r["depth"].as_u64().expect("depth") == 0)
-                .collect();
             assert_eq!(
                 v2_anchors.len(),
-                v3_anchors.len(),
-                "{ctx}: addressable anchor count — v2 nodes {}, v3 rows {}",
+                anchors.len(),
+                "{ctx}: addressable anchor count — v2 nodes {}, v3 anchors {}",
                 v2_anchors.len(),
-                v3_anchors.len()
+                anchors.len()
             );
-            for (n, r) in v2_anchors.iter().zip(&v3_anchors) {
+            for (n, a) in v2_anchors.iter().zip(anchors) {
                 let id = n["anchor"].as_str().expect("anchor id");
-                assert_eq!(r["anchor"].as_str(), Some(id), "{ctx}: anchor row id");
-                assert_eq!(
-                    r["hpath"].as_str(),
-                    Some(format!("^{id}").as_str()),
-                    "{ctx}: anchor row address is the ^id form"
-                );
-                assert_eq!(n["span"], r["span"], "{ctx}: anchor row span != node span");
-                assert!(
-                    r.get("content_span").is_none(),
-                    "{ctx}: an anchor row carries no content_span: {r}"
-                );
-                let (start, end) = span(&r["span"]);
+                assert_eq!(a["anchor"].as_str(), Some(id), "{ctx}: anchor id");
+                assert_eq!(n["span"], a["span"], "{ctx}: anchor span != node span");
+                let (start, end) = span(&a["span"]);
                 assert!(
                     start < end && end <= raw_len,
                     "{ctx}: anchor span [{start},{end}) in bounds of {raw_len}"
@@ -233,22 +246,25 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 anchor_rows_checked += 1;
             }
             // A task/paragraph-hosted anchor is NOT addressable on this face
-            // (the Go switch default) — surfacing anchor rows must not smuggle
-            // one in.
+            // (the Go switch default) — surfacing the anchor plane must not
+            // smuggle one in, on EITHER array.
             for n in nodes
                 .iter()
                 .filter(|n| n["anchor"].is_string() && n["kind"] != "list_item")
             {
                 let id = n["anchor"].as_str().expect("anchor id");
                 assert!(
-                    !rows.iter().any(|r| r["anchor"].as_str() == Some(id)),
+                    !anchors.iter().any(|a| a["anchor"].as_str() == Some(id)),
                     "{ctx}: `{id}` is hosted by kind {} — it stays unaddressable",
                     n["kind"]
                 );
                 dropped_anchors += 1;
             }
 
-            // --- governing sections: v3 rows alone == the v2 nodes today ----
+            // --- governing sections: the v3 two-plane join == the v2 nodes --
+            // The join is absolute-byte arithmetic across the arrays, which is
+            // exactly why s1c could split them: containment never read
+            // document order, only spans.
             let from_rows: Vec<(u64, u64, String)> = v3_headings
                 .iter()
                 .map(|r| {
@@ -268,25 +284,25 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                     (s, e, title)
                 })
                 .collect();
-            for r in &v3_anchors {
-                let (block_start, _) = span(&r["span"]);
+            for a in anchors {
+                let (block_start, _) = span(&a["span"]);
                 assert_eq!(
                     containing_titles(&from_rows, block_start),
                     containing_titles(&from_nodes, block_start),
-                    "{ctx}: governing sections for {} diverge between the v3 row set \
-                     and the v2 nodes the host reads today",
-                    r["hpath"]
+                    "{ctx}: governing sections for ^{} diverge between the v3 two-plane \
+                     join and the v2 nodes the host reads today",
+                    a["anchor"]
                 );
             }
 
-            // --- render stays frozen: anchor rows are structured-only -------
+            // --- render stays frozen: the anchor plane never renders --------
             let text = read["body"]["rendered_text"]
                 .as_str()
                 .expect("rendered_text");
-            for r in &v3_anchors {
-                let addr = r["hpath"].as_str().expect("anchor address");
+            for a in anchors {
+                let addr = format!("^{}", a["anchor"].as_str().expect("anchor id"));
                 assert!(
-                    !text.contains(addr),
+                    !text.contains(&addr),
                     "{ctx}: `{addr}` must not reach rendered_text: {text}"
                 );
             }
@@ -379,11 +395,12 @@ fn extended_rows_match_the_captured_go_toc_rows() {
             let ctx = format!("{doc}/{step_id}");
             let frame = &frames[i + 1];
             assert_eq!(frame["ok"], json!(true), "{ctx}: ok frame: {frame}");
+            // No filter: s1c makes `toc` heading-only, so the array itself
+            // must line up row-for-row with the captured Go table.
             let got: Vec<&Value> = frame["body"]["toc"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{ctx}: rows: {frame}"))
                 .iter()
-                .filter(|r| r["depth"].as_u64().expect("depth") > 0)
                 .collect();
             let want = want.as_array().expect("golden rows");
             assert_eq!(got.len(), want.len(), "{ctx}: heading row count");
@@ -406,11 +423,12 @@ fn extended_rows_match_the_captured_go_toc_rows() {
     println!("S1 vs captured Go rows: {steps_replayed} toc steps, {rows_compared} heading rows");
 }
 
-/// A `frag`-scoped read carries the anchor rows of that subtree ONLY — the
+/// A `frag`-scoped read carries the anchors of that subtree ONLY — the
 /// scoping predicate is the host's own byte containment, so a scoped read is
-/// still a complete authz fact set for what it returns.
+/// still a complete authz fact set for what it returns. Each plane answers
+/// its own question: `toc` the scoped headings, `anchors` the scoped blocks.
 #[test]
-fn frag_scoped_read_carries_only_the_subtree_anchor_rows() {
+fn frag_scoped_read_carries_only_the_subtree_anchors() {
     let root_dir = testsuite::parity_dir().join("corpus").join("trailing-ws");
     let rel = "corpus/trailing-ws.md";
     let frames = serve(
@@ -420,7 +438,7 @@ fn frag_scoped_read_carries_only_the_subtree_anchor_rows() {
             json!({"id": 2, "op": "read", "path": rel, "mode": "toc", "frag": "Padded-Title"}),
         ],
     );
-    let addresses = |frame: &Value| -> Vec<String> {
+    let headings = |frame: &Value| -> Vec<String> {
         frame["body"]["toc"]
             .as_array()
             .unwrap_or_else(|| panic!("rows: {frame}"))
@@ -428,14 +446,71 @@ fn frag_scoped_read_carries_only_the_subtree_anchor_rows() {
             .map(|r| r["hpath"].as_str().expect("hpath").to_owned())
             .collect()
     };
+    let anchors = |frame: &Value| -> Vec<String> {
+        frame["body"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("anchors: {frame}"))
+            .iter()
+            .map(|a| a["anchor"].as_str().expect("anchor id").to_owned())
+            .collect()
+    };
     assert_eq!(
-        addresses(&frames[1]),
-        vec!["Anchor-Zone", "^anc1", "^anc2"],
-        "the scoped heading plus the anchors byte-contained in it"
+        headings(&frames[1]),
+        vec!["Anchor-Zone"],
+        "the scoped heading, and no anchor row beside it"
     );
     assert_eq!(
-        addresses(&frames[2]),
+        anchors(&frames[1]),
+        vec!["anc1", "anc2"],
+        "the anchors byte-contained in the scoped subtree"
+    );
+    assert_eq!(
+        headings(&frames[2]),
         vec!["Padded-Title"],
         "a sibling subtree carries none of them"
+    );
+    assert!(
+        anchors(&frames[2]).is_empty(),
+        "and its anchor plane is EMPTY, not absent — always-emitted"
+    );
+}
+
+/// s1c: `anchors[]` rides a SECTIONS-mode read too, scoped by the same frag —
+/// the field is a property of the response, never of the mode, so no caller
+/// has to know which mode serves it.
+#[test]
+fn sections_mode_carries_the_anchor_plane_too() {
+    let root_dir = testsuite::parity_dir().join("corpus").join("trailing-ws");
+    let rel = "corpus/trailing-ws.md";
+    let frames = serve(
+        &root_dir,
+        &[
+            json!({"id": 1, "op": "read", "path": rel, "mode": "sections",
+                   "sections": ["Anchor-Zone"]}),
+            json!({"id": 2, "op": "read", "path": rel, "mode": "sections",
+                   "frag": "Padded-Title"}),
+        ],
+    );
+    let anchors = |frame: &Value| -> Vec<String> {
+        assert_eq!(frame["ok"], json!(true), "ok frame: {frame}");
+        assert!(
+            frame["body"]["toc"].is_null(),
+            "sections mode serves no heading table: {frame}"
+        );
+        frame["body"]["anchors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("anchors: {frame}"))
+            .iter()
+            .map(|a| a["anchor"].as_str().expect("anchor id").to_owned())
+            .collect()
+    };
+    assert_eq!(
+        anchors(&frames[1]),
+        vec!["anc1", "anc2"],
+        "unscoped (no frag): the whole document's anchor plane"
+    );
+    assert!(
+        anchors(&frames[2]).is_empty(),
+        "a frag scopes the whole call, anchor plane included"
     );
 }
