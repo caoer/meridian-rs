@@ -648,6 +648,30 @@ pub struct TocNode {
 /// facts — dewey ordinal `n`, heading `depth`, RAW `title`, the sanitized
 /// joined `hpath` ADDRESS, `strings.Fields` `words` over the
 /// subtree-inclusive content span, and the section CAS token `sec_rev`.
+///
+/// Stage-2 S1 adds the AUTHZ facts (v3-additive; the v2 plane carries no
+/// composed read at all, so no frozen byte moves): `span`, `content_span`,
+/// and `anchor`. With them the row set answers governing-section derivation
+/// by BYTE CONTAINMENT — the host's `containingSectionTitles`
+/// (`puttoc.go:104`) walks the heading rows and keeps every one whose span
+/// contains an anchor row's start byte — so ccc-statusd's put authz needs no
+/// markdown of its own (residual #4: the `sanitizeHeadingHost` mirror dies
+/// against this row).
+///
+/// Two row shapes ride the one array, discriminated exactly as the Go read
+/// face discriminates them:
+///
+/// - HEADING rows: `depth >= 1`, `anchor` absent, `content_span` present when
+///   the section has content (heading-excluded, subtree-inclusive).
+/// - ANCHOR rows (`^id` blocks): `depth == 0` (the Go Depth-0 sentinel),
+///   `anchor` = the block id, `hpath`/`n` = `"^id"`, `content_span` absent.
+///   They are STRUCTURED-only: `rendered_text` stays heading-only, so the
+///   toc projection's captured Go bytes never move.
+///
+/// D12: `hpath` stays root-prefix-learnable — a later `root:` prefix rides in
+/// front of the address string (`root:Notes/Deep`) with no row reshape, and
+/// spans are intra-file byte offsets, which are root-independent by
+/// construction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadRow {
     pub n: String,
@@ -656,6 +680,16 @@ pub struct ReadRow {
     pub hpath: String,
     pub words: u64,
     pub sec_rev: NodeRev,
+    /// Full node span (heading rows: heading-inclusive and subtree-inclusive;
+    /// anchor rows: the block-leaf span) — the containment fact.
+    pub span: Span,
+    /// Heading rows with content: the heading-EXCLUDED, subtree-inclusive
+    /// content span. Absent on anchor rows and content-less headings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_span: Option<Span>,
+    /// Anchor rows: the block id WITHOUT the `^` marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
 }
 
 /// One composed-read resolved section (M1 U4a2, v3-only): the selector that

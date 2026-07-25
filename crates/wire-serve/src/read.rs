@@ -162,6 +162,10 @@ pub fn composed_read(
                 ));
                 return Err(Box::new(e));
             }
+            // The RENDERED set is heading-only (frozen Go toc bytes); the
+            // STRUCTURED set additionally carries the `^id` anchor rows —
+            // stage-2 S1, the authz facts the host derives governing sections
+            // from by byte containment.
             let rendered_text = render::toc_text(&header, &rows);
             Ok(ResponseBody::Read {
                 path: path.clone(),
@@ -169,15 +173,9 @@ pub fn composed_read(
                 root: ambient.clone(),
                 words_total,
                 toc: Some(
-                    rows.iter()
-                        .map(|f| wire::ReadRow {
-                            n: f.n.clone(),
-                            depth: f.depth,
-                            title: f.title.clone(),
-                            hpath: f.hpath.clone(),
-                            words: f.words,
-                            sec_rev: NodeRev(f.sec_rev.clone()),
-                        })
+                    wire_map::facts::read_rows(&facts, frag)
+                        .iter()
+                        .map(|f| read_row(f))
                         .collect(),
                 ),
                 sections: None,
@@ -206,6 +204,25 @@ pub fn composed_read(
             })
         }
         other => Err(bad_request(format!("read: invalid mode \"{other}\""))),
+    }
+}
+
+/// One read fact → one wire composed-read row: the M1 addressing facts plus
+/// the stage-2 S1 authz facts (`span`, `content_span`, `anchor`), carried
+/// verbatim off the fact — the engine has ONE hpath owner
+/// (`model::gotext::sanitize_heading`, through `wire_map::facts`), and this
+/// seam never re-derives an address.
+fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
+    wire::ReadRow {
+        n: f.n.clone(),
+        depth: f.depth,
+        title: f.title.clone(),
+        hpath: f.hpath.clone(),
+        words: f.words,
+        sec_rev: NodeRev(f.sec_rev.clone()),
+        span: f.span,
+        content_span: f.content_span,
+        anchor: f.anchor.clone(),
     }
 }
 
