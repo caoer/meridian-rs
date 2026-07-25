@@ -11,12 +11,15 @@
 //! origin knowledge" — from FROZEN facts only. It is:
 //!
 //! - **pure-local** — no daemon, no network, no fetch (cap-free);
-//! - **O(armed) + O(pins)** — it reads ONE index file (`conventions/INDEX.md`)
-//!   for the armed set, re-hashes each armed convention's `CHECK.md` (O(armed)
-//!   small reads), scans the bounded receipt journal, and reads the git refs.
-//!   The `meridian-lock` axis adds ONE corpus build (the pins live in the
-//!   corpus's pages, so nothing smaller can see them) and then colors O(pins),
-//!   never O(corpus): the 3k-corpus wall-time stays sub-second;
+//! - **O(armed) + O(pins) + O(objects)** — it reads ONE index file
+//!   (`conventions/INDEX.md`) for the armed set, re-hashes each armed
+//!   convention's `CHECK.md` (O(armed) small reads), scans the bounded receipt
+//!   journal, and reads the git refs. The `meridian-lock` planes add ONE corpus
+//!   build (the lock lives in the corpus's pages, so nothing smaller can see
+//!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
+//!   O(objects) plus at most TWO git calls (one `rev-list`, one batched
+//!   `cat-file`) — never O(corpus) and never a call per blob, so the 3k-corpus
+//!   wall-time stays sub-second;
 //! - **fetch-less** — the anchor axis is therefore NEVER `verified` and never
 //!   renders a bare `at-tip` (W-C1, U2.7; the colors amendment § anchor axis);
 //! - **predicate-free** — it never evaluates a `check:` (the <1s budget holds;
@@ -42,6 +45,9 @@
 //!   for why a repo-level currency fact never enters a per-pin color.
 //! - **convention severity** — the worst armed severity (`off` / `warn` /
 //!   `block`), and one violation row per `--force`-escaped skip.
+//! - **vibe debt** — the quantity axis ([`VibeDebt`]): how many lock-referenced
+//!   blobs git holds that no commit reaches, and how many bytes they are. A
+//!   METER, never a gate: it never enters the exit triad.
 //!
 //! # The INDEX summary line
 //! `<A> armed · <D> drifted · <F> forced-since-realise (receipts boundary)`:
@@ -63,12 +69,16 @@
 //!   (drifted) exit at the semantic class.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use model::Document;
 use model::selector::{Color, RedReason};
 use policy::{Enforcement, evidence_rev, parse_index_strict};
-use receipt::anchor::{AnchorFacts, AnchorState, Observed, TipPosition};
+use receipt::anchor::{
+    AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, Observed, TipPosition,
+};
 use receipt::journal::parse_rows;
 use serde_json::{Value, json};
 use view::walk::{color_detail, color_label, color_reason, color_tone};
@@ -254,6 +264,68 @@ impl LockAxis {
     }
 }
 
+/// The vibe-debt gauge (U6.2) — how much of the corpus's retrieval plane is
+/// held by nothing but this machine.
+///
+/// A `--vibe` pin writes its blob eagerly (`git hash-object -w`) so the pin can
+/// be verified before the file is committed. That blob is reachable from no ref,
+/// so it survives only until `git gc` ages it past the repository's local
+/// `gc.pruneExpire` ([`receipt::anchor::PENDING_ANCHOR_TTL`], named residual
+/// G1). The debt is exactly that population: the lock-referenced blobs git HAS
+/// but no commit reaches, counted and summed in bytes.
+///
+/// **It is a METER, never a gate.** Debt never enters
+/// [`StatusReport::has_findings`], never refuses a write, and never warns as an
+/// error — the gauge reports the size of the window, it does not shorten it.
+///
+/// **What it does NOT count:** a blob absent from the object database
+/// (`never-anchored` — pruned past the TTL, or a fresh clone) is not debt but
+/// past debt: nothing local can pay it, and its bytes no longer exist to sum. A
+/// blob a commit reaches is not debt at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VibeDebt {
+    /// Distinct lock-referenced blobs present in the object database and
+    /// reachable from no commit.
+    blobs: usize,
+    /// Their total size, git's own byte count.
+    bytes: u64,
+    /// Set when reachability could not be measured (no git, not a repository,
+    /// an unreadable corpus): the gauge reports unknown, never a false `0`.
+    unknown: Option<String>,
+}
+
+impl VibeDebt {
+    /// Nothing owed — the honest zero. A gauge that hides at zero is not a
+    /// gauge, so this renders and serializes exactly like any other reading.
+    fn clear() -> VibeDebt {
+        VibeDebt {
+            blobs: 0,
+            bytes: 0,
+            unknown: None,
+        }
+    }
+
+    /// Unmeasurable — the reachability question could not be asked. Never
+    /// collapsed into `0`: a false clean is the one reading this gauge exists
+    /// to prevent.
+    fn unknown(detail: String) -> VibeDebt {
+        VibeDebt {
+            blobs: 0,
+            bytes: 0,
+            unknown: Some(detail),
+        }
+    }
+
+    /// The gauge word: the count, the bytes, or the honest unknown case.
+    fn render(&self) -> String {
+        if let Some(detail) = &self.unknown {
+            return format!("unknown ({detail})");
+        }
+        let unit = if self.blobs == 1 { "blob" } else { "blobs" };
+        format!("{} {unit} ({} bytes)", self.blobs, self.bytes)
+    }
+}
+
 /// The gathered, render-ready status summary — the three composed axes, the INDEX
 /// counts, and the forced-write violation rows.
 struct StatusReport {
@@ -272,6 +344,8 @@ struct StatusReport {
     pin_rollup: Color,
     /// The meridian-lock axis — the corpus's lock pins, rolled up worst-of.
     lock: LockAxis,
+    /// The vibe-debt gauge — lock-referenced blobs no commit reaches.
+    vibe_debt: VibeDebt,
     /// The convention-severity axis roll-up — the worst armed severity.
     severity_rollup: Enforcement,
     /// The rendered anchor-qualified tip axis (U2.7) — never a bare `at-tip`.
@@ -301,16 +375,19 @@ impl StatusReport {
     }
 
     /// The composed multi-axis line — armed-pin color · meridian-lock color ·
-    /// anchor state · convention severity, side by side, never merged (U6.2
-    /// composed legend). `lock` sits beside `anchor` on purpose: the pin verdict
-    /// and the currency qualifier that reads it are one glance apart.
+    /// anchor state · convention severity · vibe debt, side by side, never
+    /// merged (U6.2 composed legend). `lock` sits beside `anchor` on purpose:
+    /// the pin verdict and the currency qualifier that reads it are one glance
+    /// apart. `vibe-debt` is the fifth question — not a color and not a verdict,
+    /// but a quantity — so it rides the tail rather than splitting that pair.
     fn composed_line(&self) -> String {
         format!(
-            "pin {} · lock {} · anchor {} · convention {}",
+            "pin {} · lock {} · anchor {} · convention {} · vibe-debt {}",
             color_label(&self.pin_rollup),
             self.lock.render(),
             self.anchor_axis,
             self.severity_rollup.as_str(),
+            self.vibe_debt.render(),
         )
     }
 
@@ -384,6 +461,16 @@ impl StatusReport {
                 },
                 "anchor": self.anchor_axis,
                 "convention_severity": self.severity_rollup.as_str(),
+                // The vibe-debt gauge, ALWAYS emitted (no conditional omit): a
+                // corpus with nothing owed reports 0 blobs and 0 bytes, because
+                // a gauge that hides at zero is not a gauge — an absent field
+                // reads as "not measured", which is the `unknown` case instead.
+                "vibe_debt": {
+                    "blobs": self.vibe_debt.blobs,
+                    "bytes": self.vibe_debt.bytes,
+                    "label": self.vibe_debt.render(),
+                    "unknown": self.vibe_debt.unknown,
+                },
             },
             "nudge": self.nudge,
             "violations": violations,
@@ -439,8 +526,9 @@ fn gather(workspace: &Path) -> StatusReport {
     // 4. The anchor axis — git refs, fetch-less, never verified (U2.7).
     let (anchor_axis, nudge) = anchor_axis(workspace, &rows);
 
-    // 5. The meridian-lock axis — the corpus's lock pins, colored and rolled up.
-    let lock = lock_axis(workspace);
+    // 5. The meridian-lock planes — ONE corpus build answering both the pin
+    //    colors (claim plane) and the vibe-debt gauge (retrieval plane).
+    let (lock, vibe_debt) = lock_planes(workspace);
 
     StatusReport {
         workspace: workspace.display().to_string(),
@@ -451,6 +539,7 @@ fn gather(workspace: &Path) -> StatusReport {
         index_fault,
         pin_rollup,
         lock,
+        vibe_debt,
         severity_rollup,
         anchor_axis,
         nudge,
@@ -458,33 +547,96 @@ fn gather(workspace: &Path) -> StatusReport {
     }
 }
 
-/// Color every `meridian-lock` pin in the workspace and roll them up worst-of.
+/// Read both `meridian-lock` planes of the workspace over ONE corpus build: the
+/// claim plane's pin colors rolled up worst-of ([`LockAxis`]) and the retrieval
+/// plane's unreachable blobs ([`VibeDebt`]).
 ///
-/// This is the ONE place status leaves the O(armed) set: the lock plane lives in
-/// the corpus's pages, so it costs one corpus build (`fs::domain_snapshot` +
+/// This is the ONE place status leaves the O(armed) set: the lock lives in the
+/// corpus's pages, so it costs one corpus build (`fs::domain_snapshot` +
 /// `fs::build_corpus` — the same builder `mrd walk` uses, so status and walk can
-/// never disagree about a pin). It stays sub-second on the 3k-doc corpus: the
-/// build reads and parses bytes without resolving anything, and the coloring is
-/// O(pins), not O(corpus).
+/// never disagree about a pin). Both planes read that ONE build; a second build
+/// would let the two axes describe two different corpora. It stays sub-second on
+/// the 3k-doc corpus: the build reads and parses bytes without resolving
+/// anything, the coloring is O(pins) and the gauge O(objects), never O(corpus).
 ///
 /// Honest degradation, like every other frozen-fact read here: an unreadable
-/// corpus reports `unreadable`, never an empty (falsely clean) axis.
-fn lock_axis(workspace: &Path) -> LockAxis {
+/// corpus reports `unreadable` / `unknown`, never an empty (falsely clean) axis.
+fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     let docs = match crate::walk_cmd::build_docs(workspace) {
         Ok(docs) => docs,
         Err(fail) => {
-            return LockAxis {
+            let axis = LockAxis {
                 rows: 0,
                 rollup: None,
-                unreadable: Some(fail.message),
+                unreadable: Some(fail.message.clone()),
             };
+            return (axis, VibeDebt::unknown(fail.message));
         }
     };
     let colors: Vec<Color> = view::walk::lock_pin_colors(&docs)
         .into_iter()
         .map(|p| p.color)
         .collect();
-    LockAxis::roll_up(&colors)
+    (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
+}
+
+/// Measure the vibe debt: the lock-referenced blobs git holds that no commit
+/// reaches, counted and summed in bytes.
+///
+/// Two git calls at most, never a call per blob: ONE
+/// `git rev-list --objects --all` into the reachable set (S5's `ReachableSet`,
+/// O(1) membership) and ONE batched `git cat-file --batch-check` for presence
+/// and size. `receipt::anchor::ObjectAnchor` classifies the gathered facts — the
+/// same fact/classify split the origin-anchor axis uses — and only its
+/// `PendingAnchor` state is debt.
+///
+/// A corpus that references no blobs asks git nothing: nothing is referenced, so
+/// nothing can be owed, and the gauge reads a true `0` even outside a repository.
+fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
+    // Distinct blob ids, first-sighting order: one blob referenced by two pages
+    // is ONE object on disk, and counting it twice would double its bytes. A
+    // value that is not an object id at all is not a blob git could hold — the
+    // lock is machine-written, so that is damage the lock plane names, not a
+    // debt this gauge can price.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut oids: Vec<String> = Vec::new();
+    for object in view::walk::lock_objects(docs) {
+        let oid = object.blob_sha.to_ascii_lowercase();
+        if git::is_oid(&oid) && seen.insert(oid.clone()) {
+            oids.push(oid);
+        }
+    }
+    if oids.is_empty() {
+        return VibeDebt::clear();
+    }
+
+    let repo = git::Repo::at(workspace);
+    let reachable = match repo.reachable_objects() {
+        Ok(set) => set,
+        Err(fail) => return VibeDebt::unknown(fail.to_string()),
+    };
+    let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
+    let info = match repo.object_info(&refs) {
+        Ok(info) => info,
+        Err(fail) => return VibeDebt::unknown(fail.to_string()),
+    };
+
+    let mut debt = VibeDebt::clear();
+    for (oid, info) in oids.iter().zip(info) {
+        let facts = ObjectAnchorFacts {
+            object_present: info.is_some(),
+            reachable_from_commit: reachable.contains(oid),
+        };
+        // `PendingAnchor` alone is debt: present, reachable from nothing. The
+        // size is git's own byte count, so the sum costs no second git call.
+        if ObjectAnchor::classify(&facts) == ObjectAnchor::PendingAnchor
+            && let Some(present) = info
+        {
+            debt.blobs += 1;
+            debt.bytes += present.size;
+        }
+    }
+    debt
 }
 
 /// One armed convention read from the INDEX: the pinned `armed_rev` per slug, plus
@@ -803,7 +955,7 @@ mod tests {
         );
         assert_eq!(
             line,
-            "pin red content-drifted · lock none · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · convention warn"
+            "pin red content-drifted · lock none · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · convention warn · vibe-debt 0 blobs (0 bytes)"
         );
     }
 
@@ -813,7 +965,7 @@ mod tests {
         let line = compose(Color::Green, "at-tip (anchor as-known)", Enforcement::Off);
         assert_eq!(
             line,
-            "pin green · lock none · anchor at-tip (anchor as-known) · convention off"
+            "pin green · lock none · anchor at-tip (anchor as-known) · convention off · vibe-debt 0 blobs (0 bytes)"
         );
     }
 
@@ -830,6 +982,17 @@ mod tests {
         anchor_axis: &str,
         severity: Enforcement,
     ) -> StatusReport {
+        report_with_debt(pin, lock, anchor_axis, severity, VibeDebt::clear())
+    }
+
+    /// The same pure report with a chosen vibe-debt reading.
+    fn report_with_debt(
+        pin: Color,
+        lock: LockAxis,
+        anchor_axis: &str,
+        severity: Enforcement,
+        vibe_debt: VibeDebt,
+    ) -> StatusReport {
         StatusReport {
             workspace: "/ws".to_owned(),
             armed: 0,
@@ -839,6 +1002,7 @@ mod tests {
             index_fault: None,
             pin_rollup: pin,
             lock,
+            vibe_debt,
             severity_rollup: severity,
             anchor_axis: anchor_axis.to_owned(),
             nudge: None,
@@ -952,6 +1116,135 @@ mod tests {
         assert_eq!(lock["detail"], json!("unknown version"));
         // ORTHOGONAL: a grey lock axis never repaints the armed-set pin axis.
         assert_eq!(drifted["composed"]["pin_color"], json!("green"));
+    }
+
+    // ── S11: the vibe-debt gauge (U6.2, a quantity not a color) ─────────────
+
+    /// ZERO RENDERS — the half of the gate that is easiest to miss. With nothing
+    /// owed the gauge still occupies its segment on the human line and still
+    /// emits its fields in `--json`: `0`, never an absent field a reader could
+    /// mistake for "not measured".
+    #[test]
+    fn the_vibe_debt_gauge_renders_zero_as_a_reading_not_a_silence() {
+        assert_eq!(VibeDebt::clear().render(), "0 blobs (0 bytes)");
+
+        let clean = report(
+            Color::Green,
+            LockAxis::roll_up(&[]),
+            "at-tip (anchor as-known)",
+            Enforcement::Off,
+        );
+        assert!(
+            clean
+                .composed_line()
+                .ends_with("· vibe-debt 0 blobs (0 bytes)"),
+            "zero holds its segment: {}",
+            clean.composed_line(),
+        );
+
+        let v: Value = serde_json::from_str(&clean.json()).expect("json");
+        let debt = &v["composed"]["vibe_debt"];
+        assert_eq!(debt["blobs"], json!(0));
+        assert_eq!(debt["bytes"], json!(0));
+        assert_eq!(debt["label"], json!("0 blobs (0 bytes)"));
+        assert_eq!(debt["unknown"], Value::Null);
+        assert!(
+            !debt.is_null(),
+            "the gauge is a field at zero, never an omission"
+        );
+    }
+
+    /// A reading renders count AND bytes (singular at one), and `--json` carries
+    /// both as numbers beside the unchanged axes.
+    #[test]
+    fn the_vibe_debt_gauge_renders_count_and_bytes() {
+        let one = VibeDebt {
+            blobs: 1,
+            bytes: 512,
+            unknown: None,
+        };
+        assert_eq!(one.render(), "1 blob (512 bytes)");
+        assert_eq!(
+            VibeDebt {
+                blobs: 3,
+                bytes: 4096,
+                unknown: None,
+            }
+            .render(),
+            "3 blobs (4096 bytes)"
+        );
+
+        let owed = report_with_debt(
+            Color::Green,
+            LockAxis::roll_up(&[Color::Green]),
+            "at-tip (anchor as-known)",
+            Enforcement::Off,
+            one,
+        );
+        assert!(
+            owed.composed_line()
+                .contains("· vibe-debt 1 blob (512 bytes)"),
+            "{}",
+            owed.composed_line()
+        );
+        let v: Value = serde_json::from_str(&owed.json()).expect("json");
+        assert_eq!(v["composed"]["vibe_debt"]["blobs"], json!(1));
+        assert_eq!(v["composed"]["vibe_debt"]["bytes"], json!(512));
+        // ORTHOGONAL (U6.2): debt repaints no color axis.
+        assert_eq!(v["composed"]["pin_color"], json!("green"));
+        assert_eq!(v["composed"]["lock"]["color"], json!("green"));
+    }
+
+    /// Unmeasurable is its own reading, never a false `0`: no git, no
+    /// repository, or an unreadable corpus says so in both renders.
+    #[test]
+    fn the_vibe_debt_gauge_reports_unknown_rather_than_a_false_zero() {
+        let unknown = VibeDebt::unknown("not a git repository: /ws".to_owned());
+        assert_eq!(unknown.render(), "unknown (not a git repository: /ws)");
+
+        let v: Value = serde_json::from_str(
+            &report_with_debt(
+                Color::Green,
+                LockAxis::roll_up(&[]),
+                "at-tip (anchor as-known)",
+                Enforcement::Off,
+                unknown,
+            )
+            .json(),
+        )
+        .expect("json");
+        let debt = &v["composed"]["vibe_debt"];
+        assert_eq!(debt["blobs"], json!(0));
+        assert_eq!(
+            debt["unknown"],
+            json!("not a git repository: /ws"),
+            "unknown names why it could not be measured",
+        );
+        assert_eq!(debt["label"], json!("unknown (not a git repository: /ws)"));
+    }
+
+    /// METER, NOT A GATE — debt never becomes a finding: the exit triad is
+    /// unchanged by any reading, and `findings` stays false. Enforcement is not
+    /// in this stage at all.
+    #[test]
+    fn vibe_debt_is_never_a_finding() {
+        let owed = report_with_debt(
+            Color::Green,
+            LockAxis::roll_up(&[]),
+            "at-tip (anchor as-known)",
+            Enforcement::Block,
+            VibeDebt {
+                blobs: 9,
+                bytes: 1_048_576,
+                unknown: None,
+            },
+        );
+        assert!(
+            !owed.has_findings(),
+            "the gauge reports; it never refuses or exits 1"
+        );
+        let v: Value = serde_json::from_str(&owed.json()).expect("json");
+        assert_eq!(v["findings"], json!(false));
     }
 
     // ── the forced-write violation row fixture (U4.3 §11.1) ──────────────────
