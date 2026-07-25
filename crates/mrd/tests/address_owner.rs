@@ -18,26 +18,50 @@ use std::collections::BTreeMap;
 
 use model::Document;
 
-/// The corpus: `a/b.md` carries the pinned anchor; `b.md` is the decoy that
-/// shares its basename and carries an anchor of the SAME name with different
-/// bytes, so resolving to it is not merely wrong but measurably wrong.
+/// The corpus: `a/b.md` carries the pinned section; `b.md` is the decoy that
+/// shares its basename and carries a section of the SAME title with different
+/// bytes, so resolving to it is not merely wrong but MEASURABLY wrong.
+///
+/// The ref is a HEADING (`a/b#Section`), which is what a pin's fingerprint
+/// actually covers. A `#^anchor` ref would prove nothing here: an anchor node's
+/// span is only its own host line, and `anchor_removals` strips exactly that, so
+/// every anchor in every document fingerprints the empty span and both answers
+/// look green. The decoration's link handle is the promoted slug of that
+/// heading (`^section`), which is the shape S7's promotion writes.
 fn corpus() -> (BTreeMap<String, Document>, String) {
-    let target = "# B\n\nthe pinned body\n\n^claim\n";
-    let decoy = "# Decoy\n\nDIFFERENT bytes entirely\n\n^claim\n";
+    // Same title, same heading path, different bytes: the pinned selector
+    // RESOLVES in both documents, so picking the wrong one yields a wrong
+    // VERDICT rather than an unresolved address that would be red for the wrong
+    // reason.
+    let target = "# Page\n\n## Section\n\nthe pinned body\n";
+    let decoy = "# Page\n\n## Section\n\nDIFFERENT bytes entirely\n";
 
     let mut docs: BTreeMap<String, Document> = BTreeMap::new();
     docs.insert("a/b.md".to_string(), doc(target));
     docs.insert("b.md".to_string(), doc(decoy));
 
-    // The live fingerprint of `a/b.md#^claim`, minted the way the engine mints it
-    // (the resolved span, anchor lines removed) — so the pin is a true GREEN on
-    // `a/b.md`, and a resolver that answers `b.md` measures drift instead.
-    let fingerprint = live_fingerprint(&docs, "a/b.md", "^claim");
+    // The live fingerprint of `a/b.md#Page/Section`, minted the way the engine
+    // mints it (the resolved span, anchor lines removed) — so the pin is a true
+    // GREEN on `a/b.md`, and a plane that answers `b.md` measures drift instead.
+    let fingerprint = live_fingerprint(&docs, "a/b.md", "Page/Section");
     let src = format!(
-        "# Src\n\ndraws from [[a/b#^claim]]\n\n```meridian-lock\nversion: 1\npins:\n  - ref: \"a/b#^claim\"\n    fingerprint: \"{fingerprint}\"\n```\n"
+        "# Src\n\ndraws from [[a/b#^section]]\n\n```meridian-lock\nversion: 1\npins:\n  - ref: \"a/b#Page/Section\"\n    fingerprint: \"{fingerprint}\"\n```\n"
     );
     docs.insert("src.md".to_string(), doc(&src));
     (docs, fingerprint)
+}
+
+/// The two documents must be measurably different at the pinned selector, or the
+/// gate above proves nothing: a fixture whose planes hash the same bytes agrees
+/// no matter which document each one picked.
+#[test]
+fn the_fixture_can_tell_the_two_documents_apart() {
+    let (docs, pinned) = corpus();
+    let decoy_fp = live_fingerprint(&docs, "b.md", "Page/Section");
+    assert_ne!(
+        pinned, decoy_fp,
+        "`a/b.md#Section` and `b.md#Section` must fingerprint differently"
+    );
 }
 
 fn doc(raw: &str) -> Document {
