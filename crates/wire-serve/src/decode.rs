@@ -659,9 +659,24 @@ fn decode_anchor(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     let Value::String(id) = v else {
         return Err(bad_request("`anchor` must be a string"));
     };
+    // Stage-2 S10: the `@fp` strip is ordered BEFORE the mint-guard here, and
+    // this is the FIRST of the two guard sites a wire address meets (the other
+    // is `read::to_model_ref`, the belt for in-process callers that build a
+    // `SecRef` directly). Decoding to the STORED spelling is what makes the
+    // decorated address agent-plane rather than display-only: an agent that
+    // read `[[guide#^goal@green.b3af12cd]]` can address `^goal@green.b3af12cd`
+    // and reach exactly the node `^goal` names.
+    //
+    // Additive on the frozen v2 plane by construction: the only inputs whose
+    // outcome moves are shaped tokens, which every pre-S10 build refused and no
+    // v2 client can produce (the grammar did not exist). An `@` the shape does
+    // NOT recognize still refuses, verbatim, below.
+    let id = syntax::split_fp(id).0;
     // the mint-guard: one block-id charset, both planes (§2.4)
-    match model::Ref::anchor(id.clone()) {
-        Ok(_) => Ok(SecRef::Anchor { anchor: id.clone() }),
+    match model::Ref::anchor(id.to_owned()) {
+        Ok(_) => Ok(SecRef::Anchor {
+            anchor: id.to_owned(),
+        }),
         Err(bad) => Err(bad_request(format!(
             "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
             id = bad.id

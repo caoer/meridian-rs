@@ -323,6 +323,41 @@ fn a_heading_fragment_at_is_never_touched() {
     );
 }
 
+/// The I4 ladder has ONE owner and TWO entry points (S4a/D4): the host's
+/// `check_write` PRE-FLIGHT and the flocked `splice`. They must judge the same
+/// bytes, so the strip runs at BOTH intakes — otherwise an agent's decorated
+/// `find` would miss in the pre-flight and hit in the write, which is the
+/// two-answers-to-one-question shape this milestone keeps closing.
+#[test]
+fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
+    let (_dir, root) = workspace();
+    mint_pin(&root);
+    let prev = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
+
+    let decorated = "[[guide#^leaders-guideline@green.b3af12cd|Leader's Guideline]]";
+    let body = wire_serve::check_write::check_write(
+        &prev,
+        "plan.md",
+        "tester",
+        "2026-07-25T00:00:00Z",
+        &[wire::CheckWriteEdit {
+            op: "replace".into(),
+            at: "Plan".into(),
+            find: decorated.into(),
+            body: format!("{decorated} — reviewed."),
+            rev: String::new(),
+            all: false,
+        }],
+    );
+    let ResponseBody::CheckWrite { refuse, .. } = &body else {
+        panic!("check_write body");
+    };
+    assert!(
+        refuse.is_none(),
+        "the decorated needle matched the STORED bytes in the pre-flight too: {refuse:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The colour the token carries — the reason the whole module exists
 // ---------------------------------------------------------------------------
@@ -431,6 +466,56 @@ fn a_malformed_fp_address_refuses_and_writes_nothing() {
         err.message
     );
     assert_eq!(read_page(&root, "guide.md"), before, "nothing reached disk");
+}
+
+/// The SAME law at the wire's own guard. `decode_anchor` runs `Ref::anchor`
+/// before any arm does, so the strip is ordered there too — otherwise the
+/// decorated address would be display-only, refused by the decoder before the
+/// bridge that strips it ever ran. Both halves are asserted on the decoded
+/// value: a shaped token decodes to the STORED spelling, an unshaped `@` still
+/// refuses verbatim.
+#[test]
+fn the_wire_decoder_strips_before_its_own_mint_guard() {
+    let frame = |anchor: &str| {
+        let serde_json::Value::Object(o) = serde_json::json!({
+            "op": "cat",
+            "path": "guide.md",
+            "sec": { "anchor": anchor },
+        }) else {
+            unreachable!()
+        };
+        o
+    };
+
+    let op = wire_serve::decode::decode(
+        &frame("leaders-guideline@green.b3af12cd"),
+        wire_serve::rev::Rev::V3,
+    )
+    .expect("a shaped token decodes");
+    let wire::Op::Cat {
+        sec: Some(SecRef::Anchor { anchor }),
+        ..
+    } = op
+    else {
+        panic!("cat with an anchor sec");
+    };
+    assert_eq!(
+        anchor, "leaders-guideline",
+        "the decoded address is the STORED spelling — nothing downstream ever \
+         sees the token"
+    );
+
+    let err =
+        wire_serve::decode::decode(&frame("leaders-guideline@nope"), wire_serve::rev::Rev::V3)
+            .expect_err("an unshaped `@` is not a token");
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    assert!(
+        err.message
+            .as_deref()
+            .is_some_and(|m| m.contains("[A-Za-z0-9-]")),
+        "and it refuses at the charset guard, verbatim: {:?}",
+        err.message
+    );
 }
 
 /// The positive half of the same law: a WELL-FORMED `@fp` on an address is
