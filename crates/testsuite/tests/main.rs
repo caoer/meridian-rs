@@ -7,6 +7,7 @@ mod delta_e3e4;
 mod gt_pack_smoke;
 mod gt_parse;
 mod pf_frozen_sweep;
+mod s1_authz_facts;
 mod u0_read_parity;
 mod u4a1_render_parity;
 mod u4a2_composed_read;
