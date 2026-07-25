@@ -478,11 +478,18 @@ untouched.
 additions above); stage 2 adds the pin firing conditions to both. Recovery
 classes are unchanged and remain statically bound in `crates/wire/src/lib.rs`.
 
-### 10. The `@fp` claim-link decoration (S10) — agent-plane, never on disk
+### 10. The `@fp` claim-link decoration (S10) — agent-plane, never in a claim-link position on disk
 
 A claim link is decorated with its drift color on the way OUT and stripped on
-the way IN. **Stored bytes never carry an `@fp` token**, and the engine never
-mints a fingerprint claim an author did not write.
+the way IN.
+
+**The claim, stated exactly as wide as the proof: NO `@fp` TOKEN SURVIVES IN A
+CLAIM-LINK POSITION ON DISK.** That is the block-ref slot of a wikilink or
+embed, and only that. It is deliberately NOT the wider claim "no `@fp` token is
+ever in stored bytes", and NOT "no `@` anywhere" — both are false, and § The
+bound on that claim below says why. Within the claim's scope the guarantee is
+total: the engine never mints a fingerprint claim an author did not write, and
+no put path can land one in a claim-link position.
 
 The grammar is SHAPED, not opaque (D10): `@<tone-word>.<8 lowercase hex>`, where
 `tone` is up to 12 lowercase ASCII letters and the digest is exactly 8 lowercase
@@ -511,11 +518,62 @@ would eat authored text.
 - **The decorated address is addressable, not display-only.** An agent that read
   `[[guide#^goal@green.b3af12cd]]` may address `^goal@green.b3af12cd` and reach
   exactly the node `^goal` names.
+- **The tone word ALWAYS rides, green included.** A token is never abbreviated
+  to its digest for the green case. The consistency argument is the point: if
+  the marker were present only when a pin is non-green, then an absent marker
+  would mean either "green" or "nobody computed this", and a reader could not
+  tell which. That is exactly the two-meanings-for-one-shape ambiguity s1c
+  removed from the anchor plane, and the same discipline applies here — the
+  decorator calls the minter unconditionally on the tone the color model
+  returns (`crates/wire-serve/src/read.rs:376-378`).
 - **An `@` the shape does NOT recognize refuses.** The block-id charset
   (`[A-Za-z0-9-]`, §2.4) has no `@`, so an unshaped tail survives to validation
   and raises `bad_request`: ``block id outside the one charset [A-Za-z0-9-]
-  (§2.4): `<id>` ``. Shaped-and-stripped or unshaped-and-refused — there is no
-  third outcome, and no path that writes an `@fp` to disk.
+  (§2.4): `<id>` ``. In a claim-link position there is no third outcome:
+  shaped-and-stripped, or unshaped-and-refused.
+
+#### The bound on that claim — a fenced code sample is not a claim link
+
+**A token-shaped string inside a code fence is NOT stripped, and stored bytes
+therefore CAN contain one.** A document whose body carries
+
+````
+```
+[[guide#^goal@green.b3af12cd]]
+```
+````
+
+round-trips through a put with those bytes intact
+(`crates/syntax/src/lib.rs:1284-1287` pins exactly this case).
+
+This is correct behavior, not a leak to apologize for. A token-shaped string
+inside a fence is a **code sample** — documentation of the grammar, a test
+fixture, this very amendment. Stripping it would be corruption: the engine would
+silently edit an author's illustration of a claim link into something that is no
+longer the thing being illustrated. The strip identifies tokens through the ONE
+dialect parse, so it sees only real block-ref slots, and a fenced sample is not
+one. The engine declines to touch it for the same reason it declines to touch
+`[[Page#Q@Home]]` — neither is a claim-link position.
+
+What survives inside a fence is inert. It is not a claim link, so nothing
+decorates it, nothing resolves it, and no verdict is minted from it. The
+narrower claim above holds precisely because the wider one was never the target.
+
+#### The one true ambiguity, stated as a limit
+
+**An author cannot write a literal `@green.deadbeef` immediately after a block
+ref inside a wikilink.** Authored `[[guide#^goal@green.deadbeef]]` is
+shape-recognized on the way in and stored as `[[guide#^goal]]` — the author's
+literal text is lost, with no refusal.
+
+This is the price of a shaped grammar and it is bounded to one position. It does
+not spread, because the STORED plane stays unambiguous by construction: the
+block-id charset is `[A-Za-z0-9-]` and contains no `@`, so no legitimate stored
+block id can hold one, and there is no authored construct in that slot the strip
+could be confusing for a token. Outside that slot — heading fragments, link
+labels, prose, code fences — an author writes any `@` text freely. An author who
+genuinely needs to show the decorated spelling puts it in a fence, which is what
+this document does.
 
 **D12:** the link target is opaque to the decorator. A later `root:` prefix
 rides inside it untouched — the slot is reserved by not being parsed.
@@ -601,8 +659,11 @@ byte-identical guarantee is structural, proven by the untouched frozen goldens.
   rev-recheck, promotion idempotence, vibe blob, the refusal set),
   `crates/registry/tests/read_mint.rs` (the ledger survives the write that
   rebuilds the warm engine, and mints nothing to disk),
-  `crates/wire-serve/tests/s10_fp_decorate.rs` (decorate → strip round-trip,
-  disk clean; heading-`@` intact; an unshaped `@fp` refuses and writes nothing),
+  `crates/wire-serve/tests/s10_fp_decorate.rs` (decorate → strip round-trip
+  leaving no token in a claim-link position; heading-`@` intact; an unshaped
+  `@fp` refuses and writes nothing) and
+  `crates/syntax/src/lib.rs`'s `strip_fp_removes_block_ref_tokens_only` (the
+  bound: heading fragments, labels, prose, and FENCED CODE all survive),
   `crates/view/tests/board_pin_verdict_gates.rs` (the board's verdict equals the
   walk's, value for value, over all six outcomes).
 - Frozen and unchanged, still green: `crates/wire/tests/contract_v2.rs`,
