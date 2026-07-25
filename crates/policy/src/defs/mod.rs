@@ -65,7 +65,10 @@ pub use fm::{FmMeta, FmValue, parse_meta, string_field};
 pub use go_fmt::go_quote;
 pub use i4::{ConformanceRequest, ConformanceResult, Repair, conformance};
 pub use load::{Def, DefError, PropSpec, SectionRule, parse_def};
-pub use rebuild::{MultiLineValue, PlanEdit, ensure_trailing_nl, rebuild, rev8, yaml_safe_value};
+pub use rebuild::{
+    InvalidPropertyKey, MultiLineValue, PlanEdit, SafeKey, ensure_trailing_nl, rebuild, rev8,
+    yaml_safe_key, yaml_safe_value,
+};
 
 /// One validator finding (Go `types.Finding`), delta-scored by (rule, message).
 #[derive(Debug, Clone, PartialEq)]
