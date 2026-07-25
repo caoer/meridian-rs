@@ -392,9 +392,15 @@ pub fn page_decorations(
     out
 }
 
-/// Resolve a link/ref target spelling to a corpus path: the exact key first (a
-/// lock `ref` names one), then the app-parity linkpath resolver (a body link
-/// spells the same page by basename). An empty spelling is the page itself.
+/// Resolve a link/ref target spelling to a corpus path through the ONE address
+/// owner ([`model::CorpusIndex::resolve_ref`]) — the same three rules, in the
+/// same order, that `view::read_face::resolve_to_path` gives the walk plane. An
+/// empty spelling is the page itself (a self-link `[[#^blk]]`).
+///
+/// It holds no precedence of its own on purpose. When it did, it lacked the
+/// key + `.md` rule the walk plane had, so a ref `a/b` in a corpus carrying both
+/// `a/b.md` and `b.md` decorated a link with a tone minted over `b.md` while the
+/// walk colored `a/b.md` — one pin, two documents, two answers.
 fn resolve_page(
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
@@ -404,10 +410,7 @@ fn resolve_page(
     if spelling.is_empty() {
         return Some(from.to_owned());
     }
-    if docs.contains_key(spelling) {
-        return Some(spelling.to_owned());
-    }
-    index.resolve_linkpath(spelling, from)
+    index.resolve_ref(spelling, from, docs)
 }
 
 /// Every `[[target#^block]]` link in the tree, as (target, block) borrowed off
