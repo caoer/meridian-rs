@@ -84,7 +84,7 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     let removals = syntax::anchor_removals(&doc.raw);
     model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
         .expect("the fixture target has content")
-        .0
+        .into_string()
 }
 
 /// The fingerprint of one heading selector over ARBITRARY bytes (no disk) — the
@@ -104,7 +104,7 @@ fn fingerprint_of(bytes: &str, chain: &[&str]) -> String {
     let removals = syntax::anchor_removals(&doc.raw);
     model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
         .expect("the fixture target has content")
-        .0
+        .into_string()
 }
 
 // ---------------------------------------------------------------------------

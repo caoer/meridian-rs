@@ -271,7 +271,7 @@ fn neutrality_document_grain() {
     let pf0 = model::fingerprint::fingerprint(&d0, &d0.root).expect("X0 root has content");
     let pf1 = model::fingerprint::fingerprint(&d1, &d1.root).expect("X1 root has content");
     assert_eq!(pf0, pf1, "production: false drift at document grain");
-    assert_eq!(pf0.0, fp0, "production token != reference token");
+    assert_eq!(pf0.as_str(), fp0, "production token != reference token");
 }
 
 /// §5 at section grain: the promoted paragraph lives in section A; section A's
@@ -296,7 +296,7 @@ fn neutrality_section_grain() {
         model::fingerprint::fingerprint(&d1, a1).expect("section A of X1 has content"),
     );
     assert_eq!(p0, p1, "production: false drift at section grain");
-    assert_eq!(p0.0, reference::fingerprint(&c0));
+    assert_eq!(p0.as_str(), reference::fingerprint(&c0));
 
     let (b0, b1) = (section(&d0.root, "B"), section(&d1.root, "B"));
     assert_eq!(b0.node_rev, b1.node_rev, "untouched section B moved");

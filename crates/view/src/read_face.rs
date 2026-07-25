@@ -1236,7 +1236,7 @@ mod tests {
         // measurement, never a blanket verdict on the form.
         let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root)
             .expect("the fixture target has content")
-            .0;
+            .into_string();
         let mut green_docs = BTreeMap::new();
         green_docs.insert(
             "effect.md".to_string(),

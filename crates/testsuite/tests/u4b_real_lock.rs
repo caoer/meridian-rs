@@ -27,7 +27,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
         declared_ref: "page.md#^c1".to_string(),
         fingerprint: model::fingerprint::fingerprint(&doc0, &doc0.root)
             .expect("fixture target has content")
-            .0,
+            .into_string(),
     });
     let out = lock_write(
         &root,
