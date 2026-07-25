@@ -8,7 +8,10 @@
 //! restated here), computes `node_rev` hashes and Merkle roots, resolves
 //! `#hpath` / `#^anchor` refs to targets, validates CAS splices, and diffs at
 //! node level. The corpus name index lives here too — derived, disposable —
-//! and `query`/`policy` *borrow* it, never own it.
+//! and `query`/`policy` *borrow* it, never own it. Since stage-2 S0 it also
+//! owns the FROZEN Go-text heading predicate ([`gotext`]) — the one address
+//! law `wire-map`'s projection and `policy`'s defs rebuild both call, so they
+//! cannot drift apart.
 //!
 //! **Never does:** file I/O (that's `fs`), persistence of any kind (law 2: Rust
 //! memory is disposable; cold rebuild is the recovery path), protocol types
@@ -31,6 +34,7 @@ use std::ops::Range;
 
 pub mod delta;
 pub mod fingerprint;
+pub mod gotext;
 pub mod selector;
 pub mod walk;
 
