@@ -1,12 +1,16 @@
 //! End-to-end gates for `mrd status` (U3.6, the LAST leg), driving the REAL
 //! binary (`CARGO_BIN_EXE_mrd`) over its process boundary against on-disk
-//! workspaces. These are the merge-gate evidence: the <1s wall-time budget on a
-//! 3k-doc corpus, the armed/drifted INDEX line, the forced-write violation row,
-//! the composed three-axis line, and the exit triad.
+//! workspaces. These are the merge-gate evidence: the armed/drifted INDEX line,
+//! the forced-write violation row, the composed three-axis line, and the exit
+//! triad. Every gate here is timing-insensitive by construction.
+//!
+//! The <1s wall-time budget on a 3k-doc corpus is NOT here — it lives in
+//! `status_walltime.rs`, behind the `perf-walltime` feature, because `ci.yml`
+//! gates no wall-clock number in the PR lane. Same 1000 ms budget, different
+//! lane; that file's header carries the measurement that moved it.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Instant;
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -266,61 +270,6 @@ fn status_json_shape() {
     assert_eq!(v["findings"], false);
 }
 
-/// **The <1s wall-time gate (the merge budget, U3.6).** A 3k-doc corpus with a
-/// handful of armed conventions: `status` reads ONE index file + O(armed)
-/// `CHECK.md` re-hashes + the journal + the git refs — NEVER the 3k docs. So its
-/// wall-time is independent of corpus size and stays well under the 1s hard
-/// budget. The measured milliseconds are printed for the card record.
-#[test]
-fn status_wall_time_under_1s_on_3k_corpus() {
-    let sb = sandbox();
-    let ws = sb.workspace("corpus3k");
-
-    // 3,000 ordinary docs — the corpus size status must NOT scale with.
-    let docs = ws.join("docs");
-    std::fs::create_dir_all(&docs).expect("docs dir");
-    for i in 0..3_000u32 {
-        std::fs::write(
-            docs.join(format!("note-{i:04}.md")),
-            format!("# Note {i}\n\nbody line for note {i}\n"),
-        )
-        .expect("write doc");
-    }
-    // A handful of armed conventions (the O(armed) work).
-    let rows: Vec<String> = (0..5u32)
-        .map(|i| {
-            let slug = format!("conv-{i}");
-            let body = format!("law {i} v1\n");
-            arm_convention(&ws, &slug, "block", &body, &body)
-        })
-        .collect();
-    write_index(&ws, &rows);
-
-    // Warm the process/page cache with one throwaway run, then measure.
-    let _ = sb.run(&ws, &["status"]);
-    let start = Instant::now();
-    let out = sb.run(&ws, &["status"]);
-    let elapsed = start.elapsed();
-
-    assert!(
-        out.status.success() || code(&out) == 1,
-        "status ran: {}",
-        stderr(&out)
-    );
-    let so = stdout(&out);
-    assert!(
-        so.contains("5 armed · 0 drifted"),
-        "the armed set read: {so}"
-    );
-
-    let ms = elapsed.as_millis();
-    eprintln!("status wall-time on the 3k-doc corpus: {ms} ms (hard budget 1000 ms)");
-    assert!(
-        elapsed.as_secs_f64() < 1.0,
-        "status must be O(armed), <1s on the 3k corpus — measured {ms} ms"
-    );
-}
-
 // ── S9: the meridian-lock axis, end to end over the real binary ─────────────
 
 /// The canonical `meridian-lock` fence bytes for one pin — the exact form
@@ -338,7 +287,9 @@ fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
 /// not recompute.
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
-    model::fingerprint::fingerprint(&doc, &doc.root).0
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
 }
 
 /// The composed multi-axis line of a human `status` render (the U6.2 legend).

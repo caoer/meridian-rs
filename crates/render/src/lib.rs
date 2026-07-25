@@ -496,4 +496,66 @@ mod tests {
              trip disk-clean"
         );
     }
+
+    /// F1: the token rides the ADDRESS slot, located structurally — not the last
+    /// byte-match of `#^<block>` anywhere in the link. A label that quotes its own
+    /// block ref (an ordinary sentence, no adversarial author) used to absorb the
+    /// mint: the strip then could not see it, and the token reached disk.
+    ///
+    /// The claim is asserted as the PROPERTY — `syntax::fp_removals` over the
+    /// rendered bytes finds the token, and the strip returns them to the inert
+    /// render. A decoration the strip cannot remove fails here by construction.
+    #[test]
+    fn decoration_rides_the_address_slot_when_the_label_repeats_the_ref() {
+        let raw = "# H\n\nsee [[guide#^goal|guide#^goal in full]] and \
+                   ![[guide#^goal|#^goal]]\n";
+        let (doc, facts) = doc_and_facts(raw);
+        let fact = resolve_selector(&facts, "H").expect("resolves");
+        let rows = [SectionRow { sel: "H", fact }];
+        let header = |decorations| Header {
+            display_path: "p",
+            file_rev: "r",
+            words_total: 0,
+            decorations,
+        };
+        let render = |decorations| {
+            TextRenderer::default()
+                .render(
+                    &doc,
+                    &RenderJob::Sections {
+                        header: header(decorations),
+                        rows: &rows,
+                        notice: None,
+                    },
+                )
+                .expect("renders")
+        };
+
+        let inert = render(&NO_DECORATIONS);
+        let mut decorations = Decorations::new();
+        decorations.insert(
+            ClaimLink {
+                target: "guide".into(),
+                block: "goal".into(),
+            },
+            "@green.b3af12cd".into(),
+        );
+        let got = render(&decorations).sections[0].content.clone();
+
+        assert_eq!(
+            syntax::fp_removals(&got).len(),
+            2,
+            "one token per claim link, in the block-ref slot the strip owns: {got}"
+        );
+        assert_eq!(
+            syntax::strip_fp(&got),
+            inert.sections[0].content,
+            "so the round trip is disk-clean: a token the strip cannot reach is a \
+             token that reaches disk"
+        );
+        assert!(
+            got.contains("[[guide#^goal@green.b3af12cd|guide#^goal in full]]"),
+            "the label is authored text and stays verbatim: {got}"
+        );
+    }
 }

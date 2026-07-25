@@ -1580,10 +1580,22 @@ impl CorpusIndex {
         // qualifier matches nothing (a stale subpath still resolves best-effort).
         // Without this, `[[a/b]]` collides with every other `b.md` in the vault.
         if key.contains('/') {
-            let suffix = format!("/{key}.md");
+            // The subpath matches a path that ENDS in `a/b.md` — either nested
+            // under something (`c/a/b.md`) or at the vault root, where the path
+            // IS `a/b.md` and carries no leading separator. Matching only the
+            // separator form dropped the root case, so `[[a/b]]` in a corpus
+            // holding both `a/b.md` and `b.md` fell through to the bare-basename
+            // set and answered `b.md` — the wrong document, and a different one
+            // from the answer the exact-path step of `CorpusIndex::resolve_ref`
+            // gives, which is how one address grew two owners.
+            let qualified = format!("{key}.md");
+            let suffix = format!("/{qualified}");
             let narrowed: Vec<String> = candidates
                 .iter()
-                .filter(|p| p.to_lowercase().ends_with(&suffix))
+                .filter(|p| {
+                    let lower = p.to_lowercase();
+                    lower == qualified || lower.ends_with(&suffix)
+                })
                 .cloned()
                 .collect();
             if !narrowed.is_empty() {
@@ -1591,6 +1603,44 @@ impl CorpusIndex {
             }
         }
         pick_source_relative(candidates, from)
+    }
+
+    /// THE address owner: resolve one REF SPELLING — a `meridian-lock` `ref`, a
+    /// body wikilink target, any address a plane hashes a document by — to the
+    /// corpus path it names, or `None` when it names nothing here.
+    ///
+    /// Precedence, in order:
+    /// 1. the spelling IS a corpus key (a full vault path carrying its `.md`);
+    /// 2. the spelling + `.md` is a corpus key (a full-path ref written without
+    ///    the extension, `a/b` → `a/b.md`);
+    /// 3. [`CorpusIndex::resolve_linkpath`] — `getFirstLinkpathDest` parity for
+    ///    a spelling by basename/alias.
+    ///
+    /// **One owner, because two owners hash two documents.** The pin plane and
+    /// the decoration plane once each carried their own copy of this precedence;
+    /// they disagreed on `a/b` in a corpus holding both `a/b.md` and `b.md`, so
+    /// the `@fp` tone word was minted over one document while the walk color was
+    /// measured on another — one question, two answers. Every plane that turns a
+    /// spelling into a document calls THIS.
+    ///
+    /// **D12:** the spelling is carried verbatim into the lookup; no single-root
+    /// assumption and no string surgery, so a later `root:` prefix rides inside
+    /// the spelling and resolves by the same three rules.
+    #[must_use]
+    pub fn resolve_ref(
+        &self,
+        spelling: &str,
+        from: &str,
+        docs: &BTreeMap<String, Document>,
+    ) -> Option<String> {
+        if docs.contains_key(spelling) {
+            return Some(spelling.to_owned());
+        }
+        let with_md = format!("{spelling}.md");
+        if docs.contains_key(&with_md) {
+            return Some(with_md);
+        }
+        self.resolve_linkpath(spelling, from)
     }
 }
 

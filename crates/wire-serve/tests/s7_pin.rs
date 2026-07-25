@@ -86,7 +86,9 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     };
     let target = model::resolve(&doc, &r#ref).expect("the lock ref resolves");
     let removals = syntax::anchor_removals(&doc.raw);
-    model::fingerprint::fingerprint_span(&doc, &target.span, &removals).0
+    model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
+        .expect("the fixture target has content")
+        .into_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -239,42 +241,90 @@ fn a_re_pin_reuses_the_same_slug_and_promotes_nothing() {
     assert_eq!(found.lock.pins.len(), 1, "a re-pin updates, never appends");
 }
 
-/// GATE 5: the benign orphan heals. The pin's two inodes are two renames
-/// (residual G3), and the promotion is ordered FIRST — so the survivable failure
-/// mode is "anchor written, lock not". Simulated by refusing the lock write (the
-/// pinning page is corrupt), then repairing it and re-pinning: the orphan is
-/// reused as-is, and nothing false-drifts.
+/// GATE 5a: a REFUSAL leaves no orphan. This test used to assert the opposite,
+/// and the assertion was the defect (review finding 12): it simulated the G3
+/// crash residual with a deterministic REFUSAL — a corrupt lock block on the
+/// pinning page — and then asserted the marker survived it. A refusal is not a
+/// crash. A crash is survivable and heals; that refusal repeated identically on
+/// every re-pin, so the bytes it left in a page the request does not even name
+/// could never heal, and the promotion is now ordered after every refusal rung.
+///
+/// The vehicle is worth keeping precisely because it refuses at a DIFFERENT rung
+/// from the ref-grammar repro in `s2fix_promotion` (`lock_engine_edit`, inside
+/// the batch composition rather than the prologue): between them they show it is
+/// the ORDERING that holds, not one patched rung.
 #[test]
-fn a_lock_write_failure_after_promotion_leaves_a_benign_orphan_a_re_pin_heals() {
+fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
     let (_dir, root) = workspace();
-    // A hand-mangled lock block: `lock::find` refuses it, so the lock write
-    // cannot land — the exact "promotion committed, lock did not" shape.
+    // A hand-mangled lock block: `lock::find` refuses it, so the pin cannot
+    // compose its lock edit at all.
     std::fs::write(
         root.0.join("plan.md"),
         format!("{PINNER}\n```meridian-lock\nversion: 1\ngarbage\n```\n"),
     )
     .expect("corrupt pinner");
+    let pinner_before = read_page(&root, "plan.md");
     let fp_before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
 
     let err = splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
         .expect_err("a corrupt lock refuses the pin");
     assert_eq!(err.code, ErrorCode::BadRequest);
 
-    // What survived: the slug marker, and NOTHING else. The section still hashes
-    // to the same value, so no dependent of that section reddened.
-    let orphaned = read_page(&root, "guide.md");
-    assert!(
-        orphaned.contains("## Leader's Guideline\n^leaders-guideline\n"),
-        "the own-line marker survived: {orphaned}"
+    assert_eq!(
+        read_page(&root, "guide.md"),
+        TARGET,
+        "the TARGET is byte-unchanged: no marker, no orphan to heal"
     );
+    assert_eq!(
+        read_page(&root, "plan.md"),
+        pinner_before,
+        "and the corrupt pinning page is left exactly as found"
+    );
+    assert_eq!(
+        live_fingerprint(&root, "guide.md#Guide/Leader's Guideline"),
+        fp_before,
+        "so nothing could have drifted"
+    );
+
+    // Repair the page by hand (the #8 §3 remedy the refusal names) and the same
+    // pin commits — the refusal was about the lock state, not the pin.
+    std::fs::write(root.0.join("plan.md"), PINNER).expect("repair");
+    let fact = pin_fact(
+        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+            .unwrap()
+            .body,
+    );
+    assert!(
+        fact.promoted,
+        "the marker is written NOW, on the run that commits"
+    );
+    assert_eq!(fact.fingerprint, fp_before);
+}
+
+/// GATE 5b: the benign orphan still heals. The pin's two inodes are two renames
+/// (residual G3, unchanged and still accepted), and the promotion's rename is
+/// ordered first — so the one survivable failure mode is a CRASH between them:
+/// "anchor written, lock not". A refusal can no longer produce that state
+/// ([`a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind`]), so the
+/// aftermath is staged the way a crash leaves it — the marker on disk, no claim
+/// — and the claim under test is what a later pin does with it.
+#[test]
+fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
+    let (_dir, root) = workspace();
+    let fp_before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
+    // The state a crash between the two renames leaves behind: exactly what
+    // `promote_anchor` writes, and nothing else.
+    let orphaned = TARGET.replace(
+        "## Leader's Guideline\n",
+        "## Leader's Guideline\n^leaders-guideline\n",
+    );
+    std::fs::write(root.0.join("guide.md"), &orphaned).expect("stage the orphan");
     assert_eq!(
         live_fingerprint(&root, "guide.md#Guide/Leader's Guideline"),
         fp_before,
         "the orphan is fingerprint-neutral — no false drift while it is unclaimed"
     );
 
-    // Heal: repair the page by hand (the #8 §3 remedy the refusal names), re-pin.
-    std::fs::write(root.0.join("plan.md"), PINNER).expect("repair");
     let healed = pin_fact(
         &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
             .unwrap()

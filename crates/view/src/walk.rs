@@ -144,11 +144,19 @@ pub fn walk(
     let mut read: BTreeSet<String> = BTreeSet::new();
     read.insert(root_page.clone());
 
-    // BFS, page-keyed traversal; entries deduped by canonical selector at min
-    // depth (BFS visits shallower first, so the first sighting is the min depth).
+    // BFS, page-keyed traversal; entries deduped by the ROW they would print —
+    // `(selector, rev, color_label)` — at min depth (BFS visits shallower first,
+    // so the first sighting is the min depth).
+    //
+    // The key is the whole row, never the selector alone: two pins on ONE ref
+    // (one live, one drifted) share a canonical selector and carry DIFFERENT
+    // verdicts, and a selector-keyed dedupe dropped the second one — so a
+    // measured red vanished behind a green and the listing exited 0 while
+    // `mrd status` rolled the same corpus up red. A dedupe may collapse rows
+    // that say the same thing; it may never collapse a verdict.
     let mut queue: VecDeque<(String, u32)> = VecDeque::new();
     let mut enqueued: BTreeSet<String> = BTreeSet::new();
-    let mut emitted: BTreeSet<String> = BTreeSet::new();
+    let mut emitted: BTreeSet<(String, Option<String>, String)> = BTreeSet::new();
     queue.push_back((root_page.clone(), 0));
     enqueued.insert(root_page.clone());
 
@@ -160,7 +168,12 @@ pub fn walk(
         for step in steps_from(docs, &forward, &page, direction) {
             read.insert(step.color_target.clone());
             read.insert(page_of(&step.selector).to_string());
-            if emitted.insert(step.selector.clone()) {
+            let row = (
+                step.selector.clone(),
+                step.pinned_rev.clone(),
+                color_label(&step.color),
+            );
+            if emitted.insert(row) {
                 entries.push(WalkEntry {
                     selector: step.selector,
                     rev: step.pinned_rev,
@@ -1202,7 +1215,9 @@ mod tests {
     /// The live fingerprint token of a page root — what a CORRECT pin holds.
     fn live_token(raw: &str) -> String {
         let d = doc(raw);
-        model::fingerprint::fingerprint(&d, &d.root).0
+        model::fingerprint::fingerprint(&d, &d.root)
+            .expect("the fixture page has content")
+            .into_string()
     }
 
     /// GATE 1 — the five rendered states are DISTINCT: no two of green /

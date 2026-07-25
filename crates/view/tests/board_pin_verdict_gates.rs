@@ -39,7 +39,9 @@ fn doc(raw: &str) -> Document {
 /// would not recompute.
 fn live_token(raw: &str) -> String {
     let d = doc(raw);
-    model::fingerprint::fingerprint(&d, &d.root).0
+    model::fingerprint::fingerprint(&d, &d.root)
+        .expect("the fixture page has content")
+        .into_string()
 }
 
 /// An effect page whose `meridian-lock` block pins `declared_ref` at `token`,

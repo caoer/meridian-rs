@@ -161,6 +161,17 @@ pub enum ExecError {
     /// choke-point), so it mounts the SAME gate — byte-landing parity. `detail`
     /// names the convention/INDEX and cites the legal path.
     ArmedRefusal { detail: String },
+    /// The apply would put an `@fp` decoration token in a claim-link position
+    /// (advisor R32 (3)): a fingerprint claim nobody minted. Tokens the batch's
+    /// own payloads carry are STRIPPED, silently and by law — this variant is
+    /// what is left when the strip cannot place a claim, which is never a write
+    /// the engine may guess at. `cause` names which case.
+    FpClaim { page: String, cause: String },
+    /// The apply would change the page's `meridian-lock` bytes (advisor R25):
+    /// the run plane mints no pin, so any change to the attestation artifact is
+    /// a claim nobody computed. The wire choke-point carries the same guard —
+    /// this door bypasses `splice`, so the guard is mounted here too.
+    LockArtifact { page: String },
 }
 
 impl std::fmt::Display for ExecError {
@@ -201,6 +212,14 @@ impl std::fmt::Display for ExecError {
             ExecError::ArmedRefusal { detail } => {
                 write!(f, "armed change refused: {detail}")
             }
+            ExecError::FpClaim { page, cause } => write!(
+                f,
+                "@fp refused in {page}: {cause}. `@green.…` after a block ref is a render-face decoration the engine mints on read, never storable content (S10) — write the plain `[[page#^id]]` address and let the tone and digest be computed. Nothing applied"
+            ),
+            ExecError::LockArtifact { page } => write!(
+                f,
+                "meridian-lock refused: the lock block in {page} is the engine's attestation artifact (#8 §3) and the run plane mints no pin — a pin is minted by `mrd pin`, which fingerprints the target behind the read-mint gate. Nothing applied"
+            ),
         }
     }
 }
@@ -213,11 +232,43 @@ impl std::error::Error for ExecError {}
 /// process CAS guards cannot see). `LOCK_NB` acquire — a held lock is
 /// [`io::ErrorKind::WouldBlock`], surfaced as the fast typed
 /// [`ExecError::WorkspaceBusy`] refusal; it never waits, so a hung holder can
-/// never make callers hang (review C4). Released on drop.
+/// never make callers hang (review C4). Released on drop — by an EXPLICIT
+/// unlock, not by the fd close (see the [`Drop`] impl: relying on the close
+/// leaks the lock into any concurrently forking subprocess, and the run plane
+/// forks a child per dispatched task).
 #[derive(Debug)]
 pub struct WorkspaceLock {
-    // Held open for its fd; flock releases when the fd closes on drop.
-    _file: File,
+    // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
+    file: File,
+}
+
+/// Release the lock EXPLICITLY, before the fd closes — the S7/R19 fix, applied
+/// here because the run plane is the workspace's heaviest forker.
+///
+/// # Why the fd close is not enough (measured on the sibling lock, not theorised)
+/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
+/// every descriptor. Any thread in this process spawning any subprocess
+/// transiently holds a copy of this fd between its fork and its exec, even with
+/// `FD_CLOEXEC` set (CLOEXEC acts at exec, not at fork). If this guard dropped
+/// in that window, closing our fd would NOT release the lock: the child's copy
+/// keeps the description alive until it execs, and every other run meanwhile
+/// refuses `workspace_busy` for a critical section that already finished.
+///
+/// The exact overlap here is across CONCURRENT runs in one process, not within
+/// a single one: `dispatch_bash::run` forks its task child BETWEEN its two
+/// locked windows, so a second run holding this lock — in its phase-1 window or
+/// in the phase-2 [`apply`] commit — is the one whose release leaks. One process
+/// dispatching two tasks is the ordinary case, and the run plane forks a child
+/// per dispatched task, which is what makes this the workspace's heaviest forker.
+///
+/// `LOCK_UN` acts on the description itself, so one unlock releases the lock no
+/// matter how many copies of the fd exist. Measured on `fs::WriteLock`, which
+/// carried the identical defect: 12/60 unrelated writes refused spuriously.
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        // SAFETY: flock on a valid open fd we own; the fd outlives the call.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 impl WorkspaceLock {
@@ -240,7 +291,7 @@ impl WorkspaceLock {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
 }
 
@@ -317,14 +368,34 @@ impl EditTarget {
             EditTarget::Section(segs) => format!("section:{}", segs.join("#")),
         }
     }
+
+    /// This target with its identifier strings rendered for a receipt line
+    /// (fix9 F1). A field name comes from the task block's author and a heading
+    /// chain is read off the page — `serde_json` escapes neither `[` nor `@`,
+    /// so an undecorated pass-through lands a claim link in a claim-link
+    /// POSITION in the receipt file. The heading case is not hypothetical: a
+    /// pre-existing token is left exactly as found on the page (R32 (1)), and
+    /// copying it into the receipt would be this write INTRODUCING it there.
+    fn rendered(&self) -> Self {
+        match self {
+            EditTarget::FmKey(k) => EditTarget::FmKey(receipt::render_field(k).into_owned()),
+            EditTarget::Section(segs) => EditTarget::Section(
+                segs.iter()
+                    .map(|s| receipt::render_field(s).into_owned())
+                    .collect(),
+            ),
+        }
+    }
 }
 
-/// One planned edit: the model edit plus the identity/rev facts the receipt
-/// and the foreign-edit check need.
+/// One planned edit: the model edit plus the identity/target facts the receipt,
+/// the foreign-edit check and the `@fp` strip need. `before` is the target as
+/// the model resolved it at load — its rev is the foreign-edit anchor, its SPAN
+/// is what attributes a candidate token back to the effect that supplied it.
 struct PlannedEdit {
     edit: Edit,
     identity: EditTarget,
-    before_rev: NodeRev,
+    before: model::Target,
 }
 
 /// Apply one generation of md.* effects to `page` as ONE atomic batch. See the
@@ -395,42 +466,20 @@ pub fn apply_under(
         check_foreign_edits(root, addr, req.page, &planned)?;
     }
 
-    // 5. Validate — mints the sealed batch; the `if_root` pin runs against
-    // the REQUIRED live root (gate #19).
-    let batch = SpliceRequest {
-        if_root: Some(req.pin_root.clone()),
-        edits: planned.iter().map(|p| p.edit.clone()).collect(),
-        engine: None,
-    };
-    let sealed = match model::validate_batch(&doc, Some(req.live_root), &batch, None) {
-        SpliceVerdict::Validated(b) => b,
-        SpliceVerdict::RootMismatch { expected, actual } => {
-            return Err(ExecError::RootMismatch {
-                expected: expected.0,
-                actual: actual.0,
-            });
-        }
-        refused => {
-            return Err(ExecError::Refused {
-                verdict: format!("{refused:?}"),
-            });
-        }
-    };
+    // 5-6. Seal the batch and the bytes it will write, `@fp`-stripped.
+    let (batch, after_doc) = seal_stripped_candidate(&doc, &planned, req)?;
 
-    // 6. Armed facts: dry-apply the sealed edits in memory — the SAME bytes
-    // fs will write — and read each target's post-apply rev off the reparse.
-    let mut after_raw = doc.raw.clone();
-    for edit in sealed.edits.iter().rev() {
-        after_raw.replace_range(edit.span.clone(), &edit.text);
-    }
-    let after_nodes = syntax::parse(&after_raw);
-    let after_doc = model::build(after_raw, after_nodes);
+    // Each target's post-apply rev, read off the (post-strip) reparse.
     let after_revs: Vec<NodeRev> = planned
         .iter()
         .map(|p| after_rev(&after_doc, &p.edit.target))
         .collect::<Result<_, _>>()?;
 
-    // 6b. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
+    // 6b. THE LOCK ARTIFACT GUARD (advisor R25), over the same candidate the gate
+    // below reads and ordered before it: a forged claim is not a policy question.
+    guard_lock_artifact(&doc, &after_doc, req.page)?;
+
+    // 6c. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
     // bytes through `fs::apply_batch` below (not the wire choke-point), so it
     // mounts the SAME `policy::gate` over the change it produces: read the
     // workspace's OWN attested INDEX + once-armed marker, and REFUSE before the
@@ -497,6 +546,78 @@ pub fn apply_under(
     })
 }
 
+/// Steps 5-6: mint the sealed batch and the candidate document it will write,
+/// with the `@fp` strip already applied — the request batch, its seal, and the
+/// bytes, all three agreeing.
+///
+/// The `if_root` pin runs against the REQUIRED live root (gate #19). The
+/// candidate is then dry-applied in memory (the SAME bytes `fs` will write) and
+/// the `@fp` strip (advisor R32 (3)) rewrites the REQUEST batch: this door
+/// bypasses the wire choke-point, so it carries the choke-point's law itself, and
+/// every judgment after it — the post-apply revs the receipt commits, the lock
+/// artifact guard, the armed gate — reads the bytes that actually land.
+///
+/// # Errors
+/// [`ExecError::RootMismatch`] / [`ExecError::Refused`] from validation, or
+/// [`ExecError::FpClaim`] from a claim token the strip cannot place. Nothing has
+/// been applied at this point in any case.
+fn seal_stripped_candidate(
+    doc: &Document,
+    planned: &[PlannedEdit],
+    req: &ApplyRequest<'_>,
+) -> Result<(SpliceRequest, Document), ExecError> {
+    let mut batch = SpliceRequest {
+        if_root: Some(req.pin_root.clone()),
+        edits: planned.iter().map(|p| p.edit.clone()).collect(),
+        engine: None,
+    };
+    let mut sealed = match model::validate_batch(doc, Some(req.live_root), &batch, None) {
+        SpliceVerdict::Validated(b) => b,
+        SpliceVerdict::RootMismatch { expected, actual } => {
+            return Err(ExecError::RootMismatch {
+                expected: expected.0,
+                actual: actual.0,
+            });
+        }
+        refused => {
+            return Err(ExecError::Refused {
+                verdict: format!("{refused:?}"),
+            });
+        }
+    };
+    let mut after_doc = crate::fp::candidate(doc, &sealed);
+    let before_facts: Vec<model::Target> = planned.iter().map(|p| p.before.clone()).collect();
+    crate::fp::strip_candidate(
+        doc,
+        &before_facts,
+        req.page,
+        req.live_root,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+    Ok((batch, after_doc))
+}
+
+/// **The lock ARTIFACT guard** (advisor R25) — guard the artifact, not the verb.
+///
+/// The read-mint gate guards `splice.pin`; this door bypasses `splice` entirely
+/// and mints no pin, so ANY change to the page's `meridian-lock` bytes is an
+/// attestation nobody computed. Byte-identity over `lock::block_texts`, which is
+/// the one owner of "which bytes are the lock" — re-deriving that here would be a
+/// second spelling of the grammar.
+///
+/// # Errors
+/// [`ExecError::LockArtifact`] — nothing was applied.
+fn guard_lock_artifact(before: &Document, after: &Document, page: &str) -> Result<(), ExecError> {
+    if lock::block_texts(after) == lock::block_texts(before) {
+        return Ok(());
+    }
+    Err(ExecError::LockArtifact {
+        page: page.to_owned(),
+    })
+}
+
 /// A descriptor's choke-point surface: its namespaced kind string and its
 /// capability target (the field / section it touches).
 fn descriptor_surface(effect: &Effect) -> Result<(&'static str, String), ExecError> {
@@ -541,13 +662,13 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
                     if_node_rev: Some(before.node_rev.clone()),
                 },
                 identity: EditTarget::FmKey(field),
-                before_rev: before.node_rev,
+                before,
             })
         }
         EffectKind::AppendSection => {
             let section = str_arg(effect, "section")?;
             let content = str_arg(effect, "content")?;
-            let (segs, span_end_byte, node_rev) = find_section(doc, &section)?;
+            let (segs, span_end_byte, before) = find_section(doc, &section)?;
             // Append as a LINE: exactly one trailing newline; a leading one
             // only when the section's last byte is not already a terminator.
             let mut text = String::new();
@@ -570,10 +691,10 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
                         at: PutAt::End,
                         text,
                     },
-                    if_node_rev: Some(node_rev.clone()),
+                    if_node_rev: Some(before.node_rev.clone()),
                 },
                 identity: EditTarget::Section(segs),
-                before_rev: node_rev,
+                before,
             })
         }
         _ => Err(ExecError::NonMdEffect {
@@ -583,12 +704,13 @@ fn plan_edit(doc: &Document, effect: &Effect) -> Result<PlannedEdit, ExecError> 
 }
 
 /// Find the UNIQUE section whose governing heading text is `heading`; returns
-/// its full hpath chain, its last raw byte, and its load-time rev. Zero → not
+/// its full hpath chain, its last raw byte, and its load-time target (span +
+/// rev — the same span `model::resolve` hands `validate_batch`). Zero → not
 /// found; two-plus → ambiguous (the mint plane never silently picks).
 fn find_section(
     doc: &Document,
     heading: &str,
-) -> Result<(Vec<String>, Option<u8>, NodeRev), ExecError> {
+) -> Result<(Vec<String>, Option<u8>, model::Target), ExecError> {
     fn collect<'a>(node: &'a model::Node, heading: &str, out: &mut Vec<&'a model::Node>) {
         if matches!(&node.kind, NodeKind::Section { heading_text, .. } if heading_text == heading) {
             out.push(node);
@@ -613,7 +735,14 @@ fn find_section(
                 .as_bytes()
                 .get(only.span.end.wrapping_sub(1))
                 .copied();
-            Ok((segs, last_byte, only.node_rev.clone()))
+            Ok((
+                segs,
+                last_byte,
+                model::Target {
+                    span: only.span.clone(),
+                    node_rev: only.node_rev.clone(),
+                },
+            ))
         }
         many => Err(ExecError::SectionAmbiguous {
             section: heading.to_owned(),
@@ -632,13 +761,19 @@ fn check_foreign_edits(
 ) -> Result<(), ExecError> {
     let anchors = last_governed_revs(root, addr, page)?;
     for p in planned {
-        if let Some(last) = anchors.get(&p.identity.describe())
-            && *last != p.before_rev.0
+        // Keyed on the RENDERED identity (fix9 F1), because that is what the
+        // receipt stores and this reads back. Keying the two sides differently
+        // would make every lookup miss for a target whose name needed
+        // rendering — the #26 guard lapsing silently for exactly the names that
+        // motivated the guard. Identical for every identifier target.
+        let key = p.identity.rendered().describe();
+        if let Some(last) = anchors.get(&key)
+            && *last != p.before.node_rev.0
         {
             return Err(ExecError::ForeignEdit {
-                target: p.identity.describe(),
+                target: key,
                 last_governed: last.clone(),
-                current: p.before_rev.0.clone(),
+                current: p.before.node_rev.0.clone(),
             });
         }
     }
@@ -660,6 +795,10 @@ fn last_governed_revs(
     let dir: PathBuf = abs
         .parent()
         .map_or_else(|| root.0.clone(), Path::to_path_buf);
+    // The receipt stores the RENDERED page (fix9 F1), so the scan matches on
+    // the rendered spelling — same reason the target key is rendered above, and
+    // identical for every path that is already an identifier.
+    let page = receipt::render_field(page);
     let mut out = BTreeMap::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -710,8 +849,14 @@ fn render_receipt(
     let io_err = |e: io::Error| ExecError::Io {
         reason: format!("receipt: {e}"),
     };
+    // fix9 F1: the free-text fields go through the receipt crate's field law.
+    // `task` (and the `run:<task>` actor derived from it) is already an
+    // identifier by the time it reaches here — `address::bindings` refuses any
+    // other shape at the name boundary — and `invocation`/`now` are minted by
+    // `run_cmd::mint_identity`, `root_pin`/`task_rev`/the revs are engine hex.
+    // `page` and the edit targets are the two that arrive as arbitrary bytes.
     let facts = ReceiptFacts {
-        page: req.page.to_owned(),
+        page: receipt::render_field(req.page).into_owned(),
         task: req.task.to_owned(),
         invocation: req.invocation_id.to_owned(),
         actor: format!("run:{}", req.task),
@@ -722,8 +867,8 @@ fn render_receipt(
             .iter()
             .zip(after_revs)
             .map(|(p, after)| ReceiptEdit {
-                target: p.identity.clone(),
-                before: p.before_rev.0.clone(),
+                target: p.identity.rendered(),
+                before: p.before.node_rev.0.clone(),
                 after: after.0.clone(),
             })
             .collect(),

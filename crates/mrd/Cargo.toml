@@ -10,6 +10,22 @@ publish.workspace = true
 [lints]
 workspace = true
 
+# The wall-time gate is the PERF lane's, not the PR lane's — `ci.yml` says so in
+# its own header ("Wall-time numbers are NEVER gated in this lane … that's
+# perf.yml's job on the pinned fleet runner"). `required-features` is what makes
+# that mechanically true: `cargo test --workspace` skips the target (so no
+# wall-clock assert rides the correctness suite, and no vacuous pass replaces it),
+# `ci.yml` lints it explicitly so it cannot bit-rot, and `perf.yml` runs it for
+# real on the pinned runner. The 1000 ms budget is UNCHANGED — relocation, not
+# relaxation. Why it moved: `crates/mrd/tests/status_walltime.rs` header.
+[features]
+perf-walltime = []
+
+[[test]]
+name = "status_walltime"
+path = "tests/status_walltime.rs"
+required-features = ["perf-walltime"]
+
 # lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
 # library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
 # and the typed entry points.
@@ -119,6 +135,14 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# R31 gate (crates/mrd/tests/color_planes_e2e.rs): mint the empty-span token a
+# HAND-AUTHORED lock carries — `blake3` of zero bytes — through the same hasher
+# family the engine uses, so the witness is computed, never a literal that could
+# drift from the thing it stands for. The engine's own mint deliberately REFUSES
+# to produce it, which is the defect being closed, so the gate cannot ask
+# `model` for it. Already in the graph and the lockfile via `model` (blake3 =
+# "1") — no new external crate enters the workspace, `cargo deny` unchanged.
+blake3 = "1"
 # V3 integration gates (crates/mrd/tests/sql_e2e.rs): pre-publish a `view.duckdb`
 # (view + fs + cache + workspace) to drive the cold-degrade/STALE/OD8 paths
 # without a live daemon, and start an in-process `registry` daemon to drive the

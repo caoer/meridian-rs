@@ -36,7 +36,9 @@ fn file_rev(root: &fs::WorkspaceRoot, rel: &str) -> NodeRev {
 /// the U10 CID-token path (`fp1.span2.b3.<64hex>`), not a synthetic string.
 fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
     let doc = fs::load(root, std::path::Path::new("page.md")).expect("load");
-    model::fingerprint::fingerprint(&doc, &doc.root).0
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("page.md has content")
+        .into_string()
 }
 
 /// One lock object for the tests: one `objects:` entry + one pin carrying a

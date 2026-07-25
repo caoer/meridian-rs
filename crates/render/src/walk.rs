@@ -124,12 +124,14 @@ fn collect_elided(
 /// caller decorated gains its shaped `@fp` token immediately after the block
 /// id, inside the link's own bytes.
 ///
-/// The insertion point is LOCATED (`#^<block>` is a verbatim substring of the
-/// node's own bytes), never reconstructed — this walker does not own the
-/// wikilink grammar and must not grow a second spelling of it. A link whose
-/// bytes do not contain their own parsed fragment is skipped rather than
-/// guessed at: an undecorated link claims nothing, while a misplaced token
-/// would claim something false.
+/// The insertion point is the end of the block-ref SLOT, and the slot comes
+/// from `syntax::block_slot` — this walker does not own the wikilink grammar
+/// and must not grow a second spelling of it. Locating the slot by searching
+/// the node's bytes for `#^<block>` was that second spelling, and a label
+/// quoting its own block ref (`[[guide#^goal|guide#^goal in full]]`) won the
+/// search: the token landed in the label, where the put-side strip cannot see
+/// it, and reached disk. Decorate and strip now read the slot from one owner,
+/// so a token this crate mints is one that crate removes.
 fn collect_decorations<'a>(
     node: &model::Node,
     start: usize,
@@ -155,13 +157,10 @@ fn collect_decorations<'a>(
             target: target.clone(),
             block: block.clone(),
         })
-        && let Some(at) = raw
-            .get(node.span.clone())
-            .and_then(|s| s.rfind(&format!("#^{block}")))
+        && let Some(slot) = syntax::block_slot(raw, &node.span, block)
     {
-        let point = node.span.start + at + "#^".len() + block.len();
         out.push(Rewrite {
-            range: (point, point),
+            range: (slot.end, slot.end),
             text: token,
         });
     }

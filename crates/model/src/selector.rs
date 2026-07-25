@@ -41,9 +41,10 @@
 //! - [`classify_edge`] — the legacy `^inputs` plane: `live node_rev` vs the
 //!   pinned `rev`.
 //! - [`classify_pin`] — the `meridian-lock` plane: the pinned `fp1.…`
-//!   CID-token through [`crate::fingerprint::verify_content_span`], whose four
+//!   CID-token through [`crate::fingerprint::verify_content_span`], whose five
 //!   arms map onto these same tones (green / red `content-drifted` / grey
-//!   `unverifiable-fingerprint` / grey `malformed-fingerprint`).
+//!   `unverifiable-fingerprint` / grey `malformed-fingerprint` / red
+//!   `content-drifted` for an empty normalized span, R31).
 //!
 //! **Grey never renders green.** Every grey means the ledger did not measure
 //! this edge — an unverified claim dressed as attested is the one dishonest
@@ -305,10 +306,23 @@ pub fn resolve_selector<'a>(
 /// | `Red{actual}` | red `content-drifted` |
 /// | `Unverifiable` | grey `unverifiable-fingerprint`, NAMING the unknown triple member |
 /// | `Malformed` | grey `malformed-fingerprint` |
+/// | `EmptySpan` | red `content-drifted` |
 ///
 /// Both unverifiable arms are grey and NEVER green — an unreadable or
 /// unimplemented pin was never measured, so claiming it verified would be the
 /// one dishonest color (grey = outside sight).
+///
+/// **R31 — why the empty-span arm is RED and not grey.** Grey means "outside
+/// sight"; this is inside it. The address resolved, the engine read the live
+/// bytes, and they canonicalize to nothing — so the content this pin claims to
+/// cover is measurably not there. A pinned token can never have been minted
+/// over an empty span ([`fingerprint::fingerprint_span`] refuses), so the pin is
+/// wrong about its target, which is exactly `content-drifted`. It reuses that
+/// existing reason deliberately: the class is a *false green being closed*, not
+/// a new colour to teach, so no reason code, render label, or golden row moves.
+/// The consequence to know: `realise` converges an ordinary `red(drifted)` pin,
+/// but converging THIS one would have to re-mint over the empty span, so it
+/// refuses at the mint door instead — honestly, and by the same owner.
 ///
 /// **D8:** a target that no longer resolves is red-with-reason
 /// (`dangling-anchor` / `selector-unresolved`), never grey and never green —
@@ -326,7 +340,12 @@ pub fn classify_pin(selector: &Selector, pinned_token: &str, target: Option<&Doc
     let verdict = crate::fingerprint::verify_content_span(doc, &resolved.span, pinned_token);
     match verdict {
         ContentVerdict::Green => Color::Green,
-        ContentVerdict::Red { .. } => Color::Red(RedReason::Drifted),
+        // One body for two verdicts, and they genuinely are one colour: the
+        // address resolved and the engine read the live bytes in both, so both
+        // are measured. `Red` measured different content; `EmptySpan` measured
+        // NO content under a token that can only have been minted over some
+        // (R31) — the pin is wrong about its target either way.
+        ContentVerdict::Red { .. } | ContentVerdict::EmptySpan => Color::Red(RedReason::Drifted),
         ContentVerdict::Unverifiable { .. } => Color::Grey(GreyReason::UnverifiableFingerprint {
             unknown: verdict.unknown_members(),
         }),
@@ -736,7 +755,9 @@ mod tests {
     /// holds (mint through the SAME owner the verdict recomputes with).
     fn live_token(d: &Document, sel: &Selector) -> String {
         let (_, t) = resolve_selector(sel, Some(d)).expect("resolves");
-        crate::fingerprint::fingerprint_span(d, &t.span, &syntax::anchor_removals(&d.raw)).0
+        crate::fingerprint::fingerprint_span(d, &t.span, &syntax::anchor_removals(&d.raw))
+            .expect("fixture target has content")
+            .into_string()
     }
 
     /// All four `ContentVerdict` arms map onto the ONE color model, each with

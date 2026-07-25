@@ -456,10 +456,12 @@ pub struct LockItem {
 /// - **form-3** (`meridian-lock`, the engine's own lockfile) — the `pins:` plane
 ///   of the page's ` ```meridian-lock ` block ([`collect_lock_pins`]).
 ///
-/// The three forms are disjoint by construction, so nothing is double-counted:
-/// a page carries form-1 or form-2, never both (the form-2 pass skips any block
-/// whose fence info already carries `^inputs`), and form-3 is a `meridian-lock`
-/// fence that neither `^inputs` pass can match.
+/// The three forms are disjoint because each pass EXCLUDES the others by fence
+/// info, so nothing is double-counted: the form-2 pass skips any block whose
+/// info already carries `^inputs` (form-1's), and it skips any engine block
+/// (`meridian-*`, form-3's) whatever anchor trails it — a `meridian-lock` fence
+/// followed by `^inputs` otherwise projected the SAME pin twice, once per pass,
+/// with two different verdicts.
 #[must_use]
 pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     let mut out = Vec::new();
@@ -504,20 +506,21 @@ pub fn page_lock_items_in_corpus(
     items
 }
 
-/// Resolve a lock item's `to_path` to a real corpus path. Precedence:
-/// 1. already a real `node.path` (a form-1 path, or a full-path ref that carries
-///    its `.md`) — kept verbatim;
-/// 2. the ref + `.md` is a real path (a full-path wikilink `a/b/c` → `a/b/c.md`);
-/// 3. otherwise `getFirstLinkpathDest` by basename/alias
-///    ([`CorpusIndex::resolve_linkpath`]).
+/// Resolve a lock item's `to_path` to a real corpus path through the ONE address
+/// owner ([`CorpusIndex::resolve_ref`]) — exact key, then key + `.md`, then
+/// `getFirstLinkpathDest` parity. This function holds no precedence of its own:
+/// a second copy of the address grammar is how the pin plane and the decoration
+/// plane came to hash two different documents for one ref.
 ///
 /// An unresolvable ref returns its bare input unchanged — unresolved is
 /// first-class (the edge then renders red `selector-unresolved`, never a false
-/// green), exactly as a genuinely missing target should.
+/// green), exactly as a genuinely missing target should. That fallback is the
+/// only thing this wrapper adds: the read face reports the spelling it could not
+/// place, where a caller needing the absence itself reads the `Option`.
 ///
 /// Public so the U3.4 supersede tool resolves a ref to the SAME path this reader
-/// does — one owner for wikilink resolution, no reader/writer drift on which
-/// node a `[[ref]]` names (the swept `node_rev` must match what the board reads).
+/// does — no reader/writer drift on which node a `[[ref]]` names (the swept
+/// `node_rev` must match what the board reads).
 #[must_use]
 pub fn resolve_to_path(
     to_path: &str,
@@ -525,15 +528,8 @@ pub fn resolve_to_path(
     index: &CorpusIndex,
     docs: &BTreeMap<String, Document>,
 ) -> String {
-    if docs.contains_key(to_path) {
-        return to_path.to_string();
-    }
-    let with_md = format!("{to_path}.md");
-    if docs.contains_key(&with_md) {
-        return with_md;
-    }
     index
-        .resolve_linkpath(to_path, src_path)
+        .resolve_ref(to_path, src_path, docs)
         .unwrap_or_else(|| to_path.to_string())
 }
 
@@ -622,6 +618,14 @@ fn block_hash_algo(body: &str) -> Option<String> {
 /// form-1 pass, so no item is double-counted. Detection is via the block+anchor
 /// alone — never the frontmatter `inputs: '[[#^inputs]]'` discriminator (this is a
 /// READER; the U3.4 ruling licenses no schema conversion, no write).
+///
+/// An ENGINE block ([`lock::is_meridian_lang`] — `meridian-lock` and any future
+/// `meridian-*`) is owned by its own reader and skipped here whatever follows
+/// it. Without that skip, a `meridian-lock` fence with a trailing `^inputs`
+/// anchor was read TWICE: once by [`collect_lock_pins`] as the pin it is, and
+/// once here as a form-2 block, so ONE pin projected TWO rows carrying two
+/// different verdicts (the form-3 fingerprint compare, and a grey
+/// `declared-unpinned` row the page never declared). One pin, one row.
 fn collect_form2_lock_items(doc: &Document, out: &mut Vec<LockItem>) {
     let mut blocks: Vec<&Node> = Vec::new();
     let mut anchors: Vec<&Node> = Vec::new();
@@ -633,6 +637,11 @@ fn collect_form2_lock_items(doc: &Document, out: &mut Vec<LockItem>) {
         // A form-1 block (its fence info carries `^inputs`) is owned by the form-1
         // pass — never re-read here (no double-count for a page in either form).
         if is_inputs_lang(lang) {
+            continue;
+        }
+        // An engine block is form-3's (or a later engine reader's), never a
+        // form-2 chain block — the namespace law is `lock`'s, one owner.
+        if lock::is_meridian_lang(lang) {
             continue;
         }
         if !inputs_anchor_immediately_follows(&doc.raw, block, &anchors) {
@@ -1225,7 +1234,9 @@ mod tests {
 
         // The same pin at the target's LIVE token greens — the red above is a
         // measurement, never a blanket verdict on the form.
-        let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root).0;
+        let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root)
+            .expect("the fixture target has content")
+            .into_string();
         let mut green_docs = BTreeMap::new();
         green_docs.insert(
             "effect.md".to_string(),

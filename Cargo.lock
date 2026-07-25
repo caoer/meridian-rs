@@ -2099,6 +2099,7 @@ version = "0.0.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blake3",
  "cache",
  "check",
  "duckdb",
@@ -2769,6 +2770,7 @@ dependencies = [
 name = "receipt"
 version = "0.0.0"
 dependencies = [
+ "syntax",
  "wire",
 ]
 
@@ -2959,8 +2961,10 @@ dependencies = [
  "effects",
  "fs",
  "libc",
+ "lock",
  "model",
  "policy",
+ "receipt",
  "serde",
  "serde_json",
  "sha2",
