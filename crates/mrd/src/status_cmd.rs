@@ -11,27 +11,35 @@
 //! origin knowledge" — from FROZEN facts only. It is:
 //!
 //! - **pure-local** — no daemon, no network, no fetch (cap-free);
-//! - **O(armed)** — it reads ONE index file (`conventions/INDEX.md`) for the
-//!   armed set, re-hashes each armed convention's `CHECK.md` (O(armed) small
-//!   reads), scans the bounded receipt journal, and reads the git refs. It NEVER
-//!   walks the whole corpus, so the 3k-corpus wall-time stays sub-second;
+//! - **O(armed) + O(pins)** — it reads ONE index file (`conventions/INDEX.md`)
+//!   for the armed set, re-hashes each armed convention's `CHECK.md` (O(armed)
+//!   small reads), scans the bounded receipt journal, and reads the git refs.
+//!   The `meridian-lock` axis adds ONE corpus build (the pins live in the
+//!   corpus's pages, so nothing smaller can see them) and then colors O(pins),
+//!   never O(corpus): the 3k-corpus wall-time stays sub-second;
 //! - **fetch-less** — the anchor axis is therefore NEVER `verified` and never
 //!   renders a bare `at-tip` (W-C1, U2.7; the colors amendment § anchor axis);
 //! - **predicate-free** — it never evaluates a `check:` (the <1s budget holds;
 //!   passenger-registry amendment). Drift here is a mechanical rev compare, never
 //!   a starlark run.
 //!
-//! # The composed legend — three axes on one surface (U6.2)
-//! `status` renders the three orthogonal axes side by side, never merged, each
-//! rolled up worst-of INDEPENDENTLY (colors amendment § composed legend):
+//! # The composed legend — four axes on one surface (U6.2)
+//! `status` renders the orthogonal axes side by side, never merged, each rolled
+//! up worst-of INDEPENDENTLY (colors amendment § composed legend):
 //!
 //! - **pin color** — the armed set's evidence drift: `green` (every armed
 //!   convention's live `CHECK.md` rev still equals its pinned `armed_rev`) or
 //!   `red content-drifted` (some armed evidence drifted). The four named greys of
 //!   the full color law are the render's capability (fixtures pin each), and are
 //!   reached only by pinned `^inputs` edges, not the armed set.
+//! - **lock color** — the `meridian-lock` pins' FINGERPRINT verdicts
+//!   ([`LockAxis`]), rolled up red > grey > green. A different source and a
+//!   different compare from the armed-set `pin` axis, so neither subsumes the
+//!   other and neither changes the other's roll-up.
 //! - **anchor state** — the origin-freshness qualifier (U2.7): `as-known` /
-//!   `unverified`, NEVER `verified` (status cannot fetch).
+//!   `unverified`, NEVER `verified` (status cannot fetch). This is where origin
+//!   tip-compare CURRENCY lives, for every axis on the line — see [`LockAxis`]
+//!   for why a repo-level currency fact never enters a per-pin color.
 //! - **convention severity** — the worst armed severity (`off` / `warn` /
 //!   `block`), and one violation row per `--force`-escaped skip.
 //!
@@ -63,7 +71,7 @@ use policy::{Enforcement, evidence_rev, parse_index_strict};
 use receipt::anchor::{AnchorFacts, AnchorState, Observed, TipPosition};
 use receipt::journal::parse_rows;
 use serde_json::{Value, json};
-use view::walk::{color_label, color_tone};
+use view::walk::{color_detail, color_label, color_reason, color_tone};
 
 use crate::{Fail, Format, current_dir};
 
@@ -176,6 +184,76 @@ enum Boundary {
     LastApply(String),
 }
 
+/// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of.
+///
+/// **Its relationship to [`StatusReport::pin_rollup`] is ORTHOGONAL, never
+/// merged.** The two read different sources and answer different questions:
+/// `pin` rolls up the ARMED SET's evidence drift (each armed convention's live
+/// `CHECK.md` rev vs its pinned `armed_rev`, from `conventions/INDEX.md`);
+/// `lock` rolls up the FINGERPRINT verdicts of every `meridian-lock` pin in the
+/// corpus. Neither can subsume the other, `pin_rollup`'s own worst-of
+/// (red-if-any-drifted, else green) is unchanged by this axis, and a green on
+/// one axis never colors the other — the U6.2 composed legend renders them side
+/// by side, each rolled up independently.
+///
+/// **Currency is NOT folded into the tone.** Origin tip-compare is a
+/// REPOSITORY-level fact, and a lock verdict is per-pin and content-addressed
+/// (D12) — folding a repo fact into a per-pin color would both merge two axes
+/// and re-root a root-independent computation. Currency therefore stays on the
+/// `anchor` axis this line already renders: `lock` says whether the pinned
+/// content still matches the working copy, `anchor` says how current that
+/// working copy is against origin's tip. Read together, never multiplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockAxis {
+    /// Lock rows colored — pins plus any page-level lock-refusal row.
+    rows: usize,
+    /// The worst-of color across those rows — `None` when there are none. Not a
+    /// color: a vault with no lock pins has nothing to verify, and rendering
+    /// green there would claim an attestation nobody made.
+    rollup: Option<Color>,
+    /// Set when the corpus itself could not be read — the lock plane is out of
+    /// sight, reported as such rather than as an empty (falsely clean) axis.
+    unreadable: Option<String>,
+}
+
+impl LockAxis {
+    /// Roll up `colors` worst-of: red (a measured defect) over grey (never
+    /// measured) over green. **Grey above green is load-bearing** — a roll-up
+    /// that let one unverifiable pin hide inside a green fleet would render the
+    /// exact false green the color law forbids.
+    fn roll_up(colors: &[Color]) -> LockAxis {
+        let rollup = colors.iter().max_by_key(|c| Self::severity(c)).cloned();
+        LockAxis {
+            rows: colors.len(),
+            rollup,
+            unreadable: None,
+        }
+    }
+
+    /// The worst-of rank of one color: green 0 < grey 1 < red 2.
+    fn severity(color: &Color) -> u8 {
+        match color {
+            Color::Green => 0,
+            Color::Grey(_) => 1,
+            Color::Red(_) => 2,
+        }
+    }
+
+    /// The axis word: the worst-of label plus the row count, or the honest empty
+    /// / unreadable case. Never a bare tone. The count is bracketed because a
+    /// reason already carries its own parenthesized detail.
+    fn render(&self) -> String {
+        if let Some(detail) = &self.unreadable {
+            return format!("unreadable ({detail})");
+        }
+        let Some(color) = &self.rollup else {
+            return "none".to_owned();
+        };
+        let unit = if self.rows == 1 { "pin" } else { "pins" };
+        format!("{} [{} {unit}]", color_label(color), self.rows)
+    }
+}
+
 /// The gathered, render-ready status summary — the three composed axes, the INDEX
 /// counts, and the forced-write violation rows.
 struct StatusReport {
@@ -192,6 +270,8 @@ struct StatusReport {
     index_fault: Option<String>,
     /// The pin-color axis roll-up — `Green` all-fresh, `Red(Drifted)` any-drift.
     pin_rollup: Color,
+    /// The meridian-lock axis — the corpus's lock pins, rolled up worst-of.
+    lock: LockAxis,
     /// The convention-severity axis roll-up — the worst armed severity.
     severity_rollup: Enforcement,
     /// The rendered anchor-qualified tip axis (U2.7) — never a bare `at-tip`.
@@ -220,12 +300,15 @@ impl StatusReport {
         )
     }
 
-    /// The composed multi-axis line — pin color · anchor state · convention
-    /// severity, side by side, never merged (U6.2 composed legend).
+    /// The composed multi-axis line — armed-pin color · meridian-lock color ·
+    /// anchor state · convention severity, side by side, never merged (U6.2
+    /// composed legend). `lock` sits beside `anchor` on purpose: the pin verdict
+    /// and the currency qualifier that reads it are one glance apart.
     fn composed_line(&self) -> String {
         format!(
-            "pin {} · anchor {} · convention {}",
+            "pin {} · lock {} · anchor {} · convention {}",
             color_label(&self.pin_rollup),
+            self.lock.render(),
             self.anchor_axis,
             self.severity_rollup.as_str(),
         )
@@ -288,6 +371,17 @@ impl StatusReport {
             "composed": {
                 "pin_color": color_tone(&self.pin_rollup),
                 "pin_label": color_label(&self.pin_rollup),
+                // The meridian-lock axis, ALWAYS emitted (no conditional omit):
+                // an empty vault reports 0 pins and a null color, never an
+                // absent field a reader could mistake for "not checked".
+                "lock": {
+                    "pins": self.lock.rows,
+                    "color": self.lock.rollup.as_ref().map(color_tone),
+                    "reason": self.lock.rollup.as_ref().and_then(color_reason),
+                    "detail": self.lock.rollup.as_ref().and_then(color_detail),
+                    "label": self.lock.render(),
+                    "unreadable": self.lock.unreadable,
+                },
                 "anchor": self.anchor_axis,
                 "convention_severity": self.severity_rollup.as_str(),
             },
@@ -345,6 +439,9 @@ fn gather(workspace: &Path) -> StatusReport {
     // 4. The anchor axis — git refs, fetch-less, never verified (U2.7).
     let (anchor_axis, nudge) = anchor_axis(workspace, &rows);
 
+    // 5. The meridian-lock axis — the corpus's lock pins, colored and rolled up.
+    let lock = lock_axis(workspace);
+
     StatusReport {
         workspace: workspace.display().to_string(),
         armed: armed.len(),
@@ -353,11 +450,41 @@ fn gather(workspace: &Path) -> StatusReport {
         boundary,
         index_fault,
         pin_rollup,
+        lock,
         severity_rollup,
         anchor_axis,
         nudge,
         violations,
     }
+}
+
+/// Color every `meridian-lock` pin in the workspace and roll them up worst-of.
+///
+/// This is the ONE place status leaves the O(armed) set: the lock plane lives in
+/// the corpus's pages, so it costs one corpus build (`fs::domain_snapshot` +
+/// `fs::build_corpus` — the same builder `mrd walk` uses, so status and walk can
+/// never disagree about a pin). It stays sub-second on the 3k-doc corpus: the
+/// build reads and parses bytes without resolving anything, and the coloring is
+/// O(pins), not O(corpus).
+///
+/// Honest degradation, like every other frozen-fact read here: an unreadable
+/// corpus reports `unreadable`, never an empty (falsely clean) axis.
+fn lock_axis(workspace: &Path) -> LockAxis {
+    let docs = match crate::walk_cmd::build_docs(workspace) {
+        Ok(docs) => docs,
+        Err(fail) => {
+            return LockAxis {
+                rows: 0,
+                rollup: None,
+                unreadable: Some(fail.message),
+            };
+        }
+    };
+    let colors: Vec<Color> = view::walk::lock_pin_colors(&docs)
+        .into_iter()
+        .map(|p| p.color)
+        .collect();
+    LockAxis::roll_up(&colors)
 }
 
 /// One armed convention read from the INDEX: the pinned `armed_rev` per slug, plus
@@ -664,10 +791,11 @@ mod tests {
         }
     }
 
-    /// The composed multi-axis line renders all three axes side by side, never
-    /// merged — pin color, anchor state, convention severity (U6.2).
+    /// The composed multi-axis line renders every axis side by side, never
+    /// merged — armed-pin color, meridian-lock color, anchor state, convention
+    /// severity (U6.2).
     #[test]
-    fn composed_line_shows_three_axes_side_by_side() {
+    fn composed_line_shows_every_axis_side_by_side() {
         let line = compose(
             Color::Red(RedReason::Drifted),
             "behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d)",
@@ -675,7 +803,7 @@ mod tests {
         );
         assert_eq!(
             line,
-            "pin red content-drifted · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · convention warn"
+            "pin red content-drifted · lock none · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · convention warn"
         );
     }
 
@@ -685,13 +813,23 @@ mod tests {
         let line = compose(Color::Green, "at-tip (anchor as-known)", Enforcement::Off);
         assert_eq!(
             line,
-            "pin green · anchor at-tip (anchor as-known) · convention off"
+            "pin green · lock none · anchor at-tip (anchor as-known) · convention off"
         );
     }
 
-    /// Compose the three axes without an IO edge — the pure render under test by
-    /// the fixtures.
+    /// Compose the axes without an IO edge — the pure render under test by the
+    /// fixtures.
     fn compose(pin: Color, anchor_axis: &str, severity: Enforcement) -> String {
+        report(pin, LockAxis::roll_up(&[]), anchor_axis, severity).composed_line()
+    }
+
+    /// A pure [`StatusReport`] with no IO edge — the render fixtures' subject.
+    fn report(
+        pin: Color,
+        lock: LockAxis,
+        anchor_axis: &str,
+        severity: Enforcement,
+    ) -> StatusReport {
         StatusReport {
             workspace: "/ws".to_owned(),
             armed: 0,
@@ -700,12 +838,120 @@ mod tests {
             boundary: Boundary::Genesis,
             index_fault: None,
             pin_rollup: pin,
+            lock,
             severity_rollup: severity,
             anchor_axis: anchor_axis.to_owned(),
             nudge: None,
             violations: Vec::new(),
         }
-        .composed_line()
+    }
+
+    // ── S9: the meridian-lock axis (U6.2 never-merged) ───────────────────────
+
+    /// The lock roll-up is worst-of RED > GREY > GREEN, and grey-over-green is
+    /// load-bearing: one unverifiable pin must not hide inside a green fleet.
+    #[test]
+    fn the_lock_rollup_is_worst_of_with_grey_above_green() {
+        let grey = Color::Grey(GreyReason::UnverifiableFingerprint {
+            unknown: vec!["version"],
+        });
+        let red = Color::Red(RedReason::Drifted);
+
+        assert_eq!(
+            LockAxis::roll_up(&[]).rollup,
+            None,
+            "no pins is not a color"
+        );
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Green, Color::Green]).rollup,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Green, grey.clone()]).rollup,
+            Some(grey.clone()),
+            "a grey pin must not roll up green",
+        );
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Green, grey, red.clone()]).rollup,
+            Some(red),
+            "a measured red outranks an unmeasured grey",
+        );
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Green, Color::Green, Color::Green]).rows,
+            3
+        );
+    }
+
+    /// The axis renders its worst-of label, its count, and the honest empty /
+    /// unreadable cases — never a bare tone and never a silent absence.
+    #[test]
+    fn the_lock_axis_renders_every_case() {
+        assert_eq!(LockAxis::roll_up(&[]).render(), "none");
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Green, Color::Green]).render(),
+            "green [2 pins]"
+        );
+        assert_eq!(
+            LockAxis::roll_up(&[Color::Grey(GreyReason::LockRefused {
+                reason: "more than one meridian-lock block on the page".to_owned(),
+            })])
+            .render(),
+            "grey lock-refused (more than one meridian-lock block on the page) [1 pin]",
+        );
+        assert_eq!(
+            LockAxis {
+                rows: 0,
+                rollup: None,
+                unreadable: Some("cannot read the corpus: boom".to_owned()),
+            }
+            .render(),
+            "unreadable (cannot read the corpus: boom)",
+        );
+    }
+
+    /// `json()` ALWAYS emits the lock fields — an empty vault reports 0 pins and
+    /// a null color, never an absent field a reader could mistake for
+    /// "not checked". The armed-set `pin_*` fields are untouched beside them.
+    #[test]
+    fn json_always_emits_the_lock_axis_beside_the_untouched_pin_rollup() {
+        let empty: Value = serde_json::from_str(
+            &report(
+                Color::Green,
+                LockAxis::roll_up(&[]),
+                "at-tip (anchor as-known)",
+                Enforcement::Off,
+            )
+            .json(),
+        )
+        .expect("json");
+        let lock = &empty["composed"]["lock"];
+        assert_eq!(lock["pins"], json!(0));
+        assert_eq!(lock["color"], Value::Null, "no pins is not a color");
+        assert_eq!(lock["label"], json!("none"));
+        assert_eq!(lock["unreadable"], Value::Null);
+        // The armed-set axis is unchanged and still its own worst-of.
+        assert_eq!(empty["composed"]["pin_color"], json!("green"));
+        assert_eq!(empty["composed"]["pin_label"], json!("green"));
+
+        let drifted: Value = serde_json::from_str(
+            &report(
+                Color::Green,
+                LockAxis::roll_up(&[Color::Grey(GreyReason::UnverifiableFingerprint {
+                    unknown: vec!["version"],
+                })]),
+                "at-tip (anchor as-known)",
+                Enforcement::Off,
+            )
+            .json(),
+        )
+        .expect("json");
+        let lock = &drifted["composed"]["lock"];
+        assert_eq!(lock["pins"], json!(1));
+        assert_eq!(lock["color"], json!("grey"));
+        assert_eq!(lock["reason"], json!("unverifiable-fingerprint"));
+        assert_eq!(lock["detail"], json!("unknown version"));
+        // ORTHOGONAL: a grey lock axis never repaints the armed-set pin axis.
+        assert_eq!(drifted["composed"]["pin_color"], json!("green"));
     }
 
     // ── the forced-write violation row fixture (U4.3 §11.1) ──────────────────

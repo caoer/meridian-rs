@@ -262,8 +262,15 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
     )?;
     for (path, doc) in docs {
         let src_doc_rev = doc.root.node_rev.0.clone();
+        // The lock-refusal row is a PAGE-level fact, not an `^inputs` edge: it
+        // declares no ref, no target and no pinned rev, and `input_lock`'s
+        // frozen columns can only spell it as a declared-unpinned edge — the
+        // wrong reason. It is carried on the color plane (`view::walk`), which
+        // has a reason-carrying grey; teaching the board its own column is a
+        // DDL change this unit does not make.
         for (seq, item) in page_lock_items_in_corpus(path, doc, &index, docs)
             .into_iter()
+            .filter(|item| item.lock_refusal.is_none())
             .enumerate()
         {
             stmt.execute(duckdb::params_from_iter(
@@ -294,9 +301,13 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
 /// owner per fact"), never a second reader that could drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockItem {
-    /// The `ref` field, verbatim (the declared ref).
+    /// The `ref` field, verbatim (the declared ref). EMPTY on a
+    /// [`LockItem::lock_refusal`] row — a refused lock declares no ref, and the
+    /// listing names the page from its own context instead.
     pub declared_ref: String,
-    /// The `to` page path — the `ref` path when `to` is absent.
+    /// The `to` page path — the `ref` path when `to` is absent. EMPTY on a
+    /// [`LockItem::lock_refusal`] row: a refused lock names no target, so the
+    /// row is a leaf the walk never traverses and never reverses into.
     pub to_path: String,
     /// The `to` selector, verbatim after the first `#` (`""` = the page/doc root).
     pub to_sel: String,
@@ -316,6 +327,16 @@ pub struct LockItem {
     /// typed slot a verdict computer reads: `model::fingerprint::verify_content`
     /// consumes THIS, never a re-parse of the lock block.
     pub fingerprint: Option<String>,
+    /// Set on the ONE row a page projects when its `meridian-lock` block
+    /// REFUSED to parse ([`lock::LockError`], verbatim): malformed, or more than
+    /// one block on the page. Every other field is the empty/absent case — this
+    /// row declares no edge, it declares that the page's edges are UNREADABLE.
+    ///
+    /// It exists so a corrupt lock cannot read as "no pins": before it, a
+    /// refusal projected ZERO rows and a damaged page was indistinguishable from
+    /// a page that never pinned anything. The row renders grey `lock-refused`
+    /// (grey = outside sight), never green and never red.
+    pub lock_refusal: Option<String>,
 }
 
 /// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
@@ -581,6 +602,7 @@ fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
                     rev_class: None,
                     hash_algo: hash_algo.clone(),
                     fingerprint: None, // a legacy form pins a rev, never a CID-token
+                    lock_refusal: None, // only form-3 has a lock block to refuse
                 });
                 current = Some(out.len() - 1);
             }
@@ -630,12 +652,30 @@ const FP_ALGO_UNKNOWN: &str = "fp-unknown";
 /// [`lock::find`] is the only parser: one owner for the lock grammar, and the
 /// crate's own predicate decides which fence is a lock (never a second
 /// language list here). `find` is fail-loud — a malformed block, or more than
-/// one on a page, is an `Err`; this is a READ face, so such a page projects no
-/// pin rows (its state before this reader existed) and the refusal stays where
-/// `find`'s other callers put it, on the write path.
+/// one on a page, is an `Err`; a READ face cannot refuse, so it projects the
+/// refusal as ONE grey row ([`LockItem::lock_refusal`]) rather than swallowing
+/// it. Projecting nothing would make a CORRUPT lock read as "no pins" —
+/// indistinguishable from a page that never pinned anything, which is the one
+/// answer a drift face must never give. The row carries the reason and colors
+/// grey `lock-refused` (grey = outside sight); repairing the block is not this
+/// face's job.
 fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
-    let Ok(Some(found)) = lock::find(doc) else {
-        return;
+    let found = match lock::find(doc) {
+        Ok(Some(found)) => found,
+        Ok(None) => return,
+        Err(refusal) => {
+            out.push(LockItem {
+                declared_ref: String::new(),
+                to_path: String::new(),
+                to_sel: String::new(),
+                pinned_rev: None,
+                rev_class: None,
+                hash_algo: None,
+                fingerprint: None,
+                lock_refusal: Some(refusal.to_string()),
+            });
+            return;
+        }
     };
     for pin in found.lock.pins {
         let (to_path, to_sel) = split_lock_ref(&pin.declared_ref);
@@ -651,6 +691,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             rev_class: Some("content".to_string()),
             hash_algo: Some(fingerprint_algo(&pin.fingerprint)),
             fingerprint: Some(pin.fingerprint),
+            lock_refusal: None, // this lock parsed — the refusal row is the Err arm
         });
     }
 }
@@ -722,8 +763,9 @@ fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
         to_sel,
         pinned_rev,
         rev_class,
-        hash_algo: None,   // stamped per-block by parse_lock_body
-        fingerprint: None, // a legacy form pins a rev, never a CID-token
+        hash_algo: None,    // stamped per-block by parse_lock_body
+        fingerprint: None,  // a legacy form pins a rev, never a CID-token
+        lock_refusal: None, // only form-3 has a lock block to refuse
     })
 }
 
@@ -1102,17 +1144,33 @@ mod tests {
     }
 
     /// A lock block the format REFUSES (malformed, or two blocks on one page)
-    /// projects no pin rows — `lock::find` is the one parser and the one place
-    /// that judges the bytes; this read face never guesses a pin out of damage.
-    /// The legacy items on the same page still project.
+    /// projects ONE row carrying the refusal — never a pin guessed out of
+    /// damage, and never NOTHING. `lock::find` stays the one parser and the one
+    /// judge of the bytes; this face only reports its verdict.
+    ///
+    /// SUPERSEDES S3's `refused_lock_block_projects_no_pin_rows`: projecting
+    /// zero rows made a CORRUPT lock byte-identical, to every reader, to a page
+    /// that never pinned anything. The row exists so damage is visible; it
+    /// carries no ref, no target and no rev, so it can never be read as an edge.
     #[test]
-    fn refused_lock_block_projects_no_pin_rows() {
+    fn refused_lock_block_projects_one_refusal_row_not_silence() {
         let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
         assert!(
             lock::find(&doc(malformed)).is_err(),
             "precondition: the format refuses these bytes",
         );
-        assert!(page_lock_items(&doc(malformed)).is_empty());
+        let items = page_lock_items(&doc(malformed));
+        assert_eq!(items.len(), 1, "the refusal is visible, not absent");
+        assert_eq!(
+            items[0].lock_refusal.as_deref(),
+            Some(
+                "malformed at line 3: unrecognized line (canonical order: version, objects, pins)"
+            ),
+            "the row carries WHY the lock is unreadable",
+        );
+        assert_eq!(items[0].declared_ref, "", "a refusal declares no ref");
+        assert_eq!(items[0].to_path, "", "a refusal names no target");
+        assert!(items[0].pinned_rev.is_none() && items[0].fingerprint.is_none());
 
         let block = lock::render(&{
             let mut l = lock::Lock::new();
@@ -1128,7 +1186,31 @@ mod tests {
             Err(lock::LockError::MultipleBlocks),
             "precondition: two blocks is corruption, not two locks",
         );
-        assert!(page_lock_items(&doc(&two)).is_empty());
+        let items = page_lock_items(&doc(&two));
+        assert_eq!(
+            items.len(),
+            1,
+            "two blocks project ONE refusal, not two pins"
+        );
+        assert_eq!(
+            items[0].lock_refusal.as_deref(),
+            Some("more than one meridian-lock block on the page"),
+        );
+    }
+
+    /// The refusal row stays OFF the `^inputs` SQL board: its columns can only
+    /// spell it as a declared-unpinned EDGE, which would be a wrong reason on a
+    /// row that declares no edge. The color plane carries it instead.
+    #[test]
+    fn refusal_row_is_not_projected_into_the_input_lock_table() {
+        let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("a.md".to_string(), doc(malformed));
+        let conn = open_board(&docs, &[]).expect("board");
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM input_lock", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(rows, 0, "a page-level refusal is not an ^inputs edge row");
     }
 
     /// The algo label is derived, and it can never collide with the native set:
