@@ -975,6 +975,35 @@ pub struct SpliceRequest {
     /// batch (`root_mismatch` → resync). `None` = unguarded.
     pub if_root: Option<MerkleRoot>,
     pub edits: Vec<Edit>,
+    /// The ONE engine-minted span edit riding inside the same batch (stage-2
+    /// S7). `None` for every caller-shaped batch.
+    pub engine: Option<EngineEdit>,
+}
+
+/// An **engine-minted** span edit riding inside the batch (stage-2 S7): the
+/// exact pre-batch byte span to replace and its replacement bytes, minted by
+/// the engine itself instead of resolved from a caller [`Ref`].
+///
+/// # Why a span, when request-side spans are banned (D-C1)
+/// Its one inhabitant is the `meridian-lock` block, whose span comes from
+/// `lock::find` (authoritative, fence-to-fence) or the page's EOF birth point,
+/// and whose bytes come from `lock::render`. A fenced code block carries no
+/// heading path, no block id, and no frontmatter key, so the §2.1 ref grammar
+/// cannot address it — and the engine is its SOLE writer (#8 §3), so no caller
+/// needs to. No wire shape lowers to this field: the wire carries `edits` /
+/// `plan_edits`, both of which produce [`Edit`]s, so a client can never mint one.
+///
+/// # It is validated exactly like a resolved edit
+/// The span joins the planned set before the batch-wide rungs, so
+/// char-alignment, disjointness against the caller's edits, and the one
+/// simulated reparse all cover it. That is strictly MORE guarding than the M1
+/// `lock_write` path had (its own flock, hand-rolled splice, no validation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineEdit {
+    /// The pre-batch byte span these bytes replace (empty span = an insert).
+    pub span: ByteSpan,
+    /// The replacement bytes, already canonical (the minter renders them).
+    pub text: String,
 }
 
 /// A receipt append riding INSIDE the sealed batch (§6.1, D-C3): the receipt
@@ -1181,6 +1210,15 @@ pub fn validate_batch(
         });
     }
 
+    // 2b. The engine-minted span edit (S7) joins the planned set HERE — after the
+    // caller's edits, before every batch-wide rung.
+    if let Some(engine) = &batch.engine {
+        match plan_engine_edit(raw, engine) {
+            Ok(planned_engine) => planned.push(planned_engine),
+            Err(v) => return v,
+        }
+    }
+
     // 3. Disjointness (§4.4): targets must not overlap (containment counts).
     if let Some(spans) = first_overlap(&planned) {
         return SpliceVerdict::Overlap { spans };
@@ -1250,6 +1288,19 @@ fn guard_char_aligned(raw: &str, region: &ByteSpan) -> Result<(), SpliceVerdict>
     } else {
         Err(SpliceVerdict::MultibyteSplit)
     }
+}
+
+/// Plan the one [`EngineEdit`]: its span IS its address, so nothing resolves —
+/// but an out-of-range span is still refused by the same char-alignment
+/// guarantor (`is_char_boundary` is false past the end), so a mis-minted span can
+/// never splice into invented bytes.
+fn plan_engine_edit(raw: &str, engine: &EngineEdit) -> Result<PlannedEdit, SpliceVerdict> {
+    guard_char_aligned(raw, &engine.span)?;
+    Ok(PlannedEdit {
+        target: engine.span.clone(),
+        region: engine.span.clone(),
+        text: engine.text.clone(),
+    })
 }
 
 /// The first pair of non-disjoint TARGET spans (§4.4), or `None`. Containment
@@ -2161,6 +2212,7 @@ mod tests {
         SpliceRequest {
             if_root: None,
             edits,
+            engine: None,
         }
     }
 
@@ -2264,7 +2316,77 @@ mod tests {
         let SpliceRequest {
             if_root: _,
             edits: _,
+            engine: _,
         } = batch(vec![e]);
+    }
+
+    /// The engine-minted span edit (S7) is sealed like any other edit: it lands
+    /// in the sealed batch, it is checked for disjointness against the caller's
+    /// edits, and it is char-alignment guarded.
+    #[test]
+    fn an_engine_edit_rides_the_sealed_batch_and_obeys_every_batch_rung() {
+        let raw = "# A\n\nbody\n";
+        let doc = build(raw.to_string(), syntax::parse(raw));
+
+        // Alone: an EOF insert seals as one validated edit at that span.
+        let mut req = batch(Vec::new());
+        req.engine = Some(EngineEdit {
+            span: raw.len()..raw.len(),
+            text: "```meridian-lock\nversion: 1\n```\n".to_string(),
+        });
+        let SpliceVerdict::Validated(sealed) = validate_batch(&doc, None, &req, None) else {
+            panic!("the engine edit validates");
+        };
+        assert_eq!(sealed.edits.len(), 1);
+        assert_eq!(sealed.edits[0].span, raw.len()..raw.len());
+
+        // Beside a caller edit on a DISJOINT target: both seal, in offset order.
+        let mut both = batch(vec![match_edit(hpath(&["A"]), "body", "BODY", None)]);
+        both.engine = req.engine.clone();
+        let SpliceVerdict::Validated(sealed) = validate_batch(&doc, None, &both, None) else {
+            panic!("caller edit + engine edit validate together");
+        };
+        assert_eq!(sealed.edits.len(), 2);
+        assert!(sealed.edits[0].span.start < sealed.edits[1].span.start);
+
+        // OVERLAPPING the caller's target span: the batch-wide disjointness rung
+        // refuses, exactly as it does for two caller edits.
+        let mut clash = batch(vec![put_edit(hpath(&["A"]), PutAt::All, "# A\n")]);
+        clash.engine = Some(EngineEdit {
+            span: 2..4,
+            text: "x".to_string(),
+        });
+        assert!(
+            matches!(
+                validate_batch(&doc, None, &clash, None),
+                SpliceVerdict::Overlap { .. }
+            ),
+            "an engine edit is not exempt from disjointness"
+        );
+
+        // Out of range / mid-character: refused, never spliced into thin air.
+        let mut bad = batch(Vec::new());
+        bad.engine = Some(EngineEdit {
+            span: raw.len()..raw.len() + 5,
+            text: "x".to_string(),
+        });
+        assert_eq!(
+            validate_batch(&doc, None, &bad, None),
+            SpliceVerdict::MultibyteSplit,
+            "a span past the end fails the char-alignment guarantor"
+        );
+
+        let uni = "# Ünïcode\n";
+        let udoc = build(uni.to_string(), syntax::parse(uni));
+        let mut split = batch(Vec::new());
+        split.engine = Some(EngineEdit {
+            span: 3..4, // inside the two-byte `Ü`
+            text: "x".to_string(),
+        });
+        assert_eq!(
+            validate_batch(&udoc, None, &split, None),
+            SpliceVerdict::MultibyteSplit
+        );
     }
 
     /// GATE 3 (seal, positive): only `model` mints a `ValidatedBatch`; a valid

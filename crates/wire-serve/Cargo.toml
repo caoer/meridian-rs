@@ -36,6 +36,10 @@ receipt = { workspace = true }
 # canonical render, locate. This crate is the format's SOLE writer — the
 # guarded `lock_write` path splices `lock::render` bytes and nothing else.
 lock = { workspace = true }
+# S7 the pin plane: git owns content-addressing (D5), so the `objects:` blob
+# oid is shelled out through the zero-dep plumbing crate — read-only for a
+# normal pin, `hash-object -w` for `--vibe`.
+git = { workspace = true }
 # The DELIBERATE composition edge (P6-VERDICTS, advisor Ruling 1): the write
 # choke-point evaluates whatever admitted rule packs the CALLER hands in over the
 # post-batch doc and projects §11.1 findings to `wire::Verdict`. Zero edges run

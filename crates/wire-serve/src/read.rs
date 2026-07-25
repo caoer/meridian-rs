@@ -123,7 +123,7 @@ pub struct ReadParams {
 /// host's authz — so it mints nothing and the pin gate is bypassed for it. A
 /// blank actor is treated as absent too: an empty string is not an identity,
 /// and admitting one would open a bucket every actor-less caller shares.
-fn mint_actor(actor: Option<&str>) -> Option<&str> {
+pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
     actor.map(str::trim).filter(|a| !a.is_empty())
 }
 

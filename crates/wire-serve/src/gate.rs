@@ -519,9 +519,10 @@ mod scenarios {
                 if_node_rev: None,
             }],
             plan_edits: Vec::new(),
+            pin: None,
         };
         let before = std::fs::read(dir.path().join("tasks/fix.md")).unwrap();
-        let err = splice(&root, 0, &args, &[]).expect_err("owner self-splice refuses");
+        let err = splice(&root, 0, &args, &[], None).expect_err("owner self-splice refuses");
         assert_eq!(err.code, ErrorCode::ConventionFault);
         assert_eq!(
             std::fs::read(dir.path().join("tasks/fix.md")).unwrap(),
@@ -582,6 +583,7 @@ mod scenarios {
                 if_node_rev: None,
             }],
             plan_edits: Vec::new(),
+            pin: None,
         }
     }
 
@@ -592,7 +594,7 @@ mod scenarios {
         let index_path = dir.path().join(fs::domain::RESERVED_INDEX_PATH);
         let before = std::fs::read_to_string(&index_path).unwrap();
 
-        let err = splice(&root, 0, &checkbox_flip(false), &[])
+        let err = splice(&root, 0, &checkbox_flip(false), &[], None)
             .expect_err("a direct INDEX edit must break the file↔index binding");
         assert_eq!(err.code, ErrorCode::BindingBreak);
         assert_eq!(err.recovery, Recovery::Fix, "binding-break recovers by fix");
@@ -652,8 +654,9 @@ mod scenarios {
                 if_node_rev: None,
             }],
             plan_edits: Vec::new(),
+            pin: None,
         };
-        let out = splice(&root, 0, &args, &[]).expect("--force escapes the armed refusal");
+        let out = splice(&root, 0, &args, &[], None).expect("--force escapes the armed refusal");
 
         // RENDERED: a forced verdict rides the response naming the skip.
         let wire::ResponseBody::Splice { verdicts, .. } = out.body else {

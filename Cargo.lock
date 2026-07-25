@@ -4399,6 +4399,7 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "fs",
+ "git",
  "lock",
  "model",
  "policy",
