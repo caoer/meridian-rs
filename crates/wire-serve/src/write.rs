@@ -1222,8 +1222,7 @@ fn mint_pin(
         (fact_span, String::new())
     };
 
-    let removals = syntax::anchor_removals(&pinned_doc.raw);
-    let fingerprint = model::fingerprint::fingerprint_span(&pinned_doc, &span, &removals).0;
+    let fingerprint = mint_fingerprint(&pinned_doc, &span, &spec.target, &selector)?;
     let blob = blob_oid(
         root,
         &spec.target,
@@ -1467,6 +1466,49 @@ fn read_mint_required(target: &Path, message: String) -> Box<ErrorBody> {
     e.path = Some(target.clone());
     e.message = Some(message);
     Box::new(e)
+}
+
+/// Mint the pin's fingerprint over the bytes the promotion will land — the
+/// R31 discharge of [`model::fingerprint::fingerprint_span`]'s fallible owner.
+///
+/// **This refusal is NOT the load-bearing guard, and stage 3 must not read it
+/// as one.** Every ref form whose normalized span can be empty is already
+/// refused at an EARLIER rung: an own-line anchor projects no read-face fact
+/// ("no section addressed"), and a whole-page ref cannot express a selector at
+/// all. So this rung is measured-unreachable today — `mrd pin` cannot deliver
+/// an empty span to it (`tests/s2fix_empty_span_mint.rs` asserts each rung by
+/// name). The guard that BITES is on the verdict side
+/// (`model::fingerprint::ContentVerdict::EmptySpan`), because the class arrives
+/// through hand- or tool-authored `meridian-lock` blocks, never through here.
+///
+/// It exists because the owner is fallible and every door discharges it — belt
+/// on belt, and a cheap one: if a future read-face change ever projects such a
+/// fact, the pin refuses instead of minting a token that matches every
+/// document.
+///
+/// # Errors
+/// `pin_target_missing` when the selector addresses no content to fingerprint.
+fn mint_fingerprint(
+    doc: &model::Document,
+    span: &model::ByteSpan,
+    target: &Path,
+    selector: &str,
+) -> Result<String, Box<ErrorBody>> {
+    let removals = syntax::anchor_removals(&doc.raw);
+    model::fingerprint::fingerprint_span(doc, span, &removals)
+        .map(|fp| fp.0)
+        .map_err(|model::fingerprint::EmptySpan| {
+            pin_target_missing(
+                target,
+                format!(
+                    "\"{selector}\" in {} addresses no content to fingerprint — its bytes \
+                     canonicalize to nothing, and a fingerprint over nothing would match \
+                     every document instead of this one. Pin a section or block that has \
+                     content.",
+                    target.0
+                ),
+            )
+        })
 }
 
 /// `pin_target_missing`: the pin's page or selector does not resolve, so there
