@@ -114,8 +114,13 @@ pub struct SpliceOutcome {
 ///
 /// # Errors
 /// A typed validation refusal (§5.2 failure split) mapped to its wire frame, an
-/// ambient-root/domain failure, or an I/O error — in every error case nothing was
-/// committed and no Delta exists.
+/// ambient-root/domain failure, or an I/O error — in every error case no Delta
+/// exists and nothing was committed, with ONE named exception that is a disk
+/// fault rather than a refusal: a pin's anchor promotion is a second inode and
+/// therefore a second rename (residual G3), so an I/O failure in the commit
+/// AFTER the promotion's own rename lands can leave that marker behind. It is
+/// fingerprint-neutral and idempotently reused by the next pin. Every REFUSAL
+/// rung, including all of the pin's, runs before that rename.
 // THE single write choke-point (decision 0002 W1): its length is the deliberate
 // one-linear-flow this crate is built around; the U4.2 gate mount grew it past
 // the 100-line lint, but splitting the flow would obscure it.
@@ -163,27 +168,38 @@ pub fn splice(
     // + blob → anchor promotion. It runs INSIDE the flock this splice already
     // holds, so the receipt's rev-recheck reads the same pre-image the batch
     // will validate against, and the promotion needs no second flock.
-    let pin = match &args.pin {
+    let mut pin = match &args.pin {
         Some(spec) => Some(mint_pin(
             root,
             spec,
             args.actor.as_deref(),
-            args.dry,
+            args.force,
             mints,
         )?),
         None => None,
     };
-    // The promotion is the ONE write ordered before the commit (residual G3:
-    // two inodes are two renames). It lands rev-NEUTRALLY — norm-v2 removes the
-    // marker plus its one leading space, so the target's fingerprint cannot
-    // move and no other page pinning that target reddens — which is exactly why
-    // promoting into a possibly-unowned target is permitted (D14). It did move
-    // the target's BYTES, so it moved the corpus root, and the pinning page
-    // itself when it IS the target: re-read both, or every rung below would
-    // validate against a stale pre-image.
-    if pin.as_ref().is_some_and(|p| p.promotion_landed) {
-        doc = load_doc(root, &args.path)?;
-        root_before = ambient_root(root)?;
+    // The promotion's own gate ran at mint time — it must refuse before any byte
+    // is written, and on the dry path too (§4.4: a rehearsal refuses exactly
+    // where the real write does). Its advisory findings and forced skips ride
+    // this response and this journal, merged below with the batch's own.
+    let mut pin_gate = pin
+        .as_mut()
+        .map(|p| std::mem::take(&mut p.gate))
+        .unwrap_or_default();
+    // The promotion is COMPUTED by the prologue and LANDS far below, after the
+    // last rung that can refuse (R25, finding 12): it is the ONE write that does
+    // not ride the batch (residual G3: two inodes are two renames), so ordering
+    // it last is what makes a refused pin leave every file byte-unchanged.
+    //
+    // Nothing has moved on disk yet, so `root_before` and the pinning page's
+    // pre-image both still stand — with one exception: when the promotion's
+    // target IS the pinning page, those promoted bytes are the pre-image this
+    // batch must be composed against, because they are what disk will carry when
+    // `commit_batch` reads it back.
+    if let Some(p) = pin.as_ref().and_then(|p| p.promotion.as_ref())
+        && same_file(root, &p.target, &args.path)
+    {
+        doc = build_doc(&args.path, &p.bytes);
     }
     // The lock block is composed against the POST-promotion pinning page and
     // rides the batch as the one engine-minted span edit (`model::EngineEdit`):
@@ -192,41 +208,36 @@ pub fn splice(
     // `commit_batch` — one flock, one rename — instead of a second flocked
     // `lock_write` call, which would self-refuse `workspace_busy` (the flock is
     // non-reentrant per open-file-description).
-    let pin_engine = match &pin {
-        Some(p) => Some(lock_engine_edit(&doc, &args.path, p)?),
-        None => None,
+    // `pin_block` is the canonical block this call MINTED — the one byte form
+    // the artifact guard below admits as a lock change (R25).
+    let (pin_engine, pin_block) = match &pin {
+        Some(p) => {
+            let (edit, block) = lock_engine_edit(&doc, &args.path, p)?;
+            (Some(edit), Some(block))
+        }
+        None => (None, None),
     };
-
-    // Stage-2 S10: the `@fp` STRIP, at the ONE content intake — before plan
-    // lowering, before target resolution, before validation, before anything
-    // reads a byte of it. An agent's context is the DECORATED render face, so
-    // the link it copies into its next edit carries a token no author wrote;
-    // stripping it here is what keeps stored bytes free of a fingerprint claim
-    // the engine never minted.
-    //
-    // Ordering, not vigilance, is the guarantee: everything below this line
-    // operates on `plan_edits`/`edits` and never on `args.plan_edits`/
-    // `args.edits`, so a new put shape lowered from either is stripped by
-    // construction. The address half is ordered the same way one layer down —
-    // `read::to_model_ref` strips before `model::Ref::anchor` validates, and it
-    // is the only bridge to a `model::Ref`.
-    let plan_edits = strip_fp_plan_edits(&args.plan_edits);
-    let edits = strip_fp_edits(&args.edits);
 
     // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
     // (under the flock, against the just-loaded pre-batch doc), then the whole
     // path below runs unchanged on the lowered batch. Target-class refusals
     // (the deleted Go arms' teachings) fire before any per-target resolution.
+    //
+    // Stage-2 S10, re-grained by advisor R25: payloads ride through here
+    // VERBATIM. The `@fp` strip is no longer a walk of named payload fields
+    // (that list missed `create.title` and could not see a token two fields
+    // compose between them) — it runs once, at DOCUMENT grain, over the
+    // candidate this splice is about to commit ([`strip_fp_candidate`] below).
     let lowered;
-    let effective_edits = if plan_edits.is_empty() {
-        &edits
+    let effective_edits = if args.plan_edits.is_empty() {
+        &args.edits
     } else {
-        lowered = crate::plan::lower(&doc, &plan_edits)?;
+        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
         &lowered
     };
 
     let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
-    let batch = model::SpliceRequest {
+    let mut batch = model::SpliceRequest {
         // The CLIENT's world guard was honored above, against the root it
         // actually pinned. The batch re-guards on the CURRENT root instead of
         // that value: a pin's own rev-neutral promotion advances the root, and
@@ -267,7 +278,38 @@ pub fn splice(
     // that makes the dry twin incapable of diverging from the real one (§4.4
     // one-reparse law; advisor Ruling 2). The real commit writes exactly these
     // bytes, so evaluating this simulated doc is evaluating the committed doc.
-    let after_doc = build_after_doc(&doc, &sealed, &args.path);
+    let mut after_doc = build_after_doc(&doc, &sealed, &args.path);
+
+    // Stage-2 S10 re-grained (advisor R25, structural fix 2): the `@fp` strip
+    // runs HERE, over the CANDIDATE — one grammar, one grain. It rewrites the
+    // batch's payloads (so `commit_batch`'s re-validation lands the same bytes
+    // judged here) and leaves a document-grain assertion behind it: any token
+    // still standing in a claim-link position refuses LOUD instead of landing
+    // silently. A door that grows a new payload field is covered by
+    // construction; a door that reaches these bytes another way is refused.
+    let mut sealed = sealed;
+    strip_fp_candidate(
+        &doc,
+        &root_before,
+        &args.path,
+        &before_facts,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+
+    // Advisor R25, structural fix 1 — GUARD THE ARTIFACT, not the verb. The
+    // read-mint gate guards the `splice.pin` door; the `meridian-lock` bytes it
+    // protects are ordinary page text every put shape can reach. This rung reads
+    // the SAME candidate every rung below reads and refuses any lock-byte change
+    // that is not exactly the block THIS call minted — so an actor with no
+    // receipt cannot write a pin through native `edits`, a lowered `plan_edits`
+    // batch, or any put shape added later. Ordered before the ladder and the
+    // advisory verdicts (a forged attestation is not a policy question) and above
+    // the dry short-circuit, so a rehearsal refuses exactly where the real write
+    // does.
+    lock_artifact_guard(&doc, &after_doc, pin_block.as_deref(), &args.path)?;
+
     let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
 
     // S4a/D4 (TOCTOU close): the I4 def-conformance verdict runs HERE — inside
@@ -315,6 +357,7 @@ pub fn splice(
         &after_doc,
     )?;
     verdicts.extend(gate_pass.verdicts);
+    verdicts.extend(std::mem::take(&mut pin_gate.verdicts));
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -340,6 +383,46 @@ pub fn splice(
             },
             committed: None,
         });
+    }
+
+    // THE PROMOTION LANDS HERE — genuinely last (R25, finding 12). Everything
+    // above it can still refuse; below it there is only the commit's own I/O. So
+    // "a refused pin leaves the target byte-unchanged" is true by ORDERING, not
+    // by cleanup: the read-mint gate, the slug collision, the ref grammar, the
+    // artifact guard, the `@fp` law, def-conformance and BOTH armed gates have
+    // all already answered. The unchanged residual (G3) is a crash between this
+    // rename and the commit's: a fingerprint-neutral marker the next pin reuses.
+    //
+    // The write is rev-NEUTRAL — norm-v2 removes the marker line whole, so the
+    // target's fingerprint cannot move and no other page pinning that target
+    // reddens. That exactness is what permits promoting into a possibly-unowned
+    // target at all (D14), and it is asserted, not assumed (`s2fix_promotion`).
+    if let Some(minted) = pin.as_ref()
+        && let Some(p) = minted.promotion.as_ref()
+    {
+        fs::replace_file(root, FsPath::new(&p.target.0), &p.bytes).map_err(|e| io_to_wire(&e))?;
+        // D16: refresh the actor's receipt to the rev THIS engine write created.
+        // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
+        // and a line was inserted) without moving one byte of what the actor
+        // READ, so leaving the old rev would fail the actor's own gate on its
+        // next pin. Only this path refreshes, and only for a receipt that
+        // already passed the gate at mint time; a foreign content change still
+        // refuses.
+        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(args.actor.as_deref()))
+        {
+            store.mint(actor, &p.target.0, &minted.fact.selector, &p.sec_rev);
+        }
+        // The promotion moved the corpus root — this splice's OWN write. Re-read
+        // it so the receipt records the root the commit reports, and re-guard the
+        // batch on the current value: re-comparing the client's pre-promotion
+        // token would self-refuse `root_mismatch` on our own write. The client's
+        // guard was already honored above, against the root it actually pinned,
+        // and nothing else can move the root under the flock.
+        root_before = ambient_root(root)?;
+        batch.if_root = args
+            .if_root
+            .as_ref()
+            .map(|_| model::MerkleRoot(root_before.0.clone()));
     }
 
     // REAL commit: render the receipt line (facts about what is being
@@ -379,6 +462,10 @@ pub fn splice(
     // U4.3: journal every `--force`-escaped skip — a permanent force-row per
     // bypassed rule (the render carries the same detail). The reserved journal is
     // root-EXCLUDED, so appending it never perturbs the root the splice advanced.
+    // Both gates' skips, in one journal pass: a promotion forced past the armed
+    // law is as permanent a record as a batch edit forced past it.
+    let mut forced_skips = gate_pass.forced_skips;
+    forced_skips.extend(pin_gate.forced_skips);
     force_journal_write(
         root,
         &args.path,
@@ -386,7 +473,7 @@ pub fn splice(
         args.now.as_deref(),
         &frame.delta.root_before,
         &frame.delta.root_after,
-        &gate_pass.forced_skips,
+        &forced_skips,
     )?;
 
     Ok(SpliceOutcome {
@@ -529,16 +616,39 @@ pub fn create(
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
-    // Stage-2 S10: a birth is a put too — the whole file is caller-supplied
-    // content, so its `@fp` tokens are stripped at the same intake, BEFORE the
-    // after-state is built. The rev the birth reports is therefore the rev of
-    // the bytes that land, never of a decorated draft.
+    // Stage-2 S10: a birth is a put too — and here the payload IS the candidate
+    // document, so `strip_fp` over the whole body already runs at document grain
+    // (advisor R25): one grammar, the same one `strip_fp_candidate` applies to a
+    // splice. The rev the birth reports is therefore the rev of the bytes that
+    // land, never of a decorated draft.
     let body = syntax::strip_fp(&args.body);
 
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
     let after_doc = build_doc(&args.path, &body);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+
+    // THE ASSERTION (R25), live on the birth path: a token still standing in a
+    // claim-link position refuses instead of landing. A birth has no pre-image,
+    // so "introduced" and "present" are the same set here.
+    if !syntax::fp_removals(&after_doc.raw).is_empty() {
+        return Err(bad_request(format!(
+            "refused: an @fp claim token survived the document-grain strip in {} — the birth was \
+             refused rather than landing a fingerprint claim the engine never minted",
+            args.path.0
+        )));
+    }
+
+    // The lock ARTIFACT guard (R25) at the birth door: a newborn page has no
+    // pre-image and this op mints no pin, so ANY `meridian-lock` bytes in the
+    // body are a claim nobody computed — `write::create` is one of the four
+    // ungated doors the review names.
+    lock_artifact_guard(
+        &crate::gate::absent_doc(&args.path),
+        &after_doc,
+        None,
+        &args.path,
+    )?;
 
     // Advisory §11.1 findings from any caller packs (never a decision).
     let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
@@ -947,49 +1057,94 @@ pub fn lock_write(
 // edit would read as green. The slug is the STABLE HANDLE (D15) a claim link
 // decorates and a later rename-heal relocates by, minted beside the claim.
 
-/// What a pin minted, plus the one disk fact the caller needs: whether a
-/// promotion actually landed (so the pre-image is re-read).
+/// What a pin minted, plus what it still OWES to disk. Nothing here has been
+/// written: the prologue computes, the caller lands (see [`PendingPromotion`]).
 #[derive(Debug)]
 struct PinMint {
     /// The wire fact returned to the client.
     fact: wire::PinFact,
     /// The pinned selector's span in the target — the exact bytes the
-    /// fingerprint covers.
+    /// fingerprint covers, in the POST-promotion document (the promotion widens
+    /// the selector's node by the marker line).
     span: std::ops::Range<usize>,
-    /// `true` only when this call WROTE the anchor to disk (never on dry).
-    promotion_landed: bool,
+    /// The anchor promotion this pin decided on, or `None` when the stable
+    /// handle already existed and nothing needs writing.
+    promotion: Option<PendingPromotion>,
+    /// The promotion's armed-gate pass — advisory verdicts and forced skips the
+    /// caller merges into its own (the gate itself already ran; a refusal never
+    /// reached here).
+    gate: crate::gate::GatePass,
+}
+
+/// An anchor promotion that has been DECIDED and not written: the exact bytes,
+/// the page they belong to, and the receipt refresh the write owes.
+///
+/// Separating the decision from the write is the whole point (R25, finding 12).
+/// The promotion touches a DIFFERENT file from the one the request names, so a
+/// rung refusing after it would leave bytes in a page the caller never asked to
+/// change — deterministically, and therefore unhealably. Held here, it lands
+/// after the last such rung.
+#[derive(Debug)]
+struct PendingPromotion {
+    /// The page the marker lands in — the pin's target, which may be the pinning
+    /// page itself.
+    target: Path,
+    /// The exact bytes to write. Also the pinning page's pre-image when the
+    /// target IS the pinning page.
+    bytes: String,
+    /// The promoted section's `sec_rev` in those bytes — the D16 receipt refresh
+    /// the write owes (a rev this ENGINE moved, invisible to the fingerprint).
+    sec_rev: String,
 }
 
 /// The pin prologue: resolve the target, gate it against the read-mint ledger,
-/// mint the fingerprint + blob oid, and promote the stable anchor.
+/// decide the stable anchor, and mint the fingerprint + blob oid over the bytes
+/// the promotion WILL land.
 ///
-/// Order is plan §6's, and it is load-bearing: the gate refuses before any byte
-/// is composed, and the promotion is the LAST step so a refusal never leaves a
-/// promoted target behind. `dry` promotes nothing (a rehearsal has zero disk
-/// effects) while still reporting the plan.
+/// **This function writes nothing.** It used to promote the anchor in the middle
+/// of its own ladder, which put engine bytes in a page the request does not name
+/// before the rungs that can still refuse had run — deterministically, so unlike
+/// the accepted G3 crash orphan it never healed (R25, finding 12). The promotion
+/// now travels back as a [`PendingPromotion`] and the caller lands it after its
+/// last refusal rung. Two consequences worth stating:
+///
+/// - The fingerprint, the ref and the blob oid are all computed over the
+///   POST-promotion bytes, on the dry path exactly as on the real one — a
+///   rehearsal reports what a real run mints (§4.4), and the fingerprint agrees
+///   either way only because the promotion is rev-neutral.
+/// - The promotion's armed gate runs HERE (finding 9): the marker is a change to
+///   a page like any other, so it passes [`crate::gate::gate_write`] — the same
+///   mount, the same INDEX-integrity floor — before it can be handed back as
+///   pending.
 ///
 /// # Errors
 /// `bad_path` / `bad_request` (the target escapes the workspace, is the reserved
 /// journal, or its slug id is taken), `pin_target_missing` (no such page or
 /// selector), `read_mint_required` (D16 — a session actor pinning unread
-/// content), `write_conflict` (the receipt's rev is stale), `io_error`.
+/// content), `write_conflict` (the receipt's rev is stale), a
+/// `convention_fault` / `armed_drift` / `index_integrity` gate refusal on the
+/// promotion, `io_error`.
 fn mint_pin(
     root: &fs::WorkspaceRoot,
     spec: &wire::PinSpec,
     actor: Option<&str>,
-    dry: bool,
+    force: bool,
     mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<PinMint, Box<ErrorBody>> {
     path_confined(&spec.target)?;
     reserved_journal_guard(FsPath::new(&spec.target.0))?;
 
-    let target_doc = load_doc(root, &spec.target).map_err(|e| {
+    let mut target_doc = load_doc(root, &spec.target).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
             pin_target_missing(&spec.target, format!("no page at {} to pin", spec.target.0))
         } else {
             e
         }
     })?;
+    // The armed gate SCOPES its rules by the document's path, and `fs::load`
+    // leaves that empty — an unstamped pre-image is a page no path-scoped
+    // convention can see.
+    stamp_path(&mut target_doc, &spec.target);
 
     // The CANONICAL selector, from the target's own read facts — one hpath
     // owner (`wire_map::facts` → `model::gotext::sanitize_heading`). A dewey
@@ -1020,54 +1175,41 @@ fn mint_pin(
     // a receipt answers "was it read", never "is it current".
     read_mint_gate(mints, actor, &spec.target, &selector, &fact.sec_rev)?;
 
-    // D15: the stable block id. An id already in the selector's promotion slot is
-    // REUSED verbatim — that is what makes a re-pin idempotent and keeps a benign
-    // orphan from accumulating instead of growing one marker per pin.
     let fact_span = span_range(fact.span);
     let slot = promotion_slot(&target_doc.raw, fact_span.start);
-    // The selector IS a block anchor, or the promotion slot already carries one:
-    // either way the stable handle exists and nothing is written.
-    let existing = fact_anchor
-        .clone()
-        .or_else(|| anchor_on_line(&target_doc, slot));
-    let (anchor, promote) = if let Some(id) = existing {
-        (id, false)
+    let (anchor, promote) = decide_anchor(
+        &target_doc,
+        &spec.target,
+        fact_anchor.as_deref(),
+        slot,
+        &title,
+        &selector,
+    )?;
+
+    // Compose the promotion IN MEMORY (nothing is written here — see this
+    // function's own contract) and mint from those bytes. Minting from the
+    // post-promotion state is not a convenience: the blob oid is the WHOLE FILE's
+    // content id, so taking it from the pre-promotion bytes would record an oid
+    // for a state that ceases to exist the moment the marker lands (and `--vibe`
+    // would eagerly write that unreachable blob). The fingerprint agrees either
+    // way, because the promotion is rev-neutral.
+    let mut gate = crate::gate::GatePass::default();
+    let (pinned_doc, promoted_bytes) = if promote {
+        let (promoted_doc, bytes, pass) =
+            plan_promotion(root, &spec.target, &target_doc, slot, &anchor, actor, force)?;
+        gate = pass;
+        (promoted_doc, Some(bytes))
     } else {
-        let slug = slug_id(&title)?;
-        if !matches!(
-            model::resolve(&target_doc, &model::Ref::Anchor(slug.clone())),
-            Err(model::ResolveError::NotFound)
-        ) {
-            return Err(bad_request(format!(
-                "the slug id ^{slug} derived from \"{selector}\" is already taken by \
-                 another node in {} — give that node's own ^id as the selector instead",
-                spec.target.0
-            )));
-        }
-        (slug, true)
+        (target_doc, None)
     };
 
-    // Promote, then mint from the POST-promotion bytes: the fingerprint is
-    // rev-neutral across the promotion by construction (tested), but the blob
-    // oid is NOT — it is the whole file's content id, so it must be taken from
-    // the bytes that are actually on disk.
-    let promotion_landed = promote && !dry;
-    let target_doc = if promotion_landed {
-        let promoted = promote_anchor(&target_doc.raw, slot, &anchor);
-        fs::replace_file(root, FsPath::new(&spec.target.0), &promoted)
-            .map_err(|e| io_to_wire(&e))?;
-        build_doc(&spec.target, &promoted)
-    } else {
-        target_doc
-    };
-
-    // Re-resolve the span: a landed promotion widened the selector's node by the
-    // marker line. Fingerprinting the stale span would hash bytes that are no
-    // longer the selector's.
-    let span = if promotion_landed {
+    // Re-resolve the span against the bytes the fingerprint will cover: a
+    // promotion widens the selector's node by the marker line, so the
+    // pre-promotion span would hash bytes that are no longer the selector's.
+    let (span, promoted_sec_rev) = if promote {
         let facts = wire_map::facts::read_facts(
-            &wire_map::project_toc(&target_doc),
-            target_doc.raw.as_bytes(),
+            &wire_map::project_toc(&pinned_doc),
+            pinned_doc.raw.as_bytes(),
         );
         let Some(fresh) = wire_map::facts::resolve_selector(&facts, &selector) else {
             return Err(pin_target_missing(
@@ -1075,33 +1217,27 @@ fn mint_pin(
                 format!("\"{selector}\" no longer resolves after promotion"),
             ));
         };
-        // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
-        // and a line was inserted) without moving one byte of what the actor
-        // READ — norm-v2 removes the marker line whole. So the actor's receipt is
-        // refreshed to the new rev rather than left to fail its own gate on the
-        // next pin: this write is the ENGINE's, and the only thing it changed is
-        // invisible to the fingerprint. A foreign content change still refuses,
-        // because only THIS path refreshes, and only for a receipt that already
-        // passed the gate above.
-        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(actor)) {
-            store.mint(actor, &spec.target.0, &selector, &fresh.sec_rev);
-        }
-        span_range(fresh.span)
+        (span_range(fresh.span), fresh.sec_rev.clone())
     } else {
-        fact_span
+        (fact_span, String::new())
     };
 
-    let removals = syntax::anchor_removals(&target_doc.raw);
-    let fingerprint = model::fingerprint::fingerprint_span(&target_doc, &span, &removals).0;
-    let blob = blob_oid(root, &spec.target, spec.vibe.unwrap_or(false))?;
+    let fingerprint = mint_fingerprint(&pinned_doc, &span, &spec.target, &selector)?;
+    let blob = blob_oid(
+        root,
+        &spec.target,
+        promoted_bytes.as_deref(),
+        spec.vibe.unwrap_or(false),
+    )?;
+    let declared_ref = format!(
+        "{}#{}",
+        spec.target.0,
+        lock_ref_fragment(&pinned_doc, &span, fact_anchor.as_deref(), &selector)?
+    );
 
     Ok(PinMint {
         fact: wire::PinFact {
-            declared_ref: format!(
-                "{}#{}",
-                spec.target.0,
-                lock_ref_fragment(&target_doc, &span, fact_anchor.as_deref(), &selector)?
-            ),
+            declared_ref,
             target: spec.target.clone(),
             selector,
             fingerprint,
@@ -1110,7 +1246,12 @@ fn mint_pin(
             promoted: promote,
         },
         span,
-        promotion_landed,
+        promotion: promoted_bytes.map(|bytes| PendingPromotion {
+            target: spec.target.clone(),
+            bytes,
+            sec_rev: promoted_sec_rev,
+        }),
+        gate,
     })
 }
 
@@ -1162,6 +1303,89 @@ fn span_range(span: Span) -> std::ops::Range<usize> {
     let lo = usize::try_from(span.0).unwrap_or(usize::MAX);
     let hi = usize::try_from(span.1).unwrap_or(usize::MAX);
     lo..hi
+}
+
+/// The D15 stable handle for a pinned selector, and whether it must be promoted.
+///
+/// An id already in the selector's promotion slot is REUSED verbatim — that is
+/// what makes a re-pin idempotent and keeps a benign orphan from accumulating
+/// instead of growing one marker per pin. The selector may also BE a block anchor;
+/// either way the handle exists and nothing needs writing.
+///
+/// # Errors
+/// `bad_request` when the title yields no id ([`slug_id`]), or when the derived
+/// slug is already taken by another node — refused rather than uniquified, so the
+/// id stays a function of the title alone (D15).
+fn decide_anchor(
+    target_doc: &model::Document,
+    target: &Path,
+    fact_anchor: Option<&str>,
+    slot: usize,
+    title: &str,
+    selector: &str,
+) -> Result<(String, bool), Box<ErrorBody>> {
+    if let Some(id) = fact_anchor
+        .map(ToOwned::to_owned)
+        .or_else(|| anchor_on_line(target_doc, slot))
+    {
+        return Ok((id, false));
+    }
+    let slug = slug_id(title)?;
+    if !matches!(
+        model::resolve(target_doc, &model::Ref::Anchor(slug.clone())),
+        Err(model::ResolveError::NotFound)
+    ) {
+        return Err(bad_request(format!(
+            "the slug id ^{slug} derived from \"{selector}\" is already taken by \
+             another node in {} — give that node's own ^id as the selector instead",
+            target.0
+        )));
+    }
+    Ok((slug, true))
+}
+
+/// Compose one anchor promotion and put it through the two rungs a target write
+/// owes, without writing it: the promoted document, its exact bytes, and the
+/// armed gate's pass (whose verdicts and forced skips the caller merges).
+///
+/// The promotion is the ONE write in a pin that does not ride `commit_batch`, so
+/// both rungs live here rather than at the write site — they must answer while a
+/// refusal still costs nothing:
+///
+/// - **the artifact guard** (fix2a): a marker line must be lock-NEUTRAL, or this
+///   door reaches the attestation bytes the batch door refuses to.
+/// - **the armed gate** (R25, finding 9): the SAME `gate::gate_write` mount every
+///   other target write passes, over this promotion's own before/after states,
+///   carrying the armed conventions, the `--force` escape and the
+///   never-escapable INDEX-integrity floor. Rev-neutral is not ungated: it is
+///   still a write to a page this actor may not own.
+///
+/// # Errors
+/// The artifact guard's `bad_request`, or a `convention_fault` / `armed_drift` /
+/// `binding_break` / `index_integrity` gate refusal.
+fn plan_promotion(
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+    target_doc: &model::Document,
+    slot: usize,
+    anchor: &str,
+    actor: Option<&str>,
+    force: bool,
+) -> Result<(model::Document, String, crate::gate::GatePass), Box<ErrorBody>> {
+    let bytes = promote_anchor(&target_doc.raw, slot, anchor);
+    let promoted_doc = build_doc(target, &bytes);
+    lock_artifact_guard(target_doc, &promoted_doc, None, target)?;
+    let gate = crate::gate::gate_write(
+        root,
+        target_doc,
+        &promoted_doc,
+        &[],
+        policy::ChangeOp::Splice,
+        actor,
+        force,
+        &promoted_doc,
+    )?;
+    Ok((promoted_doc, bytes, gate))
 }
 
 /// The RAW heading chain of the section starting at `start` — `model` carries it
@@ -1242,6 +1466,49 @@ fn read_mint_required(target: &Path, message: String) -> Box<ErrorBody> {
     e.path = Some(target.clone());
     e.message = Some(message);
     Box::new(e)
+}
+
+/// Mint the pin's fingerprint over the bytes the promotion will land — the
+/// R31 discharge of [`model::fingerprint::fingerprint_span`]'s fallible owner.
+///
+/// **This refusal is NOT the load-bearing guard, and stage 3 must not read it
+/// as one.** Every ref form whose normalized span can be empty is already
+/// refused at an EARLIER rung: an own-line anchor projects no read-face fact
+/// ("no section addressed"), and a whole-page ref cannot express a selector at
+/// all. So this rung is measured-unreachable today — `mrd pin` cannot deliver
+/// an empty span to it (`tests/s2fix_empty_span_mint.rs` asserts each rung by
+/// name). The guard that BITES is on the verdict side
+/// (`model::fingerprint::ContentVerdict::EmptySpan`), because the class arrives
+/// through hand- or tool-authored `meridian-lock` blocks, never through here.
+///
+/// It exists because the owner is fallible and every door discharges it — belt
+/// on belt, and a cheap one: if a future read-face change ever projects such a
+/// fact, the pin refuses instead of minting a token that matches every
+/// document.
+///
+/// # Errors
+/// `pin_target_missing` when the selector addresses no content to fingerprint.
+fn mint_fingerprint(
+    doc: &model::Document,
+    span: &model::ByteSpan,
+    target: &Path,
+    selector: &str,
+) -> Result<String, Box<ErrorBody>> {
+    let removals = syntax::anchor_removals(&doc.raw);
+    model::fingerprint::fingerprint_span(doc, span, &removals)
+        .map(model::fingerprint::Fingerprint::into_string)
+        .map_err(|model::fingerprint::EmptySpan| {
+            pin_target_missing(
+                target,
+                format!(
+                    "\"{selector}\" in {} addresses no content to fingerprint — its bytes \
+                     canonicalize to nothing, and a fingerprint over nothing would match \
+                     every document instead of this one. Pin a section or block that has \
+                     content.",
+                    target.0
+                ),
+            )
+        })
 }
 
 /// `pin_target_missing`: the pin's page or selector does not resolve, so there
@@ -1338,26 +1605,58 @@ fn promotion_slot(raw: &str, line_start: usize) -> usize {
 
 /// Write `^id` on its own line at `slot` (see [`promotion_slot`]), matching the
 /// file's own line terminator so a CRLF page stays CRLF.
+///
+/// # The file's EOF terminator state is preserved (finding 7)
+/// Rev-neutrality is a claim about EVERY pinned span in the target, not just the
+/// one being pinned, so the promotion may not move a single byte outside the
+/// marker line. At EOF that is a real constraint: this used to append a
+/// terminator after the marker unconditionally, which on a file whose last line
+/// carried none added one — and norm-v2 masks the MARKER line, not that byte. The
+/// enclosing spans' canonical bytes moved, so another page's green pin over the
+/// same target went red on somebody else's pin.
+///
+/// So a marker landing at an unterminated EOF stays unterminated, and norm-v2's
+/// R2b takes it: an own-line anchor with no terminator of its own is removed
+/// together with the terminator BEFORE it — which is exactly the terminator this
+/// function had to add to give the marker its own line. The canonical bytes come
+/// out byte-identical, and `promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical`
+/// holds the claim.
 fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
     let head = &raw[..slot];
+    let tail = &raw[slot..];
     let nl = if head.ends_with("\r\n") { "\r\n" } else { "\n" };
     let mut out = String::with_capacity(raw.len() + id.len() + 4);
     out.push_str(head);
     // An unterminated last line (the heading is the file's final line) needs its
-    // own terminator before the marker line can start.
+    // own terminator before the marker line can start. norm-v2 R2b removes it
+    // again with the marker, so it is inside the mask, not outside it.
     if !head.is_empty() && !head.ends_with('\n') {
         out.push_str(nl);
     }
     out.push('^');
     out.push_str(id);
-    out.push_str(nl);
-    out.push_str(&raw[slot..]);
+    if tail.is_empty() {
+        // At EOF: terminate the marker line only if the file was terminated.
+        // Adding a terminator to a file that had none is a byte OUTSIDE the
+        // marker line and outside norm-v2's mask (see this function's contract).
+        if raw.ends_with('\n') {
+            out.push_str(nl);
+        }
+    } else {
+        out.push_str(nl);
+        out.push_str(tail);
+    }
     out
 }
 
 /// The target file's git blob oid for the lock's `objects:` plane (D5: git owns
 /// content-addressing, so shell out). `vibe` additionally WRITES the blob into
 /// the object store, so the pin is retrievable before any commit references it.
+///
+/// `pending` is the bytes the caller has DECIDED to write to `target` and not
+/// written yet (an anchor promotion) — the oid must describe the state the file
+/// will carry, so those bytes are hashed as if they were already there. `None`
+/// asks about the file on disk, which is the same thing when nothing is pending.
 ///
 /// A normal pin degrades honestly when git cannot answer (no repo, no git on
 /// PATH): the `objects:` entry is simply absent and the claim plane still lands
@@ -1369,12 +1668,18 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
 fn blob_oid(
     root: &fs::WorkspaceRoot,
     target: &Path,
+    pending: Option<&str>,
     vibe: bool,
 ) -> Result<Option<String>, Box<ErrorBody>> {
     let repo = git::Repo::at(root.0.clone());
     let abs = root.0.join(&target.0);
+    let ask = |write: bool| match pending {
+        Some(bytes) => repo.blob_oid_of_bytes(&abs, bytes.as_bytes(), write),
+        None if write => repo.write_blob(&abs),
+        None => repo.blob_oid(&abs),
+    };
     if vibe {
-        return repo.write_blob(&abs).map(Some).map_err(|e| {
+        return ask(true).map(Some).map_err(|e| {
             let mut err = ErrorBody::new(ErrorCode::IoError);
             err.cause = Some(format!(
                 "--vibe asked for an eager blob write of {} and git refused: {e}",
@@ -1383,14 +1688,15 @@ fn blob_oid(
             Box::new(err)
         });
     }
-    Ok(repo.blob_oid(&abs).ok())
+    Ok(ask(false).ok())
 }
 
 /// Compose the pinning page's `meridian-lock` block as the batch's one
 /// engine-minted span edit: union the pin into the page's existing lock
 /// (`upsert_pin`/`set_object` — position-preserving, so a re-pin never drops or
 /// reorders a sibling claim), render the canonical bytes, and hand back the span
-/// they replace.
+/// they replace plus THE MINTED BLOCK ITSELF — the one byte form
+/// [`lock_artifact_guard`] admits as a lock change (R25).
 ///
 /// # Errors
 /// `bad_request` when the page's existing lock state is corrupt (malformed, or
@@ -1400,7 +1706,7 @@ fn lock_engine_edit(
     doc: &model::Document,
     pinning_path: &Path,
     pin: &PinMint,
-) -> Result<model::EngineEdit, Box<ErrorBody>> {
+) -> Result<(model::EngineEdit, String), Box<ErrorBody>> {
     let found = find_lock(doc)?;
     let mut lock = found
         .as_ref()
@@ -1436,7 +1742,7 @@ fn lock_engine_edit(
             pin.fact.selector
         )));
     }
-    Ok(edit)
+    Ok((edit, lock::render(&lock)))
 }
 
 /// The `meridian-lock` block's byte form and its placement law, in ONE place —
@@ -1572,10 +1878,38 @@ fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<Err
 /// the path empty, so stamp it, mirroring `build_after_doc`).
 fn build_doc(path: &Path, body: &str) -> model::Document {
     let mut doc = model::build(body.to_string(), syntax::parse(body));
+    stamp_path(&mut doc, path);
+    doc
+}
+
+/// Stamp a document's own path (`model::build` is I/O-free and leaves it empty).
+/// The ONE writer of that field in this crate, because two callers reaching into
+/// `NodeKind::Document` by hand is how one of them forgets: the armed gate SCOPES
+/// its rules by this value, so an unstamped pre-image is a page no path-scoped
+/// convention can see.
+fn stamp_path(doc: &mut model::Document, path: &Path) {
     if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
         p.clone_from(&path.0);
     }
-    doc
+}
+
+/// Same FILE, not the same spelling. A pin whose target is the pinning page
+/// reached through a DIFFERENT spelling of that one path still writes the page
+/// the batch is being composed against, and composing against the pre-promotion
+/// bytes would splice the lock block at an offset the file no longer has.
+///
+/// String equality answers the common case with no I/O; when the spellings differ
+/// the filesystem answers, because two address owners is a known open finding and
+/// this call adopts neither of them.
+fn same_file(root: &fs::WorkspaceRoot, a: &Path, b: &Path) -> bool {
+    if a.0 == b.0 {
+        return true;
+    }
+    let resolved = |p: &Path| std::fs::canonicalize(root.0.join(&p.0)).ok();
+    match (resolved(a), resolved(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// The occupant's whole-file rev when `path` is occupied, else `None`. Occupancy
@@ -1814,83 +2148,343 @@ fn resolve_receipt_fact(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// The `@fp` strip at DOCUMENT grain + the lock ARTIFACT guard (advisor R25)
+// ---------------------------------------------------------------------------
+//
+// Both rungs read the SAME candidate `after_doc` the ladder, the armed gate and
+// the commit read, because both answer a question about BYTES, not about a verb:
+//
+// - The strip was a walk of named payload fields. A field list is the defect
+//   shape: it missed `plan_edits.create.title`, it could not see a token two
+//   fields compose between them, and it judged a payload OUT of the document it
+//   lands in — stripping a token the document law calls a code sample. One
+//   grammar, one grain: identify tokens in the candidate, remove them from the
+//   payloads that carry them, and refuse what is left.
+// - The read-mint gate guards `splice.pin`. The `meridian-lock` bytes it protects
+//   are ordinary page text, so every put shape is a door to them. A guard on the
+//   verb is not a guard on the file.
+
+/// One `@fp` token run in the candidate, classified by WHO put it there.
+enum FpOrigin {
+    /// Bytes THIS batch supplies: request edit `edit`, at `local` inside its
+    /// payload. Removable — this is the strip.
+    Introduced {
+        edit: usize,
+        local: std::ops::Range<usize>,
+    },
+    /// A token already on disk, retained verbatim by this batch. NOT this
+    /// write's to remove: deleting bytes the batch never addressed would move
+    /// the fingerprint of a node this write does not own, reddening pins that
+    /// have nothing to do with it.
+    Retained,
+}
+
+/// Classify every `@fp` token run in `after` — the ONE identification, shared by
+/// the strip and by the assertion that follows it.
+///
+/// # Errors
+/// `bad_request` when a token can be attributed to no single payload: the batch
+/// COMPOSED it out of retained bytes plus its own (a claim minted by an edit that
+/// never carried it), or two request edits contest the same region.
+fn classify_fp(
+    doc: &model::Document,
+    after: &model::Document,
+    sealed: &model::ValidatedBatch,
+    before_facts: &[model::Target],
+    path: &Path,
+) -> Result<Vec<FpOrigin>, Box<ErrorBody>> {
+    let removals = syntax::fp_removals(&after.raw);
+    if removals.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The after image, walked ONCE. The sealed spans index the pre-image and are
+    // sorted and disjoint, so a single forward scan places every inserted text
+    // AND every surviving run in after coordinates — no shift arithmetic.
+    // `inserted` carries each insertion with the pre-image REGION that produced
+    // it; `retained` carries each surviving run with the pre-image offset it came
+    // from.
+    let mut inserted: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> =
+        Vec::with_capacity(sealed.edits.len());
+    let mut retained: Vec<(std::ops::Range<usize>, usize)> =
+        Vec::with_capacity(sealed.edits.len() + 1);
+    let mut after_pos = 0usize;
+    let mut pre_pos = 0usize;
+    for e in &sealed.edits {
+        let gap = e.span.start.saturating_sub(pre_pos);
+        if gap > 0 {
+            retained.push((after_pos..after_pos + gap, pre_pos));
+            after_pos += gap;
+        }
+        inserted.push((after_pos..after_pos + e.text.len(), e.span.clone()));
+        after_pos += e.text.len();
+        pre_pos = e.span.end;
+    }
+    let tail = doc.raw.len().saturating_sub(pre_pos);
+    if tail > 0 {
+        retained.push((after_pos..after_pos + tail, pre_pos));
+    }
+    let pre_existing = syntax::fp_removals(&doc.raw);
+
+    let mut out = Vec::with_capacity(removals.len());
+    for r in removals {
+        if let Some((after_range, region)) = inserted
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+        {
+            let edit = attribute_region(region, before_facts).ok_or_else(|| {
+                bad_request(format!(
+                    "refused: an @fp decoration token in {} cannot be attributed to any edit \
+                     in this batch — the engine will not remove a claim token it cannot place",
+                    path.0
+                ))
+            })?;
+            out.push(FpOrigin::Introduced {
+                edit,
+                local: r.start - after_range.start..r.end - after_range.start,
+            });
+            continue;
+        }
+        let was_already_there = retained
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+            .is_some_and(|(after_range, pre_start)| {
+                let start = pre_start + (r.start - after_range.start);
+                pre_existing.contains(&(start..start + (r.end - r.start)))
+            });
+        if was_already_there {
+            out.push(FpOrigin::Retained);
+        } else {
+            return Err(bad_request(format!(
+                "refused: this write would COMPOSE an @fp claim token in {} out of bytes it \
+                 does not supply — `@green.…` after a block ref is a render-face decoration the \
+                 engine mints on read, never storable content (S10). Write the plain \
+                 `[[page#^id]]` address; the tone and digest are computed, never authored",
+                path.0
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// Which request edit produced the sealed region — by the TARGET SPAN the model
+/// itself resolved, never by text similarity. `validate_batch` refuses a batch
+/// whose target spans are not pairwise disjoint (containment counts), so a
+/// non-empty region has at most one container; a region contested past the
+/// boundary rule below is `None` (refuse, never guess).
+///
+/// # The boundary rule, which containment alone cannot decide
+/// Sections are contiguous: a section's span ENDS on the byte where its next
+/// sibling's span BEGINS. An `md.append_section` plans `put{at:"end"}`, whose
+/// replaced region is EMPTY and sits exactly on that shared byte (§4.4), so both
+/// siblings contain it. The one the model planned it from is the one that ENDS
+/// there — the other merely begins there. Empty regions are the only ones that
+/// can land on a shared byte, and `put{at:"end"}` is the only shape that produces
+/// one (a `match` needle is non-empty by validation), so this decides every case
+/// it applies to and touches no other.
+///
+/// Ported verbatim from `run::fp::attribute_region` (fix8, `9953cf3b`), where the
+/// same false-red was found: without the rule, a decorated `put{at:end}` into any
+/// section with a following sibling refuses a legitimate write.
+fn attribute_region(
+    region: &std::ops::Range<usize>,
+    before_facts: &[model::Target],
+) -> Option<usize> {
+    let containers: Vec<usize> = before_facts
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.span.start <= region.start && region.end <= t.span.end)
+        .map(|(i, _)| i)
+        .collect();
+    if let [only] = containers.as_slice() {
+        return Some(*only);
+    }
+    if !region.is_empty() {
+        return None;
+    }
+    let mut hit = None;
+    for &i in &containers {
+        if before_facts[i].span.end == region.end {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(i);
+        }
+    }
+    hit
+}
+
+/// `text` with `ranges` (payload-local, non-overlapping, ascending) removed.
+fn remove_ranges(text: &str, ranges: &[std::ops::Range<usize>]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for r in ranges {
+        if r.start < cursor || r.end > text.len() {
+            continue;
+        }
+        out.push_str(&text[cursor..r.start]);
+        cursor = r.end;
+    }
+    out.push_str(&text[cursor..]);
+    out
+}
+
+/// **The `@fp` strip, at document grain** (advisor R25, structural fix 2): remove
+/// every token this batch INTRODUCES from the payload that carries it, re-seal so
+/// the commit lands exactly the judged bytes, and assert the candidate introduces
+/// none — the loud refusal that catches the next missed door.
+///
+/// The batch is rewritten rather than the sealed copy because [`commit_batch`]
+/// re-validates the REQUEST: a strip applied only to the sealed batch would judge
+/// bytes the commit does not write, which is the divergence S4a closed.
+///
+/// # Errors
+/// `bad_request` — an unattributable token (see [`classify_fp`]), a token in a
+/// composed frontmatter line (unreachable: frontmatter is not a claim-link
+/// position), a re-validation refusal, or a token still standing after the strip.
+fn strip_fp_candidate(
+    doc: &model::Document,
+    root_before: &Root,
+    path: &Path,
+    before_facts: &[model::Target],
+    batch: &mut model::SpliceRequest,
+    sealed: &mut model::ValidatedBatch,
+    after_doc: &mut model::Document,
+) -> Result<(), Box<ErrorBody>> {
+    let mut per_edit: Vec<Vec<std::ops::Range<usize>>> = vec![Vec::new(); batch.edits.len()];
+    let mut introduced = 0usize;
+    for origin in classify_fp(doc, after_doc, sealed, before_facts, path)? {
+        if let FpOrigin::Introduced { edit, local } = origin {
+            introduced += 1;
+            per_edit
+                .get_mut(edit)
+                .map(|v| v.push(local))
+                .ok_or_else(|| {
+                    bad_request(format!(
+                        "refused: an @fp token in {} attributes to the engine's own minted span, \
+                     which composes no claim link",
+                        path.0
+                    ))
+                })?;
+        }
+    }
+    if introduced == 0 {
+        return Ok(());
+    }
+
+    for (i, ranges) in per_edit.iter().enumerate() {
+        if ranges.is_empty() {
+            continue;
+        }
+        let payload = match &mut batch.edits[i].edit {
+            // The composed `{key}: {value}` frontmatter line: its payload offsets
+            // are not the sealed line's, and frontmatter carries no claim-link
+            // position in the one grammar — so a token attributed here means the
+            // grammar moved under this code. Refuse rather than splice blind.
+            model::EditKind::Put {
+                at: model::PutAt::Upsert,
+                ..
+            } => {
+                return Err(bad_request(format!(
+                    "refused: an @fp token attributed to a frontmatter property line in {} — \
+                     frontmatter is not a claim-link position (S10/R22); the strip cannot place it",
+                    path.0
+                )));
+            }
+            model::EditKind::Put { text, .. } => text,
+            model::EditKind::Match { new, .. } => new,
+        };
+        *payload = remove_ranges(payload, ranges);
+    }
+
+    *sealed = match model::validate_batch(
+        doc,
+        Some(&model::MerkleRoot(root_before.0.clone())),
+        batch,
+        None,
+    ) {
+        model::SpliceVerdict::Validated(b) => b,
+        refused => {
+            return Err(bad_request(format!(
+                "refused: the batch no longer validates after its @fp decoration tokens were \
+                 stripped ({refused:?}) — nothing was written"
+            )));
+        }
+    };
+    *after_doc = build_after_doc(doc, sealed, path);
+
+    // THE ASSERTION (R25): the candidate introduces no token. Live on every
+    // write path, dry and real alike — a door that reaches these bytes without
+    // passing the strip refuses here instead of landing silently.
+    if classify_fp(doc, after_doc, sealed, before_facts, path)?
+        .iter()
+        .any(|o| matches!(o, FpOrigin::Introduced { .. }))
+    {
+        return Err(bad_request(format!(
+            "refused: an @fp claim token survived the document-grain strip in {} — the write \
+             was refused rather than landing a fingerprint claim the engine never minted",
+            path.0
+        )));
+    }
+    Ok(())
+}
+
+/// **The lock ARTIFACT guard** (advisor R25, structural fix 1): the
+/// `meridian-lock` bytes change ONLY as the pin this call minted.
+///
+/// `minted` is the canonical block this splice's pin composed, or `None` when the
+/// call carries no pin. The comparison is over RAW block bytes
+/// ([`lock::block_texts`]) rather than parsed values, so a change from one
+/// unparseable block to another is still a change, and a page whose lock is
+/// already corrupt can still be edited elsewhere without laundering it.
+///
+/// # Errors
+/// `bad_request` — the candidate's lock bytes differ from the pre-image's and are
+/// not exactly the minted block.
+fn lock_artifact_guard(
+    before: &model::Document,
+    after: &model::Document,
+    minted: Option<&str>,
+    path: &Path,
+) -> Result<(), Box<ErrorBody>> {
+    let before_blocks = lock::block_texts(before);
+    let after_blocks = lock::block_texts(after);
+    if after_blocks == before_blocks {
+        return Ok(());
+    }
+    if let Some(block) = minted
+        && after_blocks == vec![block]
+    {
+        return Ok(());
+    }
+    Err(bad_request(format!(
+        "refused: this write changes the meridian-lock block in {} without minting it. The lock \
+         is the ATTESTATION artifact and the engine is its sole writer (#8 §3) — a pin is minted \
+         by `splice.pin` (mrd pin), which fingerprints the target's real bytes behind the \
+         read-mint gate. Lock bytes reaching disk as ordinary page text would be a claim nobody \
+         computed. WHAT THIS WOULD DESTROY: the {} attestation claim(s) already minted on this \
+         page. WHAT TO DO INSTEAD: the block is birthed at the page's END, so a whole-section \
+         rewrite of the LAST section deletes it — write that section with `put at:end` or an \
+         append, or rewrite a section that does not hold the block, and the claims survive \
+         untouched. Retiring a claim on purpose needs an unpin verb, which does not exist yet \
+         (stage 3) — until it does, remove the block by hand and re-mint",
+        path.0,
+        before_blocks.len()
+    )))
+}
+
 /// Per-target BEFORE facts + the wire→model edit conversion, request order
 /// (§4.4: armed edits align 1:1 with request edits) — resolution failures
 /// name the failing target exactly (candidates in THE grammar).
-/// Stage-2 S10: every caller-supplied string in a native edit, with its `@fp`
-/// tokens stripped ([`syntax::strip_fp`]).
 ///
-/// `Match{old}` is stripped too, and that is not cosmetic: `old` is a NEEDLE
-/// matched against stored bytes, which never carry a token, so an agent that
-/// copied a decorated link as its needle would otherwise never match its own
-/// document.
-fn strip_fp_edits(edits: &[Edit]) -> Vec<Edit> {
-    edits
-        .iter()
-        .map(|e| Edit {
-            target: e.target.clone(),
-            edit: match &e.edit {
-                EditShape::Match { old, new } => EditShape::Match {
-                    old: syntax::strip_fp(old).into_owned(),
-                    new: syntax::strip_fp(new).into_owned(),
-                },
-                EditShape::Put { at, text } => EditShape::Put {
-                    at: *at,
-                    text: syntax::strip_fp(text).into_owned(),
-                },
-            },
-            if_node_rev: e.if_node_rev.clone(),
-        })
-        .collect()
-}
-
-/// [`strip_fp_edits`] for the plan-level batch: the payload of each shape, at
-/// the same intake, so lowering never sees a token. Addresses (`hpath`,
-/// `parent_hpath`, `key`) are NOT payloads and are left verbatim — a heading
-/// path is not a claim-link slot.
-fn strip_fp_plan_edits(edits: &[wire::PlanEdit]) -> Vec<wire::PlanEdit> {
-    edits
-        .iter()
-        .map(|e| match e {
-            wire::PlanEdit::Append { hpath, body } => wire::PlanEdit::Append {
-                hpath: hpath.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-            },
-            wire::PlanEdit::Match {
-                hpath,
-                old,
-                new,
-                all,
-                rev,
-            } => wire::PlanEdit::Match {
-                hpath: hpath.clone(),
-                old: syntax::strip_fp(old).into_owned(),
-                new: syntax::strip_fp(new).into_owned(),
-                all: *all,
-                rev: rev.clone(),
-            },
-            wire::PlanEdit::ReplaceSection { hpath, body, rev } => wire::PlanEdit::ReplaceSection {
-                hpath: hpath.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-                rev: rev.clone(),
-            },
-            wire::PlanEdit::SetProperty { key, value } => wire::PlanEdit::SetProperty {
-                key: key.clone(),
-                value: syntax::strip_fp(value).into_owned(),
-            },
-            wire::PlanEdit::Create {
-                parent_hpath,
-                title,
-                body,
-            } => wire::PlanEdit::Create {
-                parent_hpath: parent_hpath.clone(),
-                title: title.clone(),
-                body: syntax::strip_fp(body).into_owned(),
-            },
-        })
-        .collect()
-}
-
+/// **The ADDRESS half of the `@fp` law is ordered here** (the payload half is
+/// [`strip_fp_candidate`]'s, at document grain). `Match{old}` is a NEEDLE matched
+/// against stored bytes, which never carry a token, so a needle copied from the
+/// decorated render face would otherwise never match its own document. It is
+/// stripped for the same reason `read::to_model_ref` strips a `SecRef::Anchor`
+/// before the mint-guard sees it: an address is compared, never stored. This is
+/// the ONE funnel every native and lowered edit passes through, so no put shape
+/// can skip it.
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
@@ -1936,7 +2530,7 @@ fn model_edits_and_before_facts(
             target,
             edit: match &edit.edit {
                 EditShape::Match { old, new } => model::EditKind::Match {
-                    old: old.clone(),
+                    old: syntax::strip_fp(old).into_owned(),
                     new: new.clone(),
                 },
                 EditShape::Put { at, text } => model::EditKind::Put {
@@ -1971,9 +2565,7 @@ fn build_after_doc(
     let after_raw = apply_validated(&doc.raw, sealed);
     let after_tree = syntax::parse(&after_raw);
     let mut after_doc = model::build(after_raw, after_tree);
-    if let model::NodeKind::Document { path: p, .. } = &mut after_doc.root.kind {
-        p.clone_from(&path.0);
-    }
+    stamp_path(&mut after_doc, path);
     after_doc
 }
 

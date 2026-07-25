@@ -13,8 +13,8 @@ workspace = true
 [dependencies]
 lock = { workspace = true }
 model = { workspace = true }
+# the wikilink grammar's owner: the claim-link decoration reads its block-ref
+# slot from `syntax::block_slot` rather than re-spelling the grammar here.
+syntax = { workspace = true }
 wire = { workspace = true }
 wire-map = { workspace = true }
-
-[dev-dependencies]
-syntax = { workspace = true }

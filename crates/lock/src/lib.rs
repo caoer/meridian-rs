@@ -197,6 +197,27 @@ pub fn find(doc: &Document) -> Result<Option<Found>, LockError> {
     }
 }
 
+/// Every `meridian-lock` block's RAW bytes in document order — the lock
+/// ARTIFACT as it sits on disk, with no parse in the way.
+///
+/// [`find`] answers "what does the lock SAY", which needs the grammar and
+/// therefore refuses corruption. This answers "which bytes ARE the lock", which
+/// a guard comparing two documents needs to work even when one of them is
+/// malformed or carries two blocks: a diff over parsed values could not see a
+/// change from one broken block to a different broken block, and byte-identity
+/// is the property the artifact guard states (advisor R25 — guard the artifact,
+/// not the verb).
+#[must_use]
+pub fn block_texts(doc: &Document) -> Vec<&str> {
+    let mut spans: Vec<ByteSpan> = Vec::new();
+    collect_lock_spans(&doc.root, &mut spans);
+    spans.sort_by_key(|s| s.start);
+    spans
+        .into_iter()
+        .filter_map(|span| doc.raw.get(span))
+        .collect()
+}
+
 fn collect_lock_spans(node: &Node, out: &mut Vec<ByteSpan>) {
     if let NodeKind::CodeBlock { lang, .. } = &node.kind
         && is_lock_lang(lang)

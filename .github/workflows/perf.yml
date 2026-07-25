@@ -58,3 +58,11 @@ jobs:
             critcmp.txt
             claim-verdicts.md
             crates/perfsuite/results/
+      # The `mrd status` <1s wall-time budget (1000 ms, U3.6). It lived in the
+      # correctness suite until an A/B interleave proved it was measuring machine
+      # contention there — shipped main blew it 3/3 under load — so it moved to the
+      # home this repo already named for wall-time. LAST step on purpose: the sweep
+      # artifacts above upload first, so a broken budget arrives WITH the criterion
+      # data that explains it. `--nocapture` prints the measured ms into the log.
+      - name: status wall-time gate (1000 ms hard budget, pinned runner)
+        run: cargo test -p mrd --features perf-walltime --test status_walltime -- --nocapture
