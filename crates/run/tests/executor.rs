@@ -617,3 +617,65 @@ fn receipt_commits_the_threaded_exec_facts() {
     // S7: the env VALUE never reaches the committed receipt.
     assert!(!receipts.contains("secret-value"), "{receipts}");
 }
+
+/// **Advisor R25 — the fifth door to the lock ARTIFACT.** The run plane lands
+/// bytes through `fs::apply_batch`, bypassing the wire choke-point entirely, and
+/// it mints no pin: `md.append_section` composing a `meridian-lock` block is a
+/// pin nobody computed. The assertion is on the WRITE (`is_err`), never on the
+/// colour the forged claim would render (R26).
+#[test]
+fn the_run_plane_cannot_write_a_meridian_lock_block() {
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let before = page_text(&root);
+    let forged = apply(
+        &root,
+        &Req {
+            effects: &[append(
+                "Log",
+                "```meridian-lock\nversion: 1\npins:\n  - ref: \"t.md#T/S\"\n    fingerprint: \"fp1.b3.deadbeef\"\n```",
+                0,
+            )],
+            caps: write_caps(),
+            pin: now.clone(),
+            live: now,
+            receipt: None,
+            takeover: false,
+        },
+    );
+    assert!(
+        matches!(forged, Err(ExecError::LockArtifact { .. })),
+        "the run plane must refuse to write the attestation artifact: {forged:?}"
+    );
+    assert_eq!(page_text(&root), before, "nothing was applied");
+}
+
+/// The control: ordinary run-plane content beside an untouched lock still lands.
+/// A guard that refused every apply on a pinned page would be worthless.
+#[test]
+fn the_run_plane_still_writes_beside_an_untouched_lock() {
+    let (tmp, root) = workspace();
+    std::fs::write(
+        tmp.path().join("page.md"),
+        format!(
+            "{PAGE}\n```meridian-lock\nversion: 1\npins:\n  - ref: \"t.md#T/S\"\n    fingerprint: \"fp1.b3.deadbeef\"\n```\n"
+        ),
+    )
+    .unwrap();
+    let now = current_root(&root);
+    apply(
+        &root,
+        &Req {
+            effects: &[append("Log", "- a run-plane line", 0)],
+            caps: write_caps(),
+            pin: now.clone(),
+            live: now,
+            receipt: None,
+            takeover: false,
+        },
+    )
+    .expect("an ordinary apply on a pinned page still commits");
+    let text = page_text(&root);
+    assert!(text.contains("- a run-plane line"), "{text}");
+    assert!(text.contains("```meridian-lock"), "{text}");
+}

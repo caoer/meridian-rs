@@ -2959,6 +2959,7 @@ dependencies = [
  "effects",
  "fs",
  "libc",
+ "lock",
  "model",
  "policy",
  "serde",

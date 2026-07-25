@@ -229,6 +229,13 @@ fn lower_match(
             policy::defs::go_quote(hpath)
         )));
     };
+    // S10's ADDRESS half (advisor R25): `old` is a NEEDLE searched in STORED
+    // bytes, which never carry an `@fp` token, so an agent's needle copied from
+    // the decorated render face must be peeled before the search — the same rule
+    // `read::to_model_ref` applies to a `SecRef::Anchor`. It is peeled HERE
+    // because the search happens here; `new` is a PAYLOAD and rides verbatim into
+    // the candidate, where the document-grain strip owns it.
+    let old = &*syntax::strip_fp(old);
     let if_node_rev = rev
         .filter(|r| !r.is_empty())
         .map(|r| NodeRev(r.to_string()));
