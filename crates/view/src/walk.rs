@@ -1217,7 +1217,7 @@ mod tests {
         let d = doc(raw);
         model::fingerprint::fingerprint(&d, &d.root)
             .expect("the fixture page has content")
-            .0
+            .into_string()
     }
 
     /// GATE 1 — the five rendered states are DISTINCT: no two of green /
