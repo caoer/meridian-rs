@@ -26,6 +26,12 @@ effects = { workspace = true }
 policy = { workspace = true }
 # Block-id charset guard (`is_block_id`) — the ONE charset, ruling 011.
 syntax = { workspace = true }
+# The receipt-line FIELD law (`receipt::render_field`). The run plane composes a
+# receipt line of its own, so it renders that line's free-text fields through the
+# crate that owns receipt rendering rather than re-spelling the charset here —
+# a second spelling is the disease this milestone keeps diagnosing. `receipt` is
+# a leaf (its only dependency is `wire`), so this adds no graph depth.
+receipt = { workspace = true }
 # R25 artifact guard: `lock::block_texts` locates the `meridian-lock` bytes so
 # the run plane can refuse changing them. The grammar has ONE owner — re-deriving
 # "which bytes are the lock" here would be a second spelling of it.
