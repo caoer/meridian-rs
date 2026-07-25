@@ -170,9 +170,10 @@ pub fn strip_anchor_marker(b: &[u8], anchor: &str) -> Vec<u8> {
 /// subtree — the section itself plus descendants by hpath prefix. An empty
 /// result under a non-empty `frag` is the caller's "no section at" refusal.
 ///
-/// This is the RENDERED row set: `toc_text` walks exactly these, so the
-/// captured Go toc bytes stay frozen. The structured authz row set is
-/// [`read_rows`].
+/// This is the HEADING plane, whole: `toc_text` renders exactly these rows and
+/// the composed read's `toc` array carries exactly these rows, so the captured
+/// Go toc bytes stay frozen AND no `toc` consumer can meet a second row class.
+/// The `^id` anchor plane is [`anchor_rows`], served in its own array.
 #[must_use]
 pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
     facts
@@ -182,16 +183,20 @@ pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
         .collect()
 }
 
-/// The STRUCTURED composed-read row set (stage-2 S1): the [`toc_rows`]
-/// headings PLUS the `^id` anchor rows, in document order — the authz fact
-/// plane. The host derives a write's governing sections by byte containment
-/// (`containingSectionTitles`, `puttoc.go:104`: every heading whose span
-/// contains the anchor block's start byte), which needs the anchor nodes and
-/// the heading spans in ONE row set; serving them is what retires the host's
+/// The `^id` ANCHOR plane (stage-2 s1c): the block-anchor facts alone, in
+/// document order — the authz plane the host reads. Put derives a write's
+/// governing sections by byte containment (`containingSectionTitles`,
+/// `puttoc.go:86`: every heading whose span contains the anchor block's start
+/// byte), which needs the anchor spans and the heading spans — but NOT in one
+/// array: containment is absolute-byte arithmetic, so the two planes are
+/// independent. Serving these rows is what retires the host's
 /// `sanitizeHeadingHost` markdown mirror.
 ///
-/// Anchor rows never render — [`toc_rows`] stays the rendering set, so the
-/// toc text is byte-unchanged.
+/// s1c moved them OUT of the [`toc_rows`] array (S1 mixed both classes there).
+/// A row class an iterating consumer cannot receive is the only guard that
+/// holds: ccc-statusd's `readText` indents by `depth-1` and panicked "negative
+/// Repeat count" on an anchor row's `depth 0` — a documented discriminator
+/// would have rested on every future client remembering to check it.
 ///
 /// Under a non-empty `frag` the anchor rows are scoped by the SAME byte
 /// containment the host applies (start byte inside a scoped heading's
@@ -199,17 +204,12 @@ pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
 /// the requested subtree. An empty `frag` is the whole document: every anchor
 /// row rides, including anchors above the first heading.
 #[must_use]
-pub fn read_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
+pub fn anchor_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
     let scope: Vec<wire::Span> = toc_rows(facts, frag).iter().map(|f| f.span).collect();
     facts
         .iter()
-        .filter(|f| {
-            if f.depth > 0 {
-                in_frag(f, frag)
-            } else {
-                frag.is_empty() || scope.iter().any(|s| s.0 <= f.span.0 && f.span.0 < s.1)
-            }
-        })
+        .filter(|f| f.depth == 0)
+        .filter(|f| frag.is_empty() || scope.iter().any(|s| s.0 <= f.span.0 && f.span.0 < s.1))
         .collect()
 }
 
@@ -288,36 +288,41 @@ mod tests {
         assert_eq!(resolve_selector(&got, "2").map(|f| f.words), Some(5));
     }
 
-    /// S1: the structured row set surfaces the `^id` anchor rows the render
-    /// set omits, and each anchor row's span is byte-CONTAINED in every
-    /// heading section governing it — the fact the host's
-    /// `containingSectionTitles` answers a write's authz from.
+    /// s1c (supersedes S1's `read_rows_surface_anchors_contained_in_their_
+    /// governing_headings`, which asserted ONE interleaved row set): the two
+    /// planes are disjoint — `toc_rows` is heading-only, `anchor_rows` is
+    /// anchor-only — and containment still resolves across them, because it is
+    /// absolute-byte arithmetic and never needed the interleaving.
     #[test]
-    fn read_rows_surface_anchors_contained_in_their_governing_headings() {
+    fn the_two_planes_are_disjoint_and_containment_still_crosses_them() {
         let raw = "# Tasks\n\n- top item ^t1\n\n## Sub\n\n- nested item ^n1\n\n# Notes\n\nbody\n";
         let got = facts(raw);
-        let rendered: Vec<&str> = toc_rows(&got, "")
+        let headings: Vec<&str> = toc_rows(&got, "")
             .iter()
             .map(|f| f.hpath.as_str())
             .collect();
         assert_eq!(
-            rendered,
+            headings,
             vec!["Tasks", "Tasks/Sub", "Notes"],
-            "the RENDERED set stays heading-only"
+            "the heading plane carries every heading and NOTHING else"
         );
-        let structured: Vec<&str> = read_rows(&got, "")
+        assert!(
+            toc_rows(&got, "").iter().all(|f| f.anchor.is_none()),
+            "no anchor fact can reach a `toc` consumer"
+        );
+        let anchors: Vec<&str> = anchor_rows(&got, "")
             .iter()
             .map(|f| f.hpath.as_str())
             .collect();
         assert_eq!(
-            structured,
-            vec!["Tasks", "^t1", "Tasks/Sub", "^n1", "Notes"],
-            "the STRUCTURED set adds the anchor rows, in document order"
+            anchors,
+            vec!["^t1", "^n1"],
+            "the anchor plane carries every addressable block anchor, in document order"
         );
 
-        // `containingSectionTitles` (puttoc.go:104) over the row set alone.
+        // `containingSectionTitles` (puttoc.go:86) across the two planes.
         let governing = |anchor: &str| -> Vec<String> {
-            let block = read_rows(&got, "")
+            let block = anchor_rows(&got, "")
                 .into_iter()
                 .find(|f| f.anchor.as_deref() == Some(anchor))
                 .expect("anchor row");
@@ -338,37 +343,45 @@ mod tests {
     /// Frag scoping of anchor rows is the host's own byte containment: the
     /// scoped subtree's anchors ride, a sibling subtree's never do.
     #[test]
-    fn read_rows_frag_scopes_anchors_by_byte_containment() {
+    fn anchor_rows_frag_scopes_anchors_by_byte_containment() {
         let raw = "# Tasks\n\n- item ^t1\n\n# Notes\n\n- other ^o1\n";
         let got = facts(raw);
-        let scoped: Vec<&str> = read_rows(&got, "Tasks")
+        let scoped: Vec<&str> = anchor_rows(&got, "Tasks")
             .iter()
             .map(|f| f.hpath.as_str())
             .collect();
-        assert_eq!(scoped, vec!["Tasks", "^t1"]);
-        let other: Vec<&str> = read_rows(&got, "Notes")
+        assert_eq!(scoped, vec!["^t1"]);
+        let other: Vec<&str> = anchor_rows(&got, "Notes")
             .iter()
             .map(|f| f.hpath.as_str())
             .collect();
-        assert_eq!(other, vec!["Notes", "^o1"]);
+        assert_eq!(other, vec!["^o1"]);
         assert!(
-            read_rows(&got, "Ghost").is_empty(),
+            anchor_rows(&got, "Ghost").is_empty(),
             "a frag naming nothing scopes nothing — the caller's refusal"
         );
     }
 
     /// An anchor above the first heading has no governing section; the
-    /// whole-document row set still carries it (the host must see the block
-    /// to authorize a write to it).
+    /// whole-document anchor plane still carries it (the host must see the
+    /// block to authorize a write to it).
     #[test]
-    fn read_rows_carry_anchors_above_the_first_heading() {
+    fn anchor_rows_carry_anchors_above_the_first_heading() {
         let raw = "- orphan item ^o1\n\n# Tasks\n\nbody\n";
         let got = facts(raw);
-        let structured: Vec<&str> = read_rows(&got, "")
+        let anchors: Vec<&str> = anchor_rows(&got, "")
             .iter()
             .map(|f| f.hpath.as_str())
             .collect();
-        assert_eq!(structured, vec!["^o1", "Tasks"]);
+        assert_eq!(anchors, vec!["^o1"]);
+        assert_eq!(
+            toc_rows(&got, "")
+                .iter()
+                .map(|f| f.hpath.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Tasks"],
+            "and the heading plane is unaffected by it"
+        );
     }
 
     /// Frag scoping: the section itself + descendants by hpath prefix;
