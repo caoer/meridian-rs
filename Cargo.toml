@@ -33,6 +33,7 @@ default-members = [
     "crates/preset",
     "crates/check",
     "crates/lock",
+    "crates/git",
 ]
 
 [workspace.package]
@@ -68,6 +69,9 @@ lock = { path = "crates/lock", version = "0.0.0" }
 transcript = { path = "crates/transcript", version = "0.0.0" }
 preset = { path = "crates/preset", version = "0.0.0" }
 check = { path = "crates/check", version = "0.0.0" }
+# The git plumbing organ (S5): shell-out content-addressing + reachability. A
+# std-only leaf, so `mrd`/`wire-serve`/`view` can each take the edge.
+git = { path = "crates/git", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
