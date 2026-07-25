@@ -25,6 +25,11 @@
 
 use super::BodyError;
 use super::go_fmt::go_quote;
+// The heading address law has ONE owner (stage-2 S0): the frozen Go-text
+// predicate in `model`, which `wire-map`'s projection re-exports. The local
+// copy here trimmed with Rust's ambient `.trim()` — a set that agrees with Go
+// today but is not pinned to it.
+use model::gotext::sanitize_heading;
 
 /// One put-plan edit (Go `body.Edit` as `plansToBodyEdits` builds it: the
 /// daemon face's vocabulary; `Old` is never set on this face).
@@ -343,15 +348,6 @@ fn collect_blocks(node: &model::Node, raw: &str, out: &mut Vec<BlockX>) {
     for child in &node.children {
         collect_blocks(child, raw, out);
     }
-}
-
-/// Go `sanitizeHeading` (map.go): '/' and ' ' → '-', empty → "untitled".
-fn sanitize_heading(title: &str) -> String {
-    let s = title.trim().replace(['/', ' '], "-");
-    if s.is_empty() {
-        return "untitled".to_string();
-    }
-    s
 }
 
 fn block_ref(target: &str) -> Option<&str> {

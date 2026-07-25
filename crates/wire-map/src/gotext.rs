@@ -16,30 +16,17 @@
 //!   (`readsidecar.go:222`), including its malformed-hierarchy behavior
 //!   (level jumps H1→H3, resets H6→H1) — reproduced, not repaired.
 //!
+//! [`is_go_space`] and [`sanitize_heading`] MOVED to [`model::gotext`] in
+//! stage-2 S0 and are re-exported here unchanged — `policy::defs::rebuild`
+//! needs the same heading address law, and a second copy is a drift surface.
+//! The word count and the dewey stack stay here: they are projection facts,
+//! and projection is this crate's charter (law 3).
+//!
 //! The authoritative parity target is the U0 captured golden corpus (A-S2);
 //! these unit tests pin the enumerated divergence classes the review named
 //! (NBSP/NEL are spaces, ZWSP is not, level jumps, empty headings).
 
-/// Go `unicode.IsSpace`: the Unicode `White_Space` property, as an explicit
-/// pinned table (stable since Unicode 6.3 — U+180E left the property then,
-/// and Go's and Rust's current tables both agree with this set).
-#[must_use]
-pub const fn is_go_space(c: char) -> bool {
-    matches!(
-        c,
-        '\u{0009}'..='\u{000D}' // TAB LF VT FF CR
-        | '\u{0020}' // SPACE
-        | '\u{0085}' // NEL
-        | '\u{00A0}' // NBSP
-        | '\u{1680}' // OGHAM SPACE MARK
-        | '\u{2000}'..='\u{200A}' // EN QUAD .. HAIR SPACE
-        | '\u{2028}' // LINE SEPARATOR
-        | '\u{2029}' // PARAGRAPH SEPARATOR
-        | '\u{202F}' // NARROW NO-BREAK SPACE
-        | '\u{205F}' // MEDIUM MATHEMATICAL SPACE
-        | '\u{3000}' // IDEOGRAPHIC SPACE
-    )
-}
+pub use model::gotext::{is_go_space, sanitize_heading};
 
 /// `len(strings.Fields(s))`: the count of maximal runs of non-`White_Space`
 /// runes. The host word count (`wordCountBytes`, `readsidecar.go:370`) is
@@ -57,23 +44,6 @@ pub fn fields_count(s: &str) -> usize {
         }
     }
     count
-}
-
-/// `sanitizeHeadingHost` (`readsidecar.go:350`), verbatim semantics:
-/// `strings.TrimSpace` (`White_Space` rune trim), then `/` → `-`, then ASCII
-/// space (U+0020 ONLY — an interior NBSP/tab survives into the address),
-/// then empty → `"untitled"`.
-#[must_use]
-pub fn sanitize_heading(title: &str) -> String {
-    let trimmed = title.trim_matches(is_go_space);
-    // Go runs two ReplaceAll passes; the char sets are disjoint, so one
-    // combined pass is byte-equivalent.
-    let replaced = trimmed.replace(['/', ' '], "-");
-    if replaced.is_empty() {
-        "untitled".to_string()
-    } else {
-        replaced
-    }
 }
 
 /// The `buildTocEntries` dewey ordinal stack (`readsidecar.go:222`): feed
@@ -121,27 +91,6 @@ impl DeweyCounter {
 mod tests {
     use super::*;
 
-    /// The pinned `White_Space` membership — the A-C1 divergence classes:
-    /// NBSP and NEL ARE spaces; ZWSP, ZWNJ, BOM, and the Unicode-6.3-removed
-    /// Mongolian vowel separator are NOT.
-    #[test]
-    fn go_space_table_membership() {
-        let spaces = [
-            '\t', '\n', '\u{000B}', '\u{000C}', '\r', ' ', '\u{0085}', '\u{00A0}', '\u{1680}',
-            '\u{2000}', '\u{2005}', '\u{200A}', '\u{2028}', '\u{2029}', '\u{202F}', '\u{205F}',
-            '\u{3000}',
-        ];
-        for c in spaces {
-            assert!(is_go_space(c), "U+{:04X} is Go-space", c as u32);
-        }
-        let non_spaces = [
-            '\u{200B}', '\u{200C}', '\u{FEFF}', '\u{180E}', 'a', '0', '-',
-        ];
-        for c in non_spaces {
-            assert!(!is_go_space(c), "U+{:04X} is NOT Go-space", c as u32);
-        }
-    }
-
     /// `strings.Fields` semantics: NBSP separates words, ZWSP does not;
     /// leading/trailing runs and CRLF collapse; all-space is zero fields.
     #[test]
@@ -161,25 +110,14 @@ mod tests {
         assert_eq!(fields_count("你\u{3000}好"), 2);
     }
 
-    /// `sanitizeHeadingHost` verbatim: trim is `White_Space`-wide, replacement
-    /// is `/` and ASCII space ONLY — interior NBSP/tab survive.
+    /// The re-export resolves to the owner. Identity is a compile-time fact —
+    /// `pub use model::gotext::…` is one item, not a copy, which is why the
+    /// projection here and `policy`'s defs rebuild cannot drift. Membership
+    /// and the full drift-guard corpus are pinned at the owner.
     #[test]
-    fn sanitize_heading_matches_go_host() {
-        assert_eq!(sanitize_heading("Lab state"), "Lab-state");
-        assert_eq!(sanitize_heading("a/b c"), "a-b-c");
-        assert_eq!(sanitize_heading("  padded  "), "padded");
-        // NBSP-padded: TrimSpace removes it (`White_Space`)
-        assert_eq!(sanitize_heading("\u{00A0}x\u{00A0}"), "x");
-        // interior NBSP is NOT the ASCII space — it survives verbatim
-        assert_eq!(sanitize_heading("a\u{00A0}b"), "a\u{00A0}b");
-        // interior tab likewise survives (Go replaces U+0020 only)
-        assert_eq!(sanitize_heading("a\tb"), "a\tb");
-        // empty and all-space collapse to the sentinel
-        assert_eq!(sanitize_heading(""), "untitled");
-        assert_eq!(sanitize_heading("   "), "untitled");
-        assert_eq!(sanitize_heading("\u{2003}\u{2028}"), "untitled");
-        // all-space AFTER replacement stays: "/" of spaces → dashes, not empty
-        assert_eq!(sanitize_heading(" / "), "-");
+    fn heading_predicate_reexports_the_model_owner() {
+        assert_eq!(sanitize_heading("Slash/Title Here"), "Slash-Title-Here");
+        assert!(is_go_space('\u{00A0}') && !is_go_space('\u{200B}'));
     }
 
     /// The Go ordinal stack on a well-formed hierarchy.

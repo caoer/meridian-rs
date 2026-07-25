@@ -68,7 +68,7 @@ which laws it carries. In one line each:
 | Crate | Charter |
 |---|---|
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; sole owner of the pulldown-cmark fork |
-| `model` | The governed node tree, resolve, CAS-splice validation, Merkle roots — non-serializable by design (Law 1) |
+| `model` | The governed node tree, resolve, CAS-splice validation, Merkle roots — non-serializable by design (Law 1); also the frozen Go-text heading predicate (`gotext`), the single address law its two dependents share |
 | `fs` | Disk read/walk/watch into the model; atomic tmp+fsync+rename splice execution |
 | `wire` | The serde-only wire vocabulary — the whole Go-visible surface (Law 2) |
 | `wire-map` | The named model→wire projection seam, tested as a library function (Law 3) |
