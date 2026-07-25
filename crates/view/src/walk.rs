@@ -294,14 +294,12 @@ pub fn has_red(report: &WalkReport) -> bool {
 }
 
 /// The tone of a color (`green` / `grey` / `red`) — the stable output word.
-#[must_use]
-pub fn color_tone(color: &Color) -> &'static str {
-    match color {
-        Color::Green => "green",
-        Color::Grey(_) => "grey",
-        Color::Red(_) => "red",
-    }
-}
+///
+/// Re-exported from [`model::selector::color_tone`], where it sits beside the
+/// `Color` it names: stage-2 S10's claim-link decorator needs the same word on
+/// a crate that cannot depend on this one, and two `match`es over one enum is
+/// how a board and a walk start disagreeing.
+pub use model::selector::color_tone;
 
 /// The reason word behind a non-green color (`None` for green) — the stable
 /// output reason, shared by the human render and the `--json` shape.

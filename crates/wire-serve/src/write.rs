@@ -197,15 +197,31 @@ pub fn splice(
         None => None,
     };
 
+    // Stage-2 S10: the `@fp` STRIP, at the ONE content intake — before plan
+    // lowering, before target resolution, before validation, before anything
+    // reads a byte of it. An agent's context is the DECORATED render face, so
+    // the link it copies into its next edit carries a token no author wrote;
+    // stripping it here is what keeps stored bytes free of a fingerprint claim
+    // the engine never minted.
+    //
+    // Ordering, not vigilance, is the guarantee: everything below this line
+    // operates on `plan_edits`/`edits` and never on `args.plan_edits`/
+    // `args.edits`, so a new put shape lowered from either is stripped by
+    // construction. The address half is ordered the same way one layer down —
+    // `read::to_model_ref` strips before `model::Ref::anchor` validates, and it
+    // is the only bridge to a `model::Ref`.
+    let plan_edits = strip_fp_plan_edits(&args.plan_edits);
+    let edits = strip_fp_edits(&args.edits);
+
     // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
     // (under the flock, against the just-loaded pre-batch doc), then the whole
     // path below runs unchanged on the lowered batch. Target-class refusals
     // (the deleted Go arms' teachings) fire before any per-target resolution.
     let lowered;
-    let effective_edits = if args.plan_edits.is_empty() {
-        &args.edits
+    let effective_edits = if plan_edits.is_empty() {
+        &edits
     } else {
-        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
+        lowered = crate::plan::lower(&doc, &plan_edits)?;
         &lowered
     };
 
@@ -513,9 +529,15 @@ pub fn create(
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
 
+    // Stage-2 S10: a birth is a put too — the whole file is caller-supplied
+    // content, so its `@fp` tokens are stripped at the same intake, BEFORE the
+    // after-state is built. The rev the birth reports is therefore the rev of
+    // the bytes that land, never of a decorated draft.
+    let body = syntax::strip_fp(&args.body);
+
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
-    let after_doc = build_doc(&args.path, &args.body);
+    let after_doc = build_doc(&args.path, &body);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
 
     // Advisory §11.1 findings from any caller packs (never a decision).
@@ -559,7 +581,7 @@ pub fn create(
     // The if_absent CAS lives at the disk edge (`fs::create_file`): an occupied
     // path is `AlreadyExists`, mapped to `cas_mismatch{expected:absent,
     // actual:occupant-rev}` (row 13, recovery refresh — "re-read, it exists").
-    if let Err(e) = fs::create_file(root, fs_path, &args.body) {
+    if let Err(e) = fs::create_file(root, fs_path, &body) {
         return Err(match e.kind() {
             ErrorKind::AlreadyExists => cas_mismatch(
                 &absent_rev(),
@@ -1264,7 +1286,7 @@ fn anchor_on_line(doc: &model::Document, line_start: usize) -> Option<String> {
 /// `bad_request` when the title yields no id characters at all (e.g. a wholly
 /// non-ASCII heading) — the caller's remedy is to give the target node its own
 /// `^id` and pin that.
-fn slug_id(title: &str) -> Result<String, Box<ErrorBody>> {
+pub(crate) fn slug_id(title: &str) -> Result<String, Box<ErrorBody>> {
     let mut out = String::new();
     let mut pending_dash = false;
     for ch in title.chars() {
@@ -1795,6 +1817,80 @@ fn resolve_receipt_fact(
 /// Per-target BEFORE facts + the wire→model edit conversion, request order
 /// (§4.4: armed edits align 1:1 with request edits) — resolution failures
 /// name the failing target exactly (candidates in THE grammar).
+/// Stage-2 S10: every caller-supplied string in a native edit, with its `@fp`
+/// tokens stripped ([`syntax::strip_fp`]).
+///
+/// `Match{old}` is stripped too, and that is not cosmetic: `old` is a NEEDLE
+/// matched against stored bytes, which never carry a token, so an agent that
+/// copied a decorated link as its needle would otherwise never match its own
+/// document.
+fn strip_fp_edits(edits: &[Edit]) -> Vec<Edit> {
+    edits
+        .iter()
+        .map(|e| Edit {
+            target: e.target.clone(),
+            edit: match &e.edit {
+                EditShape::Match { old, new } => EditShape::Match {
+                    old: syntax::strip_fp(old).into_owned(),
+                    new: syntax::strip_fp(new).into_owned(),
+                },
+                EditShape::Put { at, text } => EditShape::Put {
+                    at: *at,
+                    text: syntax::strip_fp(text).into_owned(),
+                },
+            },
+            if_node_rev: e.if_node_rev.clone(),
+        })
+        .collect()
+}
+
+/// [`strip_fp_edits`] for the plan-level batch: the payload of each shape, at
+/// the same intake, so lowering never sees a token. Addresses (`hpath`,
+/// `parent_hpath`, `key`) are NOT payloads and are left verbatim — a heading
+/// path is not a claim-link slot.
+fn strip_fp_plan_edits(edits: &[wire::PlanEdit]) -> Vec<wire::PlanEdit> {
+    edits
+        .iter()
+        .map(|e| match e {
+            wire::PlanEdit::Append { hpath, body } => wire::PlanEdit::Append {
+                hpath: hpath.clone(),
+                body: syntax::strip_fp(body).into_owned(),
+            },
+            wire::PlanEdit::Match {
+                hpath,
+                old,
+                new,
+                all,
+                rev,
+            } => wire::PlanEdit::Match {
+                hpath: hpath.clone(),
+                old: syntax::strip_fp(old).into_owned(),
+                new: syntax::strip_fp(new).into_owned(),
+                all: *all,
+                rev: rev.clone(),
+            },
+            wire::PlanEdit::ReplaceSection { hpath, body, rev } => wire::PlanEdit::ReplaceSection {
+                hpath: hpath.clone(),
+                body: syntax::strip_fp(body).into_owned(),
+                rev: rev.clone(),
+            },
+            wire::PlanEdit::SetProperty { key, value } => wire::PlanEdit::SetProperty {
+                key: key.clone(),
+                value: syntax::strip_fp(value).into_owned(),
+            },
+            wire::PlanEdit::Create {
+                parent_hpath,
+                title,
+                body,
+            } => wire::PlanEdit::Create {
+                parent_hpath: parent_hpath.clone(),
+                title: title.clone(),
+                body: syntax::strip_fp(body).into_owned(),
+            },
+        })
+        .collect()
+}
+
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
