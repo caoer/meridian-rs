@@ -818,6 +818,7 @@ fn dispatch_read(
             force,
             edits,
             plan_edits,
+            pin,
         } => {
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
@@ -831,8 +832,15 @@ fn dispatch_read(
                 force: force.unwrap_or(false),
                 edits,
                 plan_edits,
+                pin,
             };
-            wire_serve::write::splice(&ws_root, 0, &args, &[]).map(|out| out.body)
+            // S7: this is the ONE host that holds a session, so it is the one
+            // host whose pin gate can answer — the workspace's read-mint ledger
+            // rides in beside the write. The handle is taken outside any engine
+            // borrow (H1: the ledger is not the engine's, and the pin's own
+            // write must not evaporate it).
+            let mints = registry.read_mints(ws);
+            wire_serve::write::splice(&ws_root, 0, &args, &[], Some(&mints)).map(|out| out.body)
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
         // warm engine's doc (read-only: never a write path).

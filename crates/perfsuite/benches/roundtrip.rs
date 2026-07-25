@@ -305,6 +305,7 @@ fn record_match_scan_claim() {
     body.push_str("the-unique-old-marker\n");
     let doc = model::build(body.clone(), syntax::parse(&body));
     let batch = model::SpliceRequest {
+        engine: None,
         if_root: None,
         edits: vec![model::Edit {
             target: model::Ref::Hpath(vec![model::HpathSeg {

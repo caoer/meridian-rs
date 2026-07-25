@@ -32,6 +32,7 @@ mod gc;
 mod history_cmd;
 mod init;
 mod new_cmd;
+mod pin_cmd;
 mod preset_cmd;
 mod put_cmd;
 mod read_cmd;
@@ -90,6 +91,20 @@ usage:
                            world-grain guard. Exits: 0 committed (or dry) /
                            1 refused (the engine's message, verbatim) / 2 bad
                            invocation
+  mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]
+                           the attestation verb: record in PAGE's meridian-lock
+                           block that it draws from TARGET#SELECTOR at that
+                           section's content fingerprint, and give the target a
+                           stable slug ^block-id to be addressed by. PAGE is the
+                           drawing end (A pins B); SELECTOR is a sanitized
+                           heading path or a ^id, in the same grammar mrd read
+                           takes. The lock write rides the production splice
+                           choke-point, so the page's content and its lock land
+                           in ONE flocked commit. --vibe additionally writes the
+                           target's blob into git's object store, so the pin is
+                           retrievable before any commit references it. Exits:
+                           0 pinned (or dry) / 1 refused (the engine's message,
+                           verbatim) / 2 bad invocation
   mrd walk <PAGE> [--down] [--depth N]
                            the context-assembly listing over the ^inputs pin
                            graph: up (default) = what PAGE draws from, --down =
@@ -268,6 +283,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         }
         "read" => read_cmd::dispatch(&args[1..]),
         "put" => put_cmd::dispatch(&args[1..]),
+        "pin" => pin_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),

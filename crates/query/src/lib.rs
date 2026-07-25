@@ -354,6 +354,7 @@ fn single(edit: Edit) -> SpliceRequest {
     SpliceRequest {
         if_root: None,
         edits: vec![edit],
+        engine: None,
     }
 }
 
