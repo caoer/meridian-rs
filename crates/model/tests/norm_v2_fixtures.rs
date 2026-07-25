@@ -265,8 +265,11 @@ fn neutrality_document_grain() {
     );
 
     // PRODUCTION mint agrees with reference and golden.
-    let pf0 = model::fingerprint::fingerprint(&d0, &d0.root);
-    let pf1 = model::fingerprint::fingerprint(&d1, &d1.root);
+    // `.expect` is the non-vacuity guard, not ceremony: the mint returns a
+    // Result now, and two `Err`s compare EQUAL — an undischarged neutrality
+    // assert would pass on two documents that both fingerprint nothing.
+    let pf0 = model::fingerprint::fingerprint(&d0, &d0.root).expect("X0 root has content");
+    let pf1 = model::fingerprint::fingerprint(&d1, &d1.root).expect("X1 root has content");
     assert_eq!(pf0, pf1, "production: false drift at document grain");
     assert_eq!(pf0.0, fp0, "production token != reference token");
 }
@@ -289,8 +292,8 @@ fn neutrality_section_grain() {
 
     // PRODUCTION section-grain mint agrees with reference.
     let (p0, p1) = (
-        model::fingerprint::fingerprint(&d0, a0),
-        model::fingerprint::fingerprint(&d1, a1),
+        model::fingerprint::fingerprint(&d0, a0).expect("section A of X0 has content"),
+        model::fingerprint::fingerprint(&d1, a1).expect("section A of X1 has content"),
     );
     assert_eq!(p0, p1, "production: false drift at section grain");
     assert_eq!(p0.0, reference::fingerprint(&c0));
@@ -322,8 +325,8 @@ fn neutrality_own_line_at_eof() {
 
     // PRODUCTION R2b agreement at section grain.
     assert_eq!(
-        model::fingerprint::fingerprint(&dpre, apre),
-        model::fingerprint::fingerprint(&dpost, apost),
+        model::fingerprint::fingerprint(&dpre, apre).expect("pre-promotion A has content"),
+        model::fingerprint::fingerprint(&dpost, apost).expect("post-promotion A has content"),
         "production: R2b false drift"
     );
 }

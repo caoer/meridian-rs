@@ -1215,7 +1215,9 @@ mod tests {
     /// The live fingerprint token of a page root — what a CORRECT pin holds.
     fn live_token(raw: &str) -> String {
         let d = doc(raw);
-        model::fingerprint::fingerprint(&d, &d.root).0
+        model::fingerprint::fingerprint(&d, &d.root)
+            .expect("the fixture page has content")
+            .0
     }
 
     /// GATE 1 — the five rendered states are DISTINCT: no two of green /

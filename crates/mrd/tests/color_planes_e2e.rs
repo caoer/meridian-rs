@@ -80,7 +80,9 @@ fn code(out: &Output) -> i32 {
 /// the reader would not recompute.
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
-    model::fingerprint::fingerprint(&doc, &doc.root).0
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .0
 }
 
 /// A well-formed `fp1.…` token that is NOT the live one — a pin that measures
@@ -284,4 +286,115 @@ fn a_malformed_objects_sha_is_counted_unknown_not_dropped_to_zero() {
         human.contains("vibe-debt unknown"),
         "the composed line renders the unknown gauge: {human}"
     );
+}
+
+// ── R31 — the empty-span pin that could never drift ─────────────────────────
+
+/// The token a hand-authored lock carries for an empty-normalizing span:
+/// `blake3` of NO bytes. Not a syntactic fake — a real, well-formed `fp1.…`
+/// token with a real digest, which is exactly what made it dangerous.
+fn empty_span_fingerprint() -> String {
+    format!("fp1.span2.b3.{}", blake3::hash(b"").to_hex())
+}
+
+/// **R31 GATE — a stored empty-span pin can never read green.**
+///
+/// The empty-span class is unreachable through `mrd pin` (every ref form refuses
+/// at mint — `s2fix_empty_span_mint.rs` asserts that door by door), so it
+/// reaches the product exactly one way: a HAND- or TOOL-AUTHORED `meridian-lock`
+/// block. This gate drives that door on the real binary, which is why it lives
+/// here and hand-writes its lock rather than minting one.
+///
+/// Verbatim on the base build, both forms: `depth 1  green  …` and exit 0 —
+/// before ANY edit and again after the targets were rewritten end to end. A pin
+/// no edit anywhere could ever turn red, in the module whose entire product is
+/// that green means green.
+///
+/// The claim is the assert, and it is a REFUSAL of the green, not a colour
+/// preference: neither row may say `green`, on either plane, in either state.
+/// A fix that rendered these grey and left the pin in place would still ship a
+/// pin that cannot drift — so the row must be RED and the walk must exit 1.
+#[test]
+fn a_hand_authored_empty_span_pin_never_reads_green() {
+    let sb = sandbox();
+    let ws = sb.workspace("emptyspan");
+    std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
+
+    // Two of the enumerated empty-normalizing forms, at the product surface:
+    // an own-line `#^anchor` (the Block form) and a whole-page ref over a file
+    // that is nothing but an own-line anchor (the Page form — the one the
+    // ruling did not predict).
+    let ownline_v1 = "# H\n\n^guideline\n\noriginal body\n";
+    let anchors_only = "^a\n";
+    std::fs::write(ws.join("sources/ownline.md"), ownline_v1).expect("write ownline");
+    std::fs::write(ws.join("sources/anchors.md"), anchors_only).expect("write anchors");
+
+    // A THIRD pin that is honest, minted over real content. It is the
+    // non-vacuity control: it proves this corpus can still render green, so the
+    // two reds below are the empty spans and not a blanket verdict on the walk.
+    let honest = "# Target\n\nreal body\n";
+    std::fs::write(ws.join("sources/honest.md"), honest).expect("write honest");
+
+    let forged = empty_span_fingerprint();
+    let claim = format!(
+        "# Claim\n\ndraws from three places\n\n{}\n",
+        lock_block(&[
+            ("sources/ownline.md#^guideline", &forged),
+            ("sources/anchors.md", &forged),
+            ("sources/honest.md", &live_fingerprint(honest)),
+        ])
+    );
+    std::fs::write(ws.join("claim.md"), &claim).expect("write claim");
+
+    for state in ["before any edit", "after the targets change"] {
+        let walk = sb.run(&ws, &["walk", "claim.md"]);
+        let listing = stdout(&walk);
+        let rows = walk_rows(&listing);
+        assert_eq!(rows.len(), 3, "{state}: three pins, three rows: {listing}");
+
+        let empty_rows: Vec<&String> = rows
+            .iter()
+            .filter(|r| r.contains("ownline.md") || r.contains("anchors.md"))
+            .collect();
+        assert_eq!(empty_rows.len(), 2, "{state}: {listing}");
+        for row in &empty_rows {
+            assert!(
+                !row.contains("green"),
+                "{state}: an empty-span pin rendered GREEN — the false green is back: {row}"
+            );
+            assert!(
+                row.contains("red content-drifted"),
+                "{state}: an empty-span pin must be RED, not merely non-green: {row}"
+            );
+        }
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("honest.md") && r.contains("  green  ")),
+            "{state}: the honest pin still greens — the corpus is not uniformly red: {listing}"
+        );
+        assert_eq!(
+            code(&walk),
+            1,
+            "{state}: red edges are the finding leg of the exit triad: {}",
+            stderr(&walk)
+        );
+
+        // The other plane, same corpus, same question.
+        let status = stdout(&sb.run(&ws, &["status"]));
+        assert!(
+            status.contains("lock red content-drifted [3 pins]"),
+            "{state}: status rolls the same corpus up red: {status}"
+        );
+
+        // Rewrite both targets end to end. On the base build this changed
+        // nothing — the pins stayed green. The second pass proves the verdict
+        // does not depend on the target's bytes at all, because there are no
+        // bytes it covers.
+        std::fs::write(
+            ws.join("sources/ownline.md"),
+            "# H\n\n^guideline\n\nTOTALLY DIFFERENT BODY\n",
+        )
+        .expect("rewrite ownline");
+        std::fs::write(ws.join("sources/anchors.md"), "^a\n^b\n").expect("rewrite anchors");
+    }
 }

@@ -64,24 +64,50 @@ pub struct FingerprintParts {
     pub digest: String,
 }
 
+/// The one condition under which a fingerprint cannot exist: the span's
+/// norm-v2 canonicalization is **empty** (R31).
+///
+/// `blake3` of empty input is a *universal match* — every empty-normalizing
+/// span in every document mints the identical token — so such a token carries
+/// zero information about the content it names. That voids the fingerprint's
+/// whole contract:
+///
+/// > **A fingerprint must not be able to match content it does not cover.**
+///
+/// An empty normalized span is therefore not a thing to hash. It is a typed
+/// refusal at mint time and a verdict that can never read green
+/// ([`ContentVerdict::EmptySpan`]).
+///
+/// This is a **unit error on purpose**. There is exactly one way to void the
+/// contract, and naming it as a TYPE — rather than a bool a caller may ignore —
+/// is what makes every door discharge it or fail to compile (R5: *a boolean
+/// helper a caller may ignore is not a guard; a type a caller must discharge
+/// is*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptySpan;
+
 /// Mint the `span2` fingerprint of `node` in `doc` (spec §3):
 /// `b3(norm2(raw[span]))` under the whole-file anchor-removal law.
 /// Convenience over [`fingerprint_with_removals`] — computing removals once
 /// per document and reusing them across nodes is the batch path.
-#[must_use]
-pub fn fingerprint(doc: &Document, node: &Node) -> Fingerprint {
+///
+/// # Errors
+/// [`EmptySpan`] when the node's normalized span is empty — see that type.
+pub fn fingerprint(doc: &Document, node: &Node) -> Result<Fingerprint, EmptySpan> {
     fingerprint_with_removals(doc, node, &syntax::anchor_removals(&doc.raw))
 }
 
 /// [`fingerprint`] with the document's removal ranges precomputed
 /// ([`syntax::anchor_removals`] — file coordinates, whole-file
 /// identification per spec §4.1/§4.3).
-#[must_use]
+///
+/// # Errors
+/// [`EmptySpan`] — see [`fingerprint_span`].
 pub fn fingerprint_with_removals(
     doc: &Document,
     node: &Node,
     removals: &[ByteSpan],
-) -> Fingerprint {
+) -> Result<Fingerprint, EmptySpan> {
     fingerprint_span(doc, &node.span, removals)
 }
 
@@ -90,13 +116,30 @@ pub fn fingerprint_with_removals(
 /// contributes nothing else — a caller holding a resolved [`crate::Target`]
 /// mints without a second tree walk. THE owner of the mint expression; the
 /// `&Node` forms delegate here.
-#[must_use]
-pub fn fingerprint_span(doc: &Document, span: &ByteSpan, removals: &[ByteSpan]) -> Fingerprint {
+///
+/// **THE owner of the empty-span invariant, too** (R31). This is the single
+/// place norm-v2 bytes meet the hasher — [`syntax::norm_v2_slice`] has exactly
+/// one caller, this one — so refusing here closes the CLASS rather than any one
+/// ref form that happens to normalize away. Which forms those are is not this
+/// function's business and deliberately so: it guards the *property*, so a
+/// future ref form, dialect rule, or codec that reduces to nothing is closed the
+/// day it lands, with no enumeration to remember to update.
+///
+/// # Errors
+/// [`EmptySpan`] when `norm_v2_slice` yields no bytes.
+pub fn fingerprint_span(
+    doc: &Document,
+    span: &ByteSpan,
+    removals: &[ByteSpan],
+) -> Result<Fingerprint, EmptySpan> {
     let canonical = syntax::norm_v2_slice(&doc.raw, span, removals);
-    Fingerprint(format!(
+    if canonical.is_empty() {
+        return Err(EmptySpan);
+    }
+    Ok(Fingerprint(format!(
         "{FP_VERSION}.{CODEC_SPAN2}.{HASHFN_B3}.{}",
         blake3::hash(&canonical).to_hex()
-    ))
+    )))
 }
 
 /// Grammar-only parse (spec §2.4). `None` = malformed — not a fingerprint
@@ -156,6 +199,25 @@ pub enum ContentVerdict {
     },
     /// Not a fingerprint token.
     Malformed,
+    /// The live span normalizes to NOTHING, so no fingerprint exists to compare
+    /// the pinned token against ([`EmptySpan`]). **Never green** — and that is
+    /// structural, not a policy choice: [`ContentVerdict::Green`] is reachable
+    /// only through a recomputed token, and [`fingerprint_span`] cannot produce
+    /// one here.
+    ///
+    /// **This is the LOAD-BEARING arm of R31.** The empty-span class is
+    /// unreachable through `mrd pin` (every ref form refuses at mint — see the
+    /// mint door in `wire_serve::write`), so the class arrives only in a HAND-
+    /// or TOOL-AUTHORED lock block. That makes the verdict side, not the mint,
+    /// the place the guard has to bite: before this arm, a stored pin over an
+    /// empty-normalizing span read GREEN in every document and no edit anywhere
+    /// could ever turn it red.
+    ///
+    /// A pinned token whose digest happens to BE `blake3("")` needs no special
+    /// case: over an empty span it lands here, and over a non-empty span it
+    /// reddens as ordinary drift. Either way it is never green — which is why
+    /// the guard is a property of the recompute and not a forbidden constant.
+    EmptySpan,
 }
 
 impl ContentVerdict {
@@ -214,7 +276,11 @@ pub fn verify_content_span(doc: &Document, span: &ByteSpan, pinned: &str) -> Con
             hashfn: parts.hashfn,
         };
     }
-    let actual = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw));
+    // R31: the recompute is fallible, so `Green` below is reachable only for a
+    // span that HAS canonical bytes. An empty one never reaches the compare.
+    let Ok(actual) = fingerprint_span(doc, span, &syntax::anchor_removals(&doc.raw)) else {
+        return ContentVerdict::EmptySpan;
+    };
     if actual.0 == pinned {
         ContentVerdict::Green
     } else {
@@ -280,7 +346,7 @@ mod tests {
     fn x0_token_matches_spec_golden() {
         let d = doc("# A\nintro\n\n# B\nbody\n");
         assert_eq!(
-            fingerprint(&d, &d.root).0,
+            fingerprint(&d, &d.root).expect("X0 has content").0,
             "fp1.span2.b3.40b167ed9b42a2beadb7c441b214efdc93069ef443a1cc2b5ae2ccda4cf03152"
         );
     }
@@ -370,14 +436,14 @@ mod tests {
     #[test]
     fn verify_content_verdicts() {
         let d1 = doc("# A\nbody v1\n");
-        let pin = fingerprint(&d1, &d1.root).0;
+        let pin = fingerprint(&d1, &d1.root).expect("d1 has content").0;
         assert_eq!(verify_content(&d1, &d1.root, &pin), ContentVerdict::Green);
 
         let d2 = doc("# A\nbody v2\n");
         let ContentVerdict::Red { actual } = verify_content(&d2, &d2.root, &pin) else {
             panic!("drifted content must verify Red");
         };
-        assert_eq!(actual, fingerprint(&d2, &d2.root));
+        assert_eq!(actual, fingerprint(&d2, &d2.root).expect("d2 has content"));
 
         let hex64 = "0".repeat(64);
         assert_eq!(
@@ -449,7 +515,7 @@ mod tests {
         }
 
         // A verifiable verdict names nothing — the list is the grey's alone.
-        let pin = fingerprint(&d, &d.root).0;
+        let pin = fingerprint(&d, &d.root).expect("d has content").0;
         assert!(
             verify_content(&d, &d.root, &pin)
                 .unknown_members()

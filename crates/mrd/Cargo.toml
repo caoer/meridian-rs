@@ -119,6 +119,14 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# R31 gate (crates/mrd/tests/color_planes_e2e.rs): mint the empty-span token a
+# HAND-AUTHORED lock carries — `blake3` of zero bytes — through the same hasher
+# family the engine uses, so the witness is computed, never a literal that could
+# drift from the thing it stands for. The engine's own mint deliberately REFUSES
+# to produce it, which is the defect being closed, so the gate cannot ask
+# `model` for it. Already in the graph and the lockfile via `model` (blake3 =
+# "1") — no new external crate enters the workspace, `cargo deny` unchanged.
+blake3 = "1"
 # V3 integration gates (crates/mrd/tests/sql_e2e.rs): pre-publish a `view.duckdb`
 # (view + fs + cache + workspace) to drive the cold-degrade/STALE/OD8 paths
 # without a live daemon, and start an in-process `registry` daemon to drive the

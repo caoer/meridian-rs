@@ -82,7 +82,9 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     };
     let target = model::resolve(&doc, &r#ref).expect("the lock ref resolves");
     let removals = syntax::anchor_removals(&doc.raw);
-    model::fingerprint::fingerprint_span(&doc, &target.span, &removals).0
+    model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
+        .expect("the fixture target has content")
+        .0
 }
 
 /// The fingerprint of one heading selector over ARBITRARY bytes (no disk) — the
@@ -100,7 +102,9 @@ fn fingerprint_of(bytes: &str, chain: &[&str]) -> String {
     );
     let target = model::resolve(&doc, &r#ref).expect("the chain resolves");
     let removals = syntax::anchor_removals(&doc.raw);
-    model::fingerprint::fingerprint_span(&doc, &target.span, &removals).0
+    model::fingerprint::fingerprint_span(&doc, &target.span, &removals)
+        .expect("the fixture target has content")
+        .0
 }
 
 // ---------------------------------------------------------------------------

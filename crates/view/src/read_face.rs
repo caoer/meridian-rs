@@ -1234,7 +1234,9 @@ mod tests {
 
         // The same pin at the target's LIVE token greens — the red above is a
         // measurement, never a blanket verdict on the form.
-        let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root).0;
+        let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root)
+            .expect("the fixture target has content")
+            .0;
         let mut green_docs = BTreeMap::new();
         green_docs.insert(
             "effect.md".to_string(),
