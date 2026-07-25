@@ -79,7 +79,9 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
     let (d, resolved) =
         model::selector::resolve_selector(&sel, Some(&doc)).expect("selector resolves");
     let removals = syntax::anchor_removals(&d.raw);
-    model::fingerprint::fingerprint_span(d, &resolved.span, &removals).0
+    model::fingerprint::fingerprint_span(d, &resolved.span, &removals)
+        .expect("the fixture target has content")
+        .0
 }
 
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {

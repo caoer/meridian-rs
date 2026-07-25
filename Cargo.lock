@@ -2099,6 +2099,7 @@ version = "0.0.0"
 dependencies = [
  "allocative",
  "anyhow",
+ "blake3",
  "cache",
  "check",
  "duckdb",
