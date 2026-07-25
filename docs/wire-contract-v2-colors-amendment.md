@@ -46,23 +46,66 @@ phrasing, used by every surface.
 - **green** — `live_rev(to) = pinned_rev`. Node rollup = worst-of-own-edges.
 - **red** — resolution fails (named reason, fail-closed) OR
   `live_rev(to) ≠ pinned_rev`.
-- **grey** — the ledger cannot verify. The grey class is one of EXACTLY FOUR
-  named classes (D2-F4 — the exhaustive enumeration). Grey never refuses; grey
-  inputs never block a write (`wire-contract-v2-refusal-amendment.md`
-  § Non-refusing renders).
+- **grey** — the ledger cannot verify. The grey class is one of the named
+  classes enumerated below (D2-F4). Grey never refuses; grey inputs never block
+  a write (`wire-contract-v2-refusal-amendment.md` § Non-refusing renders).
 
 | grey class | when | never renders |
 |---|---|---|
 | `declared-unpinned` | an `inputs:` ref is declared but `pinned_rev` is NULL — never pinned | red / green — the first pin is how grey turns green |
-| `unmanaged` | the target sits outside the ledger's sight | red / green |
+| `ambiguous` | the pinned selector resolves to MORE than one node, so no single node's rev can answer the compare | red / green |
 | `superseded-algo` | pinned under a `hash_algo` this engine does not compute — readable, unverifiable here | red / green-with-tag |
 | `immutable-root` | a `session-id#seq-N` transcript hop — recognized, not verified; the address class cannot drift by construction (§2.2) | red / green |
+| `unverifiable-fingerprint` | a `meridian-lock` pin whose fingerprint token PARSES but whose `version.codec.hashfn` triple names a member this build does not implement. The render names WHICH member is unknown, never the live-looking triple | red / green |
+| `malformed-fingerprint` | the pinned value is not a fingerprint token at all — wrong field count, empty field, or an out-of-charset digest | red / green |
+| `lock-refused` | the page's `meridian-lock` block itself is unreadable (malformed, unsupported version, or more than one block on the page), so the pins it declares are outside sight. The row carries the refusal reason verbatim, because a corrupt lock must never read as "no pins" | red / green |
+| `unmanaged` | the target sits outside the ledger's sight. **NO RENDERING SITE in the shipped engine** — this case renders `declared-unpinned` today (`model::selector::GreyReason` has no `Unmanaged` variant). Recorded, not retired: the name is ratified and its site is an open question, not a resolved one | red / green |
 
-These four are exhaustive: a grey edge is exactly one of them, named. Greys that
-belong to OTHER axes — the genesis-epoch write (enforcement axis), the
+A grey edge is exactly one of these, named — SEVEN rendered classes, plus
+`unmanaged`, which is a ratified contract name awaiting a rendering site. Greys
+that belong to OTHER axes — the genesis-epoch write (enforcement axis), the
 between-runs directory shape (fs-frontier axis), the `test --history` class-C
 (history-fidelity axis) — are NOT pin colors and are governed by their own units,
 not by this enumeration.
+
+**EXTENSION RULE.** The pin-axis grey enumeration is OPEN and is extended by
+ratified unit decisions, each recorded in this table when it lands — so a later
+reader extends the list here instead of re-litigating a stale exhaustive claim.
+
+### Correction record (stage-2, tier BRONZE)
+
+This section previously asserted the enumeration was EXACTLY FOUR classes and
+that "these four are exhaustive". That claim was false, and it stayed false
+after three ratified decisions shipped:
+
+- **S9's charter** — map ALL four `ContentVerdict` arms, with `Unverifiable` →
+  grey and `Malformed` → grey — added `unverifiable-fingerprint` and
+  `malformed-fingerprint`.
+- **The Advisor's `lock-refused` ruling** — a refused lock projects zero rows,
+  so the page must project a visible grey row rather than reading as "no pins" —
+  added `lock-refused`.
+- `ambiguous` and the `unmanaged` gap are older than stage 2 and are recorded
+  here for the first time.
+
+The amendment's own carve-out ("greys that belong to OTHER axes are NOT pin
+colors") does not save the old claim: all three new classes ARE pin colors on
+the pin axis, squarely inside the enumeration's scope.
+
+The Advisor classified this correction **BRONZE**, on three grounds a later
+reader should find rather than reconstruct. (1) The decisions being recorded
+were already ratified inside this milestone, so nothing new is decided — the
+doc was simply behind. (2) This amendment documents **view-plane vocabulary, not
+wire bytes**: `GreyReason` lives in `crates/model/src/selector.rs` and has ZERO
+presence in `crates/wire`, so no ratified byte contract moves and the v2
+byte-identity exit criterion is untouched. (3) A ratified document asserting a
+false exhaustive claim is ALREADY broken — correcting it restores what its
+authors meant, and leaving it is the governance failure.
+
+Elevation test: silver or gold is for changes to what a law MEANS or binds. Had
+this correction redefined grey semantics — letting grey cover a case the model
+calls red, say — it would return to the Advisor. It does not: every row above
+is a case the shipped engine already renders grey, and `unmanaged` is carried
+forward unchanged.
 
 ## The anchor axis — three states (two-badge freshness)
 
@@ -90,7 +133,7 @@ value on each axis, and each axis rolls up worst-of INDEPENDENTLY.
 
 | axis | values | question it answers | who decides | renders on |
 |---|---|---|---|---|
-| pin color | `green` · `red` · `grey`{`declared-unpinned`, `unmanaged`, `superseded-algo`, `immutable-root`} | what drifted / what lies — validity and freshness of my inputs | the ledger (revs) | status line · board |
+| pin color | `green` · `red` · `grey`{the § Colors enumeration} | what drifted / what lies — validity and freshness of my inputs | the ledger (revs) | status line · board |
 | anchor state | `verified` · `as-known` · `unverified` | is origin fresh — tip plus the trust of that knowledge | the read plane (`status` / sweep) — NEVER the door (D2-X3) | status line · board |
 | convention severity | `off` · `warn` · `block` | does armed law refuse this change | the door (`gate()`, the armed INDEX row — refusal-amendment §11.1) | status line (violation row) · board |
 

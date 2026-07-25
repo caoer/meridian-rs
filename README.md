@@ -26,23 +26,24 @@ registry daemon.
 | Crate | Charter |
 |---|---|
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; the only crate that touches the pulldown-cmark fork |
-| `model` | The in-memory world model: governed node tree (kind/span/rev/hpath), resolve, CAS-splice validation, Merkle roots — deliberately non-serializable |
+| `model` | The in-memory world model: governed node tree (kind/span/rev/hpath), resolve, CAS-splice validation, Merkle roots — deliberately non-serializable. Also content identity: the `fp1.…` fingerprint token, its verify verdict, and the one reason-carrying drift-color model |
 | `fs` | Disk truth in, atomic splices out: read/walk/watch feeding the model; tmp+fsync+rename splice execution |
 | `wire` | The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error types (serde-only, zero I/O) |
 | `wire-map` | The named model→wire projection seam: tree-flatten + prefix window + node ordering, as a tested library function |
-| `receipt` | Receipt rendering: outcome-as-fact lines committed in the same batch as the edit |
+| `git` | The git plumbing organ: shell-out blob object ids, the eager `-w` write, and object reachability against a repo handle — git owns content-addressing, the engine never computes an oid. A `std`-only leaf |
+| `receipt` | The receipt family: the persisted outcome-as-fact line committed in the same batch as the edit, the append-only journal + forgery detector, the anchor freshness and blob three-state axes, and the ephemeral read-mint ledger |
 | `transport` | Untyped NDJSON message envelope + codec seam (knows framing, never meaning) |
 | `transport-proto` | Opt-in typed protobuf transport: `meridian.proto` + length-delimited framing |
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts and the blocking armed-plane gate |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
 | `wire-serve` | The shared typed edge: strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, two hosts |
-| `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and link-decoration hook points |
+| `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and claim-link decoration hooks — decorations arrive as data, never as a dependency edge |
 | `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` namespace predicate |
 | `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
 | `run` | The mrd-local run plane: plan/execute under the workspace run lock |
 | `realise` | The realise engine: observe → check → apply per claim, on the run plane |
 | `check` | The check engine: the pure READ verb of the reconciliation loop |
-| `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file |
+| `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file; also the lock-aware read face that renders each `meridian-lock` pin's drift color through `model`'s one computer |
 | `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
 | `transcript` | Transcript cross-check: a corroborating (never authenticating) detector over the journal's actor claims |
 | `sidecar` (bin) | The per-workspace NDJSON stdin/stdout host — wiring only; dispatches through `wire-serve` |
@@ -84,6 +85,8 @@ graph TD
     CACHE --> MRD
     REG --> MRD
     WSRV --> MRD
+    GIT[git<br/>std-only leaf] --> WSRV
+    GIT --> MRD
 ```
 
 Both hosts — the per-workspace `sidecar` and the resident `registry` daemon —
@@ -118,6 +121,8 @@ Start here, then follow the file that matches your role:
 | Doc | Read it for | Start here if you are… |
 |---|---|---|
 | `docs/wire-contract-v2.md` | The frozen NDJSON contract: ops, shapes, guards, deltas, errors | integrating a host daemon against the wire |
+| `docs/wire-contract-v3-amendment.md` | The live v3 rev: the `root`→`fingerprint` rename, the composed `read`, and the stage-2 attestation surface (`splice.pin`, the read-mint receipt, `anchors[]`, the `@fp` grammar, the error-code additions) | writing a v3 client, or pinning content |
+| `docs/wire-contract-v2-colors-amendment.md` | The color law: the pin-axis grey enumeration, the anchor axis, and the composed three-axis legend | rendering or reading drift state |
 | `docs/node-rev-merkle-spec.md` | How node revisions and workspace roots are computed and bound | implementing or verifying the rev/root hashing |
 | `docs/laws.md` | The three architecture laws and per-crate charters | contributing Rust code to the engine |
 | `docs/status.md` | Current build state: armed capabilities, test baseline, perf verdicts | checking what works today |
