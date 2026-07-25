@@ -50,6 +50,7 @@ fn racer_args(i: usize) -> SpliceArgs {
             if_node_rev: None,
         }],
         plan_edits: Vec::new(),
+        pin: None,
     }
 }
 
@@ -67,7 +68,7 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
             std::thread::spawn(move || {
                 let args = racer_args(i);
                 barrier.wait();
-                (i, splice(&root, 0, &args, &[]).map(|_| ()))
+                (i, splice(&root, 0, &args, &[], None).map(|_| ()))
             })
         })
         .collect();

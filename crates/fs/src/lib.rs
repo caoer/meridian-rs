@@ -212,7 +212,9 @@ pub fn write_conflict(path: &Path) -> io::Error {
 /// window the in-memory CAS guards cannot see). `LOCK_NB` acquire: a held lock
 /// is [`io::ErrorKind::WouldBlock`], surfaced by the caller as the fast typed
 /// `workspace_busy` refusal — it never waits, so a hung holder can never make
-/// callers hang. Released on drop (fd close).
+/// callers hang. Released on drop — by an EXPLICIT unlock, not by the fd close
+/// (see [`WriteLock`]'s Drop: relying on the close leaks the lock into any
+/// concurrently forking subprocess).
 ///
 /// STATED residuals: out-of-band writers (editors, git, bash) do not take this
 /// lock — they are covered by DETECTION (the D8 pre-rename verify →
@@ -225,8 +227,33 @@ pub fn write_conflict(path: &Path) -> io::Error {
 /// refuse `workspace_busy` exactly like cross-process ones.
 #[derive(Debug)]
 pub struct WriteLock {
-    // Held open for its fd; flock releases when the fd closes on drop.
-    _file: File,
+    // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
+    file: File,
+}
+
+/// Release the lock EXPLICITLY, before the fd closes.
+///
+/// # Why the fd close is not enough (measured, not theoretical)
+/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
+/// every descriptor. Any other thread in this process spawning any subprocess —
+/// `git`, a bash task, anything — transiently holds a copy of this fd between
+/// its fork and its exec, even with `FD_CLOEXEC` set (CLOEXEC acts at exec, not
+/// at fork). If this guard dropped in that window, closing our fd would NOT
+/// release the lock: the child's copy keeps the description alive until it
+/// execs, and every other writer meanwhile refuses `workspace_busy` for a
+/// critical section that already finished.
+///
+/// `LOCK_UN` acts on the description itself, so one unlock here releases the
+/// lock no matter how many copies of the fd exist. Measured before the fix:
+/// 12/60 unrelated writes refused spuriously while a sibling thread spawned
+/// short-lived children. The refusal was never WRONG (`workspace_busy` is
+/// contractually the Retry class), but it was avoidable noise on a door that
+/// should only close for a real concurrent writer.
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        // SAFETY: flock on a valid open fd we own; the fd outlives the call.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 impl WriteLock {
@@ -250,7 +277,7 @@ impl WriteLock {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
 }
 
@@ -829,6 +856,7 @@ mod tests {
         let req = model::SpliceRequest {
             if_root: None,
             edits: vec![q3_september()],
+            engine: None,
         };
         match model::validate_batch(&doc, None, &req, receipt) {
             model::SpliceVerdict::Validated(vb) => vb,

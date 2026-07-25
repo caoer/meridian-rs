@@ -37,6 +37,7 @@ fn plan_args(path: &str, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
         force: false,
         edits: Vec::new(),
         plan_edits,
+        pin: None,
     }
 }
 
@@ -44,6 +45,7 @@ fn native_args(path: &str, edits: Vec<Edit>) -> SpliceArgs {
     SpliceArgs {
         edits,
         plan_edits: Vec::new(),
+        pin: None,
         ..plan_args(path, Vec::new())
     }
 }
@@ -86,6 +88,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
             ],
         ),
         &[],
+        None,
     )
     .expect("plan splice commits");
 
@@ -132,6 +135,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
             ],
         ),
         &[],
+        None,
     )
     .expect("native splice commits");
 
@@ -191,6 +195,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
             }],
         ),
         &[],
+        None,
     )
     .expect("match-all commits");
 
@@ -215,6 +220,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
             }],
         ),
         &[],
+        None,
     )
     .expect("replace_section commits");
     let after = std::fs::read_to_string(dir.path().join("card.md")).expect("read");
@@ -242,6 +248,7 @@ fn plan_rev_threads_into_the_native_cas_guard() {
             }],
         ),
         &[],
+        None,
     )
     .expect_err("stale rev refuses");
     assert_eq!(err.code, wire::ErrorCode::CasMismatch);
@@ -273,6 +280,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
             }],
         ),
         &[],
+        None,
     )
     .expect_err("a multi-line property value refuses");
     assert_eq!(err.code, wire::ErrorCode::BadRequest);
@@ -296,6 +304,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
             }],
         ),
         &[],
+        None,
     )
     .expect_err("a quoted-scalar injection refuses too");
     assert_eq!(err.code, wire::ErrorCode::BadRequest);
@@ -318,6 +327,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
             ],
         ),
         &[],
+        None,
     )
     .expect_err("the batch refuses whole");
     assert_eq!(err.code, wire::ErrorCode::BadRequest);
@@ -350,6 +360,7 @@ fn golden_target_class_refusals_fire_engine_side() {
             }],
         ),
         &[],
+        None,
     )
     .expect_err("block replace target refuses");
     assert_eq!(
@@ -369,6 +380,7 @@ fn golden_target_class_refusals_fire_engine_side() {
             }],
         ),
         &[],
+        None,
     )
     .expect_err("top-level create refuses");
     assert_eq!(

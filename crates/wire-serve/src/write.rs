@@ -71,6 +71,12 @@ pub struct SpliceArgs {
     /// below (`crate::plan::lower` — byte-faithful to the deleted Go arms);
     /// armed facts align 1:1 with the LOWERED edits. Empty = the native form.
     pub plan_edits: Vec<wire::PlanEdit>,
+    /// Stage-2 S7 `splice.pin` (D7): the pin riding this splice. `args.path` is
+    /// the PINNING page — the page whose `meridian-lock` block records the
+    /// claim, so the lock write IS a content edit on this splice's own file and
+    /// lands in the same [`commit_batch`] rename. A pin-only splice carries no
+    /// `edits`. The pin's actor is `self.actor` and nothing else (D13).
+    pub pin: Option<wire::PinSpec>,
 }
 
 /// The outcome of the write choke-point: the wire `Splice` response body plus,
@@ -119,6 +125,7 @@ pub fn splice(
     seq: u64,
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
+    mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
     // Journal write restriction (d2 §2.1 A3/A9; F4): the reserved receipt
     // journal is writable ONLY by the receipt engine (a receipt append rides
@@ -144,19 +151,51 @@ pub fn splice(
     // `workspace_busy` exactly where the real write would. Released on drop.
     let _write_lock = acquire_write_lock(root)?;
 
-    let doc = load_doc(root, &args.path)?;
-    let root_before = ambient_root(root)?;
+    let mut doc = load_doc(root, &args.path)?;
+    let mut root_before = ambient_root(root)?;
 
     // §5.1 order: the world guard FIRST — checked here so a stale plan
-    // refuses before any per-target resolution can answer for it.
-    if let Some(expected) = &args.if_root
-        && *expected != root_before
-    {
-        let mut e = ErrorBody::new(ErrorCode::RootMismatch);
-        e.expected = Some(NodeRev(expected.0.clone()));
-        e.actual = Some(NodeRev(root_before.0.clone()));
-        return Err(Box::new(e));
+    // refuses before any per-target resolution can answer for it, and (S7)
+    // before this splice's own promotion can advance the root it guards on.
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    // S7 the PIN prologue (D7), ordered exactly as plan §6: gate → fingerprint
+    // + blob → anchor promotion. It runs INSIDE the flock this splice already
+    // holds, so the receipt's rev-recheck reads the same pre-image the batch
+    // will validate against, and the promotion needs no second flock.
+    let pin = match &args.pin {
+        Some(spec) => Some(mint_pin(
+            root,
+            spec,
+            args.actor.as_deref(),
+            args.dry,
+            mints,
+        )?),
+        None => None,
+    };
+    // The promotion is the ONE write ordered before the commit (residual G3:
+    // two inodes are two renames). It lands rev-NEUTRALLY — norm-v2 removes the
+    // marker plus its one leading space, so the target's fingerprint cannot
+    // move and no other page pinning that target reddens — which is exactly why
+    // promoting into a possibly-unowned target is permitted (D14). It did move
+    // the target's BYTES, so it moved the corpus root, and the pinning page
+    // itself when it IS the target: re-read both, or every rung below would
+    // validate against a stale pre-image.
+    if pin.as_ref().is_some_and(|p| p.promotion_landed) {
+        doc = load_doc(root, &args.path)?;
+        root_before = ambient_root(root)?;
     }
+    // The lock block is composed against the POST-promotion pinning page and
+    // rides the batch as the one engine-minted span edit (`model::EngineEdit`):
+    // a fenced block is unaddressable by the §2.1 ref grammar, and the engine is
+    // its sole writer (#8 §3). Riding here is what puts content+lock in ONE
+    // `commit_batch` — one flock, one rename — instead of a second flocked
+    // `lock_write` call, which would self-refuse `workspace_busy` (the flock is
+    // non-reentrant per open-file-description).
+    let pin_engine = match &pin {
+        Some(p) => Some(lock_engine_edit(&doc, &args.path, p)?),
+        None => None,
+    };
 
     // M1 U8b: the plan-lowering intake — plan_edits become native edits HERE
     // (under the flock, against the just-loaded pre-batch doc), then the whole
@@ -172,11 +211,19 @@ pub fn splice(
 
     let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
     let batch = model::SpliceRequest {
+        // The CLIENT's world guard was honored above, against the root it
+        // actually pinned. The batch re-guards on the CURRENT root instead of
+        // that value: a pin's own rev-neutral promotion advances the root, and
+        // re-comparing the client's pre-promotion token here would self-refuse
+        // `root_mismatch` on this splice's own write. Nothing else can move the
+        // root under the flock, so the guard keeps its meaning — and an
+        // unguarded request stays unguarded.
         if_root: args
             .if_root
             .as_ref()
-            .map(|r| model::MerkleRoot(r.0.clone())),
+            .map(|_| model::MerkleRoot(root_before.0.clone())),
         edits: model_edits,
+        engine: pin_engine,
     };
 
     // Validate + simulate the after state in memory (the §4.4 one-reparse
@@ -271,6 +318,9 @@ pub fn splice(
                 seq: None,
                 dry: Some(true),
                 verdicts,
+                // A dry pin reports the plan it rehearsed; nothing was written,
+                // so `promoted` reads as what a real run WOULD do.
+                pin: pin.map(|p| Box::new(p.fact)),
             },
             committed: None,
         });
@@ -341,6 +391,7 @@ pub fn splice(
             seq: Some(frame.delta.seq),
             dry: None,
             verdicts,
+            pin: pin.map(|p| Box::new(p.fact)),
         },
         committed: Some(frame),
     })
@@ -783,32 +834,13 @@ pub fn lock_write(
     // on duplicates and malformed YAML — a sole-writer page can only reach
     // that state by hand-editing, and adopting it would launder corruption.
     let raw = &before_doc.raw;
-    let (span, created) = match locate_lock(&before_doc)? {
-        Some(existing) => (existing, false),
-        None => (raw.len()..raw.len(), true),
-    };
-
-    // Render the canonical block (fence-to-fence, no trailing newline — the
-    // surrounding terminators are THIS path's, per the crates/lock contract).
-    let block = lock::render(&args.lock);
-    let new_text = if created {
-        // Placement law: EOF, one blank line before, one terminator after.
-        let sep = if raw.is_empty() || raw.ends_with("\n\n") {
-            ""
-        } else if raw.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        format!("{sep}{block}\n")
-    } else {
-        block
-    };
-
-    let mut new_raw = String::with_capacity(raw.len() + new_text.len());
-    new_raw.push_str(&raw[..span.start]);
-    new_raw.push_str(&new_text);
-    new_raw.push_str(&raw[span.end..]);
+    // The block's bytes and its placement law, from the ONE owner the pin path
+    // shares (`lock_block_splice`), then spliced in memory.
+    let (edit, created) = lock_block_splice(&before_doc, locate_lock(&before_doc)?, &args.lock);
+    let mut new_raw = String::with_capacity(raw.len() + edit.text.len());
+    new_raw.push_str(&raw[..edit.span.start]);
+    new_raw.push_str(&edit.text);
+    new_raw.push_str(&raw[edit.span.end..]);
     let after_doc = build_doc(&args.path, &new_raw);
     let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
 
@@ -868,6 +900,574 @@ pub fn lock_write(
     })
 }
 
+// ---------------------------------------------------------------------------
+// The PIN prologue (stage-2 S7, D7/D13/D14/D15/D16)
+// ---------------------------------------------------------------------------
+//
+// A pin is a Splice-SIBLING field, never its own op: the splice's `path` is the
+// pinning page, so the lock write is a content edit on that page and rides the
+// SAME `commit_batch` rename. What lives here is everything that must happen
+// under the flock BEFORE the batch is sealed — the read-mint gate, the
+// fingerprint + blob, and the anchor promotion — plus the lock composition.
+//
+// # The grain, and why the lock's `ref` is the canonical selector
+// A pin's fingerprint is minted over EXACTLY the span its `ref` resolves to,
+// because that is the span the verify plane recomputes
+// (`model::selector::resolve_selector` → `fingerprint::verify_content`). So the
+// `ref` carries the canonical selector the read receipt was keyed on — a
+// `/`-joined sanitized heading path (`model::selector::Selector::parse`'s
+// normative Heading form, resolving to the SECTION: ratified 07-22 §3 wants
+// section-level pins so a change to section A reddens only A's dependents), or
+// `^id` for a block-anchor row (the 07-23 leaf-selector ruling). The promoted
+// `^slug` is deliberately NOT the `ref`: an anchor node's model span is its HOST
+// LINE (`model::build`'s `anchor_host_span`), so an `^id` ref over a promoted
+// heading would silently narrow a section pin to its heading text — every body
+// edit would read as green. The slug is the STABLE HANDLE (D15) a claim link
+// decorates and a later rename-heal relocates by, minted beside the claim.
+
+/// What a pin minted, plus the one disk fact the caller needs: whether a
+/// promotion actually landed (so the pre-image is re-read).
+#[derive(Debug)]
+struct PinMint {
+    /// The wire fact returned to the client.
+    fact: wire::PinFact,
+    /// The pinned selector's span in the target — the exact bytes the
+    /// fingerprint covers.
+    span: std::ops::Range<usize>,
+    /// `true` only when this call WROTE the anchor to disk (never on dry).
+    promotion_landed: bool,
+}
+
+/// The pin prologue: resolve the target, gate it against the read-mint ledger,
+/// mint the fingerprint + blob oid, and promote the stable anchor.
+///
+/// Order is plan §6's, and it is load-bearing: the gate refuses before any byte
+/// is composed, and the promotion is the LAST step so a refusal never leaves a
+/// promoted target behind. `dry` promotes nothing (a rehearsal has zero disk
+/// effects) while still reporting the plan.
+///
+/// # Errors
+/// `bad_path` / `bad_request` (the target escapes the workspace, is the reserved
+/// journal, or its slug id is taken), `pin_target_missing` (no such page or
+/// selector), `read_mint_required` (D16 — a session actor pinning unread
+/// content), `write_conflict` (the receipt's rev is stale), `io_error`.
+fn mint_pin(
+    root: &fs::WorkspaceRoot,
+    spec: &wire::PinSpec,
+    actor: Option<&str>,
+    dry: bool,
+    mints: Option<&receipt::read_mint::ReadMintStore>,
+) -> Result<PinMint, Box<ErrorBody>> {
+    path_confined(&spec.target)?;
+    reserved_journal_guard(FsPath::new(&spec.target.0))?;
+
+    let target_doc = load_doc(root, &spec.target).map_err(|e| {
+        if e.code == ErrorCode::FileNotFound {
+            pin_target_missing(&spec.target, format!("no page at {} to pin", spec.target.0))
+        } else {
+            e
+        }
+    })?;
+
+    // The CANONICAL selector, from the target's own read facts — one hpath
+    // owner (`wire_map::facts` → `model::gotext::sanitize_heading`). A dewey
+    // ordinal resolves here but is never carried: `fact.hpath` is what the
+    // receipt was keyed on and what the lock will declare.
+    let facts = wire_map::facts::read_facts(
+        &wire_map::project_toc(&target_doc),
+        target_doc.raw.as_bytes(),
+    );
+    let Some(fact) = wire_map::facts::resolve_selector(&facts, &spec.selector) else {
+        return Err(pin_target_missing(
+            &spec.target,
+            format!(
+                "no section addressed by \"{}\" in {} — read it with mode toc to \
+                 list the section paths",
+                spec.selector, spec.target.0
+            ),
+        ));
+    };
+    let selector = fact.hpath.clone();
+    // Captured before the promotion re-resolve borrows the doc again: anchor rows
+    // carry a block id (heading rows do not), and the RAW title is what the D15
+    // slug derives from.
+    let fact_anchor = fact.anchor.clone();
+    let title = fact.title.clone();
+
+    // D16: the gate, and its rev-recheck against the bytes on disk RIGHT NOW —
+    // a receipt answers "was it read", never "is it current".
+    read_mint_gate(mints, actor, &spec.target, &selector, &fact.sec_rev)?;
+
+    // D15: the stable block id. An id already in the selector's promotion slot is
+    // REUSED verbatim — that is what makes a re-pin idempotent and keeps a benign
+    // orphan from accumulating instead of growing one marker per pin.
+    let fact_span = span_range(fact.span);
+    let slot = promotion_slot(&target_doc.raw, fact_span.start);
+    // The selector IS a block anchor, or the promotion slot already carries one:
+    // either way the stable handle exists and nothing is written.
+    let existing = fact_anchor
+        .clone()
+        .or_else(|| anchor_on_line(&target_doc, slot));
+    let (anchor, promote) = if let Some(id) = existing {
+        (id, false)
+    } else {
+        let slug = slug_id(&title)?;
+        if !matches!(
+            model::resolve(&target_doc, &model::Ref::Anchor(slug.clone())),
+            Err(model::ResolveError::NotFound)
+        ) {
+            return Err(bad_request(format!(
+                "the slug id ^{slug} derived from \"{selector}\" is already taken by \
+                 another node in {} — give that node's own ^id as the selector instead",
+                spec.target.0
+            )));
+        }
+        (slug, true)
+    };
+
+    // Promote, then mint from the POST-promotion bytes: the fingerprint is
+    // rev-neutral across the promotion by construction (tested), but the blob
+    // oid is NOT — it is the whole file's content id, so it must be taken from
+    // the bytes that are actually on disk.
+    let promotion_landed = promote && !dry;
+    let target_doc = if promotion_landed {
+        let promoted = promote_anchor(&target_doc.raw, slot, &anchor);
+        fs::replace_file(root, FsPath::new(&spec.target.0), &promoted)
+            .map_err(|e| io_to_wire(&e))?;
+        build_doc(&spec.target, &promoted)
+    } else {
+        target_doc
+    };
+
+    // Re-resolve the span: a landed promotion widened the selector's node by the
+    // marker line. Fingerprinting the stale span would hash bytes that are no
+    // longer the selector's.
+    let span = if promotion_landed {
+        let facts = wire_map::facts::read_facts(
+            &wire_map::project_toc(&target_doc),
+            target_doc.raw.as_bytes(),
+        );
+        let Some(fresh) = wire_map::facts::resolve_selector(&facts, &selector) else {
+            return Err(pin_target_missing(
+                &spec.target,
+                format!("\"{selector}\" no longer resolves after promotion"),
+            ));
+        };
+        // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
+        // and a line was inserted) without moving one byte of what the actor
+        // READ — norm-v2 removes the marker line whole. So the actor's receipt is
+        // refreshed to the new rev rather than left to fail its own gate on the
+        // next pin: this write is the ENGINE's, and the only thing it changed is
+        // invisible to the fingerprint. A foreign content change still refuses,
+        // because only THIS path refreshes, and only for a receipt that already
+        // passed the gate above.
+        if let (Some(store), Some(actor)) = (mints, crate::read::mint_actor(actor)) {
+            store.mint(actor, &spec.target.0, &selector, &fresh.sec_rev);
+        }
+        span_range(fresh.span)
+    } else {
+        fact_span
+    };
+
+    let removals = syntax::anchor_removals(&target_doc.raw);
+    let fingerprint = model::fingerprint::fingerprint_span(&target_doc, &span, &removals).0;
+    let blob = blob_oid(root, &spec.target, spec.vibe.unwrap_or(false))?;
+
+    Ok(PinMint {
+        fact: wire::PinFact {
+            declared_ref: format!(
+                "{}#{}",
+                spec.target.0,
+                lock_ref_fragment(&target_doc, &span, fact_anchor.as_deref(), &selector)?
+            ),
+            target: spec.target.clone(),
+            selector,
+            fingerprint,
+            blob,
+            anchor,
+            promoted: promote,
+        },
+        span,
+        promotion_landed,
+    })
+}
+
+/// The lock `ref`'s fragment — the spelling that must RESOLVE, which is not the
+/// same string as the canonical selector the receipt is keyed on.
+///
+/// `model::selector::Selector::parse` is the normative ref grammar and the verify
+/// plane's front door: `#^id` → the block, anything else → a `/`-split chain of
+/// **RAW** heading texts matched byte-exactly (`model::resolve`). The host-face
+/// selector is SANITIZED (`model::gotext::sanitize_heading` turns every space
+/// and `/` into `-`), so writing it into the lock would mint a ref that resolves
+/// to nothing for any heading with a space in it — a pin that reads
+/// `red(dangling)` the moment it lands.
+///
+/// # Errors
+/// `bad_request` when a heading in the chain carries a `/` or a `#` — the joined
+/// grammar cannot round-trip it, and guessing would silently address a different
+/// node. The remedy is the node's own `^id`, which has neither problem.
+fn lock_ref_fragment(
+    doc: &model::Document,
+    span: &std::ops::Range<usize>,
+    anchor_row: Option<&str>,
+    selector: &str,
+) -> Result<String, Box<ErrorBody>> {
+    if let Some(id) = anchor_row {
+        return Ok(format!("^{id}"));
+    }
+    let Some(chain) = section_hpath_at(&doc.root, span.start) else {
+        return Err(bad_request(format!(
+            "cannot address \"{selector}\" in the lock ref grammar — no heading chain \
+             at that span"
+        )));
+    };
+    if let Some(bad) = chain.iter().find(|h| h.contains('/') || h.contains('#')) {
+        return Err(bad_request(format!(
+            "the heading \"{bad}\" carries a `/` or `#`, which the lock ref grammar \
+             (`page#A/B`, model::selector) cannot round-trip — give that section an \
+             explicit ^id and pin that instead"
+        )));
+    }
+    Ok(chain.join("/"))
+}
+
+/// A wire `Span` as a byte range. Every span this engine mints comes from a
+/// `usize` file offset, so the narrowing is lossless in practice; saturating
+/// beats panicking on a hypothetical 32-bit target, and an out-of-range span is
+/// refused downstream by `model`'s char-alignment guarantor either way.
+fn span_range(span: Span) -> std::ops::Range<usize> {
+    let lo = usize::try_from(span.0).unwrap_or(usize::MAX);
+    let hi = usize::try_from(span.1).unwrap_or(usize::MAX);
+    lo..hi
+}
+
+/// The RAW heading chain of the section starting at `start` — `model` carries it
+/// per node in delimiter-free array form, so nothing here re-derives an address.
+fn section_hpath_at(node: &model::Node, start: usize) -> Option<Vec<String>> {
+    if matches!(node.kind, model::NodeKind::Section { .. }) && node.span.start == start {
+        return node.hpath.clone();
+    }
+    node.children
+        .iter()
+        .find_map(|c| section_hpath_at(c, start))
+}
+
+/// The read-mint gate (D16 + D6), the WHOLE refusal ladder in one place.
+///
+/// `actor == None` (or blank) is the bare CLI: local-operator-trusted, the gate
+/// is bypassed exactly as `mrd put` bypasses the host's authz. A real session
+/// actor must carry a receipt for THIS path and THIS selector — matching is
+/// exact, so reading a parent section does not authorize pinning a child
+/// (S6 fails closed by design), and only a SECTIONS-mode read mints at all.
+/// A held receipt is then re-checked against the live `sec_rev` under the
+/// caller's flock: a receipt is not a lease.
+///
+/// # Errors
+/// `read_mint_required` (no covering receipt, or a host with no session layer),
+/// `write_conflict` (the receipt covers a rev the target no longer carries).
+fn read_mint_gate(
+    store: Option<&receipt::read_mint::ReadMintStore>,
+    actor: Option<&str>,
+    target: &Path,
+    selector: &str,
+    live_sec_rev: &str,
+) -> Result<(), Box<ErrorBody>> {
+    let Some(actor) = crate::read::mint_actor(actor) else {
+        return Ok(());
+    };
+    let Some(store) = store else {
+        return Err(read_mint_required(
+            target,
+            format!(
+                "pin of {}#{selector} refused: this host holds no read-receipt ledger, so it \
+                 cannot know that actor {actor} read the content (the per-request sidecar has \
+                 no session — pin through the resident daemon, or from the local CLI)",
+                target.0
+            ),
+        ));
+    };
+    let Some(receipt) = store.lookup(actor, &target.0, selector) else {
+        return Err(read_mint_required(
+            target,
+            format!(
+                "pin of {}#{selector} refused: actor {actor} has not read that selector in this \
+                 session — you cannot attest content that was never in your context. Read it \
+                 first (mode sections, that exact selector), then pin.",
+                target.0
+            ),
+        ));
+    };
+    if receipt.sec_rev != live_sec_rev {
+        let mut e = ErrorBody::new(ErrorCode::WriteConflict);
+        e.path = Some(target.clone());
+        e.expected = Some(NodeRev(receipt.sec_rev.clone()));
+        e.actual = Some(NodeRev(live_sec_rev.to_owned()));
+        e.message = Some(format!(
+            "pin of {}#{selector} refused: the receipt covers rev {} but the section now carries \
+             {live_sec_rev} — re-read the selector (that re-mints) and pin again",
+            target.0, receipt.sec_rev
+        ));
+        return Err(Box::new(e));
+    }
+    Ok(())
+}
+
+/// `read_mint_required` (D16): a session actor pinning content no receipt in
+/// this session covers. Fix class — read the exact selector, then pin.
+fn read_mint_required(target: &Path, message: String) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::ReadMintRequired);
+    e.path = Some(target.clone());
+    e.message = Some(message);
+    Box::new(e)
+}
+
+/// `pin_target_missing`: the pin's page or selector does not resolve, so there
+/// is nothing to fingerprint. Refusing at mint time beats writing a claim the
+/// drift plane could only ever render `red(dangling)`.
+fn pin_target_missing(target: &Path, message: String) -> Box<ErrorBody> {
+    let mut e = ErrorBody::new(ErrorCode::PinTargetMissing);
+    e.path = Some(target.clone());
+    e.message = Some(message);
+    Box::new(e)
+}
+
+/// The block id of an anchor whose HOST LINE starts at `line_start`, if the line
+/// carries one. This is the idempotence probe against the promotion slot: the
+/// slot either already bears a stable id (reuse it, promote nothing) or it does
+/// not (mint the slug).
+fn anchor_on_line(doc: &model::Document, line_start: usize) -> Option<String> {
+    fn walk(node: &model::Node, line_start: usize) -> Option<String> {
+        if let model::NodeKind::Anchor { name } = &node.kind
+            && node.span.start == line_start
+        {
+            return Some(name.clone());
+        }
+        node.children.iter().find_map(|c| walk(c, line_start))
+    }
+    walk(&doc.root, line_start)
+}
+
+/// The D15 slug: a deterministic block id derived from the target's own heading
+/// title (`"Leader's Guideline"` → `leaders-guideline`, the ratified example).
+/// Determinism is the whole point — a re-pin recomputes the SAME id, so promotion
+/// is idempotent and an orphan never accumulates; a counter or a random id would
+/// do neither.
+///
+/// Apostrophes are dropped rather than separating (`Leader's` is one word); every
+/// other run outside the one block-id charset (`[A-Za-z0-9-]`, §2.4) collapses to
+/// a single `-`. A slug that collides with an id already on the page is REFUSED
+/// (see the caller) rather than uniquified, so the id stays a function of the
+/// title alone.
+///
+/// # Errors
+/// `bad_request` when the title yields no id characters at all (e.g. a wholly
+/// non-ASCII heading) — the caller's remedy is to give the target node its own
+/// `^id` and pin that.
+fn slug_id(title: &str) -> Result<String, Box<ErrorBody>> {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for ch in title.chars() {
+        if ch == '\'' || ch == '\u{2019}' {
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            pending_dash = true;
+        }
+    }
+    if out.is_empty() {
+        return Err(bad_request(format!(
+            "cannot derive a block id from the title \"{title}\" (nothing in the \
+             [A-Za-z0-9-] charset, §2.4) — give the target node an explicit ^id and pin that"
+        )));
+    }
+    Ok(out)
+}
+
+/// The **promotion slot**: the byte immediately after the terminator of the line
+/// starting at `line_start` — i.e. the start of the selector's second line.
+///
+/// A promoted marker goes on its OWN LINE there, never at the heading line's
+/// tail, and that placement is load-bearing twice over:
+///
+/// - **Address-neutral.** A heading's text is everything after its `#` run,
+///   trimmed (`syntax`'s heading scan), so a tail marker would become PART of
+///   the heading text — the section's sanitized hpath would change from
+///   `Guide/Leaders-Guideline` to `Guide/Leaders-Guideline-^leaders-guideline`,
+///   dangling every existing pin and every reader's address for it. On its own
+///   line the heading text is untouched.
+/// - **Fingerprint-neutral (D14).** norm-v2's R2 removal takes an own-line
+///   anchor's ENTIRE line including its terminator, so the canonical bytes of
+///   the section are byte-identical before and after. That exactness is what
+///   makes promoting into a target this actor may not own honest: it cannot
+///   redden anyone else's pin on the same section.
+fn promotion_slot(raw: &str, line_start: usize) -> usize {
+    raw.as_bytes()[line_start..]
+        .iter()
+        .position(|&b| b == b'\n')
+        .map_or(raw.len(), |p| line_start + p + 1)
+}
+
+/// Write `^id` on its own line at `slot` (see [`promotion_slot`]), matching the
+/// file's own line terminator so a CRLF page stays CRLF.
+fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
+    let head = &raw[..slot];
+    let nl = if head.ends_with("\r\n") { "\r\n" } else { "\n" };
+    let mut out = String::with_capacity(raw.len() + id.len() + 4);
+    out.push_str(head);
+    // An unterminated last line (the heading is the file's final line) needs its
+    // own terminator before the marker line can start.
+    if !head.is_empty() && !head.ends_with('\n') {
+        out.push_str(nl);
+    }
+    out.push('^');
+    out.push_str(id);
+    out.push_str(nl);
+    out.push_str(&raw[slot..]);
+    out
+}
+
+/// The target file's git blob oid for the lock's `objects:` plane (D5: git owns
+/// content-addressing, so shell out). `vibe` additionally WRITES the blob into
+/// the object store, so the pin is retrievable before any commit references it.
+///
+/// A normal pin degrades honestly when git cannot answer (no repo, no git on
+/// PATH): the `objects:` entry is simply absent and the claim plane still lands
+/// — a fabricated sha would be worse than no sha. `--vibe` REFUSES instead: its
+/// entire purpose is the eager write, so silently not writing would be a lie.
+///
+/// # Errors
+/// `io_error{cause}` when `vibe` was asked for and git could not do it.
+fn blob_oid(
+    root: &fs::WorkspaceRoot,
+    target: &Path,
+    vibe: bool,
+) -> Result<Option<String>, Box<ErrorBody>> {
+    let repo = git::Repo::at(root.0.clone());
+    let abs = root.0.join(&target.0);
+    if vibe {
+        return repo.write_blob(&abs).map(Some).map_err(|e| {
+            let mut err = ErrorBody::new(ErrorCode::IoError);
+            err.cause = Some(format!(
+                "--vibe asked for an eager blob write of {} and git refused: {e}",
+                target.0
+            ));
+            Box::new(err)
+        });
+    }
+    Ok(repo.blob_oid(&abs).ok())
+}
+
+/// Compose the pinning page's `meridian-lock` block as the batch's one
+/// engine-minted span edit: union the pin into the page's existing lock
+/// (`upsert_pin`/`set_object` — position-preserving, so a re-pin never drops or
+/// reorders a sibling claim), render the canonical bytes, and hand back the span
+/// they replace.
+///
+/// # Errors
+/// `bad_request` when the page's existing lock state is corrupt (malformed, or
+/// more than one block — the sole writer mints exactly one, so adopting either
+/// would launder corruption).
+fn lock_engine_edit(
+    doc: &model::Document,
+    pinning_path: &Path,
+    pin: &PinMint,
+) -> Result<model::EngineEdit, Box<ErrorBody>> {
+    let found = find_lock(doc)?;
+    let mut lock = found
+        .as_ref()
+        .map_or_else(lock::Lock::new, |f| f.lock.clone());
+    lock.upsert_pin(lock::PinEntry {
+        declared_ref: pin.fact.declared_ref.clone(),
+        fingerprint: pin.fact.fingerprint.clone(),
+    });
+    if let Some(blob) = &pin.fact.blob {
+        // D12: the key is the target's path spelling VERBATIM — nothing here
+        // parses it, so a later `root:` prefix rides through untouched.
+        lock.set_object(&pin.fact.target.0, blob);
+    }
+    let edit = lock_block_splice(doc, found.map(|f| f.span), &lock).0;
+    // LOCK-IS-CONTENT (#8 §5): the block sits inside the page's own span, so a
+    // page pinning a section of ITSELF that would CONTAIN the block is pinning
+    // bytes this very write is about to change — the claim could never be green,
+    // on this write or any later one. Refuse rather than mint a permanently-red
+    // pin (§5's law: never a silent colour the engine knows is wrong).
+    // TOUCHING counts, not just overlap: a fresh block is an EOF INSERT, and a
+    // section that runs to EOF absorbs it — `edit.span.start == pin.span.end` is
+    // exactly the self-pin-of-the-last-section case.
+    if pin.fact.target.0 == pinning_path.0
+        && !pin.span.is_empty()
+        && edit.span.start <= pin.span.end
+        && edit.span.end >= pin.span.start
+    {
+        return Err(bad_request(format!(
+            "refused: the meridian-lock block lands INSIDE \"{}\", the very section \
+             being pinned, so the pin could never verify green (lock-is-content, #8 §5) \
+             — pin a section that does not extend to the page's end, or pin from \
+             another page",
+            pin.fact.selector
+        )));
+    }
+    Ok(edit)
+}
+
+/// The `meridian-lock` block's byte form and its placement law, in ONE place —
+/// shared by the pin path and [`lock_write`] so the two cannot drift.
+///
+/// A block that EXISTS is replaced across its exact fence-to-fence span. A fresh
+/// block is birthed at EOF (lockfile-at-bottom), separated from existing content
+/// by exactly one blank line, and the file ends with one terminator —
+/// `lock::render` emits no trailing newline, so terminators are this caller's
+/// (the `crates/lock` contract). Returns the edit plus whether it BIRTHED.
+fn lock_block_splice(
+    doc: &model::Document,
+    existing: Option<std::ops::Range<usize>>,
+    lock: &lock::Lock,
+) -> (model::EngineEdit, bool) {
+    let raw = &doc.raw;
+    let block = lock::render(lock);
+    if let Some(span) = existing {
+        return (model::EngineEdit { span, text: block }, false);
+    }
+    let sep = if raw.is_empty() || raw.ends_with("\n\n") {
+        ""
+    } else if raw.ends_with('\n') {
+        "\n"
+    } else {
+        "\n\n"
+    };
+    (
+        model::EngineEdit {
+            span: raw.len()..raw.len(),
+            text: format!("{sep}{block}\n"),
+        },
+        true,
+    )
+}
+
+/// The page's `meridian-lock` block, parsed, or `None` when it has none — the
+/// one `crates/lock` read adapter. A present-but-broken lock is an ERROR, never
+/// "absent": a sole-writer page reaches that state only by hand editing, and
+/// adopting it would launder corruption.
+///
+/// # Errors
+/// `bad_request` naming the `LockError` (malformed, unsupported version, or
+/// MULTIPLE blocks).
+fn find_lock(doc: &model::Document) -> Result<Option<lock::Found>, Box<ErrorBody>> {
+    lock::find(doc).map_err(|e| {
+        bad_request(format!(
+            "the page's meridian-lock state is corrupt ({e:?}) — the engine is the sole \
+             writer (#8 §3); repair the block by hand-removing it, then re-mint"
+        ))
+    })
+}
+
 /// The one `crates/lock` locate adapter: the page's existing block span
 /// (fence-to-fence, terminator-exclusive), `None` when the page has no lock,
 /// or a teaching `bad_request` when the page's lock state is corrupt (MULTIPLE
@@ -875,14 +1475,7 @@ pub fn lock_write(
 /// beats adopting: a hand-edited lock must be repaired deliberately, never
 /// silently rewritten over.
 fn locate_lock(doc: &model::Document) -> Result<Option<std::ops::Range<usize>>, Box<ErrorBody>> {
-    match lock::find(doc) {
-        Ok(Some(found)) => Ok(Some(found.span)),
-        Ok(None) => Ok(None),
-        Err(e) => Err(bad_request(format!(
-            "the page's meridian-lock state is corrupt ({e:?}) — the engine is the sole \
-             writer (#8 §3); repair the block by hand-removing it, then re-mint"
-        ))),
-    }
+    Ok(find_lock(doc)?.map(|found| found.span))
 }
 
 /// Acquire the workspace write flock (D9, xproc-race fix) with the typed
@@ -1745,6 +2338,7 @@ mod tests {
                 if_node_rev: None,
             }],
             plan_edits: Vec::new(),
+            pin: None,
         }
     }
 
@@ -1755,7 +2349,7 @@ mod tests {
     #[test]
     fn ordinary_splice_at_journal_path_refuses() {
         let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
-        let err = splice(&root, 0, &journal_splice(false), &[])
+        let err = splice(&root, 0, &journal_splice(false), &[], None)
             .expect_err("a splice targeting the reserved journal must refuse");
         assert_eq!(err.code, ErrorCode::BadRequest);
         assert!(
@@ -1773,7 +2367,7 @@ mod tests {
     #[test]
     fn dry_splice_at_journal_path_also_refuses() {
         let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
-        let err = splice(&root, 0, &journal_splice(true), &[])
+        let err = splice(&root, 0, &journal_splice(true), &[], None)
             .expect_err("dry splice at the journal must also refuse");
         assert_eq!(err.code, ErrorCode::BadRequest);
     }

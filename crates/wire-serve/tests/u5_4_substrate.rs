@@ -203,6 +203,7 @@ fn gate1_falsification_body_dropping_rename_loses_block_id() {
     // (put at:all) — the shape plan_rename deliberately does NOT emit.
     let doc = build_doc(original);
     let bad = SpliceRequest {
+        engine: None,
         if_root: None,
         edits: vec![model::Edit {
             target: hpath(&["Foo"]),
@@ -329,6 +330,7 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
         force: false,
         edits,
         plan_edits: Vec::new(),
+        pin: None,
     }
 }
 
@@ -337,7 +339,7 @@ fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
     let (_d, root) = ws(&[("card.md", CARD)]);
 
     let outcome =
-        splice(&root, 0, &close_args(close_edits()), &[]).expect("the close batch commits");
+        splice(&root, 0, &close_args(close_edits()), &[], None).expect("the close batch commits");
 
     // ONE root advance = one rev mint; ONE delta batch at seq 1.
     let ResponseBody::Splice {
@@ -425,7 +427,7 @@ fn gate2_falsification_one_invalid_edit_refuses_the_whole_batch() {
         if_node_rev: None,
     };
 
-    let result = splice(&root, 0, &close_args(edits), &[]);
+    let result = splice(&root, 0, &close_args(edits), &[], None);
     assert!(result.is_err(), "one invalid edit refuses the whole batch");
 
     // ZERO partial splice: the card is byte-identical — the valid property edit

@@ -229,6 +229,76 @@ mod tests {
             wire::PlanEdit::Match { all: true, rev: Some(r), .. } if r == "r"));
     }
 
+    /// S7 `splice.pin`: v3-only at decode, strict on its own three keys, and —
+    /// the security shape — carrying NO actor key (D13). A pin IS a write, so a
+    /// pin-only splice is a complete batch and the frozen "missing `edits`"
+    /// refusal must not fire on it.
+    #[test]
+    fn v3_splice_pin_decodes_and_carries_no_actor() {
+        let frame = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md", "selector": "Guide/Q3", "vibe": true}});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
+        let Op::Splice { edits, pin, .. } = op else {
+            panic!("splice op");
+        };
+        assert!(edits.is_empty(), "a pin-only splice needs no edits");
+        let pin = pin.expect("the pin decoded");
+        assert_eq!(pin.target, wire::Path("guide.md".into()));
+        assert_eq!(pin.selector, "Guide/Q3");
+        assert_eq!(pin.vibe, Some(true));
+
+        // The actor wall (D13): there is no `pin.actor` key to set, so a caller
+        // cannot forge a pin as another actor — the pin's identity is the
+        // splice's own daemon-derived `actor` and nothing else.
+        let forged = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md", "selector": "Q3", "actor": "someone-else"}});
+        let e = super::decode::decode(&obj(forged), super::rev::Rev::V3)
+            .expect_err("a pin actor is not a field");
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `actor` on `pin`")
+        );
+    }
+
+    /// The v2 wall and the per-key strictness around the pin.
+    #[test]
+    fn splice_pin_strict_negatives() {
+        // v2 never heard of `pin` — the frozen unknown-field refusal, verbatim.
+        let v2 = json!({"op": "splice", "path": "plan.md",
+            "pin": {"target": "guide.md", "selector": "Q3"}});
+        let e = super::decode::decode(&obj(v2.clone()), super::rev::Rev::V2)
+            .expect_err("v2 refuses the pin field");
+        assert_eq!(e.code, ErrorCode::BadRequest);
+        assert_eq!(
+            e.message.as_deref(),
+            Some("unknown request field `pin` on `splice`")
+        );
+
+        for (frame, want) in [
+            (
+                json!({"op": "splice", "path": "p.md", "pin": {"target": "g.md"}}),
+                "missing `selector` on `pin`",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md", "pin": {"selector": "Q3"}}),
+                "missing `target` on `pin`",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"target": "g.md", "selector": "  "}}),
+                "`pin.selector` must name a section (a sanitized heading path or `^id`)",
+            ),
+            (
+                json!({"op": "splice", "path": "p.md", "pin": []}),
+                "`pin` must be an object on `splice`",
+            ),
+        ] {
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("strict pin decode");
+            assert_eq!(e.message.as_deref(), Some(want));
+        }
+    }
+
     /// Mutual exclusion + the explicit empty-array law (C note 6) + the
     /// strict per-shape wall.
     #[test]
