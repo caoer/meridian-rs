@@ -339,6 +339,112 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     );
 }
 
+/// Finding 5 / R5: the KEY is composed into `{key}: {value}` exactly as the
+/// value is, so it has the SAME fallible owner (`policy::defs::yaml_safe_key`
+/// → `SafeKey`) — and BOTH doors discharge it. The pre-flight (`rebuild`) and
+/// the committer (`splice.plan_edits`, which skips `check_write`) refuse the
+/// identical edit; before the fix the committer accepted it and forged two
+/// frontmatter lines. The assert is the REFUSAL itself: a fix that sanitized
+/// the key into something legal and committed would fail here.
+#[test]
+fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
+    // The reviewer's repro, verbatim (review 2026-07-25-0845-64d761b1 § #5).
+    const SEED: &str = "---\ntitle: Plan\n---\n\n# Plan\n\nbody\n";
+    const FORGED: &str = "ti tle: forged\nevil";
+
+    // Door 1 — the `check_write` pre-flight over the same edit.
+    let prev = model::build(SEED.to_string(), syntax::parse(SEED));
+    let err = policy::defs::rebuild(
+        &prev,
+        &[policy::defs::PlanEdit {
+            op: "set_property".into(),
+            target: FORGED.into(),
+            body: "x".into(),
+            ..policy::defs::PlanEdit::default()
+        }],
+        &|raw| model::build(raw.to_string(), syntax::parse(raw)),
+    )
+    .expect_err("the pre-flight refuses a forged key");
+    assert_eq!(
+        err.render(),
+        "E_FAIL_LOUD: invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')"
+    );
+
+    // Door 2 — the committer, reached with NO pre-flight in front of it.
+    let (dir, root) = ws(&[("plan.md", SEED)]);
+    let err = splice(
+        &root,
+        0,
+        &plan_args(
+            "plan.md",
+            vec![PlanEdit::SetProperty {
+                key: FORGED.into(),
+                value: "x".into(),
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("the committer refuses what the pre-flight refuses");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+    assert_eq!(
+        err.message.as_deref(),
+        Some(
+            "invalid frontmatter key \"ti tle: forged\\nevil\" — a property key is [A-Za-z0-9_-]+ (single line, no spaces or ':')"
+        )
+    );
+
+    // A refused batch REFUSES WHOLE: the legal sibling lands nothing either.
+    let err = splice(
+        &root,
+        0,
+        &plan_args(
+            "plan.md",
+            vec![
+                PlanEdit::SetProperty {
+                    key: "title".into(),
+                    value: "Rewritten".into(),
+                },
+                PlanEdit::SetProperty {
+                    key: FORGED.into(),
+                    value: "x".into(),
+                },
+            ],
+        ),
+        &[],
+        None,
+    )
+    .expect_err("the batch refuses whole");
+    assert_eq!(err.code, wire::ErrorCode::BadRequest);
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
+        SEED,
+        "no bytes reach disk: the file is byte-unchanged after every refusal"
+    );
+
+    // The owner refuses a charset violation, not a legal key: `[A-Za-z0-9_-]+`
+    // still commits, so the guard cannot pass by refusing everything.
+    splice(
+        &root,
+        0,
+        &plan_args(
+            "plan.md",
+            vec![PlanEdit::SetProperty {
+                key: "review-state_2".into(),
+                value: "pending".into(),
+            }],
+        ),
+        &[],
+        None,
+    )
+    .expect("a legal key still commits");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
+        "---\ntitle: Plan\nreview-state_2: pending\n---\n\n# Plan\n\nbody\n"
+    );
+}
+
 /// The two golden MUST-CARRY refusals fire from the ENGINE now, with the file
 /// untouched: p-replace-on-block + p-create-top (message = the Go-face bytes
 /// minus the host's `put: ` prefix).
