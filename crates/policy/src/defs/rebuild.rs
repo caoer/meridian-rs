@@ -542,16 +542,16 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
             context: vec![("key".to_string(), key.clone())],
         });
     }
-    if val.contains(['\n', '\r']) {
-        return Err(BodyError {
-            code: "E_FAIL_LOUD".to_string(),
-            message: format!("property value for {} contains a newline", go_quote(key)),
-            remedy:
-                "frontmatter values are single-line in v1; put multi-line content in a body section"
-                    .to_string(),
-            context: vec![("key".to_string(), key.clone())],
-        });
-    }
+    // The value passes the ONE quoting owner here — BEFORE the frontmatter
+    // probe — so the multi-line refusal keeps its Go-golden ordering.
+    let safe = yaml_safe_value(val).map_err(|MultiLineValue| BodyError {
+        code: "E_FAIL_LOUD".to_string(),
+        message: format!("property value for {} contains a newline", go_quote(key)),
+        remedy:
+            "frontmatter values are single-line in v1; put multi-line content in a body section"
+                .to_string(),
+        context: vec![("key".to_string(), key.clone())],
+    })?;
     if !view.has_fm {
         return Err(BodyError {
             code: "E_NO_MATCH".to_string(),
@@ -564,7 +564,6 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
             context: vec![("key".to_string(), key.clone())],
         });
     }
-    let safe = yaml_safe_value(val);
     for k in &view.fm {
         if k.key == *key {
             let mut repl = safe.clone().into_bytes();
@@ -594,6 +593,18 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
     }])
 }
 
+/// A multi-line `set_property` value: the ONE refusal `yaml_safe_value` mints.
+/// Each caller renders it in its own vocabulary (`BodyError` here, a wire
+/// `bad_request` at the splice face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MultiLineValue;
+
+impl std::fmt::Display for MultiLineValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a frontmatter value may not contain a newline")
+    }
+}
+
 /// Go `yamlSafeValue` (E2 finding 1): quote IFF the `k: <val>` probe ERRORS
 /// or decodes a MAP; everything that parses non-map passes VERBATIM — typed
 /// scalars, flow lists, and crucially list-of-list (`[[a, b]]`), which lands
@@ -603,10 +614,19 @@ fn plan_set_property(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>, 
 /// SHARED (U8b): the splice plan-lowering quotes `set_property` values through
 /// THIS predicate — single-owner discipline, so the `check_write` candidate and
 /// the written bytes cannot drift.
-#[must_use]
-pub fn yaml_safe_value(val: &str) -> String {
+///
+/// # Errors
+/// `MultiLineValue` when the value carries a `\n`/`\r` (D11): the server writes
+/// `{key}: {value}`, and a single-quoted YAML scalar CANNOT escape a raw
+/// newline — an escaped-scalar approach leaks, so a multi-line value is refused,
+/// never sanitized. Fallibility is the guard: no caller can mint a quoted value
+/// without passing it.
+pub fn yaml_safe_value(val: &str) -> Result<String, MultiLineValue> {
+    if val.contains(['\n', '\r']) {
+        return Err(MultiLineValue);
+    }
     if val.is_empty() {
-        return String::new();
+        return Ok(String::new());
     }
     let map_shaped = val.starts_with('{');
     let unquoted = !val.starts_with(['\'', '"']);
@@ -614,9 +634,9 @@ pub fn yaml_safe_value(val: &str) -> String {
     let unterminated_quote = (val.starts_with('\'') && (val.len() < 2 || !val.ends_with('\'')))
         || (val.starts_with('"') && (val.len() < 2 || !val.ends_with('"')));
     if map_shaped || colon_space || unterminated_quote {
-        return format!("'{}'", val.replace('\'', "''"));
+        return Ok(format!("'{}'", val.replace('\'', "''")));
     }
-    val.to_string()
+    Ok(val.to_string())
 }
 
 fn plan_anchored(
