@@ -213,11 +213,43 @@ impl std::error::Error for ExecError {}
 /// process CAS guards cannot see). `LOCK_NB` acquire — a held lock is
 /// [`io::ErrorKind::WouldBlock`], surfaced as the fast typed
 /// [`ExecError::WorkspaceBusy`] refusal; it never waits, so a hung holder can
-/// never make callers hang (review C4). Released on drop.
+/// never make callers hang (review C4). Released on drop — by an EXPLICIT
+/// unlock, not by the fd close (see the [`Drop`] impl: relying on the close
+/// leaks the lock into any concurrently forking subprocess, and the run plane
+/// forks a child per dispatched task).
 #[derive(Debug)]
 pub struct WorkspaceLock {
-    // Held open for its fd; flock releases when the fd closes on drop.
-    _file: File,
+    // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
+    file: File,
+}
+
+/// Release the lock EXPLICITLY, before the fd closes — the S7/R19 fix, applied
+/// here because the run plane is the workspace's heaviest forker.
+///
+/// # Why the fd close is not enough (measured on the sibling lock, not theorised)
+/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
+/// every descriptor. Any thread in this process spawning any subprocess
+/// transiently holds a copy of this fd between its fork and its exec, even with
+/// `FD_CLOEXEC` set (CLOEXEC acts at exec, not at fork). If this guard dropped
+/// in that window, closing our fd would NOT release the lock: the child's copy
+/// keeps the description alive until it execs, and every other run meanwhile
+/// refuses `workspace_busy` for a critical section that already finished.
+///
+/// The exact overlap here is across CONCURRENT runs in one process, not within
+/// a single one: `dispatch_bash::run` forks its task child BETWEEN its two
+/// locked windows, so a second run holding this lock — in its phase-1 window or
+/// in the phase-2 [`apply`] commit — is the one whose release leaks. One process
+/// dispatching two tasks is the ordinary case, and the run plane forks a child
+/// per dispatched task, which is what makes this the workspace's heaviest forker.
+///
+/// `LOCK_UN` acts on the description itself, so one unlock releases the lock no
+/// matter how many copies of the fd exist. Measured on `fs::WriteLock`, which
+/// carried the identical defect: 12/60 unrelated writes refused spuriously.
+impl Drop for WorkspaceLock {
+    fn drop(&mut self) {
+        // SAFETY: flock on a valid open fd we own; the fd outlives the call.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 impl WorkspaceLock {
@@ -240,7 +272,7 @@ impl WorkspaceLock {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
 }
 
