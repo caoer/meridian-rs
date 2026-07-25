@@ -59,6 +59,11 @@ pub(crate) fn dispatch(
                 // receipt to live in — it mints none (the registry daemon is
                 // the one host that does).
                 None,
+                // S10: and it holds no corpus either — one document per
+                // request cannot color a pin whose target is another page, so
+                // it decorates nothing rather than guessing (an undecorated
+                // link claims nothing; a wrongly-colored one lies).
+                &wire_serve::read::NO_DECORATIONS,
             )
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the

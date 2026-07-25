@@ -11,6 +11,10 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span
 
 use crate::bad_request;
 
+/// The stage-2 S10 claim-link decoration input, re-exported at the read seam so
+/// a host wires it without taking a `render` dependency of its own.
+pub use render::{ClaimLink, Decorations, NO_DECORATIONS};
+
 /// wire §4.1 the map: header `file_rev` (the document root's rev over whole-file
 /// bytes) + the ambient `root`, rows from the `wire-map` projection. `ambient`
 /// is the corpus content-hash cursor the caller already holds (the sidecar folds
@@ -139,6 +143,15 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 /// mints nothing, which is honest: there is no session for a receipt to live
 /// in. Minting is SECTIONS-mode only; see [`composed_read`]'s mint block.
 ///
+/// `decorations` is the stage-2 S10 claim-link input (D10), built by the caller
+/// ([`page_decorations`]) and passed through to the renderer as data. It rides
+/// the render HEADER, so it is an input to the read as a whole rather than to a
+/// mode, and [`NO_DECORATIONS`] is the ONE spelling of "nothing to decorate" —
+/// a host with no corpus cannot color a cross-page pin and says so by passing
+/// it. Decoration lands in `rendered_text` ALONE: `sections[].content` stays
+/// the raw face a put is built from, because a read-decorated view feeding a
+/// write is the A-K1 data-loss class.
+///
 /// # Errors
 /// `bad_request` (fix): `frag` and `sections` both present; sections mode
 /// with no selectors; an unknown `mode` (decode already gates it — this is
@@ -151,6 +164,7 @@ pub fn composed_read(
     ambient: &Root,
     params: &ReadParams,
     mint: Option<&receipt::read_mint::ReadMintStore>,
+    decorations: &Decorations,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
     let file_rev = doc.root.node_rev.0.clone();
@@ -168,6 +182,7 @@ pub fn composed_read(
         display_path: display,
         file_rev: &file_rev,
         words_total,
+        decorations,
     };
     // The `^id` ANCHOR plane (stage-2 s1c) — computed once, emitted by BOTH
     // modes, scoped by the same `frag` that scopes the whole call. It rides
@@ -282,6 +297,138 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
         anchor: id.clone(),
         span: f.span,
     })
+}
+
+/// The claim-link decorations for ONE page (stage-2 S10): every `meridian-lock`
+/// pin the page declares, matched to the links in the page's own body that
+/// address it, carrying the shaped `@fp` token that pin's drift color mints.
+///
+/// This is the CALLER side of the render seam — deliberately outside `render`,
+/// which never reads a lock and never computes a fingerprint (D10). It needs
+/// the corpus, so only a host that holds one calls it (the registry daemon);
+/// the per-request sidecar and the bare CLI pass [`render::NO_DECORATIONS`].
+///
+/// Four rules, each closing a way a decoration could lie:
+///
+/// - **The color is S9's, per pin.** [`model::selector::classify_pin`] is the
+///   single compare `view::walk::lock_pin_colors` uses, so a decorated link can
+///   never disagree with the same pin's row in `mrd walk` / `mrd status`.
+/// - **The handle is the promoted `^slug`, never the pin's identity.** A pin's
+///   fingerprint covers the span its `ref` RESOLVES to (the section); an anchor
+///   node's span is only its host line, so treating the slug as the identity
+///   would read green on every body edit. Here the slug is only a lookup key.
+/// - **The link must actually address the pinned page.** The body's spelling
+///   (`guide`) and the lock's (`guide.md`) are two spellings of one address, so
+///   both go through the ONE linkpath resolver before they are called a match.
+/// - **A pin it cannot honestly color is left undecorated** — an unresolvable
+///   target page, a refused lock, a `Malformed` token with no digest to show.
+///   An undecorated link claims nothing; a decorated one claims the ledger
+///   measured it.
+///
+/// **D12:** the pinned page is resolved through the corpus index, never by
+/// string surgery on a single-root assumption; a later `root:` prefix rides
+/// inside the target spelling this function carries verbatim into the key.
+#[must_use]
+pub fn page_decorations(
+    index: &model::CorpusIndex,
+    docs: &BTreeMap<String, model::Document>,
+    path: &str,
+) -> Decorations {
+    let mut out = Decorations::new();
+    let Some(doc) = docs.get(path) else {
+        return out;
+    };
+    // A refused lock decorates nothing: it is already visible as the grey
+    // `lock-refused` row, and a token minted from bytes nobody could parse
+    // would be a claim nobody measured.
+    let Ok(Some(found)) = lock::find(doc) else {
+        return out;
+    };
+    let mut links: Vec<(&String, &String)> = Vec::new();
+    collect_links(&doc.root, &mut links);
+    for pin in &found.lock.pins {
+        let Some((page, _)) = pin.declared_ref.split_once('#') else {
+            continue; // a whole-page pin has no block handle to decorate
+        };
+        let Some(target_path) = resolve_page(index, docs, page, path) else {
+            continue;
+        };
+        let selector = model::selector::Selector::parse(&pin.declared_ref);
+        // The handle a pin's target carries: for a section pin, the D15 slug
+        // S7's promotion mints from the heading title — computed by the SAME
+        // owner, so a decoration keys on the id promotion actually wrote.
+        let handle = match &selector {
+            model::selector::Selector::Heading(segs) => {
+                segs.last().and_then(|h| crate::write::slug_id(h).ok())
+            }
+            model::selector::Selector::Block(id) => Some(id.clone()),
+            _ => None,
+        };
+        let Some(handle) = handle else {
+            continue;
+        };
+        let color =
+            model::selector::classify_pin(&selector, &pin.fingerprint, docs.get(&target_path));
+        let Some(digest) =
+            model::fingerprint::parse_fingerprint(&pin.fingerprint).map(|p| p.digest)
+        else {
+            continue; // Malformed: no digest exists to show
+        };
+        let Some(token) = syntax::fp_token(model::selector::color_tone(&color), &digest) else {
+            continue;
+        };
+        for (target, block) in links.iter().filter(|(_, b)| **b == handle) {
+            if resolve_page(index, docs, target, path).as_ref() == Some(&target_path) {
+                out.insert(
+                    ClaimLink {
+                        target: (*target).clone(),
+                        block: (*block).clone(),
+                    },
+                    token.clone(),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Resolve a link/ref target spelling to a corpus path: the exact key first (a
+/// lock `ref` names one), then the app-parity linkpath resolver (a body link
+/// spells the same page by basename). An empty spelling is the page itself.
+fn resolve_page(
+    index: &model::CorpusIndex,
+    docs: &BTreeMap<String, model::Document>,
+    spelling: &str,
+    from: &str,
+) -> Option<String> {
+    if spelling.is_empty() {
+        return Some(from.to_owned());
+    }
+    if docs.contains_key(spelling) {
+        return Some(spelling.to_owned());
+    }
+    index.resolve_linkpath(spelling, from)
+}
+
+/// Every `[[target#^block]]` link in the tree, as (target, block) borrowed off
+/// the parsed nodes — the addresses a decoration can key on.
+fn collect_links<'a>(node: &'a model::Node, out: &mut Vec<(&'a String, &'a String)>) {
+    if let model::NodeKind::Wikilink {
+        target,
+        block: Some(block),
+        ..
+    }
+    | model::NodeKind::Embed {
+        target,
+        block: Some(block),
+        ..
+    } = &node.kind
+    {
+        out.push((target, block));
+    }
+    for child in &node.children {
+        collect_links(child, out);
+    }
 }
 
 /// The rendered sections-mode pieces the `Read` body carries.
@@ -488,6 +635,17 @@ pub fn resolve(
 /// sidecar's write path (splice) resolves the same §2.1 targets through it — one
 /// bridge, not two.
 ///
+/// **Stage-2 S10 — the `@fp` strip is ORDERED HERE, and that ordering is the
+/// guarantee.** `model::Ref::anchor` is this workspace's ONE anchor-id mint
+/// guard, and this bridge is the ONE place any wire `SecRef::Anchor` reaches
+/// it — every read arm and every write arm (native edits and the lowered plan
+/// batch alike) funnels through this function. So the strip cannot be skipped
+/// by adding a put path: a path that skips it has no `model::Ref` to write
+/// with. A well-formed agent-plane address (`^leaders-guideline@green.b3af12cd`)
+/// therefore addresses exactly what its stored spelling addresses, while an
+/// `@` the shaped grammar does NOT recognize survives into validation below and
+/// refuses `bad_request` — the block-id charset has no `@`.
+///
 /// # Errors
 /// An anchor id outside the block-id charset `[A-Za-z0-9-]` (`bad_request`).
 pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
@@ -501,12 +659,15 @@ pub fn to_model_ref(sec: &SecRef) -> Result<model::Ref, Box<ErrorBody>> {
                 })
                 .collect(),
         ),
-        SecRef::Anchor { anchor } => model::Ref::anchor(anchor.clone()).map_err(|bad| {
-            bad_request(format!(
-                "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
-                id = bad.id
-            ))
-        })?,
+        SecRef::Anchor { anchor } => {
+            let (id, _fp) = syntax::split_fp(anchor);
+            model::Ref::anchor(id.to_owned()).map_err(|bad| {
+                bad_request(format!(
+                    "block id outside the one charset [A-Za-z0-9-] (§2.4): `{id}`",
+                    id = bad.id
+                ))
+            })?
+        }
         SecRef::FmKey { fm_key } => model::Ref::FmKey(fm_key.clone()),
     })
 }

@@ -897,7 +897,20 @@ fn composed_read_warm(
             .docs
             .get(&path.0)
             .ok_or_else(|| file_not_found(path))?;
-        wire_serve::read::composed_read(doc, path, &engine_root(engine), params, Some(&mints))
+        // Stage-2 S10: this is also the one host that holds a CORPUS, and a
+        // claim-link's color is a fact about the PINNED page, not the page
+        // being read — so the decorations are built here, from the same warm
+        // snapshot the read is served from (D6: one snapshot, one answer).
+        let decorations =
+            wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
+        wire_serve::read::composed_read(
+            doc,
+            path,
+            &engine_root(engine),
+            params,
+            Some(&mints),
+            &decorations,
+        )
     })
 }
 

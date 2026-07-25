@@ -180,6 +180,22 @@ pub enum RedReason {
     SelectorUnresolved { candidates: Vec<String> },
 }
 
+/// The tone of a color (`green` / `grey` / `red`) — the stable output word.
+///
+/// It lives beside the [`Color`] it names so there is ONE vocabulary, exactly
+/// as there is one color law: the walk/status render (`view::walk::color_tone`
+/// re-exports this) and the stage-2 claim-link decorator are different surfaces
+/// answering the same question, and a second `match` would be a second answer
+/// waiting to disagree.
+#[must_use]
+pub fn color_tone(color: &Color) -> &'static str {
+    match color {
+        Color::Green => "green",
+        Color::Grey(_) => "grey",
+        Color::Red(_) => "red",
+    }
+}
+
 /// Compute an edge's color from its pinned selector, its pinned rev, and the
 /// live target document (d2 §2.3). `target` is `None` when the target PAGE
 /// itself does not resolve (a moved/deleted page) — the whole address is

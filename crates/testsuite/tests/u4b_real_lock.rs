@@ -75,6 +75,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
         display_path: "$S/page.md",
         file_rev: &doc.root.node_rev.0,
         words_total: 0,
+        decorations: &render::NO_DECORATIONS,
     };
     let rendered = TextRenderer::with_meridian_elision()
         .render(

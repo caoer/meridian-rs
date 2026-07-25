@@ -24,10 +24,49 @@
 //! The walker returns a typed [`RenderFailed`] `{node_kind, node_ref,
 //! reason}` — it NEVER panics; the sidecar serve loop is panic-free by law.
 
+use std::collections::BTreeMap;
+
 use wire_map::facts::ReadFact;
 use wire_map::gotext::fields_count;
 
 pub mod walk;
+
+/// One claim-link address **as written in the body**: the link's target
+/// spelling plus its block id, verbatim off the parsed node.
+///
+/// The address is the key, not a resolution: this crate never resolves a
+/// linkpath, never reads a lock, and never computes a fingerprint. The CALLER
+/// resolves — it is the one holding the corpus and the pin — and hands back a
+/// map keyed by exactly the spellings its own document uses. That is what keeps
+/// the rejected `render → lock → fingerprint` coupling out of here (D10), and
+/// it is also why a decoration can never point at an address the body does not
+/// literally contain.
+///
+/// **D12:** `target` is opaque to this crate. A later `root:` prefix rides
+/// inside it untouched — the slot is reserved by not being parsed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClaimLink {
+    /// The link's target spelling, verbatim (`guide`, `sub/guide.md`, …).
+    pub target: String,
+    /// The link's block id, verbatim — the promoted `^slug` a pin's target
+    /// carries. The slug is a HANDLE, never the pin's identity: the pin's
+    /// fingerprint covers the section span its `ref` resolves to, and an
+    /// anchor node's span is only its host line.
+    pub block: String,
+}
+
+/// The claim-link decorations for one render: address → the shaped token text
+/// the walker splices into that link's block-ref slot (`@green.b3af12cd`,
+/// minted by `syntax::fp_token` — the same predicate the strip-on-put side
+/// recognizes, so decorate and strip cannot drift apart).
+pub type Decorations = BTreeMap<ClaimLink, String>;
+
+/// The empty decoration map — the one spelling of "nothing to decorate".
+///
+/// A host with no corpus (the per-request sidecar, the bare CLI) passes THIS
+/// rather than an `Option`, so an absent map and an empty map cannot mean two
+/// different things — the same discipline s1c applied to the anchor plane.
+pub static NO_DECORATIONS: Decorations = Decorations::new();
 
 /// Typed render failure (G1): named node kind + a human-addressable node ref
 /// + the reason. Recovery class: none (a render bug is a bug, not a retry).
@@ -61,6 +100,11 @@ pub struct Header<'a> {
     pub display_path: &'a str,
     pub file_rev: &'a str,
     pub words_total: u64,
+    /// Stage-2 S10: the claim-link decorations for this render (D10). It rides
+    /// the HEADER, so it is an input to the render as a whole and not to one
+    /// mode — a toc render simply has no link to decorate. Empty
+    /// ([`NO_DECORATIONS`]) is the inert input and the M1 behavior exactly.
+    pub decorations: &'a Decorations,
 }
 
 /// One resolved sections-mode row: the selector that hit plus its fact.
@@ -178,7 +222,8 @@ impl Renderer for TextRenderer {
             } => {
                 let mut sections = Vec::with_capacity(rows.len());
                 for row in *rows {
-                    let content = walk::emit_section(doc, row.fact, self.elide_lang)?;
+                    let content =
+                        walk::emit_section(doc, row.fact, self.elide_lang, header.decorations)?;
                     sections.push(RenderedSection {
                         hpath: row.fact.hpath.clone(),
                         sec_rev: row.fact.sec_rev.clone(),
@@ -271,6 +316,7 @@ mod tests {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
             words_total,
+            decorations: &NO_DECORATIONS,
         };
         let text = toc_text(&header, &rows);
         let lines: Vec<&str> = text.lines().collect();
@@ -301,6 +347,7 @@ mod tests {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
             words_total: 0,
+            decorations: &NO_DECORATIONS,
         };
         let out = TextRenderer::default()
             .render(
@@ -340,6 +387,7 @@ mod tests {
             display_path: "p",
             file_rev: "r",
             words_total: 0,
+            decorations: &NO_DECORATIONS,
         };
         let job = RenderJob::Sections {
             header,
@@ -364,5 +412,88 @@ mod tests {
         );
         assert!(out.sections[0].content.contains("before"));
         assert!(out.sections[0].content.contains("after"));
+    }
+
+    /// The S10 claim-link hook, same law as the elision hook: an EMPTY
+    /// decoration map emits the raw slice byte-identically (the U0 goldens
+    /// depend on it), and an inhabited one decorates exactly the addresses it
+    /// names — never a neighbour that merely shares a slug or a target.
+    #[test]
+    fn decoration_hook_inert_when_empty_and_exact_when_inhabited() {
+        let raw = "# H\n\nsee [[guide#^goal|Goal]] and [[other#^goal|Other]] and \
+                   [[guide#^misc]] and [[Page#Q@Home]]\n";
+        let (doc, facts) = doc_and_facts(raw);
+        let fact = resolve_selector(&facts, "H").expect("resolves");
+        let rows = [SectionRow { sel: "H", fact }];
+
+        let inert = TextRenderer::default()
+            .render(
+                &doc,
+                &RenderJob::Sections {
+                    header: Header {
+                        display_path: "p",
+                        file_rev: "r",
+                        words_total: 0,
+                        decorations: &NO_DECORATIONS,
+                    },
+                    rows: &rows,
+                    notice: None,
+                },
+            )
+            .expect("renders");
+        let cs = fact.content_span.as_ref().expect("content span");
+        assert_eq!(
+            inert.sections[0].content.as_bytes(),
+            &raw.as_bytes()[usize::try_from(cs.0).unwrap()..usize::try_from(cs.1).unwrap()],
+            "an empty map is byte-identity"
+        );
+
+        let mut decorations = Decorations::new();
+        decorations.insert(
+            ClaimLink {
+                target: "guide".into(),
+                block: "goal".into(),
+            },
+            "@green.b3af12cd".into(),
+        );
+        let out = TextRenderer::default()
+            .render(
+                &doc,
+                &RenderJob::Sections {
+                    header: Header {
+                        display_path: "p",
+                        file_rev: "r",
+                        words_total: 0,
+                        decorations: &decorations,
+                    },
+                    rows: &rows,
+                    notice: None,
+                },
+            )
+            .expect("renders");
+        let got = &out.sections[0].content;
+        assert!(
+            got.contains("[[guide#^goal@green.b3af12cd|Goal]]"),
+            "the named address decorates: {got}"
+        );
+        assert!(
+            got.contains("[[other#^goal|Other]]"),
+            "a same-SLUG link to another target does not: {got}"
+        );
+        assert!(
+            got.contains("[[guide#^misc]]"),
+            "a same-TARGET link to another block does not: {got}"
+        );
+        assert!(
+            got.contains("[[Page#Q@Home]]"),
+            "and a heading fragment's `@` is not a slot at all: {got}"
+        );
+        assert_eq!(
+            syntax::strip_fp(got),
+            inert.sections[0].content,
+            "the decoration is exactly what the put-side strip removes — \
+             decorate and strip are inverses, which is what makes the round \
+             trip disk-clean"
+        );
     }
 }

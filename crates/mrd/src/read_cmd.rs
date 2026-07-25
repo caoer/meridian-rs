@@ -231,8 +231,19 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     };
     // S6: no actor (above) and no session store — the local CLI mints no read
     // receipt on either path, and the CLI pin is local-operator-trusted (D16).
-    let body = wire_serve::read::composed_read(&doc, &wpath, &ambient, &params, None)
-        .map_err(|e| engine::refusal_fail(&e))?;
+    // S10: this degrade path loads ONE document, not the corpus, so it cannot
+    // color a pin whose target is another page — it decorates nothing. The
+    // decorated face is the daemon's (the host that holds a corpus); `mrd read`
+    // serves the stored spelling, which is also the spelling `mrd put` takes.
+    let body = wire_serve::read::composed_read(
+        &doc,
+        &wpath,
+        &ambient,
+        &params,
+        None,
+        &wire_serve::read::NO_DECORATIONS,
+    )
+    .map_err(|e| engine::refusal_fail(&e))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
     // The same lifted projection the daemon applies for a v3 session

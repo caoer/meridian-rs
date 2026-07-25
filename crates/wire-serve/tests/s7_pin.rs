@@ -318,6 +318,7 @@ fn session_read(
         &wire::Root("r0".into()),
         &params,
         Some(store),
+        &wire_serve::read::NO_DECORATIONS,
     )
     .expect("the read serves");
 }

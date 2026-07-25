@@ -44,6 +44,7 @@ fn render_sections(
         display_path: "$S/x.md",
         file_rev: "r",
         words_total: 0,
+        decorations: &render::NO_DECORATIONS,
     };
     r.render(
         doc,
