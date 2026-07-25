@@ -169,13 +169,54 @@ pub fn strip_anchor_marker(b: &[u8], anchor: &str) -> Vec<u8> {
 /// rows are Depth-0, shape-table-excluded), optionally scoped to the `frag`
 /// subtree — the section itself plus descendants by hpath prefix. An empty
 /// result under a non-empty `frag` is the caller's "no section at" refusal.
+///
+/// This is the RENDERED row set: `toc_text` walks exactly these, so the
+/// captured Go toc bytes stay frozen. The structured authz row set is
+/// [`read_rows`].
 #[must_use]
 pub fn toc_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
     facts
         .iter()
         .filter(|f| f.depth > 0)
-        .filter(|f| frag.is_empty() || f.hpath == frag || f.hpath.starts_with(&format!("{frag}/")))
+        .filter(|f| in_frag(f, frag))
         .collect()
+}
+
+/// The STRUCTURED composed-read row set (stage-2 S1): the [`toc_rows`]
+/// headings PLUS the `^id` anchor rows, in document order — the authz fact
+/// plane. The host derives a write's governing sections by byte containment
+/// (`containingSectionTitles`, `puttoc.go:104`: every heading whose span
+/// contains the anchor block's start byte), which needs the anchor nodes and
+/// the heading spans in ONE row set; serving them is what retires the host's
+/// `sanitizeHeadingHost` markdown mirror.
+///
+/// Anchor rows never render — [`toc_rows`] stays the rendering set, so the
+/// toc text is byte-unchanged.
+///
+/// Under a non-empty `frag` the anchor rows are scoped by the SAME byte
+/// containment the host applies (start byte inside a scoped heading's
+/// subtree-inclusive span), so a scoped read never leaks a row from outside
+/// the requested subtree. An empty `frag` is the whole document: every anchor
+/// row rides, including anchors above the first heading.
+#[must_use]
+pub fn read_rows<'a>(facts: &'a [ReadFact], frag: &str) -> Vec<&'a ReadFact> {
+    let scope: Vec<wire::Span> = toc_rows(facts, frag).iter().map(|f| f.span).collect();
+    facts
+        .iter()
+        .filter(|f| {
+            if f.depth > 0 {
+                in_frag(f, frag)
+            } else {
+                frag.is_empty() || scope.iter().any(|s| s.0 <= f.span.0 && f.span.0 < s.1)
+            }
+        })
+        .collect()
+}
+
+/// The `frag` subtree predicate for a heading row: the section itself plus
+/// descendants by hpath prefix; an empty `frag` is the whole document.
+fn in_frag(f: &ReadFact, frag: &str) -> bool {
+    frag.is_empty() || f.hpath == frag || f.hpath.starts_with(&format!("{frag}/"))
 }
 
 #[cfg(test)]
@@ -245,6 +286,89 @@ mod tests {
         assert_eq!(hit.n, "1", "first occurrence");
         // subtree words: second + ## + Child + child + body
         assert_eq!(resolve_selector(&got, "2").map(|f| f.words), Some(5));
+    }
+
+    /// S1: the structured row set surfaces the `^id` anchor rows the render
+    /// set omits, and each anchor row's span is byte-CONTAINED in every
+    /// heading section governing it — the fact the host's
+    /// `containingSectionTitles` answers a write's authz from.
+    #[test]
+    fn read_rows_surface_anchors_contained_in_their_governing_headings() {
+        let raw = "# Tasks\n\n- top item ^t1\n\n## Sub\n\n- nested item ^n1\n\n# Notes\n\nbody\n";
+        let got = facts(raw);
+        let rendered: Vec<&str> = toc_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(
+            rendered,
+            vec!["Tasks", "Tasks/Sub", "Notes"],
+            "the RENDERED set stays heading-only"
+        );
+        let structured: Vec<&str> = read_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(
+            structured,
+            vec!["Tasks", "^t1", "Tasks/Sub", "^n1", "Notes"],
+            "the STRUCTURED set adds the anchor rows, in document order"
+        );
+
+        // `containingSectionTitles` (puttoc.go:104) over the row set alone.
+        let governing = |anchor: &str| -> Vec<String> {
+            let block = read_rows(&got, "")
+                .into_iter()
+                .find(|f| f.anchor.as_deref() == Some(anchor))
+                .expect("anchor row");
+            toc_rows(&got, "")
+                .into_iter()
+                .filter(|h| h.span.0 <= block.span.0 && block.span.0 < h.span.1)
+                .map(|h| h.title.clone())
+                .collect()
+        };
+        assert_eq!(governing("t1"), vec!["Tasks".to_owned()]);
+        assert_eq!(
+            governing("n1"),
+            vec!["Tasks".to_owned(), "Sub".to_owned()],
+            "a nested block answers BOTH its ancestor sections"
+        );
+    }
+
+    /// Frag scoping of anchor rows is the host's own byte containment: the
+    /// scoped subtree's anchors ride, a sibling subtree's never do.
+    #[test]
+    fn read_rows_frag_scopes_anchors_by_byte_containment() {
+        let raw = "# Tasks\n\n- item ^t1\n\n# Notes\n\n- other ^o1\n";
+        let got = facts(raw);
+        let scoped: Vec<&str> = read_rows(&got, "Tasks")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(scoped, vec!["Tasks", "^t1"]);
+        let other: Vec<&str> = read_rows(&got, "Notes")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(other, vec!["Notes", "^o1"]);
+        assert!(
+            read_rows(&got, "Ghost").is_empty(),
+            "a frag naming nothing scopes nothing — the caller's refusal"
+        );
+    }
+
+    /// An anchor above the first heading has no governing section; the
+    /// whole-document row set still carries it (the host must see the block
+    /// to authorize a write to it).
+    #[test]
+    fn read_rows_carry_anchors_above_the_first_heading() {
+        let raw = "- orphan item ^o1\n\n# Tasks\n\nbody\n";
+        let got = facts(raw);
+        let structured: Vec<&str> = read_rows(&got, "")
+            .iter()
+            .map(|f| f.hpath.as_str())
+            .collect();
+        assert_eq!(structured, vec!["^o1", "Tasks"]);
     }
 
     /// Frag scoping: the section itself + descendants by hpath prefix;
