@@ -2104,6 +2104,7 @@ dependencies = [
  "duckdb",
  "effects",
  "fs",
+ "git",
  "libc",
  "model",
  "policy",

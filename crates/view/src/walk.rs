@@ -237,6 +237,52 @@ pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
     out
 }
 
+/// One `objects:`-plane row of a page's `meridian-lock` block — a blob sha the
+/// lock references, with the page and key that reference it.
+///
+/// The `objects:` plane is the RETRIEVAL plane (#8 §2, git's world): whole-file
+/// blob shas, never fingerprints. It answers a different question from the
+/// `pins:` plane [`PinColor`] carries — not "did the content drift" but "does
+/// this blob still exist anywhere durable" — so it is projected separately and
+/// carries no color.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockObject {
+    /// The page whose `meridian-lock` block declares this object.
+    pub src_path: String,
+    /// The `objects:` key, verbatim (what the blob is FOR).
+    pub key: String,
+    /// The blob sha, verbatim — an object id in git's world, not the engine's.
+    pub blob_sha: String,
+}
+
+/// Every `meridian-lock` `objects:` entry in `docs` — corpus order, then block
+/// order. THE surface for a whole-corpus reachability gauge (`mrd status`'s
+/// vibe-debt meter), which asks git whether each of these blobs is reachable
+/// from a commit.
+///
+/// [`lock::find`] is the parser, exactly as it is for the `pins:` plane — one
+/// owner for the lock grammar, so a page's objects and its pins can never be
+/// read by two disagreeing readers. A page whose lock REFUSED contributes NO
+/// objects here: its plane is unreadable, and that damage is already named by
+/// the grey `lock-refused` row [`lock_pin_colors`] projects for the same page.
+#[must_use]
+pub fn lock_objects(docs: &BTreeMap<String, Document>) -> Vec<LockObject> {
+    let mut out = Vec::new();
+    for (path, doc) in docs {
+        let Ok(Some(found)) = lock::find(doc) else {
+            continue;
+        };
+        for (key, blob_sha) in found.lock.objects {
+            out.push(LockObject {
+                src_path: path.clone(),
+                key,
+                blob_sha,
+            });
+        }
+    }
+    out
+}
+
 /// Whether the listing carries any red edge — the finding signal (a broken pin
 /// in the context, or a dependent whose pin no longer resolves).
 #[must_use]
@@ -1383,5 +1429,65 @@ mod tests {
         assert!(down.entries.is_empty(), "a refusal is nobody's dependent");
         let down_self = walk(&docs, "effect.md", Direction::Down, None).expect("down self");
         assert!(down_self.entries.is_empty());
+    }
+
+    // ── S11: the `objects:` retrieval plane ─────────────────────────────────
+
+    /// [`lock_objects`] projects the `objects:` plane of every page's lock in
+    /// corpus order, carries key and sha verbatim, and stays SEPARATE from the
+    /// `pins:` plane: a lock with pins but no objects projects nothing here, and
+    /// a page with no lock projects nothing at all.
+    #[test]
+    fn lock_objects_projects_the_objects_plane_verbatim() {
+        let mut with_both = lock::Lock::new();
+        with_both.set_object("vibe.md", &"a".repeat(40));
+        with_both.set_object("second.md", &"b".repeat(40));
+        with_both.upsert_pin(lock::PinEntry {
+            declared_ref: "sources/target.md".to_string(),
+            fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
+        });
+        let mut pins_only = lock::Lock::new();
+        pins_only.upsert_pin(lock::PinEntry {
+            declared_ref: "sources/target.md".to_string(),
+            fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
+        });
+
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "effect.md".to_string(),
+            doc(&format!("# Effect\n\n{}\n", lock::render(&with_both))),
+        );
+        docs.insert(
+            "other.md".to_string(),
+            doc(&format!("# Other\n\n{}\n", lock::render(&pins_only))),
+        );
+        docs.insert("plain.md".to_string(), doc("# Plain\n\nno lock here\n"));
+
+        let objects = lock_objects(&docs);
+        assert_eq!(objects.len(), 2, "only the objects plane, once each");
+        assert_eq!(objects[0].src_path, "effect.md");
+        assert_eq!(objects[0].key, "vibe.md");
+        assert_eq!(objects[0].blob_sha, "a".repeat(40));
+        assert_eq!(objects[1].key, "second.md");
+        assert_eq!(objects[1].blob_sha, "b".repeat(40));
+    }
+
+    /// A REFUSED lock projects no objects — its plane is unreadable, and the
+    /// damage is already named by the grey `lock-refused` row the pin plane
+    /// projects for the same page. The gauge must never read a corrupt lock's
+    /// objects as "none owed" WITHOUT that row beside it.
+    #[test]
+    fn a_refused_lock_projects_no_objects_but_still_projects_its_refusal_row() {
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let mut docs = BTreeMap::new();
+        docs.insert("effect.md".to_string(), doc(malformed));
+
+        assert!(
+            lock_objects(&docs).is_empty(),
+            "an unreadable plane is empty"
+        );
+        let rows = lock_pin_colors(&docs);
+        assert_eq!(rows.len(), 1, "the refusal is still visible: {rows:?}");
+        assert_eq!(color_tone(&rows[0].color), "grey");
     }
 }

@@ -67,6 +67,12 @@ run = { workspace = true }
 # external crate enters and `cargo deny` is unchanged.
 view = { workspace = true }
 duckdb = { workspace = true }
+# The git plumbing leaf (S5): `mrd status`'s vibe-debt gauge asks git which
+# lock-referenced blobs are reachable from a commit — ONE `rev-list --objects
+# --all` into a `ReachableSet` plus ONE batched `cat-file --batch-check`, never a
+# call per blob. `git` is a std-only path crate already in the workspace; no new
+# external crate enters and `cargo deny` is unchanged.
+git = { workspace = true }
 # The `mrd test` scenario runner (U1.2): `^put` routes through the PRODUCTION
 # write path (`wire-serve` splice/create/remove over a real `fs` mount — no
 # in-memory double), and `^expect` runs fenced Starlark under FULL `EvalLimits`
