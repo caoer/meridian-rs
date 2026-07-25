@@ -82,7 +82,17 @@ pub fn fingerprint_with_removals(
     node: &Node,
     removals: &[ByteSpan],
 ) -> Fingerprint {
-    let canonical = syntax::norm_v2_slice(&doc.raw, &node.span, removals);
+    fingerprint_span(doc, &node.span, removals)
+}
+
+/// [`fingerprint_with_removals`] over a resolved SPAN rather than a `&Node`
+/// handle. `span2` hashes the span's own bytes (spec §3), so the node
+/// contributes nothing else — a caller holding a resolved [`crate::Target`]
+/// mints without a second tree walk. THE owner of the mint expression; the
+/// `&Node` forms delegate here.
+#[must_use]
+pub fn fingerprint_span(doc: &Document, span: &ByteSpan, removals: &[ByteSpan]) -> Fingerprint {
+    let canonical = syntax::norm_v2_slice(&doc.raw, span, removals);
     Fingerprint(format!(
         "{FP_VERSION}.{CODEC_SPAN2}.{HASHFN_B3}.{}",
         blake3::hash(&canonical).to_hex()

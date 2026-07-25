@@ -289,6 +289,61 @@ pub struct ReceiptAddr {
     pub anchor: String,
 }
 
+/// The **pin** riding a splice (stage-2 S7, D7): a Splice-SIBLING optional
+/// field, never its own op. The splice's `path` is the PINNING page (the page
+/// whose `meridian-lock` block records the claim); these two fields say what it
+/// pins.
+///
+/// # There is deliberately NO actor field (D13)
+/// A pin's mint identity IS the gate identity IS the splice's own `actor` — one
+/// daemon-derived session identity behind the `bodyActor` wall. The sibling
+/// `check_write` op carries a caller-settable actor; a pin must not, or a caller
+/// forges a pin as somebody else. Adding an actor here is a security regression,
+/// not a convenience.
+///
+/// # D12 (cross-root seam)
+/// `target` is carried VERBATIM into the lock's `ref` and `objects:` key — this
+/// type parses no address, so a later `root:` prefix rides through untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinSpec {
+    /// The page holding the pinned content (workspace-relative).
+    pub target: Path,
+    /// The selector inside `target`: a sanitized heading path (`"Notes/Q3"`) or
+    /// a block anchor (`"^id"`). The engine canonicalizes it against the
+    /// target's own read facts before anything is written.
+    pub selector: String,
+    /// `--vibe`: additionally WRITE the target's blob into git's object store
+    /// (`git hash-object -w`), so the pin is retrievable before any commit
+    /// references it. Absent/`false` computes the oid read-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vibe: Option<bool>,
+}
+
+/// What a pin actually minted (stage-2 S7) — the response half of [`PinSpec`],
+/// present only when the request carried one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinFact {
+    /// The pinned page, as given.
+    pub target: Path,
+    /// The CANONICAL selector the engine resolved (never the caller's spelling,
+    /// never a dewey ordinal) — the same string the read-mint gate looked up.
+    pub selector: String,
+    /// The lock's `pins[].ref` verbatim: `"<target>#<selector>"`.
+    pub declared_ref: String,
+    /// The minted `fp1.…` CID-token over the selector's own span.
+    pub fingerprint: String,
+    /// The lock's `objects[]` blob oid for the target file; absent when git
+    /// could not answer (honest degradation — never a fabricated sha).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+    /// The target's stable block id (D15, slug-derived) — the handle a claim
+    /// link decorates and a later rename-heal relocates by.
+    pub anchor: String,
+    /// `true` when THIS pin wrote `anchor` into the target (a re-pin reuses the
+    /// id and promotes nothing).
+    pub promoted: bool,
+}
+
 /// One v3 PLAN-level splice edit (M1 U8b, `splice.plan_edits`): the put-plan
 /// vocabulary the Go daemon's `buildSpliceEdit`/`buildPropertyEdits` emulation
 /// spoke, moved behind the wire. Externally tagged; addresses are the HOST-face
@@ -454,6 +509,13 @@ pub enum Op {
         /// bytes never change.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         plan_edits: Vec<PlanEdit>,
+        /// Stage-2 S7 `splice.pin` (v3-only at decode): the pin rides the write
+        /// choke-point as a SIBLING field, so its lock write lands in the same
+        /// `commit_batch` — one flock, one rename — instead of a second flocked
+        /// call (D7). A pin-only splice carries no `edits`. Serialization skips
+        /// it, so the frozen v2 request bytes never change.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<PinSpec>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
@@ -912,6 +974,12 @@ pub enum ResponseBody {
         /// until rung 6 — [`Verdict`] is uninhabited until P6-VERDICTS, so
         /// the type ADMITS only `[]` today and the shape never changes.
         verdicts: Vec<Verdict>,
+        /// Stage-2 S7: what the request's `pin` minted. Absent unless the
+        /// request carried a pin, so the frozen v2 response bytes are untouched.
+        /// Boxed: the fact is wide next to every other response body, and the
+        /// enum is passed by value on every reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<Box<PinFact>>,
     },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;
@@ -1364,6 +1432,21 @@ pub enum ErrorCode {
     /// Extras: `message`. Retry class — transient; the same request may
     /// succeed. Additive by the tolerant-code law.
     WorkspaceBusy,
+    /// Stage-2 S7/S6 (D16): a `splice.pin` from a real session actor whose
+    /// selector no receipt covers — **you cannot attest content that was never
+    /// in your context**. Extras: `path` (the pin target) + `message` (names the
+    /// selector and the read that would mint it). Fix class — read the exact
+    /// selector in sections mode, then pin. The bare CLI (`actor` absent) is
+    /// local-operator-trusted and never raises it. Additive by the
+    /// tolerant-code law; only the v3 pin path can emit it.
+    ReadMintRequired,
+    /// Stage-2 S7: the `splice.pin` target page or selector does not exist, so
+    /// there is nothing to fingerprint. Extras: `path` (the target) + `message`.
+    /// Fix class — a pin over an address that does not resolve would mint a
+    /// dangling claim, which the drift plane could only ever render
+    /// `red(dangling)`; refusing at mint time is the honest door. Additive by
+    /// the tolerant-code law.
+    PinTargetMissing,
 }
 
 impl ErrorCode {
@@ -1384,7 +1467,9 @@ impl ErrorCode {
             | ErrorCode::WouldCorrupt
             | ErrorCode::AmbiguousRef
             | ErrorCode::BindingBreak
-            | ErrorCode::IndexIntegrity => Recovery::Fix,
+            | ErrorCode::IndexIntegrity
+            | ErrorCode::ReadMintRequired
+            | ErrorCode::PinTargetMissing => Recovery::Fix,
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8

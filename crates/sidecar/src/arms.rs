@@ -116,6 +116,7 @@ pub(crate) fn dispatch(
             force,
             edits,
             plan_edits,
+            pin,
         } => {
             let out = wire_serve::write::splice(
                 root,
@@ -131,8 +132,14 @@ pub(crate) fn dispatch(
                     force: force.unwrap_or(false),
                     edits,
                     plan_edits,
+                    pin,
                 },
                 rulesets,
+                // S7: the per-request sidecar HOLDS NO SESSION, so it holds no
+                // read-receipt ledger. A pin from a session actor therefore
+                // refuses `read_mint_required` here, naming that reason — the
+                // honest answer, since this host cannot know what was read.
+                None,
             )?;
             if let Some(frame) = out.committed {
                 epoch.advance(frame);
