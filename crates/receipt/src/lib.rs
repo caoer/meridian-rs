@@ -8,7 +8,10 @@
 //! defined by the wire response shape; a non-ccc consumer renders it any
 //! way it likes. Also owns the receipt block-anchor mint format
 //! (`r-NNNNNN`, in-charset per decision 011 — the CHARSET-GUARD position
-//! homed here).
+//! homed here). Stage-2 S6 adds the read-is-the-mint ledger
+//! ([`read_mint`]) — the ephemeral in-memory read-receipt fact, the same
+//! receipt FAMILY at the read plane (stage-3 unifies its representation with
+//! the persisted `^receipt` projection this module renders).
 //!
 //! **Never does:** I/O, batching, validation, span math. Rendered bytes
 //! join the batch BEFORE validation (the caller's law, §6.1): the append
@@ -32,6 +35,7 @@ use std::fmt::Write;
 
 pub mod anchor;
 pub mod journal;
+pub mod read_mint;
 
 /// The armed-fact set for one batch, borrowed from the request + armed
 /// response pair the caller already holds (§6.1 fact list).

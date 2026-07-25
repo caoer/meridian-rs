@@ -107,12 +107,24 @@ pub struct ReadParams {
     pub sections: Option<Vec<String>>,
     pub display_path: Option<String>,
     /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
-    /// carried to THIS seam — the future stage-2 read-mint site (the one
-    /// place holding the document, each `sec_rev`, and the actor together)
-    /// — and deliberately UNREAD in M1 (reads mint no receipt yet).
-    /// Carrying it now is the point: stage-2 becomes additive, never an op
-    /// re-shape.
+    /// carried to THIS seam — the stage-2 read-mint site (the one place
+    /// holding the document, each `sec_rev`, and the actor together). M1 left
+    /// it UNREAD; stage-2 S6 reads it here, additively, with no op re-shape.
+    /// It stays DAEMON-derived and never MCP-caller-settable (D13): the wire
+    /// `Op::Read.actor` field is not widened, and nothing below invents one.
     pub actor: Option<String>,
+}
+
+/// The `actor == None` no-mint door (D16), in ONE place.
+///
+/// A read mints a receipt only for a real daemon-derived identity. The bare
+/// CLI sends no actor (`read_cmd.rs`: "§9 read provenance is the DAEMON's to
+/// stamp") and is local-operator-trusted — exactly as `mrd put` skips the
+/// host's authz — so it mints nothing and the pin gate is bypassed for it. A
+/// blank actor is treated as absent too: an empty string is not an identity,
+/// and admitting one would open a bucket every actor-less caller shares.
+fn mint_actor(actor: Option<&str>) -> Option<&str> {
+    actor.map(str::trim).filter(|a| !a.is_empty())
 }
 
 /// The COMPOSED read op (M1 U4a2, decision D6): addressing + content +
@@ -120,6 +132,12 @@ pub struct ReadParams {
 /// ambient `root`, the toc/sections facts, and the `readText` projection in
 /// one exchange. Refusal messages are the Go host face's VERBATIM strings,
 /// so the thin proxy (U8a) forwards `error.message` without re-minting.
+///
+/// `mint` is the stage-2 S6 read-is-the-mint ledger (D9): present only for a
+/// host that HOLDS a daemon-session layer (the registry daemon). A host with
+/// no session — the per-request sidecar, the bare CLI — passes `None` and
+/// mints nothing, which is honest: there is no session for a receipt to live
+/// in. Minting is SECTIONS-mode only; see [`composed_read`]'s mint block.
 ///
 /// # Errors
 /// `bad_request` (fix): `frag` and `sections` both present; sections mode
@@ -132,6 +150,7 @@ pub fn composed_read(
     path: &Path,
     ambient: &Root,
     params: &ReadParams,
+    mint: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(&wire_map::project_toc(doc), doc.raw.as_bytes());
     let file_rev = doc.root.node_rev.0.clone();
@@ -191,6 +210,27 @@ pub fn composed_read(
                 vec![frag.to_owned()]
             };
             let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
+            // S6 read-IS-the-mint (D9): one receipt per section this call
+            // actually served — actor, canonical selector, `sec_rev`.
+            //
+            // SECTIONS mode only, and off the RAW rows: `rendered_sections`
+            // are the `sections[].content` rows whose bytes the caller
+            // received verbatim, so each receipt is a true "this was in your
+            // context" fact. Two things follow deliberately. A toc-mode read
+            // mints NOTHING — it serves the section map, not content, so it
+            // must never gate an attestation over bytes nobody saw. And the
+            // rev bound is the raw face's `sec_rev`, never anything derived
+            // from the elided `rendered_text` — a read-elided view must never
+            // be what a write is authorized against (the A-K1 data-loss
+            // class).
+            //
+            // Unresolved selectors are absent from these rows (they carry the
+            // PARTIAL-read notice instead), so a miss mints nothing.
+            if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
+                for row in &rendered_sections {
+                    store.mint(actor, path.0.as_str(), &row.hpath, &row.sec_rev.0);
+                }
+            }
             Ok(ResponseBody::Read {
                 path: path.clone(),
                 file_rev: NodeRev(file_rev),

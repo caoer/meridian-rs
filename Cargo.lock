@@ -2837,6 +2837,7 @@ dependencies = [
  "fs",
  "model",
  "query",
+ "receipt",
  "serde",
  "serde_json",
  "syntax",

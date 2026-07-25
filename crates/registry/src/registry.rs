@@ -88,6 +88,16 @@ pub struct Registry {
     /// last successful publish fingerprint, sole-writer-faithful within one
     /// epoch.
     refresh_state: RwLock<HashMap<PathBuf, RefreshState>>,
+    /// Stage-2 S6 the read-is-the-mint ledger, one per workspace (D6/H1).
+    ///
+    /// **Deliberately NOT a field on [`WorkspaceEngine`]**: `warm_or_build`
+    /// replaces a workspace's engine on every corpus content-hash change, so a
+    /// receipt held inside the engine would be evaporated by the very write the
+    /// receipt authorized (a pin writes). This map sits beside `engines` and no
+    /// rebuild touches it. Daemon memory only — never persisted, never in the
+    /// state file — and dropped alongside the registration on the ONE idle-reap
+    /// horizon.
+    read_mints: Mutex<HashMap<PathBuf, Arc<receipt::read_mint::ReadMintStore>>>,
     /// This daemon instance's epoch token — the `built_epoch` half of a
     /// published stamp (pairs with `seq`). A per-instance value (a restart mints
     /// a new one); the resident daemon holds no delta ring, so `seq` is `0`
@@ -116,6 +126,8 @@ impl Registry {
             engines: RwLock::new(HashMap::new()),
             publish_locks: Mutex::new(HashMap::new()),
             refresh_state: RwLock::new(HashMap::new()),
+            // Session memory starts empty: a cold daemon has minted nothing.
+            read_mints: Mutex::new(HashMap::new()),
             // A per-instance epoch stamp: restart mints a new one, so a stale
             // cross-restart `built_epoch` never reads as current.
             epoch: now_secs().to_string(),
@@ -430,6 +442,32 @@ impl Registry {
         )
     }
 
+    /// The workspace's read-is-the-mint ledger (stage-2 S6), created on first
+    /// use — the daemon-session layer a composed read mints into and a pin gate
+    /// reads back.
+    ///
+    /// `workspace` must already be the CANONICAL path (the same key `engines`
+    /// and `inner` use, which the `hello` bind supplies): one mount, one ledger,
+    /// so two workspaces holding the same relative path never answer each
+    /// other's lookups. That is also the D12 seam — mount identity is THIS key,
+    /// never a field inside the ledger, so a later per-root world hands out one
+    /// ledger per root and the ledger itself is unchanged.
+    ///
+    /// The returned handle is an [`Arc`] so a slow read never holds this map's
+    /// lock (the `publish_lock` pattern); the ledger has its own interior lock.
+    #[must_use]
+    pub fn read_mints(&self, workspace: &Path) -> Arc<receipt::read_mint::ReadMintStore> {
+        let mut mints = self
+            .read_mints
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(
+            mints
+                .entry(workspace.to_path_buf())
+                .or_insert_with(|| Arc::new(receipt::read_mint::ReadMintStore::new())),
+        )
+    }
+
     /// The last successful publish fingerprint (daemon-memory `as_of` proxy), or
     /// `None` when this daemon has not published this workspace.
     fn last_ok_fingerprint(&self, workspace: &Path) -> Option<model::MerkleRoot> {
@@ -646,6 +684,11 @@ impl Registry {
     /// warm-engine eviction hangs off this ONE idle-reap horizon — no separate
     /// memory budget or eviction policy. The `engines` lock is taken AFTER the
     /// `inner` lock is released, so the two maps are never held at once.
+    ///
+    /// Its S6 read-mint ledger is dropped on the same horizon (session memory
+    /// does not outlive the registration). This is the ONLY place a ledger is
+    /// dropped — never on a corpus change, which is the whole point of holding
+    /// it outside the warm engine.
     pub fn reap(&self, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
         let cutoff = now.saturating_sub(threshold_secs);
         let reaped: Vec<PathBuf> = {
@@ -667,6 +710,14 @@ impl Registry {
             let mut engines = self.engines.write().unwrap_or_else(PoisonError::into_inner);
             for key in &reaped {
                 engines.remove(key);
+            }
+            drop(engines);
+            let mut mints = self
+                .read_mints
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for key in &reaped {
+                mints.remove(key);
             }
         }
         reaped
