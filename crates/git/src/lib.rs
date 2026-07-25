@@ -150,6 +150,52 @@ impl Repo {
         self.hash_object(path, true)
     }
 
+    /// The object id of `bytes` **as if they were the file at `path`**
+    /// (`hash-object --path <path> --stdin`) — the oid of content that is not on
+    /// disk yet. `write` additionally stores the blob (`-w`), with the same
+    /// residual G1 as [`Repo::write_blob`].
+    ///
+    /// A caller that must record the oid of bytes it has decided to write, but
+    /// has not written, needs this: hashing the file first would content-address
+    /// the state being replaced. `--path` is what keeps the answer equal to
+    /// [`Repo::blob_oid`] on those same bytes once they land — git applies that
+    /// path's own `.gitattributes` filters, so a filtered page cannot get one oid
+    /// from disk and another from memory.
+    ///
+    /// # Errors
+    /// As [`Repo::blob_oid`].
+    pub fn blob_oid_of_bytes(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        write: bool,
+    ) -> Result<String, GitFail> {
+        // Same guard, same reason as `hash_object`: outside a repository git
+        // answers with a number about nothing.
+        self.require_repo()?;
+
+        let mut cmd = self.command();
+        cmd.arg("hash-object");
+        if write {
+            cmd.arg("-w");
+        }
+        cmd.arg("--path").arg(self.relative(path)).arg("--stdin");
+        let what = if write {
+            "hash-object -w --stdin"
+        } else {
+            "hash-object --stdin"
+        };
+        let stdout = self.run_with_stdin(cmd, what, bytes.to_vec())?;
+        let text = std::str::from_utf8(&stdout).unwrap_or_default().trim();
+        if !is_oid(text) {
+            return Err(GitFail::Unexpected {
+                what: what.to_owned(),
+                detail: format!("output is not an object id: {text:?}"),
+            });
+        }
+        Ok(text.to_ascii_lowercase())
+    }
+
     /// Every object reachable from every ref, computed in ONE
     /// `git rev-list --objects --all` — the anchoring check's reachable set.
     ///
