@@ -18,6 +18,14 @@
 //! [`the_fence_line_never_reaches_the_exit_code`] reads ONE corpus twice — unfenced,
 //! then fully fenced — over two corpus states, and fails if the codes ever part.
 //!
+//! # One sentence, two instruments, and each clause claims only its own
+//! The first line composes a COUNT (coverage — how many doors this engine's line
+//! wrote, at any generation) with the set WORD (currency — whether they stand at
+//! the generation this engine writes). The two disagree on purpose, and the arms
+//! that read the count pin its **whole clause** rather than the bare `N of M`, so
+//! a clause that grows back a currency claim the count never measured reddens
+//! here.
+//!
 //! # Three doors can disagree, and a line that reads door one is the defect rebuilt
 //! The install set is `pre-commit`, `pre-merge-commit` and `pre-applypatch`. Every
 //! per-door assert here **spells the three names as literals**: an arm that
@@ -238,6 +246,28 @@ fn fence_line(out: &Output) -> String {
         .to_owned()
 }
 
+/// The COUNT CLAUSE of the `  fence:` line, isolated — everything between the set
+/// word and the teaching that follows it.
+///
+/// **The clause is lifted out rather than substring-matched inside the whole
+/// line** because the claim under test is about the clause's own boundaries: it
+/// may state the coverage it measured and NOT the currency the set word states
+/// beside it. A `contains` over the whole line passes on a clause that has grown a
+/// currency claim; pinning the clause entire fails on it.
+///
+/// Panics when the line has no clause to lift, for the reason [`fence_line`]
+/// panics on a missing line: a helper that returned `""` would let the arm below
+/// pass on the sentence falling apart.
+fn fence_count_clause(out: &Output) -> String {
+    let line = fence_line(out);
+    line.split_once(" — ")
+        .and_then(|(_word, rest)| rest.split_once(';'))
+        .map_or_else(
+            || panic!("the fence line carries no count clause: {line}"),
+            |(clause, _teaching)| clause.to_owned(),
+        )
+}
+
 /// The `  fence doors:` line — the per-door reading, or `None` when this root has
 /// no door plane. The two are DIFFERENT facts and this helper keeps them so.
 fn fence_doors_line(out: &Output) -> Option<String> {
@@ -380,9 +410,12 @@ fn a_fresh_clone_of_a_fenced_root_says_it_is_unfenced_without_being_asked() {
         line.contains("fence: absent"),
         "the unasked-for reading, on a bare `mrd check`: {line}"
     );
-    assert!(
-        line.contains("0 of 3 doors"),
-        "and it counts the doors rather than asserting one of them: {line}"
+    assert_eq!(
+        fence_count_clause(&out),
+        "0 of 3 doors carry this engine's fence marker, at any generation",
+        "and it counts the doors rather than asserting one of them — over the whole \
+         clause, so the count cannot regain the currency claim it does not \
+         measure: {line}"
     );
     assert!(
         line.contains("never gated on"),
@@ -421,9 +454,11 @@ fn a_partly_fenced_checkout_is_partial_and_the_line_names_the_open_door() {
         !line.contains("fence: installed —"),
         "and it must not be reported as fully fenced: {line}"
     );
-    assert!(
-        line.contains("2 of 3 doors"),
-        "the population beside the reading: {line}"
+    assert_eq!(
+        fence_count_clause(&out),
+        "2 of 3 doors carry this engine's fence marker, at any generation",
+        "the population beside the reading, pinned as a whole clause: it states the \
+         coverage it measured and leaves currency to the word: {line}"
     );
     assert!(
         line.contains("pre-merge-commit"),
@@ -501,6 +536,13 @@ fn a_foreign_hook_at_one_door_is_reported_as_foreign_from_check() {
 /// `Coverage::fenced_doors` counts every door this engine wrote, whatever
 /// generation it declares — so this checkout reads `3 of 3` with a stale door
 /// standing in it. The count is blind to currency BY CONSTRUCTION.
+///
+/// # And so the count's CLAUSE must say which axis it measured
+/// This is the checkout where the two instruments disagree, so it is where a
+/// clause that overclaims is visible: `3 of 3 doors carry this engine's fence`
+/// asserted currency the count never took, sitting beside the word that says the
+/// fence is superseded. The semantics stay — the count is coverage, the word is
+/// currency — and the SENTENCE names both axes instead.
 #[test]
 fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
     let sb = sandbox();
@@ -551,10 +593,14 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
         "THE HAZARD, stated as an assert: a stale fence reported as current is \
          the silent wrong answer this lane exists to kill: {line}"
     );
-    assert!(
-        line.contains("3 of 3 doors"),
-        "and the count agrees with itself while the set does not — it counts \
-         doors this engine wrote, not doors that are current: {line}"
+    assert_eq!(
+        fence_count_clause(&out),
+        "3 of 3 doors carry this engine's fence marker, at any generation",
+        "THE CLAUSE-AXIS CLAIM: the count says COVERAGE and names the generation \
+         it is blind to; the currency is the set word's claim, standing beside it. \
+         A clause that reverts to `carry this engine's fence` asserts the currency \
+         this count never measured — false as written on exactly this checkout, \
+         and false next to the word contradicting it: {line}"
     );
     assert_eq!(
         fence_doors_line(&out).as_deref(),

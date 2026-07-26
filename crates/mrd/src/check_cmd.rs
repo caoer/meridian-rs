@@ -555,7 +555,11 @@ struct Fence {
     /// submodule or a non-repository has no hook directory to read, which is not
     /// the same fact as a hook directory read and found empty.
     doors: Option<Vec<FenceDoor>>,
-    /// How many of those doors carry a fence this engine wrote.
+    /// How many of those doors carry a fence this engine's line wrote — the
+    /// COVERAGE axis, and **blind to currency by construction**
+    /// ([`hook::Coverage::fenced_doors`]). A door standing at an older or a newer
+    /// generation is counted here; whether it is current is [`Fence::word`]'s
+    /// claim, never this one's.
     fenced: usize,
 }
 
@@ -633,6 +637,23 @@ fn agreed_teaching(fenced: usize) -> String {
 ///
 /// **Two lines rather than one**, for the reason [`Fence::doors`] gives: the set's
 /// word cannot carry which door disagrees, and the per-door line can.
+///
+/// # EACH CLAUSE NAMES ITS OWN AXIS
+/// The first line composes **two instruments**: the count is COVERAGE — how many
+/// doors this engine's line wrote — and the set word is CURRENCY — whether what
+/// they carry is the generation this engine writes. They are measured separately
+/// and they disagree on purpose: a fully skewed checkout is `3 of 3` doors and
+/// `installed-superseded`, which is the reading that keeps `installed-partial` and
+/// `installed-superseded` different states.
+///
+/// So the count's clause may claim ONLY what [`Fence::fenced`] measured — the
+/// marker, at whatever generation it declares — and says so outright. The clause
+/// it replaced (*"carry this engine's fence"*) asserted the currency the count
+/// never took: beside `installed-superseded` it was false as written, and beside
+/// `installed-ahead` it contradicted its own teaching one clause later. That is
+/// `hook.rs`'s standing hazard — *nothing can prompt an operator to run
+/// `mrd hook install` if the status face calls a superseded fence "installed"* —
+/// compressed into a sub-sentence.
 fn fence_lines(fence: &Fence) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -643,8 +664,8 @@ fn fence_lines(fence: &Fence) -> String {
         Some(doors) => {
             let _ = writeln!(
                 out,
-                "  fence: {} — {} of {} doors carry this engine's fence; {teaching} · \
-                 {FENCE_REPORTED}",
+                "  fence: {} — {} of {} doors carry this engine's fence marker, at any \
+                 generation; {teaching} · {FENCE_REPORTED}",
                 fence.word,
                 fence.fenced,
                 doors.len()
