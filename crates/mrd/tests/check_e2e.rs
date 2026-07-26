@@ -120,6 +120,10 @@ fn write(ws: &Path, rel: &str, body: &str) {
     std::fs::write(ws.join(rel), body).expect("write fixture");
 }
 
+/// The ruled reason word (S3-R6), spelled once here so a leg asserting its ABSENCE
+/// cannot drift from the legs asserting its presence.
+const GREY: &str = "grey(cannot-assess)";
+
 /// One journal row line in the `render_row` grammar (`parse_rows` reads
 /// `root_before=`, `root_after=`, and the trailing `^r-NNNNNN`).
 fn row(anchor: &str, root_before: &str, root_after: &str) -> String {
@@ -212,15 +216,21 @@ fn check_is_green_when_the_journal_carries_create_rows() {
 // ── the vacuous-baseline path: grey, never green (S3-R5) ─────────────────────
 
 /// **S3-R5, on finding-01's own corpus.** `mrd init` → `mrd pin` → git commit →
-/// a plain shell rewrite of the PINNED section. That workspace journals nothing
-/// (the pin rides `commit_batch`, D7), so both layer-0 detectors have no baseline
-/// — and the measured behaviour was `chain: green · foreign_edit: none`, EXIT 0,
-/// on the exact out-of-band write the fence exists to catch.
+/// a plain shell rewrite of the PINNED section. The measured behaviour was
+/// `chain: green · foreign_edit: none`, EXIT 0, on the exact out-of-band write the
+/// fence exists to catch.
 ///
 /// The assert is the REFUSAL (R26): check must not say green anywhere, and must
 /// not exit clean. `mrd walk` reads the same corpus in the same run, holding the
 /// cross-surface disagreement in view — it reddens, and check may not disagree by
 /// claiming a clean bill it cannot support.
+///
+/// **U32 changed this leg's MECHANISM, not its verdict.** This fixture used to
+/// assert that the pin journaled nothing — that WAS the vacuous baseline the grey
+/// rested on. A splice now journals its row, so the baseline here is present and
+/// the out-of-band rewrite makes it STALE; the refusal is now earned against
+/// evidence instead of produced by its absence. Every refusal assert below is
+/// unchanged; only the witness of the state the workspace is in was replaced.
 #[test]
 fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
     let sb = sandbox();
@@ -239,6 +249,23 @@ fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "pin"]);
 
+    // U32: the governed pin journaled its row, and at THIS instant the workspace
+    // is clean — the green-path control (S3-R8(c)), so the refusal below is caused
+    // by the out-of-band write and not by the corpus.
+    let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
+    assert_eq!(
+        journal_rows(&root),
+        1,
+        "the pin is a guarded write and leaves a row"
+    );
+    let clean = sb.run(&ws, &["check"]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "the governed corpus is accepted: {}",
+        said(&clean)
+    );
+
     // The out-of-band write: a plain rewrite of the pinned section through no
     // meridian writer at all — the human-in-Obsidian case the design names.
     write(
@@ -254,10 +281,11 @@ fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
             .contains("OUT OF BAND"),
         "the out-of-band rewrite landed on disk"
     );
-    assert!(
-        !ws.join(RESERVED_JOURNAL_PATH).exists(),
-        "a pin/put-only workspace journals nothing — this is the vacuous baseline \
-         under test, and if it ever gains rows this fixture is measuring something else"
+    assert_eq!(
+        journal_rows(&root),
+        1,
+        "and it journaled nothing — that is what makes it out-of-band, and it is \
+         what leaves the present baseline STALE"
     );
 
     let out = sb.run(&ws, &["check"]);
@@ -310,21 +338,22 @@ fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
     );
 }
 
-/// **The OTHER direction (S3-R8): the false RED.** A corpus in which every write
-/// was governed — a journaled `create`, then a `mrd pin` through the CLI — and
-/// where **no out-of-band edit exists anywhere**. The splice advances the tree root
-/// and journals no row, so the recorded baseline goes stale, and the shipped verb
-/// answered `foreign_edit: RED`, exit 1: *it accused a fully governed workspace.*
-/// The ratified fence built on that sentence would block every governed commit.
+/// **The OTHER direction (S3-R8): the false RED, now closed at the root.** A
+/// corpus in which every write was governed — a journaled `create`, then a
+/// `mrd pin` through the CLI — and where **no out-of-band edit exists anywhere**.
 ///
-/// The assert is the refusal in this direction too: check must NOT say
-/// red-foreign-edit, and must not say green either (the green half of that render
-/// was equally unearned — the baseline it rested on was stale).
+/// The shipped verb answered `foreign_edit: RED`, exit 1 — *it accused a fully
+/// governed workspace* — because the splice advanced the tree root and journaled
+/// no row, so the recorded baseline went stale. u14i withdrew that accusation and
+/// left a grey; **U32 removed the mechanism, so the honest answer here is now
+/// GREEN, exit 0.** A fence built on this verb accepts a commit whose writes were
+/// all governed, which is the green-path control criterion 5 lacked (S3-R8(c)).
 ///
-/// This does NOT make the fence usable: the honest answer is still a refusal
-/// (grey, exit 1). It stops the verb from lying about WHY.
+/// This leg's assert INVERTED, and that is the unit's whole point: what changed is
+/// the engine's behaviour, not the test's standard. The refusal direction is
+/// asserted on its own corpus in `u32_governed_journal.rs`.
 #[test]
-fn check_does_not_accuse_a_fully_governed_corpus() {
+fn check_accepts_a_fully_governed_corpus() {
     let sb = sandbox();
     let ws = sb.git_workspace("all-governed");
     write(&ws, "source.md", "# Source\n\n## Guideline\n\nthe body\n");
@@ -359,9 +388,9 @@ fn check_does_not_accuse_a_fully_governed_corpus() {
     );
     assert_eq!(
         journal_rows(&root),
-        rows_before,
-        "THE MECHANISM: a governed splice journals no row, so the baseline it \
-         should have refreshed stays where it was"
+        rows_before + 1,
+        "THE MECHANISM U32 DELIVERS: the governed splice journaled its row, so the \
+         baseline it advanced past is the baseline it refreshed"
     );
 
     let out = sb.run(&ws, &["check"]);
@@ -376,18 +405,18 @@ fn check_does_not_accuse_a_fully_governed_corpus() {
         "and the accusation must not survive in the exit message either: {text}"
     );
     assert!(
-        !text.contains("green"),
-        "nor may the other detector claim a green off the same stale baseline: {text}"
+        !text.contains(GREY),
+        "nor may it refuse what it CAN now assess — every write here was governed \
+         and every one of them is journaled: {text}"
     );
     assert!(
-        text.contains("chain: grey(cannot-assess)")
-            && text.contains("foreign_edit: grey(cannot-assess)"),
-        "both detectors report what they can prove: {text}"
+        text.contains("chain: green") && text.contains("foreign_edit: none"),
+        "both detectors read a real verdict off a current baseline: {text}"
     );
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "still a refusal (S3-R6) — honest, not permissive: {text}"
+        Some(0),
+        "the green-path control (S3-R8(c)): a fully governed corpus is ACCEPTED: {text}"
     );
 }
 

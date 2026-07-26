@@ -22,16 +22,24 @@ use receipt::journal::{ChainReport, ParsedRow, check_chain, parse_rows};
 /// on one assumption — that the last receipt's recorded `root_after` still
 /// accounts for the live tree — and that assumption fails in two measured ways:
 ///
-/// - the journal carries **no row** ([`JournalTrace::NoBaseline`]): a pin/put-only
-///   workspace journals nothing, so a silent detector proves nothing;
+/// - the journal carries **no row** ([`JournalTrace::NoBaseline`]): a workspace
+///   with no guarded write behind it has nothing to compare against, so a silent
+///   detector proves nothing;
 /// - the last receipt **no longer matches** the live tree
-///   ([`JournalTrace::StaleBaseline`]): a governed `splice` advances the tree root
-///   and writes no journal row, so the mismatch is produced by ordinary governed
-///   work exactly as it is by an out-of-writer edit.
+///   ([`JournalTrace::StaleBaseline`]): something advanced the tree that the
+///   journal does not account for.
 ///
 /// So the trace spells both as states of its own instead of letting the detectors
 /// report a green they never earned (the false green) or a red they cannot support
 /// (the false red). *Outside sight is never verified* (R26; S5 honest degradation).
+///
+/// **U32 closed the first regime and narrowed the second.** A governed `splice`
+/// now journals its row, so an ordinary pin/put workspace HAS a baseline and reads
+/// a real verdict. What remains grey rather than red is the attribution: a write
+/// door that lands bytes without journaling leaves the identical trace as an
+/// out-of-writer edit, and one such door is still open by charter (`mrd realise
+/// --truth file`'s bare `std::fs::write`, U31/U12). Naming the cause is a claim
+/// this crate cannot yet support; stating the evidence is one it can.
 #[derive(Debug)]
 pub enum JournalTrace {
     /// **Grey — cannot assess.** The reserved journal carries no row: no pair of
@@ -40,8 +48,8 @@ pub enum JournalTrace {
     NoBaseline,
     /// **Grey — cannot assess.** The journal carries rows, but its last receipt
     /// does not account for the live tree. The cause is NOT determinable from
-    /// here: an out-of-writer edit and a governed splice leave the identical
-    /// evidence, because a splice moves the root and journals nothing.
+    /// here: an out-of-writer edit and any write door that lands bytes without
+    /// journaling leave the identical evidence.
     StaleBaseline(BaselineMismatch),
     /// The last receipt accounts for the live tree: the baseline is current, so the
     /// journal's own rows are a verdict.
@@ -57,9 +65,10 @@ pub enum JournalTrace {
 ///
 /// This was `ForeignEdit`, and the rename is the correction: the same three facts
 /// were rendered as the CLAIM *"an out-of-writer edit landed with no receipt"*,
-/// which is false whenever a governed splice moved the root — measured on the
-/// deployed binary against a fully governed corpus (finding-01). The evidence
-/// stays; the accusation is withdrawn.
+/// which was false on every governed splice — measured on the deployed binary
+/// against a fully governed corpus (finding-01). U32 gave the splice its row, so
+/// that corpus no longer reaches here at all; the accusation stays withdrawn
+/// because a non-journaling write door still leaves this same evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineMismatch {
     /// The last receipt row's anchor (`r-NNNNNN`) — the last journaled write.
@@ -111,8 +120,8 @@ impl JournalTrace {
             JournalTrace::NoBaseline => Some(NO_BASELINE_DETAIL.to_string()),
             JournalTrace::StaleBaseline(m) => Some(format!(
                 "the live tree root {} does not continue the last receipt ^{} (recorded \
-                 root_after={}), and a governed splice advances the root without journaling a \
-                 row — so the journal cannot date the tree, and neither detector can be read",
+                 root_after={}) — something advanced the tree that the journal does not account \
+                 for, so the journal cannot date the tree and neither detector can be read",
                 m.live_root, m.last_receipt, m.recorded_root
             )),
             JournalTrace::Assessed { .. } => None,
@@ -167,10 +176,10 @@ pub fn journal_trace(root: &WorkspaceRoot) -> io::Result<JournalTrace> {
 /// `Some(Ok)` = the last receipt accounts for the live tree.
 ///
 /// A mismatch is deliberately NOT called a `foreign_edit` any more. The same
-/// evidence is produced by an out-of-writer edit and by an ordinary governed
-/// splice (which advances the root and writes no journal row), so naming one of
-/// the two is a claim wider than the evidence — measured as a false red on a fully
-/// governed corpus (finding-01).
+/// evidence is produced by an out-of-writer edit and by any write door that lands
+/// bytes without journaling, so naming one of the two is a claim wider than the
+/// evidence — measured as a false red on a fully governed corpus (finding-01,
+/// whose splice door U32 closed).
 fn detect_baseline(rows: &[ParsedRow], live_root: &str) -> Option<Result<(), BaselineMismatch>> {
     let last = rows.last()?;
     if last.root_after == live_root {
@@ -334,11 +343,15 @@ mod tests {
     }
 
     /// **The false red, withdrawn** (S3-R8). A stale baseline is grey, not red:
-    /// the same mismatch is left by an out-of-writer edit and by a governed splice
-    /// (which advances the root and journals nothing), so check states the
-    /// mismatch as evidence and declines to name a cause.
+    /// the same mismatch is left by an out-of-writer edit and by any write door
+    /// that lands bytes without journaling, so check states the mismatch as
+    /// evidence and declines to name a cause.
+    ///
+    /// U32 removed the splice from that list of doors — the render may no longer
+    /// cite it, because a splice now journals its row and a governed corpus never
+    /// reaches this state.
     #[test]
-    fn a_stale_baseline_is_grey_and_names_both_possible_causes() {
+    fn a_stale_baseline_is_grey_and_states_evidence_without_naming_a_cause() {
         let trace = JournalTrace::StaleBaseline(BaselineMismatch {
             last_receipt: "r-000001".to_string(),
             recorded_root: "b3:RECORDED".to_string(),
@@ -346,7 +359,7 @@ mod tests {
         });
         assert!(
             !trace.is_red(),
-            "a governed splice produces this state — accusing it is the false red"
+            "a non-journaling write door produces this state — accusing is the false red"
         );
         assert!(trace.cannot_assess(), "grey names itself");
         assert_eq!(trace.red_summary(), None, "no lie may be claimed from it");
@@ -356,8 +369,14 @@ mod tests {
             "the EVIDENCE survives the withdrawn claim: {grey}"
         );
         assert!(
-            grey.contains("governed splice"),
-            "and it names why the evidence is ambiguous: {grey}"
+            grey.contains("does not account for"),
+            "and it says what it could not do, rather than who did it: {grey}"
+        );
+        assert!(
+            !grey.contains("splice"),
+            "U32: a governed splice journals its row, so it is no longer a cause \
+             this state can have — citing it teaches the reader a defect that is \
+             fixed: {grey}"
         );
     }
 

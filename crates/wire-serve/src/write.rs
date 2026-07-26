@@ -158,6 +158,13 @@ pub fn splice(
 
     let mut doc = load_doc(root, &args.path)?;
     let mut root_before = ambient_root(root)?;
+    // U32: the root before ANY byte of this splice landed. `root_before` below is
+    // deliberately re-read after a pin's promotion (that write is this splice's
+    // own, and re-guarding the batch on the pre-promotion token would self-refuse),
+    // so it is the wrong `root_before` for the journal: the promotion's advance
+    // would fall in the gap between two rows and break the chain. The journal
+    // records the splice as ONE guarded write — promotion and batch together.
+    let journal_root_before = root_before.clone();
 
     // §5.1 order: the world guard FIRST — checked here so a stale plan
     // refuses before any per-target resolution can answer for it, and (S7)
@@ -460,11 +467,52 @@ pub fn splice(
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
 
+    // U32 — THE SPLICE'S OWN JOURNAL ROW. A splice advances the tree root, so it
+    // owes the ledger a row exactly as a birth or a death does; without one,
+    // `check`'s layer-0 detectors have nothing to date the tree against on a
+    // pin/put-only workspace (the false green) and a baseline that goes stale the
+    // instant any splice lands (the false red, which never healed because the next
+    // write's `root_before` no longer continued the prior `root_after`).
+    //
+    // ONE row per guarded write: `journal_root_before` is the root before the pin
+    // promotion too, so promotion + batch are recorded as the single advance they
+    // are. Node-grain transitions ride `edits` (the `create`/`remove` whole-file
+    // token is theirs, not a splice's — `receipt::journal::JournalRow::file`).
+    // Written before the force rows so a crash between the two still leaves the
+    // chain link that dates the tree.
+    journal_write(
+        root,
+        "splice",
+        &args.path,
+        args.actor.as_deref(),
+        args.now.as_deref(),
+        &journal_root_before,
+        &frame.delta.root_after,
+        None,
+        effective_edits
+            .iter()
+            .zip(&armed_edits)
+            .map(|(req, armed)| receipt::EditFact {
+                target: &req.target,
+                shape: &req.edit,
+                before: &armed.node_rev_before,
+                after: &armed.node_rev_after,
+            })
+            .collect(),
+    )?;
+
     // U4.3: journal every `--force`-escaped skip — a permanent force-row per
     // bypassed rule (the render carries the same detail). The reserved journal is
     // root-EXCLUDED, so appending it never perturbs the root the splice advanced.
     // Both gates' skips, in one journal pass: a promotion forced past the armed
     // law is as permanent a record as a batch edit forced past it.
+    //
+    // U32: a force row ANNOTATES the write the row above already recorded — it
+    // moves nothing of its own, so it carries the post-write root on both sides
+    // and continues the chain. It used to carry the splice's `root_before` and
+    // `root_after`, which was a second claim to the same advance: two forced skips
+    // on one splice already broke `check_chain` before this unit, and adding the
+    // splice's own row would have broken it at one.
     let mut forced_skips = gate_pass.forced_skips;
     forced_skips.extend(pin_gate.forced_skips);
     force_journal_write(
@@ -472,7 +520,7 @@ pub fn splice(
         &args.path,
         args.actor.as_deref(),
         args.now.as_deref(),
-        &frame.delta.root_before,
+        &frame.delta.root_after,
         &frame.delta.root_after,
         &forced_skips,
     )?;
@@ -720,10 +768,11 @@ pub fn create(
         args.now.as_deref(),
         &root_before,
         &root_after,
-        receipt::journal::FileTransition {
+        Some(receipt::journal::FileTransition {
             before: None,
             after: Some(&file_rev_after.0),
-        },
+        }),
+        Vec::new(),
     )?;
 
     Ok(CreateOutcome {
@@ -833,10 +882,11 @@ pub fn remove(
         args.now.as_deref(),
         &root_before,
         &root_after,
-        receipt::journal::FileTransition {
+        Some(receipt::journal::FileTransition {
             before: Some(&current.0),
             after: None,
-        },
+        }),
+        Vec::new(),
     )?;
 
     Ok(RemoveOutcome {
@@ -1015,10 +1065,11 @@ pub fn lock_write(
         args.now.as_deref(),
         &root_before,
         &root_after,
-        receipt::journal::FileTransition {
+        Some(receipt::journal::FileTransition {
             before: Some(&file_rev_before.0),
             after: Some(&file_rev_after.0),
-        },
+        }),
+        Vec::new(),
     )?;
 
     Ok(LockWriteOutcome {
@@ -2024,11 +2075,20 @@ fn birth_death_delta(
     )
 }
 
-/// Journal one guarded birth/death: render the row through `receipt::journal`
-/// (BOTH roots + the whole-file transition, `edits=0`) and append it to the
-/// reserved root-EXCLUDED journal page via the receipt-engine append
-/// (`fs::append_line`). The next `seq` is derived from the page itself (the
-/// journal is the only durable home of its own counter). Returns the row anchor.
+/// Journal one guarded write: render the row through `receipt::journal` (BOTH
+/// roots plus the grain the op records — a whole-file transition for a
+/// `create`/`remove` birth/death, the node-grain `edits` for a `splice`) and
+/// append it to the reserved root-EXCLUDED journal page via the receipt-engine
+/// append (`fs::append_line`). The next `seq` is derived from the page itself
+/// (the journal is the only durable home of its own counter). Returns the anchor.
+///
+/// **U32: every guarded write that advances the tree root journals here.** A
+/// splice used to advance the root and write nothing, which left `check`'s
+/// layer-0 detectors with no baseline on a pin/put-only workspace (the false
+/// green) and a baseline that went stale the instant any splice landed (the false
+/// red, permanent — the next write's `root_before` no longer continued the prior
+/// `root_after`). The row IS the baseline; a write door that skips it is a write
+/// `check` cannot date.
 #[allow(clippy::too_many_arguments)]
 fn journal_write(
     root: &fs::WorkspaceRoot,
@@ -2038,7 +2098,8 @@ fn journal_write(
     now: Option<&str>,
     root_before: &Root,
     root_after: &Root,
-    file: receipt::journal::FileTransition<'_>,
+    file: Option<receipt::journal::FileTransition<'_>>,
+    edits: Vec<receipt::EditFact<'_>>,
 ) -> Result<String, Box<ErrorBody>> {
     let seq = next_journal_seq(root)?;
     let line = receipt::journal::render_row(&receipt::journal::JournalRow {
@@ -2049,8 +2110,8 @@ fn journal_write(
         now,
         root_before: &root_before.0,
         root_after: &root_after.0,
-        file: Some(file),
-        edits: Vec::new(),
+        file,
+        edits,
     });
     fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
         .map_err(|e| io_to_wire(&e))?;
@@ -2058,11 +2119,16 @@ fn journal_write(
 }
 
 /// Journal every `--force`-escaped skip (U4.3, decision #6): one `op=force`
-/// row per bypassed rule, appended to the reserved root-EXCLUDED journal. Each
-/// row carries BOTH roots of the forced splice (chain continuity) and names the
-/// bypassed rule via a `forced_rule=` token that `parse_rows` reads as an extra
-/// (the render carries the full teaching). Empty `skips` is a no-op (an ordinary
-/// non-forced write journals nothing here).
+/// row per bypassed rule, appended to the reserved root-EXCLUDED journal, naming
+/// the bypassed rule via a `forced_rule=` token that `parse_rows` reads as an
+/// extra (the render carries the full teaching). Empty `skips` is a no-op (an
+/// ordinary non-forced write journals nothing here).
+///
+/// **U32: a force row annotates a write, it does not record one.** The splice's
+/// own row (`op=splice`) carries the root advance, so the caller passes the
+/// post-write root on BOTH sides here and every force row continues the chain
+/// where that row left it. Carrying the advance again — once per skip — was a
+/// chain break at two skips even before the splice row existed.
 fn force_journal_write(
     root: &fs::WorkspaceRoot,
     path: &Path,
@@ -3068,9 +3134,9 @@ mod tests {
 /// recovery `refresh`, rows 13/14).
 #[cfg(test)]
 mod guarded_create_remove {
-    use wire::{ErrorCode, FileChange, NodeRev, Path, Recovery};
+    use wire::{Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, SecRef};
 
-    use super::{CreateArgs, RemoveArgs, create, remove};
+    use super::{CreateArgs, RemoveArgs, SpliceArgs, ambient_root, create, remove, splice};
 
     /// A real on-disk workspace (create/remove land bytes and re-fold the root).
     fn ws() -> (tempfile::TempDir, fs::WorkspaceRoot) {
@@ -3406,6 +3472,138 @@ mod guarded_create_remove {
         assert!(
             report.is_green(),
             "birth→death chain is continuous: {report:?}"
+        );
+    }
+
+    /// A splice against a page under `root`, editing the `Alpha/Beta` section.
+    fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
+        SpliceArgs {
+            id: None,
+            path: Path(path.into()),
+            actor: Some("alice".into()),
+            now: None,
+            receipt: None,
+            if_root: None,
+            dry: false,
+            force: false,
+            edits: vec![Edit {
+                target: SecRef::Hpath {
+                    hpath: vec![
+                        HpathSeg {
+                            h: "Alpha".into(),
+                            n: None,
+                        },
+                        HpathSeg {
+                            h: "Beta".into(),
+                            n: None,
+                        },
+                    ],
+                },
+                edit: EditShape::Match {
+                    old: old.into(),
+                    new: new.into(),
+                },
+                if_node_rev: None,
+            }],
+            plan_edits: Vec::new(),
+            pin: None,
+        }
+    }
+
+    /// **U32 — the write door's own gate.** A splice advances the tree root, so it
+    /// journals a row like a birth or a death does. Before this unit `journal_write`
+    /// fired only from `create` / `remove` / `lock_write` (no production caller) and
+    /// `force_journal_write` (nothing to write when `skips` is empty), so the primary
+    /// write path moved the root and left the ledger silent — which is the mechanism
+    /// of BOTH of finding-01's signs.
+    ///
+    /// Deleting the `journal_write` call in [`splice`] makes this test fail on the
+    /// row count; leaving the row but taking its roots from the wrong place makes it
+    /// fail on the chain.
+    #[test]
+    fn a_splice_journals_a_row_that_dates_the_tree() {
+        let (_dir, root) = ws();
+        create(
+            &root,
+            0,
+            &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nfour five\n"),
+            &[],
+        )
+        .expect("birth");
+        let after_birth = receipt::journal::parse_rows(&journal_text(&root));
+        assert_eq!(after_birth.len(), 1, "the birth row");
+
+        splice(
+            &root,
+            0,
+            &splice_args("notes/plan.md", "four five", "four five six"),
+            &[],
+            None,
+        )
+        .expect("splice commits");
+
+        let rows = receipt::journal::parse_rows(&journal_text(&root));
+        assert_eq!(rows.len(), 2, "the splice journaled its own row");
+        let spliced = &rows[1];
+        assert_eq!(spliced.op, "splice", "the row names its op");
+        assert_eq!(spliced.path, "notes/plan.md");
+        assert_eq!(spliced.actor.as_deref(), Some("alice"));
+        assert_eq!(spliced.edits, 1, "the node-grain batch rides `edits`");
+        assert_eq!(
+            spliced.root_before, after_birth[0].root_after,
+            "it continues the chain from the previous guarded write"
+        );
+        assert_eq!(
+            spliced.root_after,
+            ambient_root(&root).expect("live root").0,
+            "and its root_after IS the live tree — the baseline `check` needs"
+        );
+        assert!(
+            receipt::journal::check_chain(&rows).is_green(),
+            "create → splice is one continuous chain"
+        );
+    }
+
+    /// A SEQUENCE, because the defect this closes was permanent: once the baseline
+    /// went stale it never healed, since the next write's `root_before` no longer
+    /// continued the prior `root_after`. One row proves the call site exists; only a
+    /// run of them proves the chain does not drift.
+    #[test]
+    fn a_run_of_splices_stays_a_continuous_chain() {
+        let (_dir, root) = ws();
+        create(
+            &root,
+            0,
+            &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nw0\n"),
+            &[],
+        )
+        .expect("birth");
+
+        for step in 1..=5 {
+            splice(
+                &root,
+                0,
+                &splice_args(
+                    "notes/plan.md",
+                    &format!("w{}", step - 1),
+                    &format!("w{step}"),
+                ),
+                &[],
+                None,
+            )
+            .unwrap_or_else(|e| panic!("splice {step} refused: {e:?}"));
+        }
+
+        let rows = receipt::journal::parse_rows(&journal_text(&root));
+        assert_eq!(rows.len(), 6, "one birth + five splices, one row each");
+        assert!(
+            receipt::journal::check_chain(&rows).is_green(),
+            "the chain stays continuous across a run of splices: {rows:#?}"
+        );
+        assert_eq!(
+            rows.last().expect("rows").root_after,
+            ambient_root(&root).expect("live root").0,
+            "and the last row still dates the live tree — the heal"
         );
     }
 }
