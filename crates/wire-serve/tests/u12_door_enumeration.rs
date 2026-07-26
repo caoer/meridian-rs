@@ -343,16 +343,11 @@ fn scoped_lines(text: &str) -> Vec<Scoped<'_>> {
         // A gated region's own closing brace belongs to it, so the flag is read
         // before the region is closed.
         let test_gated = pending || gate.is_some();
-        if let Some(open_at) = gate {
-            if body == "}" && indent == open_at {
-                gate = None;
-            }
+        if body == "}" && gate == Some(indent) {
+            gate = None;
         }
-
-        if let Some((open_at, _)) = fns.last() {
-            if body == "}" && indent == *open_at {
-                fns.pop();
-            }
+        if body == "}" && fns.last().is_some_and(|(open_at, _)| *open_at == indent) {
+            fns.pop();
         }
         let function = fns.last().map(|(_, name)| *name);
         if let Some(name) = declared_fn(trimmed) {
