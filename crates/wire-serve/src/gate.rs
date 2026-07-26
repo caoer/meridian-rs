@@ -686,6 +686,28 @@ mod scenarios {
             journal.contains("forced_rule="),
             "the force-row names the bypassed rule: {journal}"
         );
+
+        // U32: the splice's OWN row rides the same journal, and the two rows are
+        // one continuous chain — the splice row records the advance, the force row
+        // annotates it. `check_chain` compares `root_after(N)` to `root_before(N+1)`,
+        // so a force row re-claiming the splice's advance would break the chain and
+        // turn every forced write into a permanent `check` finding.
+        let rows = receipt::journal::parse_rows(&journal);
+        assert_eq!(rows.len(), 2, "one splice row + one force row: {rows:#?}");
+        assert_eq!(rows[0].op, "splice", "the write's own row comes first");
+        assert_eq!(rows[1].op, "force", "the annotation follows it");
+        assert_eq!(
+            rows[1].root_before, rows[0].root_after,
+            "the force row continues the chain where the splice row left it"
+        );
+        assert_eq!(
+            rows[1].root_before, rows[1].root_after,
+            "and claims no advance of its own — it annotates a write, it is not one"
+        );
+        assert!(
+            receipt::journal::check_chain(&rows).is_green(),
+            "so a forced write leaves a continuous chain: {rows:#?}"
+        );
     }
 
     // ── Scenario 4 — INDEX-remove + marker-remove → INDEX-integrity floor ───────

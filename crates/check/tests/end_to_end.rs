@@ -152,19 +152,27 @@ fn spliced_journal_caught_through_check() {
     );
 }
 
-/// **The stale-baseline fixture, in BOTH of its causes** (S3-R8). One honest write
-/// records the tree root. Then the tree moves — once by an out-of-writer edit, once
-/// by an ordinary GOVERNED splice — and the two leave the journal in the *same*
-/// state, because a splice advances the root and writes no row.
+/// **The stale-baseline fixture and its green-path control** (S3-R8, then U32).
+/// One honest write records the tree root; then the tree moves twice, and the two
+/// movers must now be told apart.
 ///
 /// This test supersedes `foreign_edit_caught_through_check`, which asserted RED on
-/// the first case. That red was measured on the deployed binary against a fully
-/// governed corpus and it accused a legitimate write (finding-01, corrected). So
-/// check now states the mismatch as evidence and refuses to name a cause: grey,
-/// not red — and the two causes are asserted to be indistinguishable, which is the
-/// whole reason the claim was withdrawn.
+/// the out-of-writer case. That red was measured on the deployed binary against a
+/// fully governed corpus and it accused a legitimate write (finding-01, corrected),
+/// so check states the mismatch as evidence and declines to name a cause.
+///
+/// **U32 changed the second arm's outcome, and that inversion is the unit.** A
+/// governed splice used to land in the SAME stale state as an out-of-band edit —
+/// it advanced the root and journaled nothing. It now journals its row, so the
+/// governed corpus is ASSESSED and green while the out-of-band one stays grey.
+/// Without this pairing a "fix" that greyed everything would read as success
+/// (S3-R8(c)).
+///
+/// The accusation stays withdrawn even so: a stale baseline is still what ANY
+/// byte-landing door that skips the journal leaves, and the tree cannot say who
+/// moved it. What U32 bought is that governed work no longer produces the state.
 #[test]
-fn a_moved_tree_is_a_stale_baseline_whoever_moved_it() {
+fn a_governed_splice_re_dates_the_tree_an_out_of_band_edit_does_not() {
     // ── cause 1: an out-of-writer edit ──────────────────────────────────────
     let dir = tempfile::tempdir().expect("tmpdir");
     let root = WorkspaceRoot(dir.path().to_path_buf());
@@ -191,7 +199,18 @@ fn a_moved_tree_is_a_stale_baseline_whoever_moved_it() {
     );
     assert!(trace.cannot_assess(), "and it says so");
 
-    // ── cause 2: a fully GOVERNED splice, no out-of-band edit anywhere ───────
+    // The grey names no culprit — the withdrawn accusation, still withdrawn.
+    let grey = trace.grey_summary().expect("the grey carries its reason");
+    assert!(
+        grey.contains("r-000001") && grey.contains(&recorded) && grey.contains(&now),
+        "the EVIDENCE is stated in full: {grey}"
+    );
+    assert!(
+        !grey.contains("out-of-writer") && !grey.contains("splice"),
+        "but no cause is named — the tree cannot say who moved it: {grey}"
+    );
+
+    // ── the green-path control: a fully GOVERNED splice, U32 ─────────────────
     let dir = tempfile::tempdir().expect("tmpdir");
     let governed = WorkspaceRoot(dir.path().to_path_buf());
     produce(&governed, "a.md", "# A\n\nalpha\n");
@@ -200,28 +219,40 @@ fn a_moved_tree_is_a_stale_baseline_whoever_moved_it() {
 
     splice_through_the_write_path(&governed, "a.md", "alpha", "beta");
 
-    let rows_after = parse_rows(&read_journal(&governed)).len();
+    let rows = parse_rows(&read_journal(&governed));
     assert_eq!(
-        rows_before, rows_after,
-        "the mechanism, asserted not assumed: a governed splice journals NO row"
+        rows.len(),
+        rows_before + 1,
+        "the mechanism, asserted not assumed: U32 — a governed splice journals a row"
     );
     assert_ne!(
         recorded,
         live_root(&governed),
-        "and it DOES move the tree root — which is what staleness is"
+        "it DOES move the tree root — which is what staleness WOULD have been"
+    );
+    let last = rows.last().expect("the splice row");
+    assert_eq!(last.op, "splice", "and the row names the op that moved it");
+    assert_eq!(
+        last.root_after,
+        live_root(&governed),
+        "the row re-dates the tree: its root_after IS the live root"
     );
 
     let trace = check::journal_trace(&governed).expect("journal trace");
+    let check::JournalTrace::Assessed { chain } = &trace else {
+        panic!(
+            "THE FIX: a corpus whose every write was governed is ASSESSED, not grey — \
+             {trace:?}"
+        );
+    };
     assert!(
-        matches!(trace, check::JournalTrace::StaleBaseline(_)),
-        "the governed corpus lands in the SAME state as the out-of-band one"
+        chain.is_green(),
+        "and it reads green: create → splice is one continuous chain: {chain:?}"
     );
     assert!(
-        !trace.is_red(),
-        "THE FALSE RED: accusing this workspace of an out-of-writer edit is what \
-         the ratified fence would have blocked every governed commit for"
+        !trace.cannot_assess(),
+        "a governed corpus is something check CAN assess"
     );
-    assert!(trace.cannot_assess(), "it reports what it cannot prove");
 }
 
 /// **read-only** (task gate). A layer-1 armed run over the tree mutates nothing:

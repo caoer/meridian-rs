@@ -155,8 +155,9 @@ fn render_human(workspace: &Path, report: &CoreReport) -> String {
             let _ = writeln!(
                 out,
                 "  foreign_edit: {GREY_CANNOT_ASSESS} — tree root {} does not continue the last \
-                 receipt ^{} (recorded root_after={}); a governed splice moves the root and \
-                 journals no row, so this is NOT distinguishable from an out-of-writer edit",
+                 receipt ^{} (recorded root_after={}); something advanced the tree that the \
+                 journal does not account for, and an out-of-writer edit is not the only door \
+                 that leaves this trace",
                 m.live_root, m.last_receipt, m.recorded_root
             );
         }
