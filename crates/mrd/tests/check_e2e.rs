@@ -165,6 +165,15 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 ///
 /// The whole stdout is asserted, not a substring: this is the render that must
 /// stay byte-identical while the vacuous-baseline path turns grey.
+///
+/// # The `interval:` line is an AMENDMENT with a named adjudicator (S3-R30)
+/// This golden gained one line, and the artifact that adjudicates it is not this
+/// unit's: **S3-R29 — "a byte check is only as wide as the INTERVAL IT SPANS, so
+/// STATE THE INTERVAL WHENEVER YOU STATE THE CHECK"** — ruled before F1 was found
+/// and unmoved by this change. The four journal/pin lines below are byte-identical;
+/// what is added is the sentence the ruling requires, and it says plainly that a
+/// bare `mrd check` did NOT read the index. *The pin caught the addition, which is
+/// what it is for.*
 #[test]
 fn check_is_green_when_the_journal_carries_create_rows() {
     let sb = sandbox();
@@ -189,7 +198,9 @@ fn check_is_green_when_the_journal_carries_create_rows() {
     assert_eq!(
         stdout(&out),
         format!(
-            "check core {}\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
+            "check core {}\n  interval: worktree — the bytes on disk. The git INDEX was not \
+             read, so this says nothing about what a commit would record: `mrd check --staged` \
+             asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
              anchoring: no pinned objects\n",
             root.0.display()
         ),
@@ -225,6 +236,17 @@ fn check_is_green_when_the_journal_carries_create_rows() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
+            },
+            // F1 / S3-R29 — the interval, on the machine face. `not-asked` plus
+            // `spans_the_commit: false` is the honest pair for a bare `mrd check`:
+            // the answer is about the worktree, and the reader is told so rather
+            // than left to assume the index was read.
+            "interval": {
+                "state": "not-asked",
+                "spans_the_commit": false,
+                "cannot_ask_detail": null,
+                "diverged_paths": [],
+                "staged": null,
             },
         }),
         "the baseline-present json: the `core` block is unchanged key for key, \
@@ -556,6 +578,18 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
+            },
+            // F1 / S3-R29: the interval is STATED on the machine face too, and
+            // `state: "not-asked"` is a fact — a bare `mrd check` did not read the
+            // index, so `spans_the_commit` is FALSE and a reader cannot bank this
+            // answer as being about their commit. The adjudicator for this addition
+            // is S3-R29 itself (see the sibling render gate), not this unit.
+            "interval": {
+                "state": "not-asked",
+                "spans_the_commit": false,
+                "cannot_ask_detail": null,
+                "diverged_paths": [],
+                "staged": null,
             },
         }),
         "the grey json: no `green: true` for a reader to mistake for assessed, and \

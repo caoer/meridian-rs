@@ -48,7 +48,8 @@ use model::Document;
 
 pub use layer0::{
     BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace, NO_BASELINE_DETAIL,
-    OrphanedBlob, PinPlane, PinRow, claims_realised, journal_trace, pin_plane,
+    OrphanedBlob, PinPlane, PinRow, claims_realised, journal_page, journal_trace, journal_trace_of,
+    pin_plane,
 };
 pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
 
@@ -200,6 +201,41 @@ pub fn core(
         drifted_claims,
         pins: pin_plane(root, docs, pins),
     })
+}
+
+/// [`core`] over an INTERVAL the caller holds the bytes of — the same verdict, on
+/// a snapshot that is not the worktree.
+///
+/// `journal_page` and `live_root` are that interval's own journal bytes and its
+/// own folded tree root ([`fs::overlay_snapshot`]); `docs` and `pins` are the
+/// corpus built from the same bytes. `root` is used for the OBJECT STORE alone —
+/// blob reachability is a property of the repository, not of an interval, and the
+/// same store answers for both.
+///
+/// # Why an interval-bearing entry point exists at all (F1)
+/// The pre-commit fence's whole job is to speak about what is being committed,
+/// and what is being committed is the INDEX. A verdict computer reachable only
+/// through a worktree read can be given the right question and still answer about
+/// the wrong bytes — a false green with every gate intact. So the interval is a
+/// PARAMETER here, and [`core`] is this function with the worktree supplied.
+///
+/// **Claims are not evaluated over a foreign interval.** A claim's observation is
+/// a live read against the tree ([`claims_realised`] takes the root), so it cannot
+/// be re-pointed at bytes on no disk; the worktree pass owns that plane and this
+/// one reports it empty rather than pretending to have asked.
+#[must_use]
+pub fn core_of(
+    root: &WorkspaceRoot,
+    journal_page: &str,
+    live_root: &str,
+    docs: &BTreeMap<String, Document>,
+    pins: &[PinRow],
+) -> CoreReport {
+    CoreReport {
+        trace: journal_trace_of(journal_page, live_root),
+        drifted_claims: Vec::new(),
+        pins: pin_plane(root, docs, pins),
+    }
 }
 
 /// Why the layer-0 core could not complete its read. A fault stops the read; it

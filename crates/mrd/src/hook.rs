@@ -1,12 +1,27 @@
 //! The git pre-commit fence — the boundary fence, installed per
 //! `$GIT_COMMON_DIR` (U15, D11/D12).
 //!
-//! `mrd hook install` writes a `pre-commit` hook that calls `mrd check` and
-//! rejects on its exit. **Zero markdown semantics live in the hook** — it is an
-//! adapter over the engine, the same law that keeps them out of ccc-statusd
+//! `mrd hook install` writes a `pre-commit` hook that calls `mrd check --staged`
+//! and rejects on its exit. **Zero markdown semantics live in the hook** — it is
+//! an adapter over the engine, the same law that keeps them out of ccc-statusd
 //! (`2026-07-24-pin-content-anchoring-modes.md` §5, silver). Refusal's legal home
 //! stays engine-side; the hook fences the one door the engine cannot see, the
 //! out-of-band write (a human in Obsidian, a bash edit).
+//!
+//! # THE INTERVAL THE FENCE ASKS ABOUT (F1)
+//! **git commits the INDEX**, so the fence asks `mrd check --staged` — the verb's
+//! interval-bearing question — and not `mrd check`, which answers about the
+//! worktree the hook happens to be standing in. The two part company on
+//! `git add` + restore, `git add -p`, `git commit <pathspec>`, `git stash`, and any
+//! concurrent writer between `git add` and hook fire; the shipped fence read the
+//! worktree, answered green over bytes no commit would record, and let forged
+//! bytes into history.
+//!
+//! **An OLDER installed fence therefore misses this**, which is why the body
+//! carries a version and [`HookHere::Ours`] reports whether the installed bytes
+//! are current: `mrd hook install` is idempotent and refreshes them, but nothing
+//! can prompt an operator to run it if the status face calls a superseded fence
+//! "installed".
 //!
 //! # Why this module is public
 //! The R19 anti-vacuity harness has to drive [`HookLock`] across a fork window
@@ -65,7 +80,7 @@ const LOCK_FILE: &str = "mrd-hook.lock";
 /// gate here would make the fence a silent no-op on exactly the roots it is
 /// installed for.
 const HOOK_BODY: &str = r#"#!/bin/sh
-# mrd-hook-fence 1 — the meridian pre-commit fence.
+# mrd-hook-fence 2 — the meridian pre-commit fence.
 #
 # Installed by `mrd hook install`; removed by `mrd hook uninstall`.
 # This file is an ADAPTER over the engine: it holds ZERO markdown semantics and
@@ -90,11 +105,15 @@ if ! command -v mrd >/dev/null 2>&1; then
 	exit 1
 fi
 
-mrd check
+# --staged is the whole point of running here: git commits the INDEX, so the
+# fence asks about the interval the commit spans and not about the worktree it
+# happens to be standing in. `mrd check` alone answers a true question about the
+# wrong bytes — staged forgery, restored worktree, forged bytes in history.
+mrd check --staged
 mrd_status=$?
 if [ "$mrd_status" -ne 0 ]; then
 	printf '%s\n' \
-		"meridian fence: refusing this commit — \`mrd check\` exited ${mrd_status}; its lines above say why." \
+		"meridian fence: refusing this commit — \`mrd check --staged\` exited ${mrd_status}; its lines above say why." \
 		"  escape:  MRD_HOOK_FORCE=1 git commit ...   (or: git commit --no-verify)" \
 		'  remove:  mrd hook uninstall' >&2
 	exit 1
@@ -386,7 +405,7 @@ pub fn install(workspace: &Path) -> Result<(Fenceable, Installed), Unfenceable> 
     let fenceable = fenceable.fenceable;
     let state = match read_hook(&fenceable.hook_path) {
         HookHere::None => Installed::Fresh,
-        HookHere::Ours => Installed::AlreadyInstalled,
+        HookHere::Ours { .. } => Installed::AlreadyInstalled,
         HookHere::Foreign { first_line } => {
             return Err(Unfenceable::ForeignHook {
                 path: fenceable.hook_path.clone(),
@@ -416,7 +435,7 @@ pub fn uninstall(workspace: &Path) -> Result<(Fenceable, Removed), Unfenceable> 
             path: fenceable.hook_path.clone(),
             first_line,
         }),
-        HookHere::Ours => {
+        HookHere::Ours { .. } => {
             fs::remove_file(&fenceable.hook_path).map_err(|e| Unfenceable::CannotAsk {
                 root: workspace.to_path_buf(),
                 detail: format!("cannot remove {} ({e})", fenceable.hook_path.display()),
@@ -443,8 +462,21 @@ pub fn status(workspace: &Path) -> Result<(Fenceable, HookHere), Unfenceable> {
 pub enum HookHere {
     /// Nothing is installed.
     None,
-    /// A fence this engine wrote (it carries [`HOOK_MARKER`]).
-    Ours,
+    /// A fence this engine wrote (it carries [`HOOK_MARKER`]), with whether its
+    /// bytes are the ones this engine writes TODAY.
+    ///
+    /// # Why the currency of the bytes is a reported state (F1)
+    /// The marker says WHOSE the file is; it cannot say WHAT it does. An older
+    /// fence runs `mrd check` where the current one runs `mrd check --staged`, so
+    /// it reads the worktree and passes a staged forgery — **while
+    /// `mrd hook status` reports it as installed.** A guard whose report cannot
+    /// distinguish "fenced" from "fenced by a version that misses the defect this
+    /// one closes" is a green light with no lamp behind it, and the operator has
+    /// no way to know a re-install is owed.
+    Ours {
+        /// The installed bytes are byte-for-byte what [`install`] writes now.
+        current: bool,
+    },
     /// A file this engine did not write.
     Foreign {
         /// Its first non-shebang, non-blank line, quoted verbatim.
@@ -586,7 +618,9 @@ fn read_hook(path: &Path) -> HookHere {
         };
     };
     if body.contains(HOOK_MARKER) {
-        return HookHere::Ours;
+        return HookHere::Ours {
+            current: body == HOOK_BODY,
+        };
     }
     let first_line = body
         .lines()

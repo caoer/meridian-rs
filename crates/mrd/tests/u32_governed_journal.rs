@@ -251,8 +251,13 @@ fn governed_writes_leave_check_green() {
     );
     assert_eq!(
         stdout(&out),
+        // The `interval:` line is F1's addition, adjudicated by S3-R29 ("state the
+        // interval whenever you state the check") — a ruling older than this change
+        // and unmoved by it. Every journal and pin line below is byte-identical.
         format!(
-            "check core {}\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
+            "check core {}\n  interval: worktree — the bytes on disk. The git INDEX was not \
+             read, so this says nothing about what a commit would record: `mrd check --staged` \
+             asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
              anchoring: 0 anchored · 0 pending-anchor · 1 never-anchored\n",
             root.0.display()
         ),

@@ -412,3 +412,109 @@ fn two_repo_handles_answer_independently() {
     assert_eq!(a.root(), first.path());
     assert_eq!(b.root(), second.path());
 }
+
+// ── the INDEX: what a commit is about to record (F1) ─────────────────────────
+
+/// **Gate — a fully-staged tree reports NO divergence.** The empty answer is what
+/// tells a caller the two intervals coincide, so a spurious entry here would make
+/// every ordinary commit pay for a second assessment (and, worse, read as a
+/// divergence that is not one).
+#[test]
+fn a_fully_staged_tree_reports_no_index_divergence() {
+    let dir = empty_repo();
+    write(dir.path(), "page.md", "# Page\n\nbody\n");
+    commit(dir.path(), "seed");
+    let repo = Repo::at(dir.path());
+    assert!(
+        repo.staged_divergence().expect("ask git").is_empty(),
+        "nothing is modified: the index and the worktree are the same interval"
+    );
+
+    write(dir.path(), "page.md", "# Page\n\nedited\n");
+    git_in(dir.path(), &["add", "page.md"]);
+    assert!(
+        repo.staged_divergence().expect("ask git").is_empty(),
+        "staged and identical: still one interval"
+    );
+}
+
+/// **Gate — the INDEX's bytes come back when the worktree is restored.** This is
+/// F1's exact state: staged forgery, worktree restored byte-exact. A caller reading
+/// the worktree sees the governed bytes; only this answer carries what a commit
+/// would record.
+#[test]
+fn the_index_bytes_come_back_when_the_worktree_is_restored() {
+    let dir = empty_repo();
+    write(dir.path(), "page.md", "governed\n");
+    commit(dir.path(), "seed");
+    write(dir.path(), "page.md", "FORGED\n");
+    git_in(dir.path(), &["add", "page.md"]);
+    write(dir.path(), "page.md", "governed\n");
+
+    let divergence = Repo::at(dir.path()).staged_divergence().expect("ask git");
+    assert_eq!(divergence.len(), 1, "one path diverges: {divergence:?}");
+    let (path, content) = &divergence[0];
+    assert_eq!(path, "page.md");
+    assert_eq!(
+        content.as_deref(),
+        Some(&b"FORGED\n"[..]),
+        "the bytes are the INDEX's — the ones `git show HEAD:page.md` would print \
+         after the commit"
+    );
+}
+
+/// **Gate — a staged DELETION is reported as a removal, even with the worktree copy
+/// still on disk.** `git rm --cached` leaves the file present and untracked, so
+/// `diff-files` cannot see it: without the index-vs-HEAD half of the query the
+/// commit would drop a governed page while the check still read it.
+#[test]
+fn a_staged_deletion_is_reported_as_a_removal_with_the_file_still_on_disk() {
+    let dir = empty_repo();
+    write(dir.path(), "page.md", "governed\n");
+    commit(dir.path(), "seed");
+    git_in(dir.path(), &["rm", "-q", "--cached", "page.md"]);
+    assert!(
+        dir.path().join("page.md").exists(),
+        "the fixture IS the subject: the worktree copy is still there"
+    );
+
+    let divergence = Repo::at(dir.path()).staged_divergence().expect("ask git");
+    assert_eq!(
+        divergence,
+        vec![("page.md".to_owned(), None)],
+        "None means THIS COMMIT REMOVES IT, whatever the worktree still holds"
+    );
+}
+
+/// **Gate — an unborn HEAD does not fault.** A fresh repository has no HEAD to diff
+/// against, and a caller must get an answer rather than an error: the fence runs on
+/// the very first commit too.
+#[test]
+fn an_unborn_head_answers_without_faulting() {
+    let dir = empty_repo();
+    write(dir.path(), "page.md", "first\n");
+    git_in(dir.path(), &["add", "page.md"]);
+    assert!(
+        Repo::at(dir.path())
+            .staged_divergence()
+            .expect("an unborn HEAD is not a fault")
+            .is_empty(),
+        "staged and identical to the worktree: one interval"
+    );
+}
+
+/// **Gate — a non-repository degrades TYPED, never as a silent empty answer.**
+/// `NotARepo` is what lets a caller say "there is no index here" instead of "the
+/// index agrees", which are different facts.
+#[test]
+fn a_non_repository_returns_not_a_repo_rather_than_an_empty_answer() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    write(dir.path(), "page.md", "loose\n");
+    assert!(
+        matches!(
+            Repo::at(dir.path()).staged_divergence(),
+            Err(GitFail::NotARepo { .. })
+        ),
+        "a directory that is not a repository has no index to compare"
+    );
+}
