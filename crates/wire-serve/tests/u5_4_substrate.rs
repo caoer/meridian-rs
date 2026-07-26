@@ -93,8 +93,15 @@ fn apply_plan(root: &fs::WorkspaceRoot, plan: &RenamePlan) {
         let doc = build_doc(&read(root, path));
         match model::validate_batch(&doc, None, batch, None) {
             SpliceVerdict::Validated(sealed) => {
-                fs::apply_batch(root, FsPath::new(path), None, &sealed, doc.raw.as_bytes())
-                    .expect("apply_batch lands the rename splice");
+                fs::apply_batch(
+                    root,
+                    FsPath::new(path),
+                    None,
+                    &sealed,
+                    doc.raw.as_bytes(),
+                    &model::candidate_of_batch(path, &doc.raw, &sealed),
+                )
+                .expect("apply_batch lands the rename splice");
             }
             other => panic!("rename splice for {path} did not validate: {other:?}"),
         }
@@ -223,6 +230,7 @@ fn gate1_falsification_body_dropping_rename_loses_block_id() {
         None,
         &sealed,
         doc.raw.as_bytes(),
+        &model::candidate_of_batch("page.md", &doc.raw, &sealed),
     )
     .expect("apply");
 

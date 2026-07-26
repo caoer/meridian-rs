@@ -199,7 +199,7 @@ pub fn splice(
     if let Some(p) = pin.as_ref().and_then(|p| p.promotion.as_ref())
         && same_file(root, &p.target, &args.path)
     {
-        doc = build_doc(&args.path, &p.bytes);
+        doc = build_doc(&args.path, p.candidate.raw());
     }
     // The lock block is composed against the POST-promotion pinning page and
     // rides the batch as the one engine-minted span edit (`model::EngineEdit`):
@@ -308,9 +308,9 @@ pub fn splice(
     // advisory verdicts (a forged attestation is not a policy question) and above
     // the dry short-circuit, so a rehearsal refuses exactly where the real write
     // does.
-    lock_artifact_guard(&doc, &after_doc, pin_block.as_deref(), &args.path)?;
+    lock_artifact_guard(&doc, after_doc.document(), pin_block.as_deref(), &args.path)?;
 
-    let armed_edits = simulate_armed_edits(&after_doc, effective_edits, &before_facts)?;
+    let armed_edits = simulate_armed_edits(after_doc.document(), effective_edits, &before_facts)?;
 
     // S4a/D4 (TOCTOU close): the I4 def-conformance verdict runs HERE — inside
     // the D9 flock, over the very `after_doc` this splice is about to write,
@@ -326,7 +326,7 @@ pub fn splice(
     // run only GATES, it never mutates the sealed batch.
     if let Some(refusal) = crate::check_write::verdict(
         &doc,
-        &after_doc,
+        after_doc.document(),
         &conformance_target(root, &args.path),
         args.actor.as_deref().unwrap_or_default(),
         args.now.as_deref().unwrap_or_default(),
@@ -338,7 +338,7 @@ pub fn splice(
 
     // ADVISORY §11.1 verdicts from any caller packs (W1) — never a decision; the
     // caller-supplied packs do not gate, only the armed law below does.
-    let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
+    let mut verdicts = evaluate_verdicts(rulesets, after_doc.document());
 
     // U4.2/U4.3: the armed-plane GATE — after CAS, before bytes land, both writer
     // paths. Reads the workspace's OWN armed law (never caller packs) and REFUSES
@@ -349,12 +349,12 @@ pub fn splice(
     let gate_pass = crate::gate::gate_write(
         root,
         &doc,
-        &after_doc,
+        after_doc.document(),
         &batch.edits,
         policy::ChangeOp::Splice,
         args.actor.as_deref(),
         args.force,
-        &after_doc,
+        after_doc.document(),
     )?;
     verdicts.extend(gate_pass.verdicts);
     verdicts.extend(std::mem::take(&mut pin_gate.verdicts));
@@ -400,7 +400,8 @@ pub fn splice(
     if let Some(minted) = pin.as_ref()
         && let Some(p) = minted.promotion.as_ref()
     {
-        fs::replace_file(root, FsPath::new(&p.target.0), &p.bytes).map_err(|e| io_to_wire(&e))?;
+        fs::replace_file(root, FsPath::new(&p.target.0), &p.candidate)
+            .map_err(|e| io_to_wire(&e))?;
         // D16: refresh the actor's receipt to the rev THIS engine write created.
         // The promotion moved the section's `sec_rev` (a rev is over RAW bytes,
         // and a line was inserted) without moving one byte of what the actor
@@ -485,7 +486,7 @@ pub fn splice(
                 // commit writes exactly these bytes, so this equals the
                 // committed file's rev and a subsequent `toc`'s `file_rev` — no
                 // drift. Latency only; correctness stays `root_after`.
-                file_rev_after: Some(NodeRev(after_doc.root.node_rev.0.clone())),
+                file_rev_after: Some(NodeRev(after_doc.document().root.node_rev.0.clone())),
                 edits: armed_edits,
             },
             receipt: receipt_fact,
@@ -625,13 +626,13 @@ pub fn create(
 
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
-    let after_doc = build_doc(&args.path, &body);
-    let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+    let after_doc = model::candidate_of_body(&args.path.0, body.into_owned());
+    let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
 
     // THE ASSERTION (R25), live on the birth path: a token still standing in a
     // claim-link position refuses instead of landing. A birth has no pre-image,
     // so "introduced" and "present" are the same set here.
-    if !syntax::fp_removals(&after_doc.raw).is_empty() {
+    if !syntax::fp_removals(after_doc.raw()).is_empty() {
         return Err(bad_request(format!(
             "refused: an @fp claim token survived the document-grain strip in {} — the birth was \
              refused rather than landing a fingerprint claim the engine never minted",
@@ -645,13 +646,13 @@ pub fn create(
     // ungated doors the review names.
     lock_artifact_guard(
         &crate::gate::absent_doc(&args.path),
-        &after_doc,
+        after_doc.document(),
         None,
         &args.path,
     )?;
 
     // Advisory §11.1 findings from any caller packs (never a decision).
-    let mut verdicts = evaluate_verdicts(rulesets, &after_doc);
+    let mut verdicts = evaluate_verdicts(rulesets, after_doc.document());
 
     // U4.2/U4.3: the armed-plane GATE over the birth's after-state — before=absent
     // (the `create` change surface). Blocks an armed refusal (convention or a
@@ -662,12 +663,12 @@ pub fn create(
         crate::gate::gate_write(
             root,
             &crate::gate::absent_doc(&args.path),
-            &after_doc,
+            after_doc.document(),
             &[],
             policy::ChangeOp::Create,
             args.actor.as_deref(),
             false,
-            &after_doc,
+            after_doc.document(),
         )?
         .verdicts,
     );
@@ -691,7 +692,7 @@ pub fn create(
     // The if_absent CAS lives at the disk edge (`fs::create_file`): an occupied
     // path is `AlreadyExists`, mapped to `cas_mismatch{expected:absent,
     // actual:occupant-rev}` (row 13, recovery refresh — "re-read, it exists").
-    if let Err(e) = fs::create_file(root, fs_path, &body) {
+    if let Err(e) = fs::create_file(root, fs_path, &after_doc) {
         return Err(match e.kind() {
             ErrorKind::AlreadyExists => cas_mismatch(
                 &absent_rev(),
@@ -709,7 +710,7 @@ pub fn create(
         &root_after,
         args.actor.clone(),
         args.now.clone(),
-        model::delta::file_delta(None, Some(&after_doc)).as_ref(),
+        model::delta::file_delta(None, Some(after_doc.document())).as_ref(),
     );
     let journal_anchor = journal_write(
         root,
@@ -973,8 +974,8 @@ pub fn lock_write(
     new_raw.push_str(&raw[..edit.span.start]);
     new_raw.push_str(&edit.text);
     new_raw.push_str(&raw[edit.span.end..]);
-    let after_doc = build_doc(&args.path, &new_raw);
-    let file_rev_after = NodeRev(after_doc.root.node_rev.0.clone());
+    let after_doc = model::candidate_of_body(&args.path.0, new_raw);
+    let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
 
     if args.dry {
         return Ok(LockWriteOutcome {
@@ -989,10 +990,10 @@ pub fn lock_write(
         });
     }
 
-    fs::replace_file(root, fs_path, &new_raw).map_err(|e| io_to_wire(&e))?;
+    fs::replace_file(root, fs_path, &after_doc).map_err(|e| io_to_wire(&e))?;
     let root_after = ambient_root(root)?;
 
-    let files = model::delta::file_delta(Some(&before_doc), Some(&after_doc))
+    let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
         .unwrap_or_default();
     let committed = assemble_delta(
@@ -1089,9 +1090,10 @@ struct PendingPromotion {
     /// The page the marker lands in — the pin's target, which may be the pinning
     /// page itself.
     target: Path,
-    /// The exact bytes to write. Also the pinning page's pre-image when the
-    /// target IS the pinning page.
-    bytes: String,
+    /// The sealed candidate to write (U31) — its bytes are the exact bytes
+    /// that land, and also the pinning page's pre-image when the target IS the
+    /// pinning page.
+    candidate: model::CandidateDocument,
     /// The promoted section's `sec_rev` in those bytes — the D16 receipt refresh
     /// the write owes (a rev this ENGINE moved, invisible to the fingerprint).
     sec_rev: String,
@@ -1194,21 +1196,22 @@ fn mint_pin(
     // would eagerly write that unreachable blob). The fingerprint agrees either
     // way, because the promotion is rev-neutral.
     let mut gate = crate::gate::GatePass::default();
-    let (pinned_doc, promoted_bytes) = if promote {
-        let (promoted_doc, bytes, pass) =
+    let promoted = if promote {
+        let (candidate, pass) =
             plan_promotion(root, &spec.target, &target_doc, slot, &anchor, actor, force)?;
         gate = pass;
-        (promoted_doc, Some(bytes))
+        Some(candidate)
     } else {
-        (target_doc, None)
+        None
     };
+    let pinned_doc: &model::Document = promoted.as_ref().map_or(&target_doc, |c| c.document());
 
     // Re-resolve the span against the bytes the fingerprint will cover: a
     // promotion widens the selector's node by the marker line, so the
     // pre-promotion span would hash bytes that are no longer the selector's.
     let (span, promoted_sec_rev) = if promote {
         let facts = wire_map::facts::read_facts(
-            &wire_map::project_toc(&pinned_doc),
+            &wire_map::project_toc(pinned_doc),
             pinned_doc.raw.as_bytes(),
         );
         let Some(fresh) = wire_map::facts::resolve_selector(&facts, &selector) else {
@@ -1222,17 +1225,17 @@ fn mint_pin(
         (fact_span, String::new())
     };
 
-    let fingerprint = mint_fingerprint(&pinned_doc, &span, &spec.target, &selector)?;
+    let fingerprint = mint_fingerprint(pinned_doc, &span, &spec.target, &selector)?;
     let blob = blob_oid(
         root,
         &spec.target,
-        promoted_bytes.as_deref(),
+        promoted.as_ref().map(model::CandidateDocument::raw),
         spec.vibe.unwrap_or(false),
     )?;
     let declared_ref = format!(
         "{}#{}",
         spec.target.0,
-        lock_ref_fragment(&pinned_doc, &span, fact_anchor.as_deref(), &selector)?
+        lock_ref_fragment(pinned_doc, &span, fact_anchor.as_deref(), &selector)?
     );
 
     Ok(PinMint {
@@ -1246,9 +1249,9 @@ fn mint_pin(
             promoted: promote,
         },
         span,
-        promotion: promoted_bytes.map(|bytes| PendingPromotion {
+        promotion: promoted.map(|candidate| PendingPromotion {
             target: spec.target.clone(),
-            bytes,
+            candidate,
             sec_rev: promoted_sec_rev,
         }),
         gate,
@@ -1371,21 +1374,25 @@ fn plan_promotion(
     anchor: &str,
     actor: Option<&str>,
     force: bool,
-) -> Result<(model::Document, String, crate::gate::GatePass), Box<ErrorBody>> {
-    let bytes = promote_anchor(&target_doc.raw, slot, anchor);
-    let promoted_doc = build_doc(target, &bytes);
-    lock_artifact_guard(target_doc, &promoted_doc, None, target)?;
+) -> Result<(model::CandidateDocument, crate::gate::GatePass), Box<ErrorBody>> {
+    // U31: the promotion's bytes and the document both rungs judge are ONE
+    // sealed candidate — the same object `fs::replace_file` will demand at the
+    // write site far below, so this door can no longer land bytes it never
+    // gated.
+    let promoted =
+        model::candidate_of_body(&target.0, promote_anchor(&target_doc.raw, slot, anchor));
+    lock_artifact_guard(target_doc, promoted.document(), None, target)?;
     let gate = crate::gate::gate_write(
         root,
         target_doc,
-        &promoted_doc,
+        promoted.document(),
         &[],
         policy::ChangeOp::Splice,
         actor,
         force,
-        &promoted_doc,
+        promoted.document(),
     )?;
-    Ok((promoted_doc, bytes, gate))
+    Ok((promoted, gate))
 }
 
 /// The RAW heading chain of the section starting at `start` — `model` carries it
@@ -2349,11 +2356,11 @@ fn strip_fp_candidate(
     before_facts: &[model::Target],
     batch: &mut model::SpliceRequest,
     sealed: &mut model::ValidatedBatch,
-    after_doc: &mut model::Document,
+    after_doc: &mut model::CandidateDocument,
 ) -> Result<(), Box<ErrorBody>> {
     let mut per_edit: Vec<Vec<std::ops::Range<usize>>> = vec![Vec::new(); batch.edits.len()];
     let mut introduced = 0usize;
-    for origin in classify_fp(doc, after_doc, sealed, before_facts, path)? {
+    for origin in classify_fp(doc, after_doc.document(), sealed, before_facts, path)? {
         if let FpOrigin::Introduced { edit, local } = origin {
             introduced += 1;
             per_edit
@@ -2416,7 +2423,7 @@ fn strip_fp_candidate(
     // THE ASSERTION (R25): the candidate introduces no token. Live on every
     // write path, dry and real alike — a door that reaches these bytes without
     // passing the strip refuses here instead of landing silently.
-    if classify_fp(doc, after_doc, sealed, before_facts, path)?
+    if classify_fp(doc, after_doc.document(), sealed, before_facts, path)?
         .iter()
         .any(|o| matches!(o, FpOrigin::Introduced { .. }))
     {
@@ -2561,12 +2568,8 @@ fn build_after_doc(
     doc: &model::Document,
     sealed: &model::ValidatedBatch,
     path: &Path,
-) -> model::Document {
-    let after_raw = apply_validated(&doc.raw, sealed);
-    let after_tree = syntax::parse(&after_raw);
-    let mut after_doc = model::build(after_raw, after_tree);
-    stamp_path(&mut after_doc, path);
-    after_doc
+) -> model::CandidateDocument {
+    model::candidate_of_batch(&path.0, &doc.raw, sealed)
 }
 
 /// The armed AFTER facts, resolved against the shared post-batch state
@@ -2648,17 +2651,6 @@ fn receipt_input(
             text: format!("{line}\n"),
         },
     ))
-}
-
-/// Apply a sealed batch's span edits in memory (disjoint, sorted — applied
-/// back-to-front so earlier spans stay valid). The dry/armed-fact twin of
-/// fs's staged apply; the real bytes land through fs alone.
-fn apply_validated(raw: &str, sealed: &model::ValidatedBatch) -> String {
-    let mut out = raw.to_string();
-    for edit in sealed.edits.iter().rev() {
-        out.replace_range(edit.span.clone(), &edit.text);
-    }
-    out
 }
 
 /// The §5.2 failure split, mapped: every refusal verdict to its wire frame
@@ -2834,12 +2826,20 @@ pub fn commit_batch(
     // sealed spans index), and fs verifies the live file still carries them
     // before any rename (the D8 TOCTOU-gap fix): drift refuses the typed
     // write-conflict instead of blind-splicing stale spans into moved bytes.
+    // U31: the commit seam mints the candidate for the bytes it is about to
+    // land. Before the seal this door reached disk with no candidate at all —
+    // the splice path built one above and `commit_batch` re-validated the
+    // REQUEST, so nothing tied the document the gates judged to the bytes this
+    // function writes. `fs` now refuses a candidate that is not this batch's
+    // splice result, which is what makes that tie a compile-and-run fact.
+    let candidate = model::candidate_of_batch(&req.content_path, &before_content.raw, &sealed);
     fs::apply_batch(
         root,
         FsPath::new(&req.content_path),
         req.receipt.as_ref().map(|(rp, _)| FsPath::new(rp.as_str())),
         &sealed,
         before_content.raw.as_bytes(),
+        &candidate,
     )
     .map_err(CommitError::Io)?;
 

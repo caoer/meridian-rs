@@ -472,12 +472,12 @@ pub fn apply_under(
     // Each target's post-apply rev, read off the (post-strip) reparse.
     let after_revs: Vec<NodeRev> = planned
         .iter()
-        .map(|p| after_rev(&after_doc, &p.edit.target))
+        .map(|p| after_rev(after_doc.document(), &p.edit.target))
         .collect::<Result<_, _>>()?;
 
     // 6b. THE LOCK ARTIFACT GUARD (advisor R25), over the same candidate the gate
     // below reads and ordered before it: a forged claim is not a policy question.
-    guard_lock_artifact(&doc, &after_doc, req.page)?;
+    guard_lock_artifact(&doc, after_doc.document(), req.page)?;
 
     // 6c. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
     // bytes through `fs::apply_batch` below (not the wire choke-point), so it
@@ -488,7 +488,7 @@ pub fn apply_under(
     if let Some(detail) = crate::gate::refuse_reason(
         root,
         &doc,
-        &after_doc,
+        after_doc.document(),
         req.page,
         &batch.edits,
         &format!("run:{}", req.task),
@@ -530,6 +530,9 @@ pub fn apply_under(
         // step-2 load under the lock); fs splices exactly these bytes and
         // verifies the live page still carries them before the rename.
         doc.raw.as_bytes(),
+        // U31: the SAME candidate the strip, the artifact guard and the armed
+        // gate above all read — `fs` refuses any other.
+        &after_doc,
     )
     .map_err(|e| ExecError::Io {
         reason: e.to_string(),
@@ -537,12 +540,12 @@ pub fn apply_under(
 
     // 9. Apply→event synthesis with REAL post-apply fingerprints (the dry
     // bytes ARE the committed bytes — no re-read).
-    let event = synthesize_event(req.page, &doc, &after_doc, req.depth);
+    let event = synthesize_event(req.page, &doc, after_doc.document(), req.depth);
     Ok(Applied {
         applied: req.effects.len(),
         event,
         receipt_line,
-        file_rev_after: after_doc.root.node_rev.0.clone(),
+        file_rev_after: after_doc.document().root.node_rev.0.clone(),
     })
 }
 
@@ -565,7 +568,7 @@ fn seal_stripped_candidate(
     doc: &Document,
     planned: &[PlannedEdit],
     req: &ApplyRequest<'_>,
-) -> Result<(SpliceRequest, Document), ExecError> {
+) -> Result<(SpliceRequest, model::CandidateDocument), ExecError> {
     let mut batch = SpliceRequest {
         if_root: Some(req.pin_root.clone()),
         edits: planned.iter().map(|p| p.edit.clone()).collect(),
@@ -585,7 +588,7 @@ fn seal_stripped_candidate(
             });
         }
     };
-    let mut after_doc = crate::fp::candidate(doc, &sealed);
+    let mut after_doc = crate::fp::candidate(req.page, doc, &sealed);
     let before_facts: Vec<model::Target> = planned.iter().map(|p| p.before.clone()).collect();
     crate::fp::strip_candidate(
         doc,
