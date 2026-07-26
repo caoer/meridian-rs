@@ -140,6 +140,23 @@ pub fn splice(
     // root-preserving forged row that chain continuity cannot (named residual,
     // `receipt::journal`). A `bad_request` teaching refusal (no new taxonomy
     // reason minted — U2.1 carries no U4.1 dependency).
+    // U11 — WORKSPACE-ROOT CONFINEMENT, the guard this door has never had.
+    // `create`, `remove`, `lock_write` and `mint_pin` all call `path_confined`;
+    // `splice` — the PRIMARY write op — did not. `fs::load` joins the caller's
+    // path onto the root (`root.0.join(rel_path)`), and `Path::join` with an
+    // ABSOLUTE path discards the root outright, so an absolute or `..`-bearing
+    // splice path read and wrote OUTSIDE the workspace. Measured before the fix:
+    // both landed a real `Modified` delta on an out-of-workspace file, with
+    // `root_before == root_after` — the victim is outside the hash domain, so
+    // the world root never advanced and the write was invisible to the ledger.
+    //
+    // `mrd put` is what makes it reachable from a shell: it bypasses the strict
+    // decode entirely and builds `SpliceArgs` straight from raw argv.
+    //
+    // FIRST, before the flock and before `load_doc`: a refusal must not depend
+    // on having already touched the path it refuses.
+    path_confined(&args.path)?;
+
     if fs::domain::is_reserved_journal(FsPath::new(&args.path.0)) {
         return Err(bad_request(format!(
             "refused: {} is the reserved receipt journal — writable only by the \
@@ -1898,15 +1915,23 @@ fn acquire_write_lock(root: &fs::WorkspaceRoot) -> Result<fs::WriteLock, Box<Err
 
 /// Workspace-root confinement (d2 §2.5 C3 "+ workspace-root"): the same §1
 /// path law the strict decode enforces — no absolute path, no `.`/`..`/empty
-/// segment — so a `create`/`remove` can never escape the root via `root.join`.
-/// A violation is `bad_path`, echoing the offending path.
+/// segment, **and no root separator in the head** — so a write door can never
+/// escape the root via `root.join`. A violation is `bad_path`, echoing the
+/// offending path.
+///
+/// **The predicate itself lives in `addr::confined`**, the `std`-only leaf, so
+/// the write doors here and the resolver in `model` ask ONE implementation. A
+/// second copy of a confinement fact is how one question grows two answers.
+///
+/// **U11 — why the head-colon arm is part of confinement.** Confinement was an
+/// ambient property: every path was joined onto the ONE `fs::WorkspaceRoot`, so
+/// the lexical check was the whole story. Multi-root removes that guarantee — a
+/// `root:` prefix selects WHICH tree a path is joined onto — so a `root:`-bearing
+/// spelling arriving at a write door is an ADDRESS, never a corpus path, and is
+/// refused here rather than creating a document no address can ever name (§ 4.2,
+/// D11).
 fn path_confined(path: &Path) -> Result<(), Box<ErrorBody>> {
-    let s = &path.0;
-    let violates = s.is_empty()
-        || s.starts_with('/')
-        || s.split('/')
-            .any(|seg| seg.is_empty() || seg == "." || seg == "..");
-    if violates {
+    if !addr::confined(&path.0) {
         let mut e = ErrorBody::new(ErrorCode::BadPath);
         e.path = Some(path.clone());
         return Err(Box::new(e));

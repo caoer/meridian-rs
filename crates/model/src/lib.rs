@@ -32,6 +32,8 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use addr::{Addr, AddrError, MountName, MountSet};
+
 pub mod delta;
 pub mod fingerprint;
 pub mod gotext;
@@ -1664,6 +1666,32 @@ impl CorpusIndex {
     /// pick — it is never asserted against an assumed oracle answer.
     #[must_use]
     pub fn resolve_linkpath(&self, linkpath: &str, from: &str) -> Option<String> {
+        // C-3 (address-grammar § 5.1) — THE BODY CARRIES ITS OWN GUARD, because
+        // the retype does not reach it. A `linkpath` whose HEAD carries a `:` is
+        // a programming error at this seam: the caller was supposed to peel the
+        // root and select the target root's corpus first.
+        //
+        // Without this, FINDING 03 reproduces exactly: the basename fallback
+        // below does `rsplit('/')`, so `sessions:24-01-retro/notes.md` becomes
+        // the base `notes` and matches the AMBIENT root's `notes.md` — a wrong
+        // SUCCESS with the wrong bytes, on the link plane, while the pin plane
+        // refuses the same address. The `sessions:` prefix was never examined;
+        // it was discarded with the rest of the path.
+        //
+        // Refusing here is what makes the fallback INTRA-ROOT BY CONSTRUCTION
+        // (C-1): it is reachable only after the root has been peeled and the
+        // mount lookup has chosen the corpus to search. A future caller passing
+        // a raw `&str` cannot reproduce FINDING 03 silently — it gets `None`.
+        //
+        // Scoped to EXACTLY the head-colon rule C-3 states, deliberately not the
+        // wider `addr::confined`: a linkpath is a vault address, not a corpus
+        // path, and rejecting (say) a `..` spelling here would refuse inputs
+        // this seam answers correctly today. An instrument that cries wolf is
+        // deleted by the next person it inconveniences (S3-R23(1)).
+        let trimmed = linkpath.trim();
+        if trimmed.split('/').next().unwrap_or(trimmed).contains(':') {
+            return None;
+        }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
         let base = key.rsplit('/').next().unwrap_or(key.as_str()).to_string();
         let candidates = self
@@ -1720,11 +1748,130 @@ impl CorpusIndex {
     /// measured on another — one question, two answers. Every plane that turns a
     /// spelling into a document calls THIS.
     ///
-    /// **D12:** the spelling is carried verbatim into the lookup; no single-root
-    /// assumption and no string surgery, so a later `root:` prefix rides inside
-    /// the spelling and resolves by the same three rules.
+    /// **D12, as U11 settles it.** The old note here said a `root:` prefix
+    /// *"rides inside the spelling and resolves by the same three rules"* — the
+    /// RIDE story, and it was unimplementable as written: all three rules are
+    /// lookups into ONE flat map, so `root:page.md` missed all three and
+    /// rendered `red selector-unresolved`. **Resolution is a MOUNT LOOKUP**: the
+    /// address is parsed, its root peeled, and the mount table decides which
+    /// corpus the three rules then run against.
+    ///
+    /// **D4a — the mount table is INJECTED as a parameter**, and the corpus
+    /// parameter is root-keyed ([`RootedCorpus`]). Resolution stays HERE, in
+    /// `model`, which owns *"the single address law its two dependents share"*;
+    /// relocating it would break that charter. The injected type is
+    /// [`addr::MountSet`], defined in the upstream `std`-only leaf, so `model`
+    /// never names `config` — which is DOWNSTREAM of it (§ 7.2). Both D4 and D4a
+    /// hold, unmodified.
+    ///
+    /// **Two parameters, two different facts, deliberately not merged.**
+    /// `mounts` is which names this machine BINDS (the `MERIDIAN.md` authority);
+    /// `corpus` is which roots' documents are LOADED here. A root can be bound
+    /// with its documents unreadable (§ 8 M6) — that is grey, not a parse
+    /// failure, and not `file_not_found`.
     #[must_use]
     pub fn resolve_ref(
+        &self,
+        spelling: &str,
+        from: &str,
+        corpus: &RootedCorpus<'_>,
+        mounts: &MountSet,
+    ) -> RefResolution {
+        let addr = match Addr::parse(spelling) {
+            Ok(addr) => addr,
+            Err(err) => return RefResolution::Malformed(err),
+        };
+
+        let Some(root) = addr.root().cloned() else {
+            // The ambient root — the overwhelming majority of refs, and its
+            // behaviour is byte-for-byte what it was before U11.
+            return match self.three_rules(spelling, from, corpus.ambient_docs()) {
+                Some(path) => RefResolution::Ambient(path),
+                None => RefResolution::NotFound,
+            };
+        };
+
+        // (a) The mount table is the authority, and it answers TWO questions,
+        //     not one — S3-R43. A name it does not know at all is GREY
+        //     `unmounted`, and the fix is to declare it. A name it DECLARES but
+        //     cannot read is a different cause with a different fix: the entry
+        //     is already right, so the refusal must name the PATH.
+        //
+        //     Round 1 collapsed these, and the collapse was not theoretical —
+        //     `mrd walk` told a user to declare a root that `mrd config`, one
+        //     command away, was already reporting as declared-and-unreadable.
+        //     A teaching refusal that prescribes a COMPLETED ACTION spends the
+        //     user's trust and their time and points at nothing.
+        if !mounts.is_bound(&root) {
+            return match mounts.unreachable(&root) {
+                Some(u) => RefResolution::PathUnseeable {
+                    root,
+                    path: u.path.clone(),
+                    detail: u.detail.clone(),
+                },
+                None => RefResolution::Unmounted(root),
+            };
+        }
+
+        // (b) The table says bound, but this process holds no corpus for it.
+        //     That is a caller inconsistency rather than a machine fact, and it
+        //     is reported as unreachable — never as UNDECLARED, which is the one
+        //     thing it demonstrably is not.
+        let Some(mounted) = corpus.root(&root) else {
+            return RefResolution::PathUnseeable {
+                root,
+                path: String::new(),
+                detail: "the mount table binds this root, but no corpus for it \
+                         was loaded in this process"
+                    .to_owned(),
+            };
+        };
+
+        // (c) An OPAQUE root has no parse and no sections, so a `#selector`
+        //     addresses nothing (§ 10.1, G-1). RESOLUTION-time, because a root's
+        //     kind is a mount-table fact — this is the constructor that variant
+        //     ships with.
+        if let RootKind::Opaque(kind) = &mounted.kind
+            && addr.has_selector()
+        {
+            return RefResolution::Malformed(AddrError::SelectorOnOpaqueRoot {
+                root,
+                kind: kind.clone(),
+                selector: addr.selector().to_owned(),
+            });
+        }
+
+        // (d) POST-RESOLUTION CONFINEMENT. `path_confined` is purely lexical and
+        //     confinement used to come from joining onto the ONE workspace root;
+        //     multi-root removes that ambient guarantee, so the path portion is
+        //     re-confined to the mount it resolved to. Without this a `root:`
+        //     prefix is an escape from the only confinement the engine has.
+        if !addr::confined(addr.path()) {
+            return RefResolution::Malformed(AddrError::AmbiguousColon {
+                found: addr.path().to_owned(),
+            });
+        }
+
+        // (e) The three rules, run against the TARGET root's own corpus and its
+        //     own index — never the ambient one. C-2: a rooted address never
+        //     falls back to the ambient root. If the path names nothing in THAT
+        //     root, it is `file_not_found` scoped to that root — a distinct
+        //     class from grey, and conflating them is the false negative the
+        //     unmounted class exists to prevent.
+        match mounted.index.three_rules(addr.path(), from, mounted.docs) {
+            Some(path) => RefResolution::Rooted { root, path },
+            None => RefResolution::NotFound,
+        }
+    }
+
+    /// The three rules, over ONE root's corpus: the spelling IS a key; the
+    /// spelling + `.md` is a key; then `getFirstLinkpathDest` parity.
+    ///
+    /// Factored out so the ambient arm and the mounted arm of [`resolve_ref`]
+    /// run the SAME precedence. Two copies of this order is how the pin plane
+    /// and the decoration plane came to hash two different documents for one
+    /// ref; the whole point of one owner is that there is one copy.
+    fn three_rules(
         &self,
         spelling: &str,
         from: &str,
@@ -1738,6 +1885,196 @@ impl CorpusIndex {
             return Some(with_md);
         }
         self.resolve_linkpath(spelling, from)
+    }
+}
+
+/// What kind of tree a mounted root is — the fact that decides whether a
+/// `#selector` into it can address anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootKind {
+    /// A parsed vault: sections are addressable, selectors are legal.
+    Vault,
+    /// An OPAQUE root — no parse, no sections (`git-folder`). Pin grain is the
+    /// file and the fingerprint is a raw CID of the bytes, so an address into
+    /// one MUST NOT carry a `#selector` (§ 10.1, G-1). Carries the kind word as
+    /// the mount table spells it, so the refusal can name it.
+    Opaque(String),
+}
+
+/// One mounted root's corpus, as the resolver sees it: its documents, its own
+/// name index, and its kind.
+#[derive(Debug)]
+pub struct MountedRoot<'a> {
+    index: CorpusIndex,
+    docs: &'a BTreeMap<String, Document>,
+    kind: RootKind,
+}
+
+impl MountedRoot<'_> {
+    /// This root's documents.
+    #[must_use]
+    pub fn docs(&self) -> &BTreeMap<String, Document> {
+        self.docs
+    }
+
+    /// This root's kind.
+    #[must_use]
+    pub fn kind(&self) -> &RootKind {
+        &self.kind
+    }
+}
+
+/// **The root-keyed corpus** (`docs/address-grammar.md` § 7.2): the ambient
+/// root's documents, plus one entry per MOUNTED root, keyed by canonical mount
+/// name.
+///
+/// `model`'s own type, keyed by [`addr::MountName`] — by the time resolution
+/// runs, `config`/`fs` have already loaded each root's documents into it, so the
+/// resolver needs no paths and `model` needs no filesystem.
+///
+/// **Borrowed, never owning.** A corpus is large and already lives in the
+/// caller's hands; copying it per resolution would make the root-keyed form cost
+/// what the flat form does not, and the flat form is the majority case.
+#[derive(Debug)]
+pub struct RootedCorpus<'a> {
+    ambient: &'a BTreeMap<String, Document>,
+    mounted: BTreeMap<MountName, MountedRoot<'a>>,
+}
+
+impl<'a> RootedCorpus<'a> {
+    /// The single-root world: an ambient corpus and no mounts. This is what
+    /// every caller that has not yet grown a mount table passes, and it makes
+    /// the pre-U11 behaviour the explicit `ambient` case rather than an implied
+    /// one.
+    #[must_use]
+    pub fn ambient(docs: &'a BTreeMap<String, Document>) -> Self {
+        RootedCorpus {
+            ambient: docs,
+            mounted: BTreeMap::new(),
+        }
+    }
+
+    /// Bind one mounted root's corpus under its canonical name, building that
+    /// root's own name index. Chainable.
+    #[must_use]
+    pub fn with_root(
+        mut self,
+        name: MountName,
+        kind: RootKind,
+        docs: &'a BTreeMap<String, Document>,
+    ) -> Self {
+        let mut index = CorpusIndex::new();
+        for (path, doc) in docs {
+            index.insert(path, doc);
+        }
+        self.mounted.insert(name, MountedRoot { index, docs, kind });
+        self
+    }
+
+    /// The ambient root's documents.
+    #[must_use]
+    pub fn ambient_docs(&self) -> &BTreeMap<String, Document> {
+        self.ambient
+    }
+
+    /// One mounted root, by canonical name.
+    #[must_use]
+    pub fn root(&self, name: &MountName) -> Option<&MountedRoot<'a>> {
+        self.mounted.get(name)
+    }
+
+    /// Every root whose corpus is loaded here.
+    pub fn loaded_names(&self) -> impl Iterator<Item = &MountName> {
+        self.mounted.keys()
+    }
+}
+
+/// What an address resolved to — the ROOT-AWARE answer.
+///
+/// The classes are kept distinct on purpose. Collapsing [`Unmounted`] into
+/// [`NotFound`] is the false negative this type exists to prevent: an unmounted
+/// root is *outside sight* (grey — nothing drifted, the ledger cannot measure
+/// from here), while a missing file in a MOUNTED root is a measured absence
+/// (`file_not_found`). One is a refusal to claim; the other is a claim.
+///
+/// [`Unmounted`]: RefResolution::Unmounted
+/// [`NotFound`]: RefResolution::NotFound
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefResolution {
+    /// Resolved in the AMBIENT root, to this corpus path.
+    Ambient(String),
+    /// Resolved inside a MOUNTED root, to that root's corpus path. The bytes
+    /// come from THAT root — never the ambient root's same-basename file.
+    Rooted {
+        /// The canonical root name the address named.
+        root: MountName,
+        /// The corpus path inside that root.
+        path: String,
+    },
+    /// The address names a root **nothing declares** — the mount table has never
+    /// heard of it. **GREY, never red and never `file_not_found`.** Its refusal
+    /// teaches the declaration.
+    Unmounted(MountName),
+    /// The address names a root the file **DECLARES** but this machine cannot
+    /// read. Also grey, also exit 1 — but a **different cause with a different
+    /// fix**, so S3-R43 gives it its own reason word and a refusal naming the
+    /// PATH. Telling a user to declare a root they have already declared is the
+    /// defect this variant exists to remove.
+    PathUnseeable {
+        /// The canonical name the file declares.
+        root: MountName,
+        /// The path it binds — what the refusal tells a reader to check. Empty
+        /// only in the caller-inconsistency case, where no path is known.
+        path: String,
+        /// The underlying reason, verbatim.
+        detail: String,
+    },
+    /// Well-formed, its root (if any) bound and readable — but the path names
+    /// nothing in THAT root's corpus.
+    NotFound,
+    /// The spelling is not a well-formed address, or is one the resolver
+    /// refuses (an opaque root carrying a selector).
+    Malformed(AddrError),
+}
+
+impl RefResolution {
+    /// The corpus path this resolved to, if it resolved at all — the projection
+    /// a caller that only needs "which document" reads.
+    ///
+    /// **Deliberately loses the root.** A caller holding only this cannot tell
+    /// an ambient hit from a rooted one, which is correct for callers that
+    /// already know which corpus they are indexing into and wrong for anything
+    /// that must fetch bytes — those read the variant.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            RefResolution::Ambient(path) | RefResolution::Rooted { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
+    /// Did this address name a root **nothing declares**?
+    ///
+    /// Deliberately NOT true for [`RefResolution::PathUnseeable`]: that root
+    /// IS declared, and a caller that treats the two alike reproduces exactly
+    /// the false teaching S3-R43 removed.
+    #[must_use]
+    pub fn unmounted(&self) -> Option<&MountName> {
+        match self {
+            RefResolution::Unmounted(root) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// Did this address name a root that is DECLARED but unreadable here?
+    #[must_use]
+    pub fn path_unseeable(&self) -> Option<(&MountName, &str, &str)> {
+        match self {
+            RefResolution::PathUnseeable { root, path, detail } => {
+                Some((root, path.as_str(), detail.as_str()))
+            }
+            _ => None,
+        }
     }
 }
 

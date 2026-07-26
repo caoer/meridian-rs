@@ -12,6 +12,11 @@ workspace = true
 
 [dependencies]
 syntax = { workspace = true }
+# The address type (U10) and the resolution-facing mount projection. A std-only
+# leaf UPSTREAM of `syntax`, so naming it here costs `model` no new transitive
+# weight and keeps `resolve_ref` able to speak `MountSet` without depending on
+# `config`, which is DOWNSTREAM of `model` (docs/address-grammar.md § 7.2).
+addr = { workspace = true }
 # node_rev / file_rev minting (contract §1: blake3-256, first 16 hex). blake3
 # enters the engine HERE and nowhere else in production (M2-BUILD, the rung-2
 # "algorithm is a wire amendment" decision landed).

@@ -279,6 +279,46 @@ pub enum MountState {
     },
 }
 
+/// This plane's WRAPPED spelling of the shared reason word (S3-R49).
+///
+/// **One source, checked at COMPILE TIME.** The bare word lives in
+/// [`addr::PATH_UNSEEABLE_REASON_WORD`]; the address plane takes it bare and this
+/// plane wraps it. The `const` assertion below fails the BUILD if the two ever
+/// drift, so the planes agree by construction rather than by two literals that
+/// happen to match today — which is what the ruling asked for and what a
+/// string-equality test would only have detected after the fact.
+const PATH_UNSEEABLE_WRAPPED: &str = "grey(path-unseeable)";
+
+/// Is `wrapped` exactly `grey(<bare>)`? A `const fn` so the check runs at
+/// compile time; `&str` equality is not itself const-evaluable, so the bytes are
+/// walked.
+const fn wraps_bare_word(wrapped: &str, bare: &str) -> bool {
+    let (w, b) = (wrapped.as_bytes(), bare.as_bytes());
+    if w.len() != b.len() + 6 {
+        return false;
+    }
+    // "grey(" … ")"
+    if w[0] != b'g' || w[1] != b'r' || w[2] != b'e' || w[3] != b'y' || w[4] != b'(' {
+        return false;
+    }
+    if w[w.len() - 1] != b')' {
+        return false;
+    }
+    let mut i = 0;
+    while i < b.len() {
+        if w[5 + i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const _: () = assert!(
+    wraps_bare_word(PATH_UNSEEABLE_WRAPPED, addr::PATH_UNSEEABLE_REASON_WORD),
+    "the mount plane's wrapped spelling must be exactly `grey(<the shared bare word>)` (S3-R49)"
+);
+
 impl MountState {
     /// The reason word, in S3-R6's vocabulary: `bound`, a `grey(...)`, or a
     /// `red(...)`. One spelling, used in the human line and in `--json` alike.
@@ -286,7 +326,7 @@ impl MountState {
     pub fn word(&self) -> &'static str {
         match self {
             MountState::Bound => "bound",
-            MountState::PathUnseeable { .. } => "grey(path-unseeable)",
+            MountState::PathUnseeable { .. } => PATH_UNSEEABLE_WRAPPED,
             MountState::Undeclared { .. } => "grey(undeclared)",
             MountState::DeclarationUnreadable { .. } => "grey(declaration-unreadable)",
             MountState::ClaimUnverifiable { .. } => "grey(claim-unverifiable)",

@@ -35,7 +35,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use model::Document;
 use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge, classify_pin};
 
-use crate::read_face::{LockItem, corpus_index, page_lock_items_in_corpus};
+use crate::read_face::{
+    LockItem, corpus_index, page_lock_items_in_corpus, page_lock_items_in_rooted_corpus,
+};
 
 /// Which way the walk runs over the `^inputs` pin graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,6 +125,32 @@ pub fn walk(
     direction: Direction,
     depth_bound: Option<u32>,
 ) -> Result<WalkReport, WalkError> {
+    walk_rooted(
+        &model::RootedCorpus::ambient(docs),
+        &addr::MountSet::default(),
+        root,
+        direction,
+        depth_bound,
+    )
+}
+
+/// [`walk`] against a ROOT-KEYED corpus and a mount table — the cross-root form.
+///
+/// The walk root itself is always an AMBIENT page (it is a workspace-relative
+/// path the user names); what becomes root-aware is every EDGE it reaches. An
+/// edge into a mounted root is colored against that root's documents, and an
+/// edge into an unmounted one renders grey `unmounted` with the missing name.
+///
+/// # Errors
+/// As [`walk`].
+pub fn walk_rooted(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+    root: &str,
+    direction: Direction,
+    depth_bound: Option<u32>,
+) -> Result<WalkReport, WalkError> {
+    let docs = corpus.ambient_docs();
     let root_page = page_of(root).to_string();
     if !docs.contains_key(&root_page) {
         return Err(WalkError::RootNotFound(root_page));
@@ -130,7 +158,7 @@ pub fn walk(
 
     // Parse every page's `^inputs` ONCE (the shared parser), so both directions
     // read the SAME edge facts. `forward[src] = src's declared edges`.
-    let forward = forward_edges(docs);
+    let forward = forward_edges(corpus, mounts);
 
     // Cycle check on the page-level adjacency in the walk direction (§2.4),
     // before emitting — an in-snapshot cycle is an error, not a silent stop.
@@ -165,7 +193,7 @@ pub fn walk(
         if depth_bound.is_some_and(|bound| next_depth > bound) {
             continue; // the bound is reached — do not expand this page further
         }
-        for step in steps_from(docs, &forward, &page, direction) {
+        for step in steps_from(corpus, &forward, &page, direction) {
             read.insert(step.color_target.clone());
             read.insert(page_of(&step.selector).to_string());
             let row = (
@@ -243,7 +271,7 @@ pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
                 src_path: path.clone(),
                 declared_ref: item.declared_ref.clone(),
                 fingerprint: item.fingerprint.clone(),
-                color: edge_color(docs, &item),
+                color: edge_color(&model::RootedCorpus::ambient(docs), &item),
             });
         }
     }
@@ -327,6 +355,16 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         Color::Grey(GreyReason::UnverifiableFingerprint { .. }) => Some("unverifiable-fingerprint"),
         Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
         Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
+        // S3-R6's vocabulary, not a local spelling: `grey(unmounted)` renders
+        // here as the reason word `unmounted` behind the `grey` tone, which
+        // `color_label` composes into `grey unmounted (root 'x')`. The same
+        // ruling binds u14i, U14 and U15 — do not re-spell it.
+        Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
+        // S3-R49 — the BARE form of the ONE shared word. `config`'s mount plane
+        // wraps the same const as `grey(path-unseeable)`; this plane takes it
+        // bare and `color_label` wraps. The two agree by construction: a
+        // compile-time assertion in `config` fails the BUILD if they drift.
+        Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
         Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
         Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
@@ -344,6 +382,49 @@ pub fn color_detail(color: &Color) -> Option<String> {
             Some(format!("unknown {}", unknown.join(", ")))
         }
         Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
+        // The missing mount NAME is the detail that lets the human line teach
+        // (D8). The full teaching refusal is `selector::render_unmounted`; this
+        // is the one-line form the listing carries, and it still names the root
+        // — a refusal that cannot say WHICH mount is missing teaches nothing.
+        Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
+        // The PATH is the detail here, never the mount entry — the entry is
+        // already correct, which is the whole distinction S3-R43 draws.
+        Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
+            Some(format!("{path} ({detail})"))
+        }
+        _ => None,
+    }
+}
+
+/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
+/// reason word already says everything.
+///
+/// **S3-R51 — this is the output path `render_unmounted` did not have.** Round 1
+/// shipped a pinned teaching-refusal exemplar that NOTHING called: the walk
+/// rendered [`color_label`] and the refusal existed only as a `const` and its
+/// tests. That is S3-R23(4)'s weakened middle — an assertion claiming a wording
+/// no user could ever see.
+///
+/// **WIRED rather than struck**, and the reason is that the two options are not
+/// symmetric. D8 requires a *teaching* refusal naming the missing mount, and it
+/// is a gate on this unit's card; striking the renderer would have left that gate
+/// satisfied only in its weaker half — the reason word names the mount, but
+/// nothing teaches the fix — and narrowing a criterion is the Advisor's pen
+/// (R27), not an implementer's. Wiring closes the weakened middle AND discharges
+/// D8 in full, so it strictly dominates. The two never collided, so nothing
+/// routed up.
+///
+/// `address` is the ref as the page DECLARED it — the refusal echoes what the
+/// author wrote, not what resolution made of it.
+#[must_use]
+pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
+    match color {
+        Color::Grey(GreyReason::Unmounted { root }) => {
+            Some(model::selector::render_unmounted(root, address))
+        }
+        Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
+            Some(model::selector::render_path_unseeable(root, path, detail))
+        }
         _ => None,
     }
 }
@@ -385,13 +466,17 @@ struct Step {
 /// `[[wikilink]]`-by-NAME ref points at a real `node.path` (the U3.4 wikilink
 /// wiring — else the target is unfindable and a native-algo form-2 pin can never
 /// verify green).
-fn forward_edges(docs: &BTreeMap<String, Document>) -> BTreeMap<String, Vec<LockItem>> {
+fn forward_edges(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+) -> BTreeMap<String, Vec<LockItem>> {
+    let docs = corpus.ambient_docs();
     let index = corpus_index(docs);
     docs.iter()
         .map(|(path, doc)| {
             (
                 path.clone(),
-                page_lock_items_in_corpus(path, doc, &index, docs),
+                page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts),
             )
         })
         .collect()
@@ -405,7 +490,7 @@ fn forward_edges(docs: &BTreeMap<String, Document>) -> BTreeMap<String, Vec<Lock
 ///   entry names the dependent `src`; the color rests on the pinned target
 ///   (`page`); the next hop follows `src`.
 fn steps_from(
-    docs: &BTreeMap<String, Document>,
+    corpus: &model::RootedCorpus<'_>,
     forward: &BTreeMap<String, Vec<LockItem>>,
     page: &str,
     direction: Direction,
@@ -418,20 +503,26 @@ fn steps_from(
             .map(|edge| Step {
                 selector: step_selector(page, edge),
                 pinned_rev: edge.pinned_rev.clone(),
-                color: edge_color(docs, edge),
-                color_target: edge.to_path.clone(),
-                next_page: edge.to_path.clone(),
+                color: edge_color(corpus, edge),
+                // Root-qualified, so a cross-root target is a leaf and is never
+                // confused with an ambient file of the same path.
+                color_target: edge_page(edge),
+                next_page: edge_page(edge),
             })
             .collect(),
         Direction::Down => {
             let mut steps = Vec::new();
             for (src, edges) in forward {
                 for edge in edges {
-                    if edge.to_path == page {
+                    // Only an AMBIENT edge reverses into an ambient page: a
+                    // cross-root edge whose in-root path happens to equal an
+                    // ambient path names a different document entirely.
+                    if edge.to_root.is_none() && edge.root_refusal.is_none() && edge.to_path == page
+                    {
                         steps.push(Step {
                             selector: src.clone(),
                             pinned_rev: edge.pinned_rev.clone(),
-                            color: edge_color(docs, edge),
+                            color: edge_color(corpus, edge),
                             color_target: edge.to_path.clone(),
                             next_page: src.clone(),
                         });
@@ -453,7 +544,45 @@ fn step_selector(src: &str, edge: &LockItem) -> String {
     if edge.lock_refusal.is_some() {
         return src.to_string();
     }
-    canonical_ref(&edge.to_path, &edge.to_sel)
+    // An UNMOUNTED edge never resolved, so it is named by the address the page
+    // declared — the only honest name available, and the one the refusal teaches
+    // against.
+    if edge.root_refusal.is_some() {
+        return edge.declared_ref.clone();
+    }
+    edge_address(edge)
+}
+
+/// One edge's canonical, ROOT-QUALIFIED address: `root:path[#sel]` for an edge
+/// that resolved into a mounted root, `path[#sel]` for an ambient one.
+///
+/// **The qualification is load-bearing, not cosmetic.** A cross-root target
+/// resolves to a path INSIDE its own root — `notes.md` in the `sessions` root —
+/// and the ambient corpus may hold its own `notes.md`. An unqualified name would
+/// (a) print an address that reads as the ambient file, and (b) let the BFS
+/// traverse into the ambient corpus at that key, which is FINDING 03 reappearing
+/// one layer up: the right verdict on the right bytes, followed by a walk into
+/// the wrong document.
+///
+/// Qualifying makes a cross-root target a LEAF by construction: the ambient
+/// corpus holds no key spelled `root:path`, so `docs.contains_key` is false and
+/// the page is never expanded or reversed into. Walking INTO another root's own
+/// pin graph is a separate capability no Core unit asks for.
+fn edge_address(edge: &LockItem) -> String {
+    let canonical = canonical_ref(&edge.to_path, &edge.to_sel);
+    match &edge.to_root {
+        Some(root) => format!("{root}:{canonical}"),
+        None => canonical,
+    }
+}
+
+/// The PAGE an edge points at, root-qualified — [`edge_address`] without the
+/// selector. The BFS traverses on this, so it carries the same leaf property.
+fn edge_page(edge: &LockItem) -> String {
+    match &edge.to_root {
+        Some(root) => format!("{root}:{}", edge.to_path),
+        None => edge.to_path.clone(),
+    }
 }
 
 /// Color one edge with the U2.2 law: parse the target selector, wrap the pinned
@@ -483,15 +612,37 @@ fn step_selector(src: &str, edge: &LockItem) -> String {
 ///   different compare. Before this, such a pin fell into the foreign-algo
 ///   short-circuit below and rendered grey `superseded-algo` — visible but
 ///   permanently unverified.
-fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
+fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
             reason: reason.clone(),
         });
     }
+    // **R-3 — grey OUTRANKS red, and it is checked FIRST.** An address naming an
+    // unmounted root is grey WHATEVER ELSE IS TRUE of the target: a cross-root
+    // pin that was green and whose root is later unmounted becomes grey, never
+    // red. Nothing drifted — the ledger simply stopped being able to measure.
+    //
+    // Ordering matters here rather than being incidental. Every arm below
+    // classifies against a target document, and the target document of an
+    // unmounted root is ABSENT — which classifies as red `selector-unresolved`.
+    // Checking grey second would therefore render exactly the plausible-looking
+    // wrong answer this unit exists to remove.
+    if let Some(reason) = &edge.root_refusal {
+        return Color::Grey(reason.clone());
+    }
+    // The target's bytes come from the root the address RESOLVED INTO — never
+    // the ambient corpus. Reading the ambient one here is FINDING 03's wrong
+    // success wearing a verdict.
+    let target = match &edge.to_root {
+        Some(root) => corpus
+            .root(root)
+            .and_then(|mounted| mounted.docs().get(&edge.to_path)),
+        None => corpus.ambient_docs().get(&edge.to_path),
+    };
     let selector = Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel));
     if let Some(token) = &edge.fingerprint {
-        return classify_pin(&selector, token, docs.get(&edge.to_path));
+        return classify_pin(&selector, token, target);
     }
     if edge.pinned_rev.is_some()
         && edge
@@ -502,7 +653,7 @@ fn edge_color(docs: &BTreeMap<String, Document>, edge: &LockItem) -> Color {
         return Color::Grey(GreyReason::SupersededAlgo);
     }
     let pinned = edge.pinned_rev.as_ref().map(|r| model::NodeRev(r.clone()));
-    classify_edge(&selector, pinned.as_ref(), docs.get(&edge.to_path))
+    classify_edge(&selector, pinned.as_ref(), target)
 }
 
 /// The page-level adjacency in the walk direction, for the cycle check — only

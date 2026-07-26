@@ -153,6 +153,59 @@ pub enum GreyReason {
     /// never green (an unverified claim dressed as attested) and never red (a
     /// drift nobody measured).
     UnverifiableFingerprint { unknown: Vec<&'static str> },
+    /// **A cross-root address naming a root this machine does not bind** — or
+    /// binds without being able to read (`docs/address-grammar.md` § 8 M6).
+    ///
+    /// **Grey, never red:** nothing drifted; the ledger cannot see from here
+    /// (`2026-07-24-cross-root-addressing.md` §1a). Carries the missing name so
+    /// the refusal can teach the fix (D8), and it is a DISTINCT class from
+    /// `file_not_found` — a missing file in a MOUNTED root is a measured
+    /// absence, while an unmounted root is outside sight. Conflating them is the
+    /// false negative this variant exists to prevent.
+    ///
+    /// **R-3 — grey OUTRANKS red.** A cross-root pin that was green and whose
+    /// root is later unmounted becomes grey, never red. The inverse (grey → exit
+    /// 0) is refused categorically: it would make unmounting a root a way to
+    /// convert a red into a pass through an edit to `~/MERIDIAN.md`, which cannot
+    /// itself be attested (S3-R7 ③).
+    ///
+    /// **D8a — deliberately NOT unified with `mrd check`'s cannot-assess.** Two
+    /// subsystems, ONE shared meaning: this is the *address* plane, routed
+    /// through the reason-carrying grey model; cannot-assess is a verb-level
+    /// exit state on the *validity* plane. What they share is the law — outside
+    /// sight never renders as verified (R26) — not the type.
+    Unmounted {
+        /// The canonical root name the address named and this machine does not
+        /// bind.
+        root: addr::MountName,
+    },
+    /// **A cross-root address naming a root the file DECLARES but this machine
+    /// cannot READ** — the path is absent, unreadable, or holds no corpus
+    /// (`docs/address-grammar.md` § 8 M6).
+    ///
+    /// **A DIFFERENT cause from [`GreyReason::Unmounted`], and S3-R43 rules it a
+    /// different reason word.** Both are grey and both refuse on exit 1; what
+    /// separates them is what a reader must DO. `Unmounted`'s refusal says
+    /// *"declare it in `~/MERIDIAN.md`"*; here the root **is** declared, so that
+    /// sentence is false and its fix is already done. This one names **the
+    /// PATH** — the thing that is actually wrong.
+    ///
+    /// > A teaching refusal that prescribes a COMPLETED ACTION is worse than a
+    /// > bare class: it spends the user's trust AND their time, and leaves no
+    /// > signal pointing at the real cause.
+    ///
+    /// S3-R6 does not license collapsing the two: it established
+    /// `grey(unmounted)` and `grey(cannot-assess)` as TWO words inside ONE
+    /// vocabulary at ONE exit code. It forbids re-spelling one CONCEPT across
+    /// crates; it does not require two CAUSES to share one word.
+    PathUnseeable {
+        /// The canonical name the file declares.
+        root: addr::MountName,
+        /// The path it is declared at — what the refusal tells a reader to check.
+        path: String,
+        /// The underlying reason, verbatim.
+        detail: String,
+    },
     /// A `meridian-lock` pin whose pinned value is not a fingerprint token at
     /// all ([`crate::fingerprint::ContentVerdict::Malformed`]). Unreadable, so
     /// it was never measured — grey, never red.
@@ -506,6 +559,77 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
     )
 }
 
+// ---------------------------------------------------------------------------
+// The unmounted-root teaching refusal (D8 — carried VERBATIM)
+// ---------------------------------------------------------------------------
+
+/// The unmounted-root teaching refusal, carried VERBATIM as the provenance
+/// anchor (`2026-07-24-cross-root-addressing.md` §1a). [`render_unmounted`]
+/// reproduces this wording with the real root and address interpolated; this
+/// const pins the exemplar so a drift in the wording is a visible test failure —
+/// the same shape as [`D1_TEACHING_REFUSAL_EXEMPLAR`].
+///
+/// It **names the missing mount** and **teaches the fix** (D8), and it carries
+/// §1a's ratified sentence — *"Not red: nothing drifted, you just cannot see
+/// from here"* — rather than paraphrasing it.
+pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].";
+
+/// Render the D8 teaching refusal for an address naming an unmounted root,
+/// naming the missing mount and the offending address. The wording is carried
+/// verbatim from [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`] with the real values
+/// spliced in — refuse-unmounted-only: *"Refs to mounted roots remain served."*
+///
+/// The leading reason word is **`grey(unmounted)`** — S3-R6's vocabulary, shared
+/// with `grey(cannot-assess)` and distinct from `red(...)`. It is not re-spelled
+/// locally: the same ruling binds u14i, U14 and U15.
+#[must_use]
+pub fn render_unmounted(root: &addr::MountName, address: &str) -> String {
+    format!(
+        "grey(unmounted): root '{root}' is not mounted — the address '{address}' \
+         names a root this machine does not bind. Not red: nothing drifted, you \
+         just cannot see from here. Refs to mounted roots remain served. \
+         Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry \
+         (name / path / kind); see [[address-grammar]]."
+    )
+}
+
+/// The DECLARED-but-unreadable teaching refusal, carried VERBATIM as the
+/// provenance anchor (S3-R43 / S3-R49). [`render_path_unseeable`] reproduces
+/// this wording with the real root, path and reason interpolated; this const
+/// pins the exemplar so a drift in the wording is a visible test failure — the
+/// same shape as [`D1_TEACHING_REFUSAL_EXEMPLAR`] and
+/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
+///
+/// **The word is REUSED, not minted (S3-R49).** Round 2 was ruled a new word,
+/// `root-unreachable`; the enumeration this unit was obliged to run found that
+/// `config::mount::MountState::PathUnseeable` already ships
+/// **`grey(path-unseeable)`** for the same observed state, citing the same M6
+/// row, with a teaching that already names the path. The bare word is
+/// [`addr::PATH_UNSEEABLE_REASON_WORD`] — **one source**, wrapped by each plane's
+/// own renderer rather than spelled twice.
+///
+/// **It names the PATH, never the mount entry**, because the mount entry is
+/// already correct — that is the whole distinction S3-R43 draws.
+pub const GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR: &str = "grey(path-unseeable): root 'assets' is declared, but the path it binds could not be read: /Volumes/media/assets (No such file or directory (os error 2)). Not red: nothing drifted, you just cannot see from here. Refs to readable roots remain served. Fix: check that /Volumes/media/assets exists and is readable, or change the mount entry's path; see [[address-grammar]].";
+
+/// Render the S3-R43 teaching refusal for an address naming a DECLARED root this
+/// machine cannot read. Wording carried verbatim from
+/// [`GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR`].
+///
+/// **Deliberately never says "declare it".** The root IS declared; prescribing
+/// the declaration again is the defect this refusal exists to remove.
+#[must_use]
+pub fn render_path_unseeable(root: &addr::MountName, path: &str, detail: &str) -> String {
+    let word = addr::PATH_UNSEEABLE_REASON_WORD;
+    format!(
+        "grey({word}): root '{root}' is declared, but the path it binds could not \
+         be read: {path} ({detail}). Not red: nothing drifted, you just cannot \
+         see from here. Refs to readable roots remain served. Fix: check that \
+         {path} exists and is readable, or change the mount entry's path; \
+         see [[address-grammar]]."
+    )
+}
+
 /// The first block-id anchor NAME contained within a byte span (an ambiguous
 /// section's `^block`, so the refusal can name each duplicate by its block id).
 /// `None` when the span carries no anchor. Shared with the wire-serve write door,
@@ -714,6 +838,71 @@ mod tests {
         assert!(
             msg.ends_with(TEACH_TAIL),
             "every rendered refusal carries the verbatim teaching tail: {msg}"
+        );
+    }
+
+    /// **D8 — the unmounted-root refusal carries its teaching tail VERBATIM**,
+    /// exactly as `render_ambiguity_carries_d1_teaching_verbatim` pins D1's. The
+    /// exemplar const and every rendered refusal share the same tail, so a drift
+    /// in the wording is a visible failure rather than a silent divergence
+    /// between the documented refusal and the shipped one.
+    #[test]
+    fn render_unmounted_carries_d8_teaching_verbatim() {
+        const TEACH_TAIL: &str = ". Not red: nothing drifted, you just cannot see from here. \
+             Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md \
+             as a mount entry (name / path / kind); see [[address-grammar]].";
+        // The pinned exemplar carries the verbatim teaching tail.
+        assert!(
+            GREY_UNMOUNTED_REFUSAL_EXEMPLAR.ends_with(TEACH_TAIL),
+            "the D8 exemplar const must carry the verbatim teaching tail",
+        );
+        // And the renderer REPRODUCES the exemplar exactly, on the exemplar's
+        // own inputs — the assertion that makes the const a pin rather than a
+        // decorative copy of prose nothing checks.
+        let assets = addr::MountName::parse("assets").expect("a canonical name");
+        let msg = render_unmounted(&assets, "assets:domains/media/logo.md#Design");
+        assert_eq!(
+            msg, GREY_UNMOUNTED_REFUSAL_EXEMPLAR,
+            "the renderer must reproduce the pinned exemplar byte for byte",
+        );
+
+        // On DIFFERENT inputs it names those, and still carries the tail shape.
+        let sessions = addr::MountName::parse("sessions").expect("a canonical name");
+        let other = render_unmounted(&sessions, "sessions:24-01-retro/notes.md#Design");
+        assert!(
+            other.starts_with("grey(unmounted): root 'sessions' is not mounted — "),
+            "the reason word is S3-R6's `grey(unmounted)`, and the refusal NAMES the \
+             missing mount (D8): {other}",
+        );
+        assert!(
+            other.contains("sessions:24-01-retro/notes.md#Design"),
+            "the refusal echoes the offending address: {other}",
+        );
+        assert!(
+            other.contains("Fix: declare 'sessions' in ~/MERIDIAN.md"),
+            "and it teaches the fix in terms of the missing mount: {other}",
+        );
+        assert!(
+            !other.contains("red("),
+            "grey is never spelled as red — nothing drifted",
+        );
+    }
+
+    /// The grey vocabulary must not COLLIDE with its siblings (S3-R6). One
+    /// reason word per concept, distinct in the human line.
+    #[test]
+    fn the_unmounted_reason_word_is_distinct_from_its_siblings() {
+        let assets = addr::MountName::parse("assets").expect("a canonical name");
+        let msg = render_unmounted(&assets, "assets:x.md");
+        assert!(msg.starts_with("grey(unmounted):"));
+        assert!(
+            !msg.contains("cannot-assess"),
+            "D8a — the address plane's grey is NOT `mrd check`'s verb-level \
+             cannot-assess; two subsystems, one shared meaning, two types",
+        );
+        assert!(
+            !msg.contains("file_not_found"),
+            "an unmounted root is outside sight, never a measured absence",
         );
     }
 
