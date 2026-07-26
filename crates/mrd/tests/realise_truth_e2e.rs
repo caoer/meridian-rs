@@ -142,3 +142,88 @@ fn truth_file_and_index_resolve_the_same_divergence_differently() {
         "file-truth and index-truth diverge on the same divergence"
     );
 }
+
+/// U31: **the armed policy INDEX no longer lands through a bare
+/// `std::fs::write`.** `mrd realise --truth file` deploys
+/// `conventions/INDEX.md` — the file `mrd check` reads its rules from — and did
+/// so with no candidate and not even this engine's atomic write discipline. It
+/// now rides `fs::replace_file`, which DEMANDS a `model::CandidateDocument`.
+///
+/// # The state change asserted, not the exit code (R40)
+/// An exit code reports that the command ran. Three disk facts report what it
+/// DID, and each of them separates `fs::replace_file` from `std::fs::write`:
+///
+/// 1. **The inode changes.** `replace_file` stages a temp beside the
+///    destination and renames it over — a new inode. `std::fs::write` truncates
+///    and rewrites the SAME inode. This assertion reddens against any pre-U31
+///    binary, which is what makes it evidence.
+/// 2. **The landed rev is the deployed law's rev**, checked against an
+///    independently computed INDEX (this test's own `armed_index`, not the
+///    engine's return value).
+/// 3. **No staged temp survives** — the rename committed, nothing leaked into
+///    the policy folder.
+#[test]
+fn truth_file_lands_the_index_through_the_atomic_candidate_write() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    let original = check_md("v1");
+    let drifted = check_md("v2-edited");
+    write(root, ".meridian.toml", "");
+    write(root, "conventions/INDEX.md", &armed_index(&original));
+    write(root, "conventions/reviewer-not-owner/CHECK.md", &drifted);
+
+    let index_path = root.join("conventions/INDEX.md");
+    let before_bytes = std::fs::read_to_string(&index_path).unwrap();
+    let before_ino = std::fs::metadata(&index_path).unwrap().ino();
+    let file_rev = |raw: &str| {
+        model::build(raw.to_owned(), syntax::parse(raw))
+            .root
+            .node_rev
+            .0
+    };
+    let before_rev = file_rev(&before_bytes);
+
+    let out = mrd()
+        .args(["realise", "--truth", "file"])
+        .current_dir(root)
+        .output()
+        .expect("run mrd realise --truth file");
+    assert!(out.status.success(), "the deploy runs: {out:?}");
+
+    let after_bytes = std::fs::read_to_string(&index_path).unwrap();
+    let after_ino = std::fs::metadata(&index_path).unwrap().ino();
+
+    // (1) THE ATOMIC-RENAME FACT: a bare `std::fs::write` rewrites the same
+    // inode in place. A tmp+fsync+rename installs a new one.
+    assert_ne!(
+        before_ino, after_ino,
+        "the INDEX was replaced by an atomic rename, not written in place \
+         (inode {before_ino} → {after_ino})"
+    );
+
+    // (2) THE REV MOVED, to the rev of the law this deploy was supposed to pin —
+    // computed here, independently of anything the command printed.
+    let after_rev = file_rev(&after_bytes);
+    assert_ne!(before_rev, after_rev, "the INDEX's file rev moved");
+    assert_eq!(
+        after_rev,
+        file_rev(&armed_index(&drifted)),
+        "the landed INDEX is the edited law re-pinned at its live rev"
+    );
+
+    // (3) The rename committed: no staged temp leaked into the policy folder.
+    let leftovers: Vec<String> = std::fs::read_dir(root.join("conventions"))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.ok()?.file_name().to_string_lossy().into_owned();
+            name.contains(".tmp").then_some(name)
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no staged temp survives a committed deploy: {leftovers:?}"
+    );
+}

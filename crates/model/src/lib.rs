@@ -1101,6 +1101,103 @@ pub struct ValidatedBatch {
     _sealed: (),
 }
 
+/// The document a write is ABOUT TO LAND — the write plane's candidate, sealed
+/// the way [`ValidatedBatch`] and [`fingerprint::Fingerprint`] are sealed: the
+/// inner `Document` is PRIVATE, so no crate outside `model` can wrap an
+/// arbitrary document in this type. The only way to hold one is to have minted
+/// it from the bytes that are about to reach disk
+/// ([`candidate_of_body`] / [`candidate_of_batch`]), and `fs`'s three
+/// byte-landing primitives accept nothing else.
+///
+/// # Why the type, and not a convention
+/// Before the seal, every write door built an "after doc", gated it, and then
+/// handed `fs` a `&str` or a `ValidatedBatch` — so *whether the gated document
+/// and the landed bytes were the same object* was a property of today's call
+/// sites, never of the code. Four doors happened to build one; `lock_write`,
+/// `commit_batch`, the pin promotion and `mrd realise --truth file` did not, and
+/// nothing said so. R5's rule applies verbatim: **a boolean helper a caller may
+/// ignore is not a guard; a type a caller must discharge is.** Retyping the `fs`
+/// primitives converts the door enumeration from prose into a compile error.
+///
+/// The seal is a compile-level fact — no external crate can mint one:
+///
+/// ```compile_fail
+/// // The field is private, so this fails to compile outside `model`.
+/// let doc = model::build(String::new(), Vec::new());
+/// let _ = model::CandidateDocument(doc);
+/// ```
+///
+/// Read the document with [`CandidateDocument::document`], its bytes with
+/// [`CandidateDocument::raw`], take it with
+/// [`CandidateDocument::into_document`].
+#[derive(Debug, Clone)]
+pub struct CandidateDocument(Document);
+
+impl CandidateDocument {
+    /// The candidate document, borrowed — what every gate, verdict and rev
+    /// reads.
+    #[must_use]
+    pub fn document(&self) -> &Document {
+        &self.0
+    }
+
+    /// The exact bytes this write is about to land.
+    #[must_use]
+    pub fn raw(&self) -> &str {
+        &self.0.raw
+    }
+
+    /// The candidate document, taken — for a caller that stores it past the
+    /// write.
+    #[must_use]
+    pub fn into_document(self) -> Document {
+        self.0
+    }
+}
+
+/// Mint the candidate for a WHOLE-FILE write: parse `raw` — the exact bytes
+/// that will reach disk — and stamp the document's own path (`build` is
+/// I/O-free and leaves it empty; the armed gate SCOPES its rules by that value,
+/// so an unstamped candidate is a page no path-scoped convention can see).
+///
+/// The birth door (`create`), the lock writer and the `--truth file` INDEX
+/// deploy all land whole files, and each reaches disk through this mint.
+#[must_use]
+pub fn candidate_of_body(path: &str, raw: String) -> CandidateDocument {
+    let nodes = syntax::parse(&raw);
+    let mut doc = build(raw, nodes);
+    if let NodeKind::Document { path: p, .. } = &mut doc.root.kind {
+        p.clear();
+        p.push_str(path);
+    }
+    CandidateDocument(doc)
+}
+
+/// Mint the candidate a SEALED BATCH produces: dry-apply the validated span
+/// edits to `pre_image` (the bytes the spans index — read#2's validated bytes,
+/// §4.4's one-reparse law) and parse the result ONCE.
+///
+/// This is the single owner of an apply-then-reparse that `wire-serve` and
+/// `run` previously each implemented for themselves. Two copies of one
+/// computation is how the wire and run planes came to judge candidates built by
+/// different code; the seal forces them onto one mint because the constructor
+/// cannot leave this crate.
+#[must_use]
+pub fn candidate_of_batch(
+    path: &str,
+    pre_image: &str,
+    sealed: &ValidatedBatch,
+) -> CandidateDocument {
+    let mut raw = pre_image.to_owned();
+    // The sealed edits are disjoint and sorted by span start (validated), so
+    // splicing back-to-front keeps every remaining span in pre-image
+    // coordinates — no shift arithmetic.
+    for edit in sealed.edits.iter().rev() {
+        raw.replace_range(edit.span.clone(), &edit.text);
+    }
+    candidate_of_body(path, raw)
+}
+
 /// Validate a batch splice against a live `Document` (contract §4.4/§5). The
 /// order (§5.1): `if_root` FIRST (world-grain, fails the whole batch), then per
 /// edit resolve → CAS → match/put, then batch-wide disjointness and one

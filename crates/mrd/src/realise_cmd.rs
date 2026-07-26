@@ -248,9 +248,20 @@ fn truth_deploy(
 
     // file-truth deploys the edited law: write the re-pinned INDEX (realise-as
     // -deploy). index-truth keeps the attested INDEX and only reports the restores.
+    //
+    // U31: the INDEX is the ARMED POLICY the whole check plane reads its rules
+    // from, and it used to land through a bare `std::fs::write` — no candidate,
+    // and not even the crate's atomic tmp+fsync+rename discipline, so a crash
+    // mid-write left a torn policy file. It now rides `fs::replace_file` like
+    // every other whole-file write, which DEMANDS the sealed candidate: the
+    // document this deploy is about to land is built and parsed before a byte
+    // moves. (The flock, the rev-CAS and the journal row this door still lacks
+    // are reported as findings, not fixed here — the seal is this unit's bound.)
     let wrote = matches!(truth, policy::Truth::File) && !parsed.dry;
     if wrote {
-        std::fs::write(&index_path, &convergence.index_after)
+        let candidate =
+            model::candidate_of_body(policy::RESERVED_INDEX_PATH, convergence.index_after.clone());
+        fs::replace_file(root, Path::new(policy::RESERVED_INDEX_PATH), &candidate)
             .map_err(|e| Fail::tool(format!("cannot write the converged INDEX: {e}")))?;
     }
 
