@@ -17,9 +17,13 @@
 //!   journal, and reads the git refs. The `meridian-lock` planes add ONE corpus
 //!   build (the lock lives in the corpus's pages, so nothing smaller can see
 //!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
-//!   O(objects) plus at most TWO git calls (one `rev-list`, one batched
-//!   `cat-file`) — never O(corpus) and never a call per blob, so the 3k-corpus
-//!   wall-time stays sub-second;
+//!   O(objects) plus at most TWO git calls PER OBJECT STORE (one `rev-list`, one
+//!   batched `cat-file`) — never O(corpus) and never a call per blob, so the
+//!   3k-corpus wall-time stays sub-second. A corpus whose `objects:` keys are
+//!   all ambient has exactly ONE store and so exactly the two calls it always
+//!   had; a key naming a root adds that root's store, because the anchoring
+//!   check runs against THAT root's git repo (U13, ratified cross-root
+//!   addressing §4 — six roots, six object stores, one law);
 //! - **fetch-less** — the anchor axis is therefore NEVER `verified` and never
 //!   renders a bare `at-tip` (W-C1, U2.7; the colors amendment § anchor axis);
 //! - **predicate-free** — it never evaluates a `check:` (the <1s budget holds;
@@ -290,7 +294,8 @@ struct VibeDebt {
     /// Their total size, git's own byte count.
     bytes: u64,
     /// Set when reachability could not be measured (no git, not a repository,
-    /// an unreadable corpus): the gauge reports unknown, never a false `0`.
+    /// an unreadable corpus, or a root whose object store cannot be named or
+    /// asked): the gauge reports unknown, never a false `0`.
     unknown: Option<String>,
 }
 
@@ -580,15 +585,35 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
 }
 
+/// Which object store one lock `objects:` entry's blob belongs to: the ambient
+/// workspace (`None`), or a named root (`Some`).
+///
+/// **U13 — per-root anchoring, ratified `2026-07-24-cross-root-addressing.md`
+/// §4:** *"the blob-anchoring check runs against THAT root's git repo — six
+/// roots, six object stores, one law."* The `objects:` key is an agent-plane
+/// address (§2: lock `ref:` and `objects:` keys use the canonical `root:` form),
+/// so its root names the repository whose object database holds the blob. The
+/// write path already carries the prefix through untouched (`wire-serve`'s
+/// `set_object` — "the key is the target's path spelling VERBATIM … so a later
+/// `root:` prefix rides through"); this is the reader that honours it.
+type StoreKey = Option<addr::MountName>;
+
 /// Measure the vibe debt: the lock-referenced blobs git holds that no commit
 /// reaches, counted and summed in bytes.
 ///
-/// Two git calls at most, never a call per blob: ONE
+/// Two git calls at most PER STORE, never a call per blob: ONE
 /// `git rev-list --objects --all` into the reachable set (S5's `ReachableSet`,
 /// O(1) membership) and ONE batched `git cat-file --batch-check` for presence
 /// and size. `receipt::anchor::ObjectAnchor` classifies the gathered facts — the
 /// same fact/classify split the origin-anchor axis uses — and only its
 /// `PendingAnchor` state is debt.
+///
+/// **The law is one; the store is per root ([`StoreKey`]).** Entries are grouped
+/// by the root their key names, and each group is asked of THAT root's
+/// repository — `git::Repo` is a handle and never a singleton (seam rule D12),
+/// so six roots are six handles running one unchanged classification. An
+/// ambient-keyed corpus takes exactly the pre-U13 path: one group, one handle,
+/// the workspace.
 ///
 /// A corpus that references no blobs asks git nothing: nothing is referenced, so
 /// nothing can be owed, and the gauge reads a true `0` even outside a repository.
@@ -596,70 +621,187 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
 /// A value that is not an object id at all is UNKNOWN, never skipped: git cannot
 /// be asked about it, so the entry's debt is unmeasurable, and a gauge that
 /// dropped it read a corrupt retrieval plane as a true zero — the same false
-/// clean the `unknown` slot exists to prevent.
+/// clean the `unknown` slot exists to prevent. A KEY that names no store is the
+/// same class for the same reason: the question is *which* git to ask, and an
+/// unanswerable one is reported, never guessed.
 fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
-    // Distinct blob ids, first-sighting order: one blob referenced by two pages
-    // is ONE object on disk, and counting it twice would double its bytes.
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut oids: Vec<String> = Vec::new();
+    // Distinct blob ids PER STORE, first-sighting order: one blob referenced by
+    // two pages is ONE object on disk, and counting it twice would double its
+    // bytes — but the same oid under two roots is TWO objects in two databases,
+    // so the dedupe is keyed by store and never globally.
+    let mut seen: HashSet<(StoreKey, String)> = HashSet::new();
+    let mut stores: Vec<(StoreKey, Vec<String>)> = Vec::new();
     let mut malformed: Vec<String> = Vec::new();
+    let mut unaddressable: Vec<String> = Vec::new();
     for object in view::walk::lock_objects(docs) {
         let oid = object.blob_sha.to_ascii_lowercase();
         if !git::is_oid(&oid) {
             malformed.push(format!("{} objects.{}", object.src_path, object.key));
             continue;
         }
-        if seen.insert(oid.clone()) {
-            oids.push(oid);
+        // `Addr::parse` REFUSES a malformed root rather than reading it as a
+        // literal path, and that refusal is carried here rather than swallowed:
+        // falling back to the ambient store would ask the WRONG database and
+        // answer confidently — a wrong SUCCESS, which is the one shape this
+        // gauge must never produce.
+        let Ok(addr) = addr::Addr::parse(&object.key) else {
+            unaddressable.push(format!("{} objects.{}", object.src_path, object.key));
+            continue;
+        };
+        let store: StoreKey = addr.root().cloned();
+        if seen.insert((store.clone(), oid.clone())) {
+            match stores.iter_mut().find(|(k, _)| *k == store) {
+                Some((_, oids)) => oids.push(oid),
+                None => stores.push((store, vec![oid])),
+            }
         }
     }
-    if let Some(detail) = malformed_detail(&malformed) {
+    if let Some(detail) = cannot_ask_detail(&malformed, "not an object id, so git cannot be asked")
+    {
         return VibeDebt::unknown(detail);
     }
-    if oids.is_empty() {
+    if let Some(detail) = cannot_ask_detail(
+        &unaddressable,
+        "with a key that is not an address, so WHICH git to ask is unknown",
+    ) {
+        return VibeDebt::unknown(detail);
+    }
+    if stores.is_empty() {
         return VibeDebt::clear();
     }
 
-    let repo = git::Repo::at(workspace);
-    let reachable = match repo.reachable_objects() {
-        Ok(set) => set,
-        Err(fail) => return VibeDebt::unknown(fail.to_string()),
-    };
-    let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
-    let info = match repo.object_info(&refs) {
-        Ok(info) => info,
-        Err(fail) => return VibeDebt::unknown(fail.to_string()),
+    // The mount table is read ONCE, and only when a key actually names a root:
+    // a corpus whose every key is ambient asks the config plane nothing, so a
+    // single-root machine's gauge is byte-for-byte what it was before U13.
+    let table = if stores.iter().any(|(store, _)| store.is_some()) {
+        load_mount_table()
+    } else {
+        None
     };
 
     let mut debt = VibeDebt::clear();
-    for (oid, info) in oids.iter().zip(info) {
-        let facts = ObjectAnchorFacts {
-            object_present: info.is_some(),
-            reachable_from_commit: reachable.contains(oid),
+    for (store, oids) in &stores {
+        let root = match store {
+            None => workspace.to_path_buf(),
+            Some(name) => match store_path(name, table.as_ref()) {
+                Ok(path) => path,
+                Err(detail) => return VibeDebt::unknown(detail),
+            },
         };
-        // `PendingAnchor` alone is debt: present, reachable from nothing. The
-        // size is git's own byte count, so the sum costs no second git call.
-        if ObjectAnchor::classify(&facts) == ObjectAnchor::PendingAnchor
-            && let Some(present) = info
-        {
-            debt.blobs += 1;
-            debt.bytes += present.size;
+        // ONE handle per root. Both facts below come from THIS handle, in this
+        // iteration, so a store's reachable set can never be read against
+        // another store's presence answer.
+        let repo = git::Repo::at(root);
+        let reachable = match repo.reachable_objects() {
+            Ok(set) => set,
+            Err(fail) => return VibeDebt::unknown(store_fail(store, &fail)),
+        };
+        let refs: Vec<&str> = oids.iter().map(String::as_str).collect();
+        let info = match repo.object_info(&refs) {
+            Ok(info) => info,
+            Err(fail) => return VibeDebt::unknown(store_fail(store, &fail)),
+        };
+
+        for (oid, info) in oids.iter().zip(info) {
+            let facts = ObjectAnchorFacts {
+                object_present: info.is_some(),
+                reachable_from_commit: reachable.contains(oid),
+            };
+            // `PendingAnchor` alone is debt: present, reachable from nothing.
+            // The size is git's own byte count, so the sum costs no second git
+            // call.
+            if ObjectAnchor::classify(&facts) == ObjectAnchor::PendingAnchor
+                && let Some(present) = info
+            {
+                debt.blobs += 1;
+                debt.bytes += present.size;
+            }
         }
     }
     debt
 }
 
-/// The `unknown` detail for `objects:` entries whose value is not an object id —
-/// the count plus the first offender's page and key, so the reading names WHERE
-/// the retrieval plane is damaged instead of just refusing to answer. `None`
-/// when every entry is well-formed.
-fn malformed_detail(malformed: &[String]) -> Option<String> {
-    let first = malformed.first()?;
-    let n = malformed.len();
+/// The local path of the git repository backing ONE named root — the ratified
+/// §4 lookup, and it is a MOUNT LOOKUP and nothing more (U11's settlement of
+/// D12): the table maps canonical name → local path, and `git::Repo::at` takes
+/// it from there.
+///
+/// Every failure arm is an honest degradation naming the root — never a
+/// fabricated sha and never a silent fall back to the ambient store, which would
+/// answer a different repository's question in this one's name.
+fn store_path(
+    name: &addr::MountName,
+    table: Option<&config::mount::MountTable>,
+) -> Result<PathBuf, String> {
+    let Some(table) = table else {
+        return Err(format!(
+            "`{name}` names a root, but no mount table could be read here, so its object store cannot be asked"
+        ));
+    };
+    let Some(mount) = table.by_name(name.as_str()) else {
+        return Err(format!(
+            "root `{name}` is not mounted here, so its object store cannot be asked. Fix: declare it in MERIDIAN.md"
+        ));
+    };
+    // DECLARED but unusable is a DIFFERENT CAUSE with a different fix, and
+    // telling an operator to declare a root they have already declared is the
+    // false teaching S3-R43 removed. The mount plane's own sentence is carried
+    // verbatim, so this gauge and `mrd config` say the same thing about the same
+    // root rather than two spellings of it.
+    if mount.state().refuses() {
+        return Err(format!(
+            "root `{name}` is declared but its object store cannot be asked: {}",
+            mount.state().detail()
+        ));
+    }
+    let Some(path) = mount.canonical_path() else {
+        return Err(format!(
+            "root `{name}` binds no readable path here, so its object store cannot be asked"
+        ));
+    };
+    Ok(path.to_path_buf())
+}
+
+/// The bound mount table, or `None` when this machine has none to read.
+///
+/// Absence is the topology working as designed (§8 M6) and never a failure of
+/// the gauge: a machine with no `MERIDIAN.md` binds no roots, so a rooted key
+/// has no store to ask — which [`store_path`] then says in words. The same
+/// never-fail shape `mrd walk`'s loader uses, for the same reason.
+fn load_mount_table() -> Option<config::mount::MountTable> {
+    let resolution = config::resolve(&config::Env::from_process()).ok()?;
+    let cfg = resolution.config()?;
+    config::mount::bind(cfg).ok()
+}
+
+/// A git failure while asking ONE store, with the root named.
+///
+/// The ambient arm keeps the pre-U13 wording byte-for-byte — a single-root
+/// machine's `unknown` detail did not become a different sentence because the
+/// engine grew roots. A named root prefixes its own name, because "not a git
+/// repository" is only actionable once the reader knows WHICH repository was
+/// asked (§5's per-root row: honest degradation, never a fabricated sha).
+fn store_fail(store: &StoreKey, fail: &git::GitFail) -> String {
+    match store {
+        None => fail.to_string(),
+        Some(name) => format!("root `{name}`: {fail}"),
+    }
+}
+
+/// The `unknown` detail for `objects:` entries git cannot be asked about — the
+/// count, the reason clause, and the first offender's page and key, so the
+/// reading names WHERE the retrieval plane is damaged instead of just refusing
+/// to answer. `None` when there are no offenders.
+///
+/// One helper for both causes on purpose: an entry whose VALUE is not an object
+/// id and one whose KEY names no store are the same reading — the question
+/// cannot be put to git — and two spellings of one reading is how a reader comes
+/// to believe they are two different states.
+fn cannot_ask_detail(offenders: &[String], because: &str) -> Option<String> {
+    let first = offenders.first()?;
+    let n = offenders.len();
     let unit = if n == 1 { "entry" } else { "entries" };
-    Some(format!(
-        "{n} `objects:` {unit} not an object id, so git cannot be asked (first: {first})"
-    ))
+    Some(format!("{n} `objects:` {unit} {because} (first: {first})"))
 }
 
 /// One armed convention read from the INDEX: the pinned `armed_rev` per slug, plus
