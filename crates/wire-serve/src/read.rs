@@ -325,9 +325,11 @@ fn read_anchor(f: &wire_map::facts::ReadFact) -> Option<wire::ReadAnchor> {
 ///   An undecorated link claims nothing; a decorated one claims the ledger
 ///   measured it.
 ///
-/// **D12:** the pinned page is resolved through the corpus index, never by
-/// string surgery on a single-root assumption; a later `root:` prefix rides
-/// inside the target spelling this function carries verbatim into the key.
+/// **D12 (U10):** the pinned page is resolved through the corpus index, never
+/// by string surgery. The `root:` prefix no longer *rides inside a spelling
+/// this function re-splits* — `lock` parsed the ref into an [`addr::Addr`] at
+/// its own door, and this function READS the parts. It was FINDING 02's site
+/// A3: the same `lock::find` bytes, re-split and re-parsed here.
 #[must_use]
 pub fn page_decorations(
     index: &model::CorpusIndex,
@@ -347,13 +349,14 @@ pub fn page_decorations(
     let mut links: Vec<(&String, &String)> = Vec::new();
     collect_links(&doc.root, &mut links);
     for pin in &found.lock.pins {
-        let Some((page, _)) = pin.declared_ref.split_once('#') else {
+        if !pin.declared_ref.has_selector() {
             continue; // a whole-page pin has no block handle to decorate
-        };
-        let Some(target_path) = resolve_page(index, docs, page, path) else {
+        }
+        let page = pin.declared_ref.target();
+        let Some(target_path) = resolve_page(index, docs, &page, path) else {
             continue;
         };
-        let selector = model::selector::Selector::parse(&pin.declared_ref);
+        let selector = model::selector::Selector::parse(&pin.declared_ref.to_string());
         // The handle a pin's target carries: for a section pin, the D15 slug
         // S7's promotion mints from the heading title — computed by the SAME
         // owner, so a decoration keys on the id promotion actually wrote.

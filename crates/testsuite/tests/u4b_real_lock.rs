@@ -24,7 +24,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     let doc0 = fs::load(&root, std::path::Path::new("page.md")).expect("load");
     let mut l = lock::Lock::new();
     l.upsert_pin(lock::PinEntry {
-        declared_ref: "page.md#^c1".to_string(),
+        declared_ref: addr::Addr::parse("page.md#^c1").expect("a fixture ref is an address"),
         fingerprint: model::fingerprint::fingerprint(&doc0, &doc0.root)
             .expect("fixture target has content")
             .into_string(),

@@ -403,10 +403,19 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
 /// owner per fact"), never a second reader that could drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockItem {
-    /// The `ref` field, verbatim (the declared ref). EMPTY on a
-    /// [`LockItem::lock_refusal`] row — a refused lock declares no ref, and the
-    /// listing names the page from its own context instead.
+    /// The `ref` field, verbatim (the declared ref) — the bytes the projection
+    /// writes and a verdict joins on. EMPTY on a [`LockItem::lock_refusal`] row
+    /// — a refused lock declares no ref, and the listing names the page from
+    /// its own context instead.
     pub declared_ref: String,
+    /// The same ref, PARSED ([`addr::Addr`]) — **the structural owner** (U10).
+    ///
+    /// Every consumer that needs the root, the path or the selector reads THIS;
+    /// nothing re-splits [`LockItem::declared_ref`]. `None` means there is no
+    /// address to read: a refusal row (which declares no ref), or a spelling
+    /// outside the address grammar (`docs/address-grammar.md` § 4). The option
+    /// is what makes "not an address" impossible to mistake for one.
+    pub declared_addr: Option<addr::Addr>,
     /// The `to` page path — the `ref` path when `to` is absent. EMPTY on a
     /// [`LockItem::lock_refusal`] row: a refused lock names no target, so the
     /// row is a leaf the walk never traverses and never reverses into.
@@ -703,10 +712,15 @@ fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
         if let Some(after_dash) = trimmed.strip_prefix('-') {
             // A block-sequence item start; its first key must be `ref:`.
             if let Some(value) = after_dash.trim_start().strip_prefix("ref:") {
+                // INGRESS: raw page bytes (FINDING 02, A2). The retype makes
+                // this door discharge the address grammar instead of splitting
+                // a string and handing the unpeeled root on.
                 let declared_ref = strip_wikilink(&unquote(value.trim()));
-                let (to_path, to_sel) = split_selector(&declared_ref);
+                let declared_addr = addr::Addr::parse(&declared_ref).ok();
+                let (to_path, to_sel) = split_address(declared_addr.as_ref(), &declared_ref);
                 out.push(LockItem {
                     declared_ref,
+                    declared_addr,
                     to_path,
                     to_sel,
                     pinned_rev: None,
@@ -777,6 +791,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
         Err(refusal) => {
             out.push(LockItem {
                 declared_ref: String::new(),
+                declared_addr: None,
                 to_path: String::new(),
                 to_sel: String::new(),
                 pinned_rev: None,
@@ -789,9 +804,13 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
         }
     };
     for pin in found.lock.pins {
-        let (to_path, to_sel) = split_lock_ref(&pin.declared_ref);
+        // `lock` already discharged the grammar (`LockError::BadRef`), so a pin
+        // reaching here IS an address — no second parse, no second answer.
+        let to_path = pin.declared_ref.target();
+        let to_sel = pin.declared_ref.selector().to_string();
         out.push(LockItem {
-            declared_ref: pin.declared_ref,
+            declared_ref: pin.declared_ref.to_string(),
+            declared_addr: Some(pin.declared_ref),
             to_path,
             to_sel,
             // The pinned value AS WRITTEN — for form-3 that is the token; the
@@ -830,17 +849,28 @@ fn fingerprint_algo(token: &str) -> String {
     }
 }
 
-/// Split a `meridian-lock` `ref` into `(to_path, to_sel)` — the SINGLE owner of
-/// the form-3 ref grammar (D12).
+/// Project a parsed address into the two projection columns `(to_path, to_sel)`.
 ///
-/// Today the grammar is intra-root — `page[#selector]`, the same shape the
-/// legacy forms use — so a form-3 row feeds the SAME corpus resolution
-/// ([`resolve_to_path`]) and the same `node` join as every other row. The row
-/// keeps `declared_ref` VERBATIM, so no consumer re-derives the address: a later
-/// `root:` prefix is learned by teaching THIS function to peel a leading root,
-/// and nothing else in the reader or the row shape moves.
-fn split_lock_ref(declared_ref: &str) -> (String, String) {
-    split_selector(declared_ref)
+/// **This replaces `split_lock_ref`, and the replacement is the U10 correction.**
+/// That function was documented as the SINGLE owner of the ref grammar, to be
+/// taught to peel a root later — but FINDING 02 measured sixteen sites splitting
+/// the same string, and a peeled root had nowhere to go: `LockItem` carried no
+/// root. The address is now a TYPE, parsed once at ingress, and this function
+/// only projects it.
+///
+/// `to_path` is [`addr::Addr::target`] — `[root:]path`, the root kept ON the
+/// spelling. Peeling it here, before the corpus lookup is root-aware, is exactly
+/// the discard that made a cross-root wikilink resolve to the ambient root's
+/// same-basename file (FINDING 03). U11 owns the root-keyed lookup; this stays
+/// byte-identical until it lands.
+///
+/// A spelling the grammar refuses has no address, so it projects verbatim and
+/// joins nothing — an unresolved row, never a wrong resolution.
+fn split_address(parsed: Option<&addr::Addr>, spelling: &str) -> (String, String) {
+    match parsed {
+        Some(addr) => (addr.target(), addr.selector().to_string()),
+        None => split_selector(spelling),
+    }
 }
 
 /// Parse one flow-mapping body (`ref: 'a.md', to: 'a.md#^c', rev: 'r1'`) into a
@@ -867,10 +897,15 @@ fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
         }
     }
     let declared_ref = declared_ref?;
+    // INGRESS: raw page bytes (FINDING 02, A1). `to` addresses the target when
+    // present, so the address parsed for the projection is `to`'s — while
+    // `declared_addr` stays the structural reading of the declared `ref`.
     let target = to.as_deref().unwrap_or(&declared_ref);
-    let (to_path, to_sel) = split_selector(target);
+    let declared_addr = addr::Addr::parse(&declared_ref).ok();
+    let (to_path, to_sel) = split_address(addr::Addr::parse(target).ok().as_ref(), target);
     Some(LockItem {
         declared_ref,
+        declared_addr,
         to_path,
         to_sel,
         pinned_rev,
@@ -943,6 +978,12 @@ fn u64c(x: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fixture address. Every fixture spelling here is a legal address, so a
+    /// panic is a fixture bug, never a grammar surprise.
+    fn a(spelling: &str) -> addr::Addr {
+        addr::Addr::parse(spelling).expect("a fixture ref is a well-formed address")
+    }
 
     fn doc(raw: &str) -> Document {
         model::build(raw.to_string(), syntax::parse(raw))
@@ -1123,7 +1164,7 @@ mod tests {
         l.set_object("sources/target-page.md", "9ae3f1deadbeef");
         for (declared_ref, fingerprint) in pins {
             l.upsert_pin(lock::PinEntry {
-                declared_ref: (*declared_ref).to_string(),
+                declared_ref: a(declared_ref),
                 fingerprint: (*fingerprint).to_string(),
             });
         }
@@ -1277,7 +1318,7 @@ mod tests {
             lock::render(&{
                 let mut l = lock::Lock::new();
                 l.upsert_pin(lock::PinEntry {
-                    declared_ref: "b.md".to_string(),
+                    declared_ref: a("b.md"),
                     fingerprint: fp("ef"),
                 });
                 l
@@ -1323,7 +1364,7 @@ mod tests {
         let block = lock::render(&{
             let mut l = lock::Lock::new();
             l.upsert_pin(lock::PinEntry {
-                declared_ref: "b.md".to_string(),
+                declared_ref: a("b.md"),
                 fingerprint: fp("12"),
             });
             l
@@ -1424,28 +1465,58 @@ mod tests {
         }
     }
 
-    /// D12: the ref grammar has ONE owner, and the row carries the ref verbatim,
-    /// so a later `root:` prefix is a change to that one function — the reader,
-    /// the row shape, and the resolution path are untouched by it. Today the
-    /// grammar is intra-root: `page`, `page#heading`, `page#^block-id`.
+    /// **NARROWED (U10).** This test was named
+    /// `lock_ref_grammar_has_one_owner_and_is_root_prefix_learnable` and its
+    /// comment claimed a later `root:` prefix would be *"a change to that one
+    /// function"*. FINDING 02 measured sixteen sites re-splitting the same
+    /// string, and this test never proved otherwise: it exercised exactly one
+    /// other function, asserted only `declared_ref` for its colon-bearing
+    /// fixture, and **never `to_path`** — had it asserted `to_path` it would
+    /// have printed the literal-path misreading and contradicted its own
+    /// comment. "ONE owner" was not tested at all.
+    ///
+    /// What is now true, and what this asserts: the address is a TYPE parsed at
+    /// the ingress, so the root is STRUCTURAL rather than glued to a path, and
+    /// the projection columns are byte-identical to what the string convention
+    /// produced. The claim is exactly the size of its proof.
     #[test]
-    fn lock_ref_grammar_has_one_owner_and_is_root_prefix_learnable() {
-        assert_eq!(
-            split_lock_ref("wiki/page.md"),
-            ("wiki/page.md".to_string(), String::new()),
-        );
-        assert_eq!(
-            split_lock_ref("wiki/page.md#Design"),
-            ("wiki/page.md".to_string(), "Design".to_string()),
-        );
-        assert_eq!(
-            split_lock_ref("wiki/page.md#^claim-1"),
-            ("wiki/page.md".to_string(), "^claim-1".to_string()),
-            "a block-id keeps its caret — it is the `node.selector` verbatim",
-        );
-        // The unpeeled `root:` prefix stays INSIDE the address today (stage 2 is
-        // intra-root): it is carried, never silently reinterpreted as a path.
+    fn a_lock_ref_is_a_parsed_address_and_the_projection_is_byte_identical() {
+        // The projection of a parsed address — what `split_lock_ref` used to do
+        // by string surgery, now a read of the type.
+        for (spelling, want_path, want_sel) in [
+            ("wiki/page.md", "wiki/page.md", ""),
+            ("wiki/page.md#Design", "wiki/page.md", "Design"),
+            // A block-id keeps its caret — it is the `node.selector` verbatim.
+            ("wiki/page.md#^claim-1", "wiki/page.md", "^claim-1"),
+        ] {
+            let parsed = addr::Addr::parse(spelling).expect("a well-formed address");
+            assert_eq!(
+                split_address(Some(&parsed), spelling),
+                (want_path.to_string(), want_sel.to_string()),
+                "{spelling}",
+            );
+        }
+
+        // THE assertion the old test omitted. The row carries the ref verbatim
+        // AND `to_path` — and `to_path` still prints the whole spelling, root
+        // included. Peeling it here would resolve a cross-root ref onto the
+        // ambient root's same-basename file, which is FINDING 03. U11 owns the
+        // root-keyed lookup that makes peeling safe.
         let items = page_lock_items(&doc(&lock_page(&[("sessions:notes.md#Design", &fp("34"))])));
         assert_eq!(items[0].declared_ref, "sessions:notes.md#Design");
+        assert_eq!(
+            items[0].to_path, "sessions:notes.md",
+            "the root stays ON the spelling until the lookup is root-aware",
+        );
+        assert_eq!(items[0].to_sel, "Design");
+
+        // And the root is now readable as a VALUE — the thing sixteen sites
+        // could not do, and the reason this unit exists.
+        let root = items[0]
+            .declared_addr
+            .as_ref()
+            .and_then(addr::Addr::root)
+            .map(addr::MountName::as_str);
+        assert_eq!(root, Some("sessions"), "the root is structural, not textual");
     }
 }

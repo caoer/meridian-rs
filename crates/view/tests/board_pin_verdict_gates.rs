@@ -49,7 +49,7 @@ fn live_token(raw: &str) -> String {
 fn effect_page(declared_ref: &str, token: &str) -> String {
     let mut l = lock::Lock::new();
     l.upsert_pin(lock::PinEntry {
-        declared_ref: declared_ref.to_string(),
+        declared_ref: addr::Addr::parse(declared_ref).expect("a fixture ref is an address"),
         fingerprint: token.to_string(),
     });
     format!("# Effect\n\ndraws from it\n\n{}\n", lock::render(&l))
