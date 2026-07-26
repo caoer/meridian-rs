@@ -468,7 +468,9 @@ pub enum Op {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<bool>,
     },
-    /// v2 §4.4 the ONLY write op, batch-only: the Edit-tool semantic model IS
+    /// v2 §4.4 the only write op UNDER V2, batch-only (v3 adds the birth op
+    /// [`Op::Create`]; `splice` remains the only op that EDITS an existing
+    /// file): the Edit-tool semantic model IS
     /// the wire write grammar (D-C1). No client span field exists anywhere in
     /// a request — the class of wrong-offset writes is unrepresentable.
     /// Guardless, actor-less, receipt-less frames are legal at the wire
@@ -516,6 +518,43 @@ pub enum Op {
         /// it, so the frozen v2 request bytes never change.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<PinSpec>,
+    },
+    /// The BIRTH op (v3-ONLY at dispatch, like `read`/`check_write`): born one
+    /// file through the SAME guarded door every in-process caller uses
+    /// (`wire_serve::write::create`) — path confinement → reserved-journal
+    /// guard → world guard → the four birth guards (`@fp` strip at document
+    /// grain, stored-form translation, the cross-root artifact guard, the
+    /// `meridian-lock` artifact guard) → the gate seam → the `if_absent` CAS at
+    /// the disk edge → root advance → birth Delta → journal row. There is no
+    /// second birth path: this op FORWARDS, it does not re-implement.
+    ///
+    /// `body` is the newborn's full bytes, byte-transparent — the engine mints
+    /// no template here (templating is `preset`'s `^template` plane). An
+    /// occupied path refuses `cas_mismatch` (recovery `refresh`) and nothing
+    /// lands; there is no clobbering birth.
+    ///
+    /// There is deliberately **no `force` field**: the guarded door carries no
+    /// forced-birth escape, so admitting the key would advertise a bypass that
+    /// does not exist. A `force` on this op hits the strict field wall.
+    Create {
+        path: Path,
+        /// The newborn's full bytes, verbatim (no template, no engine authoring).
+        body: String,
+        /// §9: recorded exactly as given into the birth Delta and journal row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
+        /// §9: RFC 3339, format-VALIDATED never generated — the journal row's
+        /// clock comes from the caller, so a malformed `now` is `bad_request`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        now: Option<String>,
+        /// The §5.1 world-grain guard: mismatch refuses `root_mismatch` and
+        /// nothing is born.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        if_root: Option<Root>,
+        /// Rehearsal: everything except disk — no file, no journal row, no root
+        /// advance. A dry birth still refuses a would-be clobber.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
     },
     /// v2 §4.7 integrity read: the current workspace root cursor + `seq`.
     /// No parameters — the root is world-grain (the only root guard is
@@ -934,6 +973,22 @@ pub enum ResponseBody {
     /// Absent on a workspace-less handshake (nothing to pin) and on the sidecar
     /// (which opens its drawer client-side). An OPTIONAL additive field on the
     /// frozen shape.
+    ///
+    /// `workspace` is the canonical root that ACTUALLY BOUND — the second
+    /// optional additive field on this shape, by the same §3.2 evolution law
+    /// `storage` already exercised ("tolerant client — unknown response fields
+    /// … are ignored"), so it needs no proto bump and no cap string.
+    ///
+    /// It exists because the marker-retirement ruling requires every resolution
+    /// to name the tier and root that answered, never silently — and a binding
+    /// IS a resolution. `storage` cannot serve this: it is a hashed drawer
+    /// directory, so it identifies the drawer without naming the tree. Even
+    /// under the exact-or-refuse law of `registry::Registry::pin_declared`, the
+    /// bound root may differ from the string the caller declared, because
+    /// canonicalization rewrites symlinks and on-disk case. The caller learns
+    /// the real root here rather than assuming its own spelling survived.
+    /// Absent exactly when `storage` is: a workspace-less handshake binds
+    /// nothing.
     Hello {
         proto: u32,
         server: String,
@@ -942,19 +997,6 @@ pub enum ResponseBody {
         root: Option<Root>,
         #[serde(skip_serializing_if = "Option::is_none")]
         storage: Option<String>,
-        /// The canonical root that ACTUALLY BOUND — the second optional
-        /// additive field on this shape, by the same §3.2 evolution law
-        /// `storage` already exercised ("tolerant client — unknown response
-        /// fields … are ignored"), so it needs no proto bump and no cap string.
-        ///
-        /// It exists because the marker-retirement ruling requires every
-        /// resolution to name the tier and root that answered, never silently —
-        /// and a binding IS a resolution. `storage` cannot serve this: it is a
-        /// hashed drawer directory, so it identifies the drawer without naming
-        /// the tree. Even under the exact-or-refuse law of
-        /// `registry::Registry::pin_declared`, the bound root may differ from
-        /// the string the caller declared, because canonicalization rewrites
-        /// symlinks and on-disk case. Absent exactly when `storage` is.
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
     },
@@ -1014,6 +1056,36 @@ pub enum ResponseBody {
         /// enum is passed by value on every reply.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pin: Option<Box<PinFact>>,
+    },
+    /// The BIRTH reply (the `create` op, v3-only): what the birth LANDED —
+    /// the born path, its whole-file rev, the root transition, and the journal
+    /// row that dates it. Never a delivery claim (A7), exactly like `splice`.
+    ///
+    /// Shape-unique in this untagged enum: `file_rev_after` appears on no
+    /// other variant, and `armed` (which `Splice` requires) appears on none of
+    /// this one — so neither body can capture the other's frame. Pinned by
+    /// `crates/wire/tests/contract_v2.rs`.
+    Create {
+        path: Path,
+        /// The born file's whole-file rev — computed from the body, so present
+        /// on a dry run too (a fact about the spec, not about the disk).
+        file_rev_after: NodeRev,
+        root_before: Root,
+        /// ALWAYS serialized — `null` on a dry run, the same absence-vs-null
+        /// contract `splice` carries.
+        root_after: Option<Root>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        seq: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dry: Option<bool>,
+        /// The birth's journal row anchor (`r-NNNNNN`) — the row that makes the
+        /// newborn datable by `mrd test --history`. Absent on a dry run,
+        /// because a rehearsal writes none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        journal_anchor: Option<String>,
+        /// The §11 rules-as-data surface over the birth's after-state — the
+        /// same shape `splice` carries, `[]` on an unarmed workspace.
+        verdicts: Vec<Verdict>,
     },
     /// v2 §4.7: the current root at world grain + `seq`, the monotone
     /// per-workspace batch counter (per-daemon-epoch — a restart resets it;

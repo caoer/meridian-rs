@@ -397,12 +397,39 @@ fn op_to_pb(op: wire::Op) -> pb::request::Op {
         wire::Op::ViewPath { cwd, fresh } => {
             pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh })
         }
-        // v3-only JSON-face op (M1 U4a2): outside the proto agreement
-        // surface — the pb mirror stays v2-shaped, no sample feeds it here.
+        // The BIRTH op is mirrored because it MUTATES THE CORPUS. Ruled
+        // 2026-07-26 (`decisions/2026-07-26-proto-mirror-ruling.md`, bronze):
+        // every op that mutates the corpus and advances the root MUST be
+        // mirrored, so the binary path can always perform every governed
+        // mutation. A transport that could splice but not birth would carry a
+        // lame contract. The "pb mirror stays v2-shaped" reading was found to
+        // be no law at all — it bootstrapped from the `read` arm citing itself.
+        wire::Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } => pb::request::Op::Create(pb::CreateRequest {
+            path: path.0,
+            body,
+            actor,
+            now,
+            if_root: if_root.map(|r| r.0),
+            dry,
+        }),
+        // A HOST-FACE op: DEFERRED, not excluded by principle (ruling §3,
+        // `decisions/2026-07-26-proto-mirror-ruling.md`). `read` mutates
+        // nothing, so the mandatory-membership rule does not reach it — but
+        // nothing bars it either. It joins BOTH SIDES AT ONCE via a future
+        // amendment if the binary path comes to need it, which is what this
+        // arm's own wording has promised since M1. No sample feeds it today.
         wire::Op::Read { .. } => {
             unreachable!("composed `read` is v3-JSON-face only — not in the proto agreement")
         }
-        // v3-only JSON-face op (M1 U8c): same rule as `read`.
+        // Also host-face — it computes a verdict and never writes. Deferred on
+        // the same terms as `read` above, not excluded by rule.
         wire::Op::CheckWrite { .. } => {
             unreachable!("`check_write` is v3-JSON-face only — not in the proto agreement")
         }
@@ -538,6 +565,27 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             dest: dest.0,
             span: Some(span_to_pb(span)),
             content,
+        }),
+        // The birth reply — mirrored with its request under the mandatory
+        // mutation-membership rule (see `op_to_pb`'s `Op::Create` arm).
+        wire::ResponseBody::Create {
+            path,
+            file_rev_after,
+            root_before,
+            root_after,
+            seq,
+            dry,
+            journal_anchor,
+            verdicts,
+        } => pb::response::Body::Create(pb::CreateResponse {
+            path: path.0,
+            file_rev_after: file_rev_after.0,
+            root_before: root_before.0,
+            root_after: root_after.map(|r| r.0),
+            seq,
+            dry,
+            journal_anchor,
+            verdicts: verdicts.into_iter().map(verdict_to_pb).collect(),
         }),
         wire::ResponseBody::Splice {
             armed,
@@ -1138,6 +1186,21 @@ fn op_from_pb(op: pb::request::Op) -> wire::Op {
         pb::request::Op::ViewPath(pb::ViewPathRequest { cwd, fresh }) => {
             wire::Op::ViewPath { cwd, fresh }
         }
+        pb::request::Op::Create(pb::CreateRequest {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        }) => wire::Op::Create {
+            path: wire::Path(path),
+            body,
+            actor,
+            now,
+            if_root: if_root.map(wire::Root),
+            dry,
+        },
     }
 }
 
@@ -1303,6 +1366,25 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             dry,
             verdicts: verdicts.into_iter().map(verdict_from_pb).collect(),
             pin: None,
+        },
+        pb::response::Body::Create(pb::CreateResponse {
+            path,
+            file_rev_after,
+            root_before,
+            root_after,
+            seq,
+            dry,
+            journal_anchor,
+            verdicts,
+        }) => wire::ResponseBody::Create {
+            path: wire::Path(path),
+            file_rev_after: wire::NodeRev(file_rev_after),
+            root_before: wire::Root(root_before),
+            root_after: root_after.map(wire::Root),
+            seq,
+            dry,
+            journal_anchor,
+            verdicts: verdicts.into_iter().map(verdict_from_pb).collect(),
         },
         pb::response::Body::Root(pb::RootResponse { root, seq }) => wire::ResponseBody::Root {
             root: wire::Root(root),
@@ -1740,6 +1822,10 @@ fn sample_splice_requests() -> Vec<wire::Op> {
     ]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat sample per request shape — the coverage IS the length; grouping them into helpers hides which shapes are covered"
+)]
 fn sample_requests() -> Vec<wire::Request> {
     let ops = vec![
         wire::Op::Hello {
@@ -1833,6 +1919,36 @@ fn sample_requests() -> Vec<wire::Request> {
         wire::Op::ViewPath {
             cwd: "/home/zt/wiki".into(),
             fresh: Some(false),
+        },
+        // create (the birth op): the fully-guarded frame, the bare frame, and
+        // the rehearsal — the optional-bool and optional-string wrappers all
+        // exercised in both states, so a wrapper that silently collapsed
+        // absent-to-default would fail the round trip.
+        wire::Op::Create {
+            path: wire::Path("notes/newborn.md".into()),
+            body: "---\ntype: note\n---\n\n# Newborn\n".into(),
+            actor: Some("agent:b0864fb2".into()),
+            now: Some("2026-07-18T20:31:04Z".into()),
+            if_root: Some(wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            )),
+            dry: None,
+        },
+        wire::Op::Create {
+            path: wire::Path("notes/bare.md".into()),
+            body: "# Bare\n".into(),
+            actor: None,
+            now: None,
+            if_root: None,
+            dry: None,
+        },
+        wire::Op::Create {
+            path: wire::Path("notes/rehearsal.md".into()),
+            body: String::new(), // an empty body is a legal newborn
+            actor: None,
+            now: None,
+            if_root: None,
+            dry: Some(true),
         },
     ];
     ops.into_iter()
@@ -2029,6 +2145,51 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
             dry: Some(true),
             verdicts: vec![],
             pin: None,
+        },
+    ]
+}
+
+/// The two birth response shapes: a landed birth (root advanced, seq, journal
+/// anchor, an inhabited verdict) and a rehearsal (`root_after` null, no seq, no
+/// anchor). Both states of every optional are covered, so a wrapper that
+/// collapsed absent into default would fail the round trip.
+fn sample_create_bodies() -> Vec<wire::ResponseBody> {
+    vec![
+        wire::ResponseBody::Create {
+            path: wire::Path("notes/newborn.md".into()),
+            file_rev_after: wire::NodeRev("a9794a262e67ed02".into()),
+            root_before: wire::Root(
+                "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9".into(),
+            ),
+            root_after: Some(wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            )),
+            seq: Some(1),
+            dry: None,
+            journal_anchor: Some("r-000001".into()),
+            verdicts: vec![wire::Verdict {
+                rule: "blurb-required".into(),
+                severity: wire::Severity::Warn,
+                path: wire::Path("notes/newborn.md".into()),
+                hpath: Some(vec![seg("Newborn")]),
+                span: wire::Span(20, 150),
+                node_rev: wire::NodeRev("5a8faa717fbcdb04".into()),
+                message: "section has no blurb line".into(),
+            }],
+        },
+        // The rehearsal: nothing landed, so no advanced root, no Delta seq and
+        // no journal row — but the rev IS still computable from the spec.
+        wire::ResponseBody::Create {
+            path: wire::Path("notes/rehearsal.md".into()),
+            file_rev_after: wire::NodeRev("fb49e9df2257fab8".into()),
+            root_before: wire::Root(
+                "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68".into(),
+            ),
+            root_after: None,
+            seq: None,
+            dry: Some(true),
+            journal_anchor: None,
+            verdicts: vec![],
         },
     ]
 }
@@ -2282,6 +2443,7 @@ fn sample_responses() -> Vec<wire::Response> {
     let mut payloads: Vec<wire::ResponsePayload> = bodies
         .into_iter()
         .chain(sample_splice_bodies())
+        .chain(sample_create_bodies())
         .chain(sample_view_path_bodies())
         .map(|body| wire::ResponsePayload::Body { body })
         .collect();

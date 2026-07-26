@@ -49,6 +49,7 @@ message Request {
     LinksRequest links = 11;    // v2 §4.6 (Q5-LINKS)
     SubRequest sub = 12;        // v2 §4.7 push path (T5-SUB)
     ViewPathRequest view_path = 13; // V2 §Q2 the view-organ path forwarder
+    CreateRequest create = 14;      // the birth op (v3-only at dispatch)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -108,6 +109,25 @@ message SpliceRequest {
   optional bool dry = 6;
   repeated Edit edits = 7;
   optional bool force = 8;     // U4.3 the sanctioned bypass (§11.1 pt 3)
+}
+
+// The BIRTH op: ONE path with ONE body, born through the guarded door
+// (`wire_serve::write::create`) — never a batch, so none of the splice batch
+// vocabulary appears here. Mirrored because it MUTATES THE CORPUS: ruled
+// 2026-07-26 (`decisions/2026-07-26-proto-mirror-ruling.md`, bronze) that
+// mandatory membership follows corpus mutation, so the binary path can always
+// perform every governed mutation.
+//
+// There is deliberately NO `force` field: the guarded door carries no
+// forced-birth escape, so offering one in proto would advertise a bypass that
+// does not exist. Adding it later is an amendment, not a fill-in.
+message CreateRequest {
+  string path = 1;
+  string body = 2;             // the newborn's full bytes, verbatim (no template)
+  optional string actor = 3;   // opaque; wire input, never ambient (§9)
+  optional string now = 4;     // RFC 3339; validated, never generated (§9)
+  optional string if_root = 5; // world-grain guard, checked FIRST (§5.1)
+  optional bool dry = 6;       // everything except disk; still refuses a clobber
 }
 
 message ReceiptAddr {
@@ -329,6 +349,7 @@ message Response {
     DiffResponse diff = 12; // v2 §4.7/§7.3 (D3-DELTA)
     LinksResponse links = 13; // v2 §4.6 + §10.1 triple (Q5-LINKS)
     ViewPathResponse view_path = 14; // V2 §Q2 the path forwarder reply
+    CreateResponse create = 15;      // the birth reply (v3-only)
   }
   reserved 8; // v1 guard, DELETED (D-C8) — never reuse
 }
@@ -392,6 +413,26 @@ message SpliceResponse {
   optional uint64 seq = 5;
   optional bool dry = 6;
   repeated Verdict verdicts = 7; // empty until rung 6 (P6-VERDICTS)
+}
+
+// The birth reply: what the birth LANDED. Absences mirror SpliceResponse's
+// rule — a dry run emits no Delta and writes no journal row, so `root_after`,
+// `seq` and `journal_anchor` are all absent on a rehearsal.
+message CreateResponse {
+  string path = 1;
+  // The newborn's whole-file rev. Computed from the body, so it is present on a
+  // dry run too (a fact about the spec, not about the disk).
+  string file_rev_after = 2;
+  string root_before = 3;
+  // JSON serializes root_after ALWAYS, null on dry; proto absence carries the
+  // dry-null, exactly as on SpliceResponse.
+  optional string root_after = 4;
+  optional uint64 seq = 5;
+  optional bool dry = 6;
+  // The birth's journal row anchor (`r-NNNNNN`) — the row that makes the
+  // newborn datable. Absent on a rehearsal, which writes none.
+  optional string journal_anchor = 7;
+  repeated Verdict verdicts = 8;
 }
 
 message Armed {

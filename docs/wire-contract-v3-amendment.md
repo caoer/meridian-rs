@@ -671,6 +671,142 @@ One consequence a reader will otherwise get backwards: **a green `lock` axis
 does NOT imply the tree is current.** See `docs/status.md` § The composed status
 line.
 
+## The birth op (2026-07-26) — `create` puts the guarded door on the wire
+
+### 12. `{"op":"create"}` — file birth, v3-only
+
+Until now the wire could EDIT a file and could not BIRTH one. The engine's
+guarded birth door (`wire_serve::write::create`) was reachable only in-process
+from Rust, so every wire client had to shell out to `mrd new` or `ccc-cli` to
+get a first rev. This op closes that gap by FORWARDING to that same door. It is
+not a new birth path — that distinction is the whole design.
+
+**Cap string: `create`** — appended by the v3 hello projection, at OP grain, one
+bare cap. The dotted `op.field` form names a FIELD amendment to an op that
+already exists under v2 (`splice.pin`); `create` has no v2 twin to amend, so a
+`create.<field>` cap would be a category error. A v2 session's caps never carry
+it and a v2 `create` answers `unknown_op` (§3.2 discovery honesty), exactly like
+`read` and `check_write`.
+
+Request:
+
+```
+{"id":7,"op":"create","path":"notes/newborn.md",
+ "body":"---\ntype: note\n---\n\n# Newborn\n",  // the newborn's FULL bytes, verbatim
+ "actor":"agent:b0864fb2",                       // §9, recorded never generated
+ "now":"2026-07-26T13:30:00-04:00",              // §9, RFC 3339, VALIDATED
+ "if_fingerprint":"b3:…",                        // §5.1 world guard (optional)
+ "dry":true}                                     // rehearsal (optional)
+```
+
+Response body:
+
+```
+{"path":…,"file_rev_after":…,
+ "fingerprint_before":…,"fingerprint_after":…|null,
+ "seq":N,"dry":true,"journal_anchor":"r-000001","verdicts":[]}
+```
+
+`file_rev_after` is the newborn's whole-file rev, computed from the body — so it
+is present on a dry run too (a fact about the spec, not the disk).
+`journal_anchor` names the birth's journal row, which is what makes the newborn
+datable by `mrd test --history`. `fingerprint_after`, `seq` and `journal_anchor`
+are all absent-or-null on a rehearsal, because a rehearsal emits no Delta and
+writes no row.
+
+**Byte-transparent, no template.** The engine writes exactly the caller's bytes.
+Template selection is the `preset` plane's (`mrd new <KIND>` resolves
+`presets/<KIND>.md` and its `^template`); reproducing it here would put markdown
+authoring on the wire.
+
+**There is no `force` field, deliberately.** The guarded door carries no
+forced-birth escape, so admitting the key would advertise a bypass that does not
+exist. A `force` on this op hits the strict field wall. Adding one later is an
+amendment, not a fill-in.
+
+#### What the op inherits by forwarding — the reason it is not an `O_EXCL`
+
+The door runs, in order: path confinement → reserved-journal guard → world guard
+(§5.1) → the `@fp` document-grain strip AND its assertion (S10/R25) → the U12
+stored-form translation → the cross-root artifact guard (D9) → the
+`meridian-lock` artifact guard (R25) → the armed gate over the birth's
+after-state (`ChangeOp::Create`, before=absent) → the `if_absent` CAS at the disk
+edge → root advance → birth Delta → journal row.
+
+A daemon-side `open(O_CREAT|O_EXCL)` with the caller's bytes would be trivially
+green and would skip every one of those. An agent wanting to land a forged
+fingerprint claim or a fabricated lock artifact would simply birth instead of
+splicing, and no guard would see it; the file would also appear with no journal
+row, so `mrd test --history` could not reconstruct it. That is why this op
+forwards.
+
+#### Refusal vocabulary
+
+| Condition | Code (v3 spelling) | Recovery | Refused at |
+|---|---|---|---|
+| v2 session | `unknown_op` | `fix` | dispatch, both hosts |
+| Unknown field (incl. `force`, `edits`, `pin`) | `bad_request`, names the field | `fix` | strict decode |
+| Missing `path` / `body`, or mistyped | `bad_request` | `fix` | strict decode |
+| `now` not RFC 3339 | `bad_request` | `fix` | strict decode |
+| Path violates path law (absolute, `..`) | `bad_path`, echoes the spelling | — | strict decode |
+| Path escapes the workspace | `bad_path` | — | engine `path_confined` |
+| Path is `meridian/journal.md` | `bad_request`, teaches why | `fix` | engine |
+| Stale `if_fingerprint` | `fingerprint_mismatch` | `resync` | engine |
+| **Path occupied** | **`cas_mismatch`** | **`refresh`** | engine, at the disk edge |
+| Forged `@fp` / lock artifact bytes | `bad_request` | `fix` | engine birth guards |
+
+**Create-on-existing is `cas_mismatch`, never a clobber.** The occupied path is
+reported with the occupant's rev as `actual` against `absent` as `expected`
+(taxonomy row 13); the occupant is byte-untouched and no journal row is written.
+A DRY birth honours this too — a rehearsal of a clobber refuses exactly where the
+real birth would.
+
+**Jail interaction: two walls, not one.** The wire path law refuses an escape at
+decode (`bad_path`, before the engine is reached), and the engine's own
+`path_confined` refuses it again behind that. The wire path is always
+workspace-relative; which workspace it is relative to is the host's binding (the
+process argument for the sidecar, the `hello` workspace for the resident daemon)
+and this op does not touch that binding.
+
+#### Both hosts, one door
+
+The sidecar and the resident daemon each carry a dispatch arm, and both call the
+same `wire_serve::write::create` and render through the same
+`wire_serve::write::create_response`. The sidecar advances its per-epoch ring
+with the birth Delta and admits rule packs; the daemon is a BARE commit (`&[]`,
+`seq` 0, frame discarded) whose next read rebuilds on the moved fingerprint.
+
+#### Proto mirror — membership follows corpus mutation (ruled 2026-07-26)
+
+`create` is mirrored in `meridian.proto`: `CreateRequest create = 14` in the
+Request oneof, `CreateResponse create = 15` in the Response oneof.
+
+**The rule, ruled:** every op that **mutates the corpus and advances the root
+MUST be mirrored**. That is the drift pin's live guarantee — the opt-in binary
+path can always perform every governed mutation. `splice` and `create` are those
+doors today. A binary transport able to splice but not birth would carry a lame
+contract.
+
+**Host-face ops are DEFERRED, not excluded by principle.** `read` and
+`check_write` render a projection and compute a verdict; they mutate nothing, so
+mandatory membership does not reach them — and nothing bars them either. They
+stay out today and join *both sides at once* via a future amendment if the binary
+path comes to need them, which is what their own `unreachable!()` arms have
+promised since M1.
+
+**The "pb mirror stays v2-shaped" reading was never law.** No ratified ruling,
+committed doc, or wiki decision ever stated a freeze or a reason for one; the
+provenance dig found that rule bootstrapped — the `read` arm cited itself as its
+own precedent. `create` was the first op to force the two readings apart
+(v3-only, but corpus-mutating), which is what surfaced the gap.
+
+Ruling: `decisions/2026-07-26-proto-mirror-ruling.md` (session
+`26-16-meridian-marker-retirement`) — **tier bronze**, ratified by the acting
+engine advisor with ZT AFK and queued for ZT review, so this is the governing
+rule but not settled forever. Recorded reversal cost if overruled: two arms to
+`unreachable!()`, the two messages drop, and the oneof tags stay burned — which
+is correct either way, since a tag is never renumbered.
+
 ### Named residuals carried by this surface
 
 Accepted, documented, not prevented. A doc that hides a residual is worse than
