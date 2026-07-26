@@ -311,6 +311,72 @@ fn the_json_face_carries_the_same_facts() {
     );
 }
 
+/// **U33.** The verb publishes the resolution's ORIGIN — which rung of the
+/// bootstrap chain supplied the path — and it does so **where the two rungs
+/// resolve to the SAME path**, which is the only case the printed path cannot
+/// answer on its own.
+///
+/// Measured before this was written: `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd
+/// config` and `mrd config` with the variable unset produced **byte-identical
+/// output**. Two environments differing in exactly the variable the chain is
+/// made of were indistinguishable at the only surface that publishes the chain
+/// — so an operator debugging a stale exported override had nothing to read,
+/// and criterion 1's claim is about the CHAIN, not about its endpoint.
+///
+/// The assert is the DIFFERENCE between the two runs. A build that hardcoded
+/// either word would pass one half and fail the other.
+#[test]
+fn the_verb_names_which_rung_supplied_the_path_even_when_both_agree() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let default_path = home.path().join("MERIDIAN.md");
+    std::fs::write(&default_path, single(home.path())).expect("write");
+
+    // Rung 2 — nothing stated, the default answered.
+    let fell_through = run(home.path(), None, &[]);
+    assert_eq!(fell_through.status.code(), Some(0), "{}", stderr(&fell_through));
+    let fell_through_text = stdout(&fell_through);
+    assert!(
+        fell_through_text.contains("origin:$HOME/MERIDIAN.md"),
+        "the default rung is NAMED, not inferred from the path: {fell_through_text}"
+    );
+
+    // Rung 1 — stated, and stating exactly what rung 2 would have produced. The
+    // paths are identical; only the origin differs.
+    let stated = run(home.path(), Some(&default_path), &[]);
+    assert_eq!(stated.status.code(), Some(0), "{}", stderr(&stated));
+    let stated_text = stdout(&stated);
+    assert!(
+        stated_text.contains("origin:MERIDIAN_CONFIG"),
+        "the override is named even though it resolved to the default path: {stated_text}"
+    );
+    assert_ne!(
+        fell_through_text, stated_text,
+        "the whole point: these two runs used to be byte-identical"
+    );
+
+    // `--json` carries the same word. One spelling, both faces — the rule the
+    // mount state words already follow.
+    let json_stated: serde_json::Value =
+        serde_json::from_str(&stdout(&run(home.path(), Some(&default_path), &["--json"])))
+            .expect("json");
+    assert_eq!(json_stated["origin"], "MERIDIAN_CONFIG");
+    let json_default: serde_json::Value =
+        serde_json::from_str(&stdout(&run(home.path(), None, &["--json"]))).expect("json");
+    assert_eq!(json_default["origin"], "$HOME/MERIDIAN.md");
+
+    // State A reports its origin too: the chain still ran and still answered,
+    // and WHICH rung resolved a path that holds no file is exactly what an
+    // operator staring at an unexpected `absent` needs.
+    let empty = tempfile::tempdir().expect("tempdir");
+    let absent = run(empty.path(), None, &[]);
+    assert_eq!(absent.status.code(), Some(0));
+    assert!(
+        stdout(&absent).contains("origin:$HOME/MERIDIAN.md"),
+        "absent is a resolution, and it has an origin: {}",
+        stdout(&absent)
+    );
+}
+
 /// A positional argument or an unknown flag is an exit-2 tool failure, never
 /// ignored.
 #[test]
