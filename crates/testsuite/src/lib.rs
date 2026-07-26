@@ -45,3 +45,11 @@ pub fn parity_dir() -> std::path::PathBuf {
 pub fn charset_guard_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/charset-guard")
 }
+
+/// Path to the `MERIDIAN.md` in-file schema pack (stage 3, U2): `cases.json`
+/// pairs every case with its required outcome, `corpus/` holds the
+/// acceptances and `refusals/` the malformed classes.
+#[must_use]
+pub fn meridian_md_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/meridian-md")
+}

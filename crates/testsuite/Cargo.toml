@@ -27,6 +27,11 @@ render = { workspace = true }
 sidecar = { workspace = true }
 fs = { workspace = true }
 transport = { workspace = true }
+# The MERIDIAN.md config plane (U6), driven against U2's 37-case pack under
+# `data/meridian-md/`. `crates/testsuite/Cargo.toml` sets `autotests = false`,
+# so the pack's driver is a MODULE of `tests/main.rs` — a stray
+# `tests/meridian_md.rs` would never compile and never run.
+config = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

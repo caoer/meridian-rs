@@ -34,6 +34,7 @@ default-members = [
     "crates/check",
     "crates/lock",
     "crates/git",
+    "crates/config",
 ]
 
 [workspace.package]
@@ -72,6 +73,10 @@ check = { path = "crates/check", version = "0.0.0" }
 # The git plumbing organ (S5): shell-out content-addressing + reachability. A
 # std-only leaf, so `mrd`/`wire-serve`/`view` can each take the edge.
 git = { path = "crates/git", version = "0.0.0" }
+# The MERIDIAN.md config plane (stage 3, D4): the one entry point parsed as
+# content. Downstream of `model` — it is the markdown engine's own parser that
+# gives the config a rev, which is what "config is content" means.
+config = { path = "crates/config", version = "0.0.0" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
