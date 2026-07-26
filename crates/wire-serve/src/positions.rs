@@ -310,12 +310,43 @@ fn markdown_links(raw: &str, mask: &[Range<usize>]) -> Vec<(Range<usize>, String
 /// on the majority case, which S3-R23(1) rules is deleted by the next person it
 /// inconveniences, leaving the invariant with no guard at all.
 ///
-/// **So in position 2 the engine claims only what this machine BINDS.** This is
-/// the same principle [`stored_occupants`] applies from the other side (a URI
-/// naming an unbound vault is left verbatim), and it is stated here rather than
-/// discovered: a rooted markdown URL naming an UNBOUND root is left untouched,
-/// because at that position it is indistinguishable from a URI whose scheme
-/// this engine does not own.
+/// **So in position 2 the engine claims only what its mount table DECLARES.**
+/// This is the same principle [`stored_occupants`] applies from the other side
+/// (a URI naming a vault this machine does not bind is left verbatim), and it is
+/// stated here rather than discovered: a rooted markdown URL naming a root
+/// **nothing declares** is left untouched, because at that position it is
+/// indistinguishable from a URI whose scheme this engine does not own.
+///
+/// # The predicate is DECLARED, not BOUND — and the difference was a false green
+///
+/// **Position 2 asked [`addr::MountSet::is_bound`] and that answered the wrong
+/// question.** `is_bound` is false for `https` — a scheme nobody declares — and
+/// equally false for a root `~/MERIDIAN.md` DECLARES that this machine has not
+/// checked out. **The two are opposite obligations wearing one answer:** the
+/// first is not ours and must be left verbatim; the second is ours, has no vault
+/// name, and therefore has no stored form at all.
+///
+/// So a declared-but-unbound root was `continue`d — never collected, never
+/// translated. And because [`crate::write::stored_form_guard`] scans with THIS
+/// FUNCTION, the same skip removed it from the guard's population too: **one
+/// `continue` disarmed the transform and the guard together**, and agent-plane
+/// bytes reached disk at exit 0 with no signal. The ordinary laptop case, not a
+/// corner: `mrd config` one command away named the root's path correctly the
+/// whole time.
+///
+/// [`addr::MountSet::is_declared`] is the question that keeps the two apart.
+/// Everything downstream already existed: an occupant on an unreachable root
+/// refuses through [`stored_text`] as [`TranslateError::PathUnseeable`], naming
+/// the PATH to check rather than prescribing a declaration that is already made
+/// (S3-R43/S3-R50). **The vocabulary for refusing this was built before the
+/// scanner could ever hand it a root** — the fix is the population, not a new
+/// word.
+///
+/// **The two callers share this scan deliberately.** The guard exists to catch a
+/// door that reaches bytes WITHOUT the translation, so its population must be
+/// the translation's population — two definitions would drift, and the arm that
+/// drifted would be the silent one. Sharing is the invariant; the defect was
+/// that the shared predicate answered a question neither caller was asking.
 pub(crate) fn agent_plane_occupants(raw: &str, mounts: &MountSet) -> Vec<Occupant> {
     let nodes = syntax::parse(raw);
     let mask = code_mask(&nodes);
@@ -356,8 +387,8 @@ pub(crate) fn agent_plane_occupants(raw: &str, mounts: &MountSet) -> Vec<Occupan
         let Ok(addr) = Addr::parse(&url) else {
             continue;
         };
-        // The bound test, not merely a rooted test — see the doc comment above.
-        if !addr.root().is_some_and(|root| mounts.is_bound(root)) {
+        // The DECLARED test, not merely a rooted test — see the doc comment above.
+        if !addr.root().is_some_and(|root| mounts.is_declared(root)) {
             continue;
         }
         out.push(Occupant {

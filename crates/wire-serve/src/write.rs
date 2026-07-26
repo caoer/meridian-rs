@@ -3990,4 +3990,105 @@ mod guarded_create_remove {
             "and the last row still dates the live tree — the heal"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // F4 — THE GUARD, driven at its OWN level
+    // -----------------------------------------------------------------------
+    //
+    // These call `stored_form_guard` DIRECTLY with a hand-built `MountSet`: no
+    // config on disk, no `machine_mounts()`, and no translation anywhere in the
+    // path. That independence is the point. The guard exists for a door that
+    // reaches bytes WITHOUT passing the translation, so proving it only through
+    // a write whose transform refuses first proves nothing about the case it was
+    // built for — the transform would be doing the work and the guard would be
+    // decoration.
+    //
+    // F4 was exactly that failure: the guard's population is supplied by
+    // `agent_plane_occupants`, so a root the scanner skipped was invisible to
+    // the guard as well. One `continue` disarmed both halves and the guard
+    // reported success on an empty set.
+
+    /// A table declaring `notes` at a path this machine cannot read, and binding
+    /// `sessions` — the ordinary laptop, both arms in one table.
+    fn f4_mounts() -> addr::MountSet {
+        let sessions = addr::MountName::parse("sessions").expect("a canonical name");
+        let notes = addr::MountName::parse("notes").expect("a canonical name");
+        addr::MountSet::new([sessions.clone()])
+            .with_vault(sessions, "field-notes-sessions")
+            .with_unreachable(
+                notes,
+                "/nonexistent/notes-root",
+                "No such file or directory",
+            )
+    }
+
+    fn f4_guard(raw: &str) -> Result<(), Box<crate::ErrorBody>> {
+        let candidate = model::candidate_of_body("page.md", raw.to_string());
+        super::stored_form_guard(None, &candidate, &Path("page.md".into()), &f4_mounts())
+    }
+
+    /// **THE GATE.** The guard REFUSES an agent-plane address on a
+    /// declared-but-unbound root, with no transform anywhere in the call.
+    ///
+    /// Before the fix this returned `Ok(())` on an empty occupant set — a guard
+    /// reporting success because it could not see.
+    #[test]
+    fn the_guard_sees_a_declared_but_unbound_root_with_no_transform_in_the_path() {
+        for raw in [
+            "# Page\n\nsee [x](notes:a.md)\n",
+            "# Page\n\nsee [[notes:a.md]]\n",
+        ] {
+            let err = f4_guard(raw).expect_err(
+                "the guard must refuse an agent-plane address on a declared-but-unbound root",
+            );
+            assert_eq!(err.code, ErrorCode::BadRequest);
+            assert!(
+                err.message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("notes:a.md")),
+                "and it names the offending address: {:?}",
+                err.message,
+            );
+        }
+    }
+
+    /// **The control that keeps the gate above from being satisfied by a guard
+    /// that refuses everything** (S3-R8(c)).
+    ///
+    /// An external URI parses as a rooted address — `https://example.com` has
+    /// root `https` — so this is the exact input a fix keyed on "unbound" rather
+    /// than "undeclared" would refuse. Nothing declares `https`, so it is not
+    /// this engine's to claim and never reaches the guard's population.
+    #[test]
+    fn the_guard_leaves_undeclared_schemes_alone() {
+        f4_guard(
+            "# Page\n\n[ext](https://example.com) and [m](mailto:a@b.example)\n\
+             and [rel](./sibling.md) and [[ambient.md]]\n",
+        )
+        .expect("an ordinary corpus carries no agent-plane occupant and must pass the guard");
+    }
+
+    /// A BOUND root's agent-plane spelling still trips the guard — unchanged
+    /// behaviour, asserted so the fix cannot be read as narrowing the population
+    /// it already covered.
+    ///
+    /// Reaching the guard at all means the translation was bypassed, which is
+    /// precisely what it is here to catch.
+    #[test]
+    fn the_guard_still_refuses_a_bound_roots_agent_plane_spelling() {
+        let err = f4_guard("# Page\n\nsee [x](sessions:notes.md)\n")
+            .expect_err("an untranslated bound-root address must still refuse");
+        assert_eq!(err.code, ErrorCode::BadRequest);
+    }
+
+    /// A stored form that already translated passes — the acceptance half of the
+    /// guard's own contract.
+    #[test]
+    fn the_guard_passes_bytes_that_already_carry_the_stored_form() {
+        f4_guard(
+            "# Page\n\n[sessions:notes.md](obsidian://advanced-uri\
+             ?vault=field-notes-sessions&filepath=notes.md)\n",
+        )
+        .expect("translated bytes are what the guard exists to let through");
+    }
 }
