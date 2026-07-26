@@ -39,11 +39,49 @@
 //! a reader to ignore the check. *Measured before re-keying: all eight mints sit
 //! in eight DISTINCT functions, so no site needs a line number to be named.*
 //!
-//! **Precision, measured before the check was written** (S3-R23 ①): the scan
-//! reads production `src/` only, skips doc comments and the definition site
-//! itself, and classifies every hit. A new mint anywhere in the workspace is
+//! # The partition the key stands on (the second half of F2)
+//!
+//! Re-keying the census left it standing on a broken production/test partition,
+//! and **all four of the new site-keyed reads went through it** — so the fix was
+//! green on its own terms and blind in the join. The old partition truncated the
+//! file at the FIRST literal `#[cfg(test)]`, which is sound only if that marker
+//! always opens a trailing test module. **Rust allows the attribute at ITEM
+//! level, and the counter-example ships here:** `crates/policy/src/pack.rs` is
+//! 1212 lines, its first marker at :214 is an item attribute on
+//! `pub(crate) fn facts_from_markdown`, and the real `mod tests` does not open
+//! until :841 — so truncating kept **213 lines and discarded 999 of 1212
+//! (82.4%)**, roughly twenty production functions, in which a door would have
+//! been invisible and the gate GREEN.
+//!
+//! **Measured population, so this partition covers the shapes that exist rather
+//! than the shapes it imagines: 74 markers across 69 production files — 72 gate a
+//! `mod`, 2 gate a `fn` (both in `pack.rs`), and exactly ONE file's FIRST marker
+//! is item-level.** Three gated shapes exist: `mod name {`, `fn name(…) {`, and
+//! `mod tests;` (semicolon, no body — measured as the LAST line of all three
+//! files that use it, so gating it must not hunt a brace that does not exist).
+//!
+//! **Bound, stated rather than overclaimed: this was LATENT, not an open hole.**
+//! `pack.rs` mints zero candidates anywhere in the file, and the markers in
+//! `write.rs` and `fs/src/lib.rs` do open trailing test modules, so their
+//! below-marker mints were discarded correctly and still are. Population intact,
+//! instrument broken — the same shape as the keying defect beside it.
+//!
+//! # Precision, measured before the check was written (S3-R23 ①)
+//!
+//! The scan reads production `src/` only, skips doc comments and the definition
+//! site itself, and classifies every hit. A new mint anywhere in the workspace is
 //! reported as *unclassified*, never guessed at — the false positive that would
 //! get this instrument deleted.
+//!
+//! **Every unrecognised shape resolves toward NOT gating, deliberately.** Test
+//! code read as production reddens LOUDLY as an unpinned site; production code
+//! read as test goes INVISIBLE. Only the second direction agrees with the failure
+//! this census exists to catch, so the ambiguous cases are pushed into the first
+//! (S3-R25 on error direction). One consequence is worth naming: `config`'s tests
+//! are gated in the PARENT module (`mod tests;`), so `crates/config/src/tests.rs`
+//! carries no marker of its own and is read whole as production source. Measured:
+//! it mints zero candidates, and a mint appearing there would redden as an
+//! unpinned site rather than hide.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -223,15 +261,12 @@ fn production_sources() -> Vec<PathBuf> {
     out
 }
 
-/// `text` truncated at its first `#[cfg(test)]` — a unit-test module lives
-/// inside `src/`, and a test that mints a candidate lands no bytes a user ever
-/// reads. Measured: without this, `crates/fs/src/lib.rs` reads as a byte-landing
-/// door because its own harness mints candidates.
-fn production_half(text: &str) -> &str {
-    match text.find("#[cfg(test)]") {
-        Some(at) => &text[..at],
-        None => text,
-    }
+/// One line of a source file, with the innermost function enclosing it and
+/// whether it sits inside a `#[cfg(test)]`-gated item.
+struct Scoped<'a> {
+    text: &'a str,
+    function: Option<&'a str>,
+    test_gated: bool,
 }
 
 /// The function name declared by `trimmed`, if it declares one.
@@ -271,33 +306,81 @@ fn declared_fn(trimmed: &str) -> Option<&str> {
     }
 }
 
-/// Each line of `text` paired with the name of the INNERMOST function enclosing
-/// it.
+/// Every line of `text`, each carrying the name of the INNERMOST function
+/// enclosing it and whether it is `#[cfg(test)]`-gated.
 ///
-/// A scope closes on the line that is exactly its declaration's own indentation
-/// followed by `}` — sound here because `cargo fmt --check` is a gate on this
-/// workspace, so a function's closing brace sits at the function's own indent. A
-/// nested `fn` is therefore attributed to ITSELF, which is what a door means:
-/// the innermost site holding the call. **Any misparse pushes a mint into a site
-/// the pinned list does not carry, which fails loud** — the error direction
-/// S3-R25 requires of an instrument.
-fn lines_with_scope(text: &str) -> Vec<(&str, Option<&str>)> {
-    let mut stack: Vec<(usize, &str)> = Vec::new();
+/// **Scopes close by indentation:** a scope ends on the line that is exactly its
+/// declaration's own indent followed by `}`. Sound here because
+/// `cargo fmt --check` is a gate on this workspace, so a function's closing brace
+/// sits at the function's own indent. A nested `fn` is therefore attributed to
+/// ITSELF, which is what a door means: the innermost site holding the call.
+///
+/// **Test gating is per ITEM, never by truncation** — the F2 partition defect. A
+/// `#[cfg(test)]` line gates the item that follows it, and the gate closes with
+/// that item:
+///
+/// - `mod name {` / `fn name(…) {` — gated to the matching-indent `}`;
+/// - `mod tests;` — one line, gated alone, no region opened (measured: this form
+///   is the last line of every file using it, so hunting a closing brace would
+///   swallow the rest of a file that has no rest);
+/// - **anything else — NOT GATED, deliberately.** An unrecognised shape leaves
+///   test code readable as production, which reddens LOUDLY as an unpinned site;
+///   the opposite mistake makes production code INVISIBLE, and only that
+///   direction agrees with the failure this census exists to catch.
+///
+/// The same reasoning covers a misparse of either kind: it pushes a mint into a
+/// site the pinned list does not carry, which fails loud.
+fn scoped_lines(text: &str) -> Vec<Scoped<'_>> {
+    let mut fns: Vec<(usize, &str)> = Vec::new();
+    let mut gate: Option<usize> = None;
+    let mut pending = false;
     let mut out = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim_start();
+        let body = trimmed.trim_end();
         let indent = line.len() - trimmed.len();
-        if let Some((open_at, _)) = stack.last() {
-            if trimmed.trim_end() == "}" && indent == *open_at {
-                stack.pop();
+
+        // A gated region's own closing brace belongs to it, so the flag is read
+        // before the region is closed.
+        let test_gated = pending || gate.is_some();
+        if let Some(open_at) = gate {
+            if body == "}" && indent == open_at {
+                gate = None;
             }
         }
-        out.push((line, stack.last().map(|(_, name)| *name)));
-        if let Some(name) = declared_fn(trimmed) {
-            stack.push((indent, name));
+
+        if let Some((open_at, _)) = fns.last() {
+            if body == "}" && indent == *open_at {
+                fns.pop();
+            }
         }
+        let function = fns.last().map(|(_, name)| *name);
+        if let Some(name) = declared_fn(trimmed) {
+            fns.push((indent, name));
+        }
+
+        if !trimmed.starts_with("//") {
+            if body == "#[cfg(test)]" {
+                pending = true;
+            } else if pending && !body.is_empty() && !body.starts_with("#[") {
+                pending = false;
+                if body.ends_with('{') {
+                    gate = Some(indent);
+                }
+            }
+        }
+
+        out.push(Scoped {
+            text: line,
+            function,
+            test_gated,
+        });
     }
     out
+}
+
+fn read_pinned(rel: &str) -> String {
+    fs::read_to_string(workspace_root().join(rel)).expect("a pinned file is readable")
 }
 
 /// **Every production candidate MINT, keyed by SITE, counted.**
@@ -318,17 +401,31 @@ fn mint_sites() -> BTreeMap<Site, usize> {
             .unwrap_or(&file)
             .display()
             .to_string();
-        for (line, scope) in lines_with_scope(production_half(&text)) {
-            let trimmed = line.trim_start();
-            // A doc comment is a mention, not a door. Skipping it is what keeps
-            // a true door distinguishable from the prose that describes one.
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            if trimmed.contains("candidate_of_body(") || trimmed.contains("candidate_of_batch(") {
-                let site = (rel.clone(), scope.unwrap_or(FILE_SCOPE).to_string());
-                *sites.entry(site).or_default() += 1;
-            }
+        for (function, count) in mints_in(&text) {
+            *sites.entry((rel.clone(), function)).or_default() += count;
+        }
+    }
+    sites
+}
+
+/// The mints in ONE file's text, keyed by the function holding them.
+///
+/// Split out so the partition can be measured against a fixture through the
+/// SAME code path the census uses — a partition proven only on the tree it was
+/// written against proves the tree, not the partition.
+fn mints_in(text: &str) -> BTreeMap<String, usize> {
+    let mut sites: BTreeMap<String, usize> = BTreeMap::new();
+    for line in scoped_lines(text).iter().filter(|l| !l.test_gated) {
+        let trimmed = line.text.trim_start();
+        // A doc comment is a mention, not a door. Skipping it is what keeps
+        // a true door distinguishable from the prose that describes one.
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed.contains("candidate_of_body(") || trimmed.contains("candidate_of_batch(") {
+            *sites
+                .entry(line.function.unwrap_or(FILE_SCOPE).to_string())
+                .or_default() += 1;
         }
     }
     sites
@@ -341,16 +438,16 @@ fn mint_sites() -> BTreeMap<Site, usize> {
 /// — rather than by filtering on guesswork, and the delegated core
 /// (`stored_form_guard`) does not match this name at all.
 fn guard_sites(rel: &str) -> BTreeMap<String, usize> {
-    let text = fs::read_to_string(workspace_root().join(rel)).expect("a pinned file is readable");
+    let text = read_pinned(rel);
     let mut sites: BTreeMap<String, usize> = BTreeMap::new();
-    for (line, scope) in lines_with_scope(production_half(&text)) {
-        let trimmed = line.trim_start();
+    for line in scoped_lines(&text).iter().filter(|l| !l.test_gated) {
+        let trimmed = line.text.trim_start();
         if trimmed.starts_with("//") || declared_fn(trimmed).is_some() {
             continue;
         }
         if trimmed.contains("stored_form_guard_lazy(") {
             *sites
-                .entry(scope.unwrap_or(FILE_SCOPE).to_string())
+                .entry(line.function.unwrap_or(FILE_SCOPE).to_string())
                 .or_default() += 1;
         }
     }
@@ -360,22 +457,22 @@ fn guard_sites(rel: &str) -> BTreeMap<String, usize> {
 /// How many times `name` is declared as a function in the production half of
 /// `rel`.
 fn declarations_of(rel: &str, name: &str) -> usize {
-    let text = fs::read_to_string(workspace_root().join(rel)).expect("a pinned file is readable");
-    production_half(&text)
-        .lines()
-        .filter(|l| declared_fn(l.trim_start()) == Some(name))
+    let text = read_pinned(rel);
+    scoped_lines(&text)
+        .iter()
+        .filter(|l| !l.test_gated && declared_fn(l.text.trim_start()) == Some(name))
         .count()
 }
 
 /// Whether `door_fn`'s own body in `rel` contains a call to `callee`.
 fn body_calls(rel: &str, door_fn: &str, callee: &str) -> bool {
-    let text = fs::read_to_string(workspace_root().join(rel)).expect("a pinned file is readable");
+    let text = read_pinned(rel);
     let needle = format!("{callee}(");
-    lines_with_scope(production_half(&text))
-        .into_iter()
-        .filter(|(_, scope)| *scope == Some(door_fn))
-        .any(|(line, _)| {
-            let trimmed = line.trim_start();
+    scoped_lines(&text)
+        .iter()
+        .filter(|l| !l.test_gated && l.function == Some(door_fn))
+        .any(|line| {
+            let trimmed = line.text.trim_start();
             !trimmed.starts_with("//") && trimmed.contains(&needle)
         })
 }
@@ -606,6 +703,81 @@ fn a_door_reaches_its_own_mint_and_its_own_guard() {
         "no door in write.rs discharges its guard or mints outside its own body, so this \
          arm iterates an empty population (S3-R37). If every door was inlined, strike this \
          arm deliberately and say so — do not leave it green over nothing",
+    );
+}
+
+/// **The partition gates ITEMS, not the rest of the file.**
+///
+/// The F2 partition defect had no failing signal on this tree — `pack.rs` mints
+/// nothing, so the census stayed green with 82% of that file unread. **A fixture
+/// is the only way to measure a partition rather than the tree it was written
+/// against**, and it cannot rot: the shapes are literals here, not another
+/// crate's structure, so refactoring `pack.rs` can never redden this.
+///
+/// *Fails on:* a partition that truncates at the first marker instead of gating
+/// the item (the `pack.rs` shape — `after_an_item_level_gate` disappears) · a
+/// gated `mod` leaking its contents · the semicolon form swallowing the lines
+/// after it · an unrecognised shape being gated instead of left visible.
+#[test]
+fn the_partition_gates_items_not_the_rest_of_the_file() {
+    // Every gated shape measured in this workspace, plus the ambiguous one.
+    let fixture = "\
+fn before_any_gate() {
+    model::candidate_of_body(path, body);
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn a_gated_helper() {
+    model::candidate_of_body(path, body);
+}
+
+fn after_an_item_level_gate() {
+    model::candidate_of_batch(path, raw, sealed);
+}
+
+#[cfg(test)]
+mod tests {
+    fn inside_a_gated_module() {
+        model::candidate_of_body(path, body);
+    }
+}
+
+fn after_a_gated_module() {
+    model::candidate_of_body(path, body);
+}
+
+#[cfg(test)]
+mod tests;
+
+fn after_the_semicolon_form() {
+    model::candidate_of_body(path, body);
+}
+
+#[cfg(test)]
+static AN_UNRECOGNISED_SHAPE: usize = 0;
+
+fn after_an_unrecognised_shape() {
+    model::candidate_of_body(path, body);
+}
+";
+    let measured = mints_in(fixture);
+    let expected: BTreeMap<String, usize> = [
+        ("before_any_gate", 1),
+        ("after_an_item_level_gate", 1),
+        ("after_a_gated_module", 1),
+        ("after_the_semicolon_form", 1),
+        ("after_an_unrecognised_shape", 1),
+    ]
+    .into_iter()
+    .map(|(name, n)| (name.to_string(), n))
+    .collect();
+    assert_eq!(
+        measured, expected,
+        "the production/test partition changed shape. A gated ITEM hides itself and \
+         nothing after it; truncating at the first marker would drop every site below \
+         it — which is how 82% of crates/policy/src/pack.rs went unread while this \
+         census reported green",
     );
 }
 
