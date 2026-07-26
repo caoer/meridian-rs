@@ -32,6 +32,8 @@ const CASE_COUNT: usize = 37;
 /// The acceptance / refusal split the pack states.
 const ACCEPTANCES: usize = 11;
 const REFUSALS: usize = 26;
+/// Acceptance fixtures under `corpus/`; the remaining 23 on disk are refusals.
+const ACCEPTANCE_FIXTURES: usize = 7;
 /// Cases carrying `expect_not` — the ones where the wrong behaviour still looks
 /// healthy, so the refusal alone is not evidence: `env-path-missing` (a silent
 /// fallback LOADS the default file), `no-frontmatter` and `unsupported-version`
@@ -433,36 +435,49 @@ fn check_refuse(
 fn no_refusal_can_publish_a_partial_mount_table() {
     let manifest = manifest();
     let mut with_expect_not = 0usize;
+    let mut reparsed = 0usize;
+
     for case in cases(&manifest) {
-        let Some(names) = case["expect_not"]["mounts"].as_array() else {
-            continue;
-        };
-        assert!(
-            !names.is_empty(),
-            "{}: an empty expect_not asserts nothing",
-            text(&case["id"])
-        );
-        let Some(rel) = case["fixture"].as_str() else {
-            // The env cases are covered by `every_case_holds`, which drives the
-            // real chain; only the file-bearing ones are re-parsed here.
+        let id = text(&case["id"]);
+        if let Some(names) = case["expect_not"]["mounts"].as_array() {
+            assert!(
+                !names.is_empty(),
+                "{id}: an empty expect_not asserts nothing"
+            );
             with_expect_not += 1;
+        }
+        // EVERY refusal fixture, not only the `expect_not` ones. The three
+        // `expect_not` cases all fault before any block is read, so a build that
+        // half-loads at BLOCK level satisfies them and is caught only here —
+        // measured: mutating `parse_mount`'s `?` into a `continue` left the
+        // expect_not-only form of this test green.
+        if text(&case["expect"]["outcome"]) != "refuse" {
             continue;
+        }
+        let Some(rel) = case["fixture"].as_str() else {
+            continue; // the env cases have no file; `every_case_holds` drives them
         };
         let path = pack().join(rel);
         let raw = std::fs::read_to_string(&path).expect("fixture");
         let result = config::parse(&raw, &path);
-        assert!(result.is_err(), "{}: must refuse", text(&case["id"]));
         assert!(
-            result.ok().is_none(),
-            "{}: a refusal yields NO Config, so no caller can observe a partial mount table",
-            text(&case["id"])
+            result.is_err(),
+            "{id}: must refuse, and a refusal yields NO Config — so no caller can observe a \
+             partial mount table, whatever the fixture declared before the fault"
         );
-        with_expect_not += 1;
+        assert!(result.ok().is_none(), "{id}: publishes nothing");
+        reparsed += 1;
     }
+
     assert_eq!(
         with_expect_not, EXPECT_NOT_CASES,
         "the pack's expect_not cases are the ones where the WRONG behaviour still looks healthy; \
          dropping one would remove a guard without reddening anything else"
+    );
+    assert_eq!(
+        reparsed,
+        FIXTURES_ON_DISK - ACCEPTANCE_FIXTURES,
+        "every refusal FIXTURE is re-parsed here, not a subset"
     );
 }
 
