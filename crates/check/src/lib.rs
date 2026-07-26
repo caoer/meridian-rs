@@ -47,9 +47,9 @@ use fs::WorkspaceRoot;
 use model::Document;
 
 pub use layer0::{
-    BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace, NO_BASELINE_DETAIL,
-    OrphanedBlob, PinPlane, PinRow, claims_realised, journal_page, journal_trace, journal_trace_of,
-    pin_plane, staged_trace,
+    Accounted, BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace,
+    NO_BASELINE_DETAIL, NO_RECORD_DETAIL, OrphanedBlob, PinPlane, PinRow, claims_realised,
+    interval_accounted, journal_page, journal_trace, journal_trace_of, pin_plane, staged_trace,
 };
 pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
 
