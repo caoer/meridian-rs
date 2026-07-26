@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ChildStdout, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -38,8 +38,8 @@ use crate::shim::ShimStream;
 /// `$MD_EFFECT_FD`).
 pub const SHIM_FD: i32 = 3;
 
-/// The default wall-clock timeout when `.meridian.toml` does not configure
-/// one (`[run] timeout_secs`).
+/// The default wall-clock timeout when the root's declaration configures none
+/// (`run.timeout_secs`). The safe value: a root raises it, never lowers into it.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Storage cap for the captured shim stream. The reader keeps DRAINING past
@@ -234,48 +234,66 @@ where
     ))
 }
 
-/// Resolve the effective wall-clock timeout for a workspace: `.meridian.toml`
-/// `[run] timeout_secs`, else [`DEFAULT_TIMEOUT`]. A missing file or a file
-/// without the key is the default; a present-but-malformed value refuses loud
-/// (the same posture as the `[run.caps]` table).
+/// The frontmatter key carrying the wall-clock ceiling in the root's
+/// declaration.
+pub const TIMEOUT_KEY: &str = "run.timeout_secs";
+
+/// Resolve the effective wall-clock timeout for a root: `run.timeout_secs` in
+/// the root's own `MERIDIAN.md` declaration, else [`DEFAULT_TIMEOUT`].
+///
+/// This rode along with the caps rehoming because it was this crate's SECOND
+/// reader of the retired marker. It is a RESOURCE ceiling, not a capability — it
+/// gates no effect, the compiled default is the safe value, and the same writer
+/// could already raise it under the retired plane. A move, not a grant.
+///
+/// `root` is `None` on the ladder's `CwdDefault`: no declaring root, so the
+/// compiled default stands. An absent declaration or a declaration without the
+/// key is likewise the default; a present-but-malformed value refuses loud (the
+/// same posture as the convention table).
 ///
 /// # Errors
-/// [`TimeoutConfigError`] — unreadable or malformed configuration.
-pub fn configured_timeout(workspace_root: &Path) -> Result<Duration, TimeoutConfigError> {
-    let path = workspace_root.join(".meridian.toml");
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(DEFAULT_TIMEOUT),
-        Err(e) => {
+/// [`TimeoutConfigError`] — unreadable declaration or malformed value.
+pub fn configured_timeout(root: Option<&Path>) -> Result<Duration, TimeoutConfigError> {
+    let Some(root) = root else {
+        return Ok(DEFAULT_TIMEOUT);
+    };
+    let declaration = match config::mount::read_root_declaration(root) {
+        Ok(d) => d,
+        Err(config::mount::DeclarationFault::Absent) => return Ok(DEFAULT_TIMEOUT),
+        Err(config::mount::DeclarationFault::Unreadable(reason)) => {
             return Err(TimeoutConfigError {
-                reason: format!("read {}: {e}", path.display()),
+                path: root.join(config::mount::DECLARATION_FILENAME),
+                reason,
             });
         }
     };
-    let value: toml::Value = text.parse().map_err(|e| TimeoutConfigError {
-        reason: format!("parse: {e}"),
-    })?;
-    match value.get("run").and_then(|r| r.get("timeout_secs")) {
-        None => Ok(DEFAULT_TIMEOUT),
-        Some(toml::Value::Integer(secs)) if *secs > 0 => Ok(Duration::from_secs(
-            u64::try_from(*secs).unwrap_or(u64::MAX),
-        )),
-        Some(other) => Err(TimeoutConfigError {
-            reason: format!("[run] timeout_secs must be a positive integer, got {other}"),
+    let Some(map) = crate::address::frontmatter(&declaration.document) else {
+        return Ok(DEFAULT_TIMEOUT);
+    };
+    let Some((_, raw)) = map.0.iter().find(|(k, _)| k == TIMEOUT_KEY) else {
+        return Ok(DEFAULT_TIMEOUT);
+    };
+    match raw.trim().trim_matches(['"', '\'']).parse::<u64>() {
+        Ok(secs) if secs > 0 => Ok(Duration::from_secs(secs)),
+        _ => Err(TimeoutConfigError {
+            path: root.join(config::mount::DECLARATION_FILENAME),
+            reason: format!("`{TIMEOUT_KEY}` must be a positive integer, got `{raw}`"),
         }),
     }
 }
 
-/// `.meridian.toml` `[run] timeout_secs` is unreadable or malformed.
+/// The root declaration's `run.timeout_secs` is unreadable or malformed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutConfigError {
+    /// The declaration the fault was read from.
+    pub path: PathBuf,
     /// What was wrong.
     pub reason: String,
 }
 
 impl std::fmt::Display for TimeoutConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, ".meridian.toml [run] timeout_secs: {}", self.reason)
+        write!(f, "refused: {}: {}", self.path.display(), self.reason)
     }
 }
 

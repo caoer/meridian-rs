@@ -2,6 +2,9 @@
 //! explicit > convention > none ladder, narrow-only ceilings, the builtin
 //! read-only conventions, and the bash-fence load refusal (check-*/verify-*
 //! only — fix-* is where bash writes are wanted).
+//!
+//! WHERE the convention table is declared is a separate law with its own file:
+//! `caps_home.rs` (the root's own `MERIDIAN.md`, marker-retirement ruling).
 
 mod support;
 
@@ -189,56 +192,39 @@ fn empty_explicit_declaration_is_explicit_read_only() {
     assert_eq!(r.effective, CapSet::none());
 }
 
+// The convention PLANE — where the table is declared, and what each root
+// situation yields — lives in `caps_home.rs` with the rest of the rehoming
+// contract. What stays here is the resolution law those tables feed.
+
 #[test]
-fn conventions_load_from_meridian_toml() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(
-        tmp.path().join(".meridian.toml"),
-        "version = 1\ncreated_by = \"mrd\"\n\n[run.caps]\n\"fix-*\" = [\"md.set_field\", \"md.append_section\"]\n",
-    )
-    .unwrap();
-    let conv = caps::load_conventions(tmp.path()).unwrap();
+fn conventions_parse_out_of_a_declaration_document() {
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field, md.append_section\n---\n");
+    let conv = caps::conventions_from_declaration(&d).unwrap();
     let (pattern, set) = conv.matching("fix-drift").unwrap();
     assert_eq!(pattern, "fix-*");
     assert!(set.admits("md.set_field", None));
 }
 
 #[test]
-fn absent_file_or_section_is_the_empty_table() {
-    let tmp = tempfile::tempdir().unwrap();
+fn a_declaration_without_caps_keys_is_the_empty_table() {
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\n---\n");
     assert_eq!(
-        caps::load_conventions(tmp.path()).unwrap(),
-        Conventions::none()
-    );
-
-    // The plain mrd-init marker body has no [run] section.
-    std::fs::write(
-        tmp.path().join(".meridian.toml"),
-        "version = 1\ncreated_by = \"mrd\"\n",
-    )
-    .unwrap();
-    assert_eq!(
-        caps::load_conventions(tmp.path()).unwrap(),
+        caps::conventions_from_declaration(&d).unwrap(),
         Conventions::none()
     );
 }
 
 #[test]
-fn malformed_policy_file_is_a_loud_error_never_no_policy() {
-    let tmp = tempfile::tempdir().unwrap();
-    std::fs::write(tmp.path().join(".meridian.toml"), "not toml [[[").unwrap();
+fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: not_namespaced\n---\n");
     assert!(matches!(
-        caps::load_conventions(tmp.path()).unwrap_err(),
-        CapsError::Toml { .. }
+        caps::conventions_from_declaration(&d).unwrap_err(),
+        CapsError::BadCap { .. }
     ));
 
-    std::fs::write(
-        tmp.path().join(".meridian.toml"),
-        "[run.caps]\n\"fix-*\" = \"md.set_field\"\n",
-    )
-    .unwrap();
+    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.set_field\n---\n");
     assert!(matches!(
-        caps::load_conventions(tmp.path()).unwrap_err(),
-        CapsError::Toml { .. }
+        caps::conventions_from_declaration(&d).unwrap_err(),
+        CapsError::BadPattern { .. }
     ));
 }

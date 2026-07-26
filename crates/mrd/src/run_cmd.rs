@@ -80,12 +80,13 @@ fn fail_address(e: &AddressError) -> Fail {
 }
 
 /// Cap faults split by leg: a bash fence under a read-only convention is the
-/// PLANE refusing a well-formed invocation (exit 1); malformed declarations
-/// and an unreadable `.meridian.toml` are authoring/tool faults (exit 2).
+/// PLANE refusing a well-formed invocation (exit 1); malformed declarations and
+/// a root `MERIDIAN.md` that does not read as a root declaration are
+/// authoring/tool faults (exit 2).
 fn fail_caps(e: &CapsError) -> Fail {
     match e {
         CapsError::BashFenceRefused { .. } => fail_run(e.to_string()),
-        CapsError::BadCap { .. } | CapsError::BadPattern { .. } | CapsError::Toml { .. } => {
+        CapsError::BadCap { .. } | CapsError::BadPattern { .. } | CapsError::Declaration { .. } => {
             Fail::tool(e.to_string())
         }
     }
@@ -227,8 +228,14 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // accessor is here so that acceptance is visible in the source and
     // greppable, rather than inherited from a struct field.
     let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
+    // The two roots answer different questions and are deliberately not the same
+    // expression: `root_or_cwd` above is WHERE FILES ARE READ, `answer.root()`
+    // here is WHETHER ANYTHING IS ENTITLED TO DECLARE POLICY. They coincide
+    // whenever the ladder answered; on a cwd default the first still runs and the
+    // second is `None`, so no convention ceiling is in force.
+    let declaring_root = answer.root();
     let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| fail_address(&e))?;
-    let conventions = caps::load_conventions(&root.0).map_err(|e| fail_caps(&e))?;
+    let (conventions, _source) = caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
 
     if parsed.list {
         return list_tasks(&root, &parsed.page, &doc, &conventions, parsed.format());
@@ -266,16 +273,22 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         return dry(&root, &parsed, &resolved, &caps);
     }
 
-    execute(&root, &parsed, task)
+    execute(&root, declaring_root, &parsed, task)
 }
 
 /// The execute leg: compose the run through the U7 runner (empty ruleset —
 /// see [`S1_RULES`]), render the U9 report, and map the outcome onto the
 /// exit triad. The CLI is the §9 boundary: it mints the invocation id and
 /// the time fact here, and nowhere below does.
-fn execute(root: &fs::WorkspaceRoot, parsed: &RunArgs, task: &str) -> Result<(), Fail> {
+fn execute(
+    root: &fs::WorkspaceRoot,
+    declaring_root: Option<&Path>,
+    parsed: &RunArgs,
+    task: &str,
+) -> Result<(), Fail> {
     let (invocation_id, now) = mint_identity()?;
-    let timeout = run::exec::configured_timeout(&root.0).map_err(|e| Fail::tool(e.to_string()))?;
+    let timeout =
+        run::exec::configured_timeout(declaring_root).map_err(|e| Fail::tool(e.to_string()))?;
     let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
     std::fs::create_dir_all(&scratch).map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
 
@@ -297,6 +310,7 @@ fn execute(root: &fs::WorkspaceRoot, parsed: &RunArgs, task: &str) -> Result<(),
         takeover: false,
         scratch: &scratch,
         timeout,
+        declaring_root,
         limits: EvalLimits::default(),
     };
 

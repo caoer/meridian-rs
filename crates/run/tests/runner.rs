@@ -76,6 +76,10 @@ fn spec_for(scratch: &tempfile::TempDir, args: Vec<String>) -> RunSpec<'_> {
         takeover: false,
         scratch: scratch.path(),
         timeout: Duration::from_secs(30),
+        // These fixtures exercise the runner's dispatch, not the convention
+        // plane: no declaring root means no ceiling, so a task's explicit caps
+        // reach the executor exactly as written.
+        declaring_root: None,
         limits: EvalLimits::default(),
     }
 }

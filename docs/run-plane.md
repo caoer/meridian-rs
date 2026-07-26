@@ -50,10 +50,16 @@ task.fix-drift.caps: md.set_field:status, md.append_section
 ---
 ```
 
-```toml
-[run.caps]
-"fix-*"     = ["md.set_field", "md.append_section"]
-"fix-note"  = ["md.set_field:status"]   # longest pattern wins
+```markdown
+<!-- <root>/MERIDIAN.md — the root's own self-declaration -->
+---
+type: meridian-root
+version: 1
+name: field-notes
+run.caps.fix-*: md.set_field, md.append_section
+run.caps.fix-note: md.set_field:status      # longest pattern wins
+run.timeout_secs: 7
+---
 ```
 
 A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
@@ -62,7 +68,39 @@ conventions **narrow only, never widen**, and every cap that did not survive
 intact is reported in `narrowed[]`. The builtin `check-*` / `verify-*` ceiling
 is absolute, and those names refuse a bash fence loudly at load. Caps bind at
 the executor choke point before any I/O: one violation refuses the whole batch.
-Resolution law and the `.meridian.toml` parse contract: `crates/run/src/caps.rs`.
+
+### Where the convention table lives (marker-retirement ruling, 2026-07-26)
+
+**The root declares.** The table is read from the root's own `MERIDIAN.md`
+self-declaration (`type: meridian-root`) — the artifact the config charter's
+*"the root declares, `MERIDIAN.md` binds"* already governs — through
+`crates/config`, which owns what a valid declaration is. The retired marker
+files are not read and no fallback to them ships.
+
+The grammar is the page grammar reused: flat dotted frontmatter keys with
+comma-separated cap lists. Flat is the reader's law, not a preference —
+`model`'s frontmatter scanner takes no YAML crate and skips every indented
+line, so a nested `run:`/`  caps:` spelling would be unreadable.
+
+Which root answered is never silent (`ConventionSource`):
+
+| Root situation | Conventions | |
+|---|---|---|
+| declares, with `run.caps.*` | that table | the ceiling is in force |
+| declares, none stated | empty | `Declared` — deny-by-default stands |
+| holds no `MERIDIAN.md` | empty | `Undeclared` — absent is not broken |
+| present, not a valid declaration | **refuses** | an unreadable policy file never becomes *no policy* |
+| no root resolved (`CwdDefault`) | empty | `NoRoot` — **no ceiling in force**, stated |
+
+The refusal arm is load-bearing: silently reading a broken declaration as the
+empty table would delete a declared ceiling on one typo, which is a widening.
+`config::mount` renders the same bad read grey rather than refusing outright —
+that is a **blast-radius** difference, not a strictness one: a mount table holds
+many roots and isolates the bad one, while the run plane holds exactly one and
+has nothing to isolate it from.
+
+Resolution law and the declaration parse contract: `crates/run/src/caps.rs`;
+design tests: `crates/run/tests/caps_home.rs`.
 
 ## Fence dispatch — two languages, one write path
 
