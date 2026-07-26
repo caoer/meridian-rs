@@ -36,6 +36,34 @@ are an S1 **non-goal** (decision #11) and refuse with a typed error. Every
 addressing fault is distinct and pre-eval: no such task, dangling binding,
 ambiguous anchor, not-a-code-block, unknown fence language.
 
+## Capabilities — deny-by-default (verdict ruling 3, decision #15)
+
+An undeclared block is read-only: it can compute, but no effect of its
+executes. Caps are namespaced strings, optionally target-scoped
+(`md.set_field` / `md.set_field:status`, the latter strictly narrower).
+Declared two ways — beside the binding, or by name convention:
+
+```markdown
+---
+task.fix-drift: "[[#^fix-1]]"
+task.fix-drift.caps: md.set_field:status, md.append_section
+---
+```
+
+```toml
+[run.caps]
+"fix-*"     = ["md.set_field", "md.append_section"]
+"fix-note"  = ["md.set_field:status"]   # longest pattern wins
+```
+
+A present-but-empty `caps` declaration is an EXPLICIT read-only grant, distinct
+from no declaration. Precedence for the grant is explicit > convention > none;
+conventions **narrow only, never widen**, and every cap that did not survive
+intact is reported in `narrowed[]`. The builtin `check-*` / `verify-*` ceiling
+is absolute, and those names refuse a bash fence loudly at load. Caps bind at
+the executor choke point before any I/O: one violation refuses the whole batch.
+Resolution law and the `.meridian.toml` parse contract: `crates/run/src/caps.rs`.
+
 ## Fence dispatch — two languages, one write path
 
 The runner dispatches on the fence language (decision #13): `starlark` →
