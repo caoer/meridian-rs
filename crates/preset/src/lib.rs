@@ -1014,7 +1014,7 @@ fn scan_scope(root: &fs::WorkspaceRoot, declared: &[String]) -> Vec<String> {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            // Skip engine/system files — a dotfile (`.meridian.toml`) or the
+            // Skip engine/system files — a dotfile (`.git`, `.DS_Store`) or the
             // reserved journal is never "undeclared content" to reconcile.
             if name.starts_with('.') {
                 continue;

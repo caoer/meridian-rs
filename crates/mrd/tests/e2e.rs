@@ -86,7 +86,16 @@ fn e2e_init_ls_unregister_lifecycle() {
 
     let out = sb.run(&ws, &["init"]);
     assert!(out.status.success(), "init failed: {}", stderr(&out));
-    assert!(ws.join(".meridian.toml").exists(), "marker created");
+
+    // init's product is the root's own self-declaration, and the gate reads it
+    // back through the OWNER of what a valid declaration is (`config`) rather
+    // than asserting the file merely exists — existence-only belief is the
+    // defect the retired marker embodied.
+    let declaration = ws.join("MERIDIAN.md");
+    assert!(declaration.exists(), "the root declaration is written");
+    let decl = config::mount::read_root_declaration(&canonical)
+        .unwrap_or_else(|_| panic!("`config` reads init's declaration as a root declaration"));
+    assert_eq!(decl.name, "project", "named after the directory");
 
     // The drawer holds a valid sentinel carrying the canonical workspace path.
     let drawer = cache::drawer_dir(&sb.cache_root, &canonical);
@@ -142,8 +151,54 @@ fn e2e_m2_init_supersedes_descendant_drawer() {
     }
 }
 
+/// The M2 guard the marker retirement made necessary: a descendant that is its
+/// OWN root is NOT retired.
+///
+/// Under the marker tier an init target out-resolved a nearer `.git`, so every
+/// descendant genuinely was shadowed. The ladder now returns the NEAREST `.git`,
+/// so a descendant repository resolves to itself — stamping its drawer
+/// `superseded_by` would make a later `cache clean` reap a LIVE workspace's
+/// cache. Weakening this to "retire every descendant" is the regression.
+#[test]
+fn e2e_m2_spares_a_descendant_that_is_its_own_git_root() {
+    let sb = sandbox();
+    let ancestor = sb.dir("mono");
+    let own_root = sb.dir("mono/vendor/lib");
+    std::fs::create_dir_all(own_root.join(".git")).expect("git anchor");
+    let shadowed = sb.dir("mono/packages/leaf");
+    let canon_own = std::fs::canonicalize(&own_root).unwrap();
+    let canon_shadowed = std::fs::canonicalize(&shadowed).unwrap();
+
+    let own_drawer = cache::drawer_dir(&sb.cache_root, &canon_own);
+    cache::register(&own_drawer, &canon_own).unwrap();
+    let shadowed_drawer = cache::drawer_dir(&sb.cache_root, &canon_shadowed);
+    cache::register(&shadowed_drawer, &canon_shadowed).unwrap();
+
+    let out = sb.run(&ancestor, &["init"]);
+    assert!(out.status.success(), "init: {}", stderr(&out));
+
+    match cache::probe(&own_drawer) {
+        cache::Probe::Hit(s) => assert!(
+            s.superseded_by.is_none(),
+            "a descendant that anchors ITSELF keeps its drawer: {:?}",
+            s.superseded_by
+        ),
+        cache::Probe::Miss => panic!("the spared drawer must still be a valid sentinel"),
+    }
+    // The precondition that makes the assertion above discriminating: the
+    // unanchored sibling in the same run IS retired, so a reconcile that did
+    // nothing at all could not pass this test.
+    match cache::probe(&shadowed_drawer) {
+        cache::Probe::Hit(s) => assert!(
+            s.superseded_by.is_some(),
+            "an unanchored descendant is still retired — M2 survives"
+        ),
+        cache::Probe::Miss => panic!("the retired drawer must still be a valid sentinel"),
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Gate: tier-4, no daemon → ephemeral, NOTHING written under the cache root
+// Gate: cwd-default, no daemon → ephemeral, NOTHING written under the cache root
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -220,11 +275,151 @@ fn e2e_init_in_home_is_denied_exit2() {
         "typed deny reason on stderr: {}",
         stderr(&out)
     );
-    // Refused BEFORE any write: no marker, no drawer.
+    // Refused BEFORE any write: no declaration, no drawer. This gate is now
+    // load-bearing rather than incidental — `MERIDIAN.md` is the reserved
+    // filename the MACHINE config uses at $HOME (`type: meridian-config`), so
+    // the deny ceiling is the whole reason init cannot clobber it.
     assert!(
-        !sb.home.join(".meridian.toml").exists(),
-        "no marker written"
+        !sb.home.join("MERIDIAN.md").exists(),
+        "no declaration written into $HOME"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Gate: init declares the root, and SAYS which tier/root the ladder answers
+// ---------------------------------------------------------------------------
+
+/// A tree declared BELOW a git root still resolves to the git root — the
+/// declaration plane is `config`'s, not the ladder's. init must say so, because
+/// the retired marker used to win here and whoever relied on that gets a
+/// changed answer.
+#[test]
+fn e2e_init_below_a_git_root_names_the_tier_and_root_it_resolves_to() {
+    let sb = sandbox();
+    let repo = sb.dir("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("git anchor");
+    let inner = sb.dir("repo/packages/leaf");
+    let canon_repo = std::fs::canonicalize(&repo).unwrap();
+    let canon_inner = std::fs::canonicalize(&inner).unwrap();
+
+    let out = sb.run(&inner, &["init", "--json"]);
+    assert!(out.status.success(), "init: {}", stderr(&out));
+    let v = json(&out);
+
+    assert_eq!(
+        v["workspace"], canon_inner.to_string_lossy().as_ref(),
+        "init declared the directory it was pointed at"
+    );
+    assert_eq!(v["declaration_state"], "created");
+    assert_eq!(
+        v["resolved_tier"], "git-root",
+        "the ladder answers git-root, not the declaration"
+    );
+    assert_eq!(
+        v["resolved_root"], canon_repo.to_string_lossy().as_ref(),
+        "and it names the REPO, not the declared directory"
+    );
+    assert_eq!(
+        v["declared_root_is_resolved"], false,
+        "init states the two are not the same directory"
+    );
+
+    // The human surface teaches the fix rather than leaving the change to be
+    // discovered: this is the sentence that replaces the marker.
+    let out = sb.run(&inner, &["init"]);
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        text.contains("resolves: git-root"),
+        "the human report names the tier and root: {text}"
+    );
+    assert!(
+        text.contains("MERIDIAN_WORKSPACE="),
+        "and names the way to change the answer: {text}"
+    );
+}
+
+/// Re-init over an existing valid declaration leaves it byte-for-byte and says
+/// `already declared` — a re-init never rewrites content it did not author.
+#[test]
+fn e2e_reinit_leaves_a_valid_declaration_untouched() {
+    let sb = sandbox();
+    let ws = sb.dir("project");
+    let declaration = ws.join("MERIDIAN.md");
+    let authored = "---\ntype: meridian-root\nversion: 1\nname: hand-written\n---\n\n# Mine\n";
+    std::fs::write(&declaration, authored).expect("write");
+
+    let out = sb.run(&ws, &["init", "--json"]);
+    assert!(out.status.success(), "init: {}", stderr(&out));
+    let v = json(&out);
+    assert_eq!(v["declaration_state"], "already declared");
+    assert_eq!(
+        v["declared_name"], "hand-written",
+        "the name comes from the file, never from the directory"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&declaration).unwrap(),
+        authored,
+        "byte-for-byte untouched"
+    );
+}
+
+/// A `MERIDIAN.md` that is present but does NOT read as a root declaration
+/// refuses (exit 2) and is left byte-untouched — the law `mrd hook install`
+/// already follows for a hook it did not write. The obvious accident is the
+/// machine config copied into a tree.
+#[test]
+fn e2e_init_refuses_a_meridian_md_that_is_not_a_root_declaration() {
+    let sb = sandbox();
+    let ws = sb.dir("project");
+    let declaration = ws.join("MERIDIAN.md");
+    let foreign = "---\ntype: meridian-config\nversion: 1\n---\n\n# Machine config\n";
+    std::fs::write(&declaration, foreign).expect("write");
+
+    let out = sb.run(&ws, &["init"]);
+    assert_eq!(out.status.code(), Some(2), "refuses: {}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("does not read as a root declaration"),
+        "the refusal names what is wrong: {said}"
+    );
+    assert!(
+        said.contains("meridian-root"),
+        "and quotes the owner's own reason: {said}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&declaration).unwrap(),
+        foreign,
+        "byte-untouched"
+    );
+    // Refused before the drawer, too: init is all-or-nothing on this path.
+    let canonical = std::fs::canonicalize(&ws).unwrap();
+    let drawer = cache::drawer_dir(&sb.cache_root, &canonical);
+    assert!(!drawer.exists(), "no drawer registered on a refusal");
+}
+
+/// A directory name that is not a canonical root name refuses, leaves NOTHING
+/// on disk, and teaches `--name`; `--name` then succeeds.
+#[test]
+fn e2e_init_refuses_an_unnameable_directory_and_leaves_no_declaration() {
+    let sb = sandbox();
+    let ws = sb.dir("Project Root");
+    let declaration = ws.join("MERIDIAN.md");
+
+    let out = sb.run(&ws, &["init"]);
+    assert_eq!(out.status.code(), Some(2), "refuses: {}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("--name"),
+        "the refusal teaches the recovery: {said}"
+    );
+    assert!(
+        !declaration.exists(),
+        "the write is rolled back — no broken declaration left behind"
+    );
+
+    let out = sb.run(&ws, &["init", "--name", "project-root", "--json"]);
+    assert!(out.status.success(), "init --name: {}", stderr(&out));
+    assert_eq!(json(&out)["declared_name"], "project-root");
 }
 
 // ---------------------------------------------------------------------------

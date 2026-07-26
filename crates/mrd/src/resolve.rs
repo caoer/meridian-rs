@@ -51,8 +51,9 @@ pub(crate) struct Resolved {
     pub(crate) workspace: PathBuf,
     /// How it was resolved.
     pub(crate) source: Source,
-    /// The drawer handle — disk-backed for tiers 1-3 and daemon-adopted trees,
-    /// ephemeral for a bare tree with no daemon.
+    /// The drawer handle — disk-backed for an answered rung (env override, git
+    /// root) and for daemon-adopted trees, ephemeral for an unanchored tree
+    /// with no daemon.
     pub(crate) drawer: CacheDrawer,
 }
 
@@ -105,8 +106,10 @@ fn resolve_unanchored(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
 }
 
 /// Run `mrd resolve [PATH]` — a read-only report of the resolution ladder for a
-/// path (default cwd). Writes NOTHING: no drawer creation, no registration, no
-/// auto-GC, so a tier-4 bare tree with no daemon leaves the cache root untouched.
+/// path (default cwd). It names the tier that answered and the root it named,
+/// never a bare path (the ruling's "never silently"). Writes NOTHING: no drawer
+/// creation, no registration, no auto-GC, so a cwd-default tree with no daemon
+/// leaves the cache root untouched.
 pub(crate) fn run_command(target_arg: Option<&str>, format: Format) -> Result<(), Fail> {
     let cwd = current_dir()?;
     let base = match target_arg {

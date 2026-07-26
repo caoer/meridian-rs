@@ -86,11 +86,16 @@ const LOCK_FILE: &str = "mrd-hook.lock";
 /// selector, no rev, no colour — the verdict is `mrd check`'s exit and nothing
 /// in this file may second-guess it.
 ///
-/// It deliberately does NOT test for a `.meridian.toml` marker before running
-/// the verb. Measured: none of the four operator roots carries one, and
-/// `workspace::resolve` accepts a git root as a workspace without it — a marker
-/// gate here would make the fence a silent no-op on exactly the roots it is
-/// installed for.
+/// It deliberately tests for NO membership artifact before running the verb —
+/// not the root's `MERIDIAN.md` self-declaration, not any other file. Two
+/// reasons, and the retirement of the file this clause used to name changed
+/// neither. Structurally: membership is the ladder's answer, and
+/// `workspace::resolve` anchors a git root as a workspace with no file at all —
+/// so an existence gate here would make the fence a silent no-op on exactly the
+/// roots it is installed for (installation is keyed to `$GIT_COMMON_DIR`, i.e.
+/// to being a git repository, which is the same fact the ladder reads). By
+/// charter: an existence test is a membership rule, and this file holds none —
+/// the verdict is `mrd check`'s exit, and refusal's legal home is engine-side.
 const HOOK_BODY: &str = r#"#!/bin/sh
 # mrd-hook-fence 2 — the meridian pre-commit fence.
 #

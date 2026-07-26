@@ -6,8 +6,8 @@
 //! `unregister`) opportunistically sweep past-threshold drawers, gated by a
 //! `.last-gc` stamp so the scan runs no more than once per day. It is
 //! best-effort — a sweep error never fails the verb that triggered it — and the
-//! read-only verbs (`resolve`, `cache ls`) never trigger it, so a tier-4
-//! ephemeral resolution stays write-free.
+//! read-only verbs (`resolve`, `cache ls`) never trigger it, so an ephemeral
+//! cwd-default resolution stays write-free.
 
 use std::fs;
 use std::path::Path;

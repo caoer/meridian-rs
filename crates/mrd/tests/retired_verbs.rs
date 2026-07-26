@@ -83,3 +83,26 @@ fn usage_teaches_the_new_pin_grammar_and_no_retired_verb() {
         "USAGE teaches the stage-2 pin grammar:\n{usage}"
     );
 }
+
+/// USAGE teaches no retired MARKER either (marker-retirement ruling,
+/// 2026-07-26). `mrd init`'s line sold `.meridian.toml` — a file the engine now
+/// reads nowhere — so the help text was advertising a contract that had died.
+/// It must name what init actually writes: the root's own `MERIDIAN.md`
+/// self-declaration.
+#[test]
+fn usage_teaches_the_root_declaration_and_no_retired_marker() {
+    let out = mrd(&["attest", "x"]);
+    let usage = stderr(&out);
+    assert!(
+        !usage.contains(".meridian.toml") && !usage.contains(".meridian.yaml"),
+        "USAGE still advertises a retired marker file:\n{usage}"
+    );
+    assert!(
+        usage.contains("MERIDIAN.md") && usage.contains("type: meridian-root"),
+        "USAGE teaches what `mrd init` writes now:\n{usage}"
+    );
+    assert!(
+        usage.contains("--name NAME"),
+        "USAGE teaches the name escape:\n{usage}"
+    );
+}

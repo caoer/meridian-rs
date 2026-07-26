@@ -68,11 +68,20 @@ const USAGE: &str = "\
 mrd — the meridian workspace CLI
 
 usage:
-  mrd init [PATH]          create a .meridian.toml marker, register the drawer,
-                           reconcile shadowed tier-4 drawers
+  mrd init [PATH] [--name NAME]
+                           declare the root — write PATH's own MERIDIAN.md
+                           self-declaration (type: meridian-root, named after
+                           the directory unless --name says otherwise), register
+                           the drawer, reconcile shadowed descendant drawers. A
+                           declaration does NOT anchor the resolution ladder, so
+                           the report also names the tier and root this path
+                           resolves to. An existing valid declaration is left
+                           byte-for-byte; a MERIDIAN.md that is present but does
+                           not read as a root declaration refuses (exit 2)
   mrd unregister [PATH]    drop the daemon entry (if a daemon answers) and the
                            workspace's drawer
-  mrd resolve [PATH]       report how a path resolves (read-only, writes nothing)
+  mrd resolve [PATH]       report how a path resolves — the tier that answered
+                           and the root it named (read-only, writes nothing)
   mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                            answered by the daemon (auto-spawned) or in-process
   mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
@@ -316,10 +325,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             print!("{USAGE}");
             Ok(())
         }
-        "init" => {
-            let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
-            init::run(p.positional.as_deref(), p.format())
-        }
+        "init" => init::dispatch(&args[1..]),
         "unregister" => {
             let p = Parsed::parse(&args[1..], ALLOW_PATH, NO_ALL)?;
             unregister::run(p.positional.as_deref(), p.format())

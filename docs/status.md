@@ -69,10 +69,13 @@ Stage 2 (2026-07-25) adds, all v3-only and additive
 `mrd` (`crates/mrd`) is the operator CLI over the workspace foundation:
 
 ```
-mrd init [PATH]          mark a workspace, register its drawer, reconcile
-                         shadowed tier-4 drawers (amendment M2)
+mrd init [PATH] [--name NAME]
+                         declare the root (PATH's own MERIDIAN.md,
+                         `type: meridian-root`), register its drawer, reconcile
+                         shadowed descendant drawers (amendment M2)
 mrd unregister [PATH]    drop the daemon entry (if a daemon answers) + the drawer
-mrd resolve [PATH]       report how a path resolves (read-only; writes nothing)
+mrd resolve [PATH]       report how a path resolves — the tier that answered and
+                         the root it named (read-only; writes nothing)
 mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                          answered by the daemon (auto-spawned) or in-process
 mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
@@ -234,11 +237,46 @@ renders (`0 blobs (0 bytes)`); a gauge that hides at zero is not a gauge.
 `composed.lock.color` is `null` on a corpus with no pins — never an absent field
 a reader could mistake for "not checked".
 
-Resolution follows the settled ladder: tiers 1-3 (env override → `.meridian.toml`
-marker → git root) open the hashed drawer directly; a tier-4 bare tree adopts a
-running daemon's registered ancestor, else degrades to an ephemeral,
-per-invocation store that writes nothing. Output is JSON under `--json`, a human
-table otherwise; exit codes are 0 clean / 1 findings / 2 tool failure.
+Output is JSON under `--json`, a human table otherwise; exit codes are 0 clean /
+1 findings / 2 tool failure. The workspace it ran over is printed with the tier
+that answered — `status  <root> (git-root)` — and `--json` carries the same word
+as `source`, because a status line that named only a path would leave the reader
+to guess which root it judged.
+
+### The resolution ladder — three rungs, and every answer names itself
+
+`workspace::resolve` has **three** rungs, and the marker tier is gone
+(marker-retirement ruling, 2026-07-26 — `.meridian.toml` / `.meridian.yaml` are
+read by nothing):
+
+| Tier | What it answers | How |
+|---|---|---|
+| `env-override` | the environment named the root | `MERIDIAN_WORKSPACE` |
+| `git-root` | where the version-control boundary is | the **nearest** ancestor `.git` (directory or worktree pointer file) |
+| `cwd-default` | nothing — a convenience default | the canonical cwd |
+
+**Every resolution states which tier answered and which root it named** — this
+is the ruling's requirement, not a rendering preference, and it is enforced by
+the type: `Answer` has no public path field, `root()` returns `None` on
+`cwd-default`, and reaching the defaulted path takes the greppable
+`root_or_cwd()`. `mrd resolve` prints both (`source:` plus the path); `mrd status`
+prints both on its header line; `mrd init` prints the ladder's answer for the
+directory it just declared.
+
+An answered rung opens the hashed drawer directly. A `cwd-default` tree adopts a
+running daemon's registered ancestor if one answers, else degrades to an
+ephemeral, per-invocation store that writes nothing — it is never silently
+registered.
+
+**A root's `MERIDIAN.md` self-declaration is NOT a rung.** It is read by
+`crates/config` (mount binding, and `crates/run`'s `run.caps.*` /
+`run.timeout_secs`), never by the ladder: existence-only detection is what the
+retired marker did wrong, since it cannot tell a `meridian-root` declaration
+from a `meridian-config`. So `mrd init` below a git root declares that directory
+a root **and still resolves to the git root** — init says so, and names the two
+ways to change the answer (`MERIDIAN_WORKSPACE`, or address the root by name
+through the mount table). Whoever used a marker to carve a sub-root uses one of
+those, or registers the tree with the daemon.
 
 ### `mrd hook` — the pre-commit fence (U15)
 
@@ -270,7 +308,7 @@ that receives no arguments can carry) and git's own `git commit --no-verify`.
 | a submodule | **refuses, naming the superproject** | its hooks live at `<super>/.git/modules/<name>/hooks`, which this engine does not compute |
 | setting `core.hooksPath` | **refuses, naming the path** | git runs hooks from there; anything written here is a silent no-op — and when that path already carries a `pre-commit`, installing would write into another checkout's hook directory |
 | a workspace root that is not the worktree top-level | **refuses with teaching** | "this workspace" and "this repository" name different directories |
-| not a git repository at all | **refuses, naming it a supported state** | marker-beats-git: there is simply nowhere to install, and that is not a fault in the workspace |
+| not a git repository at all | **refuses, naming it a supported state** | `MERIDIAN_WORKSPACE` anchors a non-git tree and `cwd-default` accepts one, so this is a legal workspace with simply nowhere to install a hook — not a fault in the workspace |
 
 `uninstall` ships with the installer and removes **only** a hook carrying the
 engine's marker — a `pre-commit` it did not write is refused, byte-untouched. A
