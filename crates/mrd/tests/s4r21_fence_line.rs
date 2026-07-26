@@ -207,68 +207,70 @@ fn fence_json(out: &Output) -> serde_json::Value {
 /// **Both corpus states, because a leak that only reddens hides inside a corpus
 /// that already refuses.** A green corpus catches `0 → 1`; a refusing corpus
 /// catches a leak that would have flipped the other way.
+///
+/// # The assert ORDER is part of the instrument
+/// The pair is compared to ITSELF before it is compared to an expected code. A
+/// leak reddens the unfenced run, so an arm that asserted the expected code first
+/// would fail saying *"the fixture is not green"* — true, useless, and pointing at
+/// the corpus instead of at the leak. Comparing the pair first makes the failure
+/// name the thing that broke.
 #[test]
 fn the_fence_line_never_reaches_the_exit_code() {
     let sb = sandbox();
+    // (a) the GREEN corpus — a governed pin gives it a current baseline, so this
+    //     pair is where a leak that REDDENS is visible.
+    // (b) the REFUSING corpus — already exits 1, so a leak that would have flipped
+    //     the other way has an arm that sees it too.
+    for (name, drift, expected) in [("exit-green", false, 0), ("exit-refusing", true, 1)] {
+        let ws = sb.corpus(name);
+        sb.govern(&ws);
+        if drift {
+            write(
+                &ws,
+                "source.md",
+                "# Source\n\n## Guideline\n\nOUT OF BAND\n",
+            );
+        }
 
-    // (a) the GREEN corpus — a governed pin gives it a current baseline.
-    let green = sb.corpus("exit-green");
-    sb.govern(&green);
-    let unfenced = sb.run(&green, &["check"]);
-    assert_eq!(
-        unfenced.status.code(),
-        Some(0),
-        "FIXTURE: a governed corpus is accepted: {}",
-        said(&unfenced)
-    );
-    assert!(
-        fence_line(&unfenced).contains("fence: absent"),
-        "the control: this checkout really is unfenced: {}",
-        fence_line(&unfenced)
-    );
+        let unfenced = sb.run(&ws, &["check"]);
+        sb.fence(&ws);
+        let fenced = sb.run(&ws, &["check"]);
 
-    sb.fence(&green);
-    let fenced = sb.run(&green, &["check"]);
-    assert!(
-        fence_line(&fenced).contains("fence: installed"),
-        "the control's other half: the same checkout is now fenced: {}",
-        fence_line(&fenced)
-    );
-    assert_eq!(
-        unfenced.status.code(),
-        fenced.status.code(),
-        "THE CLAIM: the fence state changed and the exit code did not. \
-         unfenced said {:?}, fenced said {:?}",
-        unfenced.status.code(),
-        fenced.status.code()
-    );
+        // The anti-vacuity control: without this pair of asserts the claim below
+        // would pass on a build that never read a fence at all.
+        assert!(
+            fence_line(&unfenced).contains("fence: absent"),
+            "[{name}] the control: this checkout really was unfenced: {}",
+            fence_line(&unfenced)
+        );
+        assert!(
+            fence_line(&fenced).contains("fence: installed"),
+            "[{name}] the control's other half: the SAME checkout is now fenced: {}",
+            fence_line(&fenced)
+        );
 
-    // (b) the REFUSING corpus — the same pair over a state that already exits 1,
-    // so a leak in either direction has an arm that sees it.
-    let red = sb.corpus("exit-red");
-    sb.govern(&red);
-    write(
-        &red,
-        "source.md",
-        "# Source\n\n## Guideline\n\nOUT OF BAND\n",
-    );
-    let unfenced = sb.run(&red, &["check"]);
-    assert_eq!(
-        unfenced.status.code(),
-        Some(1),
-        "FIXTURE: the out-of-band rewrite leaves check refusing: {}",
-        said(&unfenced)
-    );
-    assert!(fence_line(&unfenced).contains("fence: absent"));
-
-    sb.fence(&red);
-    let fenced = sb.run(&red, &["check"]);
-    assert!(fence_line(&fenced).contains("fence: installed"));
-    assert_eq!(
-        unfenced.status.code(),
-        fenced.status.code(),
-        "and a refusing corpus refuses identically whether or not it is fenced"
-    );
+        // THE CLAIM, asserted before any expected value: the fence state changed
+        // and the exit code did not.
+        assert_eq!(
+            unfenced.status.code(),
+            fenced.status.code(),
+            "[{name}] THE CLAIM: the fence state changed and the exit code did \
+             not. unfenced exited {:?}, fenced exited {:?} — the fence line has \
+             leaked into the exit.\nunfenced said: {}\nfenced said: {}",
+            unfenced.status.code(),
+            fenced.status.code(),
+            said(&unfenced),
+            said(&fenced)
+        );
+        // And only now the fixture: the pair agrees, and it agrees on the code
+        // this corpus state earns on its own.
+        assert_eq!(
+            fenced.status.code(),
+            Some(expected),
+            "[{name}] FIXTURE: this corpus state earns exit {expected}: {}",
+            said(&fenced)
+        );
+    }
 }
 
 // ── the reading itself, state by state ──────────────────────────────────────
