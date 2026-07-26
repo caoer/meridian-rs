@@ -73,6 +73,23 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
+    /// The same drive with the workspace **pinned by `MERIDIAN_WORKSPACE`** —
+    /// tier 1 of the discovery ladder.
+    ///
+    /// This is the only rung that can seat a workspace root BELOW the worktree
+    /// top-level: tier 2 anchors on the nearest `.git` and would answer the
+    /// top-level itself, so a nested root can never be reached by walking up.
+    fn run_at(&self, cwd: &Path, workspace: &Path, args: &[&str]) -> Output {
+        Command::new(mrd_bin())
+            .args(args)
+            .current_dir(cwd)
+            .env("XDG_CACHE_HOME", &self.cache_home)
+            .env("HOME", &self.home)
+            .env("MERIDIAN_WORKSPACE", workspace)
+            .output()
+            .expect("spawn mrd")
+    }
+
     /// A real git repository that is also a meridian workspace, carrying a
     /// pinnable source section and a claim page — the corpus a governed `mrd pin`
     /// turns green. **Committed, and NOT fenced**: every arm installs the fence
@@ -143,13 +160,21 @@ fn git_ok(dir: &Path, args: &[&str]) {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    String::from_utf8_lossy(&git_try(dir, args).stdout)
+        .trim()
+        .to_owned()
+}
+
+/// One git call whose FAILURE is the interesting outcome — the seam
+/// [`a_root_git_cannot_answer_for_is_named_rather_than_read_as_a_bare_absence`]
+/// needs, where [`git_out`] would hand back an empty string and hide it.
+fn git_try(dir: &Path, args: &[&str]) -> Output {
+    Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .output()
-        .expect("git runs in the test environment");
-    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        .expect("git runs in the test environment")
 }
 
 /// Where this checkout's hooks actually live — `git`'s own answer, never a
@@ -756,6 +781,121 @@ fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
     );
 }
 
+/// **`installed-unversioned` as the SET word — the state the corpus above could
+/// not reach.**
+///
+/// The arm before this one carries an unversioned door, but it carries an AHEAD
+/// door beside it, and precedence gives the set word to `installed-ahead`. So
+/// `installed-unversioned` reached the operator through the per-door line only,
+/// and the first line — the one a reader sees first, and the only one the
+/// `--json` `state` key mirrors — was never measured in this state at all.
+///
+/// **A fixture can make a state unreachable without anyone noticing.** This one
+/// exists to keep the set word reachable: ONE unversioned door, and nothing above
+/// it in precedence to shadow it.
+///
+/// # The hazard is the flatten, and it is the worst one on this axis
+/// A render that read this set as plain `installed` would tell an operator they
+/// are current when the fence's currency **cannot be judged at all** — and
+/// `mrd hook install` refuses this door rather than guessing, so an operator who
+/// is never told will never find out why their next install refuses.
+///
+/// # The count still says 3 of 3, and that is the design
+/// `fenced_doors` counts every door this engine's line wrote at ANY generation,
+/// so an undeclarable one is counted. Coverage and currency are separate
+/// instruments and this checkout is where they disagree.
+#[test]
+fn an_unversioned_door_alone_carries_the_set_word_rather_than_flattening_to_installed() {
+    let sb = sandbox();
+    let ws = sb.corpus("unversioned-set-word");
+    sb.fence(&ws);
+    retag_door(&ws, "pre-merge-commit", "next");
+
+    // THE POSITIVE CONTROL, off the files, before any render is inspected.
+    assert_eq!(
+        declared_version(&ws, "pre-merge-commit"),
+        None,
+        "the fixture IS the assert's subject: pre-merge-commit must declare a \
+         generation no `u32` parses"
+    );
+    assert!(
+        carries_marker(&ws, "pre-merge-commit"),
+        "and the MARKER must survive the retag, or this measures `foreign-hook` \
+         instead of `installed-unversioned`"
+    );
+    // THE PRECEDENCE CONTROL — the half the arm above cannot have. The two
+    // untouched doors declare the SAME generation as each other, so neither
+    // stands ahead of the other and nothing outranks `installed-unversioned`.
+    // Compared rather than spelled: a `FENCE_VERSION` bump must not turn this
+    // fixture into a silent no-op.
+    let untouched = declared_version(&ws, "pre-commit");
+    assert!(
+        untouched.is_some() && untouched == declared_version(&ws, "pre-applypatch"),
+        "the two untouched doors must declare one generation between them, or a \
+         higher-precedence word takes the set: {untouched:?} vs {:?}",
+        declared_version(&ws, "pre-applypatch")
+    );
+    // And the already-armed face agrees precedence lands HERE, so a red arm below
+    // names check's render rather than a fixture that never reached the state.
+    let status = sb.run(&ws, &["hook", "status", "--json"]);
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
+        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
+    assert_eq!(
+        status_json["state"],
+        "installed-unversioned",
+        "the face that already holds this word reads the fixture: {}",
+        said(&status)
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: installed-unversioned"),
+        "THE CLAIM: the SET word carries the undeclarable generation: {line}"
+    );
+    assert!(
+        !line.contains("fence: installed —"),
+        "THE HAZARD: a fence whose currency cannot be judged, reported as \
+         current, is the silent wrong answer this lane exists to kill — and the \
+         operator is never told why `mrd hook install` then refuses: {line}"
+    );
+    assert_eq!(
+        fence_count_clause(&out),
+        "3 of 3 doors carry this engine's fence marker, at any generation",
+        "coverage counts an undeclarable door like any other; the currency is the \
+         set word's claim, standing beside it: {line}"
+    );
+    assert!(
+        line.contains("pre-merge-commit"),
+        "the teaching names the door whose generation cannot be read: {line}"
+    );
+    assert_eq!(
+        fence_doors_line(&out).as_deref(),
+        Some(
+            "  fence doors: pre-commit installed · pre-merge-commit \
+             installed-unversioned · pre-applypatch installed"
+        ),
+        "and no door outranks it — the per-door line spells all three, so an \
+         `installed-ahead` or `foreign-hook` sneaking into the fixture fails \
+         here rather than silently shadowing the word under test: {}",
+        said(&out)
+    );
+
+    // The same word on the `--json` face — its `state` key mirrors the SET word
+    // and nothing else, so this face has no per-door line to fall back on.
+    let out = sb.run(&ws, &["check", "--json"]);
+    assert_eq!(
+        fence_json(&out)["state"],
+        serde_json::json!("installed-unversioned"),
+        "{}",
+        said(&out)
+    );
+
+    // R40 — check REPORTS the undeclarable generation and rewrites nothing.
+    assert_eq!(declared_version(&ws, "pre-merge-commit"), None);
+    assert!(carries_marker(&ws, "pre-merge-commit"));
+}
+
 /// A checkout whose root is a **submodule** reports `submodule`, not a bare
 /// absence: the reason word survives to the check face, and the root has **no door
 /// plane at all** — so there is no per-door line to print.
@@ -838,6 +978,270 @@ fn a_workspace_with_no_repository_names_that_state_rather_than_staying_silent() 
         "and it is not reported as a fault in the workspace: {line}"
     );
     assert_eq!(fence_doors_line(&out), None, "no repository, no doors");
+}
+
+/// **`core.hooksPath` is set, so this checkout's own hook directory is dead —
+/// and the line says so instead of reporting a bare absence.**
+///
+/// # Why `absent` here would be the worst reading on this face
+/// `absent` carries the teaching *"`mrd hook install` fences this one"*. Follow it
+/// on a redirected root and the install writes a file **git will never run** —
+/// and, when the redirect points at another checkout, writes it into someone
+/// else's hook directory. The operator ends up believing they are fenced while
+/// every commit walks straight through. That is the false green this whole lane
+/// exists to remove, rebuilt out of a config key.
+///
+/// The redirect target carries its own `pre-commit`, reproducing the state
+/// measured on a real root: the stronger true thing the teaching can then say.
+#[test]
+fn a_redirected_hooks_path_is_named_on_the_check_face_rather_than_read_as_unfenced() {
+    let sb = sandbox();
+    let ws = sb.corpus("hooks-path-check");
+    let elsewhere = sb.tmp.path().join("their-checkout").join(".githooks");
+    std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+    std::fs::write(elsewhere.join("pre-commit"), "#!/bin/sh\nexit 0\n").expect("their hook");
+    git_ok(
+        &ws,
+        &["config", "core.hooksPath", &elsewhere.display().to_string()],
+    );
+
+    // THE POSITIVE CONTROL — git's OWN answer, never the fact that `git config`
+    // exited 0: this root really does send git's hook lookup elsewhere.
+    assert_eq!(
+        git_out(&ws, &["config", "--get", "core.hooksPath"]),
+        elsewhere.display().to_string(),
+        "the fixture IS the assert's subject: git must report the redirect"
+    );
+    // The control's other half, and the reason `absent` is TEMPTING here: this
+    // root's own hook directory genuinely carries no fence.
+    assert!(
+        !hooks_dir(&ws).join("pre-commit").exists(),
+        "the redirected root's own hooks directory is empty, which is exactly \
+         what a render that ignored core.hooksPath would report as `absent`"
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: hooks-path-redirected"),
+        "the observed reason word, not a bare absence: {line}"
+    );
+    assert!(
+        !line.contains("fence: absent"),
+        "THE HAZARD: `absent` teaches `mrd hook install`, and on this root that \
+         writes a file git will never run — a checkout that reads as fenced and \
+         gates nothing: {line}"
+    );
+    assert!(
+        line.contains(&elsewhere.display().to_string()),
+        "and the line names WHERE git actually looks, which is what the operator \
+         needs to act: {line}"
+    );
+    assert!(
+        line.contains("another checkout's hook directory"),
+        "the stronger true thing: that path already carries a pre-commit, so \
+         installing would write into a repository this operator does not own: \
+         {line}"
+    );
+    assert_eq!(
+        fence_doors_line(&out),
+        None,
+        "the doors were never read, so there is no door plane to print: {}",
+        said(&out)
+    );
+
+    let out = sb.run(&ws, &["check", "--json"]);
+    let block = fence_json(&out);
+    assert_eq!(block["state"], serde_json::json!("hooks-path-redirected"));
+    assert_eq!(block["fenceable"], serde_json::json!(false));
+    for key in ["doors", "fenced_doors", "total_doors"] {
+        assert!(
+            !block.as_object().expect("object").contains_key(key),
+            "`{key}` must be ABSENT, never null — the doors were not read: {block}"
+        );
+    }
+}
+
+/// **The meridian workspace root sits BELOW the worktree top-level, and the line
+/// names both roots instead of reporting a bare absence.**
+///
+/// # The fixture needs tier 1, and nothing else can build it
+/// The discovery ladder is `MERIDIAN_WORKSPACE` → nearest `.git` → cwd. Tier 2
+/// walks UP to the `.git`, so it can only ever answer the top-level itself — a
+/// nested root is reachable through the env override alone. That is not a
+/// contrivance: it is precisely how an operator who exports `MERIDIAN_WORKSPACE`
+/// at a subdirectory of their repository arrives here.
+///
+/// # Why `absent` here would send the operator to the wrong root
+/// The fence installs per git COMMON DIR and runs from the committing worktree,
+/// so a fence installed for this nested workspace is really a fence over the
+/// whole top-level — it would judge commits that never touch the workspace, and
+/// the workspace would be fenced by a commit it does not cover. `absent` says
+/// *"install here"*; the truth is *"install from the top-level"*, and the line
+/// has to name which directory that is.
+#[test]
+fn a_workspace_below_the_worktree_top_level_names_both_roots_rather_than_reading_unfenced() {
+    let sb = sandbox();
+    let outer = sb.corpus("nested-outer");
+    let nested = outer.join("nested");
+    std::fs::create_dir_all(&nested).expect("mkdir nested");
+    write(&nested, "a.md", "# A\n\nalpha\n");
+    let init = sb.run_at(&nested, &nested, &["init"]);
+    assert!(
+        init.status.success(),
+        "init the nested root: {}",
+        said(&init)
+    );
+
+    // THE POSITIVE CONTROL — git's OWN answer: the two directories really are
+    // different, and the top-level really is the outer one.
+    let top_level = PathBuf::from(git_out(&nested, &["rev-parse", "--show-toplevel"]));
+    let canonical_outer = outer.canonicalize().expect("canonical outer");
+    let canonical_nested = nested.canonicalize().expect("canonical nested");
+    assert_eq!(
+        top_level, canonical_outer,
+        "the fixture IS the assert's subject: git calls the OUTER directory this \
+         worktree's top-level"
+    );
+    assert_ne!(
+        canonical_nested, canonical_outer,
+        "and the workspace under test is a different directory from it, or there \
+         is no mismatch to report"
+    );
+
+    let out = sb.run_at(&nested, &nested, &["check"]);
+    // The control's other half: the run really did resolve to the NESTED root.
+    // Without it every assert below could be reading the outer workspace.
+    let header = stdout(&out)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_owned();
+    assert!(
+        header.ends_with(&canonical_nested.display().to_string()),
+        "the env override really seated the workspace at the nested root: \
+         {header}"
+    );
+
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: workspace-not-toplevel"),
+        "the observed reason word, not a bare absence: {line}"
+    );
+    assert!(
+        !line.contains("fence: absent"),
+        "THE HAZARD: `absent` teaches `mrd hook install` HERE, and a fence \
+         installed for a nested workspace covers the whole top-level instead: \
+         {line}"
+    );
+    assert!(
+        line.contains(&canonical_nested.display().to_string())
+            && line.contains(&canonical_outer.display().to_string()),
+        "and the line names BOTH roots — the one asked about and the one git \
+         answers with — because naming only one leaves the operator guessing \
+         which directory the fence would cover: {line}"
+    );
+    assert!(
+        line.contains("Install from"),
+        "with the remedy pointing at the top-level rather than at this root: \
+         {line}"
+    );
+    assert_eq!(
+        fence_doors_line(&out),
+        None,
+        "the doors were never read, so there is no door plane to print: {}",
+        said(&out)
+    );
+
+    let out = sb.run_at(&nested, &nested, &["check", "--json"]);
+    let block = fence_json(&out);
+    assert_eq!(block["state"], serde_json::json!("workspace-not-toplevel"));
+    assert_eq!(block["fenceable"], serde_json::json!(false));
+}
+
+/// **Git ran and refused, so the fence state is UNKNOWN — and the line says that
+/// rather than reporting either of the two states it could be mistaken for.**
+///
+/// # Two neighbours, and both are wrong in a way that costs the operator
+/// `absent` claims the doors were read and found empty; `not-a-git-repo` claims
+/// there is nowhere to install at all — a SUPPORTED state an operator is meant to
+/// shrug at. Here there is a repository, it may well be fenced, and the engine
+/// simply could not ask. Reporting either neighbour turns "I do not know" into a
+/// confident answer, which is the one thing a status face may never do.
+///
+/// # The fixture breaks git's ability to answer, and git adjudicates it
+/// An unterminated section header makes every `git` invocation in this repository
+/// fail at config-parse time. The control runs `git rev-parse --git-common-dir`
+/// before and after, so the fixture is proved by git's own exit status rather
+/// than by the write having happened.
+#[test]
+fn a_root_git_cannot_answer_for_is_named_rather_than_read_as_a_bare_absence() {
+    let sb = sandbox();
+    let ws = sb.corpus("cannot-ask");
+    let config = ws.join(".git").join("config");
+
+    // THE POSITIVE CONTROL — before the corruption, git answers this question,
+    // so a failure after it is evidence rather than a blind probe.
+    assert!(
+        git_try(&ws, &["rev-parse", "--git-common-dir"])
+            .status
+            .success(),
+        "the control: git can answer for this root before the fixture breaks it"
+    );
+    let sound = std::fs::read_to_string(&config).expect("read .git/config");
+    std::fs::write(&config, format!("{sound}[core\n")).expect("write .git/config");
+    // The control's other half: git itself, not this test, says it can no longer
+    // answer.
+    let refused = git_try(&ws, &["rev-parse", "--git-common-dir"]);
+    assert!(
+        !refused.status.success(),
+        "the fixture IS the assert's subject: git must refuse to answer for this \
+         root now"
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: cannot-ask-git"),
+        "the observed reason word: the engine could not ask, and says so: {line}"
+    );
+    assert!(
+        !line.contains("fence: absent"),
+        "THE HAZARD: `absent` claims the doors WERE read and came back empty. \
+         They were never read, and this root may be fully fenced: {line}"
+    );
+    assert!(
+        !line.contains("fence: not-a-git-repo"),
+        "and not the other neighbour either — that word means there is nowhere \
+         to install, a supported state an operator is meant to accept, and this \
+         root has a repository whose configuration merely cannot be read: {line}"
+    );
+    assert!(
+        line.contains("cannot determine the hook directory")
+            && line.contains("git rev-parse --git-common-dir"),
+        "the refusal carries WHAT failed, verbatim — a reader who is not told \
+         which question went unanswered cannot fix it: {line}"
+    );
+    assert_eq!(
+        fence_doors_line(&out),
+        None,
+        "the doors were never read, so there is no door plane to print: {}",
+        said(&out)
+    );
+
+    let out = sb.run(&ws, &["check", "--json"]);
+    let block = fence_json(&out);
+    assert_eq!(block["state"], serde_json::json!("cannot-ask-git"));
+    assert_eq!(block["fenceable"], serde_json::json!(false));
+
+    // R40 — check REPORTS the unreadable config and repairs nothing. A status
+    // face that rewrote a config to make its own question answerable is a writer.
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("read .git/config"),
+        format!("{sound}[core\n"),
+        "reading a root git cannot answer for may not rewrite its config"
+    );
 }
 
 // ── the promises the reading makes about itself ─────────────────────────────
