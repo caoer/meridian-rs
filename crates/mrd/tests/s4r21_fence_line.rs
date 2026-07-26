@@ -170,17 +170,22 @@ fn declared_version(ws: &Path, door: &str) -> Option<u32> {
         .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
 }
 
-/// Rewrite ONE door's declared generation to `1`: a fence this engine wrote, at a
-/// generation older than the one it writes now.
+/// Restate ONE door's declared generation, leaving the fence this engine wrote
+/// otherwise byte-for-byte as `mrd hook install` left it.
 ///
 /// **The marker LINE is found rather than this engine's number spelled.** A
 /// literal `# mrd-hook-fence 3` here would turn into a silent no-op the day
-/// `FENCE_VERSION` is bumped, and the arm reading this fixture would go on
+/// `FENCE_VERSION` is bumped, and every arm reading the fixture would go on
 /// passing against a checkout that is perfectly current.
 ///
-/// Only the generation changes; the rest of the line stays exactly as install
-/// wrote it, so the fixture has ONE variable.
-fn supersede_door(ws: &Path, door: &str) {
+/// **The marker survives every retag**, which is what keeps this a fence this
+/// engine owns. Deleting the line instead would make the door `foreign-hook` — a
+/// different word, a different state, and the mistake a first draft of the
+/// unversioned arm in `hook_plane_fence.rs` made before it was measured.
+///
+/// `generation` is a `&str` and not a number on purpose: `installed-unversioned`
+/// is reachable only through a generation no `u32` parses.
+fn retag_door(ws: &Path, door: &str, generation: &str) {
     let path = hooks_dir(ws).join(door);
     let body = std::fs::read_to_string(&path).expect("read an installed door");
     let mut rewritten = String::new();
@@ -189,7 +194,7 @@ fn supersede_door(ws: &Path, door: &str) {
             Some(rest) => {
                 let tail = rest.split_once(' ').map_or("", |(_generation, tail)| tail);
                 rewritten.push_str(MARKER_PREFIX);
-                rewritten.push('1');
+                rewritten.push_str(generation);
                 if !tail.is_empty() {
                     rewritten.push(' ');
                     rewritten.push_str(tail);
@@ -199,7 +204,15 @@ fn supersede_door(ws: &Path, door: &str) {
         }
         rewritten.push('\n');
     }
-    std::fs::write(&path, rewritten).expect("write the skewed door");
+    std::fs::write(&path, rewritten).expect("write the retagged door");
+}
+
+/// Whether one door still carries this engine's ownership marker. The control
+/// that separates a RETAGGED door from a foreign one.
+fn carries_marker(ws: &Path, door: &str) -> bool {
+    std::fs::read_to_string(hooks_dir(ws).join(door))
+        .expect("read an installed door")
+        .contains("mrd-hook-fence")
 }
 
 fn write(ws: &Path, rel: &str, body: &str) {
@@ -493,7 +506,7 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
     let sb = sandbox();
     let ws = sb.corpus("superseded");
     sb.fence(&ws);
-    supersede_door(&ws, "pre-merge-commit");
+    retag_door(&ws, "pre-merge-commit", "1");
 
     // THE POSITIVE CONTROL, read off the files before any render is inspected:
     // this fixture really does produce a version-skewed door, and exactly one.
@@ -577,6 +590,123 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
         declared_version(&ws, "pre-merge-commit"),
         Some(1),
         "reading a superseded fence may not rewrite it"
+    );
+}
+
+/// **The two remaining door states, and the fixture that proves why the per-door
+/// line has to exist at all.**
+///
+/// # `installed-ahead` is the one word whose remedy INVERTS
+/// Every other word on this surface means *"run `mrd hook install`"*. That one
+/// means *"do not — the `mrd` answering is the one that is behind"*. A render
+/// that flattened it to plain `installed` would not merely under-inform: it
+/// would route an operator into **downgrading their own fence** with the stale
+/// binary that just told them they were current. So the inverted remedy is
+/// asserted here, not merely described.
+///
+/// # One checkout, three doors, three different words
+/// The set can say only ONE word, and precedence makes it `installed-ahead` —
+/// so `installed-unversioned` is standing on this checkout and is invisible
+/// **everywhere except the per-door line**. That is this fixture's whole
+/// argument: two independent claims, one corpus, no duplicated fixture.
+///
+/// # The unversioned door is retagged, never emptied
+/// The marker and the generation share a line, so deleting it makes the door
+/// `foreign-hook` — a different state with a different word. The reachable state
+/// is a generation no `u32` parses, which is what a future fence tagging itself
+/// `next` looks like to this engine.
+#[test]
+fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
+    let sb = sandbox();
+    let ws = sb.corpus("ahead-unversioned");
+    sb.fence(&ws);
+    retag_door(&ws, "pre-merge-commit", "999");
+    retag_door(&ws, "pre-applypatch", "next");
+
+    // THE POSITIVE CONTROL, off the files, before any render is inspected.
+    let current = declared_version(&ws, "pre-commit");
+    let ahead = declared_version(&ws, "pre-merge-commit");
+    assert!(
+        ahead > current && current.is_some(),
+        "the fixture IS the assert's subject: pre-merge-commit must declare a \
+         generation ABOVE the untouched door's, or there is nothing ahead to \
+         report — {ahead:?} vs {current:?}"
+    );
+    assert_eq!(
+        declared_version(&ws, "pre-applypatch"),
+        None,
+        "and pre-applypatch must declare a generation no `u32` parses"
+    );
+    assert!(
+        carries_marker(&ws, "pre-applypatch"),
+        "the control that first draft got wrong — the MARKER must survive the \
+         retag, or this measures `foreign-hook` instead of `installed-unversioned`"
+    );
+    // The already-armed face agrees the states are reachable, so a red arm below
+    // names check's render rather than a broken fixture.
+    let status = sb.run(&ws, &["hook", "status", "--json"]);
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
+        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
+    assert_eq!(
+        status_json["state"],
+        "installed-ahead",
+        "the face that already holds these words reads the fixture: {}",
+        said(&status)
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: installed-ahead"),
+        "the word whose remedy inverts is named ahead of every other: {line}"
+    );
+    assert!(
+        line.contains("do NOT run"),
+        "THE REASON THIS ARM EXISTS: the remedy INVERTS here, and a reader sent \
+         to `mrd hook install` by this line would downgrade their own fence: \
+         {line}"
+    );
+
+    // THE CLAIM. The set word carried `installed-ahead` and could carry nothing
+    // else; `installed-unversioned` reaches the operator through THIS line only.
+    assert_eq!(
+        fence_doors_line(&out).as_deref(),
+        Some(
+            "  fence doors: pre-commit installed · pre-merge-commit \
+             installed-ahead · pre-applypatch installed-unversioned"
+        ),
+        "each door keeps its OWN word, and a render that flattened either to \
+         `installed` fails here: {}",
+        said(&out)
+    );
+
+    // The same two words on the `--json` face, each beside the generation the
+    // FILE declares — `null` is the file's own answer and never the asking
+    // engine's number standing in for it.
+    let out = sb.run(&ws, &["check", "--json"]);
+    let block = fence_json(&out);
+    assert_eq!(block["state"], serde_json::json!("installed-ahead"));
+    assert_eq!(
+        block["doors"],
+        serde_json::json!([
+            { "name": "pre-commit", "state": "installed", "fence_version": 3 },
+            { "name": "pre-merge-commit", "state": "installed-ahead", "fence_version": 999 },
+            { "name": "pre-applypatch", "state": "installed-unversioned", "fence_version": null },
+        ]),
+        "each door's own state and its own declared generation: {}",
+        said(&out)
+    );
+
+    // R40 — check REPORTS both states and rewrites neither. Refreshing an AHEAD
+    // door would be the downgrade this arm exists to keep an operator away from.
+    assert_eq!(
+        declared_version(&ws, "pre-merge-commit"),
+        ahead,
+        "reading an ahead fence may not replace it with this engine's older one"
+    );
+    assert!(
+        carries_marker(&ws, "pre-applypatch"),
+        "and the unversioned door is left exactly as it was found"
     );
 }
 
