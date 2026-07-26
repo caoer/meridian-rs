@@ -129,6 +129,53 @@ fn status_genesis_is_clean_and_unverified() {
     assert!(!so.contains("anchor at-tip\n"), "no bare at-tip line: {so}");
 }
 
+/// `status` names HOW it resolved the workspace it judged, never the path alone
+/// (marker-retirement ruling: "every resolution states which tier and which root
+/// answered — never silently"). The header used to print the bare path, which is
+/// exactly the silence the ruling retired.
+///
+/// Both cases are asserted in one test because the discriminating fact is that
+/// the word CHANGES with the situation: a git-anchored tree reads `git-root`, an
+/// unanchored one reads `ephemeral` (the cwd-default refinement — the ladder
+/// answered nothing and no daemon adopted it). A hardcoded word would pass one
+/// half and fail the other.
+#[test]
+fn status_names_the_tier_that_resolved_the_workspace() {
+    let sb = sandbox();
+
+    let bare = sb.workspace("unanchored");
+    let out = sb.run(&bare, &["status"]);
+    let so = stdout(&out);
+    let canon_bare = std::fs::canonicalize(&bare).unwrap();
+    assert!(
+        so.contains(&format!(
+            "status  {} (ephemeral)",
+            canon_bare.to_string_lossy()
+        )),
+        "the header names the root AND how it resolved: {so}"
+    );
+
+    let anchored = sb.workspace("anchored");
+    std::fs::create_dir_all(anchored.join(".git")).expect("git anchor");
+    let canon_anchored = std::fs::canonicalize(&anchored).unwrap();
+    let out = sb.run(&anchored, &["status"]);
+    let so = stdout(&out);
+    assert!(
+        so.contains(&format!(
+            "status  {} (git-root)",
+            canon_anchored.to_string_lossy()
+        )),
+        "the word tracks the situation: {so}"
+    );
+
+    // `--json` carries the same word, so a machine reader is not left to parse
+    // the human line for it.
+    let out = sb.run(&anchored, &["status", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("json");
+    assert_eq!(v["source"], "git-root", "--json carries the provenance");
+    assert_eq!(v["workspace"], canon_anchored.to_string_lossy().as_ref());
+}
+
 /// Armed + drifted: two armed conventions, one fresh (block), one drifted (warn) —
 /// armed=2, drifted=1, the pin axis reds, the severity rolls up to block, exit 1.
 #[test]

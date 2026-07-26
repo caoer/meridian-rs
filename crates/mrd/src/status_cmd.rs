@@ -127,7 +127,12 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    let report = gather(&workspace);
+    // The resolution is reported, never assumed: the ruling requires every
+    // answer to name which rung answered and which root it named. `status` used
+    // to print the path alone, which is exactly the silence being retired. The
+    // label is the ladder's own word (`resolve::Source`), so this surface cannot
+    // drift from the tier vocabulary.
+    let report = gather(&workspace, resolved.source.label());
 
     match format {
         Format::Json => println!("{}", report.json()),
@@ -335,6 +340,9 @@ impl VibeDebt {
 /// counts, and the forced-write violation rows.
 struct StatusReport {
     workspace: String,
+    /// How that workspace was resolved — the tier word, or `daemon-adopted` /
+    /// `ephemeral`. Rendered beside the path so no reader has to assume it.
+    source: String,
     /// Count of `[x]` rows in the attested INDEX (the armed set).
     armed: usize,
     /// Count of armed conventions whose live `CHECK.md` rev ≠ pinned `armed_rev`.
@@ -400,7 +408,7 @@ impl StatusReport {
     fn render_human(&self) -> String {
         use std::fmt::Write as _;
         let mut out = String::new();
-        let _ = writeln!(out, "status  {}", self.workspace);
+        let _ = writeln!(out, "status  {} ({})", self.workspace, self.source);
         let boundary = match &self.boundary {
             Boundary::Genesis => "genesis".to_owned(),
             Boundary::LastApply(now) => format!("since {now}"),
@@ -443,6 +451,7 @@ impl StatusReport {
         };
         let doc = json!({
             "workspace": self.workspace,
+            "source": self.source,
             "index": {
                 "armed": self.armed,
                 "drifted": self.drifted,
@@ -500,7 +509,12 @@ fn render_violation_row(v: &Violation) -> String {
 /// and the git refs — every read frozen, none re-evaluated. It never fails: every
 /// absent / unreadable frozen fact degrades to its honest empty case (genesis,
 /// unverified), so status always renders a summary.
-fn gather(workspace: &Path) -> StatusReport {
+///
+/// `source` is how the caller resolved `workspace` — carried in rather than
+/// re-derived, because this half is pure over a path and the ladder's answer is
+/// the caller's fact. It is a parameter, not a settable field, so no render can
+/// reach a report whose provenance was never filled in.
+fn gather(workspace: &Path, source: &str) -> StatusReport {
     // 1. The armed set — ONE index-file read (O(armed)).
     let (armed, index_fault) = read_armed(workspace);
 
@@ -537,6 +551,7 @@ fn gather(workspace: &Path) -> StatusReport {
 
     StatusReport {
         workspace: workspace.display().to_string(),
+        source: source.to_owned(),
         armed: armed.len(),
         drifted,
         forced,
@@ -1169,6 +1184,7 @@ mod tests {
     ) -> StatusReport {
         StatusReport {
             workspace: "/ws".to_owned(),
+            source: "git-root".to_owned(),
             armed: 0,
             drifted: 0,
             forced: 0,
