@@ -505,6 +505,58 @@ impl MountTable {
     pub fn is_clear(&self) -> bool {
         self.mounts.iter().all(|m| !m.state.refuses())
     }
+
+    /// **The table, projected for the planes that resolve and translate** — the
+    /// half `docs/laws.md` reserved for this crate (*"Still NOT here: projecting
+    /// the bound names into `addr::MountSet`"*).
+    ///
+    /// Carries three facts and no paths beyond the ones a refusal must name:
+    /// which names this machine BINDS, the **vault name** each bound vault root
+    /// carries (the stored plane is spelled in vault names — U12), and which
+    /// declared names are **unreachable here**, with the path to check.
+    ///
+    /// A refusing mount is recorded as unreachable rather than dropped —
+    /// S3-R50: dropping it collapses *"declared but unreadable"* into *"nobody
+    /// declared it"* one frame upstream of the refusal, and the refusal then
+    /// prescribes a declaration that already exists.
+    ///
+    /// **This is not `mrd walk`'s projection and the difference is a FACT, not
+    /// a second spelling.** `walk_cmd::load_mounts` also marks a root
+    /// unreachable when its CORPUS will not build — a fact only a caller
+    /// holding corpora can know. This projection answers what the TABLE knows.
+    /// The two agree wherever they overlap because both read `Mount::state`.
+    #[must_use]
+    pub fn projection(&self) -> addr::MountSet {
+        let mut bound: Vec<addr::MountName> = Vec::new();
+        let mut unreachable: Vec<(addr::MountName, &Mount)> = Vec::new();
+        let mut vaults: Vec<(addr::MountName, &str)> = Vec::new();
+        for mount in &self.mounts {
+            // Not a canonical name — no address can reach it anyway.
+            let Ok(name) = addr::MountName::parse(mount.name()) else {
+                continue;
+            };
+            if mount.state().refuses() {
+                unreachable.push((name, mount));
+                continue;
+            }
+            if let Some(vault) = mount.vault() {
+                vaults.push((name.clone(), vault));
+            }
+            bound.push(name);
+        }
+        let mut set = addr::MountSet::new(bound);
+        for (name, vault) in vaults {
+            set = set.with_vault(name, vault);
+        }
+        for (name, mount) in unreachable {
+            let detail = match mount.state() {
+                MountState::PathUnseeable { detail } => detail.clone(),
+                other => other.detail(),
+            };
+            set = set.with_unreachable(name, mount.declared_path().to_owned(), detail);
+        }
+        set
+    }
 }
 
 impl Resolution {

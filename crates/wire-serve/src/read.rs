@@ -11,6 +11,40 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Path, ResponseBody, Root, SecRef, Span
 
 use crate::bad_request;
 
+/// **U12 — the stored form, read back into the agent plane.**
+///
+/// `put` translates an agent-plane `root:` address into the `obsidian://` stored
+/// form ([`crate::write`]); this is the other direction, and it lands on the
+/// **RENDERED face only** — exactly where the S10 `@fp` decoration lands, and
+/// for the same reason.
+///
+/// **`sections[].content` and `cat.content` stay RAW and are deliberately NOT
+/// translated.** They are *"the verbatim bytes `sec_rev` was minted over, so
+/// each row is self-verifying"* (the op-owner ruling this arm already carries).
+/// A translated content row would no longer hash to the rev shipped beside it,
+/// which is the A-K1 class the raw face exists to prevent. The agent plane is a
+/// VIEW of stored bytes; the raw face IS the stored bytes.
+///
+/// A URI naming a vault this machine does not bind is left verbatim — an
+/// ordinary link a human wrote, not the engine's to claim. A URI naming a BOUND
+/// vault IS the engine's, so a hand-edited one **fails loudly here** rather than
+/// resolving to something plausible.
+///
+/// # Errors
+/// `bad_request` naming the URI, the non-canonical part and the canonical
+/// spelling, so the fix is one edit.
+fn agent_plane_face(rendered: String) -> Result<String, Box<ErrorBody>> {
+    if !crate::positions::may_carry_stored(&rendered) {
+        return Ok(rendered);
+    }
+    let mounts = crate::positions::machine_mounts();
+    crate::positions::to_agent_plane(&rendered, &mounts).map_err(|e| {
+        bad_request(format!(
+            "read: a stored cross-root link in this page cannot be read back — {e}"
+        ))
+    })
+}
+
 /// The stage-2 S10 claim-link decoration input, re-exported at the read seam so
 /// a host wires it without taking a `render` dependency of its own.
 pub use render::{ClaimLink, Decorations, NO_DECORATIONS};
@@ -210,7 +244,7 @@ pub fn composed_read(
             // stay frozen and the structured face never diverges from the
             // rendered one. The authz facts (`span`, `content_span`) ride the
             // same rows; the anchor plane is `anchors`.
-            let rendered_text = render::toc_text(&header, &rows);
+            let rendered_text = agent_plane_face(render::toc_text(&header, &rows))?;
             Ok(ResponseBody::Read {
                 path: path.clone(),
                 file_rev: NodeRev(file_rev),
@@ -262,7 +296,7 @@ pub fn composed_read(
                 sections: Some(rendered_sections),
                 truncated: body.notice.is_some().then_some(true),
                 notice: body.notice,
-                rendered_text: body.text,
+                rendered_text: agent_plane_face(body.text)?,
             })
         }
         other => Err(bad_request(format!("read: invalid mode \"{other}\""))),
