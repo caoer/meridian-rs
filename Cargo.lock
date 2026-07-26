@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "addr"
+version = "0.0.0"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1974,6 +1978,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 name = "lock"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "inventory",
  "model",
  "syntax",
@@ -2879,6 +2884,7 @@ dependencies = [
 name = "render"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "lock",
  "model",
  "syntax",
@@ -3654,6 +3660,7 @@ dependencies = [
 name = "testsuite"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "blake3",
  "config",
  "fs",
@@ -4061,6 +4068,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "view"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "cache",
  "duckdb",
  "lock",
@@ -4418,6 +4426,7 @@ dependencies = [
 name = "wire-serve"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "fs",
  "git",
  "lock",

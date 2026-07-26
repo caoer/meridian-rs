@@ -591,6 +591,12 @@ fn canonical_ref(to_path: &str, to_sel: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A fixture address. Every fixture spelling here is a legal address, so a
+    /// panic is a fixture bug, never a grammar surprise.
+    fn a(spelling: &str) -> addr::Addr {
+        addr::Addr::parse(spelling).expect("a fixture ref is a well-formed address")
+    }
+
     fn doc(raw: &str) -> Document {
         model::build(raw.to_string(), syntax::parse(raw))
     }
@@ -1105,7 +1111,7 @@ mod tests {
         let mut lock_block = lock::Lock::new();
         lock_block.set_object("sources/target-page.md", "9ae3f1deadbeef");
         lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: "sources/target-page.md".to_string(),
+            declared_ref: a("sources/target-page.md"),
             fingerprint: token.clone(),
         });
         let effect = format!(
@@ -1192,7 +1198,7 @@ mod tests {
     ) -> BTreeMap<String, Document> {
         let mut lock_block = lock::Lock::new();
         lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: declared_ref.to_string(),
+            declared_ref: a(declared_ref),
             fingerprint: token.to_string(),
         });
         let effect = format!(
@@ -1354,7 +1360,7 @@ mod tests {
         // The pinned PAGE is not in the corpus at all.
         let mut lock_block = lock::Lock::new();
         lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: "sources/vanished.md#^goal".to_string(),
+            declared_ref: a("sources/vanished.md#^goal"),
             fingerprint: token.clone(),
         });
         let mut docs = BTreeMap::new();
@@ -1401,7 +1407,7 @@ mod tests {
         let block = lock::render(&{
             let mut l = lock::Lock::new();
             l.upsert_pin(lock::PinEntry {
-                declared_ref: "sources/target.md".to_string(),
+                declared_ref: a("sources/target.md"),
                 fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
             });
             l
@@ -1456,12 +1462,12 @@ mod tests {
         with_both.set_object("vibe.md", &"a".repeat(40));
         with_both.set_object("second.md", &"b".repeat(40));
         with_both.upsert_pin(lock::PinEntry {
-            declared_ref: "sources/target.md".to_string(),
+            declared_ref: a("sources/target.md"),
             fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
         });
         let mut pins_only = lock::Lock::new();
         pins_only.upsert_pin(lock::PinEntry {
-            declared_ref: "sources/target.md".to_string(),
+            declared_ref: a("sources/target.md"),
             fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
         });
 

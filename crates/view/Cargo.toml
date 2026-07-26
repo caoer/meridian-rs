@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# the address grammar — an address is parsed ONCE, at the ingress (U10)
+addr = { workspace = true }
 # read the parsed corpus (Document/Node/NodeKind) — the projector's only source
 model = { workspace = true }
 # the `meridian-lock` block format — ONE owner for the lock grammar (`lock::find`
@@ -24,6 +26,8 @@ cache = { workspace = true }
 duckdb = { workspace = true }
 
 [dev-dependencies]
+# fixture addresses for the gate tests
+addr = { workspace = true }
 # build Document fixtures for the gate tests (parse -> model::build); a dev-only
 # edge, never a runtime dependency of the projector.
 syntax = { workspace = true }
