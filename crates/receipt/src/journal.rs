@@ -207,6 +207,32 @@ pub fn parse_rows(page: &str) -> Vec<ParsedRow> {
     rows
 }
 
+/// The next row's counter for a journal page: one past the highest `r-NNNNNN`
+/// the page already carries (an absent or empty page starts at 1). The journal
+/// is the SOLE durable home of this counter — there is no separate on-disk
+/// sequence (d2 §14) — so the derivation lives here, beside the anchor grammar
+/// it reads, and every byte-landing door that appends a row asks for its seq
+/// through this one function.
+///
+/// **U35:** three planes append rows now (the wire splice choke-point, `mrd
+/// realise --truth file`'s INDEX deploy, the run plane's batch commit). A second
+/// spelling of "one past the highest anchor" in any of them would be a second
+/// owner of the counter, and two owners disagreeing is a duplicate anchor — the
+/// one thing the row's identity may never be.
+#[must_use]
+pub fn next_seq(page: &str) -> u64 {
+    parse_rows(page)
+        .iter()
+        .filter_map(|r| {
+            r.anchor
+                .strip_prefix("r-")
+                .and_then(|n| n.parse::<u64>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
 /// The value of the first `key=value` token, or `None` if the key is absent.
 fn token_value<'a>(tokens: &[&'a str], key: &str) -> Option<&'a str> {
     tokens
@@ -406,6 +432,30 @@ mod tests {
             assert_eq!(p.root_after, ra);
             assert!(p.anchor.starts_with("r-"));
         }
+    }
+
+    /// The counter's one owner (U35): an absent/empty page starts at 1, and a
+    /// populated page continues one past its highest anchor — read off the rows,
+    /// never off the row COUNT (a page whose first row is `^r-000007` must not
+    /// hand the next writer `r-000002`).
+    #[test]
+    fn next_seq_continues_past_the_highest_anchor() {
+        assert_eq!(next_seq(""), 1, "an absent journal starts at 1");
+        assert_eq!(
+            next_seq("# Receipt journal\n\nprose\n"),
+            1,
+            "prose is not a row"
+        );
+        let page = format!(
+            "# journal\n{}\n{}\n",
+            row(7, "b3:0", "b3:1"),
+            row(3, "b3:1", "b3:2")
+        );
+        assert_eq!(
+            next_seq(&page),
+            8,
+            "one past the HIGHEST anchor, not one past the row count"
+        );
     }
 
     /// A continuous chain (`root_after(N)` == `root_before(N+1)`) is green.
