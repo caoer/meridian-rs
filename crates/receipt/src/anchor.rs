@@ -283,6 +283,20 @@ pub fn human_age(age: Duration) -> String {
 /// the ONE `git rev-list --objects --all` set the check computed up front (O(1)
 /// membership, never a per-blob git call), and `object_present` from the batched
 /// `git cat-file --batch-check` over every pinned oid.
+///
+/// # Both facts must come from ONE store — the per-root law (U13)
+/// The ratified cross-root addressing §4 puts the anchoring check in **that
+/// root's** git repo: six roots, six object stores, **one law**. This type is
+/// that one law's input, and it is store-blind on purpose — the caller picks the
+/// repository (`git::Repo` is a handle, never a singleton, seam rule D12) and
+/// this classification is the same in every one of them.
+///
+/// What that costs the caller is stated rather than assumed: **a fact pair split
+/// across two stores is a wrong answer, not a stale one.** An oid can be
+/// reachable in root A and absent from root B, so `reachable_from_commit` read
+/// from A beside `object_present` read from B classifies a blob that exists
+/// nowhere. Gather both from one handle in one pass, as `mrd status`'s gauge and
+/// `git`'s own `one_oid_three_stores_three_anchor_states` gate both do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectAnchorFacts {
     /// Whether the object exists in the repository's object database.
