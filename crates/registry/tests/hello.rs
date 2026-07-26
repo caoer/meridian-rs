@@ -123,6 +123,11 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         "fingerprint",
         "diff",
         "splice",
+        // S3 U1 (R23): the served write op's v3-era sibling FIELDS are listed
+        // too, as dotted `op.field` caps — discovery honesty at field grain,
+        // not just op grain.
+        "splice.plan_edits",
+        "splice.pin",
     ] {
         assert!(
             caps.contains(&served.to_string()),
