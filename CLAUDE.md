@@ -7,12 +7,21 @@ over markdown lands HERE, never in meridian-go.
 
 - **ccc-statusd** is this engine's customer — a thin MCP/orchestration face
   that calls over the wire and holds zero markdown semantics.
-- **meridian-go (`md`)** is a bridge: it dies leg-by-leg as the wire contract
-  reaches parity. Its five correct-context verbs (attest / chain / status /
-  walk / realise) and its run plane migrate here; the parity gate per leg is
-  the 22-07 replay harness (byte-identical receipts, verbatim refusals).
-- Full ruling + cutover sequence: llm-wiki
-  `decisions/2026-07-22-meridian-go-end-state.md`.
+- **meridian-go (`md`)** is a bridge: it dies **leg-by-leg as each leg's
+  REDESIGNED CONTRACT is implemented.** Its five correct-context verbs (attest
+  / chain / status / walk / realise) and its run plane migrate here. **The
+  remaining legs owe NO byte parity with meridian-go — they get redesigned
+  contracts, not ports, and each leg's gate is its own contract's design
+  tests.**
+- ⚠️ **AMENDED 2026-07-26 — the previous "dies at wire parity" framing and the
+  "22-07 replay harness (byte-identical receipts)" gate were NEVER RATIFIED
+  CONTENT** (page elaboration under a `ratified` stamp) **and the gate was
+  additionally unsatisfiable** — its atomic unit is a process invocation, while
+  the remaining legs are in-process Go library calls that spawn none. Superseded
+  text preserved verbatim at the source, not here: this file is always-loaded
+  context, so the record lives once.
+- Full ruling + cutover sequence, and the superseded wording: llm-wiki
+  `decisions/2026-07-22-meridian-go-end-state.md` **§ Amendment (2026-07-26)**.
 
 Docs: `docs/laws.md` (crate charters), `docs/wire-contract-v2.md` +
 `docs/wire-contract-v3-amendment.md` (the client seam),
