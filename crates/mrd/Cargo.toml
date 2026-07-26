@@ -121,6 +121,13 @@ check = { workspace = true }
 # the A4 classifier, the pending-agent board mint. Already in the graph via
 # `check`; no new external crate enters.
 realise = { workspace = true }
+# `mrd config` (U6): the MERIDIAN.md plane. A local CLIENT of the `config`
+# engine — it resolves the two-rung bootstrap chain and publishes the parsed
+# mount table, because the render face elides `meridian-*` blocks and so
+# `mrd read` cannot be that surface. `config` is a path crate downstream of
+# `model` (already in the graph); no new external crate enters, `cargo deny`
+# unchanged.
+config = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
