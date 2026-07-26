@@ -76,7 +76,20 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             "status",
             hook::status(&workspace).map(|(f, here)| match here {
                 HookHere::None => (f, "absent".to_owned(), None),
-                HookHere::Ours => (f, "installed".to_owned(), None),
+                // "Installed" and "installed, but an OLDER fence" are different
+                // facts about the disk and are reported apart (R40). An older
+                // fence runs `mrd check` where this one runs `mrd check --staged`,
+                // so it reads the worktree and passes a staged forgery — a
+                // reinstall is owed, and only this line can say so.
+                HookHere::Ours { current: true } => (f, "installed".to_owned(), None),
+                HookHere::Ours { current: false } => (
+                    f,
+                    "installed-superseded".to_owned(),
+                    Some(
+                        "an older fence is installed; `mrd hook install` refreshes it (idempotent)"
+                            .to_owned(),
+                    ),
+                ),
                 HookHere::Foreign { first_line } => {
                     (f, "foreign-hook".to_owned(), Some(first_line))
                 }

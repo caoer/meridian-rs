@@ -54,6 +54,24 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 ///    receipt-engine-only write restriction (an ordinary `^put`/splice at this
 ///    path refuses — `wire-serve`) plus the git witness, never on chain
 ///    continuity alone.
+///
+///    **WIDENED, and stated because a silently-grown residual is worse than a
+///    named one (F1's staged interval):** such a row now buys MORE than a
+///    continuous-looking chain. `check::staged_trace` dates the git INDEX's tree
+///    against **any** row in this journal — a legitimately staged INTERMEDIATE
+///    governed state matches an earlier receipt, and refusing it was a measured
+///    false red on the commonest path there is (`git add`, then any further
+///    governed write). So a chain-continuous forged row whose `root_after` names
+///    a tree the attacker also stages will VOUCH FOR THAT STAGED TREE at the
+///    pre-commit fence.
+///
+///    **The capability is unchanged and so are its defences** — the attacker must
+///    still be able to write this path out of band, which the receipt-engine-only
+///    restriction refuses and the git witness records; what changed is what one
+///    such row is worth. Two things bound it: the staged journal must be a true
+///    PREFIX of this one (a spliced row is not), and the pin plane is assessed
+///    over the staged bytes independently, so a forged tree still has to satisfy
+///    every lock it carries. Carded as an s4 rider rather than left here.
 pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
 
 /// The attested INDEX page (U1.4) — the ONE living checklist the door reads to
