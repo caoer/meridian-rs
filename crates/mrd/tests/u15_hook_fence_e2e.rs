@@ -427,6 +427,16 @@ fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
         "AND IT NAMES THE INTERVAL (S3-R29): a refusal an operator cannot locate \
          is one they cannot act on, and the worktree here is clean: {text}"
     );
+    // S3-R104 — ASSERT THE CAUSE, because this arm has two independent refusing
+    // detectors and a later fix could delete one of them without failing anything.
+    // The pin plane is the one that names the forgery; the journal plane's grey is
+    // the second, and it survives the interval predicate only because a forged tree
+    // matches no receipt. Measured post-predicate-fix: both are present.
+    assert!(
+        text.contains("content-drifted"),
+        "the refusal must name WHAT it saw — a pin whose target drifted — or this arm \
+         could later pass on a refusal that has nothing to do with the forgery: {text}"
+    );
 }
 
 /// **The fence still ACCEPTS the same corpus once the forgery is out of BOTH
@@ -644,6 +654,66 @@ fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
     );
 }
 
+/// **A MIXED two-receipt stage is REFUSED — the predicate is over the TREE, not
+/// per path** (ratified S3-R103, superseding R102(a)'s per-path phrasing).
+///
+/// Two governed writes to two files, then only the SECOND file staged: the index
+/// carries `b.md`'s new bytes beside `a.md`'s HEAD bytes — **a combination no
+/// governed write ever produced**, though every individual path's bytes came from
+/// some receipt. A per-path predicate would accept it; the tree-form predicate
+/// refuses, and refusing is the safe direction because the commit would record a
+/// tree the record cannot date.
+///
+/// This arm is what separates the two readings, so a later narrowing to per-path
+/// fails here rather than shipping.
+#[test]
+fn a_mixed_two_receipt_stage_is_refused_because_the_predicate_is_over_the_tree() {
+    let sb = sandbox();
+    let ws = sb.corpus("mixed-two-receipt");
+    // The two files are committed BEFORE the fence is installed, exactly as
+    // `corpus()` commits its own: writing them is an out-of-band write, and the
+    // fence would refuse that commit for the right reason and mask this arm.
+    write(&ws, "a.md", "# A\n\n## Log\n\nalpha\n");
+    write(&ws, "b.md", "# B\n\n## Log\n\nbeta\n");
+    git_ok(&ws, &["add", "-A"]);
+    git_ok(&ws, &["commit", "-qm", "two files"]);
+    sb.install_fence(&ws);
+
+    let edit = |file: &str, heading: &str, old: &str, new: &str| {
+        let batch = serde_json::to_string(&serde_json::json!([{
+            "target": {"hpath": [{"h": heading}, {"h": "Log"}]},
+            "edit": {"match": {"old": old, "new": new}},
+        }]))
+        .expect("edits json");
+        let out = sb.run_stdin(&ws, &["put", file], &batch);
+        assert_eq!(out.status.code(), Some(0), "mrd put {file}: {}", said(&out));
+    };
+    edit("a.md", "A", "alpha", "alpha-ONE"); // receipt N   : tree (a@1, b@0)
+    edit("b.md", "B", "beta", "beta-TWO"); // receipt N+1 : tree (a@1, b@1)
+
+    // Stage ONLY b.md: the index becomes (a@0 from HEAD, b@1) — a tree that was
+    // never on disk and that no receipt recorded.
+    git_ok(&ws, &["add", "b.md"]);
+    assert!(
+        !String::from_utf8_lossy(&git_bytes(&ws, &["show", ":a.md"])).contains("alpha-ONE"),
+        "the fixture IS the subject: the index still holds a.md's PRE-write bytes"
+    );
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", ":b.md"])).contains("beta-TWO"),
+        "beside b.md's post-write bytes — each governed, the COMBINATION never produced"
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "mixed two-receipt stage", &[]);
+    assert!(
+        !commit.status.success(),
+        "THE PREDICATE IS OVER THE TREE: every path's bytes came from a receipt, and \
+         the tree they compose did not. A per-path reading would accept this: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+}
+
 // ── THE OTHER DOORS ONTO THE SAME INTERVAL GAP (F1 names them) ───────────────
 
 /// **`git commit <pathspec>` records a THIRD interval, and asking git is what
@@ -711,6 +781,22 @@ fn a_pathspec_commit_is_refused_over_the_tree_git_builds_for_it() {
     assert!(
         String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:plan.md"])).contains("alpha beta"),
         "and HEAD still carries the pre-write plan.md — nothing landed"
+    );
+    // S3-R104 — THIS ARM HAS EXACTLY ONE REFUSING DETECTOR, so it names it. The pin
+    // plane is GREEN here (no lock is drifted); the refusal is the journal plane
+    // being unable to date a tree the record never produced. Measured after the
+    // interval predicate widened: the grey survives, because HEAD's lock-less
+    // claim.md beside a governed plan.md is a combination no receipt recorded. If a
+    // later change turns that grey green, this assert fails instead of the arm
+    // silently passing on nothing.
+    let text = said(&commit);
+    assert!(
+        text.contains(check::GREY_CANNOT_ASSESS),
+        "the ONE detector that refuses this arm must still be the one refusing: {text}"
+    );
+    assert!(
+        text.contains("staged"),
+        "and it must be the STAGED interval that says so — the worktree is green: {text}"
     );
 }
 
