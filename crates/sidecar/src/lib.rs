@@ -121,19 +121,32 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        // F5-WATCH reconcile BEFORE dispatch: an external change is emitted
-        // (and pushed) before this request's answer reads the world. A
-        // reconcile error never fails the request — stderr, retry next cycle.
-        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+        // Decode BEFORE the reconcile — the loop cannot know what this line
+        // costs until it knows which op it holds (the demand law,
+        // `watch::observes_ring`). A line answered at the frame layer runs no
+        // arm, so it observes nothing and owes no fold at all.
+        let decoded = decode_line(&mut rev, &line);
+        // F5-WATCH reconcile BEFORE dispatch, ON DEMAND: an external change is
+        // emitted (and pushed) before this request's answer reads the ring —
+        // for the lines that read the ring, plus every line of a subscribed
+        // session (a standing observer of the delta stream). A reconcile error
+        // never fails the request — stderr, retry next cycle.
+        if (decoded.observes_ring() || !subs.is_empty())
+            && let Err(e) = watch::reconcile(root, &mut epoch, &mut watch)
+        {
             eprintln!("watch reconcile: {e:?}");
         }
         flush_subs(&mut output, &epoch, &mut subs, rev)?;
-        let (response, duration_us) =
-            respond_line(root, &mut epoch, &mut subs, rulesets, &mut rev, &line);
+        let advances = decoded.advances_ring();
+        let (response, duration_us) = respond(root, &mut epoch, &mut subs, rulesets, rev, decoded);
         write_response(&mut output, &response, rev, duration_us)?;
-        // Post-dispatch reconcile: internal commits sync the baseline
-        // silently; an external landing mid-dispatch is emitted here.
-        if let Err(e) = watch::reconcile(root, &mut epoch, &mut watch) {
+        // Post-dispatch reconcile: an internal commit syncs the baseline
+        // silently (so the next external delta chains from the commit, not
+        // from the root it replaced); an external landing mid-dispatch is
+        // emitted here for the subscribers who are waiting on it.
+        if (advances || !subs.is_empty())
+            && let Err(e) = watch::reconcile(root, &mut epoch, &mut watch)
+        {
             eprintln!("watch reconcile: {e:?}");
         }
         // The push path: ok first, THEN Notification frames (§4.7 order) —
@@ -239,30 +252,43 @@ fn subscribe(
     })
 }
 
-/// One frame in → one response out (§3.1). Order is law: the raw `id` lexeme
+/// What one input line turned out to be. The split exists so the loop can
+/// price the line before it runs it: only a decoded op can be classified
+/// against the demand law, and a frame-layer verdict — which reaches no arm —
+/// costs nothing at all.
+enum Decoded {
+    /// Answered at the frame layer (§3.1 classification, B2 id law). No arm
+    /// runs, so nothing observes the ring.
+    Answer(Response),
+    /// A validated op beside its correlation token.
+    Op(Option<u64>, wire::Op),
+}
+
+impl Decoded {
+    fn observes_ring(&self) -> bool {
+        matches!(self, Decoded::Op(_, op) if watch::observes_ring(op))
+    }
+
+    fn advances_ring(&self) -> bool {
+        matches!(self, Decoded::Op(_, op) if watch::advances_ring(op))
+    }
+}
+
+/// One frame in → one verdict (§3.1). Order is law: the raw `id` lexeme
 /// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
-/// corrupt frame classification.
-///
-/// Returns the response plus the U7 in-band duration: `Some(µs)` exactly when
-/// the frame reached `arms::dispatch` (the sidecar measure point — engine work
-/// only, success or refusal alike). Frame-layer verdicts and the serve-layer
-/// `sub` never carry one.
-fn respond_line(
-    root: &fs::WorkspaceRoot,
-    epoch: &mut ring::RootRing,
-    subs: &mut Vec<SubState>,
-    rulesets: &[policy::CompiledRuleset],
-    rev: &mut rev::Rev,
-    line: &str,
-) -> (Response, Option<u64>) {
+/// corrupt frame classification. Negotiating the session rev happens here too
+/// — at the `hello` declaration, before any frame is shaped by it.
+fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
-        Err(_) => return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None),
+        Err(_) => {
+            return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
+        }
         // §3.1 emission: id:null + the offending lexeme verbatim in id_raw
         Ok(IdScan::BadId(lexeme)) => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
             e.id_raw = Some(lexeme);
-            return (error_frame(None, e), None);
+            return Decoded::Answer(error_frame(None, e));
         }
         Ok(IdScan::Request(n)) => Some(n),
         // id key absent: a legal id-less request if `op` rides the frame
@@ -271,12 +297,12 @@ fn respond_line(
     };
     // scan_id proved the line is a JSON object.
     let Ok(mut obj) = serde_json::from_str::<Map<String, Value>>(line) else {
-        return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None);
+        return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
     };
     if !obj.contains_key("op") {
         // Inbound frames that aren't requests (responses, notifications) are
         // protocol misuse → bad_frame; un-correlatable by design.
-        return (error_frame(None, ErrorBody::new(ErrorCode::BadFrame)), None);
+        return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
     }
     // v3 session: re-key the request into its v2 form so the strict decoder
     // and every arm stay v2-only. `hello` itself always arrives in the base
@@ -286,43 +312,65 @@ fn respond_line(
         rev::rename_request(&mut obj);
     }
     match wire_serve::decode::decode(&obj, *rev) {
-        // The push-path op registers at the serve layer — the loop owns the
-        // subscription list; everything else routes to the arms.
-        Ok(wire::Op::Sub { from_seq }) => match subscribe(root, epoch, subs, from_seq) {
-            Ok(body) => (
-                Response {
-                    id,
-                    ok: true,
-                    payload: ResponsePayload::Body { body },
-                },
-                None,
-            ),
-            Err(e) => (error_frame(id, *e), None),
-        },
         Ok(op) => {
             // Negotiate the session rev from the hello declaration, so THIS
             // hello response (and every frame after) is shaped for it.
             if let wire::Op::Hello { contract, .. } = &op {
                 *rev = rev::Rev::from_contract(contract.as_deref());
             }
-            // U7 measure point: the dispatch call alone (after decode, before
-            // the response write) — checked µs, never a lossy `as`.
-            let started = std::time::Instant::now();
-            let outcome = arms::dispatch(root, epoch, id, op, rulesets, *rev == rev::Rev::V3);
-            let duration_us =
-                Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
-            let response = match outcome {
-                Ok(body) => Response {
-                    id,
-                    ok: true,
-                    payload: ResponsePayload::Body { body },
-                },
-                Err(e) => error_frame(id, *e),
-            };
-            (response, duration_us)
+            Decoded::Op(id, op)
         }
-        Err(e) => (error_frame(id, *e), None),
+        Err(e) => Decoded::Answer(error_frame(id, *e)),
     }
+}
+
+/// One decoded line → one response frame. Returns the response plus the U7
+/// in-band duration: `Some(µs)` exactly when the frame reached `arms::dispatch`
+/// (the sidecar measure point — engine work only, success or refusal alike).
+/// Frame-layer verdicts and the serve-layer `sub` never carry one, and the
+/// demand-driven reconcile is deliberately OUTSIDE the timer: the fold budget
+/// is proven by counting folds, never by reading a clock.
+fn respond(
+    root: &fs::WorkspaceRoot,
+    epoch: &mut ring::RootRing,
+    subs: &mut Vec<SubState>,
+    rulesets: &[policy::CompiledRuleset],
+    rev: rev::Rev,
+    decoded: Decoded,
+) -> (Response, Option<u64>) {
+    let (id, op) = match decoded {
+        Decoded::Answer(response) => return (response, None),
+        // The push-path op registers at the serve layer — the loop owns the
+        // subscription list; everything else routes to the arms.
+        Decoded::Op(id, wire::Op::Sub { from_seq }) => {
+            return match subscribe(root, epoch, subs, from_seq) {
+                Ok(body) => (
+                    Response {
+                        id,
+                        ok: true,
+                        payload: ResponsePayload::Body { body },
+                    },
+                    None,
+                ),
+                Err(e) => (error_frame(id, *e), None),
+            };
+        }
+        Decoded::Op(id, op) => (id, op),
+    };
+    // U7 measure point: the dispatch call alone (after decode, before the
+    // response write) — checked µs, never a lossy `as`.
+    let started = std::time::Instant::now();
+    let outcome = arms::dispatch(root, epoch, id, op, rulesets, rev == rev::Rev::V3);
+    let duration_us = Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    let response = match outcome {
+        Ok(body) => Response {
+            id,
+            ok: true,
+            payload: ResponsePayload::Body { body },
+        },
+        Err(e) => error_frame(id, *e),
+    };
+    (response, duration_us)
 }
 
 fn error_frame(id: Option<u64>, error: ErrorBody) -> Response {
