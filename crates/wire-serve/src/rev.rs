@@ -148,6 +148,12 @@ pub fn project_response(frame: &mut Value) {
                 // batch — v3-only, projection-advertised (the frozen v2 caps
                 // never carry it).
                 caps.push(Value::String("splice.plan_edits".to_string()));
+                // S3 U1 (R23): the pin sibling field, same rule and same reason
+                // — a v3-era field-only amendment ships as a dotted `op.field`
+                // cap (wire-contract-v2.md:190), and the frozen v2 caps never
+                // carry it because a v2 session REFUSES `pin` at the field wall.
+                // Advertising it there would be a false advertisement.
+                caps.push(Value::String("splice.pin".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -285,6 +291,59 @@ mod tests {
         assert_eq!(frame["error"]["changed"], json!(["x.md"]));
     }
 
+    /// R23's enforcement: every v3-era `splice` field amendment is advertised by
+    /// the v3 caps projection as `splice.<field>`.
+    ///
+    /// The expected set is DERIVED from the decoder's own field arrays —
+    /// `SPLICE_V3_FIELDS \ SPLICE_V2_FIELDS` — never hand-copied here. A second
+    /// hand-written list would be a second owner for one fact and would drift on
+    /// the next field; deriving it means a splice field added to the v3 decoder
+    /// without a matching `caps.push` fails this test before it can ship.
+    ///
+    /// The v2-era fields are deliberately NOT asserted: `force` is honoured and
+    /// unadvertised, and advertising it would require changing the FROZEN v2
+    /// `CAPS` constant (whole-frame equality, stage-2 criterion 7). It is carried
+    /// as a stated exception in `docs/wire-contract-v3-amendment.md`, and the
+    /// arithmetic that closes it lives there.
+    #[test]
+    fn v3_splice_amendments_are_all_advertised() {
+        let amendments: Vec<&str> = crate::decode::SPLICE_V3_FIELDS
+            .iter()
+            .copied()
+            .filter(|f| !crate::decode::SPLICE_V2_FIELDS.contains(f))
+            .collect();
+        // Anti-vacuity: an empty difference would pass the loop below without
+        // asserting anything, so the harness proves it has something to check.
+        assert!(
+            !amendments.is_empty(),
+            "the v3-era splice amendments must be a non-empty set — an empty \
+             difference makes this enumeration vacuous"
+        );
+
+        let mut frame = json!({"id":1,"ok":true,"body":{
+            "proto":1,"server":"meridian-sidecar/2.0",
+            "caps":["toc","splice","splice.if_root"],
+            "root":"b3:a"}});
+        project_response(&mut frame);
+        let caps: Vec<&str> = frame["body"]["caps"]
+            .as_array()
+            .expect("caps array")
+            .iter()
+            .map(|c| c.as_str().expect("cap is a string"))
+            .collect();
+
+        for field in &amendments {
+            let want = format!("splice.{field}");
+            assert!(
+                caps.contains(&want.as_str()),
+                "v3-era splice field `{field}` is honoured by the decoder but \
+                 NOT advertised: the v3 caps projection must push `{want}` \
+                 (R23 — a field-only amendment ships as a dotted `op.field` \
+                 cap). caps = {caps:?}"
+            );
+        }
+    }
+
     #[test]
     fn hello_body_caps_and_contract_echo() {
         let mut frame = json!({"id":1,"ok":true,"body":{
@@ -306,7 +365,8 @@ mod tests {
                 "diff",
                 "read",
                 "check_write",
-                "splice.plan_edits"
+                "splice.plan_edits",
+                "splice.pin"
             ])
         );
     }
