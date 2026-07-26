@@ -23,6 +23,8 @@
 
 use core::fmt;
 
+pub mod stored;
+
 /// A canonical root NAME — the mount-table key a cross-root address carries
 /// (`sessions`, `assets`).
 ///
@@ -442,10 +444,21 @@ pub fn confined(path: &str) -> bool {
 /// and the prescribed fix is ALREADY DONE. A teaching refusal that prescribes a
 /// completed action is worse than a bare class: it spends the user's trust and
 /// their time and leaves no signal pointing at the real cause.
+///
+/// **The vault axis (U12).** The three-way map is *name ↔ vault name ↔ path*,
+/// and the STORED plane is spelled in vault names
+/// (`2026-07-24-cross-root-addressing.md` §2). So the same projection answers
+/// the translation's two questions — *which vault name does this root have* and
+/// *which root does this vault name belong to* — rather than a second
+/// projection type growing beside this one for one axis of one map. The axis is
+/// **partial by construction**: a `git-folder` root has no Obsidian vault, so
+/// [`MountSet::vault_of`] is `None` there and the stored form refuses rather
+/// than inventing a vault name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MountSet {
     bound: Vec<MountName>,
     unreachable: Vec<UnreachableRoot>,
+    vaults: Vec<(MountName, String)>,
 }
 
 /// A root the mount table DECLARES but this machine cannot read — the path is
@@ -476,7 +489,46 @@ impl MountSet {
         MountSet {
             bound: names,
             unreachable: Vec::new(),
+            vaults: Vec::new(),
         }
+    }
+
+    /// Record the Obsidian vault name a bound root carries — the vault axis of
+    /// the three-way map. Chainable.
+    ///
+    /// A later record for the same name REPLACES the earlier one rather than
+    /// shadowing it: the mount table enforces INV-3 (a vault name is a key), so
+    /// two answers for one root cannot both be right and keeping both would let
+    /// a lookup order decide which stored form a link gets.
+    #[must_use]
+    pub fn with_vault(mut self, name: MountName, vault: impl Into<String>) -> Self {
+        let vault = vault.into();
+        self.vaults.retain(|(n, _)| n != &name);
+        self.vaults.push((name, vault));
+        self
+    }
+
+    /// The Obsidian vault name bound to `name`, for the STORED spelling.
+    ///
+    /// `None` when the root carries no vault — a `git-folder` root has none —
+    /// and the stored form then refuses rather than inventing one.
+    #[must_use]
+    pub fn vault_of(&self, name: &MountName) -> Option<&str> {
+        self.vaults
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The canonical root name a stored form's vault name belongs to — the
+    /// reverse of [`MountSet::vault_of`], and the read plane's whole question.
+    ///
+    /// `None` means this machine binds no root under that vault name, which is
+    /// how the read plane tells an engine-minted stored form from an ordinary
+    /// `obsidian://` link a human wrote to a vault meridian does not govern.
+    #[must_use]
+    pub fn name_of_vault(&self, vault: &str) -> Option<&MountName> {
+        self.vaults.iter().find(|(_, v)| v == vault).map(|(n, _)| n)
     }
 
     /// Record a DECLARED root this machine cannot read, with the path to check
@@ -493,6 +545,7 @@ impl MountSet {
         detail: impl Into<String>,
     ) -> Self {
         self.bound.retain(|n| n != &name);
+        self.vaults.retain(|(n, _)| n != &name);
         self.unreachable.retain(|u| u.name != name);
         self.unreachable.push(UnreachableRoot {
             name,
@@ -803,6 +856,39 @@ mod tests {
             "duplicates collapse — the table is a set of names",
         );
         assert!(MountSet::default().bound_names().is_empty());
+    }
+
+    /// The vault axis, both directions, with its PARTIALITY asserted: a root
+    /// carrying no vault name answers `None` rather than a guess, which is what
+    /// makes the stored form refuse instead of inventing one.
+    #[test]
+    fn the_vault_axis_answers_both_directions_and_stays_partial() {
+        let sessions = MountName::parse("sessions").expect("a name");
+        let assets = MountName::parse("assets").expect("a name");
+        let set = MountSet::new([sessions.clone(), assets.clone()])
+            .with_vault(sessions.clone(), "field-notes-sessions");
+
+        assert_eq!(set.vault_of(&sessions), Some("field-notes-sessions"));
+        assert_eq!(set.name_of_vault("field-notes-sessions"), Some(&sessions));
+        assert_eq!(
+            set.vault_of(&assets),
+            None,
+            "a git-folder root has no vault name, and the axis says so",
+        );
+        assert_eq!(
+            set.name_of_vault("someone-elses-vault"),
+            None,
+            "a vault this machine does not bind is not the engine's to translate",
+        );
+        // INV-3 read from this side: one root, one vault name — a second record
+        // REPLACES rather than shadowing.
+        let set = set.with_vault(sessions.clone(), "renamed-vault");
+        assert_eq!(set.vault_of(&sessions), Some("renamed-vault"));
+        assert_eq!(set.name_of_vault("field-notes-sessions"), None);
+        // An unreachable root keeps no vault name: it is not bound, so it has
+        // no stored spelling either.
+        let set = set.with_unreachable(sessions.clone(), "/gone", "unreadable");
+        assert_eq!(set.vault_of(&sessions), None);
     }
 
     /// [`confined`] — the one lexical confinement law, with its ACCEPTANCE half

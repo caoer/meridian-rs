@@ -4430,6 +4430,7 @@ name = "wire-serve"
 version = "0.0.0"
 dependencies = [
  "addr",
+ "config",
  "fs",
  "git",
  "lock",

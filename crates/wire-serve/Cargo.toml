@@ -13,6 +13,15 @@ workspace = true
 [dependencies]
 # the address grammar — the wire boundary constructs an address BY HAND (U10)
 addr = { workspace = true }
+# U12 — the mount table, for the STORED-FORM translation at the candidate.
+# The stored plane is spelled in Obsidian VAULT names, and the mount table is
+# the single authority for the name <-> vault axis, so the write choke-point
+# cannot mint a stored form without it. Read-only and LAZY: the table is loaded
+# only when a candidate actually carries a cross-root position, so the ordinary
+# single-root corpus pays nothing. `config` is downstream of `model` and nothing
+# it names depends on this crate, so the edge adds no cycle and no new external
+# crate.
+config = { workspace = true }
 # The frozen wire vocabulary this crate decodes into and answers with.
 wire = { workspace = true }
 # The named wire<->model projection seam (toc/extract node rows, delta files).
