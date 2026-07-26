@@ -1,7 +1,7 @@
 //! `mrd check` — the pure READ validity verb (U2.10; d2 §3 check).
 //!
 //! ```text
-//! mrd check [--core] [--staged] [--json]
+//! mrd check [--core] [--staged] [--commit-gate] [--json]
 //! ```
 //!
 //! Runs the convention-free CORE (layer 0) over the resolved workspace: date the
@@ -47,8 +47,44 @@
 //! evaluation is the `check` engine surface the door mounts (U4.2) — its
 //! change-framing over a whole tree lands with that door, not this verb.
 //!
+//! # THE QUESTION THIS VERB IS ASKED (`--commit-gate`)
+//! The interval above says WHICH BYTES an answer covers. `--commit-gate` says WHICH
+//! QUESTION is put to them, and the two are independent.
+//!
+//! Without it the verb asks *"is everything this corpus's record says true?"* — a
+//! claim about the whole **write history**, whose answer is **permanent** once a row
+//! breaks. With it the verb asks the narrower, per-commit question:
+//!
+//! > **were these bytes produced by a governed write?**
+//!
+//! **Why a second question and not a second exit code.** Three distinct
+//! propositions rode the single exit `1` out of `mrd check --staged`: a journal
+//! chain break (about the **past** — permanent by design), an out-of-band write in
+//! this index (about **this interval** — per-commit), and `grey(cannot-assess)`
+//! (about **evidence availability** — per-state). A pre-commit fence branches on the
+//! code alone, so it answered a permanent fact about the ledger's history with the
+//! same byte as a per-commit fact about bytes that fact never examined. Past the
+//! first break the exit stopped varying with what was staged: a guard whose verdict
+//! no longer depends on the thing it guards carries **zero information about it**,
+//! and the only ways past are the unrecorded escapes — so the per-commit
+//! enforcement is destroyed too. The fix is not a fourth code and not a reason word
+//! the fence must parse; it is asking the question whose answer is actually
+//! per-commit.
+//!
+//! **The permanence is untouched.** `mrd check` unscoped stays RED forever, citing
+//! the same row. A break never heals, is never acknowledged, and is never cleared —
+//! and under `--commit-gate` it is **printed on stderr at every commit**. The
+//! blocking is downgraded; the telling never is.
+//!
+//! **A gated pass over a broken record is never spelled green.** With the chain
+//! broken, the record that accounts for the interval may itself hold a forged row,
+//! so the acceptance is genuinely weaker and carries the weaker word
+//! `accounted(unvouched-record)`. Stating that weakness is the price of unblocking;
+//! hiding it would be the same defect wearing the other sign.
+//!
 //! Read-only. Exit triad (§4 preamble):
 //! - **0** — green: the journal dates the live tree and its chain is continuous.
+//!   Under `--commit-gate`: the interval a commit records is accounted for.
 //! - **1** — a finding: a broken journal chain (cites the row). A check finding,
 //!   never a door refusal (refusal-amendment). **Grey rides this leg too** (S3-R5
 //!   and S3-R8, spelled by S3-R6): when the journal cannot date the tree — no rows,
@@ -58,10 +94,14 @@
 //!   fourth code. The exit answers "may this proceed?" (red and grey both say no);
 //!   the reason word, distinct on both faces, says why.
 //! - **2** — bad invocation, or an unreadable workspace / journal.
+//!
+//! `--commit-gate` keeps all three meanings exactly. Only the question changes, so
+//! a caller that branches on the code alone still reads a code that means what it
+//! always meant.
 
 use std::path::Path;
 
-use check::{CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinRow};
+use check::{Accounted, CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinPlane, PinRow};
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
@@ -142,15 +182,34 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         _ => None,
     };
 
-    match parsed.format {
-        Format::Json => {
-            let value = to_json(&canonical, &worktree.report, &interval, staged.as_ref());
-            println!("{}", serde_json::to_string_pretty(&value).expect("json"));
-        }
-        Format::Human => print!(
-            "{}",
-            render_human(&canonical, &worktree.report, &interval, staged.as_ref())
-        ),
+    let gate = parsed.commit_gate.then(|| {
+        build_gate(
+            &interval,
+            &worktree,
+            staged.as_ref(),
+            &worktree_journal,
+            &worktree_fold.0,
+        )
+    });
+
+    emit(
+        parsed.format,
+        &canonical,
+        &worktree.report,
+        &interval,
+        staged.as_ref(),
+        gate.as_ref(),
+    );
+
+    // **DOWNGRADE THE BLOCKING, NEVER THE TELLING.** The standing break is printed
+    // on every gated run that has one — pass or refuse — and on stderr, so it
+    // survives a caller that reads stdout. No acknowledgement state exists to
+    // silence it: a store of "I have seen this" would be durable state that must
+    // itself be attested, a new forgery surface guarding a fact that is already
+    // permanent. Telling it every time reaches the same end with nothing new to
+    // forge.
+    if let Some(standing) = gate.as_ref().and_then(Gate::standing_report) {
+        eprint!("{standing}");
     }
 
     // FAIL CLOSED on an interval that was ASKED FOR and could not be read. The
@@ -168,41 +227,110 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         });
     }
 
-    // Worst-of ACROSS INTERVALS, then worst-of within one: red is reported first,
-    // grey next, green last. Both refuse on the SAME leg (S3-R6: the exit code
-    // answers only "may this proceed?"; no fourth code), so the prefix is the same
-    // verb and the REASON WORD in each line is what tells a finding from an
-    // absence of evidence. Saying "found a lie" over a pending-anchor blob would
-    // be a claim wider than the evidence — nothing lied, a blob is simply held by
-    // nothing durable.
-    //
-    // The STAGED interval refuses on the same leg as the worktree one and says
-    // which interval it is: a refusal a reader cannot locate is one they cannot
-    // act on, and "the bytes on your disk are fine" plus "the bytes you are about
-    // to commit are not" are different instructions.
-    let mut intervals: Vec<(&str, &CoreReport)> = vec![(WORKTREE, &worktree.report)];
-    if let Some(staged) = staged.as_ref() {
+    // **The scoped exit, and it reads ONE interval.** The worst-of below is the
+    // corpus-wide question's answer and stays exactly as it was for every caller
+    // that asks it; a gated run never reaches it.
+    if let Some(gate) = gate.as_ref() {
+        return gate.exit();
+    }
+
+    worst_of_exit(&worktree.report, staged.as_ref())
+}
+
+/// **The corpus-wide question's exit: worst-of ACROSS INTERVALS**, then worst-of
+/// within one — red is reported first, grey next, green last.
+///
+/// Both refuse on the SAME leg (S3-R6: the exit code answers only "may this
+/// proceed?"; no fourth code), so the prefix is the same verb and the REASON WORD
+/// in each line is what tells a finding from an absence of evidence. Saying "found
+/// a lie" over a pending-anchor blob would be a claim wider than the evidence —
+/// nothing lied, a blob is simply held by nothing durable.
+///
+/// The STAGED interval refuses on the same leg as the worktree one and says which
+/// interval it is: a refusal a reader cannot locate is one they cannot act on, and
+/// "the bytes on your disk are fine" plus "the bytes you are about to commit are
+/// not" are different instructions.
+///
+/// **`--commit-gate` never reaches here.** This is the whole-corpus claim, and
+/// spending it on a per-commit question is the defect that flag exists to close.
+///
+/// # Errors
+/// [`Fail`] exit 1 on the worst finding across the assessed intervals.
+fn worst_of_exit(worktree: &CoreReport, staged: Option<&Assessed>) -> Result<(), Fail> {
+    let mut intervals: Vec<(&str, &CoreReport)> = vec![(WORKTREE, worktree)];
+    if let Some(staged) = staged {
         intervals.push((STAGED, &staged.report));
     }
-    if let Some((label, summary)) = intervals
-        .iter()
-        .find_map(|(label, report)| report.red_summary().map(|s| (*label, s)))
-    {
-        return Err(Fail {
-            code: EXIT_FINDING,
-            message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
-        });
-    }
-    if let Some((label, summary)) = intervals
-        .iter()
-        .find_map(|(label, report)| report.grey_summary().map(|s| (*label, s)))
-    {
-        return Err(Fail {
-            code: EXIT_FINDING,
-            message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
-        });
+    for summarise in [CoreReport::red_summary, CoreReport::grey_summary] {
+        if let Some((label, summary)) = intervals
+            .iter()
+            .find_map(|(label, report)| summarise(report).map(|s| (*label, s)))
+        {
+            return Err(Fail {
+                code: EXIT_FINDING,
+                message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
+            });
+        }
     }
     Ok(())
+}
+
+/// **Which interval a commit records**, and the scoped question put to it. When the
+/// index diverges that is the staged bytes; when it coincides, or there is no
+/// repository at all, the worktree IS that interval and its own render says so.
+///
+/// Either way ONE interval answers, and the record it is read against is always the
+/// WORKTREE's journal — the most complete one the engine has, and the one the
+/// worktree pass separately validates in the same run.
+fn build_gate<'a>(
+    interval: &'a Interval,
+    worktree: &'a Assessed,
+    staged: Option<&'a Assessed>,
+    worktree_journal: &'a str,
+    worktree_fold: &'a str,
+) -> Gate<'a> {
+    let (label, journal, root, pins) = match (interval, staged) {
+        (Interval::Diverges(bytes), Some(staged)) => (
+            STAGED,
+            bytes.journal.as_str(),
+            bytes.fold.as_str(),
+            &staged.report.pins,
+        ),
+        _ => (
+            WORKTREE,
+            worktree_journal,
+            worktree_fold,
+            &worktree.report.pins,
+        ),
+    };
+    Gate {
+        label,
+        accounted: check::interval_accounted(journal, root, worktree_journal),
+        pins,
+        record: &worktree.report.trace,
+    }
+}
+
+/// Print the verdict on the caller's chosen face. One writer for both, so a face
+/// can never be given a reading the other was not.
+fn emit(
+    format: Format,
+    workspace: &Path,
+    worktree: &CoreReport,
+    interval: &Interval,
+    staged: Option<&Assessed>,
+    gate: Option<&Gate<'_>>,
+) {
+    match format {
+        Format::Json => {
+            let value = to_json(workspace, worktree, interval, staged, gate);
+            println!("{}", serde_json::to_string_pretty(&value).expect("json"));
+        }
+        Format::Human => print!(
+            "{}",
+            render_human(workspace, worktree, interval, staged, gate)
+        ),
+    }
 }
 
 /// The interval a worktree read spans — the bytes on disk.
@@ -212,6 +340,148 @@ const WORKTREE: &str = "worktree";
 /// the human render, the `--json` face and every refusal, so a reader who learns
 /// the word once can find it everywhere (S3-R6).
 const STAGED: &str = "staged";
+
+/// The finding colour, spelled ONCE — the chain line, the pin lines and the gate's
+/// verdict word all mean the same thing by it (S3-R6/S3-R59).
+const RED: &str = "RED";
+
+/// The gated pass whose record vouches for itself — the full-strength word.
+const ACCOUNTED: &str = "accounted";
+
+/// The gated pass whose record does **not** vouch for itself. A separate word
+/// because it is a separate, weaker claim: the interval is accounted for by a
+/// ledger whose own chain is broken or unreadable, so the acceptance rests on
+/// something nothing vouches for. Never spelled green (S3-R6 — one vocabulary,
+/// distinct words for distinct causes).
+const ACCOUNTED_UNVOUCHED: &str = "accounted(unvouched-record)";
+
+/// **What `--commit-gate` reads, and the standing fact it reports beside it.**
+///
+/// # One interval decides the exit — that is the whole law
+/// Worst-of ACROSS intervals is right for the unscoped question, which is a claim
+/// about the corpus. It is wrong for this one: a finding from the worktree
+/// interval would swamp a clean answer about the bytes a commit records, which is
+/// precisely how a permanent fact came to be spent as a per-commit verdict. So the
+/// gate names ONE interval — the one a commit records — and reads two planes of it:
+/// whether the record accounts for it, and whether its pins hold. Every other
+/// reading in this run is REPORTED and gates nothing.
+struct Gate<'a> {
+    /// Which interval the exit reads. Named in the render and in every refusal,
+    /// because a refusal a reader cannot locate is one they cannot act on.
+    label: &'a str,
+    /// The scoped question's answer over that interval — this is the EXIT.
+    accounted: Accounted,
+    /// That same interval's pin plane — the second gated plane. A pin is a claim
+    /// about the bytes being committed, so it belongs to the interval, not to the
+    /// history.
+    pins: &'a PinPlane,
+    /// **The RECORD's own standing: reported, never gated on.** This is the
+    /// permanent proposition, and holding it here rather than in the exit is what
+    /// keeps it from being spent on every future commit.
+    record: &'a JournalTrace,
+}
+
+impl Gate<'_> {
+    /// May this commit proceed? Both gated planes must answer, and an unread plane
+    /// is not a clean one — unknown is not clean, on either.
+    fn permits(&self) -> bool {
+        self.accounted.is_accounted() && !self.pins.is_red() && !self.pins.cannot_assess()
+    }
+
+    /// The verdict WORD. On the passing leg it says whether the record that let the
+    /// commit through could vouch for itself; on the refusing leg it says whether
+    /// something was read and found bad, or whether nothing could be read at all.
+    fn word(&self) -> &'static str {
+        if self.permits() {
+            if self.record.vouches() {
+                ACCOUNTED
+            } else {
+                ACCOUNTED_UNVOUCHED
+            }
+        } else if self.accounted.is_red() || self.pins.is_red() {
+            RED
+        } else {
+            GREY_CANNOT_ASSESS
+        }
+    }
+
+    /// Why — the half of the answer the exit code cannot carry. Names the plane
+    /// that decided, so a reader is never left inferring which of two gated planes
+    /// spoke.
+    fn detail(&self) -> String {
+        if self.permits() || !self.accounted.is_accounted() {
+            return self.accounted.detail();
+        }
+        // The journal plane accounted for the interval and the PIN plane refused.
+        // Cite its first finding only — the render above carries the full list, and
+        // repeating it here is how a reader comes to believe there are two.
+        if let Some(pin) = self.pins.red.first().or_else(|| self.pins.grey.first()) {
+            return format!("pin: {}", pin_line(pin));
+        }
+        if let Some(orphan) = self.pins.orphaned.first() {
+            return format!(
+                "{}: {} objects.{} ({}) is reachable from no ref, and the file hashes to {} now \
+                 — no commit will anchor it",
+                orphan.state.word(),
+                orphan.src_path,
+                orphan.key,
+                orphan.blob_sha,
+                orphan.live
+            );
+        }
+        self.pins.cannot_ask.clone().unwrap_or_default()
+    }
+
+    /// The scoped exit — the closed triad, over one interval. `0` it is accounted
+    /// for; `1` it is not, or could not be assessed; `2` never comes from here,
+    /// because a bad invocation is refused before any interval is read.
+    ///
+    /// # Errors
+    /// [`Fail`] exit 1 when the interval a commit records is not accounted for, or
+    /// its pin plane refuses.
+    fn exit(&self) -> Result<(), Fail> {
+        if self.permits() {
+            return Ok(());
+        }
+        Err(Fail {
+            code: EXIT_FINDING,
+            message: format!(
+                "check refuses ({}): {} — {}",
+                self.label,
+                self.word(),
+                self.detail()
+            ),
+        })
+    }
+
+    /// **The STANDING BREAK, told on every run that has one** (never a blocker,
+    /// never withheld). `None` when the record vouches for itself and there is
+    /// nothing standing to tell.
+    ///
+    /// It goes to **stderr** so that it survives a caller reading stdout, and it is
+    /// emitted whether the gate permits or refuses: a fact nobody is told each time
+    /// is a fact that gets forgotten, and forgetting is exactly what an
+    /// acknowledgement store would institutionalise. Telling it every time is the
+    /// same end with no new state to attest and no new forgery surface.
+    fn standing_report(&self) -> Option<String> {
+        if self.record.vouches() {
+            return None;
+        }
+        let finding = self
+            .record
+            .red_summary()
+            .or_else(|| self.record.grey_summary())?;
+        Some(format!(
+            "meridian: the RECORD this commit was gated against does not vouch for itself.\n  \
+             {finding}\n  This is a STANDING fact about the write history, not a finding about \
+             the bytes you are committing: it does not clear, it is never acknowledged away, and \
+             `mrd check` reports it on every run. This commit was gated on the {} interval alone \
+             — {}.\n",
+            self.label,
+            self.word()
+        ))
+    }
+}
 
 /// One interval's verdict, with the paths that made it a separate interval.
 struct Assessed {
@@ -426,12 +696,21 @@ struct Check {
     /// written and not staged"* into a refusal. **The pre-commit fence passes this
     /// flag, because at that instant the index IS what is being committed.**
     staged: bool,
+    /// Ask the **per-commit** question instead of the corpus-wide one, and gate the
+    /// exit on the interval a commit records alone (§ THE QUESTION THIS VERB IS
+    /// ASKED).
+    ///
+    /// **Implies [`Check::staged`]**, because the interval it gates on is the one
+    /// the index carries and there is no coherent commit gate without it. One flag
+    /// for the fence to pass, not two that can be passed apart and mean nothing.
+    commit_gate: bool,
 }
 
 impl Check {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut json = false;
         let mut staged = false;
+        let mut commit_gate = false;
         for arg in args {
             match arg.as_str() {
                 "--json" => json = true,
@@ -442,6 +721,13 @@ impl Check {
                 // — one vocabulary, and never a second spelling for a concept the
                 // operator's other tool already named.
                 "--staged" => staged = true,
+                // The QUESTION, not a second interval: it names the caller — a
+                // pre-commit gate — rather than a mechanism, so what it changes is
+                // legible from the flag alone.
+                "--commit-gate" => {
+                    commit_gate = true;
+                    staged = true;
+                }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -453,6 +739,7 @@ impl Check {
         Ok(Check {
             format: if json { Format::Json } else { Format::Human },
             staged,
+            commit_gate,
         })
     }
 }
@@ -469,6 +756,7 @@ fn render_human(
     worktree: &CoreReport,
     interval: &Interval,
     staged: Option<&Assessed>,
+    gate: Option<&Gate<'_>>,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -483,6 +771,19 @@ fn render_human(
         );
         out.push_str(&staged_predicate_line());
         out.push_str(&render_report(&staged.report));
+    }
+    // The gate block comes LAST and adds to the readings rather than replacing
+    // them: the interval reports above are true descriptions of what was read, and
+    // this says which one the exit answered for. A render that dropped them would
+    // hide the standing break the gate deliberately does not block on.
+    if let Some(gate) = gate {
+        let _ = writeln!(out, "  commit-gate: {} — {}", gate.word(), gate.detail());
+        let _ = writeln!(
+            out,
+            "  gated on: {} — the interval a commit records, and nothing else; every other \
+             reading above is REPORTED and gates nothing",
+            gate.label
+        );
     }
     out
 }
@@ -571,7 +872,7 @@ fn render_report(report: &CoreReport) -> String {
         }
         JournalTrace::Assessed { chain } => {
             if let Some(summary) = chain.red_summary() {
-                let _ = writeln!(out, "  chain: RED — {summary}");
+                let _ = writeln!(out, "  chain: {RED} — {summary}");
             } else {
                 let _ = writeln!(out, "  chain: green");
             }
@@ -662,6 +963,7 @@ fn to_json(
     worktree: &CoreReport,
     interval: &Interval,
     staged: Option<&Assessed>,
+    gate: Option<&Gate<'_>>,
 ) -> Value {
     let mut value = interval_json(workspace, worktree);
     // **`red` is the VERDICT, so it is worst-of across intervals** — a reader who
@@ -695,6 +997,31 @@ fn to_json(
             Some(staged) => interval_json(workspace, &staged.report),
         },
     });
+    // **The key is ABSENT when the scoped question was not asked** — this face's own
+    // law, stated at [`interval_json`]: *an absent field reads as "not checked"*. A
+    // `null` would say the gate WAS asked and had nothing to say, which is a
+    // different fact and a false one. Absence also leaves the shipped shape
+    // byte-identical, so every existing consumer reads exactly what it read before.
+    //
+    // The two propositions stay apart on this face as well: `verdict` is what the
+    // exit answered about THIS interval, `record_vouches` is the standing fact it
+    // refused to spend.
+    if let Some(gate) = gate {
+        value["commit_gate"] = json!({
+            "gated_interval": gate.label,
+            "permits": gate.permits(),
+            "verdict": gate.word(),
+            "detail": gate.detail(),
+            // The permanent proposition, reported and never gated on. `false` here
+            // with `permits: true` is the whole point of the flag, not a
+            // contradiction.
+            "record_vouches": gate.record.vouches(),
+            "standing_report": match gate.standing_report() {
+                None => Value::Null,
+                Some(report) => Value::String(report),
+            },
+        });
+    }
     value
 }
 
@@ -838,6 +1165,200 @@ mod tests {
     #[test]
     fn parse_rejects_unknown_flag() {
         assert_eq!(Check::parse(&["--nope".to_string()]).unwrap_err().code, 2);
+    }
+
+    /// `--commit-gate` IMPLIES `--staged`: the interval it gates on is the one the
+    /// index carries, and a gate without it would read the wrong bytes while
+    /// reporting confidently. Drop the implication and the fence must pass two
+    /// flags that mean nothing apart — this fails.
+    #[test]
+    fn commit_gate_implies_staged_and_is_off_by_default() {
+        let c = Check::parse(&["--commit-gate".to_string()]).expect("parse");
+        assert!(c.commit_gate, "the scoped question was asked");
+        assert!(
+            c.staged,
+            "and it brought the interval a commit records with it"
+        );
+        let plain = Check::parse(&["--staged".to_string()]).expect("parse");
+        assert!(
+            !plain.commit_gate,
+            "while `--staged` alone still asks the corpus-wide question — the \
+             shipped invocation keeps its shipped meaning"
+        );
+    }
+
+    /// A `PinPlane` with nothing to report — the pin axis held flat so the gate
+    /// arms below measure the JOURNAL axis alone.
+    fn clean_pins() -> PinPlane {
+        PinPlane {
+            red: Vec::new(),
+            grey: Vec::new(),
+            orphaned: Vec::new(),
+            anchored: 0,
+            pending: 0,
+            never: 0,
+            cannot_ask: None,
+        }
+    }
+
+    /// A journal page from `(anchor, root_before, root_after)` triples — the three
+    /// facts a row asserts, in the shipped row grammar.
+    fn chain_of(rows: &[(&str, &str, &str)]) -> String {
+        use std::fmt::Write as _;
+        let mut page = String::new();
+        for (anchor, before, after) in rows {
+            let _ = writeln!(
+                page,
+                "- op=splice path=p.md root_before={before} root_after={after} edits=0 ^{anchor}"
+            );
+        }
+        page
+    }
+
+    /// **A broken record downgrades the BLOCKER and never the REPORT.** One state,
+    /// three assertions that must hold together: the gate permits, the word is the
+    /// weaker one, and the standing break is told anyway citing its row.
+    ///
+    /// Drop the scoping and `permits` goes false. Spell the pass `green` and the
+    /// word assertion fails. Suppress the report — the acknowledgement design this
+    /// card rejected — and the standing assertion fails.
+    #[test]
+    fn a_broken_record_permits_the_interval_and_still_tells_the_break() {
+        let record = chain_of(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:SPLICED", "b3:R2"),
+        ]);
+        let trace = check::journal_trace_of(&record, "b3:R2");
+        let pins = clean_pins();
+        let gate = Gate {
+            label: STAGED,
+            accounted: check::interval_accounted(&record, "b3:R2", &record),
+            pins: &pins,
+            record: &trace,
+        };
+
+        assert!(
+            gate.permits(),
+            "the interval a commit records is accounted for"
+        );
+        assert_eq!(
+            gate.word(),
+            ACCOUNTED_UNVOUCHED,
+            "and the pass carries the WEAKER word, because the record that let it \
+             through cannot vouch for itself"
+        );
+        assert_ne!(gate.word(), ACCOUNTED, "it is not the full-strength pass");
+        let standing = gate.standing_report().expect("a broken record has one");
+        assert!(
+            standing.contains("r-000002"),
+            "the standing report cites the broken row: {standing}"
+        );
+        assert!(
+            standing.contains("does not clear"),
+            "and states the permanence rather than implying it: {standing}"
+        );
+    }
+
+    /// The full-strength pass, and its silence. An intact record has nothing
+    /// standing to tell, and a report printed unconditionally would be noise that
+    /// teaches operators to skip the one that matters.
+    #[test]
+    fn an_intact_record_passes_at_full_strength_and_has_nothing_standing_to_tell() {
+        let record = chain_of(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:R1", "b3:R2"),
+        ]);
+        let trace = check::journal_trace_of(&record, "b3:R2");
+        let pins = clean_pins();
+        let gate = Gate {
+            label: WORKTREE,
+            accounted: check::interval_accounted(&record, "b3:R2", &record),
+            pins: &pins,
+            record: &trace,
+        };
+        assert!(gate.permits());
+        assert_eq!(gate.word(), ACCOUNTED, "nothing weakens this one");
+        assert_eq!(
+            gate.standing_report(),
+            None,
+            "and there is no standing fact to report"
+        );
+    }
+
+    /// **The gate refuses on either gated plane, and says which one spoke.** A
+    /// refusal a reader cannot locate is one they cannot act on, so the journal leg
+    /// and the pin leg must not answer in each other's words.
+    #[test]
+    fn the_gate_refuses_on_either_plane_and_names_the_one_that_decided() {
+        let record = chain_of(&[("r-000001", "b3:GENESIS", "b3:R1")]);
+        let trace = check::journal_trace_of(&record, "b3:R1");
+
+        let pins = clean_pins();
+        let journal_leg = Gate {
+            label: STAGED,
+            accounted: check::interval_accounted(&record, "b3:FORGED", &record),
+            pins: &pins,
+            record: &trace,
+        };
+        assert!(!journal_leg.permits(), "a root nothing produced is refused");
+        assert_eq!(journal_leg.word(), RED, "read, and found bad");
+        assert!(
+            journal_leg.detail().contains("b3:FORGED"),
+            "citing the fold that matches nothing: {}",
+            journal_leg.detail()
+        );
+
+        let unreadable = PinPlane {
+            cannot_ask: Some("the object store could not be asked".to_string()),
+            ..clean_pins()
+        };
+        let pin_leg = Gate {
+            label: STAGED,
+            accounted: check::interval_accounted(&record, "b3:R1", &record),
+            pins: &unreadable,
+            record: &trace,
+        };
+        assert!(
+            pin_leg.accounted.is_accounted(),
+            "FIXTURE: the journal plane is satisfied, so only the pin plane can refuse"
+        );
+        assert!(!pin_leg.permits(), "an UNREAD plane is not a clean one");
+        assert_eq!(
+            pin_leg.word(),
+            GREY_CANNOT_ASSESS,
+            "and it refuses as an absence of evidence, not as a finding"
+        );
+    }
+
+    /// **The empty record refuses without accusing.** Under the ruled cache-resident
+    /// journal this is the common case, not an edge one: a fresh clone carries zero
+    /// rows and has tampered with nothing.
+    #[test]
+    fn an_empty_record_refuses_as_an_absence_and_not_as_a_finding() {
+        let trace = check::journal_trace_of("", "b3:R1");
+        let pins = clean_pins();
+        let gate = Gate {
+            label: WORKTREE,
+            accounted: check::interval_accounted("", "b3:R1", ""),
+            pins: &pins,
+            record: &trace,
+        };
+        assert!(!gate.permits(), "unknown is not clean — it fails CLOSED");
+        assert_eq!(
+            gate.word(),
+            GREY_CANNOT_ASSESS,
+            "grey, never red: nothing was read, so nobody may be accused"
+        );
+        assert_ne!(
+            gate.word(),
+            RED,
+            "the fresh-clone path is not a tampering path"
+        );
+        assert!(
+            gate.detail().contains("tampered with nothing"),
+            "and the words say so: {}",
+            gate.detail()
+        );
     }
 
     #[test]

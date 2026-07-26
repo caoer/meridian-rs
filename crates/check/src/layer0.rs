@@ -119,6 +119,20 @@ impl JournalTrace {
         )
     }
 
+    /// **Does this record vouch for ITSELF?** Only an assessed, continuous chain
+    /// does: it was read against a current baseline and every row continues the one
+    /// before it.
+    ///
+    /// This is the axis [`interval_accounted`] deliberately does NOT fold into its
+    /// answer. A record that cannot vouch for itself can still ACCOUNT for an
+    /// interval — the rows it carries are the only rows there are — but the
+    /// acceptance then rests on a ledger nothing vouches for, and that is a weaker
+    /// claim which must be spelled as one. Two facts, two readings, never one byte.
+    #[must_use]
+    pub fn vouches(&self) -> bool {
+        matches!(self, JournalTrace::Assessed { chain } if chain.is_green())
+    }
+
     /// A red render citing the broken row, or `None` when the TRACE is not red.
     /// This is the string the `check --core` verb renders.
     #[must_use]
@@ -246,8 +260,10 @@ pub fn journal_trace_of(journal_page: &str, live_root: &str) -> JournalTrace {
 #[must_use]
 pub fn staged_trace(staged_page: &str, staged_root: &str, worktree_page: &str) -> JournalTrace {
     let rows = parse_rows(staged_page);
-    let recorded = parse_rows(worktree_page);
-    let accounted = || is_prefix_of(&rows, &recorded) && accounts_for(&recorded, staged_root);
+    // ONE owner for the pair. This widener and the scoped verdict must never come
+    // to disagree about what "accounted for" means — two copies of a two-condition
+    // test agree only until someone edits one of them.
+    let accounted = || interval_accounted(staged_page, staged_root, worktree_page).is_accounted();
     match detect_baseline(&rows, staged_root) {
         // Its own journal dates it: the shipped answer, untouched.
         Some(Ok(())) => JournalTrace::Assessed {
@@ -275,6 +291,151 @@ pub fn staged_trace(staged_page: &str, staged_root: &str, worktree_page: &str) -
             }
         }
     }
+}
+
+/// **The interval a commit records, as a verdict a caller can HOLD** — the
+/// promotion of the [`is_prefix_of`] + [`accounts_for`] pair from a baseline
+/// widener to an addressable answer.
+///
+/// # Why this is a different question from [`JournalTrace`], and not a softer one
+/// [`JournalTrace`] answers *"is everything this record says true?"* — about the
+/// corpus's whole write history, and **permanent** once a row breaks: *"a
+/// hand-inserted row breaks the chain mechanically and a forger must re-forge the
+/// entire suffix"* ([`receipt::journal`] lines 18-21). No later governed write can
+/// make a past break untrue, and nothing here tries to.
+///
+/// A pre-commit gate does not ask that question. It asks the narrower one —
+/// **were THESE bytes produced by a governed write?** — a fact about THIS interval,
+/// answered fresh every commit. Spending the permanent answer on the per-commit
+/// question builds a gate whose verdict stops varying with its input: past the
+/// first break it refuses every commit, carrying zero information about the thing it
+/// guards, so the only remaining paths are the unrecorded escapes. That is strictly
+/// worse than reporting the two apart, because it destroys the per-commit
+/// enforcement as well.
+///
+/// **The permanence is correct and this verdict does not touch it.** The record's
+/// own standing is [`JournalTrace::vouches`] — reported beside this answer, never
+/// folded into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Accounted {
+    /// Both conditions hold: the interval's journal is a truthful PREFIX of the
+    /// record, and the interval's tree folds to a root some governed write produced.
+    Yes,
+    /// **Grey — the record carries no row at all**, so it accounts for nothing and
+    /// could refuse nothing either. This is EVIDENCE AVAILABILITY, not a finding: a
+    /// clone whose journal has not travelled reaches it having tampered with
+    /// nothing, and rendering it as a lie would accuse every such workspace.
+    NoRecord,
+    /// The interval's journal carries a row the record does not have. Membership
+    /// cannot see this — the journal is root-EXCLUDED from the hash domain, so a
+    /// spliced row moves no fold at all.
+    ForeignJournal,
+    /// The interval's tree folds to a root no governed write ever produced. The
+    /// prefix cannot see this — forging a governed file leaves the journal
+    /// untouched, so the prefix holds trivially.
+    ForeignBytes {
+        /// The fold that matches no recorded root — the evidence, stated.
+        root: String,
+    },
+}
+
+impl Accounted {
+    /// The interval is accounted for: the gate may let it through.
+    #[must_use]
+    pub fn is_accounted(&self) -> bool {
+        matches!(self, Accounted::Yes)
+    }
+
+    /// Nothing could be read, so nothing was assessed. Never green, never red —
+    /// and never rendered as tampering, which is the whole reason it is its own
+    /// state rather than a refusal detail.
+    #[must_use]
+    pub fn cannot_assess(&self) -> bool {
+        matches!(self, Accounted::NoRecord)
+    }
+
+    /// The record was READ, and it contradicts the interval. A finding.
+    #[must_use]
+    pub fn is_red(&self) -> bool {
+        matches!(
+            self,
+            Accounted::ForeignJournal | Accounted::ForeignBytes { .. }
+        )
+    }
+
+    /// What was asked and what came back, in words — the half of the answer that
+    /// tells the four states apart once the exit has collapsed them to two.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Accounted::Yes => "the journal being committed is a truthful prefix of the record, \
+                 and the tree it commits folds to a root the record produced"
+                .to_string(),
+            Accounted::NoRecord => format!(
+                "{NO_RECORD_DETAIL} — an absence of evidence about your bytes, not a finding \
+                 against them"
+            ),
+            Accounted::ForeignJournal => {
+                "the journal being committed carries a row the record does not have; the journal \
+                 is root-EXCLUDED from the hash domain, so a spliced row moves no fold and only \
+                 the prefix can see it"
+                    .to_string()
+            }
+            Accounted::ForeignBytes { root } => format!(
+                "the tree being committed folds to {root}, which no governed write ever \
+                 produced; forging a governed file leaves the journal untouched, so only \
+                 membership can see it"
+            ),
+        }
+    }
+}
+
+/// The one sentence that explains the empty-RECORD grey. Distinct from
+/// [`NO_BASELINE_DETAIL`] because the two are different absences with different
+/// fixes: that one is *"this journal cannot date this tree"*, this one is *"there is
+/// no journal to date anything with"*.
+pub const NO_RECORD_DETAIL: &str = "the record carries no row, so nothing accounts for these bytes — a clone whose journal has \
+     not travelled reaches this state having tampered with nothing";
+
+/// **Is this interval accounted for by the record?** — the scoped question, whose
+/// answer is a fact about THESE bytes and is recomputed at every commit.
+///
+/// `interval_page`/`interval_root` are the journal bytes and tree fold of the
+/// interval being asked about (the git index at a pre-commit gate, the worktree
+/// when the two coincide). `record_page` is the most complete journal the engine
+/// has — the worktree's.
+///
+/// The two conditions are a PAIR and each catches what the other misses; the arms
+/// that prove each one necessary are
+/// [`a_forged_tree_is_refused_and_the_prefix_condition_alone_would_not_see_it`] and
+/// [`the_widened_path_refuses_a_journal_the_record_does_not_contain`].
+///
+/// # The empty record is checked FIRST, and that ordering is the point
+/// With no rows, [`accounts_for`] is false and [`is_prefix_of`] is false for any
+/// non-empty interval — so a bare pair would spell *"there is no ledger"* as
+/// *"you forged this"*. Under a journal that does not travel with a clone, that
+/// mis-spelling is the COMMON case, not an edge one. Absence of evidence gets its
+/// own state ([`Accounted::NoRecord`]) so it can be refused without being accused.
+#[must_use]
+pub fn interval_accounted(
+    interval_page: &str,
+    interval_root: &str,
+    record_page: &str,
+) -> Accounted {
+    let recorded = parse_rows(record_page);
+    if recorded.is_empty() {
+        return Accounted::NoRecord;
+    }
+    let rows = parse_rows(interval_page);
+    if !is_prefix_of(&rows, &recorded) {
+        return Accounted::ForeignJournal;
+    }
+    if !accounts_for(&recorded, interval_root) {
+        return Accounted::ForeignBytes {
+            root: interval_root.to_string(),
+        };
+    }
+    Accounted::Yes
 }
 
 /// Is `rows` a PREFIX of `recorded` — the same rows, in the same order, from the
@@ -1307,6 +1468,157 @@ mod tests {
         assert!(
             matches!(staged_trace("", "b3:R2", ""), JournalTrace::NoBaseline),
             "no rows anywhere is not a licence"
+        );
+    }
+
+    // ── S4-R19: the pair as an ADDRESSABLE verdict ───────────────────────────
+
+    /// **The four states are four different facts, and each one is REACHED.** A
+    /// verdict that could only ever answer two of them is the one-bit channel this
+    /// promotion exists to widen — so every arm here names a state no other arm
+    /// produces, and a collapse of any pair fails at least one of them.
+    #[test]
+    fn the_scoped_verdict_tells_its_four_states_apart() {
+        let record = record();
+        let prefix = journal(&[("r-000001", "b3:GENESIS", "b3:R1")]);
+
+        assert_eq!(
+            interval_accounted(&prefix, "b3:R2", &record),
+            Accounted::Yes,
+            "a truthful prefix over a root the record produced is accounted for"
+        );
+        assert_eq!(
+            interval_accounted(&prefix, "b3:FORGED", &record),
+            Accounted::ForeignBytes {
+                root: "b3:FORGED".to_string()
+            },
+            "a root no governed write produced is a FINDING, and the evidence is the root"
+        );
+        assert_eq!(
+            interval_accounted(
+                &journal(&[
+                    ("r-000001", "b3:GENESIS", "b3:R1"),
+                    ("r-000002", "b3:R1", "b3:INVENTED"),
+                ]),
+                "b3:R2",
+                &record
+            ),
+            Accounted::ForeignJournal,
+            "a row the record never had is a FINDING the fold cannot see — the journal \
+             is root-EXCLUDED, so a spliced row moves nothing"
+        );
+        assert_eq!(
+            interval_accounted(&prefix, "b3:R2", ""),
+            Accounted::NoRecord,
+            "and no record at all is an ABSENCE, not either finding"
+        );
+    }
+
+    /// **The empty record is checked FIRST, and the ordering is load-bearing.**
+    /// Both halves of the pair are false over an empty record, so a bare pair spells
+    /// *"there is no ledger"* as *"you forged this"*. Under a journal that does not
+    /// travel with a clone that mis-spelling is the COMMON case — every fresh clone
+    /// accused of tampering.
+    ///
+    /// Reorder the checks and this fails: the answer becomes `ForeignJournal`.
+    #[test]
+    fn an_absent_record_is_an_absence_of_evidence_and_never_an_accusation() {
+        let staged = journal(&[("r-000001", "b3:GENESIS", "b3:R1")]);
+        let rows = parse_rows(&staged);
+
+        // The measurement that makes the ordering necessary, stated rather than
+        // implied: over an empty record BOTH conditions fail.
+        assert!(
+            !is_prefix_of(&rows, &[]),
+            "the prefix condition is false over an empty record"
+        );
+        assert!(
+            !accounts_for(&[], "b3:R1"),
+            "and so is membership — a bare pair has no way to say WHICH absence this is"
+        );
+
+        let verdict = interval_accounted(&staged, "b3:R1", "");
+        assert_eq!(
+            verdict,
+            Accounted::NoRecord,
+            "so the state is named instead"
+        );
+        assert!(verdict.cannot_assess(), "grey — nothing could be read");
+        assert!(!verdict.is_red(), "and never red: nobody was accused");
+        assert!(!verdict.is_accounted(), "while still failing CLOSED");
+        assert!(
+            verdict.detail().contains("tampered with nothing"),
+            "and the words say so out loud: {}",
+            verdict.detail()
+        );
+    }
+
+    /// **Accounting for an interval and vouching for a record are DIFFERENT
+    /// questions**, and keeping them apart is the whole fix: the first is about
+    /// THESE bytes and is answered fresh each commit, the second is about the past
+    /// and is permanent.
+    ///
+    /// A broken chain must not stop the record accounting for an interval — that
+    /// coupling is what made one out-of-band edit un-fence a repo forever. Collapse
+    /// the two and this fails on its first assertion.
+    #[test]
+    fn a_broken_record_still_accounts_for_an_interval_and_still_fails_to_vouch() {
+        // r2 does not continue r1: a hand-inserted row, mechanically.
+        let broken = journal(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:SPLICED", "b3:R2"),
+        ]);
+        assert!(
+            journal_trace_of(&broken, "b3:R2").is_red(),
+            "FIXTURE: the chain is broken and the trace says so"
+        );
+        assert!(
+            !journal_trace_of(&broken, "b3:R2").vouches(),
+            "so the record cannot vouch for ITSELF — permanent, by design"
+        );
+        assert_eq!(
+            interval_accounted(&broken, "b3:R2", &broken),
+            Accounted::Yes,
+            "and it STILL accounts for an interval it produced — the per-commit \
+             question has its own answer, which is the entire point"
+        );
+        assert_eq!(
+            interval_accounted(&broken, "b3:NEVER_PRODUCED", &broken),
+            Accounted::ForeignBytes {
+                root: "b3:NEVER_PRODUCED".to_string()
+            },
+            "and it still REFUSES what it never produced: the downgrade is of the \
+             blocker, never of the detector"
+        );
+    }
+
+    /// `vouches` is load-bearing in BOTH directions — a reading that always said
+    /// yes would spell every broken record as intact, and one that always said no
+    /// would print a standing break over corpora that have none, teaching operators
+    /// to ignore it.
+    #[test]
+    fn only_an_assessed_continuous_chain_vouches_for_itself() {
+        assert!(
+            journal_trace_of(&record(), "b3:R3").vouches(),
+            "assessed and continuous — the one state that vouches"
+        );
+        assert!(
+            !journal_trace_of("", "b3:R3").vouches(),
+            "no baseline: nothing was read, so nothing is vouched for"
+        );
+        assert!(
+            !journal_trace_of(&record(), "b3:DRIFTED").vouches(),
+            "stale baseline: the record cannot date the tree it is read against"
+        );
+        assert!(
+            !JournalTrace::Assessed {
+                chain: check_chain(&[
+                    row("r-000001", "b3:GENESIS", "b3:R1"),
+                    row("r-000002", "b3:SPLICED", "b3:R2"),
+                ])
+            }
+            .vouches(),
+            "broken chain: read, and found discontinuous"
         );
     }
 }
