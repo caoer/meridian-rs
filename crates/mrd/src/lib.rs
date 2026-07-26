@@ -116,13 +116,17 @@ usage:
   mrd config               the MERIDIAN.md config plane: resolve the bootstrap
                            chain (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and
                            print what it found — the resolved path, the state,
-                           the config's own rev and fingerprint, and the declared
-                           mounts and tools in document order. This is the verb
-                           that PUBLISHES the mount table: the render face elides
-                           meridian-* blocks, so `mrd read` on the same file
-                           shows its prose and none of its entries. Read-only.
-                           Exits: 0 resolved (loaded or absent) / 1 the config
-                           refused (its message, verbatim) / 2 bad invocation
+                           the config's own rev and fingerprint, the BOUND mount
+                           table (canonical name / vault name / path, plus each
+                           root's state), and the declared tools in document
+                           order. This is the verb that PUBLISHES the mount
+                           table: the render face elides meridian-* blocks, so
+                           `mrd read` on the same file shows its prose and none
+                           of its entries. Read-only.
+                           Exits: 0 resolved and every root bound / 1 the config
+                           refused, or any root refuses — grey(...) and red(...)
+                           alike, each with its own reason word / 2 bad
+                           invocation
   mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
                            recomputes the receipt journal's chain continuity and
                            the foreign_edit trace (last-receipt-vs-live) over the

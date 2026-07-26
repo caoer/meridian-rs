@@ -38,12 +38,13 @@ lock = { workspace = true }
 # finding rather than decided silently.
 serde = { workspace = true }
 serde_yaml = "0.9"
+# THE CEILING. Every mount path passes `workspace::deny_reason` before it is
+# bound (`docs/address-grammar.md` §8 B-2), so this is a PRODUCTION edge as of
+# U7 — U6 held it as dev-only because nothing bound yet. The predicate is
+# REUSED, never re-implemented: a second spelling of the ceiling would let the
+# two disagree, and config would be the one that binds. `workspace` is a leaf
+# (`std` + `cache`), so no cycle and no new external crate.
+workspace = { workspace = true }
 
 [dev-dependencies]
-# The stated limit (S3-R7, schema §9): `~/MERIDIAN.md` lives in a DENIED
-# workspace path, so the rev the config carries can never become an attested
-# one. The criterion-4 gate asserts that limit in the same test that
-# demonstrates the rev moving — a dev-only edge, because the deny ceiling at
-# BIND is U7's production concern, not this unit's.
-workspace = { workspace = true }
 tempfile = "3"

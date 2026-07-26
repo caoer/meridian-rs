@@ -16,7 +16,34 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-const SINGLE: &str = "\
+/// The two-root config, over roots that live INSIDE the sandbox and really
+/// declare themselves.
+///
+/// **Changed by U7, stated rather than absorbed.** This fixture used to name
+/// `/Users/Shared/projects/field-notes` and `/Users/Shared/repos/archive`
+/// literally. Binding now canonicalizes every mount path, passes it through the
+/// `workspace` deny ceiling, and reads each root's own declaration — so absolute
+/// machine paths made the verb's exit depend on what happened to be checked out
+/// on the runner, and both roots refused (`grey(undeclared)`,
+/// `grey(path-unseeable)`). Sandbox roots keep every assertion below measuring
+/// what it was written to measure, and remove a machine dependency that was
+/// always latent.
+///
+/// The LINE LAYOUT is unchanged on purpose: `line 13` is asserted verbatim by
+/// [`a_malformed_config_refuses_on_exit_one_and_publishes_nothing`], so only the
+/// path values differ from the original.
+fn single(home: &Path) -> String {
+    single_named(home, "field-notes", "archive")
+}
+
+/// The same fixture with either root renamed — and the root's own declaration
+/// renamed with it, since a canonical name the root does not declare is a
+/// declared-vs-bound mismatch and fails loud by design (D7).
+fn single_named(home: &Path, vault_name: &str, folder_name: &str) -> String {
+    let vault = declare_root(home, vault_name);
+    let folder = declare_root(home, folder_name);
+    format!(
+        "\
 ---
 type: meridian-config
 version: 1
@@ -27,18 +54,34 @@ version: 1
 The wiki I write in.
 
 ```meridian-mount
-name: field-notes
-path: /Users/Shared/projects/field-notes
+name: {vault_name}
+path: {}
 kind: vault
-vault: field-notes
+vault: {vault_name}
 ```
 
 ```meridian-mount
-name: archive
-path: /Users/Shared/repos/archive
+name: {folder_name}
+path: {}
 kind: git-folder
 ```
-";
+",
+        vault.display(),
+        folder.display()
+    )
+}
+
+/// Create a root under the sandbox and write its self-declaration.
+fn declare_root(home: &Path, name: &str) -> std::path::PathBuf {
+    let root = home.join("roots").join(name);
+    std::fs::create_dir_all(&root).expect("create the root");
+    std::fs::write(
+        root.join("MERIDIAN.md"),
+        format!("---\ntype: meridian-root\nversion: 1\nname: {name}\n---\n\n# {name}\n"),
+    )
+    .expect("write the root declaration");
+    root
+}
 
 fn run(home: &Path, meridian_config: Option<&Path>, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mrd"));
@@ -67,7 +110,7 @@ fn stderr(out: &Output) -> String {
 #[test]
 fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     let home = tempfile::tempdir().expect("tempdir");
-    std::fs::write(home.path().join("MERIDIAN.md"), SINGLE).expect("write");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
 
     let out = run(home.path(), None, &[]);
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
@@ -83,14 +126,39 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
         "and a fingerprint like any page: {text}"
     );
     assert!(text.contains("mounts (2):"), "{text}");
+    let roots = home.path().join("roots");
     assert!(
-        text.contains("field-notes  vault  /Users/Shared/projects/field-notes  vault:field-notes"),
-        "the vault root, with its Obsidian vault name: {text}"
+        text.contains(&format!(
+            "field-notes  vault  {}",
+            roots.join("field-notes").display()
+        )) && text.contains("vault:field-notes  bound"),
+        "the vault root, with its Obsidian vault name and its bound state: {text}"
     );
     assert!(
-        text.contains("archive  git-folder  /Users/Shared/repos/archive"),
+        text.contains(&format!(
+            "archive  git-folder  {}",
+            roots.join("archive").display()
+        )),
         "the git-folder root, which carries no vault name: {text}"
     );
+    assert!(
+        !text.contains("archive  git-folder") || !text.contains("archive  git-folder  vault:"),
+        "a git-folder root has no vault leg: {text}"
+    );
+
+    // U7: the CANONICAL path is published beside the declared one whenever the
+    // two differ — and on this runner they do, because the sandbox lives under
+    // `/var`, a symlink to `/private/var`. That is the mount law's collapse made
+    // visible at the verb rather than only asserted in a unit test: an operator
+    // reading this line sees which tree the name is actually bound to.
+    let canonical =
+        std::fs::canonicalize(roots.join("field-notes")).expect("the sandbox root canonicalizes");
+    if canonical != roots.join("field-notes") {
+        assert!(
+            text.contains(&format!("-> {}", canonical.display())),
+            "the canonical spelling is published when it differs: {text}"
+        );
+    }
     assert!(
         text.contains("elided by the render face"),
         "the verb NAMES the elision it exists to work around — S3-R10(a): an elision that \
@@ -102,7 +170,7 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     let before = rev_line(&text);
     std::fs::write(
         home.path().join("MERIDIAN.md"),
-        SINGLE.replace("name: archive", "name: assets"),
+        single_named(home.path(), "field-notes", "assets"),
     )
     .expect("edit");
     let after_out = run(home.path(), None, &[]);
@@ -150,7 +218,7 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
     let home = tempfile::tempdir().expect("tempdir");
     std::fs::write(
         home.path().join("MERIDIAN.md"),
-        SINGLE.replace(
+        single(home.path()).replace(
             "kind: vault\nvault: field-notes",
             "kind: obsidian\nvault: field-notes",
         ),
@@ -185,7 +253,7 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
 #[test]
 fn a_stated_path_that_cannot_be_honoured_never_falls_back() {
     let home = tempfile::tempdir().expect("tempdir");
-    std::fs::write(home.path().join("MERIDIAN.md"), SINGLE).expect("write");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
     let nowhere = home.path().join("nowhere").join("MERIDIAN.md");
 
     let out = run(home.path(), Some(&nowhere), &[]);
@@ -203,11 +271,7 @@ fn a_stated_path_that_cannot_be_honoured_never_falls_back() {
     // The acceptance half in the same breath: a stated path that CAN be
     // honoured wins over the default.
     let elsewhere = home.path().join("elsewhere.md");
-    std::fs::write(
-        &elsewhere,
-        SINGLE.replace("name: field-notes", "name: sessions"),
-    )
-    .expect("write");
+    std::fs::write(&elsewhere, single_named(home.path(), "sessions", "archive")).expect("write");
     let out = run(home.path(), Some(&elsewhere), &[]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert!(stdout(&out).contains("sessions  vault"), "{}", stdout(&out));
@@ -219,7 +283,7 @@ fn a_stated_path_that_cannot_be_honoured_never_falls_back() {
 #[test]
 fn the_json_face_carries_the_same_facts() {
     let home = tempfile::tempdir().expect("tempdir");
-    std::fs::write(home.path().join("MERIDIAN.md"), SINGLE).expect("write");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
 
     let out = run(home.path(), None, &["--json"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
