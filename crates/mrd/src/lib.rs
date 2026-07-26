@@ -116,6 +116,8 @@ usage:
   mrd config               the MERIDIAN.md config plane: resolve the bootstrap
                            chain (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and
                            print what it found — the resolved path, the state,
+                           the origin: which rung supplied that path, which the
+                           path cannot say when both rungs name one file,
                            the config's own rev and fingerprint, the BOUND mount
                            table (canonical name / vault name / path, plus each
                            root's state), and the declared tools in document
