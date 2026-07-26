@@ -4,5 +4,3 @@
 /crates/perfsuite/results/20*.json
 /.claude/agent-memory
 /result
-/.target-u34
-/.target-u35b
