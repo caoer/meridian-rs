@@ -27,7 +27,6 @@ fn kind_id(kind: &syntax::DialectKind) -> &'static str {
 }
 
 #[test]
-#[ignore = "dormant until rung 1: syntax::parse is todo!() — remove this attribute when the rung lands"]
 fn parser_finds_at_least_planted() {
     let constructs = KNOWN_CONSTRUCTS
         .iter()
