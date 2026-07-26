@@ -322,6 +322,22 @@ pub fn splice(
         &mut after_doc,
     )?;
 
+    // U12 — the STORED-FORM translation, at the candidate (D9). Ordered AFTER
+    // the `@fp` strip on purpose: the strip has already removed every decoration
+    // this write introduces, so an address reaching the stored plane with one
+    // still attached is a token the strip could not place — refused there, not
+    // silently carried into a URI here. Like the strip it rewrites payloads,
+    // re-validates and re-builds, and leaves the artifact guard behind it.
+    translate_stored_candidate(
+        &doc,
+        &root_before,
+        &args.path,
+        &before_facts,
+        &mut batch,
+        &mut sealed,
+        &mut after_doc,
+    )?;
+
     // Advisor R25, structural fix 1 — GUARD THE ARTIFACT, not the verb. The
     // read-mint gate guards the `splice.pin` door; the `meridian-lock` bytes it
     // protects are ordinary page text every put shape can reach. This rung reads
@@ -689,9 +705,18 @@ pub fn create(
     // land, never of a decorated draft.
     let body = syntax::strip_fp(&args.body);
 
+    // U12 — the stored-form translation at the BIRTH door (see
+    // [`translate_stored_body`]).
+    let body = translate_stored_body(body, &args.path)?;
+
     // The birth's after-state, built once from the body (path-stamped so the
     // gate sees it). Its whole-file rev is the born file's rev.
     let after_doc = model::candidate_of_body(&args.path.0, body.into_owned());
+
+    // THE ARTIFACT GUARD (D9), live on the birth path: an agent-plane cross-root
+    // address still standing refuses instead of landing bytes no reader can
+    // follow. A birth has no pre-image, so `None`.
+    stored_form_guard_lazy(None, &after_doc, &args.path)?;
     let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
 
     // THE ASSERTION (R25), live on the birth path: a token still standing in a
@@ -1042,6 +1067,13 @@ pub fn lock_write(
     new_raw.push_str(&edit.text);
     new_raw.push_str(&raw[edit.span.end..]);
     let after_doc = model::candidate_of_body(&args.path.0, new_raw);
+    // THE ARTIFACT GUARD (D9) at the lock door. The lock block's own `ref:` and
+    // `objects:` keys are positions 3 and 4, where the translation is the
+    // IDENTITY by ratified law — they stay in the canonical `root:` form, never
+    // the URI. So this rung asserts the OTHER half: engine-composed lock bytes
+    // introduce no agent-plane address into positions 1 or 2. A door proven only
+    // by what it forbids would be satisfied by a door that writes nothing.
+    stored_form_guard_lazy(Some(&before_doc), &after_doc, &args.path)?;
     let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
 
     if args.dry {
@@ -1450,6 +1482,11 @@ fn plan_promotion(
     let promoted =
         model::candidate_of_body(&target.0, promote_anchor(&target_doc.raw, slot, anchor));
     lock_artifact_guard(target_doc, promoted.document(), None, target)?;
+    // THE ARTIFACT GUARD (D9) at the promotion door: an anchor promotion inserts
+    // `^slug` and nothing else, so it introduces no address — asserted rather
+    // than assumed, because this door lands a SECOND inode and would otherwise
+    // be the one candidate no rung of the address plane ever reads.
+    stored_form_guard_lazy(Some(target_doc), &promoted, target)?;
     let gate = crate::gate::gate_write(
         root,
         target_doc,
@@ -2297,32 +2334,7 @@ fn classify_fp(
     if removals.is_empty() {
         return Ok(Vec::new());
     }
-    // The after image, walked ONCE. The sealed spans index the pre-image and are
-    // sorted and disjoint, so a single forward scan places every inserted text
-    // AND every surviving run in after coordinates — no shift arithmetic.
-    // `inserted` carries each insertion with the pre-image REGION that produced
-    // it; `retained` carries each surviving run with the pre-image offset it came
-    // from.
-    let mut inserted: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> =
-        Vec::with_capacity(sealed.edits.len());
-    let mut retained: Vec<(std::ops::Range<usize>, usize)> =
-        Vec::with_capacity(sealed.edits.len() + 1);
-    let mut after_pos = 0usize;
-    let mut pre_pos = 0usize;
-    for e in &sealed.edits {
-        let gap = e.span.start.saturating_sub(pre_pos);
-        if gap > 0 {
-            retained.push((after_pos..after_pos + gap, pre_pos));
-            after_pos += gap;
-        }
-        inserted.push((after_pos..after_pos + e.text.len(), e.span.clone()));
-        after_pos += e.text.len();
-        pre_pos = e.span.end;
-    }
-    let tail = doc.raw.len().saturating_sub(pre_pos);
-    if tail > 0 {
-        retained.push((after_pos..after_pos + tail, pre_pos));
-    }
+    let (inserted, retained) = splice_index(doc, sealed);
     let pre_existing = syntax::fp_removals(&doc.raw);
 
     let mut out = Vec::with_capacity(removals.len());
@@ -2364,6 +2376,48 @@ fn classify_fp(
         }
     }
     Ok(out)
+}
+
+/// Each insertion in AFTER coordinates, with the pre-image REGION that produced
+/// it — [`splice_index`]'s first half.
+type Inserted = Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>;
+
+/// Each surviving run in AFTER coordinates, with the pre-image OFFSET it came
+/// from — [`splice_index`]'s second half.
+type Retained = Vec<(std::ops::Range<usize>, usize)>;
+
+/// **The after image, walked ONCE — the ONE attribution index.**
+///
+/// The sealed spans index the pre-image and are sorted and disjoint, so a single
+/// forward scan places every inserted text AND every surviving run in AFTER
+/// coordinates, with no shift arithmetic. Returns `(inserted, retained)`:
+/// `inserted` carries each insertion with the pre-image REGION that produced it;
+/// `retained` carries each surviving run with the pre-image offset it came from.
+///
+/// It is a shared owner rather than a copied loop because TWO grammars now ask
+/// the same question of the same candidate — the `@fp` strip ([`classify_fp`])
+/// and U12's stored-form translation ([`classify_cross_root`]) — and two
+/// implementations of one attribution law is how one question grows two answers.
+fn splice_index(doc: &model::Document, sealed: &model::ValidatedBatch) -> (Inserted, Retained) {
+    let mut inserted: Inserted = Vec::with_capacity(sealed.edits.len());
+    let mut retained: Retained = Vec::with_capacity(sealed.edits.len() + 1);
+    let mut after_pos = 0usize;
+    let mut pre_pos = 0usize;
+    for e in &sealed.edits {
+        let gap = e.span.start.saturating_sub(pre_pos);
+        if gap > 0 {
+            retained.push((after_pos..after_pos + gap, pre_pos));
+            after_pos += gap;
+        }
+        inserted.push((after_pos..after_pos + e.text.len(), e.span.clone()));
+        after_pos += e.text.len();
+        pre_pos = e.span.end;
+    }
+    let tail = doc.raw.len().saturating_sub(pre_pos);
+    if tail > 0 {
+        retained.push((after_pos..after_pos + tail, pre_pos));
+    }
+    (inserted, retained)
 }
 
 /// Which request edit produced the sealed region — by the TARGET SPAN the model
@@ -2526,6 +2580,299 @@ fn strip_fp_candidate(
         )));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// U12 — the STORED-FORM translation, guarded at the ARTIFACT (D9)
+// ---------------------------------------------------------------------------
+//
+// `put` translates an agent-plane `root:` address into the `obsidian://` stored
+// form; `read` translates back (`crate::read`). The grammar and the positional
+// law are `crate::positions`'; what lives here is WHERE it lands:
+//
+// - the TRANSFORM rewrites the PAYLOAD that introduced an address, never the
+//   assembled bytes. `fs::apply_batch` re-splices the sealed spans onto the disk
+//   pre-image and REFUSES a candidate that is not that splice's own result
+//   (S3-R11(c), `crates/fs/src/lib.rs:566`), so a transform applied to the
+//   assembled candidate would land bytes the primitive rejects. The payload is
+//   also exactly "what this write introduces", which is the only thing a write
+//   may move: rewriting a RETAINED address would change bytes this batch never
+//   addressed and redden pins that have nothing to do with it.
+// - the GUARD reads the CANDIDATE, on every door, dry and real alike — the
+//   artifact, never the verb. A door that reaches these bytes without passing
+//   the transform refuses instead of landing an agent-plane spelling on disk.
+
+/// Every AGENT-PLANE cross-root address in the candidate, classified by WHO put
+/// it there — the [`classify_fp`] shape over U12's grammar, sharing
+/// [`splice_index`]'s one attribution law.
+///
+/// # Errors
+/// `bad_request` when an address can be attributed to no single payload: the
+/// batch COMPOSED it out of retained bytes plus its own, or two request edits
+/// contest the same region (§ 9.4 P7 — refuse, never transform blind).
+fn classify_cross_root(
+    doc: &model::Document,
+    after: &model::Document,
+    sealed: &model::ValidatedBatch,
+    before_facts: &[model::Target],
+    path: &Path,
+    mounts: &addr::MountSet,
+) -> Result<Vec<FpOrigin>, Box<ErrorBody>> {
+    let occupants = crate::positions::agent_plane_occupants(&after.raw, mounts);
+    if occupants.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (inserted, retained) = splice_index(doc, sealed);
+    let pre_existing: Vec<std::ops::Range<usize>> =
+        crate::positions::agent_plane_occupants(&doc.raw, mounts)
+            .into_iter()
+            .map(|o| o.span)
+            .collect();
+
+    let mut out = Vec::with_capacity(occupants.len());
+    for o in &occupants {
+        let r = &o.span;
+        if let Some((after_range, region)) = inserted
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+        {
+            let edit = attribute_region(region, before_facts).ok_or_else(|| {
+                bad_request(format!(
+                    "refused: the cross-root address '{}' in {} cannot be attributed to any edit \
+                     in this batch — the engine will not translate an address it cannot place",
+                    o.addr.target(),
+                    path.0
+                ))
+            })?;
+            out.push(FpOrigin::Introduced {
+                edit,
+                local: r.start - after_range.start..r.end - after_range.start,
+            });
+            continue;
+        }
+        let was_already_there = retained
+            .iter()
+            .find(|(a, _)| a.start <= r.start && r.end <= a.end)
+            .is_some_and(|(after_range, pre_start)| {
+                let start = pre_start + (r.start - after_range.start);
+                pre_existing.contains(&(start..start + (r.end - r.start)))
+            });
+        if was_already_there {
+            // NOT this write's to translate: rewriting bytes the batch never
+            // addressed would move the fingerprint of a node this write does not
+            // own. The same rule the `@fp` strip follows, for the same reason.
+            out.push(FpOrigin::Retained);
+        } else {
+            return Err(bad_request(format!(
+                "refused: this write would COMPOSE the cross-root address '{}' in {} out of bytes \
+                 it does not supply — the engine translates an address into its `obsidian://` \
+                 stored form from the payload that carries it, and will not assemble one across a \
+                 payload boundary. Write the whole address in one edit",
+                o.addr.target(),
+                path.0
+            )));
+        }
+    }
+    Ok(out)
+}
+
+/// **The stored-form translation, at the candidate** (D9): rewrite every
+/// cross-root address this batch INTRODUCES into its `obsidian://` stored form,
+/// re-seal so the commit lands exactly the judged bytes, and leave the artifact
+/// guard behind it.
+///
+/// Mirrors [`strip_fp_candidate`] rung for rung — identify in the candidate,
+/// attribute to the payload, rewrite the payload, re-validate, rebuild, assert —
+/// because it answers the same kind of question about the same bytes. The batch
+/// is rewritten rather than the sealed copy because [`commit_batch`]
+/// re-validates the REQUEST.
+///
+/// # Errors
+/// `bad_request` — an unattributable address ([`classify_cross_root`]), an
+/// address with no stored form ([`crate::positions::TranslateError`]), a
+/// re-validation refusal, or an agent-plane address still standing afterwards.
+fn translate_stored_candidate(
+    doc: &model::Document,
+    root_before: &Root,
+    path: &Path,
+    before_facts: &[model::Target],
+    batch: &mut model::SpliceRequest,
+    sealed: &mut model::ValidatedBatch,
+    after_doc: &mut model::CandidateDocument,
+) -> Result<(), Box<ErrorBody>> {
+    // The lazy gate: an ordinary single-root candidate never loads a mount
+    // table, and never pays for one.
+    if !crate::positions::may_carry_cross_root(after_doc.raw()) {
+        return Ok(());
+    }
+    let mounts = crate::positions::machine_mounts();
+
+    let mut per_edit: Vec<Vec<std::ops::Range<usize>>> = vec![Vec::new(); batch.edits.len()];
+    let mut introduced = 0usize;
+    for origin in classify_cross_root(
+        doc,
+        after_doc.document(),
+        sealed,
+        before_facts,
+        path,
+        &mounts,
+    )? {
+        if let FpOrigin::Introduced { edit, local } = origin {
+            introduced += 1;
+            per_edit
+                .get_mut(edit)
+                .map(|v| v.push(local))
+                .ok_or_else(|| {
+                    bad_request(format!(
+                        "refused: a cross-root address in {} attributes to the engine's own \
+                         minted span, which composes no link",
+                        path.0
+                    ))
+                })?;
+        }
+    }
+    if introduced == 0 {
+        return Ok(());
+    }
+
+    for (i, ranges) in per_edit.iter().enumerate() {
+        if ranges.is_empty() {
+            continue;
+        }
+        let payload = match &mut batch.edits[i].edit {
+            // Frontmatter is NOT an address position (§ 9.2 A-1): `root:` is a
+            // live YAML key in the shipped preset/def grammar, so an address
+            // attributed to a composed `{key}: {value}` line means the grammar
+            // moved under this code. Refuse rather than translate blind — a
+            // blanket rewrite there would corrupt the def AND silently
+            // invalidate every pin whose fingerprint covers the line.
+            model::EditKind::Put {
+                at: model::PutAt::Upsert,
+                ..
+            } => {
+                return Err(bad_request(format!(
+                    "refused: a cross-root address attributed to a frontmatter property line in \
+                     {} — frontmatter is not an address position (S10/R22, address-grammar § 9.2); \
+                     the translation cannot place it",
+                    path.0
+                )));
+            }
+            model::EditKind::Put { text, .. } => text,
+            model::EditKind::Match { new, .. } => new,
+        };
+        *payload = crate::positions::to_stored(payload, &mounts)
+            .map_err(|e| bad_request(format!("{e} (in {})", path.0)))?;
+    }
+
+    *sealed = match model::validate_batch(
+        doc,
+        Some(&model::MerkleRoot(root_before.0.clone())),
+        batch,
+        None,
+    ) {
+        model::SpliceVerdict::Validated(b) => b,
+        refused => {
+            return Err(bad_request(format!(
+                "refused: the batch no longer validates after its cross-root addresses were \
+                 translated to their stored form ({refused:?}) — nothing was written"
+            )));
+        }
+    };
+    *after_doc = build_after_doc(doc, sealed, path);
+
+    // The closing rung goes through the SAME door-facing guard every other door
+    // calls — one entry point, so "which doors are guarded" is answerable by
+    // counting one name rather than by reading five call sites.
+    stored_form_guard_lazy(Some(doc), after_doc, path)
+}
+
+/// **The stored-form translation at a WHOLE-BODY door** (D9): the birth door
+/// supplies its entire document, so the whole body is this write's payload and
+/// "introduced" and "present" are the same set — no attribution walk is needed
+/// or possible.
+///
+/// Ordered after the `@fp` strip for the same reason the splice door orders it
+/// there, and lazy for the same reason: a body with no cross-root position never
+/// loads a mount table.
+///
+/// # Errors
+/// `bad_request` — an address with no stored form
+/// ([`crate::positions::TranslateError`]), naming the address and the fix.
+fn translate_stored_body<'a>(
+    body: std::borrow::Cow<'a, str>,
+    path: &Path,
+) -> Result<std::borrow::Cow<'a, str>, Box<ErrorBody>> {
+    if !crate::positions::may_carry_cross_root(&body) {
+        return Ok(body);
+    }
+    let mounts = crate::positions::machine_mounts();
+    Ok(std::borrow::Cow::Owned(
+        crate::positions::to_stored(&body, &mounts)
+            .map_err(|e| bad_request(format!("{e} (in {})", path.0)))?,
+    ))
+}
+
+/// **THE ARTIFACT GUARD** (D9, R20/R30): the candidate introduces NO agent-plane
+/// cross-root address in an owned position.
+///
+/// Live on every write door in this module, dry and real alike. `before` is the
+/// pre-image, or `None` for a birth — where "introduced" and "present" are the
+/// same set. The comparison is introduce-scoped for the reason
+/// [`classify_cross_root`] gives: an address a document already carried is not
+/// this write's to move.
+///
+/// *A guard on a verb is not a guard on a file.* A door that reaches these bytes
+/// without passing the translation refuses HERE instead of landing an
+/// agent-plane spelling on disk — which is stage 2's criterion-4 machinery,
+/// reused at the candidate rather than reinvented at the verb.
+fn stored_form_guard(
+    before: Option<&model::Document>,
+    candidate: &model::CandidateDocument,
+    path: &Path,
+    mounts: &addr::MountSet,
+) -> Result<(), Box<ErrorBody>> {
+    let after = crate::positions::agent_plane_occupants(candidate.raw(), mounts);
+    if after.is_empty() {
+        return Ok(());
+    }
+    let mut standing: Vec<String> = after.iter().map(|o| o.addr.target()).collect();
+    if let Some(before) = before {
+        for carried in crate::positions::agent_plane_occupants(&before.raw, mounts) {
+            let spelling = carried.addr.target();
+            if let Some(i) = standing.iter().position(|s| *s == spelling) {
+                standing.remove(i);
+            }
+        }
+    }
+    let Some(offender) = standing.first() else {
+        return Ok(());
+    };
+    Err(bad_request(format!(
+        "refused: the cross-root address '{offender}' survived the stored-form translation in {} \
+         — a `root:` address is the AGENT plane's spelling and is unresolvable garbage to \
+         Obsidian on disk; the stored form is an `obsidian://` URI carrying the vault name. The \
+         write was refused rather than landing a link no reader can follow",
+        path.0
+    )))
+}
+
+/// **THE ONE DOOR-FACING ENTRY to the artifact guard.** Every byte-landing door
+/// in this module discharges it, and it loads the mount table only if the
+/// candidate can carry a cross-root position at all — so an ordinary
+/// single-root write never pays for one.
+///
+/// One entry point rather than five call sites into [`stored_form_guard`],
+/// because *"which doors are guarded"* must be answerable by counting a single
+/// name; `tests/u12_door_enumeration.rs` counts exactly that.
+fn stored_form_guard_lazy(
+    before: Option<&model::Document>,
+    candidate: &model::CandidateDocument,
+    path: &Path,
+) -> Result<(), Box<ErrorBody>> {
+    if !crate::positions::may_carry_cross_root(candidate.raw()) {
+        return Ok(());
+    }
+    stored_form_guard(before, candidate, path, &crate::positions::machine_mounts())
 }
 
 /// **The lock ARTIFACT guard** (advisor R25, structural fix 1): the
@@ -2925,6 +3272,17 @@ pub fn commit_batch(
     // function writes. `fs` now refuses a candidate that is not this batch's
     // splice result, which is what makes that tie a compile-and-run fact.
     let candidate = model::candidate_of_batch(&req.content_path, &before_content.raw, &sealed);
+    // THE ARTIFACT GUARD (D9) at the commit seam. The splice door translates and
+    // then guards; this is the PUBLIC seam, and a caller reaching it directly
+    // has passed no translation at all. Guarding here is what makes the door
+    // enumeration a property of the file rather than of today's call sites —
+    // a guard on a verb is not a guard on a file.
+    stored_form_guard_lazy(
+        Some(&before_content),
+        &candidate,
+        &Path(req.content_path.clone()),
+    )
+    .map_err(CommitError::Env)?;
     fs::apply_batch(
         root,
         FsPath::new(&req.content_path),
