@@ -41,10 +41,13 @@
 //!
 //! Isolation matters and is not decoration: `mrd read` DIALS a resident daemon, so
 //! an unsandboxed drive can be served by a stale daemon built from another tree.
-//! Every drive here runs under its own `XDG_CACHE_HOME`/`HOME`.
+//! Every drive here runs under its own `XDG_CACHE_HOME`/`HOME`, and the auto-spawn
+//! is pointed at nowhere, so the only daemon that can answer is one a test started
+//! itself on its own socket ([`Sandbox::start_daemon`], PATH A's decorate half).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use wire::{ErrorCode, Path as WPath, PinSpec};
 use wire_serve::write::{SpliceArgs, splice};
@@ -84,13 +87,45 @@ impl Sandbox {
             .current_dir(cwd)
             .env("XDG_CACHE_HOME", &self.cache_home)
             .env("HOME", &self.home)
-            // Spawn-impossible: no resident daemon may serve these drives, so a
-            // stale daemon from another tree cannot answer for the engine under
-            // test. Every verb this file drives (pin/walk/status/put) is
-            // pure-local anyway; this closes the one that is not (`read`).
+            // Auto-spawn-impossible: no daemon from another tree may serve these
+            // drives, so nothing but the engine under test can answer. `mrd`
+            // pings before it spawns, so a daemon this sandbox started itself
+            // ([`Sandbox::start_daemon`]) still answers on this socket — that is
+            // the ONE resident host allowed here, and it is built from this tree.
             .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
             .env_remove("MERIDIAN_WORKSPACE");
         cmd
+    }
+
+    /// The registry cache root this sandbox's `mrd` drives resolve
+    /// (`cache::cache_root` = `$XDG_CACHE_HOME/meridian`).
+    fn cache_root(&self) -> PathBuf {
+        self.cache_home.join("meridian")
+    }
+
+    /// Start the resident daemon IN-PROCESS, bound to this sandbox's own socket.
+    ///
+    /// This is `crates/registry/src/server.rs` — the host `page_decorations`'
+    /// **one production caller** lives in (`server.rs:905`). A `mrd read` from
+    /// this sandbox dials it through `default_socket_path()`, which resolves under
+    /// the sandbox's `XDG_CACHE_HOME`, so no daemon from another tree can answer
+    /// and none is left behind: dropping the handle stops it. The reaper and
+    /// prewarm intervals are set past any test's lifetime — a decoration must not
+    /// depend on a background thread's timing.
+    #[allow(clippy::duration_suboptimal_units)]
+    fn start_daemon(&self) -> registry::RunningServer {
+        let reg_dir = self.cache_root().join("registry");
+        std::fs::create_dir_all(&reg_dir).expect("registry dir");
+        let never = Duration::from_secs(365 * 24 * 60 * 60);
+        registry::RunningServer::start(registry::Config {
+            socket_path: reg_dir.join("daemon.sock"),
+            state_path: reg_dir.join("state.json"),
+            cache_root: self.cache_root(),
+            idle_threshold: never,
+            reap_interval: never,
+            prewarm_interval: never,
+        })
+        .expect("the resident daemon starts")
     }
 
     fn run(&self, cwd: &Path, args: &[&str]) -> Output {
@@ -234,6 +269,25 @@ fn fp_tokens(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// The sole wikilink in a render, split at its alias pipe: `(dest, label)`,
+/// both without the `[[`/`]]` delimiters.
+///
+/// The split is what makes a decoration checkable at all: the token is only ever
+/// honest in the DEST half, because the put-side strip parses the address and
+/// never reads the label. One owner for the split, so no assertion here grows a
+/// second spelling of where the slot is.
+fn sole_link(rendered: &str) -> (String, String) {
+    let node = rendered
+        .split("[[")
+        .nth(1)
+        .and_then(|s| s.split("]]").next())
+        .unwrap_or_else(|| panic!("a claim link in the render:\n{rendered}"));
+    let (dest, label) = node
+        .split_once('|')
+        .unwrap_or_else(|| panic!("the link carries an alias label: {node}"));
+    (dest.to_owned(), label.to_owned())
 }
 
 // ── the board plane — R26's TEST-VISIBLE surface, read in this same run ──────
@@ -854,12 +908,8 @@ fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> Stri
         minted[0].starts_with("@green."),
         "the pin is live, so the tone is green: {minted:?}"
     );
-    let decorated = rendered_text
-        .split("[[")
-        .nth(1)
-        .and_then(|s| s.split("]]").next())
-        .map(|s| format!("[[{s}]]"))
-        .expect("a decorated claim link in the render");
+    let (dest, label) = sole_link(rendered_text);
+    let decorated = format!("[[{dest}|{label}]]");
     assert!(
         decorated.contains(&minted[0]),
         "the token rides the BLOCK-REF slot of the link: {decorated}"
@@ -958,30 +1008,92 @@ fn criterion_4_the_four_disk_landing_paths_leave_no_token() {
     path_d_create_position_exclusions();
 }
 
-/// **PATH A (finding 1, P0)** — label absorption, through the CLI. The label
-/// deliberately REPEATS its own block ref: decorate located the slot by whole-node
-/// `rfind`, so the label's copy absorbed the minted token and the strip could not
-/// find it again. No adversarial author needed — a page that cites itself is
-/// ordinary prose.
+/// **PATH A (finding 1, P0)** — label absorption, driven through the surface that
+/// actually DECORATES. The label deliberately REPEATS its own block ref: decorate
+/// located the slot by a whole-node `rfind`, so the label's copy won the search,
+/// absorbed the minted token, and the put-side strip — which parses the address
+/// and never reads the label — could not find it again, so it reached disk. No
+/// adversarial author needed: a page that cites itself is ordinary prose.
+///
+/// **Why this path runs a resident daemon, stated rather than assumed.**
+/// `wire_serve::read::page_decorations` has exactly ONE production caller —
+/// `crates/registry/src/server.rs:905`, the resident daemon, the one host that
+/// holds a corpus — and the bare CLI passes `NO_DECORATIONS` by design
+/// (`read_cmd.rs`). So a drive that only runs `mrd pin` **never invokes decorate
+/// at all**, and stays green with finding 1 restored: a vacuous gate on a forgery
+/// finding, which is the false-green class this suite exists to close. The daemon
+/// is started in-process on this sandbox's own socket, and the read's `source`
+/// field is asserted to be `daemon` FIRST — a degrade to the ephemeral engine
+/// decorates nothing, and must fail loudly here rather than pass by proving
+/// nothing.
+///
+/// Both halves of the round trip are asserted, because finding 1 is a defect in
+/// their relationship: the mint rides the ADDRESS half (mechanism), and the
+/// agent's copy-back lands with nothing token-shaped on disk (consequence).
 fn path_a_label_absorption(sb: &Sandbox) {
+    const PROSE: &str = "draws from [[guide#^goal|cf. guide#^goal]].";
+
     let ws = sb.workspace("c4-label");
     write(&ws, "guide.md", "# Guide\n\n## Goal\n\nthe goal body\n");
-    write(
-        &ws,
-        "plan.md",
-        "# Plan\n\ndraws from [[guide#^goal|cf. guide#^goal]].\n",
-    );
+    write(&ws, "plan.md", &format!("# Plan\n\n## Body\n\n{PROSE}\n"));
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "init"]);
     let out = sb.run(&ws, &["pin", "plan.md", "guide.md#Guide/Goal"]);
     assert_eq!(code(&out), 0, "pin: {}", said(&out));
+
+    // ── DECORATE: `mrd read` through the ONE host that decorates ─────────────
+    let _daemon = sb.start_daemon();
+    let out = sb.run(
+        &ws,
+        &["read", "plan.md", "--section", "Plan/Body", "--json"],
+    );
+    assert_eq!(code(&out), 0, "read: {}", said(&out));
+    let doc: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("read json");
+    assert_eq!(
+        doc["source"], "daemon",
+        "PATH A must DRIVE decorate or it proves nothing: the ephemeral degrade \
+         passes NO_DECORATIONS, so accepting it would rebuild the vacuous gate \
+         this test replaces: {doc}"
+    );
+    let rendered = doc["read"]["rendered_text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rendered_text: {doc}"));
+    let (dest, label) = sole_link(rendered);
+    assert_eq!(
+        fp_tokens(&dest).len(),
+        1,
+        "the mint rides the ADDRESS half of the link, which is the half the \
+         strip parses: dest={dest:?} label={label:?}"
+    );
+    assert!(
+        fp_tokens(&label).is_empty(),
+        "PATH A: a label that repeats its own block ref must not absorb the \
+         mint — a token there is one the put-side strip cannot see: \
+         dest={dest:?} label={label:?}"
+    );
+
+    // ── STRIP: the agent copies the decorated link back through `mrd put` ────
+    let decorated = format!("[[{dest}|{label}]]");
+    let edits = serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Plan"}, {"h": "Body"}]},
+        "edit": {"match": {"old": PROSE, "new": format!("draws from {decorated}.")}}
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "plan.md", "--actor", "agent-scribe"], &edits);
+    assert_eq!(code(&out), 0, "put: {}", said(&out));
     for rel in ["plan.md", "guide.md"] {
         let text = read(&ws, rel);
         assert!(
             fp_tokens(&text).is_empty(),
-            "PATH A: a self-repeating label must not absorb the token into {rel}:\n{text}"
+            "PATH A: a token decorate put where the strip cannot see it is a \
+             forged claim on disk in {rel}:\n{text}"
         );
     }
+    assert!(
+        read(&ws, "plan.md").contains(PROSE),
+        "and the self-repeating label survives its decoration verbatim: {}",
+        read(&ws, "plan.md")
+    );
 }
 
 /// **PATH B (finding 2, P0)** — a DOUBLED token, through the CLI. A single-pass
