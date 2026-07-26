@@ -166,34 +166,48 @@ fn exec_streaming_hands_stdout_to_the_consumer() {
 }
 
 #[test]
-fn configured_timeout_reads_meridian_toml_and_defaults() {
+fn configured_timeout_reads_the_root_declaration_and_defaults() {
     let tmp = tempfile::tempdir().unwrap();
-    // No file → the default.
+    let declare = |body: &str| {
+        std::fs::write(
+            tmp.path().join("MERIDIAN.md"),
+            format!("---\ntype: meridian-root\nversion: 1\nname: r\n{body}---\n"),
+        )
+        .unwrap();
+    };
+
+    // No declaring root at all → the default.
+    assert_eq!(exec::configured_timeout(None).unwrap(), DEFAULT_TIMEOUT);
+    // A root with no declaration → the default.
     assert_eq!(
-        exec::configured_timeout(tmp.path()).unwrap(),
+        exec::configured_timeout(Some(tmp.path())).unwrap(),
         DEFAULT_TIMEOUT
     );
-    // A file without the key → the default.
-    std::fs::write(tmp.path().join(".meridian.toml"), "[run.caps]\n").unwrap();
+    // A declaration without the key → the default.
+    declare("run.caps.fix-*: md.set_field\n");
     assert_eq!(
-        exec::configured_timeout(tmp.path()).unwrap(),
+        exec::configured_timeout(Some(tmp.path())).unwrap(),
         DEFAULT_TIMEOUT
     );
     // The key → the configured ceiling.
-    std::fs::write(
-        tmp.path().join(".meridian.toml"),
-        "[run]\ntimeout_secs = 7\n",
-    )
-    .unwrap();
+    declare("run.timeout_secs: 7\n");
     assert_eq!(
-        exec::configured_timeout(tmp.path()).unwrap(),
+        exec::configured_timeout(Some(tmp.path())).unwrap(),
         Duration::from_secs(7)
     );
     // Malformed → loud, never a silent default.
+    declare("run.timeout_secs: fast\n");
+    assert!(exec::configured_timeout(Some(tmp.path())).is_err());
+    // Zero is malformed too: a zero ceiling would kill every step instantly.
+    declare("run.timeout_secs: 0\n");
+    assert!(exec::configured_timeout(Some(tmp.path())).is_err());
+
+    // A declaration that does not read as one → loud, never a silent default:
+    // the same posture the convention table takes.
     std::fs::write(
-        tmp.path().join(".meridian.toml"),
-        "[run]\ntimeout_secs = \"fast\"\n",
+        tmp.path().join("MERIDIAN.md"),
+        "---\ntype: meridian-config\nversion: 1\n---\n",
     )
     .unwrap();
-    assert!(exec::configured_timeout(tmp.path()).is_err());
+    assert!(exec::configured_timeout(Some(tmp.path())).is_err());
 }

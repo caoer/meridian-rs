@@ -256,6 +256,10 @@ pub struct RealiseSpec {
     pub limits: EvalLimits,
     /// Bash wall-clock ceiling threaded into every apply run.
     pub timeout: Duration,
+    /// The root whose `MERIDIAN.md` declares the caps convention ceiling, or
+    /// `None` when the ladder answered nothing. Threaded in beside `timeout`
+    /// for the same reason: only the caller holds the ladder's answer.
+    pub declaring_root: Option<PathBuf>,
 }
 
 /// The whole realise run's outcome.
@@ -353,7 +357,12 @@ pub fn realise(
     let mut caps_union = CapSet::none();
     for claim in claims {
         if let Some(binding) = &claim.apply {
-            let caps = resolve_binding_caps(root, &claim.selector, binding)?;
+            let caps = resolve_binding_caps(
+                root,
+                spec.declaring_root.as_deref(),
+                &claim.selector,
+                binding,
+            )?;
             caps_union = union(&caps_union, &caps);
         }
     }
@@ -488,6 +497,7 @@ fn run_apply(
         takeover: false,
         scratch: &spec.scratch,
         timeout: spec.timeout,
+        declaring_root: spec.declaring_root.as_deref(),
         limits: spec.limits,
     };
     let mut sink = io::sink();
@@ -578,11 +588,13 @@ fn render_card(selector: &str, detail: &str, now: Option<&str>) -> String {
 }
 
 /// Resolve one apply binding's declared caps through the run plane's own caps
-/// resolution (explicit frontmatter > `.meridian.toml` convention > deny) —
-/// the same resolution `runner::run` applies, read here for the union and the
-/// dry-run blast radius without running the block.
+/// resolution (explicit frontmatter > the root's own `MERIDIAN.md`
+/// `run.caps.<pattern>` convention > deny) — the same resolution `runner::run`
+/// applies, read here for the union and the dry-run blast radius without
+/// running the block.
 fn resolve_binding_caps(
     root: &fs::WorkspaceRoot,
+    declaring_root: Option<&Path>,
     selector: &str,
     binding: &ApplyBinding,
 ) -> Result<CapSet, RealiseError> {
@@ -595,7 +607,8 @@ fn resolve_binding_caps(
     let task =
         run::address::resolve_task(&doc, Some(&binding.task)).map_err(|e| err(e.to_string()))?;
     let explicit = run::caps::explicit_caps(&doc, &binding.task).map_err(|e| err(e.to_string()))?;
-    let conventions = run::caps::load_conventions(&root.0).map_err(|e| err(e.to_string()))?;
+    let (conventions, _source) =
+        run::caps::load_conventions(declaring_root).map_err(|e| err(e.to_string()))?;
     let resolution = run::caps::resolve_caps(
         &binding.task,
         task.block.lang,

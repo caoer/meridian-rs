@@ -1,25 +1,61 @@
 //! Capability resolution — deny-by-default (verdict ruling 3, plan decision
 //! #15). An undeclared block is read-only: it can compute, but no effect of
 //! its executes. Resolution precedence: explicit frontmatter
-//! (`task.<name>.caps`) > `.meridian.toml` `[run.caps]` name-convention >
-//! none. Conventions NARROW only, never widen: a matching convention acts as a
-//! ceiling over an explicit grant (the intersection survives, the narrowed
-//! remainder is reported), and the builtin `check-*` / `verify-*` read-only
-//! ceiling cannot be overridden at all. `check-*` / `verify-*` names refuse a
-//! bash fence loudly at load; `fix-*` does not — fix blocks declare writes and
-//! are exactly where bash is wanted.
+//! (`task.<name>.caps`) > the ROOT'S OWN `MERIDIAN.md` declaration
+//! (`run.caps.<pattern>`) > none. Conventions NARROW only, never widen: a
+//! matching convention acts as a ceiling over an explicit grant (the
+//! intersection survives, the narrowed remainder is reported), and the builtin
+//! `check-*` / `verify-*` read-only ceiling cannot be overridden at all.
+//! `check-*` / `verify-*` names refuse a bash fence loudly at load; `fix-*`
+//! does not — fix blocks declare writes and are exactly where bash is wanted.
+//!
+//! # The convention plane (marker-retirement ruling, 2026-07-26)
+//! The table lives in the root's own self-declaration — `<root>/MERIDIAN.md`
+//! with `type: meridian-root`, the artifact D7's *"the root declares,
+//! `MERIDIAN.md` binds"* already governs. The retired marker files are NOT read
+//! and NO fallback to them ships: a reader that still found one would defeat the
+//! retirement the ruling ordered. `tests/caps_home.rs` proves them inert.
+//!
+//! The grammar is the PAGE grammar reused — flat dotted frontmatter keys,
+//! comma-separated cap lists, read through the same [`frontmatter`] helper as
+//! `task.<name>.caps`:
+//!
+//! ```yaml
+//! run.caps.fix-*: md.set_field, md.append_section
+//! run.caps.fix-note: md.set_field:status
+//! ```
+//!
+//! Flat is the law of the reader, not a preference: `model`'s frontmatter
+//! scanner takes no YAML crate and SKIPS every indented line, so a nested
+//! `run:` / `  caps:` spelling would be unreadable through it.
+//!
+//! [`ConventionSource`] states which of the four root situations answered — a
+//! resolution never goes silent about whether a ceiling was in force. A
+//! present-but-invalid declaration REFUSES ([`CapsError::Declaration`]):
+//! silently reading it as the empty table would delete a ceiling on one typo,
+//! which is the widening this plane exists to prevent.
 //!
 //! Caps are namespaced strings (`md.set_field`), forward-compatible to
 //! target-scoped (`md.set_field:status`) — a target-scoped cap is strictly
 //! narrower than its untargeted form.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use model::Document;
 
 use crate::address::frontmatter;
 use crate::fence::TaskLanguage;
+
+/// The frontmatter key prefix carrying one convention entry. The pattern is
+/// whatever follows it, taken by stripping this FIXED prefix rather than by
+/// splitting on dots — so a pattern may itself contain `.`, which
+/// [`Conventions::new`]'s charset allows.
+pub const CAPS_KEY_PREFIX: &str = "run.caps.";
+
+/// The reserved filename of the root's self-declaration. Re-exported from its
+/// ONE owner rather than re-spelled here.
+pub use config::mount::{DECLARATION_FILENAME, DECLARATION_TYPE};
 
 /// Name patterns that are read-only BY CONVENTION, builtin and non-overridable:
 /// their ceiling is empty, and a bash fence under them refuses at load. `fix-*`
@@ -166,8 +202,8 @@ impl CapSet {
     }
 }
 
-/// The `[run.caps]` name-convention table from `.meridian.toml`: pattern →
-/// grant/ceiling set, resolution-ordered (longest pattern first, then
+/// The `run.caps.<pattern>` name-convention table from the root's declaration:
+/// pattern → grant/ceiling set, resolution-ordered (longest pattern first, then
 /// lexicographic — deterministic regardless of file order).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Conventions(Vec<(String, CapSet)>);
@@ -225,10 +261,53 @@ fn pattern_matches(pattern: &str, name: &str) -> bool {
 pub enum CapSource {
     /// Explicit `task.<name>.caps` frontmatter.
     Explicit,
-    /// A `.meridian.toml` `[run.caps]` convention entry (the pattern).
+    /// A root-declared `run.caps.<pattern>` convention entry (the pattern).
     Convention(String),
     /// No declaration anywhere — deny-by-default, read-only.
     DenyDefault,
+}
+
+/// Which root situation produced a [`Conventions`] table. The ruling requires
+/// every resolution to say which root answered rather than going silent, and
+/// these three teach three different fixes.
+///
+/// Three states and not four: "the root declared a table" versus "the root
+/// declared none" is read off [`Conventions`] being empty, so it needs no
+/// variant of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConventionSource {
+    /// `<root>/MERIDIAN.md` read as a `meridian-root` declaration. The table may
+    /// still be empty — the root declares itself but states no `run.caps.*`.
+    Declared(PathBuf),
+    /// The root holds no `MERIDIAN.md`. Absent is not broken (the same stance
+    /// `config`'s own D7 takes), so the table is empty and deny-by-default stands.
+    Undeclared(PathBuf),
+    /// No root resolved at all — the ladder's `CwdDefault`, where `root()` is
+    /// `None`. There is no declaring root, so there is no ceiling to read and
+    /// NO convention ceiling is in force. Not an error: refusing here would
+    /// delete the convenience default the ruling deliberately kept.
+    NoRoot,
+}
+
+impl ConventionSource {
+    /// The root whose declaration was consulted, if there was one.
+    #[must_use]
+    pub fn root(&self) -> Option<&Path> {
+        match self {
+            Self::Declared(p) | Self::Undeclared(p) => Some(p.as_path()),
+            Self::NoRoot => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ConventionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Declared(p) => write!(f, "declared by {}", p.display()),
+            Self::Undeclared(p) => write!(f, "{} declares no {}", p.display(), DECLARATION_FILENAME),
+            Self::NoRoot => f.write_str("no declaring root — no convention ceiling in force"),
+        }
+    }
 }
 
 /// A block's resolved capabilities: the effective set, where the grant came
@@ -250,10 +329,11 @@ pub enum CapsError {
     BadCap { raw: String },
     /// A convention pattern is not a literal or trailing-`*` prefix glob.
     BadPattern { pattern: String },
-    /// `.meridian.toml` exists but does not parse, or `[run.caps]` is not a
-    /// table of string arrays — an unreadable policy file never silently
-    /// becomes "no policy".
-    Toml { reason: String },
+    /// `<root>/MERIDIAN.md` exists but does not read as a `meridian-root`
+    /// declaration — an unreadable policy file never silently becomes "no
+    /// policy". Silence here would delete a declared ceiling on one typo,
+    /// which is a widening.
+    Declaration { path: PathBuf, reason: String },
     /// A `check-*` / `verify-*` block carries a bash fence — refused at load
     /// (ruling 3): a read-only-by-convention name gets no exec.
     BashFenceRefused { task: String, pattern: String },
@@ -269,7 +349,12 @@ impl std::fmt::Display for CapsError {
                 f,
                 "invalid caps pattern '{pattern}' (expected a name or prefix-*)"
             ),
-            CapsError::Toml { reason } => write!(f, ".meridian.toml [run.caps]: {reason}"),
+            CapsError::Declaration { path, reason } => write!(
+                f,
+                "refused: {} does not read as a root declaration: {reason}. No convention table was loaded. Fix: give it `type: {DECLARATION_TYPE}`, `version: {}`, and a `name:`, or remove the file.",
+                path.display(),
+                config::VERSION,
+            ),
             CapsError::BashFenceRefused { task, pattern } => write!(
                 f,
                 "task '{task}' matches read-only convention '{pattern}' but carries a bash fence — refused"
@@ -296,51 +381,58 @@ pub fn explicit_caps(doc: &Document, task: &str) -> Result<Option<CapSet>, CapsE
     }
 }
 
-/// Load the `[run.caps]` conventions from `.meridian.toml` at the workspace
-/// root. An absent file or absent section is the empty table (deny-by-default
-/// stands); a malformed file is a loud typed error.
+/// Read the `run.caps.<pattern>` conventions out of an already-read root
+/// declaration. Pure: the caller owns the I/O and the validity check, this
+/// owns only what the keys MEAN.
 ///
 /// # Errors
-/// [`CapsError::Toml`] / [`CapsError::BadPattern`] / [`CapsError::BadCap`].
-pub fn load_conventions(workspace_root: &Path) -> Result<Conventions, CapsError> {
-    let path = workspace_root.join(".meridian.toml");
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Conventions::none()),
-        Err(e) => {
-            return Err(CapsError::Toml {
-                reason: e.to_string(),
-            });
-        }
-    };
-    let table: toml::Table = raw.parse().map_err(|e: toml::de::Error| CapsError::Toml {
-        reason: e.to_string(),
-    })?;
-    let Some(caps) = table
-        .get("run")
-        .and_then(toml::Value::as_table)
-        .and_then(|run| run.get("caps"))
-    else {
+/// [`CapsError::BadCap`] / [`CapsError::BadPattern`] on a malformed entry — a
+/// mis-spelled ceiling is reported, never read as an absent one.
+pub fn conventions_from_declaration(declaration: &Document) -> Result<Conventions, CapsError> {
+    let Some(map) = frontmatter(declaration) else {
         return Ok(Conventions::none());
     };
-    let caps = caps.as_table().ok_or_else(|| CapsError::Toml {
-        reason: "[run.caps] must be a table".to_owned(),
-    })?;
     let mut entries = Vec::new();
-    for (pattern, value) in caps {
-        let list = value.as_array().ok_or_else(|| CapsError::Toml {
-            reason: format!("[run.caps] '{pattern}' must be an array of cap strings"),
-        })?;
-        let mut set = BTreeSet::new();
-        for item in list {
-            let raw_cap = item.as_str().ok_or_else(|| CapsError::Toml {
-                reason: format!("[run.caps] '{pattern}' entries must be strings"),
-            })?;
-            set.insert(Cap::parse(raw_cap)?);
-        }
-        entries.push((pattern.clone(), CapSet(set)));
+    for (key, value) in &map.0 {
+        let Some(pattern) = key.strip_prefix(CAPS_KEY_PREFIX) else {
+            continue;
+        };
+        entries.push((pattern.to_owned(), CapSet::parse(value)?));
     }
     Conventions::new(entries)
+}
+
+/// Load the run-plane conventions declared by `root` — `<root>/MERIDIAN.md`
+/// with `type: meridian-root`.
+///
+/// `root` is `None` when the ladder answered `CwdDefault`: there is no
+/// declaring root, so the table is empty and [`ConventionSource::NoRoot`] says
+/// so out loud rather than letting an absent ceiling pass for a satisfied one.
+///
+/// An absent declaration is the empty table (deny-by-default stands). A
+/// PRESENT one that does not read as a root declaration is a loud refusal —
+/// reading it as empty would silently drop a declared ceiling.
+///
+/// # Errors
+/// [`CapsError::Declaration`] / [`CapsError::BadPattern`] / [`CapsError::BadCap`].
+pub fn load_conventions(root: Option<&Path>) -> Result<(Conventions, ConventionSource), CapsError> {
+    let Some(root) = root else {
+        return Ok((Conventions::none(), ConventionSource::NoRoot));
+    };
+    match config::mount::read_root_declaration(root) {
+        Ok(declaration) => Ok((
+            conventions_from_declaration(&declaration.document)?,
+            ConventionSource::Declared(root.to_path_buf()),
+        )),
+        Err(config::mount::DeclarationFault::Absent) => Ok((
+            Conventions::none(),
+            ConventionSource::Undeclared(root.to_path_buf()),
+        )),
+        Err(config::mount::DeclarationFault::Unreadable(reason)) => Err(CapsError::Declaration {
+            path: root.join(DECLARATION_FILENAME),
+            reason,
+        }),
+    }
 }
 
 /// Resolve a block's effective capabilities (see the module docs for the law).

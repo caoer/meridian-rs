@@ -79,6 +79,9 @@ fn spec(scratch: &Path) -> RealiseSpec {
         dry_run: false,
         limits: EvalLimits::default(),
         timeout: Duration::from_secs(30),
+        // These scenarios exercise the reconciliation loop, not the convention
+        // plane: no declaring root means no ceiling narrows a claim's caps.
+        declaring_root: None,
     }
 }
 

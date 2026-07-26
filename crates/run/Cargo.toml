@@ -1,6 +1,6 @@
 [package]
 name = "run"
-description = "The mrd-local run plane (S1, U2 slice): task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, and deny-by-default capability resolution. Pure pre-eval resolution — no eval, no apply, no I/O beyond page load and the .meridian.toml caps table."
+description = "The mrd-local run plane (S1, U2 slice): task addressing over the §2.1 fm_key→block grammar, fence-language detection (starlark|bash), arg/env contract validation, and deny-by-default capability resolution. Pure pre-eval resolution — no eval, no apply, no I/O beyond page load and the root's own MERIDIAN.md declaration."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -36,8 +36,16 @@ receipt = { workspace = true }
 # the run plane can refuse changing them. The grammar has ONE owner — re-deriving
 # "which bytes are the lock" here would be a second spelling of it.
 lock = { workspace = true }
-# `.meridian.toml` `[run.caps]` name-convention table.
-toml = { workspace = true }
+# The root's own `MERIDIAN.md` self-declaration, which carries the run plane's
+# convention table (`run.caps.<pattern>`) and its timeout ceiling. What a VALID
+# root declaration is has ONE owner — the `type:`/`version:` discriminator lives
+# in `config`, and re-deriving it here would be a second spelling of it, the same
+# argument the `lock` edge above is taken on. `config` reads; this crate
+# interprets only its OWN key namespace, so `config` stays ignorant that run
+# exists. Measured cost: `config` + `workspace` + `cache` enter the graph and NO
+# new external crate does — `serde_yaml` already arrives via `policy` and `addr`
+# via `model`.
+config = { workspace = true }
 # Run-plane receipt line body (machine-re-readable — the decision-#26
 # foreign-edit check parses prior receipts back).
 serde = { workspace = true, features = ["derive"] }

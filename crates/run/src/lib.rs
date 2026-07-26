@@ -5,7 +5,7 @@
 //! Pre-eval resolution locates the addressed task block ([`address`]),
 //! classifies its fence language ([`fence`]), validates the declared arg/env
 //! contract ([`contracts`]) and resolves the block's capability set
-//! deny-by-default ([`caps`]). Past that, [`runner`] dispatches on the fence
+//! deny-by-default against the root's own declaration ([`caps`]). Past that, [`runner`] dispatches on the fence
 //! language — `starlark` to the hermetic kernel ([`dispatch_starlark`]),
 //! `bash` to a `setsid` child under a wall-clock timeout ([`exec`],
 //! [`dispatch_bash`]) whose only tree mutation is the effect-shim fd
@@ -44,11 +44,20 @@
 //!
 //! # Capability law (verdict ruling 3, plan decision #15)
 //! Deny-by-default: an undeclared block is read-only. Resolution precedence is
-//! explicit frontmatter > `.meridian.toml` `[run.caps]` name-convention > none;
-//! conventions NARROW only, never widen. `check-*` / `verify-*` blocks refuse a
-//! bash fence loudly at load (`fix-*` does not — fix blocks declare writes and
-//! are exactly where bash is wanted). Caps are namespaced strings
-//! (`md.set_field`), forward-compatible to target-scoped (`md.set_field:status`).
+//! explicit frontmatter (`task.<name>.caps`) > the ROOT'S OWN `MERIDIAN.md`
+//! declaration (`run.caps.<pattern>`) > none; conventions NARROW only, never
+//! widen. `check-*` / `verify-*` blocks refuse a bash fence loudly at load
+//! (`fix-*` does not — fix blocks declare writes and are exactly where bash is
+//! wanted). Caps are namespaced strings (`md.set_field`), forward-compatible to
+//! target-scoped (`md.set_field:status`).
+//!
+//! The convention plane is the root's own self-declaration (marker-retirement
+//! ruling, 2026-07-26): *"the root declares, `MERIDIAN.md` binds"*. Both the
+//! declaring root and the wall-clock ceiling are INJECTED by the caller
+//! (`RunSpec::declaring_root`, `RunSpec::timeout`) — only the caller holds the
+//! ladder's answer, and `declaring_root` is `None` exactly when the ladder
+//! answered nothing, where no convention ceiling is in force. Full law:
+//! [`caps`].
 
 pub mod address;
 pub mod caps;
@@ -67,7 +76,9 @@ pub mod shim;
 pub mod snapshot;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
-pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
+pub use caps::{
+    Cap, CapResolution, CapSet, CapSource, CapsError, ConventionSource, Conventions,
+};
 pub use contracts::{Contract, ContractError, ContractViolation};
 pub use dispatch_bash::{BashDispatch, BashError, BashOutcome, Phase2};
 pub use dispatch_starlark::{DispatchError, DispatchOutcome, StarlarkDispatch};

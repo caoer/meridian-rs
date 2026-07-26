@@ -75,6 +75,16 @@ pub struct RunSpec<'a> {
     pub scratch: &'a Path,
     /// Bash wall-clock ceiling (#21; unused on the starlark path).
     pub timeout: Duration,
+    /// The root whose `MERIDIAN.md` declares the convention ceiling, or `None`
+    /// when the ladder answered nothing (`CwdDefault`) — then no ceiling is in
+    /// force and deny-by-default is the whole chain.
+    ///
+    /// Injected rather than derived from the [`fs::WorkspaceRoot`] above: those
+    /// two are the same path whenever a root resolved, but they answer
+    /// different questions — one is where files are read, the other is whether
+    /// anything is entitled to declare policy. Only the caller holds the
+    /// ladder's answer, which is why `timeout` above arrives the same way.
+    pub declaring_root: Option<&'a Path>,
     /// Kernel eval limits — `max_depth` is ALSO the cascade depth cap.
     pub limits: EvalLimits,
 }
@@ -237,7 +247,8 @@ pub fn run(
     contracts::validate(&name, &contract, &spec.args, &spec.env).map_err(RunnerError::Violation)?;
 
     let explicit = caps::explicit_caps(&doc, &name).map_err(RunnerError::Caps)?;
-    let conventions = caps::load_conventions(&root.0).map_err(RunnerError::Caps)?;
+    let (conventions, _source) =
+        caps::load_conventions(spec.declaring_root).map_err(RunnerError::Caps)?;
     let resolution = caps::resolve_caps(&name, task.block.lang, explicit.as_ref(), &conventions)
         .map_err(RunnerError::Caps)?;
 

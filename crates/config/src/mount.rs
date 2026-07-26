@@ -835,20 +835,51 @@ fn containment<'a>(first: &'a Path, second: &'a Path) -> Option<(&'a Path, &'a P
 }
 
 /// A root's self-declaration, read.
-struct Declaration {
-    name: String,
-    document: model::Document,
+///
+/// Public because the run plane reads the same artifact for its own
+/// convention table: what a VALID root declaration is has one owner, and a
+/// second consumer must ask that owner rather than re-spell the
+/// `type:`/`version:` discriminator. This crate stays ignorant of what any
+/// consumer reads out of `document` — the keys are theirs, the validity is
+/// ours.
+pub struct Declaration {
+    /// The canonical root name the root claims for itself.
+    pub name: String,
+    /// The declaration parsed as content, for the consumer's own keys and for
+    /// pin verification.
+    pub document: model::Document,
 }
 
 /// Why a declaration did not produce a name. Absent and unreadable are kept
 /// apart because they teach different fixes — and because collapsing them would
 /// report a broken declaration as no declaration.
-enum DeclarationFault {
+pub enum DeclarationFault {
+    /// No [`DECLARATION_FILENAME`] at the root's top level.
     Absent,
+    /// Present, but it does not read as a `meridian-root` declaration.
     Unreadable(String),
 }
 
-fn read_declaration(path: &Path) -> Result<Declaration, DeclarationFault> {
+/// Read the self-declaration of the root at `root` — [`DECLARATION_FILENAME`]
+/// at its top level.
+///
+/// The path-taking [`read_declaration`] is what this crate's own bind path
+/// uses; this is the root-taking spelling a consumer wants, so no caller
+/// re-joins the reserved filename itself.
+///
+/// # Errors
+/// [`DeclarationFault::Absent`] when the root holds no declaration, or
+/// [`DeclarationFault::Unreadable`] when one is present but does not read as
+/// a `meridian-root` declaration.
+pub fn read_root_declaration(root: &Path) -> Result<Declaration, DeclarationFault> {
+    read_declaration(&root.join(DECLARATION_FILENAME))
+}
+
+/// Read a self-declaration from its exact path.
+///
+/// # Errors
+/// [`DeclarationFault::Absent`] or [`DeclarationFault::Unreadable`].
+pub fn read_declaration(path: &Path) -> Result<Declaration, DeclarationFault> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(DeclarationFault::Absent),

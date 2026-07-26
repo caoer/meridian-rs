@@ -111,7 +111,14 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     let (invocation_id, now) = mint_identity()?;
     let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
     std::fs::create_dir_all(&scratch).map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
-    let timeout = run::exec::configured_timeout(&root.0).map_err(|e| Fail::tool(e.to_string()))?;
+    // `resolve_root` has already committed to a workspace (ladder, daemon
+    // adoption, or ephemeral), so unlike `mrd run` there is no unanswered case
+    // to represent here — this root is the one that declares. Substituting the
+    // declaration for the retired marker keeps today's behavior: the same
+    // directory is consulted, only the filename and the parse law change.
+    let declaring_root = Some(root.0.clone());
+    let timeout = run::exec::configured_timeout(declaring_root.as_deref())
+        .map_err(|e| Fail::tool(e.to_string()))?;
 
     let spec = RealiseSpec {
         invocation_id,
@@ -122,6 +129,7 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         dry_run: parsed.dry,
         limits: EvalLimits::default(),
         timeout,
+        declaring_root,
     };
 
     let report = realise::realise(root, std::slice::from_ref(&claim), &spec);
