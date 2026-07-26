@@ -165,9 +165,20 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
         )),
         "the git-folder root, which carries no vault name: {text}"
     );
+    // REPLACED by u31b, stated rather than absorbed. This line read *"a
+    // git-folder root has no vault leg"* — it encoded the shipped behaviour,
+    // which is the behaviour criterion 2 rejects: the leg is absent BY
+    // CONSTRUCTION and the face must SAY so. The artifact that adjudicates the
+    // swap is the criterion itself (`ccc-compound/plan.md` §9.2), untouched by
+    // this unit; it was never this assertion (S3-R30).
+    //
+    // And it COULD NOT HAVE FAILED as written: the declared path always sits
+    // between `git-folder` and any `vault:` token, so the second `contains` was
+    // false for every row this verb can print, and `!B` carried the whole
+    // disjunct. A green arm over an unreachable condition (S3-R23(1)).
     assert!(
-        !text.contains("archive  git-folder") || !text.contains("archive  git-folder  vault:"),
-        "a git-folder root has no vault leg: {text}"
+        mount_row(&text, "archive").ends_with("  vault:(none)  bound"),
+        "the git-folder root STATES its absent vault leg: {text}"
     );
 
     // U7: the CANONICAL path is published beside the declared one whenever the
@@ -212,6 +223,113 @@ fn rev_line(text: &str) -> String {
         .find(|t| t.starts_with("file_rev:"))
         .unwrap_or_default()
         .to_string()
+}
+
+/// The ONE output line for a mount, by canonical root name.
+///
+/// Returned whole so an assertion pins a cell **at its leg**. A `contains` over
+/// the entire output would also pass when the token turned up in some other
+/// root's row, in the tools list, or in the bridge section — which is the
+/// difference between measuring the row and measuring the page.
+fn mount_row(text: &str, name: &str) -> String {
+    text.lines()
+        .find(|l| l.trim_start().starts_with(&format!("{name}  ")))
+        .unwrap_or_else(|| panic!("no mount row for `{name}` in:\n{text}"))
+        .to_string()
+}
+
+/// **Criterion 2 — a leg that is absent BY CONSTRUCTION is STATED, never left
+/// blank.**
+///
+/// The three-way map is total on the name↔path axis and **partial on the vault
+/// axis**: `Mount::vault` is `Some` iff `kind: vault`, because the parser
+/// *refuses* a `vault:` line on a `git-folder` entry
+/// (`mount-vault-on-git-folder`). So a git-folder root's vault leg is not
+/// missing — it cannot exist, and the criterion asks this face to say which.
+///
+/// **A blank cell is byte-identical to a dropped value.** Before the marker,
+/// `archive  git-folder  /…/archive  bound` was the same bytes a build that
+/// lost the vault name between the parser and the renderer would print. The
+/// reader had no way to tell the two apart, which is the whole of U6's
+/// byte-identity lesson read at the row level.
+///
+/// **Both halves, and the second is what makes the first mean anything
+/// (S3-R8(c)):** the git-folder row carries the marker at its vault leg, and
+/// the vault root carries its NAME there and no marker. A build that printed
+/// the marker in *every* vault cell satisfies the first half on its own.
+#[test]
+fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+
+    let out = run(home.path(), None, &[]);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    let text = stdout(&out);
+
+    // The refusal half. `ends_with` rather than `contains`, so the assertion
+    // fails on a blank cell AND on a marker rendered at the wrong leg — an
+    // assertion a blank could satisfy is not the assertion (S3-R29's
+    // insensitivity class).
+    let folder = mount_row(&text, "archive");
+    assert!(
+        folder.ends_with("  vault:(none)  bound"),
+        "the git-folder root's vault leg renders the MARKER, never whitespace: {folder}"
+    );
+
+    // The acceptance half.
+    let vault = mount_row(&text, "field-notes");
+    assert!(
+        vault.ends_with("  vault:field-notes  bound"),
+        "the vault root's vault leg renders its Obsidian vault NAME: {vault}"
+    );
+    assert!(
+        !vault.contains("(none)"),
+        "and never the marker — otherwise the half above is satisfied by a build \
+         that calls every vault absent: {vault}"
+    );
+
+    // S3-R37: the population this arm iterates is asserted non-empty, so the
+    // fixture losing its git-folder root retires the coverage loudly instead of
+    // silently.
+    assert_eq!(
+        text.matches("vault:(none)").count(),
+        1,
+        "exactly one root in this fixture is structurally without a vault: {text}"
+    );
+}
+
+/// **The `--json` face is NOT changed by the marker, and this is the guard that
+/// keeps it that way.**
+///
+/// `null` at a **present key** is already the statement there; *dropping* the
+/// key would have been the omission. The human marker is a spelling for
+/// readers, and a client that string-compared `vault` would read `(none)` as a
+/// vault actually named that — so the marker must not reach the machine face at
+/// all, at any key.
+#[test]
+fn the_json_face_states_absence_as_null_and_never_carries_the_human_marker() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+
+    let out = run(home.path(), None, &["--json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let raw = stdout(&out);
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("json");
+
+    let mounts = value["mounts"].as_array().expect("mounts");
+    let folder = mounts[1].as_object().expect("the git-folder mount");
+    assert!(
+        folder.contains_key("vault"),
+        "the KEY is present — that is what makes the null a statement: {folder:?}"
+    );
+    assert!(
+        folder["vault"].is_null(),
+        "and its value is null: {folder:?}"
+    );
+    assert!(
+        !raw.contains("(none)"),
+        "the human marker never reaches the machine face, at any key: {raw}"
+    );
 }
 
 /// State A: no config file. Not an error and not a warning — every machine
