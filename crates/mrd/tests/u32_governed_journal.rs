@@ -254,11 +254,26 @@ fn governed_writes_leave_check_green() {
         // The `interval:` line is F1's addition, adjudicated by S3-R29 ("state the
         // interval whenever you state the check") — a ruling older than this change
         // and unmoved by it. Every journal and pin line below is byte-identical.
+        //
+        // The two `fence` lines are ROW 21's addition, adjudicated by its own
+        // ruling: fence coverage is per-checkout and opt-in permanently, so a
+        // checkout that carries none must be TOLD so unasked — the silence was the
+        // defect, not the absence. This corpus is a real git repository that
+        // nobody fenced, so it reads `absent` at all three doors. **It changes no
+        // verdict line and no exit code**: this leg still asserts exit 0 above, and
+        // `s4r21_fence_line.rs` holds the exit invariant directly by reading one
+        // checkout fenced and unfenced.
         format!(
             "check core {}\n  interval: worktree — the bytes on disk. The git INDEX was not \
              read, so this says nothing about what a commit would record: `mrd check --staged` \
              asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
-             anchoring: 0 anchored · 0 pending-anchor · 1 never-anchored\n",
+             anchoring: 0 anchored · 0 pending-anchor · 1 never-anchored\n  fence: absent — 0 \
+             of 3 doors carry this engine's fence; `$GIT_DIR/hooks` is never a tracked path, \
+             so no clone, fetch or pull carries a fence and a fresh checkout is unfenced BY \
+             DESIGN — `mrd hook install` fences this one, per checkout and opt-in · REPORTED, \
+             never gated on — fence coverage is a property of this local checkout and not of \
+             the corpus, so this line does not move check's exit\n  fence doors: pre-commit \
+             absent · pre-merge-commit absent · pre-applypatch absent\n",
             root.0.display()
         ),
         "and it is the honest green, earned against a current baseline — U14 added \

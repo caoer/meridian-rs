@@ -126,6 +126,30 @@ fn write(ws: &Path, rel: &str, body: &str) {
 /// cannot drift from the legs asserting its presence.
 const GREY: &str = "grey(cannot-assess)";
 
+/// **Row 21's fence block for a workspace that is no git repository**, spelled once
+/// for the two key-for-key legs below.
+///
+/// The door-plane keys (`doors`, `fenced_doors`, `total_doors`) are **absent, not
+/// null**: this face's law is that an absent field reads as *not checked*, and a
+/// root with no hook directory has no door plane that could have been read. A
+/// `null` would say the doors WERE read and came back as nothing — a different
+/// fact, and a false one. Row 21's own suite (`s4r21_fence_line.rs`) holds that
+/// absence against a fenced root where the same keys ARE present.
+fn no_repo_fence(root: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "state": "not-a-git-repo",
+        "fenceable": false,
+        "teaching": format!(
+            "{} is not a git repository, so there is no hook directory to install into. A \
+             meridian workspace does not have to be a git repository — this is a supported \
+             state, not a fault in the workspace.",
+            root.display()
+        ),
+        "engine_version": 3,
+        "gates_the_exit": false,
+    })
+}
+
 /// One journal row line in the `render_row` grammar (`parse_rows` reads
 /// `root_before=`, `root_after=`, and the trailing `^r-NNNNNN`).
 fn row(anchor: &str, root_before: &str, root_after: &str) -> String {
@@ -176,6 +200,15 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 /// what is added is the sentence the ruling requires, and it says plainly that a
 /// bare `mrd check` did NOT read the index. *The pin caught the addition, which is
 /// what it is for.*
+///
+/// # And the `fence:` line is a SECOND amendment, adjudicated by row 21
+/// Its adjudicator is likewise not this unit's: **fence coverage is per-checkout
+/// and opt-in, permanently, so a checkout that carries no fence must be TOLD so
+/// unasked** — the silence, not the absence, was the defect. This workspace is not
+/// a git repository, so the observed state is `not-a-git-repo` and there is no
+/// door plane to print beside it. **Every verdict line above is byte-identical**,
+/// and the exit code is unmoved — which is row 21's own central claim, held here
+/// by `s4r21_fence_line.rs` over a checkout read fenced and unfenced.
 #[test]
 fn check_is_green_when_the_journal_carries_create_rows() {
     let sb = sandbox();
@@ -200,14 +233,19 @@ fn check_is_green_when_the_journal_carries_create_rows() {
     assert_eq!(
         stdout(&out),
         format!(
-            "check core {}\n  interval: worktree — the bytes on disk. The git INDEX was not \
+            "check core {ws}\n  interval: worktree — the bytes on disk. The git INDEX was not \
              read, so this says nothing about what a commit would record: `mrd check --staged` \
              asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
-             anchoring: no pinned objects\n",
-            root.0.display()
+             anchoring: no pinned objects\n  fence: not-a-git-repo — {ws} is not a git \
+             repository, so there is no hook directory to install into. A meridian workspace \
+             does not have to be a git repository — this is a supported state, not a fault in \
+             the workspace · REPORTED, never gated on — fence coverage is a property of this \
+             local checkout and not of the corpus, so this line does not move check's exit\n",
+            ws = root.0.display()
         ),
         "the baseline-present render is pinned byte for byte — the two JOURNAL \
-         lines are unchanged, and U14's two PIN-PLANE lines are the addition"
+         lines are unchanged, U14's two PIN-PLANE lines and row 21's fence line \
+         are the additions"
     );
 
     let out = sb.run(&ws, &["check", "--json"]);
@@ -250,9 +288,13 @@ fn check_is_green_when_the_journal_carries_create_rows() {
                 "diverged_paths": [],
                 "staged": null,
             },
+            // Row 21 — the CHECKOUT's fence coverage, reported beside the verdict
+            // and reaching no exit. Top-level, never inside the interval objects:
+            // it is a reading of the local checkout, not of any byte range.
+            "fence": no_repo_fence(&root.0),
         }),
         "the baseline-present json: the `core` block is unchanged key for key, \
-         and the pin plane is the addition"
+         the pin plane and row 21's fence block are the additions"
     );
 }
 
@@ -593,6 +635,11 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
                 "diverged_paths": [],
                 "staged": null,
             },
+            // Row 21 — the fence block rides beside the journal's `cannot_assess`
+            // for the same reason the pin plane does: it is a separate proposition
+            // about a separate subject, and one refusing must never be reported as
+            // the other refusing. `gates_the_exit: false` is the whole claim.
+            "fence": no_repo_fence(&root.0),
         }),
         "the grey json: no `green: true` for a reader to mistake for assessed, and \
          the ruled reason word verbatim"

@@ -98,6 +98,20 @@
 //! `--commit-gate` keeps all three meanings exactly. Only the question changes, so
 //! a caller that branches on the code alone still reads a code that means what it
 //! always meant.
+//!
+//! # THE FENCE LINE — A READING OF THE CHECKOUT, BESIDE THE VERDICT (row 21)
+//! Every line above is a proposition about the corpus's bytes or their write
+//! history. The `fence:` line is not: it is a proposition about the **local
+//! checkout's configuration**, a different subject on a different axis, and it
+//! **never touches the exit code** ([`Fence`]).
+//!
+//! `$GIT_DIR/hooks` is never a tracked path, so no clone, fetch or pull can carry
+//! the fence. Fence coverage is therefore **per-checkout and opt-in, permanently**,
+//! and a fresh clone being unfenced is a SUPPORTED state — one a user needs told,
+//! not a finding. **The defect this line closes is the SILENCE, not the absence**;
+//! colouring `check` on it would make governance unreachable in every fresh clone,
+//! which is the permanent-fact-as-per-commit-verdict defect above wearing a new
+//! sign.
 
 use std::path::Path;
 
@@ -105,6 +119,7 @@ use check::{Accounted, CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinPlane, P
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
+use crate::hook;
 use crate::{Fail, Format, current_dir};
 
 /// The finding leg of the triad: the invocation was well-formed, the core found a
@@ -192,6 +207,13 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         )
     });
 
+    // **The CHECKOUT's fence coverage — read here, reported below, and reachable
+    // from no exit path in this function** (row 21). It is deliberately taken on
+    // every invocation, gated and ungated alike: a reading whose presence depended
+    // on a flag would be a reading the operator has to know to ask for, which is
+    // the silence this line closes.
+    let fence = observe_fence(&canonical);
+
     emit(
         parsed.format,
         &canonical,
@@ -199,6 +221,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         &interval,
         staged.as_ref(),
         gate.as_ref(),
+        &fence,
     );
 
     // **DOWNGRADE THE BLOCKING, NEVER THE TELLING.** The standing break is printed
@@ -320,15 +343,16 @@ fn emit(
     interval: &Interval,
     staged: Option<&Assessed>,
     gate: Option<&Gate<'_>>,
+    fence: &Fence,
 ) {
     match format {
         Format::Json => {
-            let value = to_json(workspace, worktree, interval, staged, gate);
+            let value = to_json(workspace, worktree, interval, staged, gate, fence);
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
         Format::Human => print!(
             "{}",
-            render_human(workspace, worktree, interval, staged, gate)
+            render_human(workspace, worktree, interval, staged, gate, fence)
         ),
     }
 }
@@ -481,6 +505,210 @@ impl Gate<'_> {
             self.word()
         ))
     }
+}
+
+// ---------------------------------------------------------------------------
+// the fence line — the checkout, not the corpus (row 21)
+// ---------------------------------------------------------------------------
+
+/// The clause every fence line carries, spelled ONCE so the two faces cannot drift
+/// apart on the one claim this whole reading rests on.
+const FENCE_REPORTED: &str = "REPORTED, never gated on — fence coverage is a property of this \
+                              local checkout and not of the corpus, so this line does not move \
+                              check's exit";
+
+/// **What the local CHECKOUT's fence looks like — a reading beside the verdict,
+/// never part of it** (row 21).
+///
+/// # It is not a fourth proposition
+/// The chain, the `foreign_edit` trace and the pin plane are propositions about the
+/// corpus's bytes and their write history. Fence coverage is a proposition about
+/// the **local checkout's configuration**: a different subject on a different axis,
+/// which never competed for the exit code, so the closed triad above is not under
+/// pressure here and needs no defending.
+///
+/// # The isolation is STRUCTURAL, not a promise
+/// This type is not a field of [`Gate`]; nothing in [`worst_of_exit`],
+/// [`Gate::permits`] or [`Gate::exit`] can name it; and [`observe_fence`] returns
+/// no `Result`, so there is no error for a caller to propagate into a [`Fail`].
+/// The two checkouts of one corpus — one fenced, one not — exit identically
+/// because there is no path by which they could differ.
+///
+/// # Read-only, and it leaves no souvenir
+/// It reads through [`hook::status`], which surveys and reads the doors without
+/// taking the install lock. A root must not come away with an `mrd-hook.lock` in
+/// its git dir as the souvenir of being looked at.
+struct Fence {
+    /// The one word for this checkout: [`hook::Coverage::word`] when the root can
+    /// carry a fence, [`hook::Unfenceable::word`] when it cannot. **Never
+    /// re-spelled here** (S3-R6) — an operator who learned these words from
+    /// `mrd hook status` reads the same ones off this face.
+    word: &'static str,
+    /// What was observed, and what can be done about it.
+    teaching: String,
+    /// **The door plane, or `None` when this root has none.** Three doors can
+    /// disagree, so the set's one word is not the whole reading — `installed-partial`
+    /// names a disagreement without saying where it is, and a reader who cannot
+    /// locate it cannot act on it.
+    ///
+    /// `None` rather than an empty list for a root the fence cannot reach: a
+    /// submodule or a non-repository has no hook directory to read, which is not
+    /// the same fact as a hook directory read and found empty.
+    doors: Option<Vec<FenceDoor>>,
+    /// How many of those doors carry a fence this engine wrote.
+    fenced: usize,
+}
+
+/// One door of the install set, as this face reports it.
+struct FenceDoor {
+    /// The hook's git name — one of [`hook::FENCED_HOOKS`].
+    name: &'static str,
+    /// This door's own state word, from [`hook::Door::word`].
+    word: &'static str,
+    /// The generation THIS file declares, never the asking engine's.
+    version: Option<u32>,
+}
+
+/// Read the checkout's fence state.
+///
+/// **It cannot fail into the exit.** Every outcome of the survey — a reachable
+/// root, or one the fence cannot reach — is a [`Fence`] to report, so no branch
+/// here produces a value a caller could turn into a [`Fail`].
+fn observe_fence(workspace: &Path) -> Fence {
+    match hook::status(workspace) {
+        Ok((_, coverage)) => {
+            let fenced = coverage.fenced_doors();
+            Fence {
+                word: coverage.word(),
+                // `Coverage::teaching` is silent on the two states where the set
+                // agrees with itself, because `mrd hook status` prints the door
+                // set beside it and its reader came looking. **This reader did
+                // not** — the line is unasked-for, and `absent` is precisely the
+                // state row 21 exists to stop being silent about.
+                teaching: coverage
+                    .teaching()
+                    .unwrap_or_else(|| agreed_teaching(fenced)),
+                doors: Some(
+                    coverage
+                        .doors
+                        .iter()
+                        .map(|door| FenceDoor {
+                            name: door.name,
+                            word: door.word(),
+                            version: door.version(),
+                        })
+                        .collect(),
+                ),
+                fenced,
+            }
+        }
+        // A root the fence cannot reach is reported with its OBSERVED reason word
+        // and its teaching — never as a bare absence, and never as a refusal.
+        Err(refusal) => Fence {
+            word: refusal.word(),
+            teaching: refusal.teaching(),
+            doors: None,
+            fenced: 0,
+        },
+    }
+}
+
+/// The two states [`hook::Coverage::teaching`] leaves unworded, said here because
+/// this face speaks to a reader who did not ask for a fence report.
+fn agreed_teaching(fenced: usize) -> String {
+    // The count is already in the line, so neither of these repeats it — what the
+    // count cannot say is WHY, and that is what each says instead.
+    if fenced == 0 {
+        "`$GIT_DIR/hooks` is never a tracked path, so no clone, fetch or pull carries a fence \
+         and a fresh checkout is unfenced BY DESIGN — `mrd hook install` fences this one, per \
+         checkout and opt-in"
+            .to_owned()
+    } else {
+        "this checkout is fully fenced, at the generation this engine writes".to_owned()
+    }
+}
+
+/// The fence line(s) on the human face: the checkout's coverage, then the doors
+/// when it has any.
+///
+/// **Two lines rather than one**, for the reason [`Fence::doors`] gives: the set's
+/// word cannot carry which door disagrees, and the per-door line can.
+fn fence_lines(fence: &Fence) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    // The teachings come from two different types and only some of them end in a
+    // full stop; trimming it here is what keeps one render grammar over both.
+    let teaching = fence.teaching.trim_end_matches('.');
+    match &fence.doors {
+        Some(doors) => {
+            let _ = writeln!(
+                out,
+                "  fence: {} — {} of {} doors carry this engine's fence; {teaching} · \
+                 {FENCE_REPORTED}",
+                fence.word,
+                fence.fenced,
+                doors.len()
+            );
+            let _ = writeln!(
+                out,
+                "  fence doors: {}",
+                doors
+                    .iter()
+                    .map(|door| format!("{} {}", door.name, door.word))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            );
+        }
+        // No door plane, so no door line. The same law the `--json` face states at
+        // `interval_json`: an absence is not an empty reading of something.
+        None => {
+            let _ = writeln!(
+                out,
+                "  fence: {} — {teaching} · {FENCE_REPORTED}",
+                fence.word
+            );
+        }
+    }
+    out
+}
+
+/// The fence block on the `--json` face.
+///
+/// **The door-plane keys are ABSENT when there is no door plane** — this face's own
+/// law, stated at [`interval_json`]: *an absent field reads as "not checked"*. A
+/// `null` would say the doors WERE read and came back as nothing, which for a
+/// submodule or a non-repository is a different fact and a false one.
+fn fence_json(fence: &Fence) -> Value {
+    let mut value = json!({
+        "state": fence.word,
+        "fenceable": fence.doors.is_some(),
+        "teaching": fence.teaching,
+        // What THIS ENGINE writes, beside what the files declare (per door below).
+        // A verdict that does not disclose its judge cannot be checked by a third
+        // party, and in a version skew both participants are inside it.
+        "engine_version": hook::FENCE_VERSION,
+        // The card's central claim, machine-readable: a consumer must be able to
+        // read off this face that the block did not decide the exit.
+        "gates_the_exit": false,
+    });
+    if let Some(doors) = &fence.doors {
+        value["doors"] = doors
+            .iter()
+            .map(|door| {
+                json!({
+                    "name": door.name,
+                    "state": door.word,
+                    "fence_version": door.version,
+                })
+            })
+            .collect::<Vec<Value>>()
+            .into();
+        // The POPULATION beside the reading (S3-R23(5)): "one door fenced" means
+        // one thing out of three and something else out of one.
+        value["fenced_doors"] = json!(fence.fenced);
+        value["total_doors"] = json!(doors.len());
+    }
+    value
 }
 
 /// One interval's verdict, with the paths that made it a separate interval.
@@ -757,6 +985,7 @@ fn render_human(
     interval: &Interval,
     staged: Option<&Assessed>,
     gate: Option<&Gate<'_>>,
+    fence: &Fence,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -785,6 +1014,9 @@ fn render_human(
             gate.label
         );
     }
+    // The fence line comes LAST, after every reading that could have decided the
+    // exit, because it is the one reading that could not have (row 21).
+    out.push_str(&fence_lines(fence));
     out
 }
 
@@ -964,6 +1196,7 @@ fn to_json(
     interval: &Interval,
     staged: Option<&Assessed>,
     gate: Option<&Gate<'_>>,
+    fence: &Fence,
 ) -> Value {
     let mut value = interval_json(workspace, worktree);
     // **`red` is the VERDICT, so it is worst-of across intervals** — a reader who
@@ -1022,6 +1255,12 @@ fn to_json(
             },
         });
     }
+    // **Top-level, and never inside [`interval_json`]** (row 21): the fence is a
+    // reading of the CHECKOUT, so it is not per-interval and must not be copied
+    // into the staged object as though a commit's bytes had a fence state of their
+    // own. It is unconditional for the reason its absence would be a lie: this
+    // reading was taken on every run.
+    value["fence"] = fence_json(fence);
     value
 }
 
