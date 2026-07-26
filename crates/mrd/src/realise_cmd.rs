@@ -116,7 +116,7 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     let spec = RealiseSpec {
         invocation_id,
         now: Some(now),
-        actor: "mrd:realise".to_owned(),
+        actor: DEPLOY_ACTOR.to_owned(),
         board_dir: DEFAULT_BOARD_DIR.to_owned(),
         scratch: scratch.clone(),
         dry_run: parsed.dry,
@@ -255,18 +255,120 @@ fn truth_deploy(
     // mid-write left a torn policy file. It now rides `fs::replace_file` like
     // every other whole-file write, which DEMANDS the sealed candidate: the
     // document this deploy is about to land is built and parsed before a byte
-    // moves. (The flock, the rev-CAS and the journal row this door still lacks
-    // are reported as findings, not fixed here — the seal is this unit's bound.)
+    // moves. (The flock and the rev-CAS this door still lacks are reported as
+    // findings, not fixed here — the seal was U31's bound.)
+    //
+    // U35: and it JOURNALS. Sealing and journaling are different properties
+    // (S3-R12(a)): U31 made this door unable to land bytes off-path, which is not
+    // the same as leaving a receipt. Unjournaled, the deploy advanced the tree
+    // root while the journal's last row still described the tree before it — so
+    // `check`'s baseline went stale, both detectors refused `grey(cannot-assess)`,
+    // and the installed fence refused the operator's next commit even though the
+    // ONLY write in it was governed (U34 measured exactly that, both doors).
     let wrote = matches!(truth, policy::Truth::File) && !parsed.dry;
     if wrote {
         let candidate =
             model::candidate_of_body(policy::RESERVED_INDEX_PATH, convergence.index_after.clone());
+        // The row's facts are read AROUND the write itself — the tree before, the
+        // tree after, and the INDEX's own rev transition. `current` is the exact
+        // pre-image `converge` decided against, so the recorded `before` rev is
+        // the law that was deployed FROM, never a re-read that may have drifted.
+        let rev_before = body_rev(&current);
+        let root_before = tree_root(root)?;
         fs::replace_file(root, Path::new(policy::RESERVED_INDEX_PATH), &candidate)
             .map_err(|e| Fail::tool(format!("cannot write the converged INDEX: {e}")))?;
+        let root_after = tree_root(root)?;
+        // The §9 time fact the realise plane already mints; this door mints no
+        // invocation id, so the identity's other half is deliberately dropped.
+        let (_, now) = mint_identity()?;
+        journal_deploy(
+            root,
+            &Deployed {
+                now: &now,
+                root_before: &root_before,
+                root_after: &root_after,
+                rev_before: &rev_before,
+                rev_after: &candidate.document().root.node_rev.0,
+            },
+        )?;
     }
 
     render_truth(parsed.format, truth, &convergence, wrote);
     Ok(())
+}
+
+/// What one INDEX deploy did, as the journal records it: the §9 time fact, the
+/// tree roots read around the write, and the INDEX's own rev transition. A struct
+/// rather than six positional `&str`s — six same-typed parameters at one call
+/// site is a transposition waiting to be written into the ledger.
+struct Deployed<'a> {
+    now: &'a str,
+    root_before: &'a str,
+    root_after: &'a str,
+    rev_before: &'a str,
+    rev_after: &'a str,
+}
+
+/// The actor this door records — the same name `realise_page` gives the engine,
+/// spelled once so the ledger and the realise plane cannot drift apart.
+const DEPLOY_ACTOR: &str = "mrd:realise";
+
+/// **U35 — journal one `mrd realise --truth file` deploy.** The row rides U32's
+/// row writer (`receipt::journal::render_row`); this door adds FACTS, never a
+/// second renderer and never a second counter.
+///
+/// `op=realise` with a whole-file rev transition and `edits=0` is the `op=lock`
+/// row shape (`wire-serve::lock_write`), for the same reason: the deploy replaces
+/// a whole file, so its transition is file-grain and there are no node-grain edits
+/// to list. The row is appended AFTER the bytes land, so a crash between the two
+/// leaves a stale baseline — grey, the honest unknown — rather than a row claiming
+/// a write that never happened.
+///
+/// # Errors
+/// [`Fail`] (exit 2) when the journal page cannot be read or appended.
+fn journal_deploy(root: &fs::WorkspaceRoot, deployed: &Deployed<'_>) -> Result<(), Fail> {
+    let page = fs::read_journal_page(root)
+        .map_err(|e| Fail::tool(format!("cannot read the receipt journal: {e}")))?;
+    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
+        seq: receipt::journal::next_seq(&page),
+        op: "realise",
+        path: policy::RESERVED_INDEX_PATH,
+        actor: Some(DEPLOY_ACTOR),
+        now: Some(deployed.now),
+        root_before: deployed.root_before,
+        root_after: deployed.root_after,
+        file: Some(receipt::journal::FileTransition {
+            before: Some(deployed.rev_before),
+            after: Some(deployed.rev_after),
+        }),
+        edits: Vec::new(),
+    });
+    fs::append_line(root, Path::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
+        .map_err(|e| Fail::tool(format!("cannot append the deploy's journal row: {e}")))
+}
+
+/// The live workspace tree root — the SAME `fs::domain_snapshot` fold `check`'s
+/// baseline detector reads (`check::layer0::journal_trace`). A row written against
+/// any other fold would date the tree in a unit its reader does not use.
+///
+/// # Errors
+/// [`Fail`] (exit 2) when the domain snapshot cannot be read or folded.
+fn tree_root(root: &fs::WorkspaceRoot) -> Result<String, Fail> {
+    Ok(fs::domain_snapshot(root)
+        .map_err(|e| Fail::tool(format!("cannot fold the workspace tree: {e}")))?
+        .1
+        .0)
+}
+
+/// The whole-file rev of a page's bytes, through the document build every other
+/// rev in the system comes from — never a second hash of the same bytes.
+fn body_rev(body: &str) -> String {
+    model::candidate_of_body(policy::RESERVED_INDEX_PATH, body.to_owned())
+        .document()
+        .root
+        .node_rev
+        .0
+        .clone()
 }
 
 /// Render a `--truth` convergence: the direction, whether the INDEX was written,

@@ -478,6 +478,28 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
     commit_rename(&stage_file(&dst, &bytes)?)
 }
 
+/// Read the reserved receipt journal page's bytes, or the empty string when the
+/// page does not exist yet — **an absent journal IS an empty journal** (a genesis
+/// workspace has never written a row). Reads raw text: the row grammar is
+/// line-oriented and belongs to `receipt`, so this crate still renders and parses
+/// NOTHING (crate charter) — it answers only "where the journal lives" and "what
+/// absent means", the two facts it owns as the page's disk home.
+///
+/// **U35:** every door that appends a row must read this page first (the counter
+/// is derived from it — `receipt::journal::next_seq`), so the absent-is-empty rule
+/// gets one owner here instead of one copy per door.
+///
+/// # Errors
+/// Any I/O failure other than the page being absent.
+pub fn read_journal_page(root: &WorkspaceRoot) -> io::Result<String> {
+    let page = root.0.join(domain::RESERVED_JOURNAL_PATH);
+    match fs::read_to_string(&page) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e),
+    }
+}
+
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the two
 /// renames. Separating staging from the renames is what lets the crash-honesty
 /// test drive a kill BETWEEN the renames deterministically (§6.5). Each staged

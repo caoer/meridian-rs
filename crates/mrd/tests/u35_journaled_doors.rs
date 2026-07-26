@@ -1,16 +1,25 @@
-//! **U34 — does a GOVERNED write through an unjournaled door make the installed
-//! fence refuse the next commit?** A MEASUREMENT, not a fix (S3-R12(b)).
+//! **U35 — a governed write through EITHER byte-landing door now leaves a
+//! journal row, so the installed fence accepts the commit.** This file IS U34's
+//! harness with its expectations INVERTED: U34 measured the refusal, U35 removes
+//! it, and the inversion is this unit's proof (S3-R12(b)).
 //!
-//! Two byte-landing doors survive U31/U32 without a journal row:
+//! # What U34 measured, and what changed
+//! Two byte-landing doors survived U31/U32 without a journal row:
 //!
-//! 1. **`mrd realise --truth file`** — deploys `conventions/INDEX.md`. U31 sealed
-//!    it behind the candidate and `fs::replace_file`; U31's own comment says the
-//!    journal row is still missing. *Sealing and journaling are different
-//!    properties* (S3-R12(a)).
-//! 2. **the run-plane `apply_batch`** — `executor::apply` lands page bytes through
-//!    `fs::apply_batch` directly, never through the wire splice choke-point where
-//!    U32's `render_row` call lives (`crates/wire-serve/src/write.rs:2105` is the
-//!    only production journal writer in the tree).
+//! 1. **`mrd realise --truth file`** — deploys `conventions/INDEX.md` through
+//!    `fs::replace_file`. U31 sealed it behind the candidate; *sealing and
+//!    journaling are different properties* (S3-R12(a)), and it journaled nothing.
+//! 2. **the run-plane `apply_batch`** — `executor::apply` lands page bytes
+//!    through `fs::apply_batch`, never through the wire splice choke-point where
+//!    U32's `render_row` call lives.
+//!
+//! U34 drove both over the shipped binary with the ratified fence installed and
+//! measured, for each: `mrd check` `grey(cannot-assess)` EXIT 1, `git commit`
+//! REFUSED, `git commit --no-verify` the operator's only route forward. U35 gives
+//! each door its row through the SAME row writer (`receipt::journal::render_row`,
+//! U32's), so the last row's `root_after` IS the live tree again and the fence
+//! accepts. **Every `assert_ne!(commit_code, 0)` below was an `assert_eq!` in the
+//! other direction before this unit** — that flip is the deliverable.
 //!
 //! # What "the installed fence" is here
 //! U15 has not landed, so this harness installs the RATIFIED fence verbatim: a
@@ -18,24 +27,20 @@
 //! the commit. Every leg then attempts a REAL `git commit` — never an assertion
 //! about a function.
 //!
-//! # Both arms, or the measurement is not a measurement (S3-R8(c))
+//! # BOTH arms, per door (S3-R8(c), gate 1)
+//! A fence proven only by what it accepts is as uninformative as one proven only
+//! by what it blocks. Each door leg therefore drives the governed write (green,
+//! commit ACCEPTED) **and then** an out-of-band shell rewrite on the same corpus
+//! (grey, commit REFUSED). Four assertions, two doors, plus
 //! [`the_installed_fence_accepts_governed_work_and_refuses_an_out_of_band_edit`]
-//! is the instrument's positive control: on the identical corpus the fence must
-//! ACCEPT a governed commit and REFUSE an out-of-band one. Without it a door leg
-//! reporting "refused" is indistinguishable from a fence that refuses everything.
+//! as the instrument's own control.
 //!
 //! # The assert is the STATE CHANGE (R40)
 //! An exit code says a command ran. Each door leg asserts what it DID: the bytes
-//! that landed, the tree root that moved, and the journal row that does or does
-//! not exist — then reads the fence's answer as the consequence.
-//!
-//! # THE MEASURED ANSWER
-//! **Both doors: the fence REFUSES.** Each leg reaches its own green baseline
-//! (`mrd check` exit 0, and a governed commit the fence lets through), drives its
-//! door, and lands at `grey(cannot-assess)` on both detector lines, `mrd check`
-//! exit 1, `git commit` exit 1 — with `git commit --no-verify` the only route
-//! forward. The asserts below PIN that measurement so a later change to either
-//! door reddens here rather than passing silently.
+//! that landed, the tree root that moved, the journal row that now EXISTS with
+//! `root_before` = the pre-door tree and `root_after` = the live tree — *that
+//! staleness was the mechanism; its absence is the fix* — and then reads the
+//! fence's answer as the consequence.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -119,8 +124,8 @@ impl Sandbox {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
         git(&ws, &["init", "-q"]);
-        git(&ws, &["config", "user.email", "u34@example.invalid"]);
-        git(&ws, &["config", "user.name", "u34"]);
+        git(&ws, &["config", "user.email", "u35@example.invalid"]);
+        git(&ws, &["config", "user.name", "u35"]);
         git(&ws, &["config", "commit.gpgsign", "false"]);
         write(&ws, "source.md", "# Source\n\n## Guideline\n\nthe body\n");
         write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
@@ -140,13 +145,6 @@ impl Sandbox {
     /// git's streams).
     fn commit_through_fence(&self, ws: &Path, message: &str) -> (i32, String) {
         self.commit(ws, message, &[])
-    }
-
-    /// The operator's ESCAPE — the same commit with the fence bypassed. S3-R6
-    /// ratified `--force` as the escape; for a git pre-commit hook it is spelled
-    /// `--no-verify`.
-    fn commit_bypassing_fence(&self, ws: &Path, message: &str) -> (i32, String) {
-        self.commit(ws, message, &["--no-verify"])
     }
 
     fn commit(&self, ws: &Path, message: &str, extra: &[&str]) -> (i32, String) {
@@ -171,23 +169,114 @@ impl Sandbox {
     }
 }
 
-/// **The consequence the ruling reasons about, measured** (S3-R12(b) / R35): once
-/// the fence has refused a fully governed commit, the operator's only route
-/// forward is the bypass. Asserting it is what makes "this trains the user to
-/// `--force` habitually" a measurement rather than a worry.
-fn assert_the_only_route_forward_is_the_bypass(sb: &Sandbox, ws: &Path, door: &str) {
+/// **Gate 4 — the `--no-verify` escape is no longer needed** (S3-R12(b) / R35).
+/// U34's twin of this helper asserted the opposite: that the bypass was the
+/// operator's ONLY route forward once the fence had refused a fully governed
+/// commit. Here the ordinary commit is attempted with NO extra flag, and both the
+/// exit code and the moved HEAD are read (R40 — an exit code alone says only that
+/// git ran).
+fn assert_the_fence_accepts_without_the_bypass(
+    sb: &Sandbox,
+    ws: &Path,
+    door: &str,
+    message: &str,
+) -> String {
     let head_before = git_head(ws);
-    let (escape_code, escape_said) = sb.commit_bypassing_fence(ws, "the escape: --no-verify");
+    let (commit_code, commit_said) = sb.commit_through_fence(ws, message);
     let head_after = git_head(ws);
     assert_eq!(
-        escape_code, 0,
-        "{door}: the bypass lands the same commit the fence refused: {escape_said}"
+        commit_code, 0,
+        "{door}: the installed fence ACCEPTS the governed commit, with NO --no-verify: {commit_said}"
     );
     assert_ne!(
         head_before, head_after,
-        "{door}: R40 — HEAD moved, so the commit the fence refused is now history"
+        "{door}: R40 — HEAD moved, so the governed commit is history: {commit_said}"
     );
-    eprintln!("   escape: git commit --no-verify EXIT 0 · HEAD {head_before} -> {head_after}\n");
+    eprintln!("   commit: git commit EXIT 0 · HEAD {head_before} -> {head_after}\n");
+    commit_said
+}
+
+/// **Gate 1's other arm, per door** (S3-R8(c)): the same corpus, one plain shell
+/// rewrite of the pinned section through no meridian writer at all, and the fence
+/// must still REFUSE. Journaling the doors must not turn the fence into one that
+/// accepts everything.
+fn assert_an_out_of_band_edit_still_refuses(sb: &Sandbox, ws: &Path, door: &str) {
+    write(
+        ws,
+        "source.md",
+        "# Source\n\n## Guideline\n\nthe body, rewritten by hand\n",
+    );
+    let check = sb.run(ws, &["check"]);
+    assert_eq!(
+        code(&check),
+        1,
+        "{door}: an out-of-band edit still leaves check refusing: {}",
+        said(&check)
+    );
+    assert!(
+        said(&check).contains("cannot-assess"),
+        "{door}: and it refuses GREY — the journal cannot date a tree it never \
+         receipted: {}",
+        said(&check)
+    );
+    let (commit_code, commit_said) = sb.commit_through_fence(ws, "out-of-band: a shell rewrite");
+    assert_ne!(
+        commit_code, 0,
+        "{door}: the installed fence REFUSES the out-of-band commit: {commit_said}"
+    );
+    eprintln!(
+        "   out-of-band arm: mrd check EXIT {} · git commit EXIT {commit_code}\n",
+        code(&check)
+    );
+}
+
+/// **R40, the state change this unit exists to produce**: the door appended
+/// exactly ONE row, and that row DATES the write — `root_before` is the tree the
+/// door started from, `root_after` is the tree it produced, and `root_after` is
+/// the live tree now. The last fact is the mechanism: U34 measured
+/// `last.root_after != live_root`, which is precisely what made the baseline stale
+/// and the fence refuse.
+fn assert_the_row_dates_the_write(
+    root: &WorkspaceRoot,
+    rows_around: (&[ParsedRow], &[ParsedRow]),
+    identity: (&str, &str, &str),
+    roots_around: (&str, &str),
+) {
+    let (before_rows, after_rows) = rows_around;
+    let (op, path, actor) = identity;
+    let (root_before, root_after) = roots_around;
+    assert_eq!(
+        after_rows.len(),
+        before_rows.len() + 1,
+        "the door appended exactly one journal row: {after_rows:#?}"
+    );
+    let row = after_rows.last().expect("the door's row");
+    assert_eq!(row.op, op, "the row names the op that produced it");
+    assert_eq!(row.path, path, "the row names the file the bytes landed in");
+    assert_eq!(
+        row.actor.as_deref(),
+        Some(actor),
+        "the row records the actor exactly as the door gave it"
+    );
+    assert_eq!(
+        row.root_before, root_before,
+        "the row's root_before IS the tree the door started from"
+    );
+    assert_eq!(
+        row.root_after, root_after,
+        "the row's root_after IS the tree the door produced"
+    );
+    assert_eq!(
+        row.root_after,
+        live_root(root),
+        "AND the last row's root_after IS the live tree — the staleness U34 \
+         measured is gone (R40)"
+    );
+    assert_eq!(
+        before_rows.last().expect("the baseline row").root_after,
+        row.root_before,
+        "the row CONTINUES the chain from the baseline row"
+    );
 }
 
 // ── small helpers ────────────────────────────────────────────────────────────
@@ -256,10 +345,14 @@ fn live_root(root: &WorkspaceRoot) -> String {
     fs::domain_snapshot(root).expect("snapshot").1.0
 }
 
+/// The reserved journal page's raw bytes (empty when it does not exist yet).
+fn journal_page(root: &WorkspaceRoot) -> String {
+    std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).unwrap_or_default()
+}
+
 /// Every journal row on disk, read the way `check`'s detectors read it.
 fn rows(root: &WorkspaceRoot) -> Vec<ParsedRow> {
-    let page = std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).unwrap_or_default();
-    parse_rows(&page)
+    parse_rows(&journal_page(root))
 }
 
 #[cfg(unix)]
@@ -326,8 +419,8 @@ fn green_baseline(sb: &Sandbox, ws: &Path) -> String {
 
 /// **The fence can both accept and refuse.** A fence proven only by what it
 /// blocks is indistinguishable from a fence that blocks everything (S3-R8(c)),
-/// and a door leg reporting "refused" against an uncalibrated fence is not
-/// evidence. Same corpus, both answers.
+/// and a door leg reporting "accepted" against an uncalibrated fence is not
+/// evidence either. Same corpus, both answers.
 #[test]
 fn the_installed_fence_accepts_governed_work_and_refuses_an_out_of_band_edit() {
     let sb = sandbox();
@@ -403,8 +496,8 @@ fn armed_index(check: &str) -> String {
 }
 
 /// **DOOR 1.** A governed `mrd realise --truth file` deploys the armed policy
-/// INDEX through `fs::replace_file` — sealed by U31, unjournaled by charter.
-/// Then the installed fence is asked for the next commit.
+/// INDEX through `fs::replace_file` — sealed by U31, and journaled by THIS unit.
+/// The installed fence is then asked for the next commit, and it accepts.
 #[test]
 fn door_1_realise_truth_file_then_the_installed_fence() {
     let sb = sandbox();
@@ -434,7 +527,7 @@ fn door_1_realise_truth_file_then_the_installed_fence() {
     let door = sb.run(&ws, &["realise", "--truth", "file"]);
     assert_eq!(code(&door), 0, "the governed deploy runs: {}", said(&door));
 
-    // ── R40: the STATE CHANGE, three disk facts.
+    // ── R40: the STATE CHANGE, four disk facts.
     let after_bytes = read(&ws, "conventions/INDEX.md");
     let after_ino = inode(&index_path);
     let after_root = live_root(&root);
@@ -451,54 +544,58 @@ fn door_1_realise_truth_file_then_the_installed_fence() {
         before_root, after_root,
         "(2) THE TREE ROOT MOVED — {before_root} -> {after_root}"
     );
-    assert_eq!(
-        before_rows.len(),
-        after_rows.len(),
-        "(3) NO JOURNAL ROW — the door is unjournaled: {after_rows:#?}"
+    // (3) THE JOURNAL ROW — U34 asserted this door added none.
+    assert_the_row_dates_the_write(
+        &root,
+        (&before_rows, &after_rows),
+        ("realise", "conventions/INDEX.md", "mrd:realise"),
+        (&before_root, &after_root),
     );
-    assert_ne!(
-        after_rows.last().expect("the baseline row").root_after,
-        after_root,
-        "so the baseline is now STALE: the last row's root_after is not the live tree"
+    // (4) The whole-file transition the row records (the `op=lock` row shape:
+    // both sides present, no node-grain edits).
+    let line = journal_page(&root)
+        .lines()
+        .last()
+        .expect("the door's row")
+        .to_owned();
+    assert!(
+        line.contains(" before=") && line.contains(" after=") && line.contains(" edits=0"),
+        "the row records a whole-file rev transition, not node edits: {line}"
     );
 
-    // ── the measurement: what does `mrd check` say, and does the fence refuse?
+    // ── the consequence: `mrd check` is green and the fence accepts.
     let check = sb.run(&ws, &["check"]);
-    let (commit_code, commit_said) =
-        sb.commit_through_fence(&ws, "governed: mrd realise --truth file");
     eprintln!(
         "── DOOR 1 · mrd realise --truth file ────\n\
          tree root {before_root} -> {after_root}\n\
-         journal rows {} -> {} (no new row)\n\
+         journal rows {} -> {} (+1: {line})\n\
          --- mrd check ---\n{}\
-         mrd check EXIT {}\n\
-         --- git commit (installed fence) ---\n{commit_said}\
-         git commit EXIT {commit_code}\n",
+         mrd check EXIT {}\n",
         before_rows.len(),
         after_rows.len(),
         said(&check),
         code(&check),
     );
-
-    // The measured answer, pinned so a later change to either door is visible.
     assert_eq!(
         code(&check),
-        1,
-        "MEASURED: check refuses after the governed deploy: {}",
+        0,
+        "MEASURED (inverted from U34): check is GREEN after the governed deploy: {}",
         said(&check)
     );
     assert!(
-        said(&check).contains("cannot-assess"),
-        "and it refuses GREY, not red — the door leaves the trace an out-of-band \
-         edit leaves (S3-R12(a)): {}",
-        said(&check)
+        stdout(&check).contains("chain: green") && stdout(&check).contains("foreign_edit: none"),
+        "and it renders the honest green, not a grey it cannot support: {}",
+        stdout(&check)
     );
-    assert_ne!(
-        commit_code, 0,
-        "MEASURED: the installed fence REFUSES the commit whose only write was \
-         governed: {commit_said}"
+    assert_the_fence_accepts_without_the_bypass(
+        &sb,
+        &ws,
+        "door 1",
+        "governed: mrd realise --truth file",
     );
-    assert_the_only_route_forward_is_the_bypass(&sb, &ws, "door 1");
+
+    // ── the other arm: the fence has NOT become one that accepts everything.
+    assert_an_out_of_band_edit_still_refuses(&sb, &ws, "door 1");
 }
 
 // ── DOOR 2 — the run-plane `apply_batch` ─────────────────────────────────────
@@ -524,7 +621,8 @@ def run(ctx):
 
 /// **DOOR 2.** A governed `mrd run` lands page bytes through the run plane's
 /// `fs::apply_batch` — never through the wire splice choke-point where U32's
-/// journal row is written. Then the installed fence is asked for the next commit.
+/// journal row is written — and journals its own row through the SAME row writer.
+/// The installed fence is then asked for the next commit, and it accepts.
 ///
 /// `realise.apply` faults on every attempt (the stage-4 card
 /// `s4-realise-apply-invocation-id`), so the door is reached by `mrd run` — the
@@ -557,49 +655,51 @@ fn door_2_run_plane_apply_batch_then_the_installed_fence() {
         before_root, after_root,
         "(2) THE TREE ROOT MOVED — {before_root} -> {after_root}"
     );
-    assert_eq!(
-        before_rows.len(),
-        after_rows.len(),
-        "(3) NO JOURNAL ROW — `grep -c journal crates/run/src/executor.rs` = 0: {after_rows:#?}"
+    // (3) THE JOURNAL ROW — U34 asserted `grep -c journal crates/run/src/
+    // executor.rs` = 0 and no row appeared.
+    assert_the_row_dates_the_write(
+        &root,
+        (&before_rows, &after_rows),
+        ("run", "tasks.md", "run:fix-note"),
+        (&before_root, &after_root),
     );
-    assert_ne!(
-        after_rows.last().expect("the baseline row").root_after,
-        after_root,
-        "so the baseline is now STALE: the last row's root_after is not the live tree"
-    );
+    let line = journal_page(&root)
+        .lines()
+        .last()
+        .expect("the door's row")
+        .to_owned();
 
-    // ── the measurement.
+    // ── the consequence: `mrd check` is green and the fence accepts.
     let check = sb.run(&ws, &["check"]);
-    let (commit_code, commit_said) = sb.commit_through_fence(&ws, "governed: mrd run apply_batch");
     eprintln!(
         "── DOOR 2 · run-plane apply_batch ───────\n\
          tree root {before_root} -> {after_root}\n\
-         journal rows {} -> {} (no new row)\n\
+         journal rows {} -> {} (+1: {line})\n\
          --- mrd check ---\n{}\
-         mrd check EXIT {}\n\
-         --- git commit (installed fence) ---\n{commit_said}\
-         git commit EXIT {commit_code}\n",
+         mrd check EXIT {}\n",
         before_rows.len(),
         after_rows.len(),
         said(&check),
         code(&check),
     );
-
     assert_eq!(
         code(&check),
-        1,
-        "MEASURED: check refuses after the governed run: {}",
+        0,
+        "MEASURED (inverted from U34): check is GREEN after the governed run: {}",
         said(&check)
     );
     assert!(
-        said(&check).contains("cannot-assess"),
-        "and it refuses GREY, not red: {}",
-        said(&check)
+        stdout(&check).contains("chain: green") && stdout(&check).contains("foreign_edit: none"),
+        "and it renders the honest green: {}",
+        stdout(&check)
     );
-    assert_ne!(
-        commit_code, 0,
-        "MEASURED: the installed fence REFUSES the commit whose only write was \
-         governed: {commit_said}"
+    assert_the_fence_accepts_without_the_bypass(
+        &sb,
+        &ws,
+        "door 2",
+        "governed: mrd run apply_batch",
     );
-    assert_the_only_route_forward_is_the_bypass(&sb, &ws, "door 2");
+
+    // ── the other arm: the fence has NOT become one that accepts everything.
+    assert_an_out_of_band_edit_still_refuses(&sb, &ws, "door 2");
 }
