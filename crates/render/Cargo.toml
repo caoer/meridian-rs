@@ -18,3 +18,7 @@ model = { workspace = true }
 syntax = { workspace = true }
 wire = { workspace = true }
 wire-map = { workspace = true }
+
+[dev-dependencies]
+# fixture addresses for the lock elision gate
+addr = { workspace = true }

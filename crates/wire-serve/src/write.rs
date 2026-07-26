@@ -1769,8 +1769,20 @@ fn lock_engine_edit(
     let mut lock = found
         .as_ref()
         .map_or_else(lock::Lock::new, |f| f.lock.clone());
+    // INGRESS: the wire boundary. `wire::PinFact.declared_ref` is a plain
+    // `String` — `crates/wire` deps are serde only and criterion 7 freezes v2
+    // byte-identity, so the address is constructed BY HAND here. This is the
+    // one place ingress class 3 meets a typed destination, and the retype DID
+    // force it: a malformed ref refuses at the write door instead of being
+    // minted into a lock nothing can read back.
+    let declared_ref = addr::Addr::parse(&pin.fact.declared_ref).map_err(|err| {
+        bad_request(&format!(
+            "refused: the pin ref \"{}\" is not an address — {err}",
+            pin.fact.declared_ref
+        ))
+    })?;
     lock.upsert_pin(lock::PinEntry {
-        declared_ref: pin.fact.declared_ref.clone(),
+        declared_ref,
         fingerprint: pin.fact.fingerprint.clone(),
     });
     if let Some(blob) = &pin.fact.blob {

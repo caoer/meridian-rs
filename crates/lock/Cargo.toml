@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# the address grammar — a `ref` is an ADDRESS, parsed once at the leaf (U10)
+addr = { workspace = true }
 model = { workspace = true }
 
 [dev-dependencies]
