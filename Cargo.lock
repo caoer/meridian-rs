@@ -680,6 +680,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "config"
+version = "0.0.0"
+dependencies = [
+ "lock",
+ "model",
+ "serde",
+ "serde_yaml",
+ "syntax",
+ "tempfile",
+ "workspace",
+]
+
+[[package]]
 name = "console"
 version = "0.16.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2102,6 +2115,7 @@ dependencies = [
  "blake3",
  "cache",
  "check",
+ "config",
  "duckdb",
  "effects",
  "fs",
@@ -3640,6 +3654,7 @@ name = "testsuite"
 version = "0.0.0"
 dependencies = [
  "blake3",
+ "config",
  "fs",
  "lock",
  "model",

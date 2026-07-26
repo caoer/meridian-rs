@@ -24,6 +24,7 @@ use std::process::ExitCode;
 
 mod cache_cmd;
 mod check_cmd;
+mod config_cmd;
 mod corpus_tier;
 mod daemon;
 mod engine;
@@ -112,6 +113,16 @@ usage:
                            dependents). Read-only; every answer cites the revs
                            it read. Exits: 0 clean / 1 a red edge / 2 bad
                            invocation or in-snapshot cycle
+  mrd config               the MERIDIAN.md config plane: resolve the bootstrap
+                           chain (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and
+                           print what it found — the resolved path, the state,
+                           the config's own rev and fingerprint, and the declared
+                           mounts and tools in document order. This is the verb
+                           that PUBLISHES the mount table: the render face elides
+                           meridian-* blocks, so `mrd read` on the same file
+                           shows its prose and none of its entries. Read-only.
+                           Exits: 0 resolved (loaded or absent) / 1 the config
+                           refused (its message, verbatim) / 2 bad invocation
   mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
                            recomputes the receipt journal's chain continuity and
                            the foreign_edit trace (last-receipt-vs-live) over the
@@ -292,6 +303,10 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "pin" => pin_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
+        "config" => {
+            let p = Parsed::parse(&args[1..], NO_PATH, NO_ALL)?;
+            config_cmd::run(p.format())
+        }
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "status" => status_cmd::run(&args[1..]),

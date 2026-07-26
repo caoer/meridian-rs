@@ -6,6 +6,7 @@ mod charset_guard;
 mod delta_e3e4;
 mod gt_pack_smoke;
 mod gt_parse;
+mod meridian_md;
 mod pf_frozen_sweep;
 mod s1_authz_facts;
 mod u0_read_parity;
