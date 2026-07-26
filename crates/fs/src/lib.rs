@@ -337,24 +337,52 @@ pub fn is_write_conflict(e: &io::Error) -> bool {
 /// append must be an empty span (an EOF append) — a replacing receipt span is
 /// the same `InvalidInput` refusal.
 ///
+/// # The candidate is DEMANDED, and it must be the bytes that land (U31)
+/// `candidate` is the sealed [`model::CandidateDocument`] the caller gated —
+/// the document this commit is about to produce. Only `model`'s mints build
+/// one, so a door that lands bytes without ever building a candidate does not
+/// compile. Unlike the whole-file primitives, this one's bytes are COMPUTED
+/// (batch applied to pre-image) rather than supplied, so the tie is checked:
+/// a candidate whose bytes differ from the splice result is `InvalidInput`
+/// before any temp is written. Without that check the parameter would be a
+/// token a caller may satisfy with an unrelated document — R5's ignorable
+/// helper wearing a type's clothes.
+///
 /// # Errors
-/// The seam-contract violations above (`InvalidInput`), the typed
-/// [`write_conflict`] refusal (live bytes ≠ validated pre-image — nothing
-/// landed), or any I/O failure at a tmp-write, fsync, or rename step.
+/// The seam-contract violations above (`InvalidInput`), a candidate that is not
+/// the splice result (`InvalidInput`), the typed [`write_conflict`] refusal
+/// (live bytes ≠ validated pre-image — nothing landed), or any I/O failure at a
+/// tmp-write, fsync, or rename step.
 pub fn apply_batch(
     root: &WorkspaceRoot,
     content_path: &Path,
     receipt_path: Option<&Path>,
     batch: &model::ValidatedBatch,
     expected_content: &[u8],
+    candidate: &model::CandidateDocument,
 ) -> io::Result<()> {
-    stage_batch(root, content_path, receipt_path, batch, expected_content)?.commit()
+    stage_batch(
+        root,
+        content_path,
+        receipt_path,
+        batch,
+        expected_content,
+        candidate,
+    )?
+    .commit()
 }
 
-/// Birth one file: write `body` to `rel_path` atomically (tmp+fsync+rename, the
-/// crate's one write discipline — never in place), refusing if the destination
-/// is already occupied (the `if_absent` CAS at file grain, d2 §2.5 C3). Parent
-/// directories are created first — a birth may name a fresh subtree.
+/// Birth one file: write the sealed `candidate`'s bytes to `rel_path`
+/// atomically (tmp+fsync+rename, the crate's one write discipline — never in
+/// place), refusing if the destination is already occupied (the `if_absent` CAS
+/// at file grain, d2 §2.5 C3). Parent directories are created first — a birth
+/// may name a fresh subtree.
+///
+/// # The candidate is DEMANDED (U31)
+/// The bytes ARE [`model::CandidateDocument::raw`], so the document the caller
+/// gated and the bytes that land are the same object by construction. Only
+/// `model` mints a candidate, so a birth door that never built one does not
+/// compile.
 ///
 /// # `if_absent` is a logical CAS, not a hardware one (stated limit)
 /// The occupancy check (`symlink_metadata`, so a symlink or a dangling link
@@ -368,7 +396,11 @@ pub fn apply_batch(
 /// [`io::ErrorKind::AlreadyExists`] when the destination is occupied (the
 /// `if_absent` violation) — no byte is staged; any I/O failure at mkdir,
 /// tmp-write, fsync, or rename.
-pub fn create_file(root: &WorkspaceRoot, rel_path: &Path, body: &str) -> io::Result<()> {
+pub fn create_file(
+    root: &WorkspaceRoot,
+    rel_path: &Path,
+    candidate: &model::CandidateDocument,
+) -> io::Result<()> {
     let dst = root.0.join(rel_path);
     if fs::symlink_metadata(&dst).is_ok() {
         return Err(io::Error::new(
@@ -379,7 +411,7 @@ pub fn create_file(root: &WorkspaceRoot, rel_path: &Path, body: &str) -> io::Res
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    commit_rename(&stage_file(&dst, body.as_bytes())?)
+    commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
 }
 
 /// Death of one file: remove `rel_path`, then fsync its parent directory so the
@@ -397,20 +429,33 @@ pub fn remove_file(root: &WorkspaceRoot, rel_path: &Path) -> io::Result<()> {
     fsync_dir(dst.parent().unwrap_or_else(|| Path::new(".")))
 }
 
-/// Overwrite one existing file's whole bytes with `body`, atomically
-/// (tmp+fsync+rename beside the destination — the crate's one write discipline,
-/// never in place). Unlike [`create_file`] this carries NO `if_absent` guard:
+/// Overwrite one existing file's whole bytes with the sealed `candidate`'s,
+/// atomically (tmp+fsync+rename beside the destination — the crate's one write
+/// discipline, never in place). Unlike [`create_file`] this carries NO
+/// `if_absent` guard:
 /// the caller (the pin lock writer, d2 §2.5) has already CAS-guarded the file's
 /// read rev, so the overwrite is the committed edge of a checked write. The
 /// destination's parent must exist (a whole-file overwrite never mints a fresh
 /// subtree); a missing file is the caller's CAS-drift concern, surfaced here as
 /// the rename's own I/O error, never silently created.
 ///
+/// # The candidate is DEMANDED (U31)
+/// As with [`create_file`], the bytes ARE
+/// [`model::CandidateDocument::raw`] — gated document and landed bytes are one
+/// object by construction. This closed three doors that had no candidate at
+/// all: the lock writer, the pin's anchor promotion, and `mrd realise
+/// --truth file`'s INDEX deploy (which reached disk through a bare
+/// `std::fs::write`).
+///
 /// # Errors
 /// Any I/O failure at tmp-write, fsync, or rename.
-pub fn replace_file(root: &WorkspaceRoot, rel_path: &Path, body: &str) -> io::Result<()> {
+pub fn replace_file(
+    root: &WorkspaceRoot,
+    rel_path: &Path,
+    candidate: &model::CandidateDocument,
+) -> io::Result<()> {
     let dst = root.0.join(rel_path);
-    commit_rename(&stage_file(&dst, body.as_bytes())?)
+    commit_rename(&stage_file(&dst, candidate.raw().as_bytes())?)
 }
 
 /// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+
@@ -472,6 +517,7 @@ fn stage_batch(
     receipt_path: Option<&Path>,
     batch: &model::ValidatedBatch,
     expected_content: &[u8],
+    candidate: &model::CandidateDocument,
 ) -> io::Result<StagedCommit> {
     // Seam contract, enforced BEFORE any disk write (fail-loud for D4).
     match (receipt_path, batch.receipt.as_ref()) {
@@ -499,6 +545,18 @@ fn stage_batch(
         expected_content,
         batch.edits.iter().map(|e| (&e.span, e.text.as_str())),
     );
+
+    // The candidate must BE the splice result (U31): the document the caller
+    // gated and the bytes this commit lands are one object, or the commit
+    // refuses before staging a temp.
+    if content_new != candidate.raw().as_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "candidate document is not this batch's splice result: the gated \
+             document and the landing bytes must be the same object",
+        ));
+    }
+
     let content = stage_file(&content_dst, &content_new)?;
 
     // Receipt file (when named): read pre-batch bytes (absent ⇒ empty, a create),
@@ -864,6 +922,13 @@ mod tests {
         }
     }
 
+    /// The sealed candidate the three byte-landing primitives DEMAND (U31),
+    /// for this fixture's batch over `PLAN_S0`. Only `model` mints one — these
+    /// tests cannot fabricate a candidate any more than a production door can.
+    fn candidate(vb: &model::ValidatedBatch) -> model::CandidateDocument {
+        model::candidate_of_batch("notes/plan.md", PLAN_S0, vb)
+    }
+
     /// The receipt lint (§6.5 recovery): does the receipt file record the anchor
     /// a committed batch should have written? A TEST helper only — `fs` never
     /// interprets content (crate charter), and §6.4 puts the production lint in
@@ -916,6 +981,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .unwrap();
         staged.rename_content().unwrap();
@@ -977,6 +1043,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .unwrap();
 
@@ -1017,6 +1084,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .unwrap();
 
@@ -1050,7 +1118,15 @@ mod tests {
         let (dir, root) = workspace();
         let vb = validated(None);
 
-        apply_batch(&root, &content_rel(), None, &vb, PLAN_S0.as_bytes()).unwrap();
+        apply_batch(
+            &root,
+            &content_rel(),
+            None,
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
 
         assert_eq!(
             fs::read(dir.path().join(content_rel())).unwrap(),
@@ -1081,7 +1157,8 @@ mod tests {
                 &content_rel(),
                 None,
                 &with_receipt,
-                PLAN_S0.as_bytes()
+                PLAN_S0.as_bytes(),
+                &candidate(&with_receipt),
             )
             .unwrap_err()
             .kind(),
@@ -1094,7 +1171,8 @@ mod tests {
                 &content_rel(),
                 Some(&receipt_rel()),
                 &no_receipt,
-                PLAN_S0.as_bytes()
+                PLAN_S0.as_bytes(),
+                &candidate(&no_receipt),
             )
             .unwrap_err()
             .kind(),
@@ -1107,7 +1185,8 @@ mod tests {
                 &content_rel(),
                 Some(&content_rel()),
                 &with_receipt,
-                PLAN_S0.as_bytes()
+                PLAN_S0.as_bytes(),
+                &candidate(&with_receipt),
             )
             .unwrap_err()
             .kind(),
@@ -1120,7 +1199,12 @@ mod tests {
     #[test]
     fn create_file_births_a_new_file() {
         let (dir, root) = workspace();
-        super::create_file(&root, Path::new("births/fresh.md"), "# Fresh\n").unwrap();
+        super::create_file(
+            &root,
+            Path::new("births/fresh.md"),
+            &model::candidate_of_body("births/fresh.md", "# Fresh\n".to_owned()),
+        )
+        .unwrap();
         assert_eq!(
             fs::read(dir.path().join("births/fresh.md")).unwrap(),
             b"# Fresh\n",
@@ -1141,7 +1225,12 @@ mod tests {
     #[test]
     fn create_file_refuses_when_occupied() {
         let (dir, root) = workspace();
-        let err = super::create_file(&root, &content_rel(), "OVERWRITE").unwrap_err();
+        let err = super::create_file(
+            &root,
+            &content_rel(),
+            &model::candidate_of_body("notes/plan.md", "OVERWRITE".to_owned()),
+        )
+        .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             fs::read(dir.path().join(content_rel())).unwrap(),
@@ -1205,6 +1294,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .unwrap();
 
@@ -1240,7 +1330,15 @@ mod tests {
     fn d8_external_delete_refuses_write_conflict() {
         let (dir, root) = workspace();
         let vb = validated(None);
-        let staged = stage_batch(&root, &content_rel(), None, &vb, PLAN_S0.as_bytes()).unwrap();
+        let staged = stage_batch(
+            &root,
+            &content_rel(),
+            None,
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .unwrap();
 
         fs::remove_file(dir.path().join(content_rel())).unwrap();
 
@@ -1276,6 +1374,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .expect_err("a moved receipt must refuse");
         assert!(is_write_conflict(&err), "typed write-conflict: {err}");
@@ -1301,6 +1400,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .expect_err("a truncated receipt must refuse, not panic");
         assert!(is_write_conflict(&err), "typed write-conflict: {err}");
@@ -1320,6 +1420,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .unwrap();
 
@@ -1379,6 +1480,7 @@ mod tests {
             Some(&receipt_rel()),
             &vb,
             PLAN_S0.as_bytes(),
+            &candidate(&vb),
         )
         .expect_err("a replacing receipt span must refuse");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
