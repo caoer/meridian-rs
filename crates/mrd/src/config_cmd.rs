@@ -175,19 +175,33 @@ fn to_json(
 
 /// The human face's marker for a leg that is absent **by construction**.
 ///
-/// **Reused, not minted (S3-R49).** The existing set was enumerated across this
-/// binary's human faces before a spelling was proposed: `(none)` at 6 sites
-/// (`view_status.rs:174` `as_of:  (none)`, `view_status.rs:183`, `sql.rs:963`,
-/// `sql.rs:969`, `sql.rs:977`, `test_cmd.rs:819`), `—` at 5
-/// (`test_cmd.rs:767`, `test_cmd.rs:778`, `history_cmd.rs:573`,
-/// `perfsuite/src/report.rs:198`, `perfsuite/src/report.rs:208`), `-` at 1
-/// (`walk_cmd.rs:345`). **No collision:** none of them spells this leg today,
-/// because today this leg has no spelling at all.
+/// **Reused, not minted (S3-R49).** The existing set was enumerated before a
+/// spelling was proposed. **The unit counted is a Rust STRING LITERAL used as a
+/// render filler — not a prose occurrence** (S3-R74), and the count is taken
+/// **at `f21164c3`, this unit's base, over `crates/`**, because after this
+/// commit the same command returns 3 more and they are all this unit's own:
+///
+/// ```text
+/// git grep -n '"(none)"' f21164c3 -- 'crates/*.rs'    # 6
+/// git grep -n '"—"'      f21164c3 -- 'crates/*.rs'    # 5
+/// ```
+///
+/// - **`(none)` — 6**, every one filling a **labelled scalar**: `as_of:  (none)`
+///   (`view_status.rs:174`), the `fingerprint_attempted` fallback
+///   (`view_status.rs:183`), `as_of=`/`live=` in the freshness banner
+///   (`sql.rs:963`, `:969`, `:977`), and an empty rev list (`test_cmd.rs:819`).
+/// - **`—` — 5**, every one a **markdown table cell**: the scenario table
+///   (`test_cmd.rs:767`, `:778`), the history table (`history_cmd.rs:573`), and
+///   `fmt_opt`/`gate_cell` (`perfsuite/src/report.rs:198`, `:208`).
+/// - **`-` — 1**, a walk row's rev (`walk_cmd.rs:345`).
+///
+/// **No collision:** none of them spells this leg today, because today this leg
+/// has no spelling at all.
 ///
 /// `(none)` is the one taken because it is the spelling this cell's SHAPE
-/// already uses — every `(none)` site is a `label: value` line, exactly like
-/// `vault:`, while every `—` site is a fixed-width table column. One state gets
-/// one spelling, and the spelling that already exists wins.
+/// already uses: `vault:{value}` is a labelled scalar in a whitespace row, which
+/// is every `(none)` site and no `—` site. One state gets one spelling, and the
+/// spelling that already exists wins.
 ///
 /// It stays on this face only. `--json` states the same fact as `null` at a
 /// present key, which is the machine's statement and needs no marker; a client
