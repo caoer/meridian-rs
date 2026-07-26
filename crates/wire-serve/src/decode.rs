@@ -166,6 +166,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "splice" => decode_splice(obj, rev),
+        "create" => decode_create(obj),
         // §3.2 discovery honesty: every op is armed as of T5-SUB — only
         // genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
@@ -261,7 +262,49 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     })
 }
 
-/// v2 §4.4: the only write op, batch-only. §9: `now` is RFC 3339,
+/// The BIRTH op's field set. A v3-era op, so unlike `splice` there is no
+/// frozen v2 twin: the whole op ships as ONE cap (`create`), exactly like
+/// `read` and `check_write`, and no dotted `create.<field>` cap exists. This
+/// array is the one owner of "which create fields exist"; the negative
+/// [`crate::decode::tests`] rows derive their expectations from it.
+///
+/// `force` is deliberately ABSENT: the guarded door has no forced-birth escape
+/// (`write::create`), so admitting the key would advertise a bypass that does
+/// not exist.
+pub(crate) const CREATE_FIELDS: [&str; 6] = ["path", "body", "actor", "now", "if_root", "dry"];
+
+/// Strict-decode the birth op. Rev-agnostic here (like `read`/`check_write`) —
+/// the v3 gate is at DISPATCH, so a v2 session answers `unknown_op` against the
+/// frozen v2 caps (§3.2 discovery honesty).
+///
+/// `now` takes the SAME RFC 3339 validation `splice` applies, and for the same
+/// reason: this op writes a journal row stamped with the caller's clock (§9 —
+/// the engine validates time, never generates it), so a malformed `now` must
+/// refuse at the wire rather than land an undatable row.
+fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
+    let op = "create";
+    check_fields(obj, op, &CREATE_FIELDS)?;
+    let now = opt_str(obj, op, "now")?;
+    if let Some(n) = &now
+        && !wire::now_is_rfc3339(n)
+    {
+        return Err(bad_request(format!(
+            "`now` must be RFC 3339 (§9, validated never generated): `{n}`"
+        )));
+    }
+    Ok(Op::Create {
+        path: req_path(obj, op, "path")?,
+        body: req_str(obj, op, "body")?,
+        actor: opt_str(obj, op, "actor")?,
+        now,
+        if_root: opt_str(obj, op, "if_root")?.map(wire::Root),
+        dry: opt_bool(obj, op, "dry")?,
+    })
+}
+
+/// v2 §4.4: the only write op UNDER V2, batch-only (v3 adds `create`, the birth
+/// door; `splice` stays the only op that EDITS an existing file). §9: `now` is
+/// RFC 3339,
 /// format-VALIDATED never generated — a malformed `now` is the server's
 /// `bad_request` (the pass W4 left to this build-out).
 ///

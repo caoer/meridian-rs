@@ -15,6 +15,10 @@ use wire_serve::{ambient_root, domain_snapshot, load_doc};
 /// list); no other arm reads it. `v3` is the session's negotiated rev: the
 /// extract arm enriches heading nodes with the U2 addressing facts under v3
 /// only (v3-additive keys; the frozen v2 bytes never change).
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
+)]
 pub(crate) fn dispatch(
     root: &fs::WorkspaceRoot,
     epoch: &mut crate::ring::RootRing,
@@ -105,7 +109,8 @@ pub(crate) fn dispatch(
         // is refused LOUD with `daemon_only` (the wire code's own sidecar-mode
         // carve-out), never advertised in the sidecar's caps.
         Op::ViewPath { .. } => Err(Box::new(ErrorBody::new(ErrorCode::DaemonOnly))),
-        // v2 §4.4 the only write op (D4-SPLICE), driven through the ONE shared
+        // v2 §4.4 the only write op under v2 (D4-SPLICE; v3 adds the `create`
+        // birth arm below), driven through the ONE shared
         // `splice → commit` choke-point (`wire_serve::write::splice`, W1): load
         // → §5.1 guard → validate → verdicts → commit, one exchange, one Delta.
         // The sidecar advances its per-epoch ring with the emitted frame; the
@@ -150,6 +155,44 @@ pub(crate) fn dispatch(
                 epoch.advance(frame);
             }
             Ok(out.body)
+        }
+        // The BIRTH op — v3-ONLY (absent from the frozen v2 caps; §3.2
+        // discovery honesty), driven through the SAME guarded door every
+        // in-process caller uses (`wire_serve::write::create`). This arm
+        // FORWARDS: it opens no file, computes no rev, writes no journal row.
+        // That is the whole point — a daemon-side birth would bypass the four
+        // birth guards and leave the newborn with no journal row to date it.
+        // The ring advances on the emitted birth Delta exactly like `splice`.
+        Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } => {
+            if !v3 {
+                return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
+            }
+            let out = wire_serve::write::create(
+                root,
+                epoch.seq(),
+                &wire_serve::write::CreateArgs {
+                    id,
+                    path: path.clone(),
+                    body,
+                    actor,
+                    now,
+                    if_root,
+                    dry: dry.unwrap_or(false),
+                },
+                rulesets,
+            )?;
+            let response = wire_serve::write::create_response(path, &out);
+            if let Some(frame) = out.committed {
+                epoch.advance(frame);
+            }
+            Ok(response)
         }
     }
 }

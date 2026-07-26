@@ -637,6 +637,28 @@ pub struct CreateOutcome {
     pub dry: bool,
 }
 
+/// Project a landed birth into its wire response body — ONE implementation both
+/// hosts render through (A6 "lift, don't duplicate"), so the `create` frame
+/// cannot drift between the per-workspace sidecar and the resident daemon.
+///
+/// `seq` rides from the emitted Delta, so it is absent on a dry run for the same
+/// reason `root_after` and `journal_anchor` are: a rehearsal emits no Delta.
+/// `dry` is `Some(true)` only on a rehearsal — an ordinary birth serializes no
+/// `dry` key, exactly like `splice`.
+#[must_use]
+pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
+    ResponseBody::Create {
+        path,
+        file_rev_after: out.file_rev_after.clone(),
+        root_before: out.root_before.clone(),
+        root_after: out.root_after.clone(),
+        seq: out.committed.as_ref().map(|frame| frame.delta.seq),
+        dry: out.dry.then_some(true),
+        journal_anchor: out.journal_anchor.clone(),
+        verdicts: out.verdicts.clone(),
+    }
+}
+
 /// One `remove` request's fields (d2 §2.5 C3). `if_file_rev` is the rev the
 /// caller READ — remove-what-you-read: the live file must still carry it, or the
 /// death refuses citing the drift. `if_root`/`dry` mirror `create`.
@@ -747,8 +769,9 @@ pub fn create(
     // U4.2/U4.3: the armed-plane GATE over the birth's after-state — before=absent
     // (the `create` change surface). Blocks an armed refusal (convention or a
     // binding-break on the INDEX) before the file is born; a no-op on a
-    // never-armed workspace. Guarded create carries no `--force` (the wire
-    // `create` op is internal — no forced-birth path in v1).
+    // never-armed workspace. Guarded create carries no `--force`: there is no
+    // forced-birth path, and the wire `create` op declares no `force` field for
+    // exactly that reason (a key would advertise a bypass that does not exist).
     verdicts.extend(
         crate::gate::gate_write(
             root,

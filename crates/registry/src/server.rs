@@ -856,6 +856,34 @@ fn dispatch_read(
             let mints = registry.read_mints(ws);
             wire_serve::write::splice(&ws_root, 0, &args, &[], Some(&mints)).map(|out| out.body)
         }
+        // The BIRTH op — v3-ONLY, the resident twin of the sidecar's arm: the
+        // SAME guarded door (`wire_serve::write::create`), the same forwarding
+        // discipline, no second birth path. Like `splice` here it is a BARE
+        // commit (`&[]` — the daemon loads no pack) reading + writing disk
+        // directly; the daemon holds no delta ring, so `seq` is 0 and the
+        // emitted birth frame is discarded. The newborn is durable in the disk
+        // bytes, and the next read's `warm_or_build` rebuilds from them.
+        Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } if v3 => {
+            let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+            let args = wire_serve::write::CreateArgs {
+                id,
+                path: path.clone(),
+                body,
+                actor,
+                now,
+                if_root,
+                dry: dry.unwrap_or(false),
+            };
+            wire_serve::write::create(&ws_root, 0, &args, &[])
+                .map(|out| wire_serve::write::create_response(path, &out))
+        }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
         // warm engine's doc (read-only: never a write path).
         Op::CheckWrite {
@@ -876,12 +904,14 @@ fn dispatch_read(
         // `hello` is intercepted upstream in `handle_line` (the handshake binds
         // the connection), so it never reaches here. `sub` = P2 is not served yet
         // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
-        // `read`/`check_write` land here only on a NON-v3 connection (the
-        // guarded arms above take v3): absent from the frozen v2 caps →
+        // `read`/`check_write`/`create` land here only on a NON-v3 connection
+        // (the guarded arms above take v3): absent from the frozen v2 caps →
         // `unknown_op`.
-        Op::Hello { .. } | Op::Sub { .. } | Op::Read { .. } | Op::CheckWrite { .. } => {
-            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
-        }
+        Op::Hello { .. }
+        | Op::Sub { .. }
+        | Op::Read { .. }
+        | Op::CheckWrite { .. }
+        | Op::Create { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }
 

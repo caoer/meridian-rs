@@ -300,6 +300,144 @@ mod tests {
         }
     }
 
+    // ------------------------------------------------------------------
+    // The BIRTH op's decode contract (`create`).
+    // ------------------------------------------------------------------
+
+    /// The full field set decodes into the typed birth op, `if_root` included.
+    #[test]
+    fn create_decodes_its_whole_field_set() {
+        let frame = json!({"id": 9, "op": "create", "path": "notes/newborn.md",
+            "body": "# X\n", "actor": "agent:e7c3bb2e",
+            "now": "2026-07-26T13:30:00-04:00", "if_root": "b3:a", "dry": true});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("create decodes");
+        let Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } = op
+        else {
+            panic!("create op");
+        };
+        assert_eq!(path, wire::Path("notes/newborn.md".into()));
+        assert_eq!(body, "# X\n");
+        assert_eq!(actor.as_deref(), Some("agent:e7c3bb2e"));
+        assert_eq!(now.as_deref(), Some("2026-07-26T13:30:00-04:00"));
+        assert_eq!(if_root, Some(wire::Root("b3:a".into())));
+        assert_eq!(dry, Some(true));
+    }
+
+    /// Decode is rev-AGNOSTIC (like `read`/`check_write`): the v3 gate is at
+    /// DISPATCH, so a v2 frame decodes here and is refused `unknown_op` by the
+    /// host arm. Asserted so a future reader does not "fix" decode by adding a
+    /// rev branch that would move the refusal to the wrong plane.
+    #[test]
+    fn create_decode_is_rev_agnostic_the_gate_is_dispatch() {
+        let frame = json!({"op": "create", "path": "a.md", "body": "x"});
+        for rev in [super::rev::Rev::V2, super::rev::Rev::V3] {
+            let op = super::decode::decode(&obj(frame.clone()), rev)
+                .unwrap_or_else(|e| panic!("create decodes under {rev:?}: {e:?}"));
+            assert!(matches!(op, Op::Create { .. }));
+        }
+    }
+
+    /// **The no-forced-birth wall, and the not-a-batch wall.** The guarded door
+    /// carries no `--force` escape, so admitting the key would advertise a
+    /// bypass that does not exist; and a birth is ONE path with ONE body, so
+    /// the whole splice batch vocabulary is foreign to it. Every one of these
+    /// is refused BY NAME, so a client that reached for the wrong op learns
+    /// which field it invented.
+    #[test]
+    fn create_refuses_the_fields_it_deliberately_lacks() {
+        for extra in ["force", "edits", "receipt", "plan_edits", "pin", "sec"] {
+            let mut frame = json!({"op": "create", "path": "a.md", "body": "x"});
+            frame[extra] = json!(true);
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("the field wall refuses it");
+            assert_eq!(e.code, ErrorCode::BadRequest);
+            assert_eq!(
+                e.message.as_deref(),
+                Some(format!("unknown request field `{extra}` on `create`").as_str()),
+                "the refusal must name `{extra}`"
+            );
+        }
+    }
+
+    /// Anti-vacuity for the wall above: the fields the op DOES declare are
+    /// admitted, so "everything is refused" cannot pass that test.
+    #[test]
+    fn create_admits_exactly_its_declared_fields() {
+        for field in super::decode::CREATE_FIELDS {
+            let mut frame = json!({"op": "create", "path": "a.md", "body": "x"});
+            frame[field] = match field {
+                "dry" => json!(true),
+                "now" => json!("2026-07-26T13:30:00-04:00"),
+                _ => json!("x"),
+            };
+            let op = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .unwrap_or_else(|e| panic!("declared field `{field}` is admitted: {e:?}"));
+            assert!(matches!(op, Op::Create { .. }));
+        }
+    }
+
+    /// Every strict-decode refusal arm, asserted by its CAUSE — the message a
+    /// client reads to fix its frame, not merely the code.
+    #[test]
+    fn create_strict_negatives_name_their_cause() {
+        for (frame, want) in [
+            (
+                json!({"op": "create", "path": "a.md"}),
+                "missing `body` on `create`",
+            ),
+            (
+                json!({"op": "create", "body": "x"}),
+                "missing `path` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": 7}),
+                "`body` on `create` must be a string",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "dry": "yes"}),
+                "`dry` on `create` must be a boolean",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "bogus": 1}),
+                "unknown request field `bogus` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "force": true}),
+                "unknown request field `force` on `create`",
+            ),
+            (
+                json!({"op": "create", "path": "a.md", "body": "x", "now": "yesterday"}),
+                "`now` must be RFC 3339 (§9, validated never generated): `yesterday`",
+            ),
+        ] {
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("strict create decode");
+            assert_eq!(e.code, ErrorCode::BadRequest);
+            assert_eq!(e.message.as_deref(), Some(want));
+        }
+    }
+
+    /// The path-law wall is the FIRST jail: a birth cannot even be SPELLED
+    /// outside the workspace. `bad_path` echoes the offending spelling; the
+    /// engine's own `path_confined` is the second wall behind it.
+    #[test]
+    fn create_path_law_refuses_before_the_engine_is_reached() {
+        for bad in ["/etc/passwd", "../escape.md", "", "a/../../b.md"] {
+            let frame = json!({"op": "create", "path": bad, "body": "x"});
+            let e = super::decode::decode(&obj(frame), super::rev::Rev::V3)
+                .expect_err("path law refuses the escape");
+            assert_eq!(e.code, ErrorCode::BadPath, "path `{bad}`");
+            assert_eq!(e.path.as_ref().map(|p| p.0.as_str()), Some(bad));
+        }
+    }
+
     /// Mutual exclusion + the explicit empty-array law (C note 6) + the
     /// strict per-shape wall.
     #[test]

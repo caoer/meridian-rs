@@ -154,6 +154,13 @@ pub fn project_response(frame: &mut Value) {
                 // carry it because a v2 session REFUSES `pin` at the field wall.
                 // Advertising it there would be a false advertisement.
                 caps.push(Value::String("splice.pin".to_string()));
+                // The BIRTH op — a whole v3-era OP, so it ships as one bare cap
+                // like `read`/`check_write`, never a dotted `create.<field>`
+                // (the dotted form names a FIELD amendment to an op that already
+                // exists under v2; `create` has no v2 twin to amend). A v2
+                // session's caps never carry it and its `create` answers
+                // `unknown_op` — §3.2 discovery honesty.
+                caps.push(Value::String("create".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -366,8 +373,53 @@ mod tests {
                 "read",
                 "check_write",
                 "splice.plan_edits",
-                "splice.pin"
+                "splice.pin",
+                "create"
             ])
+        );
+    }
+
+    /// §3.2 discovery honesty for the BIRTH op, both directions.
+    ///
+    /// The v3 projection advertises `create` — and advertises it at OP grain,
+    /// as one bare cap. The dotted `op.field` form names a FIELD amendment to an
+    /// op that already exists under v2; `create` has no v2 twin to amend, so a
+    /// `create.<field>` cap would be a category error. Pinned so the next reader
+    /// does not "complete" the caps list by dotting the birth op's fields.
+    #[test]
+    fn v3_advertises_create_at_op_grain_and_v2_never_does() {
+        let hello = || {
+            json!({"id":1,"ok":true,"body":{
+                "proto":1,"server":"meridian-sidecar/2.0",
+                "caps":["toc","splice"],"root":"b3:a"}})
+        };
+        let mut v3 = hello();
+        project_response(&mut v3);
+        let caps: Vec<&str> = v3["body"]["caps"]
+            .as_array()
+            .expect("caps array")
+            .iter()
+            .map(|c| c.as_str().expect("cap is a string"))
+            .collect();
+        assert!(caps.contains(&"create"), "v3 advertises the birth op: {caps:?}");
+        assert!(
+            !caps.iter().any(|c| c.starts_with("create.")),
+            "the birth op ships at OP grain — no dotted create.<field> cap: {caps:?}"
+        );
+
+        // The v2 side: the projection is the ONLY place the cap is added, so an
+        // unprojected (v2) hello body never carries it and a v2 `create`
+        // answers `unknown_op` at dispatch. Absence here is the contract.
+        let v2 = hello();
+        let v2_caps: Vec<&str> = v2["body"]["caps"]
+            .as_array()
+            .expect("caps array")
+            .iter()
+            .map(|c| c.as_str().expect("cap is a string"))
+            .collect();
+        assert!(
+            !v2_caps.contains(&"create"),
+            "a v2 session never advertises the birth op: {v2_caps:?}"
         );
     }
 
