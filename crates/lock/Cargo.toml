@@ -12,6 +12,11 @@ workspace = true
 
 [dependencies]
 model = { workspace = true }
+# The engine-emits property's collector (#8 §1, U36): a canonical writer
+# declares its own language via `engine_emits!`, and the linker assembles the
+# set. The alternative — an array of names in this crate — is the enumerated
+# list #8 §1 forbids, merely relocated.
+inventory = { workspace = true }
 
 [dev-dependencies]
 syntax = { workspace = true }
