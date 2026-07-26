@@ -246,8 +246,11 @@ to guess which root it judged.
 ### The resolution ladder — three rungs, and every answer names itself
 
 `workspace::resolve` has **three** rungs, and the marker tier is gone
-(marker-retirement ruling, 2026-07-26 — `.meridian.toml` / `.meridian.yaml` are
-read by nothing):
+(marker-retirement ruling, 2026-07-26). **A `.meridian.toml` or
+`.meridian.yaml` still sitting in a tree is inert** — no code path in this
+engine reads either file, so one left on disk anchors nothing, grants no
+`[run.caps]`, and changes no answer below. Removing them is an operator's
+choice, not this engine's business:
 
 | Tier | What it answers | How |
 |---|---|---|
@@ -267,6 +270,13 @@ An answered rung opens the hashed drawer directly. A `cwd-default` tree adopts a
 running daemon's registered ancestor if one answers, else degrades to an
 ephemeral, per-invocation store that writes nothing — it is never silently
 registered.
+
+The CLI's word for a `cwd-default` answer is therefore the **refinement**, not
+the tier: `daemon-adopted` (the daemon supplied the root) or `ephemeral` (nothing
+did, and this invocation's store writes nothing). Both imply `cwd-default` and
+both name the root beside it, so the four words `env-override` / `git-root` /
+`daemon-adopted` / `ephemeral` are a strict refinement of the three tiers — what
+happened after the ladder fell through is the fact an operator needs.
 
 **A root's `MERIDIAN.md` self-declaration is NOT a rung.** It is read by
 `crates/config` (mount binding, and `crates/run`'s `run.caps.*` /

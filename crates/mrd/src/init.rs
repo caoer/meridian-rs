@@ -3,8 +3,8 @@
 //! round 4, amendment M2; marker-retirement ruling 2026-07-26).
 //!
 //! # What init writes, and why it is this file
-//! The retired `.meridian.toml` marker was existence-defined and untyped, so
-//! anything of that name was believed. The artifact that now MEANS "this
+//! The retired marker file was existence-defined and untyped, so anything
+//! carrying its name was believed. The artifact that now MEANS "this
 //! directory is a meridian root" is the root's own self-declaration, read by
 //! [`config::mount::read_root_declaration`]: the mount table binds a root by
 //! the `name:` it declares and pins it, and `crates/run` reads `run.caps.*`

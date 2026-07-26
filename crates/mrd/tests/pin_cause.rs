@@ -20,10 +20,9 @@ struct Sandbox {
 /// the resolution ladder never falls to the ancestor git search — `git
 /// hash-object -w` stays the only thing that can fail.
 ///
-/// The retired `.meridian.toml` marker used to anchor this. With the marker
-/// gone, `MERIDIAN_WORKSPACE` is the surviving way to anchor a non-git tree,
-/// and it is set per-subprocess in [`run`] (never on this process), so the
-/// suite stays parallel-safe.
+/// `MERIDIAN_WORKSPACE` is the ladder's only way to anchor a NON-git tree, and
+/// it is set per-subprocess in [`run`] (never on this process), so the suite
+/// stays parallel-safe.
 fn sandbox() -> (Sandbox, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sb = Sandbox {

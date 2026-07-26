@@ -100,11 +100,11 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// A marked workspace carrying both preset defs.
+/// A git-anchored workspace carrying both preset defs.
 fn workspace(sb: &Sandbox) -> PathBuf {
     let ws = sb.tmp.path().join("ws");
     std::fs::create_dir_all(ws.join("presets")).unwrap();
-    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    // Anchored by a `.git` entry — the ladder's structural rung.
     std::fs::create_dir_all(ws.join(".git")).unwrap();
     std::fs::write(ws.join("presets/session.md"), SESSION_PRESET).unwrap();
     std::fs::write(ws.join("presets/broken.md"), BROKEN_PRESET).unwrap();

@@ -53,7 +53,8 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
-    /// A bare workspace with an `mrd init` marker so the verbs resolve it.
+    /// A workspace declared a root by `mrd init`; the verbs resolve it as the
+    /// cwd default, which is enough for every plane under test here.
     fn workspace(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");

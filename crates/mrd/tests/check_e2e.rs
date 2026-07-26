@@ -65,7 +65,7 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
-    /// A workspace with one page + an `mrd init` marker.
+    /// A workspace with one page, declared a root by `mrd init`.
     fn workspace(&self) -> PathBuf {
         let ws = self.tmp.path().join("project");
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -75,8 +75,10 @@ impl Sandbox {
         ws
     }
 
-    /// A git-backed workspace + an `mrd init` marker. Git is real because `mrd
-    /// pin` asks git real questions about the pinned blob.
+    /// A git-backed workspace, declared a root by `mrd init`. Git is real
+    /// because `mrd pin` asks git real questions about the pinned blob — and it
+    /// is what anchors the ladder here (`git-root`), which the declaration does
+    /// not do.
     fn git_workspace(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
