@@ -1,61 +1,79 @@
-# The armed-plane gate — byte-landing enumeration (U4.2)
+# The armed-plane gate — the law, and what is derived (U4.2; census struck)
 
-Status: enforcement doc for U4.2 `gate()` at the seam. Law: plan §4 Block 4, U4.2
-byte-landing enumeration; `docs/wire-contract-v2-refusal-amendment.md`; `docs/laws.md`
-§ the policy gate.
+Status: enforcement doc for the U4.2 `gate()` seam. Law: plan §4 Block 4;
+`docs/wire-contract-v2-refusal-amendment.md`; `docs/laws.md` § the policy gate.
 
-`gate()` refuses an armed change **after CAS, before bytes land** (§11.1 amendment).
-For that guarantee to hold, EVERY place bytes reach disk must be either GATED
-through the one evaluator (`policy::gate` over the change it produces) or EXEMPT
-with a stated rationale. This page is that census — the load-bearing claim is that
-the list below is complete.
+**Measured at `b7c92d5a`, 2026-07-26.** This page states a law and describes an
+instrument. It contains no census — see § Why the census is gone.
 
-## The two writer paths
+## The law
 
-The wire write door is served by exactly two hosts, both dispatching the `Splice`
-op to the ONE `wire_serve::write` choke-point — so gating the choke-point gates
-both:
+`gate()` refuses an armed change **after CAS, before bytes land** (§11.1
+amendment). Every gated site evaluates the SAME
+`policy::gate(change, armed_set)` over a `rulepack-api@2` change surface built
+from the before/after states. The armed set is loaded and verified from the
+workspace's OWN attested INDEX + once-armed marker inside the trusted write
+path (`wire_serve::gate::load_armed_set` / `run::gate::load_armed_set`), never
+a caller-supplied set — so no caller can weaken the decision at any gated site.
 
-| Writer path | Crate | Dispatch | Choke-point call |
-|---|---|---|---|
-| per-workspace **sidecar** | `sidecar` | `arms::dispatch` (`arms.rs`) | `wire_serve::write::splice` |
-| resident **registry daemon** | `registry` | `dispatch_read` (`server.rs`) | `wire_serve::write::splice` |
+## What is derived from source
 
-Neither host dispatches `Create`/`Remove` as a wire op; those land via the run
-plane's board-card mint and `mrd test`, both of which call the same gated
-choke-point functions.
+`crates/wire-serve/tests/u12_door_enumeration.rs` is the only instrument that
+reads the tree. Stated exactly, because the difference matters:
 
-## Byte-landing census
+It walks every crate's production `src/` except `model`, truncates each file at
+its first `#[cfg(test)]`, skips lines beginning with `//`, and looks for two
+constructor names — `candidate_of_body(` and `candidate_of_batch(`. A file
+carrying at least one such call is recorded **once**. The test then asserts that
+this **set of FILES** equals the set its pinned table names.
 
-| # | Byte-landing site | Status | How / rationale |
-|---|-------------------|--------|-----------------|
-| 1 | **wire splice** (`wire_serve::write::splice`) | **GATED here** | `crate::gate::enforce_gate` at the ONE §11.1 verdict site, after CAS + validate, before the D4 commit. Runs before the dry short-circuit (a rehearsal of a refused write is still refused). Covers BOTH writer paths (sidecar + registry). |
-| 2 | **guarded create / remove** (`wire_serve::write::create` / `remove`, U2.6) | **GATED** | Same `enforce_gate` seam over the birth's `before=absent` / death's `after=absent` change surface. |
-| 3 | **run-plane apply + `receipts/run.md` append** (`run::executor::apply_under`, U3.x) | **GATED** | The run plane lands bytes through `fs::apply_batch`, NOT the wire choke-point, so it mounts the SAME evaluator (`run::gate::refuse_reason` → `policy::gate`) at step 6b — before the commit. The `receipts/run.md` append rides the same sealed `fs::apply_batch`, so it is gated with the change that produces it. Scenario 7 + falsification. |
-| 4 | **journal append** (`fs::append_line` → `meridian/journal.md`, U2.1) | **EXEMPT** | Receipt-engine-only path. An ordinary `splice`/`create`/`remove` targeting the reserved journal is REFUSED (`reserved_journal_guard`, `fs::domain::is_reserved_journal`); the engine's own append is not a wire op and does not re-enter the write choke-point. The gate would never (and must never) see it. |
-| 5 | **migrate kit** (strict writer, U3.2) | **GATED by construction** | The migrate kit writes through the strict writer (`splice`/`commit_batch`), so it rides the gated choke-point (#1). NOTE: no migrate-kit byte-lander exists in-tree yet (U3.2 pin-leg in-progress at review time); when it lands it inherits row #1's gate — there is no second write path to add. |
-| 6 | **`^inputs` lock-write** (`wire_serve::write::pin_lock`, U2.4) | **EXEMPT** (sanctioned, Block 4 leader ruling at U4.2 merge) | Engine's own act, same trust class as row 4: `new_text` is engine-rendered by `pin` (`crates/pin` is the only production caller; not dispatched as a wire op by either host), the triggering `inputs:` manifest edit rides the gated splice (#1), and the write itself is CAS + confinement + reserved-journal guarded and journaled. Gating it would gate an engine derivation, not a user change. Residual (stated): in-process code calling `pin_lock` with fabricated bytes is inside the TCB — the same residual class as the receipt engine's journal append. |
+At `b7c92d5a` that derived set is **three files**:
 
-## Findings (byte-landers beyond the law's enumeration)
+- `crates/wire-serve/src/write.rs`
+- `crates/mrd/src/realise_cmd.rs`
+- `crates/run/src/fp.rs`
 
-The plan's byte-landing enumeration lists rows 1–5. Surveying the current tree
-surfaced ONE further byte-lander not in that list — reported, not silently gated
-(per the U4.2 work order: "more than two byte-landing writer paths … is a finding"):
+**That is the entire source-derived claim: three file names.** It fails when a
+candidate is minted in a file not on that list — which is a real and useful
+guarantee, and is the whole of it.
 
-- **`wire_serve::write::pin_lock`** (the guarded `^inputs` lock-write, U2.4) —
-  found ungated and absent from the plan's enumeration. **RULED EXEMPT** at the
-  U4.2 merge (Block 4 leader, rationale verified against the code); now census
-  row #6 above. Flagged upward for the plan's enumeration text to be amended by
-  its owner.
+## What is NOT derived — do not read it as checked
 
-- `wire_serve::write::commit_batch` has **no production caller** (tests only); it
-  is the shared commit seam rows #1/#2 use internally, not a separate byte-lander.
+The same test carries a hand-written table classifying eight doors by
+`file::function`, and two further assertions. None of the following is measured
+against the tree:
 
-## The evaluator is one
+- **Which function in a file mints.** The set comparison keeps the file column
+  and discards the function column, so every `file::function` row is prose. It
+  is accurate prose, written by U12; it is not a check.
+- **A new mint inside a file already on the list.** The scan records a file once
+  and stops reading it. A ninth mint added to `write.rs` changes the derived set
+  not at all.
+- **The door count.** The assertion that the table holds eight rows measures the
+  hand-written array against itself.
+- **Whether any door calls the policy gate.** A guard is a call, not a type, and
+  no assertion attributes a call to a function. The test that counts guard calls
+  in `write.rs` counts lines in a file; moving a call between functions in that
+  file does not fail it.
 
-Rows 1–3 all evaluate the SAME `policy::gate(change, armed_set)` over a
-`rulepack-api@2` change surface built from the before/after states. The armed set
-is loaded and verified from the workspace's OWN attested INDEX + once-armed marker
-inside the trusted write path (`wire_serve::gate::load_armed_set` /
-`run::gate::load_armed_set`), never a caller-supplied set — so no caller can weaken
-the decision at any of the three gated sites.
+Gate coverage is therefore **not stated on this page and not derived anywhere**.
+Determining it is a source-reading exercise whose result rots; the standing gap
+is recorded with the Core lane rather than restated here as prose nobody checks.
+
+## Why the census is gone
+
+This page carried a six-row prose census whose load-bearing claim was that the
+list was complete. It was last measured at `340c4de6` (2026-07-23) and carried
+no measurement stamp. By `b7c92d5a` it had rotted past repair: one row named
+`wire_serve::write::pin_lock` and a `crates/pin` crate, **neither of which
+exists** (see `crates/mrd/tests/retired_verbs.rs`); another row's migrate kit
+has no crate in-tree; the anchor promotion in `write.rs` and the `realise`
+deploy door were never in it; and it dismissed `wire_serve::write::commit_batch`
+as *"not a separate byte-lander"* on the strength of a **caller count** — a
+criterion the code itself has since rejected in `commit_batch`'s own comment.
+
+**Re-derive or strike, no third state** (S3-R23(4)). The predicate this page
+needed — *lands bytes, gated or exempt* — is not the predicate the instrument
+derives, and re-deriving it means building a second instrument. So the census is
+struck rather than restated, relocated, or re-pinned in another form. What
+survives above is the law, and an honest description of what one test checks.

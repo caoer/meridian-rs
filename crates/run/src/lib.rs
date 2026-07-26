@@ -1,15 +1,25 @@
-//! The mrd-local run plane — S1, pre-eval slice (U2).
+//! The mrd-local run plane — `mrd run` (S1, as shipped).
 //!
 //! # Charter
-//! **Owns:** everything `mrd run` must resolve BEFORE any evaluation: locating
-//! the addressed task block on a page ([`address`]), classifying its fence
-//! language ([`fence`]), validating the declared arg/env contract against what
-//! the caller supplied ([`contracts`]), and resolving the block's effective
-//! capability set deny-by-default ([`caps`]). Pure resolution over the parsed
-//! model — no Starlark eval, no bash exec, no splice, no effect.
+//! **Owns:** the whole of `mrd run` — resolve, dispatch, execute, apply.
+//! Pre-eval resolution locates the addressed task block ([`address`]),
+//! classifies its fence language ([`fence`]), validates the declared arg/env
+//! contract ([`contracts`]) and resolves the block's capability set
+//! deny-by-default ([`caps`]). Past that, [`runner`] dispatches on the fence
+//! language — `starlark` to the hermetic kernel ([`dispatch_starlark`]),
+//! `bash` to a `setsid` child under a wall-clock timeout ([`exec`],
+//! [`dispatch_bash`]) whose only tree mutation is the effect-shim fd
+//! ([`shim`]) — and both converge on the ONE write path, the shared executor
+//! ([`executor`]): caps validated at the choke point, one `if_root`-pinned
+//! splice batch, the receipt in the same commit. [`gate`] refuses an armed
+//! change before that commit; [`snapshot`] names any residual delta around
+//! every bash step; [`record`] stores stdout out-of-tree, content-addressed.
 //!
-//! **Never does:** evaluate a block, apply an effect, touch the wire or the
-//! daemon. `run` is consumer-plane — the engine cannot tell run exists.
+//! **Never does:** touch the wire or the daemon, or roll back an ungoverned
+//! write (decision #14 — it persists as actor-absent external change). `run`
+//! is consumer-plane — the engine cannot tell run exists. Bash enforcement is
+//! **detection, not prevention** (ratified S1 scope): the claim ships scoped,
+//! never unqualified. Full surface + accepted gaps: `docs/run-plane.md`.
 //!
 //! # The task grammar (§2.1 reuse, no new syntax)
 //! A page declares tasks in frontmatter, one top-level key per task:
