@@ -128,6 +128,10 @@ realise = { workspace = true }
 # `model` (already in the graph); no new external crate enters, `cargo deny`
 # unchanged.
 config = { workspace = true }
+# U11 — `mrd walk` names the canonical root type and the resolution-facing
+# mount projection to build the root-keyed corpus. A std-only leaf already in
+# the graph via `model`/`view` — no new external crate, `cargo deny` unchanged.
+addr = { workspace = true }
 # JSON output (the house grammar) + the marker body. All already in the graph.
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -167,6 +171,11 @@ model = { workspace = true }
 # dev-only edge; `syntax` is a path crate already in the graph, `cargo deny`
 # unchanged.
 syntax = { workspace = true }
+# The D12 address-owner gate (crates/mrd/tests/address_owner.rs) names the
+# injected mount table (`addr::MountSet`) U11 added to `resolve_ref`. A std-only
+# leaf already in the graph via `model` — no new external crate enters,
+# `cargo deny` unchanged.
+addr = { workspace = true }
 duckdb = { workspace = true }
 # The U1.6 `test --history` gate (crates/mrd/tests/history.rs) drives the tier over
 # the REAL embedded seed convention: `policy::seed_convention_files()` supplies the

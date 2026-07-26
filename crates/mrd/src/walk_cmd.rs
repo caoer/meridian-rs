@@ -49,8 +49,25 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let docs = build_docs(&resolved.workspace)?;
 
-    let report =
-        walk::walk(&docs, &parsed.page, parsed.direction, parsed.depth).map_err(walk_error)?;
+    // U11 — the mount table, loaded from `MERIDIAN.md`, and one corpus per
+    // BOUND root. `mounts` owns the document maps; `corpus` borrows them, so the
+    // owner must outlive the borrow — hence two bindings rather than one
+    // expression.
+    let mounts = load_mounts();
+    let mut corpus = model::RootedCorpus::ambient(&docs);
+    for mount in &mounts.corpora {
+        corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
+    }
+    let mount_set = &mounts.set;
+
+    let report = walk::walk_rooted(
+        &corpus,
+        mount_set,
+        &parsed.page,
+        parsed.direction,
+        parsed.depth,
+    )
+    .map_err(walk_error)?;
 
     match parsed.format {
         Format::Json => {
@@ -65,13 +82,157 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .iter()
         .filter(|e| walk::color_tone(&e.color) == "red")
         .count();
-    if reds > 0 {
+    // S3-R6 — grey REFUSES, on exit 1, each with its OWN reason word, both
+    // distinct in the human line and in `--json`. **No fourth exit code**, and
+    // `--force` is the escape.
+    //
+    // Scoped to the two ROOT greys deliberately: the pre-existing greys
+    // (`immutable-root`, `declared-unpinned`, …) keep exiting 0, because they
+    // describe edges the ledger was never asked to measure. These two are
+    // different — the address ASKED a question this machine cannot answer, and
+    // exiting 0 would make unmounting a root a way to turn a red into a pass
+    // through an edit to `~/MERIDIAN.md`, which cannot itself be attested.
+    let root_greys: Vec<&str> = report
+        .entries
+        .iter()
+        .filter_map(|e| walk::color_reason(&e.color))
+        .filter(|w| *w == "unmounted" || *w == addr::PATH_UNSEEABLE_REASON_WORD)
+        .collect();
+    if reds > 0 || !root_greys.is_empty() {
+        let mut findings = Vec::new();
+        if reds > 0 {
+            findings.push(format!("{reds} red edge(s)"));
+        }
+        for word in ["unmounted", addr::PATH_UNSEEABLE_REASON_WORD] {
+            let n = root_greys.iter().filter(|w| **w == word).count();
+            if n > 0 {
+                findings.push(format!("{n} grey({word}) edge(s)"));
+            }
+        }
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("{reds} red edge(s) in the walk"),
+            message: format!("{} in the walk", findings.join(", ")),
         });
     }
     Ok(())
+}
+
+/// One mounted root's corpus, owned — the backing store `RootedCorpus` borrows.
+struct MountedCorpus {
+    name: addr::MountName,
+    kind: model::RootKind,
+    docs: BTreeMap<String, Document>,
+}
+
+/// Load `MERIDIAN.md`'s mount table into BOTH halves resolution needs: one
+/// corpus per usable root, and the projection that says what the file declares.
+///
+/// **S3-R50 — a declared root that cannot be used is CARRIED WITH ITS STATE, never
+/// dropped.** Round 1 dropped it (`state().refuses()` → `continue`, and a
+/// `build_docs_at` failure skipped it), so a root the file DECLARES fell through
+/// to the *undeclared* arm and `mrd walk` told the user to declare it — while
+/// `mrd config`, one command away, was already naming the path correctly.
+///
+/// > A word added downstream of a place that ERASES the distinction is a word
+/// > that never gets used.
+///
+/// So the three causes arrive at the renderer distinct: **not declared at all**
+/// (absent from the projection entirely → `grey(unmounted)`, teach the
+/// declaration); **declared but unusable** and **declared, bound, corpus
+/// unreadable** (both recorded as unreachable with their path → the shared
+/// `path-unseeable` word, teach the PATH).
+///
+/// **Never fails the walk.** No `MERIDIAN.md`, an unparseable one, or an
+/// unreadable root simply yields fewer usable roots — absence is the topology
+/// working as designed (§ 8 M6), not a reason to brick every single-root
+/// workspace on the planet.
+fn load_mounts() -> Mounts {
+    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+        return Mounts::default();
+    };
+    let Some(cfg) = resolution.config() else {
+        return Mounts::default();
+    };
+    let Ok(table) = config::mount::bind(cfg) else {
+        return Mounts::default();
+    };
+
+    let mut corpora: Vec<MountedCorpus> = Vec::new();
+    let mut bound: Vec<addr::MountName> = Vec::new();
+    let mut unreachable: Vec<(addr::MountName, String, String)> = Vec::new();
+
+    for mount in table.mounts() {
+        let Ok(name) = addr::MountName::parse(mount.name()) else {
+            continue; // not a canonical name — no address can reach it anyway
+        };
+        // Declared, but the mount plane refuses it. Carried, with the path it
+        // declares and that plane's own reason verbatim — never dropped.
+        if mount.state().refuses() {
+            // The RAW filesystem reason where the mount plane has one, so the
+            // walk's own refusal reads as one sentence rather than nesting that
+            // plane's whole teaching inside this plane's parenthetical. For every
+            // other refusing state there is no raw reason, and that plane's
+            // teaching IS the most specific thing available — carried verbatim.
+            let detail = match mount.state() {
+                config::mount::MountState::PathUnseeable { detail } => detail.clone(),
+                other => other.detail(),
+            };
+            unreachable.push((name, mount.declared_path().to_owned(), detail));
+            continue;
+        }
+        let Some(path) = mount.canonical_path() else {
+            continue;
+        };
+        match build_docs_at(path) {
+            Ok(docs) => {
+                bound.push(name.clone());
+                corpora.push(MountedCorpus {
+                    name,
+                    kind: mount_kind(mount.kind()),
+                    docs,
+                });
+            }
+            // Bound per the table, but its corpus will not build — unreadable
+            // FROM here, and just as much a declared root as any other.
+            Err(e) => unreachable.push((name, path.display().to_string(), e.message)),
+        }
+    }
+
+    let mut set = addr::MountSet::new(bound);
+    for (name, path, detail) in unreachable {
+        set = set.with_unreachable(name, path, detail);
+    }
+    Mounts { corpora, set }
+}
+
+/// The mount table as `mrd walk` consumes it: the loaded corpora, and the
+/// projection naming what the file declares and which of it is usable.
+#[derive(Default)]
+struct Mounts {
+    corpora: Vec<MountedCorpus>,
+    set: addr::MountSet,
+}
+
+/// The mount plane's kind, as the resolver's kind.
+fn mount_kind(kind: config::MountKind) -> model::RootKind {
+    match kind {
+        config::MountKind::Vault => model::RootKind::Vault,
+        config::MountKind::GitFolder => {
+            model::RootKind::Opaque(config::MountKind::GitFolder.as_str().to_owned())
+        }
+    }
+}
+
+/// [`build_docs`] without the workspace-resolution wrapper — a mount path is
+/// already canonical (canonicalize-at-bind, § 8 B-1), so re-resolving it would
+/// ask a second owner the question the mount table already answered.
+fn build_docs_at(root: &Path) -> Result<BTreeMap<String, Document>, Fail> {
+    let root = fs::WorkspaceRoot(root.to_path_buf());
+    let (files, _fingerprint) = fs::domain_snapshot(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the mounted corpus: {e}")))?;
+    let (_index, docs) = fs::build_corpus(files)
+        .map_err(|e| Fail::tool(format!("cannot build the mounted corpus: {e}")))?;
+    Ok(docs)
 }
 
 /// The parsed `walk` invocation: the root page, direction, optional depth bound,
@@ -189,6 +350,13 @@ fn render_human(report: &WalkReport) -> String {
                 walk::color_label(&entry.color),
                 entry.selector,
             );
+            // S3-R51 — the teaching refusal, indented beneath the row it
+            // explains. The house pattern, copied from `mrd config`, which
+            // already prints `MountState::detail()` under each mount rather
+            // than inventing a second layout for the same job.
+            if let Some(teaching) = walk::color_teaching(&entry.color, &entry.selector) {
+                let _ = writeln!(out, "      {teaching}");
+            }
         }
     }
     let _ = writeln!(out, "revs-read:");
@@ -216,6 +384,10 @@ fn to_json(workspace: &Path, report: &WalkReport) -> Value {
                 "color": walk::color_tone(&entry.color),
                 "reason": walk::color_reason(&entry.color),
                 "detail": walk::color_detail(&entry.color),
+                // S3-R51 — the teaching refusal now has an output path. `null`
+                // for every color that teaches nothing, so the field never
+                // invents advice it does not have.
+                "teaching": walk::color_teaching(&entry.color, &entry.selector),
             })
         })
         .collect();

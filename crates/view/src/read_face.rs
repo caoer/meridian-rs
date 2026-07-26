@@ -448,6 +448,28 @@ pub struct LockItem {
     /// a page that never pinned anything. The row renders grey `lock-refused`
     /// (grey = outside sight), never green and never red.
     pub lock_refusal: Option<String>,
+    /// The canonical root this edge RESOLVED INTO, when it resolved into a
+    /// mounted root rather than the ambient one. `None` = the ambient root (the
+    /// majority case, unchanged).
+    ///
+    /// [`LockItem::to_path`] is the path INSIDE that root, so a consumer
+    /// fetching bytes must read this to know which corpus to fetch from —
+    /// resolving `to_path` against the ambient corpus is exactly FINDING 03's
+    /// wrong-bytes success.
+    pub to_root: Option<addr::MountName>,
+    /// Set when this edge's ROOT could not be resolved to a readable corpus —
+    /// carrying the computed grey reason itself, not merely the fact that
+    /// something was wrong.
+    ///
+    /// **It carries the REASON because the causes must stay distinct (S3-R50).**
+    /// A root nothing declares and a root that is declared but unreadable are
+    /// different facts with different fixes, and a carrier that recorded only
+    /// "unresolved" would force the renderer to guess which — which is how one
+    /// of them ended up prescribing an action the user had already taken.
+    ///
+    /// Distinct from [`LockItem::lock_refusal`]: a refused lock is unreadable
+    /// HERE, an unresolvable root is unreachable FROM here.
+    pub root_refusal: Option<model::selector::GreyReason>,
 }
 
 /// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
@@ -508,9 +530,56 @@ pub fn page_lock_items_in_corpus(
     index: &CorpusIndex,
     docs: &BTreeMap<String, Document>,
 ) -> Vec<LockItem> {
+    page_lock_items_in_rooted_corpus(
+        src_path,
+        doc,
+        index,
+        &model::RootedCorpus::ambient(docs),
+        &addr::MountSet::default(),
+    )
+}
+
+/// [`page_lock_items_in_corpus`] against a ROOT-KEYED corpus and a mount table —
+/// **resolution is a mount lookup** (U11).
+///
+/// Each item's `to_path` is resolved through the one address owner, and the
+/// outcome is recorded STRUCTURALLY rather than folded into the path string:
+///
+/// - resolved in a mounted root → `to_root` names it, `to_path` is the path
+///   inside THAT root;
+/// - the named root is not bound → `unmounted` names it and the row renders grey;
+/// - anything else → the ambient behaviour, unchanged.
+///
+/// The unresolvable-ref fallback is unchanged: the spelling comes back verbatim
+/// and the edge renders red `selector-unresolved`. **An unmounted root does NOT
+/// take that path** — that is the conflation this function exists to prevent.
+#[must_use]
+pub fn page_lock_items_in_rooted_corpus(
+    src_path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+) -> Vec<LockItem> {
     let mut items = page_lock_items(doc);
     for item in &mut items {
-        item.to_path = resolve_to_path(&item.to_path, src_path, index, docs);
+        match index.resolve_ref(&item.to_path, src_path, corpus, mounts) {
+            model::RefResolution::Ambient(path) => item.to_path = path,
+            model::RefResolution::Rooted { root, path } => {
+                item.to_root = Some(root);
+                item.to_path = path;
+            }
+            model::RefResolution::Unmounted(root) => {
+                item.root_refusal = Some(model::selector::GreyReason::Unmounted { root });
+            }
+            model::RefResolution::PathUnseeable { root, path, detail } => {
+                item.root_refusal =
+                    Some(model::selector::GreyReason::PathUnseeable { root, path, detail });
+            }
+            // Unresolved and malformed both keep the declared spelling, which is
+            // what the red `selector-unresolved` render reports.
+            model::RefResolution::NotFound | model::RefResolution::Malformed(_) => {}
+        }
     }
     items
 }
@@ -537,9 +606,36 @@ pub fn resolve_to_path(
     index: &CorpusIndex,
     docs: &BTreeMap<String, Document>,
 ) -> String {
+    resolve_to_path_rooted(
+        to_path,
+        src_path,
+        index,
+        &model::RootedCorpus::ambient(docs),
+        &addr::MountSet::default(),
+    )
+}
+
+/// [`resolve_to_path`] against a ROOT-KEYED corpus and a mount table — the
+/// cross-root form, and the one the walk plane uses.
+///
+/// The bare-input fallback is unchanged and stays deliberate: an unresolvable
+/// ref reports the spelling it could not place. **A `root:`-bearing ref to an
+/// UNMOUNTED root therefore reports its address verbatim rather than the ambient
+/// root's same-basename file** — the caller distinguishes the two by asking
+/// [`model::CorpusIndex::resolve_ref`] directly, which is what
+/// `walk::steps_from` does to reach the grey.
+#[must_use]
+pub fn resolve_to_path_rooted(
+    to_path: &str,
+    src_path: &str,
+    index: &CorpusIndex,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+) -> String {
     index
-        .resolve_ref(to_path, src_path, docs)
-        .unwrap_or_else(|| to_path.to_string())
+        .resolve_ref(to_path, src_path, corpus, mounts)
+        .path()
+        .map_or_else(|| to_path.to_string(), str::to_owned)
 }
 
 /// Walk the node tree, parsing the lock items of every `^inputs` code block into
@@ -728,6 +824,11 @@ fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
                     hash_algo: hash_algo.clone(),
                     fingerprint: None, // a legacy form pins a rev, never a CID-token
                     lock_refusal: None, // only form-3 has a lock block to refuse
+                    // Set by resolution, never by the parser: a DECLARED ref carries
+                    // its root in the spelling, and which root it RESOLVED into is a
+                    // mount-table fact this seam has not consulted yet.
+                    to_root: None,
+                    root_refusal: None,
                 });
                 current = Some(out.len() - 1);
             }
@@ -799,6 +900,11 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 hash_algo: None,
                 fingerprint: None,
                 lock_refusal: Some(refusal.to_string()),
+                // Set by resolution, never by the parser: a DECLARED ref carries
+                // its root in the spelling, and which root it RESOLVED into is a
+                // mount-table fact this seam has not consulted yet.
+                to_root: None,
+                root_refusal: None,
             });
             return;
         }
@@ -822,6 +928,11 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             hash_algo: Some(fingerprint_algo(&pin.fingerprint)),
             fingerprint: Some(pin.fingerprint),
             lock_refusal: None, // this lock parsed — the refusal row is the Err arm
+            // Set by resolution, never by the parser: a DECLARED ref carries
+            // its root in the spelling, and which root it RESOLVED into is a
+            // mount-table fact this seam has not consulted yet.
+            to_root: None,
+            root_refusal: None,
         });
     }
 }
@@ -913,6 +1024,11 @@ fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
         hash_algo: None,    // stamped per-block by parse_lock_body
         fingerprint: None,  // a legacy form pins a rev, never a CID-token
         lock_refusal: None, // only form-3 has a lock block to refuse
+        // Set by resolution, never by the parser: a DECLARED ref carries
+        // its root in the spelling, and which root it RESOLVED into is a
+        // mount-table fact this seam has not consulted yet.
+        to_root: None,
+        root_refusal: None,
     })
 }
 
