@@ -333,7 +333,12 @@ fn the_verb_names_which_rung_supplied_the_path_even_when_both_agree() {
 
     // Rung 2 — nothing stated, the default answered.
     let fell_through = run(home.path(), None, &[]);
-    assert_eq!(fell_through.status.code(), Some(0), "{}", stderr(&fell_through));
+    assert_eq!(
+        fell_through.status.code(),
+        Some(0),
+        "{}",
+        stderr(&fell_through)
+    );
     let fell_through_text = stdout(&fell_through);
     assert!(
         fell_through_text.contains("origin:$HOME/MERIDIAN.md"),
