@@ -186,7 +186,13 @@ impl Sandbox {
     }
 
     /// Install the fence and assert the STATE CHANGE, not the exit code (R40):
-    /// the file exists at the common dir's `hooks/pre-commit` and is executable.
+    /// **every door** git dispatches for a commit built from a prepared index
+    /// carries an executable fence. Returns `pre-commit`, which is the door the
+    /// arms in this file drive.
+    ///
+    /// The three names are literals rather than a read of `FENCED_HOOKS`: an
+    /// assertion parameterised by the set it measures cannot fail when that set
+    /// shrinks.
     fn install_fence(&self, ws: &Path) -> PathBuf {
         let out = self.run(ws, &["hook", "install"]);
         assert_eq!(
@@ -195,21 +201,24 @@ impl Sandbox {
             "hook install on a clean repo: {}",
             said(&out)
         );
-        let hook = common_dir(ws).join("hooks").join("pre-commit");
-        assert!(
-            hook.exists(),
-            "R40 — install exited 0 without writing {}",
-            hook.display()
-        );
-        let mode = std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(&hook).expect("stat hook").permissions(),
-        );
-        assert_eq!(
-            mode & 0o111,
-            0o111,
-            "chmod+x is the install, not a decoration on it: mode {mode:o}"
-        );
-        hook
+        let hooks = common_dir(ws).join("hooks");
+        for name in ["pre-commit", "pre-merge-commit", "pre-applypatch"] {
+            let hook = hooks.join(name);
+            assert!(
+                hook.exists(),
+                "R40 — install exited 0 without writing {}",
+                hook.display()
+            );
+            let mode = std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(&hook).expect("stat hook").permissions(),
+            );
+            assert_eq!(
+                mode & 0o111,
+                0o111,
+                "chmod+x is the install, not a decoration on it: {name} mode {mode:o}"
+            );
+        }
+        hooks.join("pre-commit")
     }
 }
 

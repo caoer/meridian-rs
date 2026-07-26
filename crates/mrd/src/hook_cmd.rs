@@ -29,7 +29,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::hook::{self, HookHere, Installed, Removed, Unfenceable};
+use crate::hook::{self, Installed, Removed, Unfenceable};
 use crate::{Fail, Format, current_dir};
 
 /// Run `mrd hook <install|uninstall|status> [PATH] [--json]`.
@@ -52,48 +52,46 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         "install" => render(
             parsed.format,
             "install",
-            hook::install(&workspace).map(|(f, state)| {
-                let word = match state {
-                    Installed::Fresh => "installed",
-                    Installed::AlreadyInstalled => "already-installed",
+            // The downgrade guard's escape is the ratified one, read here so the
+            // CLI face and the fence body honour the same grammar.
+            hook::install(&workspace, &hook::force_from_env()).map(|(f, state)| {
+                let (word, detail) = match state {
+                    Installed::Fresh => ("installed", None),
+                    Installed::AlreadyInstalled => ("already-installed", None),
+                    // A migration is not an idempotent refresh, and reporting it
+                    // as one hides the doors that were open until just now (R40).
+                    Installed::Completed { added } => (
+                        "completed",
+                        Some(format!(
+                            "{added} door(s) were unfenced and are now covered; \
+                             this root was fenced by an install set of fewer doors"
+                        )),
+                    ),
                 };
-                (f, word.to_owned(), None)
+                (f, word.to_owned(), detail)
             }),
         ),
         "uninstall" => render(
             parsed.format,
             "uninstall",
             hook::uninstall(&workspace).map(|(f, state)| {
-                let word = match state {
-                    Removed::Removed => "removed",
-                    Removed::Absent => "absent",
+                let (word, detail) = match state {
+                    Removed::Removed { doors } => {
+                        ("removed", Some(format!("{doors} door(s) unfenced")))
+                    }
+                    Removed::Absent => ("absent", None),
                 };
-                (f, word.to_owned(), None)
+                (f, word.to_owned(), detail)
             }),
         ),
+        // The whole SET's state, in one word, with its teaching. "Installed",
+        // "installed by an older fence" and "installed at two of three doors" are
+        // different facts about the disk and are reported apart (R40).
         "status" => render(
             parsed.format,
             "status",
-            hook::status(&workspace).map(|(f, here)| match here {
-                HookHere::None => (f, "absent".to_owned(), None),
-                // "Installed" and "installed, but an OLDER fence" are different
-                // facts about the disk and are reported apart (R40). An older
-                // fence runs `mrd check` where this one runs `mrd check --staged`,
-                // so it reads the worktree and passes a staged forgery — a
-                // reinstall is owed, and only this line can say so.
-                HookHere::Ours { current: true } => (f, "installed".to_owned(), None),
-                HookHere::Ours { current: false } => (
-                    f,
-                    "installed-superseded".to_owned(),
-                    Some(
-                        "an older fence is installed; `mrd hook install` refreshes it (idempotent)"
-                            .to_owned(),
-                    ),
-                ),
-                HookHere::Foreign { first_line } => {
-                    (f, "foreign-hook".to_owned(), Some(first_line))
-                }
-            }),
+            hook::status(&workspace)
+                .map(|(f, coverage)| (f, coverage.word().to_owned(), coverage.teaching())),
         ),
         other => Err(Fail::tool(format!("unknown hook subcommand: {other}"))),
     }
@@ -109,6 +107,11 @@ fn render(
 ) -> Result<(), Fail> {
     match outcome {
         Ok((fenceable, state, detail)) => {
+            // Read the set back after the verb acted. **The report is of the disk,
+            // never of what the verb intended** — and it is what carries
+            // `fence_version`, the datum the fence has always declared and nothing
+            // read. Read-only: no lock, no write.
+            let coverage = hook::coverage(&fenceable);
             match format {
                 Format::Json => {
                     let value = json!({
@@ -116,7 +119,21 @@ fn render(
                         "state": state,
                         "workspace": fenceable.workspace.display().to_string(),
                         "common_dir": fenceable.common_dir.display().to_string(),
-                        "hook": fenceable.hook_path.display().to_string(),
+                        // The install set, per door. A scalar `hook` was a claim
+                        // that one path was the whole fence, and it was not.
+                        "hooks": coverage.doors.iter().map(|door| json!({
+                            "name": door.name,
+                            "path": door.path.display().to_string(),
+                            "state": door.word(),
+                            "fence_version": door.version(),
+                        })).collect::<Vec<_>>(),
+                        // What the FILES declare, and what THIS ENGINE writes,
+                        // beside each other. A verdict that does not disclose its
+                        // judge cannot be checked by a third party — which is the
+                        // only way a version skew is ever caught, because in a
+                        // skew both participants are inside it.
+                        "fence_version": coverage.fence_version(),
+                        "engine_version": hook::FENCE_VERSION,
                         "detail": detail,
                     });
                     println!("{}", serde_json::to_string_pretty(&value).expect("json"));
@@ -125,7 +142,16 @@ fn render(
                     println!("hook {verb} {}", fenceable.workspace.display());
                     println!("  state:      {state}");
                     println!("  common-dir: {}", fenceable.common_dir.display());
-                    println!("  hook:       {}", fenceable.hook_path.display());
+                    for door in &coverage.doors {
+                        println!(
+                            "  hook:       {} [{}{}]",
+                            door.path.display(),
+                            door.word(),
+                            door.version()
+                                .map_or_else(String::new, |v| format!(" fence {v}"))
+                        );
+                    }
+                    println!("  engine:     fence {}", hook::FENCE_VERSION);
                     if let Some(detail) = &detail {
                         println!("  existing:   {detail}");
                     }
