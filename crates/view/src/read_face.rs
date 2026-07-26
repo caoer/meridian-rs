@@ -1517,6 +1517,10 @@ mod tests {
             .as_ref()
             .and_then(addr::Addr::root)
             .map(addr::MountName::as_str);
-        assert_eq!(root, Some("sessions"), "the root is structural, not textual");
+        assert_eq!(
+            root,
+            Some("sessions"),
+            "the root is structural, not textual"
+        );
     }
 }

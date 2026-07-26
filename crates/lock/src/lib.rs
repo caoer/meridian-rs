@@ -620,15 +620,15 @@ mod tests {
     fn a_ref_outside_the_address_grammar_is_named_damage_not_carried() {
         let block = |r#ref: &str| {
             format!(
-                "```meridian-lock\nversion: 1\npins:\n  - ref: \"{}\"\n    \
-                 fingerprint: \"fp1.span2.b3.00\"\n```",
-                r#ref
+                "```meridian-lock\nversion: 1\npins:\n  - ref: \"{ref}\"\n    \
+                 fingerprint: \"fp1.span2.b3.00\"\n```"
             )
         };
 
         // ACCEPTANCE — the cross-root spelling this crate is honestly
         // prefix-transparent about (FINDING 02, "where the claim IS true").
-        let ok = parse(&block("sessions:24-01-retro/notes.md#Design")).expect("a rooted ref parses");
+        let ok =
+            parse(&block("sessions:24-01-retro/notes.md#Design")).expect("a rooted ref parses");
         assert_eq!(
             ok.pins[0].declared_ref.root().map(addr::MountName::as_str),
             Some("sessions"),
@@ -646,13 +646,19 @@ mod tests {
 
         // REFUSAL — each class named, never conflated with `Malformed`.
         for (r#ref, want) in [
-            ("Sessions:notes.md", addr::AddrError::BadMountName {
-                found: "Sessions".to_string(),
-            }),
+            (
+                "Sessions:notes.md",
+                addr::AddrError::BadMountName {
+                    found: "Sessions".to_string(),
+                },
+            ),
             (":notes.md", addr::AddrError::EmptyMountName),
-            ("a:b:c.md", addr::AddrError::AmbiguousColon {
-                found: "a:b:c.md".to_string(),
-            }),
+            (
+                "a:b:c.md",
+                addr::AddrError::AmbiguousColon {
+                    found: "a:b:c.md".to_string(),
+                },
+            ),
         ] {
             match parse(&block(r#ref)).expect_err(r#ref) {
                 LockError::BadRef { found, reason, .. } => {
