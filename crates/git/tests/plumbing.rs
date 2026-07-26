@@ -329,6 +329,63 @@ fn a_ref_name_is_refused_as_a_bad_oid() {
     assert!(repo.object_exists(&oid).expect("presence"));
 }
 
+/// **Gate — ONE oid, THREE object stores, THREE anchoring states (U13).**
+///
+/// The ratified cross-root addressing §4: *"the blob-anchoring check runs against
+/// THAT root's git repo — six roots, six object stores, one law."* This is that
+/// sentence as an assertion, and it is deliberately built on the SAME object id:
+/// identical bytes content-address identically, so the oid cannot be what
+/// distinguishes the answers — **only which store was asked can.** A check that
+/// silently ran against one ambient repository could not produce three different
+/// states here, whatever it did with the root prefix.
+///
+/// Both arms of the per-root claim ride together (S3-R8(c)): the blob is found
+/// anchored where it IS anchored, and it degrades to `never-anchored` in the
+/// store that does not hold it — never borrowing another store's answer.
+#[test]
+fn one_oid_three_stores_three_anchor_states() {
+    // Identical bytes in three separate repositories.
+    const BODY: &str = "one law, several object stores\n";
+    let anchored_dir = empty_repo();
+    let pending_dir = empty_repo();
+    let absent_dir = empty_repo();
+    for dir in [&anchored_dir, &pending_dir, &absent_dir] {
+        write(dir.path(), "x.md", BODY);
+    }
+
+    // Store 1: committed — a ref reaches the blob.
+    commit(anchored_dir.path(), "anchor it here");
+    // Store 2: the eager vibe write — in the database, reachable from nothing.
+    let pending = Repo::at(pending_dir.path());
+    let pending_oid = pending.write_blob(Path::new("x.md")).expect("eager write");
+    // Store 3: hashed read-only — the object database never saw it.
+    let absent = Repo::at(absent_dir.path());
+    let absent_oid = absent.blob_oid(Path::new("x.md")).expect("read-only oid");
+
+    let anchored = Repo::at(anchored_dir.path());
+    let anchored_oid = anchored.blob_oid(Path::new("x.md")).expect("oid");
+    assert_eq!(
+        (anchored_oid.as_str(), pending_oid.as_str()),
+        (absent_oid.as_str(), absent_oid.as_str()),
+        "identical bytes are ONE oid — the stores are the only variable",
+    );
+    let oid = anchored_oid;
+
+    // One law, applied three times against three handles. Both facts of each
+    // pair come from the handle they were gathered with.
+    let classify = |repo: &Repo| {
+        let reachable = repo.reachable_objects().expect("reachable set");
+        let present = repo.object_exists(&oid).expect("presence");
+        ObjectAnchor::classify(&ObjectAnchorFacts {
+            object_present: present,
+            reachable_from_commit: reachable.contains(&oid),
+        })
+    };
+    assert_eq!(classify(&anchored), ObjectAnchor::Anchored);
+    assert_eq!(classify(&pending), ObjectAnchor::PendingAnchor);
+    assert_eq!(classify(&absent), ObjectAnchor::NeverAnchored);
+}
+
 /// The handle is a handle: two roots, two handles, one code path (seam rule
 /// D12). Nothing here discovers or caches "the" repository, so a later
 /// per-root git repo plugs in by constructing another `Repo`.
