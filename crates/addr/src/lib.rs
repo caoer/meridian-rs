@@ -83,11 +83,13 @@ impl fmt::Display for MountName {
 /// Every variant carries the offending text, so a refusal can name what it
 /// refused rather than reporting that something, somewhere, was malformed.
 ///
-/// Deliberately NOT carried here: the `SelectorOnOpaqueRoot` refusal of
-/// § 10.1. That one is a RESOLUTION-time refusal — a root's *kind* is a
-/// mount-table fact and [`Addr::parse`] does not read the mount table — so its
-/// constructor lives with the resolver (U11). Shipping an unconstructed variant
-/// here would be a claim nothing checks.
+/// One variant here is NOT reachable from [`Addr::parse`]:
+/// [`AddrError::SelectorOnOpaqueRoot`] is a RESOLUTION-time refusal, because a
+/// root's *kind* is a mount-table fact and `parse` does not read the mount table
+/// (§ 2.2). Its constructor lives with the resolver — `model`'s
+/// [`resolve_ref`](../model/struct.CorpusIndex.html) — and U11 ships the two
+/// together. A variant with no constructor would be S3-R23(4)'s forbidden
+/// weakened middle: a claim nothing checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddrError {
     /// The head carried a root separator but the name before it is outside the
@@ -108,6 +110,21 @@ pub enum AddrError {
     AmbiguousColon {
         /// The offending head, verbatim.
         found: String,
+    },
+    /// A `#selector` on an address naming an OPAQUE root — one whose kind has no
+    /// parse and no sections (`git-folder`). `assets:media/logo.png` is legal;
+    /// `assets:media/logo.png#Design` is refused (§ 10.1, G-1).
+    ///
+    /// **Resolution-time, never parse-time**: the root's kind is a mount-table
+    /// fact, so only the resolver can raise this. Pin grain for such a root is
+    /// the file, and the fingerprint is a raw CID of the bytes.
+    SelectorOnOpaqueRoot {
+        /// The opaque root the address named.
+        root: MountName,
+        /// That root's kind word, as the mount table spells it (`git-folder`).
+        kind: String,
+        /// The refused selector, verbatim.
+        selector: String,
     },
 }
 
@@ -132,6 +149,17 @@ impl fmt::Display for AddrError {
                 "refused: '{found}' carries more than one `:` before the first `/` — \
                  exactly one colon may separate a root from its path. \
                  Fix: rename the root or move the path under a directory; see [[address-grammar]]."
+            ),
+            AddrError::SelectorOnOpaqueRoot {
+                root,
+                kind,
+                selector,
+            } => write!(
+                f,
+                "refused: root '{root}' is a {kind} root — it has no parse and no sections, \
+                 so the selector '{selector}' addresses nothing. \
+                 Fix: address the file itself (`{root}:path`) — pin grain for a {kind} root is \
+                 the file; see [[address-grammar]]."
             ),
         }
     }
@@ -330,6 +358,41 @@ impl fmt::Display for Addr {
         }
         Ok(())
     }
+}
+
+/// **The ONE lexical confinement predicate for a corpus-relative path.**
+///
+/// A path is confined when it is non-empty, does not start with `/`, has no
+/// empty / `.` / `..` segment, and **carries no root separator in its head**.
+///
+/// Confinement used to be an ambient property: every path was joined onto the
+/// ONE `fs::WorkspaceRoot`, so a lexical check was the whole story. **Multi-root
+/// removes that ambient guarantee** — a `root:` prefix selects WHICH tree a path
+/// is joined onto — so the head-colon arm is part of the predicate rather than a
+/// separate address check: a `root:`-bearing spelling is an ADDRESS, and an
+/// address is never a corpus path (§ 4.2, D11).
+///
+/// It lives here, in the `std`-only leaf, because two planes ask it — the write
+/// doors in `wire-serve` and the resolver in `model` — and a second
+/// implementation of a confinement fact is how one question grows two answers.
+///
+/// **Lexical only, by design.** It does not touch the filesystem, so it cannot
+/// see a symlink that escapes; canonicalize-at-bind (§ 8 B-1) is what covers
+/// that, and the two are complementary rather than alternatives.
+#[must_use]
+pub fn confined(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('/') {
+        return false;
+    }
+    if path
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return false;
+    }
+    // The head is the first segment: a `:` after the first `/` is an ordinary
+    // path byte (§ 4.1) and must not make an otherwise-fine path unwritable.
+    !path.split('/').next().unwrap_or(path).contains(':')
 }
 
 /// The resolution-facing projection of the mount table: which canonical names
@@ -551,6 +614,53 @@ mod tests {
         assert_eq!(at_in_path.fp(), None, "a bare path's `@` is a path byte");
     }
 
+    /// **S3-R38 — an `@` in a BARE path is a PATH BYTE, so `mail@host.md` stays
+    /// addressable.** Ratified, and pinned HERE rather than remembered: before
+    /// this test the ruling lived in prose on [`Addr::parse`], and a grammar
+    /// decision living only in a doc comment is one refactor from being reversed
+    /// by someone who never read it.
+    ///
+    /// **Why it holds rather than merely being reasonable.** The `@fp` token's
+    /// slot is defined by the BLOCK-REF POSITION, and a block ref requires a
+    /// `#`. **A bare path has no such slot, so an `@` there cannot be an fp BY
+    /// CONSTRUCTION** — not by convention, not by a rule someone must remember.
+    /// The constraint is SLOT plus SHAPE, and a bare path fails the slot test
+    /// structurally. The `#`-bearing sibling below is what makes that concrete:
+    /// the SAME `@host` text is an fp once a fragment opens the slot.
+    #[test]
+    fn an_at_in_a_bare_path_is_a_path_byte_and_round_trips() {
+        let bare = Addr::parse("mail@host.md").expect("a bare path carrying `@` parses");
+        assert_eq!(bare.path(), "mail@host.md", "the `@` is an ordinary byte");
+        assert_eq!(bare.fp(), None, "no `#`, no slot, therefore no fp");
+        assert_eq!(
+            bare.to_string(),
+            "mail@host.md",
+            "and it renders back byte-identically — the file stays addressable",
+        );
+        assert_eq!(
+            bare.target(),
+            "mail@host.md",
+            "the corpus lookup addresses the whole filename, `@` included",
+        );
+
+        // The SLOT, opened: the same `@host` text after a `#` IS an fp. Without
+        // this half the assertion above is equally satisfied by a parser that
+        // never recognizes an fp anywhere.
+        let slotted = Addr::parse("mail.md#^claim@host").expect("a block ref opens the fp slot");
+        assert_eq!(slotted.selector(), "^claim");
+        assert_eq!(
+            slotted.fp(),
+            Some("host"),
+            "the block-ref position is what defines the fp slot",
+        );
+
+        // And a ROOTED bare path keeps the same reading.
+        let rooted = Addr::parse("sessions:mail@host.md").expect("rooted, still a path byte");
+        assert_eq!(rooted.path(), "mail@host.md");
+        assert_eq!(rooted.fp(), None);
+        assert_eq!(rooted.to_string(), "sessions:mail@host.md");
+    }
+
     /// `target()` is byte-identical to the pre-type `split_once('#')` result —
     /// the property that keeps U10 behaviour-neutral at every projection seam
     /// and leaves the root-aware lookup to U11.
@@ -607,6 +717,54 @@ mod tests {
             "duplicates collapse — the table is a set of names",
         );
         assert!(MountSet::default().bound_names().is_empty());
+    }
+
+    /// [`confined`] — the one lexical confinement law, with its ACCEPTANCE half
+    /// asserted in the same breath (S3-R8(c)): a predicate proven only by what
+    /// it rejects is indistinguishable from one that rejects everything.
+    #[test]
+    fn confinement_rejects_escapes_and_admits_the_ordinary_corpus() {
+        for ok in [
+            "notes.md",
+            "a/b/c.md",
+            "dir/a:b.md",        // a `:` AFTER the first `/` is a path byte (§ 4.1)
+            "mail@host.md",      // S3-R38 — an `@` in a bare path is a path byte
+            ".github/README.md", // dot-DIRS are addressable; only `.` alone is not
+        ] {
+            assert!(confined(ok), "{ok} is an ordinary corpus path");
+        }
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../victim.md",
+            "a/../../b.md",
+            "./a.md",
+            "a//b.md",
+            "sessions:notes.md", // an ADDRESS, never a path (§ 4.2, D11)
+            "sessions:",
+        ] {
+            assert!(!confined(bad), "{bad} must not be admitted as a path");
+        }
+    }
+
+    /// The resolution-time refusal U11 constructs (§ 10.1, G-1): a `#selector`
+    /// on an address into an OPAQUE root, which has no parse and no sections.
+    /// The variant ships WITH its constructor — an unconstructed variant would
+    /// be S3-R23(4)'s forbidden weakened middle.
+    #[test]
+    fn the_opaque_root_refusal_names_the_root_its_kind_and_the_selector() {
+        let err = AddrError::SelectorOnOpaqueRoot {
+            root: MountName::parse("assets").expect("a name"),
+            kind: "git-folder".to_string(),
+            selector: "Design".to_string(),
+        };
+        let text = err.to_string();
+        for needle in ["assets", "git-folder", "Design", "[[address-grammar]]"] {
+            assert!(
+                text.contains(needle),
+                "the refusal must name {needle}: {text}"
+            );
+        }
     }
 
     /// Every refusal names what it refused — a refusal that cannot teach is the

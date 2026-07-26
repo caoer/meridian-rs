@@ -141,23 +141,36 @@ fn the_address_owner_answers_the_subpath_spelling_with_the_subpath_document() {
     let (docs, _) = corpus();
     let index = view::read_face::corpus_index(&docs);
 
+    // U11: the corpus parameter is root-keyed and the mount table is injected
+    // (D4a). The AMBIENT arm below is byte-for-byte the pre-U11 behaviour — the
+    // three rules are unchanged and the single-root world is `RootedCorpus::
+    // ambient` with no mounts bound.
+    let corpus = model::RootedCorpus::ambient(&docs);
+    let no_mounts = addr::MountSet::default();
+
     assert_eq!(
-        index.resolve_ref("a/b", "src.md", &docs).as_deref(),
+        index
+            .resolve_ref("a/b", "src.md", &corpus, &no_mounts)
+            .path(),
         Some("a/b.md"),
         "a full-path ref without its extension names the path it spells"
     );
     assert_eq!(
-        index.resolve_ref("a/b.md", "src.md", &docs).as_deref(),
+        index
+            .resolve_ref("a/b.md", "src.md", &corpus, &no_mounts)
+            .path(),
         Some("a/b.md"),
         "the same address, spelled with the extension"
     );
     assert_eq!(
-        index.resolve_ref("b", "src.md", &docs).as_deref(),
+        index.resolve_ref("b", "src.md", &corpus, &no_mounts).path(),
         Some("b.md"),
         "the bare basename still names the root file"
     );
     assert_eq!(
-        index.resolve_ref("nowhere/at/all", "src.md", &docs),
+        index
+            .resolve_ref("nowhere/at/all", "src.md", &corpus, &no_mounts)
+            .path(),
         None,
         "an address the corpus does not hold is None — unresolved stays first-class"
     );

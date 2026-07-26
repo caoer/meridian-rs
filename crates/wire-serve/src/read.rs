@@ -404,6 +404,15 @@ pub fn page_decorations(
 /// key + `.md` rule the walk plane had, so a ref `a/b` in a corpus carrying both
 /// `a/b.md` and `b.md` decorated a link with a tone minted over `b.md` while the
 /// walk colored `a/b.md` — one pin, two documents, two answers.
+///
+/// **U11 — this face carries no mount table yet.** It resolves against the
+/// AMBIENT root alone, so a `root:`-bearing address answers `None` (unresolved)
+/// rather than the ambient root's same-basename file. That is FINDING 03's fix
+/// reaching this plane: an unresolved decoration is first-class here, and a
+/// wrong one is not. Per-item VERDICTS are not this surface's to give (plan
+/// §9.1: its only colour channel is daemon-only, carries tone but no reason, and
+/// is skipped exactly in the unresolvable-target case) — `mrd walk` is where the
+/// unmounted grey is rendered with its reason.
 fn resolve_page(
     index: &model::CorpusIndex,
     docs: &BTreeMap<String, model::Document>,
@@ -413,7 +422,15 @@ fn resolve_page(
     if spelling.is_empty() {
         return Some(from.to_owned());
     }
-    index.resolve_ref(spelling, from, docs)
+    index
+        .resolve_ref(
+            spelling,
+            from,
+            &model::RootedCorpus::ambient(docs),
+            &addr::MountSet::default(),
+        )
+        .path()
+        .map(str::to_owned)
 }
 
 /// Every `[[target#^block]]` link in the tree, as (target, block) borrowed off
