@@ -15,6 +15,12 @@
 //! It is `conventions/` IN-TREE, never a dot-dir — dot-dirs sit outside the hash
 //! domain and cannot carry attested law (rulings § scoping).
 //!
+//! The folder NAME is the subject slug, and it is an identifier, not free text: it
+//! is stamped verbatim into the attested INDEX and into the reserved journal, so
+//! [`load_convention`] admits only the convention-slug charset `[a-z][a-z0-9-]*` —
+//! a strict subset of the one identifier charset (`[A-Za-z0-9-]`, contract §2.4 /
+//! decision 011). See `validate_slug` § THE INTAKE CHARSET.
+//!
 //! # What v1 loads (rulings § v1 ships CHECK only)
 //! v1 loads the CHECK capability ONLY. A convention that declares a FIX / HOOK /
 //! VIEW file is refused with a named deferral ([`LoadError::CapabilityDeferred`]) —
@@ -95,8 +101,10 @@ pub trait ConventionFiles {
 /// convention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
-    /// The slug is empty, contains a path separator or `..`, or begins with `.`
-    /// (a dot-dir — outside the hash domain, cannot carry attested law).
+    /// The slug is empty, contains a path separator or `..`, begins with `.` (a
+    /// dot-dir — outside the hash domain, cannot carry attested law), or falls
+    /// outside the convention-slug charset `[a-z][a-z0-9-]*` (R45/R46 — the slug is
+    /// stamped verbatim into the attested INDEX and the reserved journal).
     SlugInvalid { slug: String, reason: String },
     /// `CHECK.md` is absent or unreadable — a convention with no CHECK has no law.
     CheckMissing { detail: String },
@@ -284,8 +292,9 @@ pub fn load_convention(
     })
 }
 
-/// Validate a convention slug: non-empty, no path separator, no `..`, and never a
-/// dot-dir (rulings § scoping — dot-dirs sit outside the hash domain).
+/// Validate a convention slug: non-empty, no path separator, no `..`, never a
+/// dot-dir (rulings § scoping — dot-dirs sit outside the hash domain), and inside
+/// the one identifier charset (R45 — see THE INTAKE CHARSET below).
 fn validate_slug(slug: &str) -> Result<(), LoadError> {
     let invalid = |reason: &str| LoadError::SlugInvalid {
         slug: slug.to_string(),
@@ -305,7 +314,89 @@ fn validate_slug(slug: &str) -> Result<(), LoadError> {
     if slug.split('/').any(|seg| seg == "..") || slug == ".." {
         return Err(invalid("contains `..`"));
     }
+    // THE INTAKE CHARSET (R45/R46). The four guards above are path-traversal only:
+    // a folder named `[[guide#^goal@green.b3af12cd|G]]` passes all of them. That
+    // name is not decoration — it is stamped VERBATIM into two stored artifacts,
+    // and a slug that can render as markdown forges the record of its own
+    // enforcement:
+    //
+    // - the attested INDEX, twice per row (`index::IndexEntry::render` — the bold
+    //   label and the wikilink to its `CHECK.md`), written by `mrd realise --truth
+    //   file`; a claim token there sits in the ENFORCEMENT SUBSTRATE;
+    // - the reserved journal's `forced_rule=` token (`gate::GateFinding::slug` →
+    //   `wire-serve`'s `ForcedSkip` → `force_journal_write`); a claim token there
+    //   forges the chain-continuity detector's own input.
+    //
+    // The class is STRUCTURAL, not a taste: the slug lands INSIDE a wikilink and
+    // INSIDE a journal row, so `[`, `]`, `|`, `#`, `^` and `@` are unsafe there
+    // whatever the escaping. Guarding the two RENDERERS would leave the third one
+    // anyone adds later open — and this milestone met one-owner-many-doors seven
+    // times, the seventh being a door nobody had enumerated. So the guard sits at
+    // INTAKE, where the next renderer inherits it. Every INDEX row is an
+    // `IndexEntry`, whose construction is sealed to `index::sweep` (which calls this
+    // loader) and `index::arm` (which consumes a swept row); every journalled
+    // `forced_rule=` is an `ArmedConvention::slug`, which `gate::resolve_one` loads
+    // through this same function before the gate can name it. Neither renderer has a
+    // path that skips this refusal, and the refusal makes the hostile bytes
+    // unrepresentable rather than removable.
+    if let Some((bad, rule)) = charset_fault(slug) {
+        return Err(invalid(&format!(
+            "the character {bad:?} (U+{code:04X}) is outside the convention-slug charset \
+             [a-z][a-z0-9-]* — {rule}. The slug is stamped verbatim into the attested INDEX \
+             (as the row label, and inside the wikilink to its CHECK.md) and into the reserved \
+             journal's `forced_rule=` token, so a name that can render as markdown forges those \
+             records. Rename the folder to `conventions/{suggestion}/`",
+            code = bad as u32,
+            suggestion = corrected_slug(slug),
+        )));
+    }
     Ok(())
+}
+
+/// The first character that puts `slug` outside the convention-slug charset
+/// `[a-z][a-z0-9-]*`, paired with the rule it broke. `None` ⇔ the slug is a legal
+/// convention identifier. (A non-empty `slug` is the caller's precondition.)
+///
+/// The charset is a STRICT SUBSET of the one identifier charset (`[A-Za-z0-9-]`,
+/// contract §2.4 / decision 011) — never wider, so a convention slug is always a
+/// legal identifier too. It is narrower on two axes, each earned: the slug is also
+/// a DIRECTORY NAME on a case-insensitive filesystem, where `Foo` and `foo` are one
+/// folder but two INDEX rows; and a leading digit or dash reads as list or numeric
+/// markup in the row it renders into.
+fn charset_fault(slug: &str) -> Option<(char, &'static str)> {
+    let mut chars = slug.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_lowercase() {
+        return Some((first, "a slug STARTS with a lowercase letter"));
+    }
+    chars
+        .find(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-'))
+        .map(|c| (c, "a slug carries only lowercase letters, digits and `-`"))
+}
+
+/// The slug the author most likely meant: lowercased, every run of out-of-charset
+/// bytes collapsed to one `-`, trimmed, and led by a letter. The refusal prints
+/// this so someone meeting the guard in a year needs no archaeology (R24 — a
+/// refusal teaches the legal path, it does not merely deny one). Total by
+/// construction: an input with no usable byte falls back to a nameable default
+/// rather than a suggestion the guard would refuse a second time.
+fn corrected_slug(slug: &str) -> String {
+    let mut out = String::with_capacity(slug.len());
+    for c in slug.chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let led = out.trim_start_matches(|c: char| !c.is_ascii_lowercase());
+    let trimmed = led.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "my-convention".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Only the CHECK.md frontmatter key the loader reads — the `paths:` scope. Other
@@ -507,6 +598,152 @@ def check_change(change):
             load_convention(".hidden", &files, CheckLimits::default()),
             Err(LoadError::SlugInvalid { .. })
         ));
+    }
+
+    /// THE INTAKE CHARSET (R45/R46). A folder name that can render as markdown is
+    /// refused at load, so it never becomes an `IndexEntry` and never reaches the
+    /// attested INDEX or the reserved journal.
+    ///
+    /// **The refusal must TEACH (R24, a hard requirement):** it names the charset,
+    /// SHOWS the offending character, names both artifacts the slug is stamped into,
+    /// and prints a CORRECTED FORM of the name the author actually typed — so
+    /// meeting this guard in a year costs zero archaeology.
+    #[test]
+    fn out_of_charset_slug_is_refused_with_the_teaching() {
+        let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
+        let err = load_convention(
+            "[[guide#^goal@green.b3af12cd|G]]",
+            &files,
+            CheckLimits::default(),
+        )
+        .expect_err("a slug that can render as markdown is refused at intake");
+        let text = err.to_string();
+        for (named, why) in [
+            ("[a-z][a-z0-9-]*", "the charset"),
+            ("'['", "the offending character, shown"),
+            ("U+005B", "the offending character's codepoint"),
+            ("attested INDEX", "the first artifact it would forge"),
+            ("reserved journal", "the second artifact it would forge"),
+            (
+                "conventions/guide-goal-green-b3af12cd-g/",
+                "a corrected form of the slug the author typed",
+            ),
+        ] {
+            assert!(
+                text.contains(named),
+                "the refusal must name {why} ({named}): {text}"
+            );
+        }
+    }
+
+    /// The correction is TOTAL: it never suggests a name the guard would refuse a
+    /// second time — including for an input with no usable byte at all.
+    #[test]
+    fn the_suggested_correction_always_passes_the_guard() {
+        let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
+        for typed in [
+            "[[guide#^goal@green.b3af12cd|G]]",
+            "Reviewer Not Owner",
+            "2fa-policy",
+            "---",
+            "^^^",
+            "CLAIM_CAS",
+            "a b\tc\nd",
+        ] {
+            let suggestion = corrected_slug(typed);
+            assert!(
+                load_convention(&suggestion, &files, CheckLimits::default()).is_ok(),
+                "the correction offered for {typed:?} was {suggestion:?}, which the guard \
+                 itself refuses"
+            );
+        }
+    }
+
+    /// The NARROWING, stated rather than discovered: three shapes that loaded
+    /// before this guard and do not now. None forges a claim; each is refused
+    /// because a slug is an ADDRESS — uppercase collides with itself on a
+    /// case-insensitive filesystem (one folder, two INDEX rows), and a leading digit
+    /// or dash reads as markup in the row it renders into.
+    #[test]
+    fn the_narrowing_is_named_not_discovered() {
+        let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
+        for (slug, why) in [
+            ("Reviewer-Not-Owner", "uppercase — one folder, two rows"),
+            ("2fa", "a leading digit reads as numeric markup"),
+            ("-draft", "a leading dash reads as list markup"),
+            (
+                "claim_cas",
+                "`_` — ruling 011 killed the underscore superset",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    load_convention(slug, &files, CheckLimits::default()),
+                    Err(LoadError::SlugInvalid { .. })
+                ),
+                "{slug} is newly invalid ({why}) and must refuse"
+            );
+        }
+    }
+
+    /// Every forging SHAPE the slug could carry into either artifact — not just the
+    /// `@fp` claim token that raised the finding. A charset closes the class; a
+    /// per-shape strip would close one member of it (fix9's measured argument, and
+    /// the reason R45 chose intake over per-renderer escaping).
+    #[test]
+    fn every_forging_slug_shape_is_refused_at_intake() {
+        let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
+        for (slug, shape) in [
+            ("[[guide#^goal@green.b3af12cd|G]]", "an `@fp` claim link"),
+            ("![[guide#^goal@green.b3af12cd]]", "a claim EMBED"),
+            ("a · block · `deadbeefdeadbeef", "the INDEX field separator"),
+            ("a\nb", "a whole forged INDEX row"),
+            ("a`b", "the pinned-rev code span"),
+            ("a**b", "the row label's bold fence"),
+            ("a b", "a second journal token"),
+            ("a^r-000099", "a second journal block anchor"),
+        ] {
+            assert!(
+                matches!(
+                    load_convention(slug, &files, CheckLimits::default()),
+                    Err(LoadError::SlugInvalid { .. })
+                ),
+                "slug {slug:?} forges {shape} — it must not load"
+            );
+        }
+    }
+
+    /// **The R45/R46 census, frozen as a test.** Every convention slug in use across
+    /// both repos and the vault when the guard landed — directory names owning any
+    /// capability file (`CHECK`/`FIX`/`HOOK`/`VIEW.md`), the strongest of the three
+    /// markers the census was run with (a narrower marker missed `armed-index` and
+    /// `no-draws-from`). The guard refuses NONE of them.
+    ///
+    /// The census is corroboration, not the argument: these are all fixtures, so
+    /// "no live slug refused" would be weak alone. The ruling rests on the
+    /// STRUCTURAL claim in `validate_slug`. What this test buys is the other
+    /// direction — if a future charset change would break a name already in use, it
+    /// fails HERE, and the migration is owed before the narrowing rather than after.
+    #[test]
+    fn every_slug_in_use_when_the_guard_landed_still_loads() {
+        let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
+        for slug in [
+            "armed-index",
+            "candidate",
+            "claim-cas",
+            "close-verdict",
+            "decoy-close",
+            "meta-convention",
+            "no-draws-from",
+            "reviewer-and-priority",
+            "reviewer-not-owner",
+            "verdict-reviewer-bind",
+        ] {
+            assert!(
+                load_convention(slug, &files, CheckLimits::default()).is_ok(),
+                "the guard must refuse no convention that was in use: {slug}"
+            );
+        }
     }
 
     #[test]
