@@ -77,6 +77,12 @@ const PINNED: &[(&str, &str, Class)] = &[
     ("crates/mrd/src/pin_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/put_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/read_cmd.rs", "fn parse", Class::CliArgv),
+    // FINDING 02's A4, and it is CLI argv despite living in `view`: the walk
+    // root reaches `page_of` as the bare positional `walk_cmd.rs` collected
+    // (`walk_cmd.rs` → `page: String` → `view::walk::walk(.., &parsed.page, ..)`).
+    // Classified `internal-reader` in this table's first draft — corrected after
+    // tracing the argument rather than trusting the crate it sits in.
+    ("crates/view/src/walk.rs", "fn page_of", Class::CliArgv),
     // ---- INGRESS 3: wire decode (serde-only, v2 byte-identity frozen) ------
     (
         "crates/model/src/walk.rs",
@@ -87,11 +93,6 @@ const PINNED: &[(&str, &str, Class)] = &[
     (
         "crates/model/src/selector.rs",
         "pub fn parse",
-        Class::InternalReader,
-    ),
-    (
-        "crates/view/src/walk.rs",
-        "fn page_of",
         Class::InternalReader,
     ),
     (
