@@ -2172,26 +2172,15 @@ fn token_safe(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join("_")
 }
 
-/// The next journal row counter: one past the highest `r-NNNNNN` the reserved
-/// page already carries (an absent page starts at 1). The journal is the sole
-/// durable home of this counter (no separate on-disk sequence, §14).
+/// The next journal row counter for this workspace, in the wire error frame: the
+/// page through `fs` (which owns where it lives and that absent means empty), the
+/// counter through `receipt::journal::next_seq` (which owns the anchor grammar it
+/// is derived from). U35 moved both facts to their owners — this arm used to
+/// re-derive `max(anchor) + 1` here, and three doors appending rows cannot each
+/// carry their own copy of that rule.
 fn next_journal_seq(root: &fs::WorkspaceRoot) -> Result<u64, Box<ErrorBody>> {
-    let page = root.0.join(fs::domain::RESERVED_JOURNAL_PATH);
-    let text = match std::fs::read_to_string(&page) {
-        Ok(t) => t,
-        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io_to_wire(&e)),
-    };
-    let max = receipt::journal::parse_rows(&text)
-        .iter()
-        .filter_map(|r| {
-            r.anchor
-                .strip_prefix("r-")
-                .and_then(|n| n.parse::<u64>().ok())
-        })
-        .max()
-        .unwrap_or(0);
-    Ok(max + 1)
+    let page = fs::read_journal_page(root).map_err(|e| io_to_wire(&e))?;
+    Ok(receipt::journal::next_seq(&page))
 }
 
 /// The post-commit receipt FACT: resolve the anchor in the just-committed receipt

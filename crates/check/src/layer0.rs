@@ -33,13 +33,19 @@ use receipt::journal::{ChainReport, ParsedRow, check_chain, parse_rows};
 /// report a green they never earned (the false green) or a red they cannot support
 /// (the false red). *Outside sight is never verified* (R26; S5 honest degradation).
 ///
-/// **U32 closed the first regime and narrowed the second.** A governed `splice`
-/// now journals its row, so an ordinary pin/put workspace HAS a baseline and reads
-/// a real verdict. What remains grey rather than red is the attribution: a write
-/// door that lands bytes without journaling leaves the identical trace as an
-/// out-of-writer edit, and one such door is still open by charter (`mrd realise
-/// --truth file`'s bare `std::fs::write`, U31/U12). Naming the cause is a claim
-/// this crate cannot yet support; stating the evidence is one it can.
+/// **U32 closed the first regime and narrowed the second; U35 closed the rest of
+/// the second.** A governed `splice` journals its row (U32), and so now do the two
+/// byte-landing doors that bypass the wire choke-point — `mrd realise --truth
+/// file`'s INDEX deploy and the run plane's batch commit (U35). A governed write
+/// through any of them leaves a baseline that is CURRENT, so the trace reads a
+/// real verdict instead of refusing.
+///
+/// **The attribution stays withheld, and that is not an oversight** (S3-R12(a)):
+/// a [`StaleBaseline`](JournalTrace::StaleBaseline) still means only *"something
+/// advanced the tree that the journal does not account for"*, which is what an
+/// out-of-band edit produces. Whether the closed doors make a narrower claim
+/// supportable is a SEPARATE question the ruling deferred — naming a cause is a
+/// claim this crate does not make here; stating the evidence is one it does.
 #[derive(Debug)]
 pub enum JournalTrace {
     /// **Grey — cannot assess.** The reserved journal carries no row: no pair of
@@ -66,9 +72,11 @@ pub enum JournalTrace {
 /// This was `ForeignEdit`, and the rename is the correction: the same three facts
 /// were rendered as the CLAIM *"an out-of-writer edit landed with no receipt"*,
 /// which was false on every governed splice — measured on the deployed binary
-/// against a fully governed corpus (finding-01). U32 gave the splice its row, so
-/// that corpus no longer reaches here at all; the accusation stays withdrawn
-/// because a non-journaling write door still leaves this same evidence.
+/// against a fully governed corpus (finding-01). U32 gave the splice its row and
+/// U35 gave the last two byte-landing doors theirs, so a governed corpus no longer
+/// reaches here at all; the accusation stays withdrawn because an ordinary
+/// out-of-band edit leaves exactly this evidence, and whether a narrower claim is
+/// now supportable is the separate question S3-R12(a) deferred.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineMismatch {
     /// The last receipt row's anchor (`r-NNNNNN`) — the last journaled write.
