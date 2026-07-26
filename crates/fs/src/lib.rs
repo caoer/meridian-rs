@@ -1194,6 +1194,61 @@ mod tests {
         );
     }
 
+    /// U31 (the seal is not decoration): `apply_batch`'s candidate must BE the
+    /// splice result. The whole-file primitives get this by construction — their
+    /// bytes ARE the candidate's — but this one's bytes are computed from the
+    /// batch, so a caller could otherwise satisfy the type with any document it
+    /// happened to hold and the gates would have judged something else.
+    ///
+    /// # Both halves, per S3-R8(c)
+    /// The refusal is only meaningful next to its acceptance: the SAME call with
+    /// the true candidate commits. A guard proven only by what it blocks is
+    /// indistinguishable from one that blocks everything.
+    #[test]
+    fn apply_batch_refuses_a_candidate_that_is_not_the_splice_result() {
+        let (dir, root) = workspace();
+        let vb = validated(None);
+
+        // An honestly-minted candidate — of the WRONG bytes. `model` built it;
+        // nothing about the type is forged. Only the tie is broken.
+        let impostor = model::candidate_of_body("notes/plan.md", "# Not this batch\n".to_owned());
+        let err = apply_batch(
+            &root,
+            &content_rel(),
+            None,
+            &vb,
+            PLAN_S0.as_bytes(),
+            &impostor,
+        )
+        .expect_err("a candidate that is not the splice result must refuse");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!is_write_conflict(&err), "misuse is not the conflict class");
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            PLAN_S0.as_bytes(),
+            "the refusal committed NOTHING — not even a staged temp reached the destination"
+        );
+        assert!(!any_tmp_in(&dir.path().join("notes")));
+
+        // THE ACCEPTANCE (S3-R8(c)): the identical call with the true candidate
+        // lands — so the refusal above discriminates rather than blocks.
+        apply_batch(
+            &root,
+            &content_rel(),
+            None,
+            &vb,
+            PLAN_S0.as_bytes(),
+            &candidate(&vb),
+        )
+        .expect("the true candidate commits");
+        assert_eq!(
+            fs::read(dir.path().join(content_rel())).unwrap(),
+            PLAN_S0
+                .replace("ship by August", "ship by September")
+                .as_bytes(),
+        );
+    }
+
     /// d2 §2.5 C3 birth: `create_file` lands a NEW file's bytes (tmp+fsync+
     /// rename), makes its parent subtree, and `walk` then sees it.
     #[test]
