@@ -1,0 +1,4 @@
+# One case (tool-declared) asserts a tool payload BYTE-VERBATIM, indentation
+# included, and every refusal case asserts a 1-based FILE line. No EOL
+# conversion, no whitespace fixing, ever.
+* -text
