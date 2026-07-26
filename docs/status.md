@@ -290,9 +290,29 @@ those, or registers the tree with the daemon.
 
 ### `mrd hook` — the pre-commit fence (U15)
 
-`mrd hook install | uninstall | status [PATH] [--json]` installs a `pre-commit`
-hook that calls `mrd check` and rejects on its exit. `PATH` is the meridian
+`mrd hook install | uninstall | status [PATH] [--json]` installs a hook that
+calls `mrd check --staged` and rejects on its exit. `PATH` is the meridian
 workspace root and defaults to the current directory.
+
+**The install set is three doors, and that is a claim about coverage.**
+`pre-commit`, `pre-merge-commit` and `pre-applypatch` are every hook git
+dispatches for a commit it builds from a prepared index, so `mrd check --staged`
+is the correct question at all three and **one body serves them all**. An install
+set of one let `git merge` and `git am` land commits past a fence that printed
+nothing.
+
+**Three commit-creating paths stay open and are declared, not papered over:**
+`git cherry-pick`, `git revert` and `git rebase` replay dispatch no veto-capable
+hook that can read the index. So the fence's guarantee is *no out-of-band write
+reaches history through `commit`, `merge`, or `am`* — it is **not** *no drift
+reaches history*. Across the replay paths the engine's read-time `mrd check` is
+the only guarantee.
+
+**Fence coverage is per checkout and opt-in, permanently.** `$GIT_DIR/hooks` is
+never a tracked path, so no clone can carry the fence. A global
+`init.templateDir` would transport it and is refused on its collateral: it fences
+every unrelated repository the operator clones or inits, abolishing the opt-in
+premise the fence body's design rests on.
 
 **The hook holds zero markdown semantics — it is an adapter over the engine.**
 Refusal's legal home stays engine-side; the fence covers the one door the engine
@@ -310,6 +330,38 @@ times.
 **Escapes at commit time**, both named in every refusal the fence prints:
 `MRD_HOOK_FORCE=1 git commit …` (the ratified `--force`, in the spelling a hook
 that receives no arguments can carry) and git's own `git commit --no-verify`.
+
+**`MRD_HOOK_FORCE` is a two-sided grammar with a loud third leg.** The value is
+parsed, never merely tested for non-emptiness — `[ -n … ]` opened the gate on
+every spelling of *"do not force"*, because it read whether a value was typed and
+never what it said.
+
+| `MRD_HOOK_FORCE` (trimmed, any case) | Verdict |
+|---|---|
+| `1` `true` `yes` `on` | **bypass** — and the bypass is printed on stderr, naming the value and stating that nothing was checked |
+| `0` `false` `no` `off`, empty, whitespace, unset | **fence normally**, silently — the specificity half of the notice |
+| anything else | **refuse the commit**, exit 1, naming the value it could not parse |
+
+**The fence declares its own generation and the engine reads it.**
+`# mrd-hook-fence <n>` on line 2 is parsed and compared against the engine's own,
+yielding a three-valued relation — a byte-equality test collapsed *older* and
+*newer* into one answer and then asserted a direction it never measured.
+
+| `hook status` state | Meaning | Remedy |
+|---|---|---|
+| `installed` | every door carries this engine's fence | — |
+| `installed-partial` | some doors unfenced | `mrd hook install` |
+| `installed-superseded` | the fence is older than this engine | `mrd hook install` |
+| `installed-ahead` | **the fence is NEWER than the engine answering** | put the current engine first on PATH — **do NOT install**, which would downgrade the fence |
+| `installed-unversioned` | marker present, generation undeclarable | `mrd hook install` refuses rather than guessing |
+| `foreign-hook` | a door carries a file this engine did not write | move or remove it |
+
+`install` **refuses a downgrade** (`fence-ahead`) and an undeclarable generation
+(`fence-unversioned`), escapable only by `MRD_HOOK_FORCE=1` so a deliberate
+rollback stays possible and never silent. Both faces report `fence_version` (what
+the files declare) beside `engine_version` (what this engine writes): a verdict
+that does not disclose its judge cannot be checked by a third party, and in a
+version skew both participants are inside it.
 
 | The root is | `install` | Why |
 |---|---|---|

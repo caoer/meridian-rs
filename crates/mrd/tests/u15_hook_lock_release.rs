@@ -208,23 +208,30 @@ fn install_spawns_git_inside_the_lock_and_still_leaves_it_free() {
     let root = dir.path().canonicalize().expect("canonical tempdir");
     init_repo(&root);
 
-    let (fenceable, _state) = mrd::hook::install(&root).expect("a clean git repo is fenceable");
+    let (fenceable, _state) = mrd::hook::install(&root, &mrd::hook::Force::No)
+        .expect("a clean git repo is fenceable");
 
-    assert!(
-        fenceable.hook_path.exists(),
-        "install reported success without writing {}",
-        fenceable.hook_path.display()
-    );
-    let mode = std::os::unix::fs::PermissionsExt::mode(
-        &std::fs::metadata(&fenceable.hook_path)
-            .expect("stat the hook")
-            .permissions(),
-    );
     assert_eq!(
-        mode & 0o111,
-        0o111,
-        "a hook git cannot execute is a hook git skips: mode {mode:o}"
+        fenceable.hook_paths.len(),
+        mrd::hook::FENCED_HOOKS.len(),
+        "the install set is a set: one path per door git dispatches for a commit"
     );
+    for path in &fenceable.hook_paths {
+        assert!(
+            path.exists(),
+            "install reported success without writing {}",
+            path.display()
+        );
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(path).expect("stat the hook").permissions(),
+        );
+        assert_eq!(
+            mode & 0o111,
+            0o111,
+            "a hook git cannot execute is a hook git skips: {} mode {mode:o}",
+            path.display()
+        );
+    }
 
     HookLock::acquire(&fenceable.common_dir).unwrap_or_else(|e| {
         panic!(
