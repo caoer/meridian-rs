@@ -177,33 +177,42 @@ pub struct TextRenderer {
 }
 
 impl TextRenderer {
-    /// The render-face production configuration (U4b): engine blocks
-    /// (`meridian-*`) are elided from rendered section content. The raw
-    /// read/cat face never routes through render and stays verbatim (byte
-    /// pin #4).
+    /// The render-face production configuration (U4b): blocks THE ENGINE
+    /// EMITS are elided from rendered section content. The raw read/cat face
+    /// never routes through render and stays verbatim (byte pin #4).
+    ///
+    /// Elision is **per-language, not per-namespace** (U36). A `meridian-lock`
+    /// is machine-written and elided; a `meridian-mount` is content the user
+    /// authored, so it renders. The name is kept for its call sites; the law it
+    /// selects is [`ElideBy::EngineEmitted`].
     #[must_use]
     pub fn with_meridian_elision() -> Self {
         TextRenderer {
-            elide_lang: Some(ElideBy::MeridianNamespace),
+            elide_lang: Some(ElideBy::EngineEmitted),
         }
     }
 }
 
-/// The one elision law reserved by decision #8: drop fenced blocks whose
-/// info-string is an ENGINE block. The predicate is
-/// [`lock::is_meridian_lang`] — the sole owner of the reserved `meridian-*`
-/// namespace (#8 §1); render never grows its own list.
+/// The elision law: drop fenced blocks whose bytes THE ENGINE EMITTED.
+///
+/// The predicate is [`lock::is_engine_emitted`] — derived in `lock` from the
+/// registered canonical writers. Render owns no list and never grew one; it
+/// also does not decide the law, only that elision is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElideBy {
-    /// Elide engine blocks: info-strings in the reserved `meridian-*`
-    /// namespace, decided by [`lock::is_meridian_lang`].
-    MeridianNamespace,
+    /// Elide the blocks the engine writes: languages with a registered
+    /// canonical writer, decided by [`lock::is_engine_emitted`].
+    ///
+    /// Deliberately **not** the `meridian-*` namespace: reservation answers
+    /// "is this ours?", readership answers "should a reader see it?", and a
+    /// human-authored `meridian-mount` block answers those two differently.
+    EngineEmitted,
 }
 
 impl ElideBy {
     fn matches(self, lang: &str) -> bool {
         match self {
-            ElideBy::MeridianNamespace => lock::is_meridian_lang(lang),
+            ElideBy::EngineEmitted => lock::is_engine_emitted(lang),
         }
     }
 }

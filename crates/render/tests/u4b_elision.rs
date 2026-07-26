@@ -5,8 +5,13 @@
 //! and an ordinary `rust` fence, mirroring the U0 `meridian-block` corpus
 //! doc. Byte pin #4: the raw read/cat face carries `meridian-*` blocks
 //! VERBATIM and never routes through render; elision lives behind
-//! [`TextRenderer::with_meridian_elision`], and the namespace predicate is
-//! `lock::is_meridian_lang` alone (#8 §1 — one law, never a list).
+//! [`TextRenderer::with_meridian_elision`].
+//!
+//! **U36:** the predicate is `lock::is_engine_emitted` — derived from the
+//! registered canonical writers, not from the `meridian-*` namespace. So the
+//! lock elides (the engine writes it) while `meridian-journal`, which no writer
+//! claims, renders. Reservation stays uniform (`lock::is_meridian_lang`, #8 §1);
+//! readership is per-language.
 
 use render::{Header, RenderJob, RenderedSection, Renderer, SectionRow, TextRenderer};
 use wire_map::facts::{ReadFact, read_facts, resolve_selector};
@@ -96,9 +101,22 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
         "lock block elided: {}",
         out.text
     );
+    // U36 re-based this assertion, and the reason is a MEASUREMENT: nothing in
+    // the engine emits a `meridian-journal` block. The language appears in this
+    // fixture and in one `lock` unit test and NOWHERE in `src/` — the receipt
+    // journal is a page of `^receipt` LINES (`crates/receipt/src/journal.rs`),
+    // not a fenced block. So it has no canonical writer, elision is now derived
+    // from having one, and a reserved language the engine does not write renders.
+    //
+    // It therefore stands here as the THIRD-LANGUAGE case (neither mount, nor
+    // tool, nor an engine block), whose rule is: readership follows authorship.
+    // The engine-emitted direction is carried by `meridian-lock` above, and by a
+    // freshly registered writer in
+    // `crates/testsuite/tests/u36_per_language_elision.rs`.
     assert!(
-        !out.text.contains("meridian-journal"),
-        "namespace law: EVERY meridian-* block is elided, not an enumerated list: {}",
+        out.text.contains("meridian-journal"),
+        "a reserved language with NO canonical writer renders — reservation is \
+         uniform, readership is per-language (U36): {}",
         out.text
     );
     assert!(
