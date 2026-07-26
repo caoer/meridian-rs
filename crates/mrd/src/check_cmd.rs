@@ -130,14 +130,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let staged = match &interval {
         Interval::Diverges(bytes) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess(
+            report: assess_staged(
                 &root,
                 &mounts,
                 bytes.files.clone(),
                 &bytes.fold,
                 &bytes.journal,
-            )?
-            .report,
+                &worktree_journal,
+            )?,
         }),
         _ => None,
     };
@@ -272,6 +272,36 @@ fn assess(
         paths: Vec::new(),
         report: check::core_of(root, journal, fold, &docs, &pins),
     })
+}
+
+/// [`assess`] for the STAGED interval, dated against the RECORD.
+///
+/// The difference is one plane: a legitimately staged INTERMEDIATE governed state is
+/// not the CURRENT one — `git add` stages content without the journal — so dating it
+/// against its own last row is a false red on the commonest path there is
+/// (`git add`, then any further governed write). `check::core_of_staged` asks
+/// instead whether the record accounts for these bytes AND the staged journal is a
+/// truthful prefix of it. The pin plane and the object store are identical.
+fn assess_staged(
+    root: &fs::WorkspaceRoot,
+    mounts: &crate::walk_cmd::Mounts,
+    files: fs::DomainFiles,
+    fold: &str,
+    journal: &str,
+    worktree_journal: &str,
+) -> Result<CoreReport, Fail> {
+    let (_index, docs) =
+        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let corpus = mounts.rooted(&docs);
+    let pins = pin_rows(&corpus, mounts.set());
+    Ok(check::core_of_staged(
+        root,
+        journal,
+        fold,
+        worktree_journal,
+        &docs,
+        &pins,
+    ))
 }
 
 /// **The interval the commit spans** (F1): the worktree snapshot with the INDEX's
@@ -451,6 +481,7 @@ fn render_human(
             "  interval: {STAGED} — the bytes a commit would record for {}",
             staged.paths.join(", ")
         );
+        out.push_str(&staged_predicate_line());
         out.push_str(&render_report(&staged.report));
     }
     out
@@ -484,6 +515,22 @@ fn interval_line(interval: &Interval) -> String {
             staged.paths.len()
         ),
     }
+}
+
+/// **The PREDICATE the staged interval asserts, stated because it is WEAKER than the
+/// worktree's and S3-R29 is about the claim as much as the byte range.**
+///
+/// The worktree pass asks *"are these bytes the CURRENT governed state?"*. The staged
+/// pass cannot: `git add` stages content without the journal, so an ordinary
+/// `git add` followed by any further governed write leaves a staged tree that is an
+/// EARLIER governed state, and refusing it is a false red on the commonest path there
+/// is. So this interval asks the weaker question, and says which one it asked.
+fn staged_predicate_line() -> String {
+    format!(
+        "  {STAGED} asserts: these bytes were PRODUCED BY A GOVERNED WRITE (they match a receipt \
+         in the journal) and the journal being committed is a truthful PREFIX of it — NOT that \
+         they are the current governed state, which a partial stage legitimately is not\n"
+    )
 }
 
 /// One interval's verdict lines — the journal TRACE, the claims, and the pin

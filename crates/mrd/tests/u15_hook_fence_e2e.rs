@@ -552,6 +552,98 @@ fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
     );
 }
 
+// ── THE ACCEPTANCE THE FIRST INTERVAL FIX BROKE (found by fbd87f1c) ──────────
+
+/// **A legitimately-governed PARTIAL STAGE is ACCEPTED** — `git add` followed by a
+/// further governed write, which on a fleet doing continuous governed writes is the
+/// common path, and which `git add -p` reaches on every hunk it leaves behind.
+///
+/// # The corpus contains no out-of-band write at all
+/// `mrd pin` (governed) → `mrd put` edit ONE (governed) → `git add notes.md` →
+/// `mrd put` edit TWO (governed). The index now holds the EXACT post-edit-ONE
+/// bytes: a state the engine itself wrote and journaled. **The deployed engine
+/// accepts this commit (`2 -> 3`); the first interval fix refused it (`2 -> 2`) —
+/// a FALSE RED, and the suite did not catch it because no arm asserted the
+/// acceptance direction for partial staging.**
+///
+/// # Why it refused, measured, because the fix turns on it
+/// The staged snapshot is INTERNALLY INCONSISTENT and legitimately so: `git add
+/// notes.md` stages content without the journal, so the staged tree folds to
+/// `^r-000002`'s `root_after` while the staged journal still ends at `^r-000001`.
+/// Dating a snapshot against its own journal's LAST row therefore reports
+/// *"something advanced the tree that the journal does not account for"* — when the
+/// engine wrote every byte of both states.
+///
+/// **The discriminator is that a legitimate intermediate state matches SOME receipt
+/// in the record, and a forgery matches NONE.** The refusal arms above are this
+/// arm's control: they must keep refusing in the same run, and
+/// [`a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded`] is
+/// the one that proves the widening did not open the journal door.
+#[test]
+fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
+    let sb = sandbox();
+    let ws = sb.corpus("governed-partial-stage");
+    sb.install_fence(&ws);
+
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+    git_ok(&ws, &["add", "-A"]);
+    assert!(
+        sb.commit(&ws, "governed baseline", &[]).status.success(),
+        "the baseline commit lands"
+    );
+
+    // Governed write ONE, then the ORDINARY partial stage.
+    let one = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match("alpha", "alpha-ONE"));
+    assert_eq!(one.status.code(), Some(0), "put ONE: {}", said(&one));
+    let after_one = std::fs::read(ws.join("plan.md")).expect("post-ONE bytes");
+    git_ok(&ws, &["add", "plan.md"]);
+
+    // Governed write TWO — the journal advances past what is staged.
+    let two = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match("beta", "beta-TWO"));
+    assert_eq!(two.status.code(), Some(0), "put TWO: {}", said(&two));
+
+    // THE FIXTURE'S OWN PRECONDITIONS, so a pass cannot come from a corpus that
+    // never reached the state under test.
+    assert_eq!(
+        git_bytes(&ws, &["show", ":plan.md"]),
+        after_one,
+        "the index holds the EXACT post-ONE governed bytes — byte-identical, so \
+         nothing here is forged"
+    );
+    assert_ne!(
+        std::fs::read(ws.join("plan.md")).expect("worktree"),
+        after_one,
+        "and the worktree has moved on, or the two intervals do not differ and this \
+         arm is vacuous"
+    );
+    assert_eq!(
+        sb.run(&ws, &["check"]).status.code(),
+        Some(0),
+        "every byte on disk is governed: the worktree interval is green and cannot \
+         be what refuses"
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "commit the staged governed state", &[]);
+    assert!(
+        commit.status.success(),
+        "THE ACCEPTANCE — every byte in this commit was written by a governed door, \
+         so refusing it is a FALSE RED that brakes `git add` + any further governed \
+         write, the common path on a fleet: {}",
+        said(&commit)
+    );
+    assert_eq!(
+        head_count(&ws),
+        before + 1,
+        "R40 — the state change, not the exit"
+    );
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:plan.md"])).contains("alpha-ONE"),
+        "and what landed is the governed intermediate state that was staged"
+    );
+}
+
 // ── THE OTHER DOORS ONTO THE SAME INTERVAL GAP (F1 names them) ───────────────
 
 /// **`git commit <pathspec>` records a THIRD interval, and asking git is what
