@@ -5,18 +5,23 @@
 //! - `project.p99.file` — per-document projection latency p99 (hdr path) over
 //!   `vault-2026 seed=1 files=2000`; baseline TBD on first fleet run.
 //!
-//! Dormant until rung 1 (`wire_map::project` is `todo!()`). When it lands:
-//! build documents in setup (parse + assemble), bench `project(&doc)` per
-//! document, record `project.p99.file` via `perfsuite::measure`.
+//! UNWIRED — and not because the seam is dormant: `wire_map::project` landed at
+//! `8883e5ca` (M2-PROJECT). perfsuite carries no `wire-map` dev-dependency, and
+//! adding one is a manifest change; wiring this bench is a stage-4 card. The
+//! claim row stays registered and UNTESTED — the `view.*` posture: register the
+//! gate, never fabricate a PASS. To wire it: add `wire-map = { workspace =
+//! true }` to `[dev-dependencies]`, then mirror `benches/policy.rs` — build
+//! documents in setup (`syntax::parse` → `model::build`), then
+//! `LatencyRun::run(500, 8_000, || black_box(wire_map::project(doc)))` and
+//! stage `project.p99.file` as `us`.
+//!
+//! No criterion function: a noop bench publishes a 1 ns estimate under this
+//! seam's name into `results/RESULTS.md`, which reads as a measurement of the
+//! projection and is not one.
 
-use criterion::{Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
-
-fn bench_project(c: &mut Criterion) {
-    c.bench_function("project/noop_until_rung_1", |b| {
-        b.iter(|| black_box(1u64).wrapping_add(1));
-    });
+fn main() {
+    eprintln!(
+        "project bench unwired: wire_map::project landed, but perfsuite has no \
+         wire-map dev-dependency (see this file's header)"
+    );
 }
-
-criterion_group!(benches, bench_project);
-criterion_main!(benches);
