@@ -579,6 +579,26 @@ impl MountSet {
     pub fn unreachable_roots(&self) -> &[UnreachableRoot] {
         &self.unreachable
     }
+
+    /// Does the mount table DECLARE `name` at all — bound or not?
+    ///
+    /// The union of [`MountSet::is_bound`] and [`MountSet::unreachable`], and the
+    /// question a caller asks when it needs *"is this name MINE to judge?"*
+    /// rather than *"can I read it from here?"*.
+    ///
+    /// **The two questions are not interchangeable and the difference is
+    /// reachable in production.** `Addr::parse` has no scheme fallback by
+    /// design, so `https://example.com` parses as root `https` and
+    /// `mailto:a@b.example` as root `mailto`. A caller that must leave external
+    /// URIs alone therefore cannot ask `is_bound` — that predicate is FALSE for
+    /// an external scheme and for a root this file declares but this machine
+    /// cannot read, **collapsing "not mine" into "mine but unreadable"**. The
+    /// first must be left verbatim; the second has no stored form and must
+    /// refuse. Asking this question instead keeps the two apart.
+    #[must_use]
+    pub fn is_declared(&self, name: &MountName) -> bool {
+        self.is_bound(name) || self.unreachable(name).is_some()
+    }
 }
 
 #[cfg(test)]
