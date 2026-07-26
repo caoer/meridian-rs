@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped whenever generation logic changes shape: invalidates corpus caches
 /// and travels in every manifest as provenance.
-pub const GENERATOR_VERSION: u32 = 1;
+///
+/// v2: task-line indentation clamped to a real open-item context. Without this
+/// bump a cached v1 corpus keeps serving pre-fix bytes — `ensure` reuses on
+/// (recipe hash, this constant), and neither sees a generator code change.
+pub const GENERATOR_VERSION: u32 = 2;
 
 /// Construct ids the generator can plant — 1:1 with `syntax::DialectKind`
 /// discriminants, so inventories join directly against parser output.

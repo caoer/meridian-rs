@@ -5,7 +5,10 @@
 //! planted only where a correct parser must recognize them — never inside
 //! fence bodies, callout bodies, table cells, or after an unterminated fence
 //! (which is always the final block). Filler text never begins a line with
-//! `#`, `>`, `|`, `-`, `` ` ``, `%%`, `[[` or `---`. Together these make the
+//! `#`, `>`, `|`, `-`, `` ` ``, `%%`, `[[` or `---`. Indentation is used by one
+//! construct only — task lines — and never jumps more than one level past the
+//! item above it, so an indented line is always a nested item and never an
+//! indented code block. Together these make the
 //! inventory a sound lower bound: `parsed(kind) ≥ planted(kind)` for every
 //! correct parser, which is what the ≥-planted assertion in `tests/` checks.
 
@@ -265,8 +268,17 @@ pub fn generate_file(recipe: &Recipe, index: u32) -> GeneratedFile {
                 tables -= 1;
             }
             Block::TaskList => {
+                // Indentation only nests when a parent item is already open:
+                // at block start (or after a jump of ≥2 levels) the same spaces
+                // are an indented code block, and pulldown emits no
+                // `TaskListMarker`. Clamp each line to at most one level deeper
+                // than the item above it — the first line is therefore depth 0 —
+                // so every planted line stays a recognizable list item. The draw
+                // is unchanged, so the rng stream is identical to before.
+                let mut max_depth = 0usize;
                 for _ in 0..tasks.max(1) {
-                    let depth = range(&mut rng, 0, 3);
+                    let depth = range(&mut rng, 0, 3).min(max_depth);
+                    max_depth = depth + 1;
                     let mark = if draw(&mut rng, 0.4) { 'x' } else { ' ' };
                     out.push_str(&"  ".repeat(depth));
                     let _ = write!(out, "- [{mark}] ");
