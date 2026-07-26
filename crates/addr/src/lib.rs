@@ -1,0 +1,634 @@
+//! The agent-plane address, as a fallible TYPE.
+//!
+//! `[root:]path[#selector][@fp]` — parsed once, here, so no plane downstream
+//! re-splits a string. A `std`-only leaf with zero dependencies, placed
+//! UPSTREAM of `syntax` (`docs/address-grammar.md` § 7.1): `model` depends on
+//! `syntax`, so an address type living beside the markdown parsing would be
+//! architecturally unreachable from the wikilink ingress where a cross-root
+//! address actually arrives.
+//!
+//! **Construction is the only way in.** [`Addr::parse`] is the sole
+//! constructor; there is no `from_parts` a caller can use to smuggle an
+//! unparsed root prefix into the [`Addr::path`] field. That invariant —
+//! *`Addr.path` carries no root prefix* — is what makes every downstream guard
+//! checkable, and it is why the type is fallible rather than a boolean helper a
+//! caller may ignore (R5).
+//!
+//! **Parse is not resolve.** [`Addr::parse`] answers *"is this a well-formed
+//! address?"*; it never touches the mount table. Whether the named root is
+//! BOUND is the resolver's question and its answer is grey, not a parse error
+//! (`docs/address-grammar.md` § 2.2, § 6). Conflating the two would make a
+//! well-formed address to an unmounted root indistinguishable from a malformed
+//! one.
+
+use core::fmt;
+
+/// A canonical root NAME — the mount-table key a cross-root address carries
+/// (`sessions`, `assets`).
+///
+/// Deliberately named `MountName`, never `Root`: three senses of "root" already
+/// meet in this engine and a fourth shares the spelling
+/// (`docs/address-grammar.md` § 1). This is neither a Merkle cursor
+/// (`wire::Root`) nor a directory (`fs::WorkspaceRoot`) nor the `root:`
+/// frontmatter key of the preset grammar — and the word **Name** says so at
+/// every call site.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MountName(String);
+
+impl MountName {
+    /// The one charset: `[a-z0-9-]`, non-empty (`docs/address-grammar.md`
+    /// § 4.3).
+    ///
+    /// **An uppercase byte REFUSES rather than being silently normalized.** A
+    /// silent normalization would make two spellings one name, and the ratified
+    /// law is one name per root used everywhere. The corpus index already
+    /// lowercases its own keys, so a normalizing `MountName` would be a second,
+    /// invisible case rule on the same address.
+    ///
+    /// # Errors
+    ///
+    /// [`AddrError::EmptyMountName`] when `name` is empty;
+    /// [`AddrError::BadMountName`] when any byte is outside the charset.
+    pub fn parse(name: &str) -> Result<Self, AddrError> {
+        if name.is_empty() {
+            return Err(AddrError::EmptyMountName);
+        }
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(AddrError::BadMountName {
+                found: name.to_string(),
+            });
+        }
+        Ok(MountName(name.to_string()))
+    }
+
+    /// The canonical name, borrowed.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for MountName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Why an address refused to parse — the closed set of `docs/address-grammar.md`
+/// § 4.5.
+///
+/// Every variant carries the offending text, so a refusal can name what it
+/// refused rather than reporting that something, somewhere, was malformed.
+///
+/// Deliberately NOT carried here: the `SelectorOnOpaqueRoot` refusal of
+/// § 10.1. That one is a RESOLUTION-time refusal — a root's *kind* is a
+/// mount-table fact and [`Addr::parse`] does not read the mount table — so its
+/// constructor lives with the resolver (U11). Shipping an unconstructed variant
+/// here would be a claim nothing checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddrError {
+    /// The head carried a root separator but the name before it is outside the
+    /// `[a-z0-9-]` charset — including any uppercase byte (§ 4.3).
+    BadMountName {
+        /// The rejected name, verbatim.
+        found: String,
+    },
+    /// The head opened with the root separator (`:notes.md`) — a separator with
+    /// no name before it.
+    EmptyMountName,
+    /// Nothing follows the root separator (`sessions:`), or the address is
+    /// empty. An address always names a path.
+    EmptyPath,
+    /// Two or more colons in the head (`a:b:c.md`). **Exactly one colon may act
+    /// as a separator**, and a second is refused rather than resolved by a
+    /// precedence rule no reader could recover from the spelling.
+    AmbiguousColon {
+        /// The offending head, verbatim.
+        found: String,
+    },
+}
+
+impl fmt::Display for AddrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AddrError::BadMountName { found } => write!(
+                f,
+                "refused: '{found}' is not a canonical root name — root names are `[a-z0-9-]`. \
+                 Fix: quote the path differently or rename the root; see [[address-grammar]]."
+            ),
+            AddrError::EmptyMountName => f.write_str(
+                "refused: the address opens with a root separator and names no root. \
+                 Fix: write `root:path`, or drop the leading `:`; see [[address-grammar]].",
+            ),
+            AddrError::EmptyPath => f.write_str(
+                "refused: the address names no path. \
+                 Fix: write `root:path` — a root alone addresses nothing; see [[address-grammar]].",
+            ),
+            AddrError::AmbiguousColon { found } => write!(
+                f,
+                "refused: '{found}' carries more than one `:` before the first `/` — \
+                 exactly one colon may separate a root from its path. \
+                 Fix: rename the root or move the path under a directory; see [[address-grammar]]."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AddrError {}
+
+/// The agent-plane address `[root:]path[#selector][@fp]`, parsed.
+///
+/// Construct with [`Addr::parse`] — the sole constructor. Round-trips
+/// byte-identically through [`Display`](fmt::Display), which is what lets an
+/// address be a type at a seam that must still write the spelling it read.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Addr {
+    root: Option<MountName>,
+    path: String,
+    selector: Option<String>,
+    fp: Option<String>,
+}
+
+impl Addr {
+    /// Parse an agent-plane address. **The sole constructor.**
+    ///
+    /// The colon law (`docs/address-grammar.md` § 4.1), over the **head** — the
+    /// text before the first `/` and before the first `#`:
+    ///
+    /// - **zero `:`** → no root; the address resolves in the ambient root. The
+    ///   overwhelming majority of refs, unchanged;
+    /// - **exactly one `:`** → that colon IS the root separator. The text
+    ///   before it must be a well-formed [`MountName`], the text after it
+    ///   non-empty. If either fails the address is REFUSED — **never**
+    ///   reinterpreted as a literal path;
+    /// - **two or more `:`** → refused.
+    ///
+    /// After the first `/`, a `:` is an ordinary path byte.
+    ///
+    /// **Why no fallback to the literal reading.** A fallback would mean a
+    /// typo'd root (`session:` for `sessions:`) silently degrades into a lookup
+    /// for a file literally named `session:notes.md` — a wrong SUCCESS of
+    /// exactly FINDING 03's shape. Refusing is the only outcome that cannot be
+    /// mistaken for working.
+    ///
+    /// The `@fp` suffix is recognized **inside the fragment only** (after the
+    /// first `#`), which is the position the render face mints it in and the
+    /// only position where it could otherwise be absorbed into the selector
+    /// (§ 4.4). An `@` in a bare path stays a path byte, so a filename carrying
+    /// one is addressable.
+    ///
+    /// # Errors
+    ///
+    /// The closed set of [`AddrError`].
+    pub fn parse(spelling: &str) -> Result<Self, AddrError> {
+        let (before_frag, frag) = match spelling.split_once('#') {
+            Some((left, frag)) => (left, Some(frag)),
+            None => (spelling, None),
+        };
+
+        // The head is the first path segment of the pre-fragment text: a `:`
+        // after the first `/` is an ordinary path byte and carries no meaning.
+        let head = before_frag.split('/').next().unwrap_or(before_frag);
+        let (root, path) = match head.match_indices(':').count() {
+            0 => (None, before_frag.to_string()),
+            1 => {
+                let colon = head.find(':').unwrap_or(0);
+                let name = MountName::parse(&head[..colon])?;
+                let rest = &before_frag[colon + 1..];
+                if rest.is_empty() {
+                    return Err(AddrError::EmptyPath);
+                }
+                (Some(name), rest.to_string())
+            }
+            _ => {
+                return Err(AddrError::AmbiguousColon {
+                    found: head.to_string(),
+                });
+            }
+        };
+        if path.is_empty() {
+            return Err(AddrError::EmptyPath);
+        }
+
+        let (selector, fp) = match frag {
+            None => (None, None),
+            Some(frag) => match frag.split_once('@') {
+                Some((sel, fp)) => (Some(sel.to_string()), Some(fp.to_string())),
+                None => (Some(frag.to_string()), None),
+            },
+        };
+
+        Ok(Addr {
+            root,
+            path,
+            selector,
+            fp,
+        })
+    }
+
+    /// The canonical root name this address names, or `None` for the ambient
+    /// root.
+    #[must_use]
+    pub fn root(&self) -> Option<&MountName> {
+        self.root.as_ref()
+    }
+
+    /// The path portion — **never carries a root prefix, by construction.**
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The selector, verbatim after the first `#` with the caret kept. `""`
+    /// means the page/doc root, matching the shipped `node.selector` column.
+    #[must_use]
+    pub fn selector(&self) -> &str {
+        self.selector.as_deref().unwrap_or("")
+    }
+
+    /// Did the spelling carry a `#` at all? Distinguishes `page` (page-grain)
+    /// from `page#` (an empty selector written out) — the two are different
+    /// spellings and this type round-trips both.
+    #[must_use]
+    pub fn has_selector(&self) -> bool {
+        self.selector.is_some()
+    }
+
+    /// The `@fp` render-face decoration, if the spelling carried one.
+    ///
+    /// **Never part of the identity a corpus lookup uses** — resolution reads
+    /// the fp-free projection ([`Addr::target`]). The fp is minted on read and
+    /// never stored (§ 4.4).
+    #[must_use]
+    pub fn fp(&self) -> Option<&str> {
+        self.fp.as_deref()
+    }
+
+    /// The address minus its selector and fp: `[root:]path`.
+    ///
+    /// This is the identity a corpus lookup addresses, and it is byte-identical
+    /// to what a pre-type `split_once('#')` produced at every seam — the root
+    /// stays ON the spelling here rather than being peeled into a field nothing
+    /// downstream reads yet. Peeling it before the resolver is root-aware is
+    /// Story A's discard defect (FINDING 02); U11 owns the root-keyed lookup.
+    #[must_use]
+    pub fn target(&self) -> String {
+        match &self.root {
+            Some(root) => format!("{root}:{}", self.path),
+            None => self.path.clone(),
+        }
+    }
+
+    /// This address with its path replaced — the resolution seam, and it is
+    /// **fallible on purpose**.
+    ///
+    /// A resolved corpus path must itself carry no root separator in its head,
+    /// or the invariant [`Addr::parse`] establishes would be smuggled around by
+    /// a caller holding an already-valid `Addr`. Root, selector and fp ride
+    /// through unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`AddrError`] when `path` is empty or its head carries a `:` — the
+    /// `grey(unaddressable-path)` corpus key of § 4.2.
+    pub fn with_path(&self, path: &str) -> Result<Self, AddrError> {
+        let reparsed = Addr::parse(path)?;
+        if reparsed.root.is_some() || reparsed.selector.is_some() {
+            return Err(AddrError::AmbiguousColon {
+                found: path.to_string(),
+            });
+        }
+        Ok(Addr {
+            root: self.root.clone(),
+            path: reparsed.path,
+            selector: self.selector.clone(),
+            fp: self.fp.clone(),
+        })
+    }
+}
+
+impl fmt::Display for Addr {
+    /// The canonical spelling — **byte-identical to what was parsed.**
+    ///
+    /// Lossless rendering is not a convenience: `lock` proves byte round-trip
+    /// of its fenced block and the view projection writes `declared_ref`
+    /// verbatim, so a type that could not reproduce its input would not be
+    /// admissible at either seam.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(root) = &self.root {
+            write!(f, "{root}:")?;
+        }
+        f.write_str(&self.path)?;
+        if let Some(sel) = &self.selector {
+            write!(f, "#{sel}")?;
+        }
+        if let Some(fp) = &self.fp {
+            write!(f, "@{fp}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The resolution-facing projection of the mount table: which canonical names
+/// this machine binds.
+///
+/// Constructed by `config` (which owns the `MERIDIAN.md` parse and the
+/// name ↔ vault-name ↔ path table) and consumed by `model` — it lives here, in
+/// the upstream leaf, so `model::CorpusIndex::resolve_ref` can name it without
+/// depending on `config`, which is downstream of `model`
+/// (`docs/address-grammar.md` § 7.2).
+///
+/// **A concrete type, not a trait.** A trait invites a second implementation,
+/// and a second implementation of an address fact is the exact defect D12 keeps
+/// producing: one question, two answers.
+///
+/// The surface is deliberately the two questions a resolver asks — *is this
+/// name bound*, and *which names are bound* (so a refusal can teach). Anything
+/// beyond that is U11's to add once its real needs are known.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MountSet {
+    bound: Vec<MountName>,
+}
+
+impl MountSet {
+    /// The set of bound names. Duplicates collapse; order is the caller's.
+    #[must_use]
+    pub fn new(bound: impl IntoIterator<Item = MountName>) -> Self {
+        let mut names: Vec<MountName> = Vec::new();
+        for name in bound {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        MountSet { bound: names }
+    }
+
+    /// Does this machine bind `name`?
+    #[must_use]
+    pub fn is_bound(&self, name: &MountName) -> bool {
+        self.bound.contains(name)
+    }
+
+    /// Every bound name, so a refusal can name what IS available.
+    #[must_use]
+    pub fn bound_names(&self) -> &[MountName] {
+        &self.bound
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The acceptance half, asserted in the same breath as the refusals
+    /// (S3-R8(c)): a grammar proven only by what it refuses is
+    /// indistinguishable from one that refuses everything. Rows D1-D4 of
+    /// `docs/address-grammar.md` § 4.5 — and D2/D3 are the ones that keep this
+    /// law from swallowing the ordinary corpus.
+    #[test]
+    fn the_colon_law_accepts_rows_d1_through_d4() {
+        // D1 — a rooted address.
+        let d1 = Addr::parse("sessions:notes.md").expect("D1 parses");
+        assert_eq!(d1.root().map(MountName::as_str), Some("sessions"));
+        assert_eq!(d1.path(), "notes.md");
+
+        // D2 — the ambient majority case, unchanged.
+        let d2 = Addr::parse("notes.md").expect("D2 parses");
+        assert_eq!(d2.root(), None);
+        assert_eq!(d2.path(), "notes.md");
+
+        // D3 — the colon FOLLOWS the first `/`, so it is an ordinary path byte.
+        let d3 = Addr::parse("dir/a:b.md").expect("D3 parses");
+        assert_eq!(d3.root(), None);
+        assert_eq!(d3.path(), "dir/a:b.md");
+
+        // D4 — root, subdirs and a selector together.
+        let d4 = Addr::parse("sessions:24-01/notes.md#Design").expect("D4 parses");
+        assert_eq!(d4.root().map(MountName::as_str), Some("sessions"));
+        assert_eq!(d4.path(), "24-01/notes.md");
+        assert_eq!(d4.selector(), "Design");
+    }
+
+    /// Rows D5-D9 — every refusal of § 4.5, each with its named class.
+    #[test]
+    fn the_colon_law_refuses_rows_d5_through_d9() {
+        assert_eq!(
+            Addr::parse("My Notes:draft.md"),
+            Err(AddrError::BadMountName {
+                found: "My Notes".to_string()
+            }),
+            "D5 — a space is outside `[a-z0-9-]`",
+        );
+        assert_eq!(
+            Addr::parse("Sessions:notes.md"),
+            Err(AddrError::BadMountName {
+                found: "Sessions".to_string()
+            }),
+            "D6 — uppercase REFUSES; it is never silently lowercased (§ 4.3)",
+        );
+        assert_eq!(
+            Addr::parse(":notes.md"),
+            Err(AddrError::EmptyMountName),
+            "D7 — a separator with no name before it",
+        );
+        assert_eq!(
+            Addr::parse("sessions:"),
+            Err(AddrError::EmptyPath),
+            "D8 — a root alone addresses nothing",
+        );
+        assert_eq!(
+            Addr::parse("a:b:c.md"),
+            Err(AddrError::AmbiguousColon {
+                found: "a:b:c.md".to_string()
+            }),
+            "D9 — exactly one colon may act as a separator",
+        );
+        assert_eq!(
+            Addr::parse(""),
+            Err(AddrError::EmptyPath),
+            "the empty spelling addresses nothing",
+        );
+    }
+
+    /// There is NO fallback to the literal reading — the property § 4.1 exists
+    /// to establish. A typo'd root must refuse rather than degrade into a
+    /// lookup for a file literally named `session:notes.md`.
+    #[test]
+    fn a_typod_root_refuses_and_never_falls_back_to_a_literal_path() {
+        // Well-formed name, so it parses AS a root — the mount lookup (U11)
+        // decides the rest. It must NOT become a literal path.
+        let typo = Addr::parse("session:notes.md").expect("a well-formed name parses");
+        assert_eq!(typo.root().map(MountName::as_str), Some("session"));
+        assert_eq!(
+            typo.path(),
+            "notes.md",
+            "the head is a root, never a literal path segment",
+        );
+        // A malformed name refuses outright rather than falling back.
+        assert!(
+            Addr::parse("Session:notes.md").is_err(),
+            "no fallback reading exists for a malformed root name",
+        );
+    }
+
+    /// The invariant every downstream guard rests on: `Addr.path` carries no
+    /// root prefix, and there is no constructor that can smuggle one in.
+    #[test]
+    fn the_path_field_never_carries_a_root_prefix() {
+        for spelling in [
+            "sessions:notes.md",
+            "sessions:a/b.md#Design",
+            "sessions:a/b.md#^claim@fp1.span2.b3.dead",
+        ] {
+            let addr = Addr::parse(spelling).expect("parses");
+            let head = addr.path().split('/').next().unwrap_or(addr.path());
+            assert!(
+                !head.contains(':'),
+                "{spelling}: the path head must carry no separator, got {head}",
+            );
+        }
+        // `with_path` is the only other way to reach the field, and it re-checks.
+        let addr = Addr::parse("sessions:notes.md").expect("parses");
+        assert!(
+            addr.with_path("other:notes.md").is_err(),
+            "with_path must refuse a path that carries its own root",
+        );
+        assert_eq!(
+            addr.with_path("deep/notes.md")
+                .expect("a root-free path is accepted")
+                .to_string(),
+            "sessions:deep/notes.md",
+            "root and selector ride through a path replacement",
+        );
+    }
+
+    /// Lossless round-trip — the property that makes the type admissible at the
+    /// `lock` byte-round-trip seam and the view projection's verbatim column.
+    #[test]
+    fn every_parsed_spelling_renders_back_byte_identically() {
+        for spelling in [
+            "notes.md",
+            "wiki/page.md",
+            "wiki/page.md#Design",
+            "wiki/page.md#^claim-1",
+            "wiki/page.md#Design/Sub",
+            "sessions:notes.md",
+            "sessions:24-01-retro/notes.md#Design",
+            "dir/a:b.md",
+            "a@b.md",
+            "page.md#^claim@fp1.span2.b3.dead",
+            "page.md#",
+            "a\"b",
+        ] {
+            let addr = Addr::parse(spelling).expect("parses");
+            assert_eq!(
+                addr.to_string(),
+                spelling,
+                "the canonical spelling must reproduce its input byte for byte",
+            );
+        }
+    }
+
+    /// `@fp` is recognized in the fragment and kept off the identity, and an
+    /// `@` in a bare path stays a path byte (§ 4.4).
+    #[test]
+    fn the_fp_decoration_is_recorded_and_never_part_of_the_identity() {
+        let decorated =
+            Addr::parse("guide.md#^claim@fp1.span2.b3.beef").expect("a decorated address parses");
+        assert_eq!(decorated.selector(), "^claim", "the fp never bleeds in");
+        assert_eq!(decorated.fp(), Some("fp1.span2.b3.beef"));
+        assert_eq!(
+            decorated.target(),
+            "guide.md",
+            "resolution reads the fp-free projection",
+        );
+
+        let at_in_path = Addr::parse("mail@host.md").expect("an `@` in a bare path parses");
+        assert_eq!(at_in_path.path(), "mail@host.md");
+        assert_eq!(at_in_path.fp(), None, "a bare path's `@` is a path byte");
+    }
+
+    /// `target()` is byte-identical to the pre-type `split_once('#')` result —
+    /// the property that keeps U10 behaviour-neutral at every projection seam
+    /// and leaves the root-aware lookup to U11.
+    #[test]
+    fn target_matches_the_pre_type_split_at_every_seam() {
+        for spelling in [
+            "wiki/page.md",
+            "wiki/page.md#Design",
+            "sessions:notes.md#Design",
+            "sessions:24-01-retro/notes.md#Design",
+        ] {
+            let addr = Addr::parse(spelling).expect("parses");
+            let legacy = spelling.split_once('#').map_or(spelling, |(left, _)| left);
+            assert_eq!(
+                addr.target(),
+                legacy,
+                "{spelling}: the retype must not move a single byte at the projection",
+            );
+        }
+    }
+
+    /// `MountName` is the mount-table key, and its charset is the one rule.
+    #[test]
+    fn mount_name_charset_is_lowercase_alnum_and_dash() {
+        assert!(MountName::parse("sessions").is_ok());
+        assert!(MountName::parse("field-notes").is_ok());
+        assert!(MountName::parse("wiki2").is_ok());
+        assert_eq!(MountName::parse(""), Err(AddrError::EmptyMountName));
+        for bad in ["Sessions", "home_wiki", "home wiki", "home.wiki", "wiki/"] {
+            assert_eq!(
+                MountName::parse(bad),
+                Err(AddrError::BadMountName {
+                    found: bad.to_string()
+                }),
+                "{bad} is outside `[a-z0-9-]`",
+            );
+        }
+    }
+
+    /// `MountSet` answers exactly the two questions a resolver asks.
+    #[test]
+    fn mount_set_answers_is_bound_and_names_what_is_available() {
+        let sessions = MountName::parse("sessions").expect("a name");
+        let assets = MountName::parse("assets").expect("a name");
+        let set = MountSet::new([sessions.clone(), sessions.clone()]);
+        assert!(set.is_bound(&sessions));
+        assert!(
+            !set.is_bound(&assets),
+            "an unbound name is grey at resolution, never bound here",
+        );
+        assert_eq!(
+            set.bound_names(),
+            &[sessions],
+            "duplicates collapse — the table is a set of names",
+        );
+        assert!(MountSet::default().bound_names().is_empty());
+    }
+
+    /// Every refusal names what it refused — a refusal that cannot teach is the
+    /// defect D8 exists to prevent.
+    #[test]
+    fn every_refusal_names_the_offending_text_and_teaches_the_fix() {
+        for (spelling, needle) in [
+            ("My Notes:draft.md", "My Notes"),
+            ("a:b:c.md", "a:b:c.md"),
+            (":notes.md", "root separator"),
+            ("sessions:", "names no path"),
+        ] {
+            let err = Addr::parse(spelling).expect_err("refuses");
+            let text = err.to_string();
+            assert!(
+                text.contains(needle),
+                "{spelling}: the refusal must name '{needle}', got: {text}",
+            );
+            assert!(
+                text.contains("[[address-grammar]]"),
+                "{spelling}: every refusal points at the law it enforces",
+            );
+        }
+    }
+}

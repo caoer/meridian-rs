@@ -198,12 +198,17 @@ pub fn is_engine_emitted(lang: &str) -> bool {
         .any(|e| e.lang == tok)
 }
 
-/// One claim-plane entry (#8 §2): the declared selector and the full
+/// One claim-plane entry (#8 §2): the declared address and the full
 /// fingerprint CID-token, both verbatim.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinEntry {
-    /// The `ref` — the declared selector as written.
-    pub declared_ref: String,
+    /// The `ref` — the declared address, PARSED ([`addr::Addr`]).
+    ///
+    /// **The retype that establishes the address owner (U10).** It was a
+    /// `String` sixteen sites re-split; the type makes every one of them
+    /// discharge the parse or fail to compile (R5). It renders back
+    /// byte-identically, so the canonical lock bytes are unmoved.
+    pub declared_ref: addr::Addr,
     /// The `fingerprint` — a full `fp1.…` token (norm-v2-spec §2), verbatim.
     pub fingerprint: String,
 }
@@ -276,6 +281,17 @@ pub enum LockError {
     /// More than one `meridian-lock` block on the page — sole-writer emits
     /// exactly one; two is corruption.
     MultipleBlocks,
+    /// A `ref` outside the address grammar (`docs/address-grammar.md` § 4).
+    /// Carries the offending spelling and the parse refusal, so the damage is
+    /// named rather than reported as "something was wrong".
+    BadRef {
+        /// 1-based line within the block slice.
+        line: usize,
+        /// The rejected spelling, verbatim.
+        found: String,
+        /// Why the address grammar refused it.
+        reason: addr::AddrError,
+    },
 }
 
 /// The refusal reason, one line — THE spelling of why a lock is unreadable, so
@@ -294,6 +310,11 @@ impl std::fmt::Display for LockError {
             LockError::MultipleBlocks => {
                 write!(f, "more than one meridian-lock block on the page")
             }
+            LockError::BadRef {
+                line,
+                found,
+                reason,
+            } => write!(f, "malformed ref at line {line}: \"{found}\" — {reason}"),
         }
     }
 }
@@ -484,6 +505,14 @@ fn parse_pins(it: &mut BodyIter<'_>, out: &mut Vec<PinEntry>) -> Result<(), Lock
                 reason: "trailing bytes after ref",
             });
         }
+        // THE door the retype opened: a lock is machine-written, so a `ref`
+        // outside the address grammar is damage to NAME, never to carry. The
+        // string convention could only hand it on.
+        let declared_ref = addr::Addr::parse(&declared_ref).map_err(|err| LockError::BadRef {
+            line: n,
+            found: declared_ref.clone(),
+            reason: err,
+        })?;
         let Some((fn_line, fl)) = it.next() else {
             return Err(LockError::Malformed {
                 line: n,
@@ -536,7 +565,7 @@ pub fn render(lock: &Lock) -> String {
         out.push_str("pins:\n");
         for pin in &lock.pins {
             out.push_str("  - ref: ");
-            push_quoted(&mut out, &pin.declared_ref);
+            push_quoted(&mut out, &pin.declared_ref.to_string());
             out.push('\n');
             out.push_str("    fingerprint: ");
             push_quoted(&mut out, &pin.fingerprint);
@@ -601,11 +630,17 @@ mod tests {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
+    /// A fixture address. Every fixture spelling in this module is a legal
+    /// address, so a panic here is a fixture bug, never a grammar surprise.
+    fn a(spelling: &str) -> addr::Addr {
+        addr::Addr::parse(spelling).expect("a fixture ref is a well-formed address")
+    }
+
     fn sample() -> Lock {
         let mut l = Lock::new();
         l.set_object("sessions:24-01-retro/notes.md", "9ae3f1deadbeef");
         l.upsert_pin(PinEntry {
-            declared_ref: "sessions:24-01-retro/notes.md#Design".to_string(),
+            declared_ref: a("sessions:24-01-retro/notes.md#Design"),
             fingerprint: format!("fp1.span2.b3.{}", "ab".repeat(32)),
         });
         l
@@ -709,13 +744,76 @@ mod tests {
         }
     }
 
+    /// U10 — the door the `declared_ref` retype opened. A lock is
+    /// machine-written, so a `ref` outside the address grammar is damage to
+    /// NAME (`LockError::BadRef`), never a string to carry on.
+    ///
+    /// **The acceptance half is asserted in the same breath** (S3-R8(c)): the
+    /// rooted, colon-bearing ref that this crate has always round-tripped must
+    /// still parse and still render byte-identically. A guard proven only by
+    /// what it blocks is indistinguishable from one that blocks everything —
+    /// and here that would mean refusing every cross-root pin ever written.
+    #[test]
+    fn a_ref_outside_the_address_grammar_is_named_damage_not_carried() {
+        let block = |r#ref: &str| {
+            format!(
+                "```meridian-lock\nversion: 1\npins:\n  - ref: \"{ref}\"\n    \
+                 fingerprint: \"fp1.span2.b3.00\"\n```"
+            )
+        };
+
+        // ACCEPTANCE — the cross-root spelling this crate is honestly
+        // prefix-transparent about (FINDING 02, "where the claim IS true").
+        let ok =
+            parse(&block("sessions:24-01-retro/notes.md#Design")).expect("a rooted ref parses");
+        assert_eq!(
+            ok.pins[0].declared_ref.root().map(addr::MountName::as_str),
+            Some("sessions"),
+            "the root is now STRUCTURAL, not glued to the path",
+        );
+        assert_eq!(
+            render(&ok),
+            block("sessions:24-01-retro/notes.md#Design"),
+            "the canonical bytes are unmoved by the retype",
+        );
+        assert!(
+            parse(&block("plain/page.md#Design")).is_ok(),
+            "the ambient majority case is untouched",
+        );
+
+        // REFUSAL — each class named, never conflated with `Malformed`.
+        for (r#ref, want) in [
+            (
+                "Sessions:notes.md",
+                addr::AddrError::BadMountName {
+                    found: "Sessions".to_string(),
+                },
+            ),
+            (":notes.md", addr::AddrError::EmptyMountName),
+            (
+                "a:b:c.md",
+                addr::AddrError::AmbiguousColon {
+                    found: "a:b:c.md".to_string(),
+                },
+            ),
+        ] {
+            match parse(&block(r#ref)).expect_err(r#ref) {
+                LockError::BadRef { found, reason, .. } => {
+                    assert_eq!(found, r#ref, "the refusal names what it refused");
+                    assert_eq!(reason, want, "{ref} — the class is carried, not flattened");
+                }
+                other => panic!("{ref}: expected BadRef, got {other:?}"),
+            }
+        }
+    }
+
     /// Escapes round-trip: quotes, backslashes, and newlines in values.
     #[test]
     fn escaping_round_trips() {
         let mut l = Lock::new();
         l.set_object("we\"ird\\key\nline", "sha");
         l.upsert_pin(PinEntry {
-            declared_ref: "a\"b".to_string(),
+            declared_ref: a("a\"b"),
             fingerprint: "fp1.span2.b3.00".to_string(),
         });
         let bytes = render(&l);
@@ -730,18 +828,18 @@ mod tests {
     fn mutators_upsert_in_place() {
         let mut l = sample();
         l.upsert_pin(PinEntry {
-            declared_ref: "other#Ref".to_string(),
+            declared_ref: a("other#Ref"),
             fingerprint: "fp1.span2.b3.11".to_string(),
         });
         assert_eq!(l.pins.len(), 2);
         // Update the FIRST pin: position stays, value changes.
         l.upsert_pin(PinEntry {
-            declared_ref: "sessions:24-01-retro/notes.md#Design".to_string(),
+            declared_ref: a("sessions:24-01-retro/notes.md#Design"),
             fingerprint: "fp1.span2.b3.22".to_string(),
         });
         assert_eq!(l.pins.len(), 2);
         assert_eq!(l.pins[0].fingerprint, "fp1.span2.b3.22");
-        assert_eq!(l.pins[1].declared_ref, "other#Ref");
+        assert_eq!(l.pins[1].declared_ref.to_string(), "other#Ref");
 
         l.set_object("sessions:24-01-retro/notes.md", "newsha");
         assert_eq!(
@@ -763,7 +861,7 @@ mod tests {
         let mut l = sample();
         let page_v1 = format!("# Page\n\nbody\n\n{}\n", render(&l));
         l.upsert_pin(PinEntry {
-            declared_ref: "sessions:24-01-retro/notes.md#Design".to_string(),
+            declared_ref: a("sessions:24-01-retro/notes.md#Design"),
             fingerprint: format!("fp1.span2.b3.{}", "cd".repeat(32)),
         });
         let page_v2 = format!("# Page\n\nbody\n\n{}\n", render(&l));

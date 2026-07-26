@@ -47,7 +47,7 @@ fn sample_lock(root: &fs::WorkspaceRoot) -> lock::Lock {
     let mut l = lock::Lock::new();
     l.set_object("page.md", "9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0");
     l.upsert_pin(lock::PinEntry {
-        declared_ref: "page.md".into(),
+        declared_ref: addr::Addr::parse("page.md").expect("a fixture ref is an address"),
         fingerprint: minted_fingerprint(root),
     });
     l
@@ -142,7 +142,7 @@ fn update_replaces_in_place_exactly_one_block() {
     lock_write(&root, 0, &args(&root, &l, false)).expect("birth");
 
     l.upsert_pin(lock::PinEntry {
-        declared_ref: "page.md#^c1".into(),
+        declared_ref: addr::Addr::parse("page.md#^c1").expect("a fixture ref is an address"),
         fingerprint:
             "fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
     });
