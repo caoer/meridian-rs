@@ -5,9 +5,17 @@
 //! ```
 //!
 //! Resolves the `MERIDIAN.md` bootstrap chain and prints what it found: the
-//! resolved path, the state, the config's own rev and fingerprint, and the
-//! declared mounts and tools in document order. Read-only — it writes nothing
-//! and mints nothing.
+//! resolved path, the state, the config's own rev and fingerprint, the **bound
+//! mount table** with each root's state, and the declared tools in document
+//! order. Read-only — it writes nothing and mints nothing.
+//!
+//! # This is criterion 2's surface as well as criterion 1's (U7)
+//! The mount table is the single authority for the three-way translation —
+//! canonical root name ↔ Obsidian vault name ↔ local path — so this verb prints
+//! all three legs per root plus the state binding decided, and it prints the
+//! **canonical** path beside the declared one whenever the two differ. A verb
+//! that showed only the declared spelling would hide exactly the symlink the
+//! mount law exists to collapse.
 //!
 //! # Why this verb exists rather than an existing one
 //! Two surfaces were MEASURED out before this one was written, not read out of
@@ -28,8 +36,16 @@
 //! elision it works around is named in its own output rather than left for an
 //! operator to rediscover.
 //!
-//! Exits: **0** resolved (loaded or absent) / **1** the config refused (its
-//! message, verbatim) / **2** bad invocation.
+//! Exits: **0** resolved and every root **bound** / **1** the config refused
+//! (its message, verbatim) **or any root refuses** — grey and red alike, each
+//! with its own reason word / **2** bad invocation.
+//!
+//! **Grey rides exit 1, and that is S3-R6, not a local choice.** The exit code
+//! answers one question — *may this proceed?* — and an unseeable or drifted root
+//! answers no, exactly as a refusal does. There is **no fourth exit code**; the
+//! reason word carries the difference, in the human line and in `--json` alike.
+//! The table is printed before the non-zero exit, because a refusal an operator
+//! cannot read teaches nothing.
 
 use serde_json::{Value, json};
 
@@ -47,17 +63,39 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
     // spelling of the same fact.
     let resolution =
         config::resolve(&config::Env::from_process()).map_err(|e| Fail::findings(e.to_string()))?;
+    // A bind refusal rides verbatim for the same reason a parse refusal does:
+    // it already names the mount, the line, that nothing loaded, and the fix.
+    let table = resolution
+        .bind()
+        .map_err(|e| Fail::findings(e.to_string()))?;
 
     match format {
         Format::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&to_json(&resolution)).expect("json")
+                serde_json::to_string_pretty(&to_json(&resolution, &table)).expect("json")
             );
         }
-        Format::Human => print!("{}", render_human(&resolution)),
+        Format::Human => print!("{}", render_human(&resolution, &table)),
     }
-    Ok(())
+
+    if table.is_clear() {
+        return Ok(());
+    }
+    // Printed first, then refused: the reason words are above, and this line
+    // names which roots carry them so the exit is not a bare 1.
+    let refusing: Vec<String> = table
+        .mounts()
+        .iter()
+        .filter(|m| m.state().refuses())
+        .map(|m| format!("{} {}", m.name(), m.state().word()))
+        .collect();
+    Err(Fail::findings(format!(
+        "{} of {} roots refuse: {}",
+        refusing.len(),
+        table.mounts().len(),
+        refusing.join(", ")
+    )))
 }
 
 fn state(resolution: &config::Resolution) -> &'static str {
@@ -67,18 +105,26 @@ fn state(resolution: &config::Resolution) -> &'static str {
     }
 }
 
-fn to_json(resolution: &config::Resolution) -> Value {
+fn to_json(resolution: &config::Resolution, table: &config::mount::MountTable) -> Value {
     json!({
         "path": resolution.path().display().to_string(),
         "state": state(resolution),
         "file_rev": resolution.file_rev(),
         "fingerprint": resolution.config().and_then(config::Config::fingerprint),
-        "mounts": resolution.mounts().iter().map(|m| json!({
-            "name": m.name,
-            "path": m.path,
-            "kind": m.kind.as_str(),
-            "vault": m.vault,
-            "pin": m.pin,
+        "clear": table.is_clear(),
+        "mounts": table.mounts().iter().map(|m| json!({
+            "name": m.name(),
+            "path": m.declared_path(),
+            "canonical": m.canonical_path().map(|p| p.display().to_string()),
+            "kind": m.kind().as_str(),
+            "vault": m.vault(),
+            "pin": m.pin(),
+            "declared_name": m.declared_name(),
+            // The reason word is the SAME spelling the human line carries. Two
+            // spellings of one state is how a downstream reader and an operator
+            // come to disagree about what the engine said.
+            "state": m.state().word(),
+            "detail": m.state().detail(),
         })).collect::<Vec<_>>(),
         "tools": resolution.tools().iter().map(|t| json!({
             "name": t.name,
@@ -88,7 +134,7 @@ fn to_json(resolution: &config::Resolution) -> Value {
     })
 }
 
-fn render_human(resolution: &config::Resolution) -> String {
+fn render_human(resolution: &config::Resolution, table: &config::mount::MountTable) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
@@ -116,16 +162,36 @@ fn render_human(resolution: &config::Resolution) -> String {
         out.push_str("no config file — single-root behaviour, unchanged\n");
     }
 
-    let _ = writeln!(out, "mounts ({}):", resolution.mounts().len());
-    for m in resolution.mounts() {
-        let _ = write!(out, "  {}  {}  {}", m.name, m.kind.as_str(), m.path);
-        if let Some(vault) = &m.vault {
+    let _ = writeln!(out, "mounts ({}):", table.mounts().len());
+    for m in table.mounts() {
+        // The three legs of the map, then the state word. The canonical path is
+        // printed only when it differs from the declared spelling, because that
+        // difference IS the symlink the mount law collapses — printing it always
+        // would bury the one line that matters.
+        let _ = write!(
+            out,
+            "  {}  {}  {}",
+            m.name(),
+            m.kind().as_str(),
+            m.declared_path()
+        );
+        if let Some(canonical) = m
+            .canonical_path()
+            .filter(|c| c.as_os_str() != m.declared_path())
+        {
+            let _ = write!(out, "  -> {}", canonical.display());
+        }
+        if let Some(vault) = m.vault() {
             let _ = write!(out, "  vault:{vault}");
         }
-        if let Some(pin) = &m.pin {
+        if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");
         }
+        let _ = write!(out, "  {}", m.state().word());
         out.push('\n');
+        if m.state().refuses() {
+            let _ = writeln!(out, "      {}", m.state().detail());
+        }
     }
     let _ = writeln!(out, "tools ({}):", resolution.tools().len());
     for t in resolution.tools() {
