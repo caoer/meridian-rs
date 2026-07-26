@@ -306,6 +306,121 @@ impl Repo {
             .is_some_and(Option::is_some))
     }
 
+    /// The **common** git directory — `git rev-parse --git-common-dir`, made
+    /// absolute against [`Repo::root`].
+    ///
+    /// # Why the COMMON dir and not the git dir (U15 / D11)
+    /// A linked worktree has its own `--git-dir`
+    /// (`<main>/.git/worktrees/<name>`) and shares `--git-common-dir` with every
+    /// other worktree of the same repository. **`hooks/` lives under the shared
+    /// one**, so N worktrees are N meridian workspaces behind ONE hook
+    /// directory. A caller that installed per `--git-dir` would write N hooks of
+    /// which git runs exactly the one belonging to the worktree that is
+    /// committing — and a caller that installed per worktree top-level would
+    /// overwrite its own file N times.
+    ///
+    /// Note this answer **ignores `core.hooksPath`**: it is where git keeps the
+    /// repository's own hooks, not necessarily where git will look for them.
+    /// [`Repo::hooks_path`] is the other half, and a caller that means "where do
+    /// hooks run from" needs both.
+    ///
+    /// # Errors
+    /// As [`Repo::blob_oid`]; [`GitFail::Unexpected`] when git prints no path.
+    pub fn common_dir(&self) -> Result<PathBuf, GitFail> {
+        let text = self.rev_parse("--git-common-dir")?;
+        Ok(self.absolutize(PathBuf::from(text)))
+    }
+
+    /// The top-level directory of the **worktree** this handle's root sits in —
+    /// `git rev-parse --show-toplevel`.
+    ///
+    /// The comparison partner for a caller holding a workspace root of its own:
+    /// when the two disagree, "this repository" and "this workspace" name
+    /// different directories and any per-root install is guessing which one the
+    /// operator meant.
+    ///
+    /// # Errors
+    /// As [`Repo::common_dir`].
+    pub fn top_level(&self) -> Result<PathBuf, GitFail> {
+        let text = self.rev_parse("--show-toplevel")?;
+        Ok(self.absolutize(PathBuf::from(text)))
+    }
+
+    /// The configured `core.hooksPath`, or `None` when the repository leaves it
+    /// unset — `git config --get core.hooksPath`, resolved against
+    /// [`Repo::root`] when it is relative (git resolves it against the worktree
+    /// top-level, which is where it runs hooks from).
+    ///
+    /// **Set means git does not run `$GIT_COMMON_DIR/hooks` at all.** Anything
+    /// written there is a silent no-op, so a caller installing a hook has to ask
+    /// this before it writes, not after.
+    ///
+    /// # Errors
+    /// As [`Repo::common_dir`]. `git config`'s documented "key not found" (exit
+    /// 1, nothing on stderr) is the `None` answer and never an error — but a
+    /// higher exit, which `git config` reserves for a malformed section or an
+    /// unreadable config file, degrades typed like any other refusal.
+    pub fn hooks_path(&self) -> Result<Option<PathBuf>, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(["config", "--get", "core.hooksPath"]);
+        let what = "config --get core.hooksPath";
+        let out = cmd.output().map_err(|source| GitFail::Spawn {
+            program: self.program.clone(),
+            source,
+        })?;
+        // `git config --get` exits 1 for "the key is not set" and reserves 2+
+        // for real failures (invalid section, unreadable file). Treating every
+        // non-zero as absence would report a broken config as a clean repo.
+        if out.status.code() == Some(1) && out.stderr.is_empty() {
+            return Ok(None);
+        }
+        let stdout = self.harvest(out, what)?;
+        let text = String::from_utf8_lossy(&stdout).trim().to_owned();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(self.absolutize(PathBuf::from(text))))
+    }
+
+    /// The superproject's working tree when this repository is a **submodule**
+    /// of one — `git rev-parse --show-superproject-working-tree` — and `None`
+    /// when it is not.
+    ///
+    /// # This is the deciding artifact, and the neighbouring one answers wrong
+    /// A `.git` that is a FILE rather than a directory is the tempting test and
+    /// it is **not** the question: a linked worktree's `.git` is a file too, and
+    /// a submodule cloned before git 1.7.8 has a real `.git` directory. This
+    /// command asks git the question directly and answers empty for both of
+    /// those, which is why the submodule refusal is wired to it.
+    ///
+    /// # Errors
+    /// As [`Repo::common_dir`].
+    pub fn superproject(&self) -> Result<Option<PathBuf>, GitFail> {
+        let text = self.rev_parse("--show-superproject-working-tree")?;
+        // Empty is the documented "not a submodule" answer, not a missing one.
+        Ok((!text.is_empty()).then(|| self.absolutize(PathBuf::from(text))))
+    }
+
+    /// One `git rev-parse <flag>`, trimmed. The shared body of the three path
+    /// queries above so they cannot drift in how they read git's answer.
+    fn rev_parse(&self, flag: &str) -> Result<String, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(["rev-parse", flag]);
+        let stdout = self.run(cmd, &format!("rev-parse {flag}"))?;
+        Ok(String::from_utf8_lossy(&stdout).trim().to_owned())
+    }
+
+    /// Git answers `--git-common-dir` relative to the directory it ran in,
+    /// which is [`Repo::root`] (every call is `git -C <root>`). An absolute
+    /// answer is returned as given.
+    fn absolutize(&self, path: PathBuf) -> PathBuf {
+        if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        }
+    }
+
     /// `git -C <root>` with a C locale, so a fatal's wording is the one
     /// [`NOT_A_REPO`] matches on any operator's machine.
     fn command(&self) -> Command {
