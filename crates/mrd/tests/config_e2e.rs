@@ -84,13 +84,37 @@ fn declare_root(home: &Path, name: &str) -> std::path::PathBuf {
 }
 
 fn run(home: &Path, meridian_config: Option<&Path>, args: &[&str]) -> Output {
+    run_bridged(home, meridian_config, args, None, None)
+}
+
+/// The same invocation with the two BRIDGED variables driven explicitly (U9).
+///
+/// `run` clears both, so every other test in this file measures a determinate
+/// `unset` bridge rather than inheriting whatever the runner exports — the
+/// developer machine really does export `CCC_LLM_WIKI_PATH`, which would
+/// otherwise make the bridge section of this verb's output depend on who ran it.
+fn run_bridged(
+    home: &Path,
+    meridian_config: Option<&Path>,
+    args: &[&str],
+    wiki_path: Option<&Path>,
+    repos_root: Option<&Path>,
+) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_mrd"));
     cmd.arg("config")
         .args(args)
         .env("HOME", home)
-        .env_remove("MERIDIAN_CONFIG");
+        .env_remove("MERIDIAN_CONFIG")
+        .env_remove("CCC_LLM_WIKI_PATH")
+        .env_remove("CCC_LLM_WIKI_REPOS_ROOT");
     if let Some(path) = meridian_config {
         cmd.env("MERIDIAN_CONFIG", path);
+    }
+    if let Some(path) = wiki_path {
+        cmd.env("CCC_LLM_WIKI_PATH", path);
+    }
+    if let Some(path) = repos_root {
+        cmd.env("CCC_LLM_WIKI_REPOS_ROOT", path);
     }
     cmd.output().expect("mrd runs")
 }
@@ -396,4 +420,135 @@ fn a_bad_invocation_is_exit_two() {
             stderr(&out)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The bridge period, end to end (U9)
+// ---------------------------------------------------------------------------
+
+/// **BOTH arms through the process boundary** (S3-R8(c)).
+///
+/// Agreement binds **silently** and names the mount it resolved onto;
+/// divergence prints its note, the FILE WINS, and **the exit code does not
+/// move** — a bridge period whose mismatch is fatal is not a bridge, and the
+/// exit code is the fact that would brick every machine exporting the variable.
+///
+/// The agreeing spelling is deliberately the **symlinked** one: it is the
+/// spelling that only canonicalize-at-bind can resolve, and it is the measured
+/// shape of `/Users/Shared/repos/field-notes` on this machine.
+#[test]
+fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+    let bound = home.path().join("roots").join("field-notes");
+
+    // The measured topology: a second spelling of the bound root, through a
+    // symlink that lives somewhere else entirely.
+    let link = home.path().join("linked-wiki");
+    std::os::unix::fs::symlink(&bound, &link).expect("symlink the bound root");
+
+    // --- Arm 1: agreement, through the symlink spelling. Silent. ---
+    let out = run_bridged(home.path(), None, &[], Some(&link), None);
+    assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("bridge (2):"), "{text}");
+    assert!(
+        text.contains("CCC_LLM_WIKI_PATH  agrees  -> field-notes"),
+        "the symlinked spelling resolves onto the bound root, and the STATE CHANGE is \
+         named — which mount now exists for this variable (R40): {text}"
+    );
+    // Asserted on the BRIDGE's own words, not on the token `note:`. This verb
+    // already prints a render-face elision note on every run, so a bare
+    // `!contains("note:")` is a check that fails for a reason unrelated to the
+    // thing it names — measured here, on the first run of this gate.
+    assert!(
+        !text.contains("the FILE WINS"),
+        "agreement is SILENT — a note on every agreement is what gets the variable unset: {text}"
+    );
+    assert!(
+        text.contains("CCC_LLM_WIKI_REPOS_ROOT  unset"),
+        "an unset variable states no path and is listed as such: {text}"
+    );
+
+    // --- Arm 2: divergence. Loud, once, and exit 0 all the same. ---
+    let elsewhere = home.path().join("not-a-declared-root");
+    std::fs::create_dir_all(&elsewhere).expect("create");
+    let out = run_bridged(home.path(), None, &[], Some(&elsewhere), None);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a divergence NEVER moves the exit code: {}",
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("CCC_LLM_WIKI_PATH  diverges"),
+        "the state word: {text}"
+    );
+    assert!(
+        !text.contains("diverges  -> "),
+        "THE FILE WINS: a diverging variable names no root: {text}"
+    );
+    assert!(
+        text.contains("the FILE WINS"),
+        "the divergence is reported, never silent: {text}"
+    );
+    assert!(
+        text.contains("reported once per process"),
+        "and the note says so, so an operator who sees it once is not left \
+         wondering whether it was suppressed: {text}"
+    );
+    assert!(
+        !text.contains("refused:"),
+        "a note is not a refusal: {text}"
+    );
+}
+
+/// The `--json` face carries the same bridge facts, with `mount` **null** on a
+/// divergence — "the file wins" as data, in the shape a machine reader gets.
+#[test]
+fn the_json_face_carries_the_bridge_and_nulls_the_mount_on_divergence() {
+    let home = tempfile::tempdir().expect("tempdir");
+    std::fs::write(home.path().join("MERIDIAN.md"), single(home.path())).expect("write");
+    let bound = home.path().join("roots").join("field-notes");
+    let elsewhere = home.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create");
+
+    let out = run_bridged(
+        home.path(),
+        None,
+        &["--json"],
+        Some(&bound),
+        Some(&elsewhere),
+    );
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).expect("valid json");
+    let bridge = v["bridge"].as_array().expect("a bridge array");
+    assert_eq!(bridge.len(), 2);
+
+    assert_eq!(bridge[0]["var"], "CCC_LLM_WIKI_PATH");
+    assert_eq!(bridge[0]["state"], "agrees");
+    assert_eq!(bridge[0]["mount"], "field-notes");
+    assert!(
+        bridge[0]["canonical"].is_string(),
+        "agreement names where it resolved from"
+    );
+    assert!(bridge[0]["report"].is_null(), "agreement carries no report");
+
+    assert_eq!(bridge[1]["var"], "CCC_LLM_WIKI_REPOS_ROOT");
+    assert_eq!(bridge[1]["state"], "diverges");
+    assert!(
+        bridge[1]["mount"].is_null(),
+        "THE FILE WINS — a diverging variable names no root, and the json says so \
+         with null rather than with a guessed name"
+    );
+    assert!(
+        bridge[1]["report"].is_string(),
+        "the first divergence in this process reports"
+    );
+
+    // The state word is the SAME spelling in both faces — two spellings of one
+    // state is how a downstream reader and an operator come to disagree.
+    let human = run_bridged(home.path(), None, &[], Some(&bound), Some(&elsewhere));
+    assert!(stdout(&human).contains("CCC_LLM_WIKI_REPOS_ROOT  diverges"));
 }

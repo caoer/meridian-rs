@@ -85,14 +85,20 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
         .bind()
         .map_err(|e| Fail::findings(e.to_string()))?;
 
+    // The bridge period's check (U9). It NEVER changes the exit code: a
+    // divergence between an env var and the file is a note, because fail-loud
+    // here would brick the CLI on every machine that exports the variable.
+    let bridged = config::bridge::check(&config::bridge::BridgeEnv::from_process(), &table);
+
     match format {
         Format::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&to_json(&resolution, &table, rung)).expect("json")
+                serde_json::to_string_pretty(&to_json(&resolution, &table, rung, &bridged))
+                    .expect("json")
             );
         }
-        Format::Human => print!("{}", render_human(&resolution, &table, rung)),
+        Format::Human => print!("{}", render_human(&resolution, &table, rung, &bridged)),
     }
 
     if table.is_clear() {
@@ -125,6 +131,7 @@ fn to_json(
     resolution: &config::Resolution,
     table: &config::mount::MountTable,
     rung: config::Rung,
+    bridged: &[config::bridge::Bridged],
 ) -> Value {
     json!({
         "path": resolution.path().display().to_string(),
@@ -154,6 +161,15 @@ fn to_json(
             "kind": t.kind,
             "config": t.config,
         })).collect::<Vec<_>>(),
+        // The bridge period (U9). `mount` is null on anything but agreement —
+        // that is "the file wins" as data, not as prose.
+        "bridge": bridged.iter().map(|b| json!({
+            "var": b.var().name(),
+            "state": b.state().word(),
+            "mount": b.mount(),
+            "canonical": b.canonical().map(|p| p.display().to_string()),
+            "report": b.report(),
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -161,6 +177,7 @@ fn render_human(
     resolution: &config::Resolution,
     table: &config::mount::MountTable,
     rung: config::Rung,
+    bridged: &[config::bridge::Bridged],
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -228,6 +245,25 @@ fn render_human(
     let _ = writeln!(out, "tools ({}):", resolution.tools().len());
     for t in resolution.tools() {
         let _ = writeln!(out, "  {}  {}", t.name, t.kind);
+    }
+
+    // The bridge period. Every variable is listed with its state word — an
+    // operator must be able to see that a variable AGREES, not only that it
+    // failed to complain. The report line appears only on the first divergence
+    // in this process.
+    let _ = writeln!(out, "bridge ({}):", bridged.len());
+    for b in bridged {
+        let _ = write!(out, "  {}  {}", b.var().name(), b.state().word());
+        if let Some(mount) = b.mount() {
+            let _ = write!(out, "  -> {mount}");
+        }
+        if let Some(canonical) = b.canonical() {
+            let _ = write!(out, "  {}", canonical.display());
+        }
+        out.push('\n');
+        if let Some(report) = b.report() {
+            let _ = writeln!(out, "      {report}");
+        }
     }
 
     if !resolution.mounts().is_empty() || !resolution.tools().is_empty() {

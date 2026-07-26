@@ -14,7 +14,14 @@
 //! `docs/address-grammar.md` §8. This module produces the parsed config; that
 //! one gives it meaning. It also does not do project-local walk-up discovery: the
 //! ratifying decision defers it, so the chain in [`resolve`] has exactly two
-//! rungs and no third.
+//! rungs and no third. The bridge period's env-var check is [`bridge`]'s.
+//!
+//! # Two env axes, one nil-vs-empty rule
+//! [`Env`] carries the BOOTSTRAP variables (`MERIDIAN_CONFIG`, `HOME`) — where
+//! the config file is. [`bridge::BridgeEnv`] carries the two llm-wiki variables
+//! the entry-point ruling inverts into mount entries — what the file should
+//! already say. Both treat an empty or whitespace-only value as unset, so the
+//! two axes cannot come to disagree about what "stated" means.
 //!
 //! # The precedent this EXTENDS
 //! `conventions/INDEX.md` is markdown-as-config shipping today
@@ -35,6 +42,7 @@ use std::path::{Path, PathBuf};
 
 use model::NodeKind;
 
+pub mod bridge;
 pub mod mount;
 
 /// The reserved config filename (schema §2.4). Rung 2 of the chain.
