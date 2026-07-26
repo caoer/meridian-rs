@@ -31,6 +31,12 @@ mod engine;
 mod expect;
 mod gc;
 mod history_cmd;
+// The pre-commit fence plane. `hook` is PUBLIC because the R19 anti-vacuity
+// harness must drive `HookLock` across a fork window it holds open by hand —
+// a test driving only the binary cannot open that window at all (the module
+// header carries the measurement). `hook_cmd` is the CLI face over it.
+pub mod hook;
+mod hook_cmd;
 mod init;
 mod new_cmd;
 mod pin_cmd;
@@ -140,6 +146,28 @@ usage:
                            identify. Exits: 0 green / 1 a chain break, or
                            grey(cannot-assess) — the exit says do-not-proceed, the
                            reason word says why / 2 bad invocation
+  mrd hook <install|uninstall|status> [PATH] [--json]
+                           the git pre-commit FENCE: install a hook that calls
+                           `mrd check` and rejects on its exit. Installed per
+                           $GIT_COMMON_DIR, so N linked worktrees of one
+                           repository share ONE hook and one install; the hook
+                           reads its worktree from git's working directory at
+                           commit time and bakes no path in. Zero markdown
+                           semantics live in the hook — it is an adapter over the
+                           engine. Escapes at commit time: MRD_HOOK_FORCE=1 (the
+                           ratified --force, in its hook spelling) or git's own
+                           `git commit --no-verify`. Refuses, naming the observed
+                           state, on: a submodule (its hooks live under
+                           <super>/.git/modules/<name>, which this engine does
+                           not compute), core.hooksPath set (git would never run
+                           what was written), a workspace root that is not the
+                           worktree top-level, a pre-commit this engine did not
+                           write (named, never overwritten), and a root that is
+                           not a git repository (a supported workspace state —
+                           there is simply nowhere to install). uninstall removes
+                           only a hook this engine wrote. PATH defaults to the
+                           current directory. Exits: 0 done / 1 this root refuses
+                           (with its reason word) / 2 bad invocation
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)
@@ -309,6 +337,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "pin" => pin_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
+        "hook" => hook_cmd::dispatch(&args[1..]),
         "config" => {
             let p = Parsed::parse(&args[1..], NO_PATH, NO_ALL)?;
             config_cmd::run(p.format())
