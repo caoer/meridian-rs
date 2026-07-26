@@ -173,6 +173,27 @@ fn to_json(
     })
 }
 
+/// The human face's marker for a leg that is absent **by construction**.
+///
+/// **Reused, not minted (S3-R49).** The existing set was enumerated across this
+/// binary's human faces before a spelling was proposed: `(none)` at 6 sites
+/// (`view_status.rs:174` `as_of:  (none)`, `view_status.rs:183`, `sql.rs:963`,
+/// `sql.rs:969`, `sql.rs:977`, `test_cmd.rs:819`), `—` at 5
+/// (`test_cmd.rs:767`, `test_cmd.rs:778`, `history_cmd.rs:573`,
+/// `perfsuite/src/report.rs:198`, `perfsuite/src/report.rs:208`), `-` at 1
+/// (`walk_cmd.rs:345`). **No collision:** none of them spells this leg today,
+/// because today this leg has no spelling at all.
+///
+/// `(none)` is the one taken because it is the spelling this cell's SHAPE
+/// already uses — every `(none)` site is a `label: value` line, exactly like
+/// `vault:`, while every `—` site is a fixed-width table column. One state gets
+/// one spelling, and the spelling that already exists wins.
+///
+/// It stays on this face only. `--json` states the same fact as `null` at a
+/// present key, which is the machine's statement and needs no marker; a client
+/// string-comparing `vault` would read this one as a vault actually named it.
+const ABSENT_LEG: &str = "(none)";
+
 fn render_human(
     resolution: &config::Resolution,
     table: &config::mount::MountTable,
@@ -230,9 +251,28 @@ fn render_human(
         {
             let _ = write!(out, "  -> {}", canonical.display());
         }
-        if let Some(vault) = m.vault() {
-            let _ = write!(out, "  vault:{vault}");
-        }
+        // The vault leg is printed ALWAYS, with the marker when it is absent.
+        //
+        // This is the ONE structurally-partial axis of criterion 2's three-way
+        // map: `Mount::vault` is `Some` iff `kind: vault`, because the parser
+        // REFUSES a `vault:` line on a `git-folder` entry. A git-folder root's
+        // vault name is therefore not missing — it cannot exist, and the
+        // criterion asks this face to say which of the two it is looking at.
+        //
+        // Dropping the cell could not say that: `archive  git-folder  /…  bound`
+        // is byte-identical to what a build that lost the vault name between the
+        // parser and this line would print. **A blank cell is a dropped value**,
+        // and the reader is the one asked to guess — U6's byte-identity lesson,
+        // at the row level.
+        //
+        // The other two conditional cells are NOT this class and stay
+        // conditional. `-> canonical` is suppressed when it EQUALS the declared
+        // path (an equality, not an absence), and when it is genuinely `None`
+        // the row already carries `grey(path-unseeable)` with its teaching
+        // detail — a marker there would be a second spelling of one fact.
+        // `pin:` is legal on BOTH kinds, so its absence is an operator's choice
+        // rather than a property of the root, and it is not a leg of the map.
+        let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");
         }
