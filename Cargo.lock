@@ -574,7 +574,10 @@ dependencies = [
 name = "check"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "fs",
+ "git",
+ "lock",
  "model",
  "policy",
  "realise",

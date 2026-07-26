@@ -41,55 +41,91 @@
 pub mod layer0;
 pub mod layer1;
 
+use std::collections::BTreeMap;
+
 use fs::WorkspaceRoot;
+use model::Document;
 
 pub use layer0::{
     BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace, NO_BASELINE_DETAIL,
-    claims_realised, journal_trace,
+    OrphanedBlob, PinPlane, PinRow, claims_realised, journal_trace, pin_plane,
 };
 pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
 
 /// The layer-0 (convention-free core) verdict over a workspace: the journal
-/// TRACE (the baseline check, then chain continuity) and the claims-realised
-/// findings. Green ⇔ the journal dated the tree, the chain is continuous, and
-/// every claim converged. With no baseline, or a baseline the journal cannot show
-/// is current, the TRACE is grey ([`CoreReport::cannot_assess`]) — never green,
-/// because nothing was assessed.
+/// TRACE (the baseline check, then chain continuity), the claims-realised
+/// findings, and the PIN PLANE. Green ⇔ the journal dated the tree, the chain is
+/// continuous, every claim converged, every pin holds and every pinned blob is
+/// anchored. With no baseline, or a baseline the journal cannot show is current,
+/// the TRACE is grey ([`CoreReport::cannot_assess`]) — never green, because
+/// nothing was assessed.
+///
+/// # The two planes fail INDEPENDENTLY (U14)
+/// Before U14 this report was the journal plane alone, so a green meant *"baseline
+/// provable AND nothing the journal plane can see"* — a true statement about the
+/// journal plane that stayed **silent about the pin plane**. The silence was the
+/// debt: a lock that arrives by clone or pull while its source has moved leaves the
+/// journal plane with nothing whatever to report, and a pinned blob no ref reaches
+/// is a fact **no journal row will ever carry**. The fence reads this verb's triad,
+/// so the verb has to hold both planes or the fence is a false green by
+/// construction.
 #[derive(Debug)]
 pub struct CoreReport {
     /// The journal TRACE: the baseline check, then the chain recompute.
     pub trace: JournalTrace,
     /// The claims whose observation drifted (not realised) — empty ⇔ all realised.
     pub drifted_claims: Vec<ClaimFinding>,
+    /// The pin plane: red/grey pins, and the `objects:` blobs no ref reaches.
+    pub pins: PinPlane,
 }
 
 impl CoreReport {
-    /// The core found a lie: a broken chain read against a current baseline, or a
-    /// drifted claim.
+    /// The core found a finding: a broken chain read against a current baseline, a
+    /// drifted claim, a red pin, or a blob reachable from nothing.
     #[must_use]
     pub fn is_red(&self) -> bool {
-        self.trace.is_red() || !self.drifted_claims.is_empty()
+        self.trace.is_red() || !self.drifted_claims.is_empty() || self.pins.is_red()
     }
 
-    /// The core could not assess the journal detectors: no baseline, or one it
-    /// cannot show is current, so their silence carries no evidence (S3-R5,
-    /// S3-R8). Grey sits above green and below red in the worst-of order — a
-    /// report can be grey and red at once (a drifted claim on an undatable
-    /// journal), and red is what it is called then.
+    /// The core could not assess something: the journal detectors (no baseline, or
+    /// one it cannot show is current — S3-R5, S3-R8), a pin outside sight, or an
+    /// object store it could not ask. Grey sits above green and below red in the
+    /// worst-of order — a report can be grey and red at once (a drifted pin on an
+    /// undatable journal), and red is what it is called then.
     #[must_use]
     pub fn cannot_assess(&self) -> bool {
-        self.trace.cannot_assess()
+        self.trace.cannot_assess() || self.pins.cannot_assess()
     }
 
-    /// The grey render — what could not be assessed and why — or `None` when the
-    /// core had the evidence to answer.
+    /// The grey render — everything that could not be assessed and why — or `None`
+    /// when the core had the evidence to answer every question it put.
+    ///
+    /// One line per unassessable plane, because they are unassessable for
+    /// DIFFERENT reasons with different fixes: a journal that cannot date the tree
+    /// is not an object store that cannot be reached, and collapsing the two would
+    /// teach a reader to look in the wrong place (S3-R43/S3-R50).
     #[must_use]
     pub fn grey_summary(&self) -> Option<String> {
-        self.trace.grey_summary()
+        let mut lines = Vec::new();
+        if let Some(trace) = self.trace.grey_summary() {
+            lines.push(format!("{GREY_CANNOT_ASSESS}: {trace}"));
+        }
+        // A grey PIN carries its own word (`unmounted`, `path-unseeable`, …) in
+        // its label, so prefixing it with `cannot-assess` would collapse two
+        // distinct causes into one tone — S3-R43 read backwards, which cost a
+        // round once already. One vocabulary, distinct words.
+        for pin in &self.pins.grey {
+            lines.push(format!("pin: {}", render_pin(pin)));
+        }
+        if let Some(detail) = &self.pins.cannot_ask {
+            lines.push(format!("{GREY_CANNOT_ASSESS}: {detail}"));
+        }
+        (!lines.is_empty()).then(|| lines.join("\n"))
     }
 
     /// A red render naming every core finding, or `None` when the core is green.
-    /// Composes the journal TRACE render with one line per drifted claim.
+    /// Composes the journal TRACE render with one line per drifted claim, per red
+    /// pin, and per blob no ref reaches.
     #[must_use]
     pub fn red_summary(&self) -> Option<String> {
         if !self.is_red() {
@@ -105,25 +141,64 @@ impl CoreReport {
                 claim.selector, claim.detail
             ));
         }
+        for pin in &self.pins.red {
+            lines.push(format!("pin: {}", render_pin(pin)));
+        }
+        for orphan in &self.pins.orphaned {
+            lines.push(format!(
+                "{}: {} objects.{} ({}) is reachable from no ref, and the file hashes to {} now \
+                 — no commit will anchor it",
+                orphan.state.word(),
+                orphan.src_path,
+                orphan.key,
+                orphan.blob_sha,
+                orphan.live
+            ));
+        }
         Some(lines.join("\n"))
     }
 }
 
+/// One pin row as a line: the page, the ref it declares, and the colour its ONE
+/// computer rendered. The reason word is never re-spelled here — [`PinRow::label`]
+/// carries `view`'s own render, so this composes and never speaks.
+fn render_pin(pin: &PinRow) -> String {
+    if pin.declared_ref.is_empty() {
+        format!("{} — {}", pin.src_path, pin.label)
+    } else {
+        format!("{} → {} — {}", pin.src_path, pin.declared_ref, pin.label)
+    }
+}
+
 /// Run the convention-free core (layer 0) over a workspace: recompute the journal
-/// TRACE (the baseline check, then the chain) and check every claim realised.
-/// Reads the reserved journal page and folds the live tree merkle — no write, no
-/// cap.
+/// TRACE (the baseline check, then the chain), check every claim realised, and
+/// read the PIN PLANE. Reads the reserved journal page, folds the live tree
+/// merkle, and asks git about the pinned blobs — no write, no cap.
+///
+/// `docs` is the corpus the caller already built, and `pins` are the colours it
+/// read off THAT build through the one pin computer. Both are passed in rather
+/// than rebuilt so the two planes describe one corpus: a second build would let
+/// them describe two.
 ///
 /// # Errors
 /// [`io::Error`](std::io::Error) if the journal page or the tree snapshot cannot
 /// be read; [`realise::CheckError`] if a claim's observation itself faults
-/// (distinct from a clean drift). A caller with no claims passes `&[]`.
-pub fn core(root: &WorkspaceRoot, claims: &[realise::Claim]) -> Result<CoreReport, CoreError> {
+/// (distinct from a clean drift). A caller with no claims passes `&[]`. The pin
+/// plane never errors — an unanswerable question there is a REPORTED grey, not a
+/// fault, because refusing to run is a worse answer than saying what could not be
+/// asked.
+pub fn core(
+    root: &WorkspaceRoot,
+    docs: &BTreeMap<String, Document>,
+    claims: &[realise::Claim],
+    pins: &[PinRow],
+) -> Result<CoreReport, CoreError> {
     let trace = journal_trace(root).map_err(CoreError::Io)?;
     let drifted_claims = claims_realised(root, claims).map_err(CoreError::Claim)?;
     Ok(CoreReport {
         trace,
         drifted_claims,
+        pins: pin_plane(root, docs, pins),
     })
 }
 

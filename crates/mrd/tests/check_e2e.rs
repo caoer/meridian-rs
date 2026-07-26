@@ -189,10 +189,12 @@ fn check_is_green_when_the_journal_carries_create_rows() {
     assert_eq!(
         stdout(&out),
         format!(
-            "check core {}\n  chain: green\n  foreign_edit: none\n",
+            "check core {}\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
+             anchoring: no pinned objects\n",
             root.0.display()
         ),
-        "the baseline-present render is unchanged, byte for byte"
+        "the baseline-present render is pinned byte for byte — the two JOURNAL \
+         lines are unchanged, and U14's two PIN-PLANE lines are the addition"
     );
 
     let out = sb.run(&ws, &["check", "--json"]);
@@ -207,9 +209,26 @@ fn check_is_green_when_the_journal_carries_create_rows() {
                 "chain": { "green": true, "breaks": [] },
                 "foreign_edit": null,
                 "drifted_claims": [],
-            }
+            },
+            // U14: the pin plane, asserted key for key beside the untouched
+            // `core` block. `asked: 0` is the POPULATION (S3-R23(5)) — this
+            // workspace pins nothing, so the empty list is a reading of nothing
+            // rather than a clean bill over something.
+            "pins": {
+                "red": [],
+                "grey": [],
+                "anchoring": {
+                    "asked": 0,
+                    "anchored": 0,
+                    "pending_anchor": 0,
+                    "never_anchored": 0,
+                    "orphaned": [],
+                },
+                "anchoring_cannot_assess": null,
+            },
         }),
-        "the baseline-present json is unchanged, key for key"
+        "the baseline-present json: the `core` block is unchanged key for key, \
+         and the pin plane is the addition"
     );
 }
 
@@ -436,9 +455,19 @@ fn check_cannot_assess_a_workspace_with_no_journal_page() {
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
+    // NARROWED BY U14, and the narrowing is a sharpening. S3-R5's subject is the
+    // two JOURNAL detectors — the assert's own message says so ("not for chain,
+    // not for a second vacuous detector"). A bare `!contains("green")` now also
+    // forbids the pin plane's green, which on this corpus is EARNED: nothing is
+    // pinned, so nothing is owed. Naming the detectors asserts what the ruling
+    // actually said, and it is strictly more precise than grepping a word with two
+    // legitimate producers (S3-R23(1) — an instrument's precision buys its
+    // survival). The pin plane's green is adjudicated by its own suite, which this
+    // assert does not own: `u14_check_pin_plane.rs` proves it appears only when
+    // earned and is replaced by a refusal when it is not.
     assert!(
-        !text.contains("green"),
-        "no green without a baseline: {text}"
+        !text.contains("chain: green"),
+        "no journal green without a baseline: {text}"
     );
     assert!(
         !text.contains("foreign_edit: none"),
@@ -465,8 +494,10 @@ fn check_cannot_assess_an_empty_journal_page() {
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
+    // Narrowed to the journal detectors for the reason given on the sibling gate
+    // above: this corpus pins nothing, so the pin plane's green is earned.
     assert!(
-        !text.contains("green"),
+        !text.contains("chain: green"),
         "zero parsed rows is zero baseline: {text}"
     );
     assert!(
@@ -510,7 +541,22 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
                 "chain": null,
                 "foreign_edit": null,
                 "drifted_claims": [],
-            }
+            },
+            // U14: the pin plane rides beside the journal's `cannot_assess`, not
+            // inside it. The two planes fail independently, so one refusing must
+            // never be reported as the other refusing.
+            "pins": {
+                "red": [],
+                "grey": [],
+                "anchoring": {
+                    "asked": 0,
+                    "anchored": 0,
+                    "pending_anchor": 0,
+                    "never_anchored": 0,
+                    "orphaned": [],
+                },
+                "anchoring_cannot_assess": null,
+            },
         }),
         "the grey json: no `green: true` for a reader to mistake for assessed, and \
          the ruled reason word verbatim"

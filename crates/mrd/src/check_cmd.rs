@@ -6,8 +6,20 @@
 //!
 //! Runs the convention-free CORE (layer 0) over the resolved workspace: date the
 //! receipt journal against the live tree (last-receipt-vs-live) and, when that
-//! holds, recompute the journal's chain continuity. `status = freshness, check =
-//! validity` — this answers "what lies?", writing nothing and minting no receipt.
+//! holds, recompute the journal's chain continuity; then read the PIN PLANE — the
+//! pin verdicts and the anchoring state of every pinned blob. `status = freshness,
+//! check = validity` — this answers "what lies?", writing nothing and minting no
+//! receipt.
+//!
+//! **U14 — the two planes fail independently.** Until this verb could see the pin
+//! plane, a green here meant *"baseline provable AND nothing the JOURNAL plane can
+//! see"*, and the fence built on it passed a corpus whose lock arrived by clone or
+//! pull while its source moved (`check` green / `walk` `red content-drifted` /
+//! `status` `lock red content-drifted`, one corpus, one run) and a corpus holding
+//! a blob no ref reaches — a fact no journal row will ever carry. The pin colours
+//! come from `view::walk::lock_pin_colors`, the SAME call `mrd status`'s lock axis
+//! makes over the SAME corpus build, so the three planes agree by construction and
+//! not by coincidence.
 //!
 //! `--core` names layer 0 explicitly (the default today). The armed layer-1
 //! evaluation is the `check` engine surface the door mounts (U4.2) — its
@@ -27,7 +39,8 @@
 
 use std::path::Path;
 
-use check::{CoreReport, GREY_CANNOT_ASSESS, JournalTrace};
+use check::{CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinRow};
+use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
 use crate::{Fail, Format, current_dir};
@@ -59,8 +72,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
-    let report =
-        check::core(&root, &[]).map_err(|e| Fail::tool(format!("check core failed: {e}")))?;
+    // ONE corpus build feeds BOTH planes. `mrd status` states the reason for its
+    // own two axes and it is the same one here: a second build would let the pin
+    // plane and the anchoring read describe two different corpora.
+    let docs = crate::walk_cmd::build_docs(&canonical)?;
+    let pins = pin_rows(&docs);
+
+    let report = check::core(&root, &docs, &[], &pins)
+        .map_err(|e| Fail::tool(format!("check core failed: {e}")))?;
 
     match parsed.format {
         Format::Json => {
@@ -70,24 +89,52 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Format::Human => print!("{}", render_human(&canonical, &report)),
     }
 
+    // Worst-of: red is reported first, grey next, green last. Both refuse on the
+    // SAME leg (S3-R6: the exit code answers only "may this proceed?"; no fourth
+    // code), so the prefix is the same verb and the REASON WORD in each line is
+    // what tells a finding from an absence of evidence. Saying "found a lie" over
+    // a pending-anchor blob would be a claim wider than the evidence — nothing
+    // lied, a blob is simply held by nothing durable.
     if report.is_red() {
         let summary = report.red_summary().unwrap_or_default();
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("check found a lie: {}", summary.replace('\n', "; ")),
+            message: format!("check refuses: {}", summary.replace('\n', "; ")),
         });
     }
-    // Worst-of: red is reported first, grey next, green last. Grey is not a lie —
-    // it is the absence of the evidence a green would have to rest on. It refuses
-    // on the SAME leg as a finding (S3-R6: the exit code answers only "may this
-    // proceed?"), and the reason word is what tells the two apart.
     if let Some(grey) = report.grey_summary() {
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("check refuses {GREY_CANNOT_ASSESS}: {grey}"),
+            message: format!("check refuses: {}", grey.replace('\n', "; ")),
         });
     }
     Ok(())
+}
+
+/// Colour every `meridian-lock` pin in the corpus through **the one pin
+/// computer** — `view::walk::lock_pin_colors`, which is exactly what
+/// `mrd status`'s lock axis reads and what colours a `mrd walk` listing.
+///
+/// This is the seam that makes the three planes agree BY CONSTRUCTION. A `check`
+/// that re-derived pin colours would be a second implementation of corpus index →
+/// ref resolution → selector → fingerprint compare, and a second copy of that
+/// chain is how the pin plane and the decoration plane once came to hash two
+/// different documents for one ref. There is one computer here, not three that
+/// happen to match today.
+///
+/// The label rides along from `color_label` for the same reason: the reason words
+/// (`content-drifted`, `unmounted`, `path-unseeable`, …) are spelled once, in
+/// `view`, and are never re-spelled by this verb (S3-R6/S3-R59).
+fn pin_rows(docs: &std::collections::BTreeMap<String, model::Document>) -> Vec<PinRow> {
+    view::walk::lock_pin_colors(docs)
+        .into_iter()
+        .map(|pin| PinRow {
+            src_path: pin.src_path,
+            declared_ref: pin.declared_ref,
+            label: view::walk::color_label(&pin.color),
+            color: pin.color,
+        })
+        .collect()
 }
 
 /// The parsed `check` invocation: the output format (the `--core` flag names
@@ -178,7 +225,67 @@ fn render_human(workspace: &Path, report: &CoreReport) -> String {
             claim.selector, claim.detail
         );
     }
+
+    // ── the PIN PLANE (U14) ─────────────────────────────────────────────────
+    // Two lines, always both present, because their silences mean different
+    // things: `pins:` reads the CLAIM plane (did the content drift) and
+    // `anchoring:` reads the RETRIEVAL plane (is the blob durably held). A verb
+    // that printed only the failing one would leave a reader unable to tell
+    // "assessed and clean" from "never looked".
+    let pins = &report.pins;
+    if pins.red.is_empty() && pins.grey.is_empty() {
+        let _ = writeln!(out, "  pins: green");
+    } else {
+        for pin in pins.red.iter().chain(&pins.grey) {
+            let _ = writeln!(out, "  pins: {}", pin_line(pin));
+        }
+    }
+    // The anchoring THREE-STATE as a reading (GAP A), with its POPULATION beside
+    // it (S3-R23(5)): the same empty orphan list means one thing over fifty pinned
+    // blobs and something else entirely over none, and a reading that cannot tell
+    // them apart is how coverage disappears with nothing failing.
+    if let Some(detail) = &pins.cannot_ask {
+        let _ = writeln!(out, "  anchoring: {GREY_CANNOT_ASSESS} — {detail}");
+    } else if pins.asked() == 0 {
+        let _ = writeln!(out, "  anchoring: no pinned objects");
+    } else {
+        let _ = writeln!(
+            out,
+            "  anchoring: {} {} · {} {} · {} {}",
+            pins.anchored,
+            ObjectAnchor::Anchored.word(),
+            pins.pending,
+            ObjectAnchor::PendingAnchor.word(),
+            pins.never,
+            ObjectAnchor::NeverAnchored.word()
+        );
+        if pins.pending > 0 {
+            let _ = writeln!(out, "  {PENDING_ANCHOR_TTL}");
+        }
+        for orphan in &pins.orphaned {
+            let _ = writeln!(
+                out,
+                "  anchoring: {} ORPHANED — {} objects.{} ({}) is reachable from no ref and the \
+                 file hashes to {} now, so no commit will anchor it",
+                orphan.state.word(),
+                orphan.src_path,
+                orphan.key,
+                orphan.blob_sha,
+                orphan.live
+            );
+        }
+    }
     out
+}
+
+/// One pin row as a render line: the page, the ref it declares, and the colour
+/// label its ONE computer produced. Never re-spells a reason word.
+fn pin_line(pin: &PinRow) -> String {
+    if pin.declared_ref.is_empty() {
+        format!("{} — {}", pin.label, pin.src_path)
+    } else {
+        format!("{} — {} → {}", pin.label, pin.src_path, pin.declared_ref)
+    }
 }
 
 /// The `--json` shape: the workspace plus the core object (chain breaks, the
@@ -195,6 +302,7 @@ fn to_json(workspace: &Path, report: &CoreReport) -> Value {
         .iter()
         .map(|c| json!({ "selector": c.selector, "detail": c.detail }))
         .collect();
+    let pins = pins_json(report);
 
     let JournalTrace::Assessed { chain } = &report.trace else {
         let baseline = match &report.trace {
@@ -211,14 +319,15 @@ fn to_json(workspace: &Path, report: &CoreReport) -> Value {
             "cannot_assess": {
                 "reason": GREY_CANNOT_ASSESS,
                 "detectors": ["chain", "foreign_edit"],
-                "detail": report.grey_summary().unwrap_or_default(),
+                "detail": report.trace.grey_summary().unwrap_or_default(),
                 "baseline": baseline,
             },
             "core": {
                 "chain": Value::Null,
                 "foreign_edit": Value::Null,
                 "drifted_claims": claims,
-            }
+            },
+            "pins": pins,
         });
     };
 
@@ -245,7 +354,55 @@ fn to_json(workspace: &Path, report: &CoreReport) -> Value {
             // only non-null case into `cannot_assess`).
             "foreign_edit": Value::Null,
             "drifted_claims": claims,
-        }
+        },
+        "pins": pins,
+    })
+}
+
+/// The `pins` block: the CLAIM plane's findings and the RETRIEVAL plane's
+/// anchoring reading, each carrying its own reason word verbatim (S3-R6 — distinct
+/// on the `--json` face as well as the human one).
+///
+/// `anchoring` is `null` when the object store could not be asked, and the reason
+/// is stated in `anchoring_cannot_assess` — *not assessed*, never an empty array a
+/// reader could bank as clean. The `pending_anchor` array is a reading of a plane
+/// that WAS asked, so its emptiness means something; a `null` says nothing was.
+fn pins_json(report: &CoreReport) -> Value {
+    let pins = &report.pins;
+    let row = |p: &PinRow| json!({ "src_path": p.src_path, "declared_ref": p.declared_ref, "color": p.label });
+    let orphaned: Vec<Value> = pins
+        .orphaned
+        .iter()
+        .map(|o| {
+            json!({
+                "src_path": o.src_path,
+                "key": o.key,
+                "blob_sha": o.blob_sha,
+                "state": o.state.word(),
+                "live": o.live,
+                "nudge": PENDING_ANCHOR_TTL,
+            })
+        })
+        .collect();
+    json!({
+        "red": pins.red.iter().map(row).collect::<Vec<_>>(),
+        "grey": pins.grey.iter().map(row).collect::<Vec<_>>(),
+        "anchoring": match &pins.cannot_ask {
+            Some(_) => Value::Null,
+            // The three-state READING plus its POPULATION (S3-R23(5)): an empty
+            // `orphaned` over `asked: 0` is a reading of nothing, not a clean bill.
+            None => json!({
+                "asked": pins.asked(),
+                "anchored": pins.anchored,
+                "pending_anchor": pins.pending,
+                "never_anchored": pins.never,
+                "orphaned": orphaned,
+            }),
+        },
+        "anchoring_cannot_assess": match &pins.cannot_ask {
+            Some(detail) => json!({ "reason": GREY_CANNOT_ASSESS, "detail": detail }),
+            None => Value::Null,
+        },
     })
 }
 
