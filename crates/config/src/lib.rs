@@ -8,11 +8,11 @@
 //! minted by the shipped laws, never a new one (`docs/meridian-md-schema.md`
 //! §7.1).
 //!
-//! **Never does:** bind a mount. Canonicalization at bind, the
+//! **Never does:** bind a mount *in this module*. Canonicalization at bind, the
 //! `workspace::deny_reason` ceiling, the equal-or-nested refusal, the
-//! declared-vs-bound check and the grey classes are the MOUNT TABLE's — U7's,
-//! `docs/address-grammar.md` §8. This crate produces the parsed config; U7
-//! gives it meaning. It also does not do project-local walk-up discovery: the
+//! declared-vs-bound check and the grey classes live in [`mount`] —
+//! `docs/address-grammar.md` §8. This module produces the parsed config; that
+//! one gives it meaning. It also does not do project-local walk-up discovery: the
 //! ratifying decision defers it, so the chain in [`resolve`] has exactly two
 //! rungs and no third.
 //!
@@ -34,6 +34,8 @@
 use std::path::{Path, PathBuf};
 
 use model::NodeKind;
+
+pub mod mount;
 
 /// The reserved config filename (schema §2.4). Rung 2 of the chain.
 pub const CONFIG_FILENAME: &str = "MERIDIAN.md";
@@ -280,6 +282,14 @@ pub struct MountEntry {
     /// CID-token, carried VERBATIM. Normalizing, truncating, or re-minting it
     /// would break the claim it exists to carry.
     pub pin: Option<String>,
+    /// The 1-based FILE line of this block's opening fence.
+    ///
+    /// Carried because a **bind** refusal is about one mount and must point at
+    /// it, and by then the raw bytes are gone: [`Config`] holds the parse, not
+    /// the file. §8.1a's absent-case rule already names the opening fence as
+    /// the line an author can always see, so this is that same line kept rather
+    /// than recomputed.
+    pub fence_line: usize,
 }
 
 /// One declared tool — the engine-read half of a `meridian-tool` block.
@@ -1143,6 +1153,7 @@ fn parse_mount(block: &Block, path: &Path) -> Result<(MountEntry, usize), Config
             kind,
             vault,
             pin,
+            fence_line: block.fence_line,
         },
         name_line,
     ))
