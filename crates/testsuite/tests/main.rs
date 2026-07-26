@@ -16,3 +16,4 @@ mod u4b_real_lock;
 mod walk_resolve;
 mod wire_vocab;
 mod wsfix_oracle;
+mod yaml_confinement;

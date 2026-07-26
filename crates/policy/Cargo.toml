@@ -18,9 +18,14 @@ model = { workspace = true }
 # tiny, rigid, well-typed schema — serde-derived deserialization is the fewest
 # lines that can be wrong; serde_yaml is stable, ubiquitous, and offline-present;
 # the wire boundary is trusted-local (§13), so YAML-parser CVE surface is bounded.
-# This dependency (and its libyaml transitive) must appear under `policy` ONLY in
-# `cargo tree` production edges — the workspace's single YAML decision (F3-DOMAIN
-# hand-parses mdfs_config.yaml precisely to keep it here).
+# CONFINEMENT (S3-R14(b)): this dependency (and its libyaml transitive) may appear
+# in `cargo tree` production edges under `policy` and `config` — and no other crate.
+# `config` is the second, STATED edge: user frontmatter is arbitrary YAML and schema
+# §4 requires the parser's own message, which a hand-rolled scanner cannot give.
+# (F3-DOMAIN still hand-parses mdfs_config.yaml precisely to avoid a third.)
+# ENFORCED, not asserted: `crates/testsuite/tests/yaml_confinement.rs` derives the
+# taker set from `cargo metadata` and reddens — naming the crate — when a third one
+# takes it. Amend that test in the same motion as this comment, or neither.
 serde = { workspace = true }
 serde_yaml = "0.9"
 # Content pin (§6.1 effect-style sha256): verify RulesetPin.sha256 over the
