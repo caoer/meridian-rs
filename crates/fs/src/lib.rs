@@ -110,6 +110,26 @@ pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<
 /// pairs — the shape [`domain_snapshot`] returns and [`build_corpus`] consumes.
 pub type DomainFiles = Vec<(String, Vec<u8>)>;
 
+/// Full corpus folds run by [`domain_snapshot`] in this process.
+static FOLD_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// How many full-corpus folds [`domain_snapshot`] has run in this process.
+///
+/// **An instrument, not a cache** — it counts folds, it never skips one. It is
+/// always on because a fold is milliseconds at corpus scale against one relaxed
+/// increment, and because a host's per-request fold budget is a CONTRACT (the
+/// sidecar's demand law, `sidecar::watch::observes_ring`): a budget nothing
+/// asserts regresses silently back to the per-read rescan it replaced, and a
+/// stopwatch cannot tell a fold that was skipped from a machine that was fast.
+///
+/// Process-global and monotonic: read it before and after the work under test
+/// and assert the DIFFERENCE. Tests asserting exact counts must not run
+/// concurrently with other folding work in the same process.
+#[must_use]
+pub fn fold_count() -> u64 {
+    FOLD_COUNT.load(Ordering::Relaxed)
+}
+
 /// The §12 hash-domain snapshot: every domain file's bytes (as
 /// `(workspace-relative path, raw bytes)`) plus the corpus [`model::MerkleRoot`]
 /// folded over exactly those bytes — one read, one fold, so a consumer parses
@@ -124,6 +144,7 @@ pub type DomainFiles = Vec<(String, Vec<u8>)>;
 /// # Errors
 /// I/O failure loading the domain config, traversing the root, or reading a file.
 pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::MerkleRoot)> {
+    FOLD_COUNT.fetch_add(1, Ordering::Relaxed);
     let domain = domain::Domain::load(root)?;
     let rels = hash_domain(root, &domain)?;
     let mut files = Vec::with_capacity(rels.len());
