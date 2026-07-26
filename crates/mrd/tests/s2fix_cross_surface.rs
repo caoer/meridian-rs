@@ -151,8 +151,9 @@ impl Sandbox {
         child.wait_with_output().expect("wait")
     }
 
-    /// A git-backed workspace with an `mrd init` marker. Git is real because the
-    /// `objects:` plane and the vibe-debt gauge both ask git real questions.
+    /// A git-backed workspace, declared a root by `mrd init`. Git is real
+    /// because the `objects:` plane and the vibe-debt gauge both ask git real
+    /// questions, and it is what anchors the ladder (`git-root`).
     fn workspace(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");

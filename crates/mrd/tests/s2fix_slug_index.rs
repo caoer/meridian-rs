@@ -100,8 +100,8 @@ fn a_convention_slug_lands_no_claim_token_in_the_armed_index() {
     // The live law DRIFTS to v2 — so file-truth has a real re-pin to deploy and the
     // write is a genuine convergence, never a byte-identical no-op.
     let v2 = check_md("v2-edited");
-    // Anchor the workspace at `root`. The retired `.meridian.toml` marker used
-    // to do this; a `.git` entry is the surviving structural anchor.
+    // Anchor the workspace at `root` — a `.git` entry is the ladder's
+    // structural rung.
     std::fs::create_dir_all(root.join(".git")).expect("git anchor");
     write(root, "conventions/INDEX.md", &index_v1);
     write(root, &format!("conventions/{LIVE_SLUG}/CHECK.md"), &v2);

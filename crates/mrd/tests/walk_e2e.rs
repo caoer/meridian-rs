@@ -87,7 +87,8 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
-    /// A workspace with the three-doc chain written + an `mrd init` marker.
+    /// A workspace with the three-doc chain written, declared a root by
+    /// `mrd init`.
     fn workspace_with_chain(&self, chain: &Chain) -> PathBuf {
         let ws = self.tmp.path().join("project");
         std::fs::create_dir_all(&ws).expect("mkdir");

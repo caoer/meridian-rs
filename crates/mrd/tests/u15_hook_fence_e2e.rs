@@ -1283,9 +1283,11 @@ fn install_refuses_a_submodule_naming_the_superproject() {
     );
 }
 
-/// **A root that is not a git repository at all**: marker-beats-git makes this a
-/// SUPPORTED workspace state, so the refusal names it as such rather than as a
-/// fault in the workspace.
+/// **A root that is not a git repository at all**: `MERIDIAN_WORKSPACE` anchors
+/// a non-git tree and the cwd default accepts one, so this is a SUPPORTED
+/// workspace state — the refusal names it as such rather than as a fault in the
+/// workspace. (The retired marker tier used to be the reason; the property
+/// outlived it.)
 #[test]
 fn install_refuses_a_root_that_is_not_a_git_repository() {
     let sb = sandbox();

@@ -82,12 +82,12 @@ impl Sandbox {
     }
 }
 
-/// A tier-2 (marker) workspace `ws` seeded with `files` — both `mrd` and the
-/// daemon resolve it to the same canonical directory (marker-anchored).
+/// A git-anchored workspace `ws` seeded with `files` — both `mrd` and the
+/// daemon resolve it to the same canonical directory.
 fn write_anchored_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
     let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
-    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    // Anchored by a `.git` entry — the ladder's structural rung.
     std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
     for (rel, content) in files {
         let path = ws.join(rel);
@@ -100,7 +100,8 @@ fn write_anchored_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathB
     (ws, canonical)
 }
 
-/// A bare tier-4 workspace (no marker, no git) seeded with `files`.
+/// An unanchored workspace (no git, no override) seeded with `files` — the
+/// ladder answers nothing, so it resolves as the cwd default.
 fn write_bare_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> PathBuf {
     let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
