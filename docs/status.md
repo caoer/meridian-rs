@@ -240,6 +240,53 @@ running daemon's registered ancestor, else degrades to an ephemeral,
 per-invocation store that writes nothing. Output is JSON under `--json`, a human
 table otherwise; exit codes are 0 clean / 1 findings / 2 tool failure.
 
+### `mrd hook` — the pre-commit fence (U15)
+
+`mrd hook install | uninstall | status [PATH] [--json]` installs a `pre-commit`
+hook that calls `mrd check` and rejects on its exit. `PATH` is the meridian
+workspace root and defaults to the current directory.
+
+**The hook holds zero markdown semantics — it is an adapter over the engine.**
+Refusal's legal home stays engine-side; the fence covers the one door the engine
+cannot see, the out-of-band write (a human in Obsidian, a bash edit). Nothing in
+the installed file parses a selector, reads a rev, or spells a colour word, and
+`crates/mrd/src/hook.rs`'s own test asserts that rather than promising it.
+
+**Installed per `$GIT_COMMON_DIR`, not per worktree.** N linked worktrees are N
+meridian workspaces sharing ONE `hooks/` directory, so the fence is written once
+and reads the committing worktree from git's working directory at run time — it
+bakes no path in. Installing per `--git-dir` would write N files of which git
+runs one; installing per worktree top-level would overwrite the same file N
+times.
+
+**Escapes at commit time**, both named in every refusal the fence prints:
+`MRD_HOOK_FORCE=1 git commit …` (the ratified `--force`, in the spelling a hook
+that receives no arguments can carry) and git's own `git commit --no-verify`.
+
+| The root is | `install` | Why |
+|---|---|---|
+| a clean git repository | installs, `chmod +x` | — |
+| already carrying a `pre-commit` this engine did not write | **refuses, naming the file and quoting its first line** | never silently overwrite another tool's artifact |
+| a submodule | **refuses, naming the superproject** | its hooks live at `<super>/.git/modules/<name>/hooks`, which this engine does not compute |
+| setting `core.hooksPath` | **refuses, naming the path** | git runs hooks from there; anything written here is a silent no-op — and when that path already carries a `pre-commit`, installing would write into another checkout's hook directory |
+| a workspace root that is not the worktree top-level | **refuses with teaching** | "this workspace" and "this repository" name different directories |
+| not a git repository at all | **refuses, naming it a supported state** | marker-beats-git: there is simply nowhere to install, and that is not a fault in the workspace |
+
+`uninstall` ships with the installer and removes **only** a hook carrying the
+engine's marker — a `pre-commit` it did not write is refused, byte-untouched. A
+guard with no exit is one an operator disables by deleting the tool.
+
+At commit time the hook **fails closed**: `mrd` absent from `PATH` refuses with a
+teaching message naming both escapes and the uninstall, because a commit nobody
+could vouch for is not a verified one.
+
+The install lock (`$GIT_COMMON_DIR/mrd-hook.lock`) is held across the guards and
+the write and **releases explicitly, never by fd close** (R19) — the guards fork
+`git` three times inside that critical section, and each fork transiently
+duplicates the lock fd. Proven by `crates/mrd/tests/u15_hook_lock_release.rs`,
+whose control holds the fork window open with a raw `fork(2)` child parked on
+`pause()` rather than racing for it.
+
 ## Tests
 
 `cargo test --workspace` — full suite green. The stage-2 integration branch
