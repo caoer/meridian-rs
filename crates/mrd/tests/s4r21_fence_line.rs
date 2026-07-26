@@ -155,6 +155,53 @@ fn hooks_dir(ws: &Path) -> PathBuf {
     }
 }
 
+/// The marker line's opening, as `mrd hook install` writes it. What follows the
+/// generation is prose (`— the meridian pre-commit fence.`), so both helpers
+/// below take the FIRST token after this prefix and never the rest of the line.
+const MARKER_PREFIX: &str = "# mrd-hook-fence ";
+
+/// The generation ONE installed door declares, read off the file itself — the
+/// fixture's own ground truth, never `mrd`'s reading of it.
+fn declared_version(ws: &Path, door: &str) -> Option<u32> {
+    std::fs::read_to_string(hooks_dir(ws).join(door))
+        .expect("read an installed door")
+        .lines()
+        .find_map(|line| line.strip_prefix(MARKER_PREFIX))
+        .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+}
+
+/// Rewrite ONE door's declared generation to `1`: a fence this engine wrote, at a
+/// generation older than the one it writes now.
+///
+/// **The marker LINE is found rather than this engine's number spelled.** A
+/// literal `# mrd-hook-fence 3` here would turn into a silent no-op the day
+/// `FENCE_VERSION` is bumped, and the arm reading this fixture would go on
+/// passing against a checkout that is perfectly current.
+///
+/// Only the generation changes; the rest of the line stays exactly as install
+/// wrote it, so the fixture has ONE variable.
+fn supersede_door(ws: &Path, door: &str) {
+    let path = hooks_dir(ws).join(door);
+    let body = std::fs::read_to_string(&path).expect("read an installed door");
+    let mut rewritten = String::new();
+    for line in body.lines() {
+        match line.strip_prefix(MARKER_PREFIX) {
+            Some(rest) => {
+                let tail = rest.split_once(' ').map_or("", |(_generation, tail)| tail);
+                rewritten.push_str(MARKER_PREFIX);
+                rewritten.push('1');
+                if !tail.is_empty() {
+                    rewritten.push(' ');
+                    rewritten.push_str(tail);
+                }
+            }
+            None => rewritten.push_str(line),
+        }
+        rewritten.push('\n');
+    }
+    std::fs::write(&path, rewritten).expect("write the skewed door");
+}
+
 fn write(ws: &Path, rel: &str, body: &str) {
     std::fs::write(ws.join(rel), body).expect("write fixture");
 }
@@ -421,6 +468,115 @@ fn a_foreign_hook_at_one_door_is_reported_as_foreign_from_check() {
         out.status.code(),
         sb.run(&ws, &["check"]).status.code(),
         "and the reading is stable across runs"
+    );
+}
+
+/// **A version-skewed door is `installed-superseded` on THIS face too, and the
+/// per-door line says which door is stale.**
+///
+/// The hazard is the one `hook.rs` names in its own module doc: *nothing can
+/// prompt an operator to run `mrd hook install` if the status face calls a
+/// superseded fence "installed"*. `mrd check` is a second status face, and an
+/// operator standing behind a previous generation's fence while being told they
+/// are current has no reason to refresh it.
+///
+/// The skewed door is the MIDDLE one, for the reason the partial arm gives: a
+/// render that reads door one alone sees `installed` and calls the checkout
+/// current.
+///
+/// # The count cannot carry this state, which is why the word and the door must
+/// `Coverage::fenced_doors` counts every door this engine wrote, whatever
+/// generation it declares — so this checkout reads `3 of 3` with a stale door
+/// standing in it. The count is blind to currency BY CONSTRUCTION.
+#[test]
+fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
+    let sb = sandbox();
+    let ws = sb.corpus("superseded");
+    sb.fence(&ws);
+    supersede_door(&ws, "pre-merge-commit");
+
+    // THE POSITIVE CONTROL, read off the files before any render is inspected:
+    // this fixture really does produce a version-skewed door, and exactly one.
+    // Without it, a rewrite that silently missed would leave every assert below
+    // reading `installed` off a checkout that is genuinely current.
+    let skewed = declared_version(&ws, "pre-merge-commit");
+    assert_eq!(
+        skewed,
+        Some(1),
+        "the fixture IS the assert's subject: pre-merge-commit must declare an \
+         older generation on disk"
+    );
+    for door in ["pre-commit", "pre-applypatch"] {
+        let current = declared_version(&ws, door);
+        assert!(
+            current > skewed,
+            "the control's other half — {door} must still declare the generation \
+             this engine writes, or there is no SKEW to report: {current:?} vs \
+             {skewed:?}"
+        );
+    }
+    // And the face that already holds this word agrees the state is reachable, so
+    // a red arm below names check's render rather than a broken fixture.
+    let status = sb.run(&ws, &["hook", "status", "--json"]);
+    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
+        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
+    assert_eq!(
+        status_json["state"],
+        "installed-superseded",
+        "the already-armed face reads the fixture as superseded: {}",
+        said(&status)
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let line = fence_line(&out);
+    assert!(
+        line.contains("fence: installed-superseded"),
+        "the set's word carries the skew: {line}"
+    );
+    assert!(
+        !line.contains("fence: installed —"),
+        "THE HAZARD, stated as an assert: a stale fence reported as current is \
+         the silent wrong answer this lane exists to kill: {line}"
+    );
+    assert!(
+        line.contains("3 of 3 doors"),
+        "and the count agrees with itself while the set does not — it counts \
+         doors this engine wrote, not doors that are current: {line}"
+    );
+    assert_eq!(
+        fence_doors_line(&out).as_deref(),
+        Some(
+            "  fence doors: pre-commit installed · pre-merge-commit \
+             installed-superseded · pre-applypatch installed"
+        ),
+        "THE CLAIM: the per-door line spells the stale door's own word, and a \
+         render that flattened it to `installed` fails here: {}",
+        said(&out)
+    );
+
+    // The same skew on the `--json` face — the machine reader of this surface is
+    // exactly the consumer a "current" answer would mislead.
+    let out = sb.run(&ws, &["check", "--json"]);
+    let block = fence_json(&out);
+    assert_eq!(block["state"], serde_json::json!("installed-superseded"));
+    assert_eq!(
+        block["doors"],
+        serde_json::json!([
+            { "name": "pre-commit", "state": "installed", "fence_version": 3 },
+            { "name": "pre-merge-commit", "state": "installed-superseded", "fence_version": 1 },
+            { "name": "pre-applypatch", "state": "installed", "fence_version": 3 },
+        ]),
+        "each door's own state and its own declared generation, never the asking \
+         engine's: {}",
+        said(&out)
+    );
+
+    // R40 — check REPORTS the skew and refreshes nothing. `mrd hook install` is
+    // the operator's move, and a status face that took it would be a writer.
+    assert_eq!(
+        declared_version(&ws, "pre-merge-commit"),
+        Some(1),
+        "reading a superseded fence may not rewrite it"
     );
 }
 
