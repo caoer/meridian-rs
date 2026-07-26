@@ -1,7 +1,7 @@
 //! `mrd check` — the pure READ validity verb (U2.10; d2 §3 check).
 //!
 //! ```text
-//! mrd check [--core] [--json]
+//! mrd check [--core] [--staged] [--json]
 //! ```
 //!
 //! Runs the convention-free CORE (layer 0) over the resolved workspace: date the
@@ -20,6 +20,28 @@
 //! come from `view::walk::lock_pin_colors`, the SAME call `mrd status`'s lock axis
 //! makes over the SAME corpus build, so the three planes agree by construction and
 //! not by coincidence.
+//!
+//! # THE INTERVAL THIS VERB SPANS, stated because a check is only as wide as it
+//! (S3-R29)
+//! Two intervals, both named in every answer:
+//!
+//! - **`worktree`** — the bytes on disk. Always assessed.
+//! - **`staged`** — the bytes the git INDEX carries, assessed whenever it carries
+//!   anything the worktree does not, because **that is the interval a commit
+//!   records**.
+//!
+//! **F1 — why the second one exists.** `domain_snapshot` reads the worktree; git
+//! commits the index. Forge a pinned section, `git add` it, restore the exact
+//! governed bytes to the worktree, and the shipped verb answered `chain: green /
+//! pins: green`, exit 0 — over bytes no commit would record — while
+//! `git show HEAD:<page>` came back carrying the forgery. The fence built on this
+//! verb read a true statement about the wrong interval. `git add -p`,
+//! `git commit <pathspec>`, `git stash` and any concurrent writer between
+//! `git add` and hook fire reach the same gap.
+//!
+//! The exit is **worst-of across both intervals**, and every refusal names the
+//! interval it came from: *"the bytes on your disk are fine"* and *"the bytes you
+//! are about to commit are not"* are different instructions to an operator.
 //!
 //! `--core` names layer 0 explicitly (the default today). The armed layer-1
 //! evaluation is the `check` engine surface the door mounts (U4.2) — its
@@ -72,47 +94,261 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
-    // ONE corpus build feeds BOTH planes. `mrd status` states the reason for its
-    // own two axes and it is the same one here: a second build would let the pin
-    // plane and the anchoring read describe two different corpora.
-    let docs = crate::walk_cmd::build_docs(&canonical)?;
-    let pins = pin_rows(&docs);
+    // U11/F6 — the REAL mount table, through the one loader `mrd walk` uses. A
+    // default (empty) table here is what made the cross-root pin axis answer
+    // `grey(unmounted)` for a bound root in all three of its states.
+    let mounts = crate::walk_cmd::load_mounts();
 
-    let report = check::core(&root, &docs, &[], &pins)
-        .map_err(|e| Fail::tool(format!("check core failed: {e}")))?;
+    // ONE read of the worktree, whose bytes feed the fold AND the corpus — the
+    // reason `domain_snapshot` returns both. A second read would let the two
+    // planes describe two different worktrees.
+    let domain = fs::domain::Domain::load(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
+    let (worktree_files, worktree_fold) = fs::domain_snapshot(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
+    let worktree_journal = check::journal_page(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the receipt journal: {e}")))?;
+
+    // THE SECOND INTERVAL (F1), and only when the caller asked the question it
+    // answers. `git` reports what the INDEX carries wherever it differs from the
+    // worktree; absent divergence the two intervals coincide and one pass answers
+    // both.
+    let interval = if parsed.staged {
+        staged_interval(&root, &domain, &worktree_files, &worktree_journal)
+    } else {
+        Interval::NotAsked
+    };
+
+    let worktree = assess(
+        &root,
+        &mounts,
+        worktree_files,
+        &worktree_fold.0,
+        &worktree_journal,
+    )?;
+
+    let staged = match &interval {
+        Interval::Diverges(bytes) => Some(Assessed {
+            paths: bytes.paths.clone(),
+            report: assess(
+                &root,
+                &mounts,
+                bytes.files.clone(),
+                &bytes.fold,
+                &bytes.journal,
+            )?
+            .report,
+        }),
+        _ => None,
+    };
 
     match parsed.format {
         Format::Json => {
-            let value = to_json(&canonical, &report);
+            let value = to_json(&canonical, &worktree.report, &interval, staged.as_ref());
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
-        Format::Human => print!("{}", render_human(&canonical, &report)),
+        Format::Human => print!(
+            "{}",
+            render_human(&canonical, &worktree.report, &interval, staged.as_ref())
+        ),
     }
 
-    // Worst-of: red is reported first, grey next, green last. Both refuse on the
-    // SAME leg (S3-R6: the exit code answers only "may this proceed?"; no fourth
-    // code), so the prefix is the same verb and the REASON WORD in each line is
-    // what tells a finding from an absence of evidence. Saying "found a lie" over
-    // a pending-anchor blob would be a claim wider than the evidence — nothing
-    // lied, a blob is simply held by nothing durable.
-    if report.is_red() {
-        let summary = report.red_summary().unwrap_or_default();
+    // FAIL CLOSED on an interval that was ASKED FOR and could not be read. The
+    // caller asked what a commit would record; degrading silently to the worktree
+    // answer is the F1 shape again with one more step in front of it — a true
+    // statement about the wrong bytes.
+    if let Interval::CannotAsk(detail) = &interval {
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("check refuses: {}", summary.replace('\n', "; ")),
+            message: format!(
+                "check refuses ({STAGED}): {GREY_CANNOT_ASSESS} — {detail}; the interval a \
+                 commit records could not be read, and a commit nobody could vouch for is not \
+                 a verified one"
+            ),
         });
     }
-    if let Some(grey) = report.grey_summary() {
+
+    // Worst-of ACROSS INTERVALS, then worst-of within one: red is reported first,
+    // grey next, green last. Both refuse on the SAME leg (S3-R6: the exit code
+    // answers only "may this proceed?"; no fourth code), so the prefix is the same
+    // verb and the REASON WORD in each line is what tells a finding from an
+    // absence of evidence. Saying "found a lie" over a pending-anchor blob would
+    // be a claim wider than the evidence — nothing lied, a blob is simply held by
+    // nothing durable.
+    //
+    // The STAGED interval refuses on the same leg as the worktree one and says
+    // which interval it is: a refusal a reader cannot locate is one they cannot
+    // act on, and "the bytes on your disk are fine" plus "the bytes you are about
+    // to commit are not" are different instructions.
+    let mut intervals: Vec<(&str, &CoreReport)> = vec![(WORKTREE, &worktree.report)];
+    if let Some(staged) = staged.as_ref() {
+        intervals.push((STAGED, &staged.report));
+    }
+    if let Some((label, summary)) = intervals
+        .iter()
+        .find_map(|(label, report)| report.red_summary().map(|s| (*label, s)))
+    {
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("check refuses: {}", grey.replace('\n', "; ")),
+            message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
+        });
+    }
+    if let Some((label, summary)) = intervals
+        .iter()
+        .find_map(|(label, report)| report.grey_summary().map(|s| (*label, s)))
+    {
+        return Err(Fail {
+            code: EXIT_FINDING,
+            message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
         });
     }
     Ok(())
 }
 
+/// The interval a worktree read spans — the bytes on disk.
+const WORKTREE: &str = "worktree";
+
+/// The interval a COMMIT spans — the bytes the index carries. One name for it, in
+/// the human render, the `--json` face and every refusal, so a reader who learns
+/// the word once can find it everywhere (S3-R6).
+const STAGED: &str = "staged";
+
+/// One interval's verdict, with the paths that made it a separate interval.
+struct Assessed {
+    /// The domain paths whose index bytes differ from the worktree's — empty for
+    /// the worktree interval itself.
+    paths: Vec<String>,
+    report: CoreReport,
+}
+
+/// **What was asked about the second interval, and what came back** — the state
+/// the render states and the exit fails closed on.
+///
+/// Four outcomes, each a DIFFERENT fact about this run, so none of them is
+/// rendered as another's silence (the same law the `pins:`/`anchoring:` split
+/// runs on): not asked · asked and there is no index · asked and the index adds
+/// nothing · asked and it carries other bytes.
+enum Interval {
+    /// `--staged` was not passed: the index was never read, and this answer is
+    /// about the worktree only. **Said out loud** — a reader must not take a
+    /// worktree green for a statement about their commit.
+    NotAsked,
+    /// Asked, and this workspace is not a git repository, so no index exists to
+    /// record anything. Marker-beats-git makes that a supported state, not a
+    /// degradation.
+    NoRepository,
+    /// Asked, and the index carries nothing the worktree does not — one pass
+    /// answers both intervals. **A FACT about this run**, not an absence.
+    Coincides,
+    /// Asked, and the index carries other bytes for these paths.
+    Diverges(StagedBytes),
+    /// Asked INSIDE a repository, and git could not be asked. Refuses.
+    CannotAsk(String),
+}
+
+/// The staged interval's own bytes: the overlaid snapshot, its fold, its journal,
+/// and the paths that diverge.
+struct StagedBytes {
+    paths: Vec<String>,
+    files: fs::DomainFiles,
+    fold: String,
+    journal: String,
+}
+
+/// Assess ONE interval: build its corpus, colour its pins through the one
+/// computer with the real mount table, and run the layer-0 core over ITS bytes.
+fn assess(
+    root: &fs::WorkspaceRoot,
+    mounts: &crate::walk_cmd::Mounts,
+    files: fs::DomainFiles,
+    fold: &str,
+    journal: &str,
+) -> Result<Assessed, Fail> {
+    let (_index, docs) =
+        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
+    let corpus = mounts.rooted(&docs);
+    let pins = pin_rows(&corpus, mounts.set());
+    Ok(Assessed {
+        paths: Vec::new(),
+        report: check::core_of(root, journal, fold, &docs, &pins),
+    })
+}
+
+/// **The interval the commit spans** (F1): the worktree snapshot with the INDEX's
+/// bytes overlaid, or `None` when the index carries nothing the worktree does not.
+///
+/// # Why this is not the same question as "is my worktree clean"
+/// `git` commits the index. A snapshot of the worktree is a snapshot of a
+/// different interval, and the two part company on `git add` + edit,
+/// `git add -p`, `git commit <pathspec>`, `git stash`, and any concurrent writer
+/// between `git add` and hook fire. Staging a forged file and restoring the
+/// worktree left the shipped fence reading bytes no commit would record: green,
+/// exit 0, forged bytes in history.
+///
+/// The reserved journal is handled here rather than in the fold because it is
+/// root-EXCLUDED from the hash domain by named law — its bytes never enter a
+/// merkle root, so the overlay would drop them, and a staged journal forgery
+/// would be assessed against the worktree's journal. It is the one file whose
+/// interval has to be picked out by hand.
+///
+/// A workspace that is not a git repository has ONE interval, and that is a
+/// supported state (marker-beats-git), not a degradation: there is no index, so
+/// nothing can diverge from it.
+fn staged_interval(
+    root: &fs::WorkspaceRoot,
+    domain: &fs::domain::Domain,
+    worktree_files: &fs::DomainFiles,
+    worktree_journal: &str,
+) -> Interval {
+    let repo = git::Repo::at(&root.0);
+    let divergence = match repo.staged_divergence() {
+        Ok(divergence) => divergence,
+        // No repository, no index, nothing a commit here could record.
+        Err(git::GitFail::NotARepo { .. }) => return Interval::NoRepository,
+        // Inside a repository and git could not answer. NOT the worktree answer
+        // wearing a wider label — the caller asked about the commit's interval and
+        // this run cannot speak about it.
+        Err(other) => return Interval::CannotAsk(other.to_string()),
+    };
+    if divergence.is_empty() {
+        return Interval::Coincides;
+    }
+
+    let (files, fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
+    let journal = divergence
+        .iter()
+        .find(|(rel, _)| rel == fs::domain::RESERVED_JOURNAL_PATH)
+        .map_or_else(
+            || worktree_journal.to_owned(),
+            |(_, content)| {
+                content.as_ref().map_or_else(String::new, |bytes| {
+                    String::from_utf8_lossy(bytes).into_owned()
+                })
+            },
+        );
+    let paths = divergence
+        .iter()
+        .filter(|(rel, _)| {
+            domain.contains(Path::new(rel)) || rel == fs::domain::RESERVED_JOURNAL_PATH
+        })
+        .map(|(rel, _)| rel.clone())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        // Everything that diverges is outside the hash domain and is not the
+        // journal — code, assets, a lock file. Neither interval reads those, so
+        // there is nothing here a second assessment could say.
+        return Interval::Coincides;
+    }
+    Interval::Diverges(StagedBytes {
+        paths,
+        files,
+        fold: fold.0,
+        journal,
+    })
+}
+
 /// Colour every `meridian-lock` pin in the corpus through **the one pin
-/// computer** — `view::walk::lock_pin_colors`, which is exactly what
+/// computer** — `view::walk::lock_pin_colors_rooted`, which is exactly what
 /// `mrd status`'s lock axis reads and what colours a `mrd walk` listing.
 ///
 /// This is the seam that makes the three planes agree BY CONSTRUCTION. A `check`
@@ -122,11 +358,20 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 /// different documents for one ref. There is one computer here, not three that
 /// happen to match today.
 ///
+/// **F6 — the computer was right and its INPUT was blind.** This verb handed it
+/// `lock_pin_colors(docs)`, which resolves against `MountSet::default()` and an
+/// ambient-only corpus, so on a BOUND root every cross-root pin answered
+/// `grey(unmounted)` whether its target matched, had drifted, or had been
+/// restored — three states, one answer, under the fence. The agree-by-construction
+/// structure above is what made this ONE edit rather than three: the corpus and
+/// the mount table are now the caller's to supply, and `mrd walk` supplies the
+/// same two through the same loader.
+///
 /// The label rides along from `color_label` for the same reason: the reason words
 /// (`content-drifted`, `unmounted`, `path-unseeable`, …) are spelled once, in
 /// `view`, and are never re-spelled by this verb (S3-R6/S3-R59).
-fn pin_rows(docs: &std::collections::BTreeMap<String, model::Document>) -> Vec<PinRow> {
-    view::walk::lock_pin_colors(docs)
+fn pin_rows(corpus: &model::RootedCorpus<'_>, mounts: &addr::MountSet) -> Vec<PinRow> {
+    view::walk::lock_pin_colors_rooted(corpus, mounts)
         .into_iter()
         .map(|pin| PinRow {
             src_path: pin.src_path,
@@ -142,17 +387,31 @@ fn pin_rows(docs: &std::collections::BTreeMap<String, model::Document>) -> Vec<P
 #[derive(Debug)]
 struct Check {
     format: Format,
+    /// Also assess **the interval a commit would record** — the git index (F1).
+    ///
+    /// Off by default, and that default is the honest one: outside a commit the
+    /// index is a staging area mid-edit, not a claim about anything. A governed
+    /// write that is not staged yet is the ordinary state of every working
+    /// repository, and assessing it as "what a commit records" turns *"I have
+    /// written and not staged"* into a refusal. **The pre-commit fence passes this
+    /// flag, because at that instant the index IS what is being committed.**
+    staged: bool,
 }
 
 impl Check {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut json = false;
+        let mut staged = false;
         for arg in args {
             match arg.as_str() {
                 "--json" => json = true,
                 // `--core` names layer 0 explicitly; it is the default today, so it
                 // is accepted and needs no separate branch.
                 "--core" => {}
+                // git's own word for the index, deliberately (`git diff --staged`)
+                // — one vocabulary, and never a second spelling for a concept the
+                // operator's other tool already named.
+                "--staged" => staged = true,
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -163,6 +422,7 @@ impl Check {
         }
         Ok(Check {
             format: if json { Format::Json } else { Format::Human },
+            staged,
         })
     }
 }
@@ -174,10 +434,64 @@ impl Check {
 /// the tree — with no row, or with a last receipt the live root no longer
 /// continues. Neither may borrow the word the assessed path earns, and neither may
 /// accuse: the mismatch is rendered as the evidence it is.
-fn render_human(workspace: &Path, report: &CoreReport) -> String {
+fn render_human(
+    workspace: &Path,
+    worktree: &CoreReport,
+    interval: &Interval,
+    staged: Option<&Assessed>,
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "check core {}", workspace.display());
+    let _ = writeln!(out, "  interval: {}", interval_line(interval));
+    out.push_str(&render_report(worktree));
+    if let Some(staged) = staged {
+        let _ = writeln!(
+            out,
+            "  interval: {STAGED} — the bytes a commit would record for {}",
+            staged.paths.join(", ")
+        );
+        out.push_str(&render_report(&staged.report));
+    }
+    out
+}
+
+/// **STATE THE INTERVAL WHENEVER YOU STATE THE CHECK** (S3-R29). The line is
+/// unconditional, and each of the four states says a different thing: a reader may
+/// never have to infer which bytes a verdict rested on, and *"the index agrees"* is
+/// a FACT about this run rather than an absence worth omitting.
+fn interval_line(interval: &Interval) -> String {
+    match interval {
+        Interval::NotAsked => format!(
+            "{WORKTREE} — the bytes on disk. The git INDEX was not read, so this says nothing \
+             about what a commit would record: `mrd check --staged` asks that question"
+        ),
+        Interval::NoRepository => format!(
+            "{WORKTREE} — this workspace is not a git repository, so there is no index and \
+             nothing else a commit could record"
+        ),
+        Interval::Coincides => format!(
+            "{WORKTREE} + {STAGED} — the index carries nothing the worktree does not, so one \
+             pass answers for both and this IS the interval a commit would record"
+        ),
+        Interval::CannotAsk(detail) => format!(
+            "{WORKTREE} only — {STAGED} could NOT be read ({detail}), and the refusal below is \
+             that, not a verdict about your bytes"
+        ),
+        Interval::Diverges(staged) => format!(
+            "{WORKTREE} — the bytes on disk; {} path(s) differ in the index and are assessed \
+             separately below",
+            staged.paths.len()
+        ),
+    }
+}
+
+/// One interval's verdict lines — the journal TRACE, the claims, and the pin
+/// plane. Shared by both intervals so a reader compares like with like, and so a
+/// line can never exist for one interval and not the other.
+fn render_report(report: &CoreReport) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
 
     match &report.trace {
         JournalTrace::NoBaseline => {
@@ -296,7 +610,49 @@ fn pin_line(pin: &PinRow) -> String {
 /// `cannot_assess` block carries the reason word, the detectors it covers, the
 /// detail, and the `baseline` evidence (`null` when there is no row at all).
 /// `red` stays honest: grey is not red. The assessed shape is untouched.
-fn to_json(workspace: &Path, report: &CoreReport) -> Value {
+fn to_json(
+    workspace: &Path,
+    worktree: &CoreReport,
+    interval: &Interval,
+    staged: Option<&Assessed>,
+) -> Value {
+    let mut value = interval_json(workspace, worktree);
+    // **`red` is the VERDICT, so it is worst-of across intervals** — a reader who
+    // banks the top-level flag must not be told the workspace is honest because
+    // the bytes on disk are, while the ones being committed are not. The
+    // per-interval detail stays under `core`/`pins` (worktree) and
+    // `interval.staged` — additive keys, so a consumer of the shipped shape reads
+    // exactly what it read before.
+    let refuses_staged = staged.is_some_and(|s| s.report.is_red());
+    value["red"] = Value::Bool(worktree.is_red() || refuses_staged);
+    value["interval"] = json!({
+        // The STATE, not merely the list — `asked: false` and "asked, and the
+        // index adds nothing" are different facts, and a face that spelled both
+        // as `["worktree"]` would make the first read like the second.
+        "state": match interval {
+            Interval::NotAsked => "not-asked",
+            Interval::NoRepository => "no-repository",
+            Interval::Coincides => "coincides",
+            Interval::Diverges(_) => "diverges",
+            Interval::CannotAsk(_) => GREY_CANNOT_ASSESS,
+        },
+        "spans_the_commit": matches!(interval, Interval::Coincides | Interval::NoRepository)
+            || staged.is_some(),
+        "cannot_ask_detail": match interval {
+            Interval::CannotAsk(detail) => Value::String(detail.clone()),
+            _ => Value::Null,
+        },
+        "diverged_paths": staged.map(|s| s.paths.clone()).unwrap_or_default(),
+        "staged": match staged {
+            None => Value::Null,
+            Some(staged) => interval_json(workspace, &staged.report),
+        },
+    });
+    value
+}
+
+/// One interval's verdict as the shipped `check --json` object.
+fn interval_json(workspace: &Path, report: &CoreReport) -> Value {
     let claims: Vec<Value> = report
         .drifted_claims
         .iter()
@@ -414,6 +770,22 @@ mod tests {
     fn parse_accepts_core_and_json() {
         let c = Check::parse(&["--core".to_string(), "--json".to_string()]).expect("parse");
         assert!(matches!(c.format, Format::Json));
+        assert!(
+            !c.staged,
+            "the index is read only when ASKED: a bare invocation answers about the \
+             worktree, because an unstaged governed write is the ordinary state of \
+             every working repository"
+        );
+    }
+
+    #[test]
+    fn parse_accepts_staged_and_it_is_off_by_default() {
+        let c = Check::parse(&["--staged".to_string()]).expect("parse");
+        assert!(c.staged, "the interval a commit records was asked for");
+        assert!(
+            !Check::parse(&[]).expect("parse").staged,
+            "and the default is OFF — the fence passes the flag, nothing else has to"
+        );
     }
 
     #[test]

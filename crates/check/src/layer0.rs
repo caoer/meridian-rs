@@ -176,14 +176,33 @@ pub const GREY_CANNOT_ASSESS: &str = "grey(cannot-assess)";
 /// [`io::Error`] when the journal page or the domain snapshot cannot be read.
 pub fn journal_trace(root: &WorkspaceRoot) -> io::Result<JournalTrace> {
     let page = read_journal(root)?;
-    let rows = parse_rows(&page);
     let live_root = fs::domain_snapshot(root)?.1.0;
-    match detect_baseline(&rows, &live_root) {
-        None => Ok(JournalTrace::NoBaseline),
-        Some(Err(mismatch)) => Ok(JournalTrace::StaleBaseline(mismatch)),
-        Some(Ok(())) => Ok(JournalTrace::Assessed {
+    Ok(journal_trace_of(&page, &live_root))
+}
+
+/// [`journal_trace`] over an interval whose BYTES the caller already holds: the
+/// journal page and the folded tree root of THAT interval, rather than of the
+/// worktree.
+///
+/// # Why the trace is reachable without a root (F1)
+/// The worktree and the git index are two intervals, and a pre-commit fence is
+/// asked about the second one. The dating and the chain recompute are pure
+/// functions of (journal bytes, tree root), so an interval that can produce those
+/// two facts gets the SAME verdict computer — never a second implementation of
+/// it. [`journal_trace`] is this function plus the two disk reads.
+///
+/// **Both arguments must come from ONE interval.** A journal page from the
+/// worktree dated against the index's fold is a compare between two worlds, and
+/// its answer describes neither.
+#[must_use]
+pub fn journal_trace_of(journal_page: &str, live_root: &str) -> JournalTrace {
+    let rows = parse_rows(journal_page);
+    match detect_baseline(&rows, live_root) {
+        None => JournalTrace::NoBaseline,
+        Some(Err(mismatch)) => JournalTrace::StaleBaseline(mismatch),
+        Some(Ok(())) => JournalTrace::Assessed {
             chain: check_chain(&rows),
-        }),
+        },
     }
 }
 
@@ -207,6 +226,21 @@ fn detect_baseline(rows: &[ParsedRow], live_root: &str) -> Option<Result<(), Bas
         recorded_root: last.root_after.clone(),
         live_root: live_root.to_string(),
     }))
+}
+
+/// The reserved receipt journal page's bytes as the WORKTREE carries them — the
+/// journal half of an interval, for a caller assembling one itself
+/// ([`journal_trace_of`]).
+///
+/// One owner for this path and its absent case: a caller that read the page
+/// itself would be a second reader of the same reserved location, free to
+/// disagree about whether a missing journal is an error (it is not — a genesis
+/// workspace has none).
+///
+/// # Errors
+/// [`io::Error`] when the page exists and cannot be read.
+pub fn journal_page(root: &WorkspaceRoot) -> io::Result<String> {
+    read_journal(root)
 }
 
 /// Read the reserved receipt journal page bytes, or the empty string when the

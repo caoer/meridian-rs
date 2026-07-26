@@ -74,6 +74,15 @@ const GIT: &str = "git";
 /// translated one.
 const NOT_A_REPO: &str = "not a git repository";
 
+/// One path in an interval that is not the worktree's, as
+/// [`Repo::staged_divergence`] reports it: the path, and the content a commit will
+/// record for it — `Some(bytes)`, or `None` when the commit REMOVES the path.
+///
+/// The shape, not a wrapper, so `fs::overlay_snapshot` consumes it without this
+/// std-only leaf appearing in that crate's dependency graph. One vocabulary across
+/// the seam: `None` means REMOVED on both sides of it.
+pub type StagedPath = (String, Option<Vec<u8>>);
+
 /// A handle on ONE git repository: the root to run `git -C` in, plus the git
 /// program to run.
 ///
@@ -304,6 +313,177 @@ impl Repo {
             .object_info(&[oid])?
             .first()
             .is_some_and(Option::is_some))
+    }
+
+    // -----------------------------------------------------------------------
+    // the INDEX — what a commit is about to record (F1)
+    // -----------------------------------------------------------------------
+
+    /// **What the INDEX carries, for exactly the paths where the worktree would
+    /// answer about something else** — the bytes a commit is about to record.
+    ///
+    /// Each entry is a [`StagedPath`] — a path relative to [`Repo::root`], and
+    /// what the index holds for it:
+    ///
+    /// - `Some(bytes)` — the index holds these bytes and a commit will record
+    ///   them, whatever the worktree says;
+    /// - `None` — this commit REMOVES the path, even though the worktree may
+    ///   still carry a file there (`git rm --cached`).
+    ///
+    /// Paths where the index and the worktree agree are **absent**, so the answer
+    /// is an OVERLAY: applied over a worktree read it yields the tree the commit
+    /// will record for every tracked path, and the caller's own bytes everywhere
+    /// else. An empty answer means the two intervals coincide — the caller's
+    /// worktree read already spans the commit.
+    ///
+    /// # Why this is git's question and not the filesystem's
+    /// Only git knows what the index holds — **including which index git means.**
+    /// `git commit <pathspec>` builds a TEMPORARY index and hands the hook
+    /// `GIT_INDEX_FILE`; every query here inherits that environment, so the answer
+    /// is about the index that commit will write and never about a stale
+    /// `.git/index`.
+    ///
+    /// # The bytes are the BLOB's, which is the point
+    /// `cat-file blob` returns the content git will store, so a repository with a
+    /// clean filter or eol conversion gets the bytes `git show HEAD:<path>` will
+    /// print after the commit — the interval history carries — rather than the
+    /// worktree's smudged form.
+    ///
+    /// # Unmerged paths are skipped, deliberately
+    /// A path with no stage-0 index entry is mid-merge, and git refuses to commit
+    /// with unmerged paths before any hook runs — so the fence never meets one.
+    /// Skipping leaves the caller's worktree bytes in place for a state no commit
+    /// can reach, instead of guessing which stage a merge will resolve to.
+    ///
+    /// # Errors
+    /// As [`Repo::blob_oid`].
+    pub fn staged_divergence(&self) -> Result<Vec<StagedPath>, GitFail> {
+        self.require_repo()?;
+
+        // git answers repo-relative; this handle may be rooted below the top
+        // level, and the prefix is what maps one onto the other.
+        let prefix = self.rev_parse("--show-prefix")?;
+
+        let mut candidates: Vec<String> = Vec::new();
+        // Worktree-vs-index: every path whose worktree bytes are not the index's,
+        // including one deleted from the worktree while the index still carries it.
+        candidates.extend(self.nul_paths(&["diff-files", "-z", "--name-only"], "diff-files")?);
+        // Index-vs-HEAD deletions: a path this commit REMOVES. `diff-files` cannot
+        // see it — once the entry leaves the index the worktree copy is untracked,
+        // so nothing compares it against anything.
+        if self.head_exists()? {
+            candidates.extend(self.nul_paths(
+                &[
+                    "diff-index",
+                    "--cached",
+                    "-z",
+                    "--diff-filter=D",
+                    "--name-only",
+                    "HEAD",
+                ],
+                "diff-index --cached",
+            )?);
+        }
+        candidates.sort();
+        candidates.dedup();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // git's OWN answer to "is this path in the index, and as which blob" —
+        // never inferred from a `cat-file` failure, which would read a refusal for
+        // any other reason as "this commit removes the file" and weaken the check.
+        let staged = self.index_blobs(&candidates)?;
+
+        let mut out = Vec::new();
+        for path in candidates {
+            let Some(rel) = strip_prefix(&path, &prefix) else {
+                continue; // outside this handle's root — another workspace's path
+            };
+            match staged.iter().find(|(p, _)| *p == path) {
+                Some((_, oid)) => out.push((rel, Some(self.blob_bytes(oid)?))),
+                None => out.push((rel, None)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `HEAD` resolves — false on an unborn branch, where nothing can be
+    /// removed from a commit that has no parent.
+    fn head_exists(&self) -> Result<bool, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(["rev-parse", "--verify", "--quiet", "HEAD"]);
+        let out = cmd.output().map_err(|source| GitFail::Spawn {
+            program: self.program.clone(),
+            source,
+        })?;
+        Ok(out.status.success())
+    }
+
+    /// The stage-0 `(repo-relative path, blob oid)` index entries among `paths`.
+    /// `:(top)` makes each pathspec repo-root-relative, so this answers the same
+    /// way from a nested root as from the top level.
+    fn index_blobs(&self, paths: &[String]) -> Result<Vec<(String, String)>, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(["ls-files", "-s", "-z", "--"]);
+        for path in paths {
+            cmd.arg(format!(":(top){path}"));
+        }
+        let stdout = self.run(cmd, "ls-files -s")?;
+        let mut out = Vec::new();
+        for record in stdout.split(|b| *b == 0) {
+            if record.is_empty() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(record);
+            // `<mode> SP <oid> SP <stage> TAB <path>`
+            let Some((meta, path)) = text.split_once('\t') else {
+                continue;
+            };
+            let mut fields = meta.split(' ');
+            let (Some(_mode), Some(oid), Some(stage)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if stage != "0" {
+                continue; // unmerged — see the doc comment on `staged_divergence`
+            }
+            if !is_oid(oid) {
+                return Err(GitFail::Unexpected {
+                    what: "ls-files -s".to_owned(),
+                    detail: format!("index entry oid is not an object id: {oid:?}"),
+                });
+            }
+            out.push((path.to_owned(), oid.to_ascii_lowercase()));
+        }
+        Ok(out)
+    }
+
+    /// One blob's raw bytes, by oid.
+    fn blob_bytes(&self, oid: &str) -> Result<Vec<u8>, GitFail> {
+        if !is_oid(oid) {
+            return Err(GitFail::BadOid {
+                oid: oid.to_owned(),
+            });
+        }
+        let mut cmd = self.command();
+        cmd.args(["cat-file", "blob", oid]);
+        self.run(cmd, "cat-file blob")
+    }
+
+    /// A NUL-separated `--name-only` answer as repo-relative paths. `-z` is not
+    /// optional: without it git quotes and escapes unusual paths, and a quoted
+    /// path matches no index entry.
+    fn nul_paths(&self, args: &[&str], what: &str) -> Result<Vec<String>, GitFail> {
+        let mut cmd = self.command();
+        cmd.args(args);
+        let stdout = self.run(cmd, what)?;
+        Ok(stdout
+            .split(|b| *b == 0)
+            .filter(|r| !r.is_empty())
+            .map(|r| String::from_utf8_lossy(r).into_owned())
+            .collect())
     }
 
     /// The **common** git directory — `git rev-parse --git-common-dir`, made
@@ -711,6 +891,19 @@ fn parse_batch_line(line: &str) -> Result<Option<ObjectInfo>, GitFail> {
 #[must_use]
 pub fn is_oid(text: &str) -> bool {
     matches!(text.len(), 40 | 64) && text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A repo-relative path as a path relative to a root whose own repo-relative
+/// prefix is `prefix` (git's `--show-prefix`, empty at the top level).
+///
+/// `None` when the path lies OUTSIDE that root: a repository holding two
+/// workspaces answers about both, and a path belonging to the other one may not
+/// silently acquire this root's keys.
+fn strip_prefix(repo_relative: &str, prefix: &str) -> Option<String> {
+    if prefix.is_empty() {
+        return Some(repo_relative.to_owned());
+    }
+    repo_relative.strip_prefix(prefix).map(ToOwned::to_owned)
 }
 
 /// The git program a bare [`Repo::at`] handle runs, for a caller that wants to

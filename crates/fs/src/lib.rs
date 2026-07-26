@@ -139,6 +139,67 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
     Ok((files, folded))
 }
 
+/// [`domain_snapshot`] over a DIFFERENT INTERVAL: the worktree snapshot with an
+/// overlay of the bytes another interval carries, folded by the same domain
+/// filter and the same fold.
+///
+/// # Why this exists — a byte check is only as wide as the interval it spans
+/// [`domain_snapshot`] reads the WORKTREE. A pre-commit fence is asked about the
+/// INDEX, and the two are different intervals: staging a forged file and then
+/// restoring the worktree leaves a snapshot that describes bytes no commit will
+/// record, and a check over it cannot speak about what is being committed. The
+/// overlay is how a caller that HAS the other interval's bytes folds them
+/// through the one fold instead of a second one of its own.
+///
+/// `overlay` is `(workspace-relative path, content)`: `Some(bytes)` replaces or
+/// adds a file, `None` removes one. Entries outside the hash domain are ignored
+/// here — they are not hashed in either interval — so a caller may pass whatever
+/// its producer reported without filtering it first. **The reserved journal is
+/// one of them** (root-excluded by named law): an interval's journal bytes are
+/// read from the same overlay by the caller, never from this fold.
+///
+/// # Ordering is the fold's correctness, not a detail
+/// The files are re-keyed by [`PathBuf`] so the emitted order is byte-for-byte
+/// the order [`walk`] produces (it sorts `PathBuf`s, and so does the map). A
+/// snapshot folded in any other order would hash the same content to a different
+/// root, and every baseline compare against it would refuse a tree that is
+/// actually current.
+#[must_use]
+pub fn overlay_snapshot(
+    worktree: &DomainFiles,
+    overlay: &[(String, Option<Vec<u8>>)],
+    domain: &domain::Domain,
+) -> (DomainFiles, model::MerkleRoot) {
+    let mut keyed: BTreeMap<PathBuf, Vec<u8>> = worktree
+        .iter()
+        .map(|(rel, bytes)| (PathBuf::from(rel), bytes.clone()))
+        .collect();
+    for (rel, content) in overlay {
+        let path = PathBuf::from(rel);
+        if !domain.contains(&path) {
+            continue;
+        }
+        match content {
+            Some(bytes) => {
+                keyed.insert(path, bytes.clone());
+            }
+            None => {
+                keyed.remove(&path);
+            }
+        }
+    }
+    let files: DomainFiles = keyed
+        .into_iter()
+        .map(|(path, bytes)| (path.to_string_lossy().replace('\\', "/"), bytes))
+        .collect();
+    let entries: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    let folded = model::merkle_root(&entries, domain.version());
+    (files, folded)
+}
+
 /// Parse a [`domain_snapshot`] into the corpus name index + document map — the
 /// EXPENSIVE half of a resident rebuild, and the only parser. Non-UTF-8 content
 /// is refused, never lossy-decoded (§8 row 1 — the same refusal [`load`] makes):
