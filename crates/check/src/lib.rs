@@ -8,16 +8,22 @@
 //! receipt, or spending a cap. Two layers, split by whether a rules pack is armed:
 //!
 //! - **Layer 0 — convention-free core** ([`layer0`]). Three pack-free reads:
-//!   1. **chain recompute** — parse the reserved receipt journal and recompute
-//!      chain continuity (the U2.1 [`receipt::journal::check_chain`] primitive,
-//!      mounted here end-to-end); a spliced/forged row reddens with a row cite.
-//!   2. **claims realised** — observe each claim against the current tree and
+//!   1. **the baseline check** — last-receipt-vs-live: the live tree root must
+//!      equal the last receipt's recorded `root_after`. When there is no row, or
+//!      the roots differ, the journal cannot date the tree and the TRACE is grey
+//!      (`cannot-assess`) — it claims nothing rather than claiming wrongly.
+//!   2. **chain recompute** — past that gate, parse the reserved receipt journal
+//!      and recompute chain continuity (the U2.1
+//!      [`receipt::journal::check_chain`] primitive, mounted here end-to-end); a
+//!      spliced/forged row reddens with a row cite.
+//!   3. **claims realised** — observe each claim against the current tree and
 //!      report the drifted ones (the realise engine's pure detection, run here
 //!      read-only — no apply, no cap).
-//!   3. **journal TRACE (`foreign_edit`)** — last-receipt-vs-live: the live tree
-//!      root must continue the last receipt's recorded `root_after`; when it does
-//!      not, an out-of-writer edit landed with no receipt, and check reddens
-//!      `foreign_edit` (a finding, never a door refusal — refusal-amendment row).
+//!
+//!   The historical `foreign_edit` RED — "an out-of-writer edit landed with no
+//!   receipt" — is withdrawn to the grey above (S3-R8): a governed splice advances
+//!   the tree root and writes no journal row, so it leaves evidence identical to
+//!   the edit that finding was accusing. The interim reports what it can prove.
 //!
 //! - **Layer 1 — armed conventions read-only** ([`layer1`]). Each armed
 //!   convention's `check_change` runs over the change through the U1.3 loader —
@@ -37,26 +43,49 @@ pub mod layer1;
 
 use fs::WorkspaceRoot;
 
-pub use layer0::{ClaimFinding, ForeignEdit, JournalTrace, claims_realised, journal_trace};
+pub use layer0::{
+    BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace, NO_BASELINE_DETAIL,
+    claims_realised, journal_trace,
+};
 pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
 
 /// The layer-0 (convention-free core) verdict over a workspace: the journal
-/// TRACE (chain continuity + the `foreign_edit` detector) and the claims-realised
-/// findings. Green ⇔ the chain is continuous, no foreign edit, and every claim
-/// converged.
+/// TRACE (the baseline check, then chain continuity) and the claims-realised
+/// findings. Green ⇔ the journal dated the tree, the chain is continuous, and
+/// every claim converged. With no baseline, or a baseline the journal cannot show
+/// is current, the TRACE is grey ([`CoreReport::cannot_assess`]) — never green,
+/// because nothing was assessed.
 #[derive(Debug)]
 pub struct CoreReport {
-    /// The journal TRACE: chain recompute + the `foreign_edit` detector.
+    /// The journal TRACE: the baseline check, then the chain recompute.
     pub trace: JournalTrace,
     /// The claims whose observation drifted (not realised) — empty ⇔ all realised.
     pub drifted_claims: Vec<ClaimFinding>,
 }
 
 impl CoreReport {
-    /// The core found a lie: a broken chain, a foreign edit, or a drifted claim.
+    /// The core found a lie: a broken chain read against a current baseline, or a
+    /// drifted claim.
     #[must_use]
     pub fn is_red(&self) -> bool {
         self.trace.is_red() || !self.drifted_claims.is_empty()
+    }
+
+    /// The core could not assess the journal detectors: no baseline, or one it
+    /// cannot show is current, so their silence carries no evidence (S3-R5,
+    /// S3-R8). Grey sits above green and below red in the worst-of order — a
+    /// report can be grey and red at once (a drifted claim on an undatable
+    /// journal), and red is what it is called then.
+    #[must_use]
+    pub fn cannot_assess(&self) -> bool {
+        self.trace.cannot_assess()
+    }
+
+    /// The grey render — what could not be assessed and why — or `None` when the
+    /// core had the evidence to answer.
+    #[must_use]
+    pub fn grey_summary(&self) -> Option<String> {
+        self.trace.grey_summary()
     }
 
     /// A red render naming every core finding, or `None` when the core is green.
@@ -81,8 +110,9 @@ impl CoreReport {
 }
 
 /// Run the convention-free core (layer 0) over a workspace: recompute the journal
-/// TRACE (chain + `foreign_edit`) and check every claim realised. Reads the
-/// reserved journal page and folds the live tree merkle — no write, no cap.
+/// TRACE (the baseline check, then the chain) and check every claim realised.
+/// Reads the reserved journal page and folds the live tree merkle — no write, no
+/// cap.
 ///
 /// # Errors
 /// [`io::Error`](std::io::Error) if the journal page or the tree snapshot cannot

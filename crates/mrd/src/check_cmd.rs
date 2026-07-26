@@ -4,25 +4,30 @@
 //! mrd check [--core] [--json]
 //! ```
 //!
-//! Runs the convention-free CORE (layer 0) over the resolved workspace: recompute the
-//! receipt journal's chain continuity and the `foreign_edit` trace
-//! (last-receipt-vs-live). `status = freshness, check = validity` — this answers
-//! "what lies?", writing nothing and minting no receipt.
+//! Runs the convention-free CORE (layer 0) over the resolved workspace: date the
+//! receipt journal against the live tree (last-receipt-vs-live) and, when that
+//! holds, recompute the journal's chain continuity. `status = freshness, check =
+//! validity` — this answers "what lies?", writing nothing and minting no receipt.
 //!
 //! `--core` names layer 0 explicitly (the default today). The armed layer-1
 //! evaluation is the `check` engine surface the door mounts (U4.2) — its
 //! change-framing over a whole tree lands with that door, not this verb.
 //!
 //! Read-only. Exit triad (§4 preamble):
-//! - **0** — green: the chain is continuous and no foreign edit.
-//! - **1** — a finding: a broken journal chain (cites the row) or a `foreign_edit`
-//!   (an out-of-writer edit). A check finding, never a door refusal
-//!   (refusal-amendment).
+//! - **0** — green: the journal dates the live tree and its chain is continuous.
+//! - **1** — a finding: a broken journal chain (cites the row). A check finding,
+//!   never a door refusal (refusal-amendment). **Grey rides this leg too** (S3-R5
+//!   and S3-R8, spelled by S3-R6): when the journal cannot date the tree — no rows,
+//!   or a last receipt the live tree no longer matches — the verb refuses
+//!   `grey(cannot-assess)`. Unknown is not clean, and a hook that rejects on
+//!   non-zero must reject what nobody could vouch for. The triad stays CLOSED: no
+//!   fourth code. The exit answers "may this proceed?" (red and grey both say no);
+//!   the reason word, distinct on both faces, says why.
 //! - **2** — bad invocation, or an unreadable workspace / journal.
 
 use std::path::Path;
 
-use check::CoreReport;
+use check::{CoreReport, GREY_CANNOT_ASSESS, JournalTrace};
 use serde_json::{Value, json};
 
 use crate::{Fail, Format, current_dir};
@@ -72,6 +77,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             message: format!("check found a lie: {}", summary.replace('\n', "; ")),
         });
     }
+    // Worst-of: red is reported first, grey next, green last. Grey is not a lie —
+    // it is the absence of the evidence a green would have to rest on. It refuses
+    // on the SAME leg as a finding (S3-R6: the exit code answers only "may this
+    // proceed?"), and the reason word is what tells the two apart.
+    if let Some(grey) = report.grey_summary() {
+        return Err(Fail {
+            code: EXIT_FINDING,
+            message: format!("check refuses {GREY_CANNOT_ASSESS}: {grey}"),
+        });
+    }
     Ok(())
 }
 
@@ -107,27 +122,50 @@ impl Check {
 
 /// Render the core verdict as a human block: the header, the chain line, the
 /// `foreign_edit` line, and one line per drifted claim (none at the CLI today).
+///
+/// Both detector lines render `grey(cannot-assess)` when the journal cannot date
+/// the tree — with no row, or with a last receipt the live root no longer
+/// continues. Neither may borrow the word the assessed path earns, and neither may
+/// accuse: the mismatch is rendered as the evidence it is.
 fn render_human(workspace: &Path, report: &CoreReport) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(out, "check core {}", workspace.display());
 
-    if let Some(summary) = report.trace.chain.red_summary() {
-        let _ = writeln!(out, "  chain: RED — {summary}");
-    } else {
-        let _ = writeln!(out, "  chain: green");
-    }
-
-    match &report.trace.foreign_edit {
-        Some(fe) => {
+    match &report.trace {
+        JournalTrace::NoBaseline => {
             let _ = writeln!(
                 out,
-                "  foreign_edit: RED — tree root {} does not continue the last receipt ^{} \
-                 (recorded root_after={})",
-                fe.live_root, fe.last_receipt, fe.recorded_root
+                "  chain: {GREY_CANNOT_ASSESS} — the receipt journal carries no row, so there \
+                 is no chain to recompute"
+            );
+            let _ = writeln!(
+                out,
+                "  foreign_edit: {GREY_CANNOT_ASSESS} — the receipt journal carries no last \
+                 receipt to attribute the live tree against"
             );
         }
-        None => {
+        JournalTrace::StaleBaseline(m) => {
+            let _ = writeln!(
+                out,
+                "  chain: {GREY_CANNOT_ASSESS} — the journal's last receipt ^{} does not account \
+                 for the live tree, so its rows cannot be read against it",
+                m.last_receipt
+            );
+            let _ = writeln!(
+                out,
+                "  foreign_edit: {GREY_CANNOT_ASSESS} — tree root {} does not continue the last \
+                 receipt ^{} (recorded root_after={}); a governed splice moves the root and \
+                 journals no row, so this is NOT distinguishable from an out-of-writer edit",
+                m.live_root, m.last_receipt, m.recorded_root
+            );
+        }
+        JournalTrace::Assessed { chain } => {
+            if let Some(summary) = chain.red_summary() {
+                let _ = writeln!(out, "  chain: RED — {summary}");
+            } else {
+                let _ = writeln!(out, "  chain: green");
+            }
             let _ = writeln!(out, "  foreign_edit: none");
         }
     }
@@ -144,10 +182,46 @@ fn render_human(workspace: &Path, report: &CoreReport) -> String {
 
 /// The `--json` shape: the workspace plus the core object (chain breaks, the
 /// `foreign_edit`, the drifted claims) and the top-level `red` verdict.
+///
+/// When the journal cannot date the tree, both journal detectors are `null` —
+/// *not assessed*, never a `{"green": true}` a reader could bank on — and a
+/// `cannot_assess` block carries the reason word, the detectors it covers, the
+/// detail, and the `baseline` evidence (`null` when there is no row at all).
+/// `red` stays honest: grey is not red. The assessed shape is untouched.
 fn to_json(workspace: &Path, report: &CoreReport) -> Value {
-    let breaks: Vec<Value> = report
-        .trace
-        .chain
+    let claims: Vec<Value> = report
+        .drifted_claims
+        .iter()
+        .map(|c| json!({ "selector": c.selector, "detail": c.detail }))
+        .collect();
+
+    let JournalTrace::Assessed { chain } = &report.trace else {
+        let baseline = match &report.trace {
+            JournalTrace::StaleBaseline(m) => json!({
+                "last_receipt": m.last_receipt,
+                "recorded_root": m.recorded_root,
+                "live_root": m.live_root,
+            }),
+            _ => Value::Null,
+        };
+        return json!({
+            "workspace": workspace.display().to_string(),
+            "red": report.is_red(),
+            "cannot_assess": {
+                "reason": GREY_CANNOT_ASSESS,
+                "detectors": ["chain", "foreign_edit"],
+                "detail": report.grey_summary().unwrap_or_default(),
+                "baseline": baseline,
+            },
+            "core": {
+                "chain": Value::Null,
+                "foreign_edit": Value::Null,
+                "drifted_claims": claims,
+            }
+        });
+    };
+
+    let breaks: Vec<Value> = chain
         .breaks
         .iter()
         .map(|b| {
@@ -159,24 +233,16 @@ fn to_json(workspace: &Path, report: &CoreReport) -> Value {
             })
         })
         .collect();
-    let foreign_edit = report.trace.foreign_edit.as_ref().map(|fe| {
-        json!({
-            "last_receipt": fe.last_receipt,
-            "recorded_root": fe.recorded_root,
-            "live_root": fe.live_root,
-        })
-    });
-    let claims: Vec<Value> = report
-        .drifted_claims
-        .iter()
-        .map(|c| json!({ "selector": c.selector, "detail": c.detail }))
-        .collect();
     json!({
         "workspace": workspace.display().to_string(),
         "red": report.is_red(),
         "core": {
-            "chain": { "green": report.trace.chain.is_green(), "breaks": breaks },
-            "foreign_edit": foreign_edit,
+            "chain": { "green": chain.is_green(), "breaks": breaks },
+            // Assessed ⇔ the last receipt accounts for the live tree, so this key
+            // is null by construction here. It stays in the shape: an absent field
+            // reads as "not checked", and this one WAS checked (S3-R8 moved its
+            // only non-null case into `cannot_assess`).
+            "foreign_edit": Value::Null,
             "drifted_claims": claims,
         }
     })
