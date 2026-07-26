@@ -28,7 +28,9 @@
 
 use std::ops::Range;
 
-use model::{Document, EditKind, MerkleRoot, PutAt, SpliceRequest, Target, ValidatedBatch};
+use model::{
+    CandidateDocument, Document, EditKind, MerkleRoot, PutAt, SpliceRequest, Target, ValidatedBatch,
+};
 
 use crate::executor::ExecError;
 
@@ -36,13 +38,8 @@ use crate::executor::ExecError;
 /// the pre-image and reparsed. The SAME bytes `fs::apply_batch` writes, so every
 /// judgment downstream (this strip, the lock artifact guard, the armed gate, the
 /// post-apply revs) reads one candidate with one spelling.
-pub(crate) fn candidate(doc: &Document, sealed: &ValidatedBatch) -> Document {
-    let mut raw = doc.raw.clone();
-    for edit in sealed.edits.iter().rev() {
-        raw.replace_range(edit.span.clone(), &edit.text);
-    }
-    let nodes = syntax::parse(&raw);
-    model::build(raw, nodes)
+pub(crate) fn candidate(page: &str, doc: &Document, sealed: &ValidatedBatch) -> CandidateDocument {
+    model::candidate_of_batch(page, &doc.raw, sealed)
 }
 
 /// One `@fp` token run in the candidate, classified by WHO put it there.
@@ -207,11 +204,11 @@ pub(crate) fn strip_candidate(
     live_root: &MerkleRoot,
     batch: &mut SpliceRequest,
     sealed: &mut ValidatedBatch,
-    after_doc: &mut Document,
+    after_doc: &mut CandidateDocument,
 ) -> Result<(), ExecError> {
     let mut per_edit: Vec<Vec<Range<usize>>> = vec![Vec::new(); batch.edits.len()];
     let mut introduced = 0usize;
-    for origin in classify(doc, after_doc, sealed, before_facts, page)? {
+    for origin in classify(doc, after_doc.document(), sealed, before_facts, page)? {
         if let FpOrigin::Introduced { edit, local } = origin {
             introduced += 1;
             per_edit
@@ -275,12 +272,12 @@ pub(crate) fn strip_candidate(
             });
         }
     };
-    *after_doc = candidate(doc, sealed);
+    *after_doc = candidate(page, doc, sealed);
 
     // THE ASSERTION (R32 (1)'s wording): this write INTRODUCES no token. Live on
     // the real apply, not test-only — a door that reaches these bytes without
     // passing the strip refuses here instead of landing silently.
-    if classify(doc, after_doc, sealed, before_facts, page)?
+    if classify(doc, after_doc.document(), sealed, before_facts, page)?
         .iter()
         .any(|o| matches!(o, FpOrigin::Introduced { .. }))
     {
@@ -343,15 +340,15 @@ mod tests {
         else {
             panic!("the batch validates — only the claim it composes is the question");
         };
-        let after = candidate(&doc, &sealed);
+        let after = candidate("page.md", &doc, &sealed);
         assert_eq!(
-            syntax::fp_removals(&after.raw).len(),
+            syntax::fp_removals(after.raw()).len(),
             1,
             "the candidate DOES carry a claim token: {}",
-            after.raw
+            after.raw()
         );
         let before_facts: Vec<Target> = vec![model::resolve(&doc, &plan_ref()).unwrap()];
-        let refused = classify(&doc, &after, &sealed, &before_facts, "page.md");
+        let refused = classify(&doc, after.document(), &sealed, &before_facts, "page.md");
         let cause = refused.expect_err("a composed claim refuses").to_string();
         assert!(
             cause.contains("COMPOSE"),
@@ -391,9 +388,9 @@ mod tests {
         else {
             panic!("the batch validates");
         };
-        let after = candidate(&doc, &sealed);
+        let after = candidate("page.md", &doc, &sealed);
         let before_facts: Vec<Target> = vec![model::resolve(&doc, &sub).unwrap()];
-        let origins = classify(&doc, &after, &sealed, &before_facts, "page.md")
+        let origins = classify(&doc, after.document(), &sealed, &before_facts, "page.md")
             .expect("an unrelated edit on a damaged page classifies");
         assert!(
             matches!(origins.as_slice(), [FpOrigin::Retained]),
