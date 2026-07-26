@@ -234,8 +234,11 @@ pub fn render_markdown(report: &RunReport, claims: &[Claim]) -> String {
         "| claim | metric | baseline | gate | measured | verdict | note |"
     );
     let _ = writeln!(md, "|---|---|---|---|---|---|---|");
+    let mut tally: BTreeMap<&'static str, usize> = BTreeMap::new();
     for claim in claims {
         let verdict = report.verdicts.iter().find(|v| v.claim_id == claim.id);
+        let rendered = verdict.map_or("UNTESTED", |v| verdict_str(v.verdict));
+        *tally.entry(rendered).or_default() += 1;
         let _ = writeln!(
             md,
             "| `{}` | {} | {} | {} | {} | {} | {} |",
@@ -244,10 +247,24 @@ pub fn render_markdown(report: &RunReport, claims: &[Claim]) -> String {
             fmt_opt(claim.baseline),
             gate_cell(claim),
             fmt_opt(verdict.and_then(|v| v.measured)),
-            verdict.map_or("UNTESTED", |v| verdict_str(v.verdict)),
+            rendered,
             claim.note.as_deref().unwrap_or(""),
         );
     }
+    // The tally is DERIVED from the rows above and names its own population, so
+    // a reader (or a doc quoting this file) can see WHAT it counted. A tally that
+    // does not say how many claims it covered reads the same whether it covered
+    // all of them or a subset — which is how ten rows once sat in no tally at all.
+    let _ = writeln!(
+        md,
+        "\n**Tally:** {} — over **{} claims registered** in `claims.toml` at this run.",
+        tally
+            .iter()
+            .map(|(verdict, n)| format!("{n} {verdict}"))
+            .collect::<Vec<_>>()
+            .join(" · "),
+        claims.len(),
+    );
     if !report.measurements.is_empty() {
         let _ = writeln!(md, "\n## Latency distributions (hdrhistogram path, µs)\n");
         let _ = writeln!(
