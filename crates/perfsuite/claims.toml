@@ -55,20 +55,20 @@ note = "rung 1; the cold-edit path Go feels per keystroke-scale change"
 [[claim]]
 id = "assemble.p99.file"
 title = "Model tree assembly p99 (dialect stream → governed tree)"
-metric = "ms"
+metric = "us"
 direction = "lower"
 harness = "benches/assemble.rs"
 recipe = "vault-2026 seed=1 files=2000"
-note = "rung 1 (model::build); baseline TBD on first fleet run"
+note = "LIVE (model::build landed 730c37b7/M2-BUILD): hdr p99 of one build over the parsed corpus, parse+clone outside the timed window. Metric is us because the hdr path stages percentile_us and the join is unit-blind. No baseline yet — the first fleet run establishes it"
 
 [[claim]]
 id = "project.p99.file"
 title = "wire-map projection p99 (model → wire nodes + prefix)"
-metric = "ms"
+metric = "us"
 direction = "lower"
 harness = "benches/project.rs"
 recipe = "vault-2026 seed=1 files=2000"
-note = "rung 1 (wire_map::project); baseline TBD on first fleet run"
+note = "UNTESTED by dependency, not by dormancy: wire_map::project landed 8883e5ca/M2-PROJECT, but perfsuite has no wire-map dev-dep — wiring benches/project.rs is a stage-4 card. Registers the gate; never a fabricated PASS. Stage as us when wired"
 
 [[claim]]
 id = "roundtrip.op.p99"
