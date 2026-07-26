@@ -173,6 +173,41 @@ fn to_json(
     })
 }
 
+/// The human face's marker for a leg that is absent **by construction**.
+///
+/// **Reused, not minted (S3-R49).** The existing set was enumerated before a
+/// spelling was proposed. **The unit counted is a Rust STRING LITERAL used as a
+/// render filler — not a prose occurrence** (S3-R74), and the count is taken
+/// **at `f21164c3`, this unit's base, over `crates/`**, because after this
+/// commit the same command returns 3 more and they are all this unit's own:
+///
+/// ```text
+/// git grep -n '"(none)"' f21164c3 -- 'crates/*.rs'    # 6
+/// git grep -n '"—"'      f21164c3 -- 'crates/*.rs'    # 5
+/// ```
+///
+/// - **`(none)` — 6**, every one filling a **labelled scalar**: `as_of:  (none)`
+///   (`view_status.rs:174`), the `fingerprint_attempted` fallback
+///   (`view_status.rs:183`), `as_of=`/`live=` in the freshness banner
+///   (`sql.rs:963`, `:969`, `:977`), and an empty rev list (`test_cmd.rs:819`).
+/// - **`—` — 5**, every one a **markdown table cell**: the scenario table
+///   (`test_cmd.rs:767`, `:778`), the history table (`history_cmd.rs:573`), and
+///   `fmt_opt`/`gate_cell` (`perfsuite/src/report.rs:198`, `:208`).
+/// - **`-` — 1**, a walk row's rev (`walk_cmd.rs:345`).
+///
+/// **No collision:** none of them spells this leg today, because today this leg
+/// has no spelling at all.
+///
+/// `(none)` is the one taken because it is the spelling this cell's SHAPE
+/// already uses: `vault:{value}` is a labelled scalar in a whitespace row, which
+/// is every `(none)` site and no `—` site. One state gets one spelling, and the
+/// spelling that already exists wins.
+///
+/// It stays on this face only. `--json` states the same fact as `null` at a
+/// present key, which is the machine's statement and needs no marker; a client
+/// string-comparing `vault` would read this one as a vault actually named it.
+const ABSENT_LEG: &str = "(none)";
+
 fn render_human(
     resolution: &config::Resolution,
     table: &config::mount::MountTable,
@@ -230,9 +265,28 @@ fn render_human(
         {
             let _ = write!(out, "  -> {}", canonical.display());
         }
-        if let Some(vault) = m.vault() {
-            let _ = write!(out, "  vault:{vault}");
-        }
+        // The vault leg is printed ALWAYS, with the marker when it is absent.
+        //
+        // This is the ONE structurally-partial axis of criterion 2's three-way
+        // map: `Mount::vault` is `Some` iff `kind: vault`, because the parser
+        // REFUSES a `vault:` line on a `git-folder` entry. A git-folder root's
+        // vault name is therefore not missing — it cannot exist, and the
+        // criterion asks this face to say which of the two it is looking at.
+        //
+        // Dropping the cell could not say that: `archive  git-folder  /…  bound`
+        // is byte-identical to what a build that lost the vault name between the
+        // parser and this line would print. **A blank cell is a dropped value**,
+        // and the reader is the one asked to guess — U6's byte-identity lesson,
+        // at the row level.
+        //
+        // The other two conditional cells are NOT this class and stay
+        // conditional. `-> canonical` is suppressed when it EQUALS the declared
+        // path (an equality, not an absence), and when it is genuinely `None`
+        // the row already carries `grey(path-unseeable)` with its teaching
+        // detail — a marker there would be a second spelling of one fact.
+        // `pin:` is legal on BOTH kinds, so its absence is an operator's choice
+        // rather than a property of the root, and it is not a leg of the map.
+        let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");
         }
