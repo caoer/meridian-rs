@@ -1,0 +1,49 @@
+[package]
+name = "config"
+description = "The MERIDIAN.md plane: the one entry point parsed as content (a rev and a fingerprint like any page), fail-loud with no partial mount table"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The document tree, the file_rev law (`blake3(bytes)[:16]`), and the
+# fingerprint plane. `MERIDIAN.md` is parsed by the engine's own parser — that
+# is what "config is content" means — so this crate is downstream of `model`
+# and mints no rev law of its own (schema §7.1).
+model = { workspace = true }
+syntax = { workspace = true }
+# The reserved `meridian-*` block-language namespace predicate
+# (`lock::is_meridian_lang`). ONE predicate for every engine block, never an
+# enumerated list (decision #8 §1) — this crate reuses it rather than growing a
+# second spelling of the namespace.
+lock = { workspace = true }
+# The frontmatter is USER-authored YAML carrying arbitrary unknown keys
+# (Obsidian properties: flow sequences, block sequences), and schema §4 requires
+# `frontmatter-unparseable` to carry "the parser's own message". A hand-rolled
+# `key: value` scanner reads `tags: [config, meridian` as a valid string and
+# never notices — the exact implementation the pack's `frontmatter-unparseable`
+# case exists to kill. So this crate takes the workspace's already-decided YAML
+# library.
+#
+# DEVIATION, STATED not absorbed: `crates/policy/Cargo.toml` says serde_yaml
+# "must appear under `policy` ONLY in `cargo tree` production edges". This is
+# the second production edge. No NEW external crate enters the graph and the
+# lockfile is unchanged (`cargo deny` unchanged) — what changes is the
+# one-crate-owns-YAML topology claim. Reported to the stage-3 leader as a
+# finding rather than decided silently.
+serde = { workspace = true }
+serde_yaml = "0.9"
+
+[dev-dependencies]
+# The stated limit (S3-R7, schema §9): `~/MERIDIAN.md` lives in a DENIED
+# workspace path, so the rev the config carries can never become an attested
+# one. The criterion-4 gate asserts that limit in the same test that
+# demonstrates the rev moving — a dev-only edge, because the deny ceiling at
+# BIND is U7's production concern, not this unit's.
+workspace = { workspace = true }
+tempfile = "3"
