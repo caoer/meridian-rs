@@ -11,13 +11,24 @@
 //! Pre-put steps only (state never moves); one v3 session per doc.
 //!
 //! # Render-divergent-by-design steps (U4b, G5 class)
-//! The render face's production configuration elides `meridian-*` blocks
-//! (predicate: `lock::is_meridian_lang`), an INTENDED divergence from the
-//! captured Go face on steps whose sections carry engine blocks. The raw
+//! The render face's production configuration elides the blocks THE ENGINE
+//! EMITS (predicate: `lock::is_engine_emitted`), an INTENDED divergence from
+//! the captured Go face on steps whose sections carry those blocks. The raw
 //! captured truth stays untouched in `goldens/`; the elided expectation is
 //! pinned alongside in `render-elided/<doc>.<step>.txt` and used INSTEAD
 //! for exactly those steps. Raw-face gates (`u0_read_parity`, cat) never
 //! elide — byte pin #4.
+//!
+//! **U36 SHRANK this divergence, and that is the measurement.** U4b keyed
+//! elision on the `meridian-*` NAMESPACE, so `meridian-block.r-sections`
+//! diverged from Go in TWO places: the `meridian-lock` block (ratified — the
+//! engine writes it) and a `meridian-journal` block (over-applied — Go rendered
+//! it, and nothing in the engine emits it). With elision derived per-language,
+//! the second divergence is gone: the `Code` section is once again BYTE-EQUAL to
+//! the captured Go text, `words:10` included, and the pin now differs from the
+//! golden in exactly one place — the engine-written block. The re-based pin was
+//! derived FROM the golden by eliding only that block, never from the engine's
+//! own output.
 
 use serde_json::{Value, json};
 

@@ -481,30 +481,37 @@ fn no_refusal_can_publish_a_partial_mount_table() {
     );
 }
 
-/// **S3-R10(a), MEASURED rather than described.**
+/// **U36 INVERTED this test, and the inversion is the proof.**
 ///
-/// The render face elides every `meridian-*` block
-/// (`TextRenderer::with_meridian_elision`, predicate `lock::is_meridian_lang`).
-/// The rule was ratified for LOCKS — machine-owned bytes that would be noise.
-/// A config's mount blocks are HUMAN-AUTHORED CONTENT THE USER WANTS TO SEE, so
-/// the rule over-applies, and this test pins exactly how far:
+/// As U6 wrote it, this test asserted the DEFECT: the render face elided every
+/// `meridian-*` block (predicate `lock::is_meridian_lang`), so a config's
+/// human-authored mount blocks vanished and the rendered section was
+/// **byte-identical** to rendering the file with those blocks physically
+/// deleted. That byte-identity WAS the missing marker (S3-R14(a)) — a config
+/// file rendering as a config file that declares nothing, with no signal.
 ///
-/// 1. the rendered section carries **none** of the three declared roots;
-/// 2. it is **byte-identical** to rendering the same file with those blocks
-///    physically deleted — so a fully-elided config renders identically to a
-///    config that declares nothing. **There is no marker**;
-/// 3. S10's existing marker mechanism (`render`'s `NOTICE:` line, the
-///    partial-read notice) does **not** fire for elision, so no second marker
-///    was invented here before checking the first;
-/// 4. the raw face carries the blocks VERBATIM, and the config plane parses all
-///    three — the acceptance half, without which (1) is satisfied by a build
-///    that renders nothing at all.
+/// U36 made elision **per-language**, derived from *"does the ENGINE EMIT this
+/// block's bytes?"* (`lock::is_engine_emitted`). `meridian-mount` has no
+/// canonical writer — the user authors it and `config` only parses it — so it is
+/// no longer elided, and the defect this test pinned is gone. What the test now
+/// asserts is the inversion, point for point:
 ///
-/// Reproduced first-hand on the installed binary before it was written down:
-/// `mrd read MERIDIAN.md --section '…/Roots'` prints the prose, drops all three
-/// blocks, and exits 0.
+/// 1. the rendered section carries **all three** declared roots;
+/// 2. it is **NOT** byte-identical to rendering the file with those blocks
+///    deleted — the two differ, which is what "the reader can tell" means. No
+///    marker bytes were invented to achieve it (M1's *"no invented placeholder
+///    bytes"* stands): the authored bytes themselves are the difference;
+/// 3. S10's `NOTICE:` mechanism still does not fire — nothing needed it;
+/// 4. the raw face still carries the blocks VERBATIM and the config plane still
+///    parses all three — the acceptance half, unchanged, without which (1) is
+///    satisfied by a build that renders the file uninterpreted.
+///
+/// The original defect was reproduced first-hand on the installed binary before
+/// it was written down: `mrd read MERIDIAN.md --section '…/Roots'` printed the
+/// prose, dropped all three blocks, and exited 0. The pre-U36 assertions are
+/// preserved verbatim in the U36 card's redden evidence.
 #[test]
-fn the_render_face_elides_config_blocks_and_leaves_no_marker() {
+fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
     use render::{Header, RenderJob, Renderer, SectionRow, TextRenderer};
     use wire_map::facts::read_facts;
 
@@ -543,26 +550,26 @@ fn the_render_face_elides_config_blocks_and_leaves_no_marker() {
         rendered.sections[0].content.clone()
     };
 
-    let elided = roots_content(&raw);
+    let rendered = roots_content(&raw);
     for root in ["field-notes", "sessions", "archive"] {
         assert!(
-            !elided.contains(root),
-            "the render face drops the declared root `{root}`: {elided}"
+            rendered.contains(root),
+            "the render face must show the declared root `{root}` the USER authored: {rendered}"
         );
     }
     assert!(
-        elided.contains("The wiki: domains, decisions, effects"),
-        "the prose beside each block survives: {elided}"
+        rendered.contains("The wiki: domains, decisions, effects"),
+        "the prose beside each block survives: {rendered}"
     );
     assert!(
-        !elided.contains("NOTICE"),
-        "S10's existing marker does not reach elision — checked before inventing a second one: {elided}"
+        !rendered.contains("NOTICE"),
+        "no marker bytes were invented — the authored bytes ARE the signal: {rendered}"
     );
-    assert_eq!(
-        elided,
+    assert_ne!(
+        rendered,
         roots_content(&stripped),
-        "a fully-elided config renders BYTE-IDENTICALLY to one that declares nothing — \
-         this is the missing marker, measured"
+        "a config that declares three roots must NOT render identically to one that \
+         declares nothing — this is the defect U6 pinned, now inverted"
     );
 
     // The acceptance half (S3-R8(c)): the bytes ARE there, and the config plane
@@ -580,7 +587,8 @@ fn the_render_face_elides_config_blocks_and_leaves_no_marker() {
             .map(|m| m.name.as_str())
             .collect::<Vec<_>>(),
         ["field-notes", "sessions", "archive"],
-        "all three roots are parsed — the elision hides authored content that loaded perfectly"
+        "all three roots still parse — the render face now shows exactly the content \
+         that loads, and the two faces agree"
     );
 }
 
