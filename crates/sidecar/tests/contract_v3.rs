@@ -165,6 +165,14 @@ fn v3_session_emits_fingerprint_never_root() {
     assert!(!caps.contains(&"root"));
     assert!(!caps.contains(&"splice.if_root"));
     assert!(!caps.contains(&"links.require_root"));
+    // S3 U1 (R23): the v3-era splice amendments are advertised as dotted
+    // `op.field` caps. A v3 session HONOURS `pin`, so it says so — the frozen
+    // v2 caps golden above must never gain it (a v2 session refuses `pin`).
+    assert!(
+        caps.contains(&"splice.pin"),
+        "a v3 session honours `pin`, so its caps advertise `splice.pin`: {caps:?}"
+    );
+    assert!(caps.contains(&"splice.plan_edits"));
 
     // toc: the ambient key is fingerprint
     assert_eq!(frames[1]["body"]["fingerprint"], json!(R0));

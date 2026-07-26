@@ -58,7 +58,8 @@ Stage 2 (2026-07-25) adds, all v3-only and additive
   Sections mode only; a blank or absent actor mints nothing,
 - **`splice.pin`** — one optional sibling field lowering a pin through the
   existing `commit_batch` two-file-under-one-flock primitive. No `Op::Pin`, no
-  `pin.actor` field, not advertised in `caps`,
+  `pin.actor` field; advertised in `caps` as `splice.pin` **by the v3 projection
+  only**, since a v2 session refuses the field,
 - four **error codes**: `read_mint_required` and `pin_target_missing` (both
   `fix`), plus the pin firing conditions on `write_conflict` (`refresh`) and
   `workspace_busy` (`retry`).

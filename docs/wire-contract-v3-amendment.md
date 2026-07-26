@@ -457,9 +457,34 @@ Ordered under the ONE flock the splice already holds:
    one engine-minted span edit, so content and lock land in ONE `apply_batch`:
    one flock, one rename.
 
-**`splice.pin` is not advertised in the hello `caps` list.** The v3 caps
-projection appends `read`, `check_write`, and `splice.plan_edits` only. A client
-learns of `pin` from this amendment.
+**`splice.pin` IS advertised in the hello `caps` list — under v3 only** (S3 U1,
+advisor R23). The v3 caps projection appends `read`, `check_write`,
+`splice.plan_edits`, and `splice.pin`. A v2 session's caps never carry it, and
+that is not an omission: a v2 session REFUSES the `pin` field at the strict
+decoder's field wall, so advertising it there would be a false advertisement.
+
+**The extension rule, stated once so the next field does not re-run this
+exchange:** *a v3-era `splice` field is advertised as `splice.<field>` by the v3
+projection; the enumeration test is the enforcement.* That test
+(`crates/wire-serve/src/rev.rs`, `v3_splice_amendments_are_all_advertised`)
+derives its expected set from the decoder's own arrays —
+`SPLICE_V3_FIELDS \ SPLICE_V2_FIELDS` in `crates/wire-serve/src/decode.rs` — so a
+splice field added under v3 without a matching `caps.push` fails the suite before
+it can ship.
+
+**One stated exception, and the arithmetic that closes it.** `force` is honoured
+and advertised by neither list. It is **v2-era**, so advertising it would require
+changing the FROZEN v2 `CAPS` constant, which whole-frame v2 byte-identity
+forbids (stage-2 criterion 7). It is named here rather than silently left:
+
+| Class | Fields | Disposition |
+|---|---|---|
+| Envelope/common (v2-era) | `path`, `actor`, `now`, `edits` | Covered at op grain by the bare `splice` cap |
+| v2-era, dotted-advertised | `receipt`, `if_root`→`if_fingerprint`, `dry` | In both lists |
+| v2-era, **not advertised** | `force` | The stated exception — the frozen v2 constant is why |
+| v3-era amendments | `plan_edits`, `pin` | Both advertised by the v3 projection; both covered by the enumeration test |
+
+4 + 3 + 1 + 2 = **10 = |`SPLICE_V3_FIELDS`|.** The enumeration closes.
 
 **D12:** `pin.target` is carried VERBATIM into the lock's `ref` and `objects:`
 key. Nothing on this path parses it, so a later `root:` prefix rides through
