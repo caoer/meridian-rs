@@ -30,12 +30,14 @@ lock = { workspace = true }
 # case exists to kill. So this crate takes the workspace's already-decided YAML
 # library.
 #
-# DEVIATION, STATED not absorbed: `crates/policy/Cargo.toml` says serde_yaml
-# "must appear under `policy` ONLY in `cargo tree` production edges". This is
-# the second production edge. No NEW external crate enters the graph and the
-# lockfile is unchanged (`cargo deny` unchanged) — what changes is the
-# one-crate-owns-YAML topology claim. Reported to the stage-3 leader as a
-# finding rather than decided silently.
+# SECOND PRODUCTION EDGE, accepted (S3-R14(b)): this crate was the deviation
+# from `policy`'s one-crate-owns-YAML claim, stated rather than absorbed. The
+# Advisor accepted it — the violation was forced, not chosen — and ruled that
+# the confinement gets an instrument or gets struck. No NEW external crate
+# entered the graph and the lockfile is unchanged (`cargo deny` unchanged).
+# ENFORCED: `crates/testsuite/tests/yaml_confinement.rs` derives the taker set
+# from `cargo metadata` and permits exactly `{policy, config}`. A third crate
+# reddens it by name; dropping this edge reddens it too.
 serde = { workspace = true }
 serde_yaml = "0.9"
 
