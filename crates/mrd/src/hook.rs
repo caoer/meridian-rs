@@ -23,6 +23,18 @@
 //! can prompt an operator to run it if the status face calls a superseded fence
 //! "installed".
 //!
+//! # AND THE SKEW RUNS BOTH WAYS — measured by the re-verifier's harness
+//! A fence written by a NEW engine can be run against an OLD `mrd` on `PATH`,
+//! because the hook resolves the engine at commit time and never bakes one in
+//! (that is what makes one file correct for N worktrees). The old engine then
+//! answers `unknown flag: --staged`, **exit 2, and the fence refuses EVERY
+//! commit** — measured: `mrd: unknown flag: --staged` on the deployed
+//! `980008813ff69586…` under a hook this engine installed, turning a guard into a
+//! blanket refusal. **This is the ordinary state of a cutover**, so the body
+//! handles exit 2 with a teaching refusal that names the skew and the two commands
+//! that decide it. It still fails CLOSED: falling back to `mrd check` would
+//! restore exactly the false green this unit removed.
+//!
 //! # Why this module is public
 //! The R19 anti-vacuity harness has to drive [`HookLock`] across a fork window
 //! it holds open BY HAND — a raw `fork(2)` whose child parks on `pause()`. A
@@ -111,6 +123,27 @@ fi
 # wrong bytes — staged forgery, restored worktree, forged bytes in history.
 mrd check --staged
 mrd_status=$?
+
+# Exit 2 is the verb's BAD-INVOCATION leg, and the only invocation this file makes
+# is `check --staged` — so the commonest way to see a 2 here is an `mrd` on PATH
+# that is OLDER than this fence and does not carry the flag. That happens during
+# any cutover: a new engine installs the hook while the old one is still on PATH.
+# It FAILS CLOSED, because the alternative is falling back to a check that reads
+# the worktree and cannot speak about what is being committed. The message names
+# the OBSERVED state and the two commands that decide the cause; it does not
+# accuse, because an unreadable workspace exits 2 as well.
+if [ "$mrd_status" -eq 2 ]; then
+	printf '%s\n' \
+		"meridian fence: refusing — \`mrd check --staged\` exited 2 (a bad invocation, or a workspace it could not read)." \
+		"  the fence fails CLOSED: a commit nobody could vouch for is not a verified one." \
+		"  if the \`mrd\` on PATH is OLDER than this fence it does not carry --staged. what decides it:" \
+		"    command -v mrd  &&  mrd check --staged        (does this engine know the flag?)" \
+		"    mrd hook status                                (is this fence the one this engine writes?)" \
+		"  a version skew is fixed by putting the current engine first on PATH, or \`mrd hook install\`." \
+		"  escape:  MRD_HOOK_FORCE=1 git commit ...   (or: git commit --no-verify)" \
+		'  remove:  mrd hook uninstall' >&2
+	exit 1
+fi
 if [ "$mrd_status" -ne 0 ]; then
 	printf '%s\n' \
 		"meridian fence: refusing this commit — \`mrd check --staged\` exited ${mrd_status}; its lines above say why." \

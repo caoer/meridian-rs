@@ -728,6 +728,76 @@ fn a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded() {
     assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
 }
 
+/// **A VERSION SKEW — this fence, an OLDER `mrd` on PATH — fails CLOSED and names
+/// the skew.**
+///
+/// The hook resolves its engine at commit time and never bakes one in (D11), so a
+/// fence written by a new engine can be run against an old one. The old engine
+/// answers `unknown flag: --staged` and exits 2, and **the fence then refuses every
+/// commit** — measured on the deployed `980008813ff69586…` by the re-verifier's
+/// harness, which puts no engine on `PATH`. That is the ordinary state of a
+/// cutover, not a corner.
+///
+/// It must fail CLOSED — falling back to a plain `mrd check` would restore the F1
+/// false green — but a bare "exited 2" leaves an operator with a bricked repository
+/// and no idea why. The stand-in for the old engine is a script that answers
+/// exactly as one does: exit 2 with `unknown flag`.
+#[test]
+fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
+    let sb = sandbox();
+    let ws = sb.corpus("version-skew");
+    sb.install_fence(&ws);
+
+    // An `mrd` that behaves like an engine predating `--staged`: exit 2 on the
+    // flag. Everything else about the fence is unchanged, so the refusal below is
+    // attributable to the skew and nothing else.
+    let old = sb.tmp.path().join("old-bin");
+    std::fs::create_dir_all(&old).expect("old bin dir");
+    std::fs::write(
+        old.join("mrd"),
+        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--staged\" ]; then\n    \
+         echo 'mrd: unknown flag: --staged' >&2\n    exit 2\n  fi\ndone\nexit 0\n",
+    )
+    .expect("write old mrd");
+    std::fs::set_permissions(
+        old.join("mrd"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+
+    git_ok(&ws, &["add", "-A"]);
+    let before = head_count(&ws);
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&ws)
+        .args(["commit", "-m", "under an older engine"])
+        .env("PATH", format!("{}:{SYSTEM_PATH}", old.display()))
+        .env("XDG_CACHE_HOME", &sb.cache_home)
+        .env("HOME", &sb.home)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("git commit");
+    assert!(
+        !commit.status.success(),
+        "FAIL CLOSED: an engine that cannot be asked about the index cannot vouch \
+         for the commit, and falling back to the worktree question is the defect \
+         this unit removed: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+    let text = said(&commit);
+    assert!(
+        text.contains("OLDER than this fence"),
+        "AND IT NAMES THE SKEW — a bricked repository with only `exited 2` to read \
+         is how a guard gets deleted: {text}"
+    );
+    assert!(
+        text.contains("command -v mrd") && text.contains("mrd hook status"),
+        "and it names the two commands that DECIDE the cause, rather than accusing \
+         (an unreadable workspace also exits 2): {text}"
+    );
+}
+
 // ── the ESCAPES, and the state change that proves each one ───────────────────
 
 /// **`--force` is honoured, in its hook spelling**, and so is git's own
