@@ -54,11 +54,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // owner must outlive the borrow — hence two bindings rather than one
     // expression.
     let mounts = load_mounts();
-    let mut corpus = model::RootedCorpus::ambient(&docs);
-    for mount in &mounts.corpora {
-        corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
-    }
-    let mount_set = &mounts.set;
+    let corpus = mounts.rooted(&docs);
+    let mount_set = mounts.set();
 
     let report = walk::walk_rooted(
         &corpus,
@@ -146,7 +143,7 @@ struct MountedCorpus {
 /// unreadable root simply yields fewer usable roots — absence is the topology
 /// working as designed (§ 8 M6), not a reason to brick every single-root
 /// workspace on the planet.
-fn load_mounts() -> Mounts {
+pub(crate) fn load_mounts() -> Mounts {
     let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
         return Mounts::default();
     };
@@ -205,12 +202,39 @@ fn load_mounts() -> Mounts {
     Mounts { corpora, set }
 }
 
-/// The mount table as `mrd walk` consumes it: the loaded corpora, and the
+/// The mount table as the pin planes consume it: the loaded corpora, and the
 /// projection naming what the file declares and which of it is usable.
 #[derive(Default)]
-struct Mounts {
+pub(crate) struct Mounts {
     corpora: Vec<MountedCorpus>,
     set: addr::MountSet,
+}
+
+impl Mounts {
+    /// The ROOT-KEYED corpus over `docs` — the ambient workspace plus one root
+    /// per bound mount.
+    ///
+    /// **One owner for this assembly** (S3-R59): `walk`, `check` and `status` all
+    /// colour pins through the same computer, so they must hand it the same
+    /// corpus. Two call sites building it by hand is how one of them came to hand
+    /// over an ambient-only corpus and a default mount table, and answer
+    /// `grey(unmounted)` for every state of a bound root (F6).
+    pub(crate) fn rooted<'a>(
+        &'a self,
+        docs: &'a BTreeMap<String, Document>,
+    ) -> model::RootedCorpus<'a> {
+        let mut corpus = model::RootedCorpus::ambient(docs);
+        for mount in &self.corpora {
+            corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
+        }
+        corpus
+    }
+
+    /// The projection naming what `MERIDIAN.md` declares and which of it is
+    /// usable — the mount table resolution is a lookup in.
+    pub(crate) fn set(&self) -> &addr::MountSet {
+        &self.set
+    }
 }
 
 /// The mount plane's kind, as the resolver's kind.

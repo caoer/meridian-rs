@@ -35,9 +35,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use model::Document;
 use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge, classify_pin};
 
-use crate::read_face::{
-    LockItem, corpus_index, page_lock_items_in_corpus, page_lock_items_in_rooted_corpus,
-};
+use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
 
 /// Which way the walk runs over the `^inputs` pin graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,10 +258,42 @@ pub struct PinColor {
 /// visible here, never silently absent.
 #[must_use]
 pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
+    lock_pin_colors_rooted(
+        &model::RootedCorpus::ambient(docs),
+        &addr::MountSet::default(),
+    )
+}
+
+/// [`lock_pin_colors`] against a ROOT-KEYED corpus and the REAL mount table —
+/// **the computer**, of which [`lock_pin_colors`] is the ambient-only case.
+///
+/// # Why the mount table had to become a parameter (F6)
+/// Resolution is a mount lookup (U11), and this roll-up resolved every row
+/// against `MountSet::default()` — an EMPTY table — while `mrd walk` one call
+/// away resolved the same rows against the loaded one. The consequence was not
+/// disagreement, which a comparison would have caught: it was
+/// **INSENSITIVITY**. On a BOUND root a cross-root pin answered
+/// `grey(unmounted)` when its target MATCHED, when it had DRIFTED, and when it
+/// was RESTORED — three states, one answer, from the plane sitting under the
+/// pre-commit fence. *An axis whose instrument cannot vary on that axis is
+/// unevidenced (S3-R72), and a fence reading it inherits the blindness.*
+///
+/// The one-computer structure is unchanged and is why this was one edit: there
+/// is still exactly one place a pin colour is computed, and `check`, `status`
+/// and `walk` still agree BY CONSTRUCTION. **What was wrong was its INPUT, not
+/// its shape** — the two blind arguments were the item resolution (an empty
+/// mount table) and the target lookup (an ambient-only corpus), and both are
+/// supplied by the caller now.
+#[must_use]
+pub fn lock_pin_colors_rooted(
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+) -> Vec<PinColor> {
+    let docs = corpus.ambient_docs();
     let index = corpus_index(docs);
     let mut out = Vec::new();
     for (path, doc) in docs {
-        for item in page_lock_items_in_corpus(path, doc, &index, docs) {
+        for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
             if item.fingerprint.is_none() && item.lock_refusal.is_none() {
                 continue; // a legacy `^inputs` row — the board's plane, not this one
             }
@@ -271,7 +301,7 @@ pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
                 src_path: path.clone(),
                 declared_ref: item.declared_ref.clone(),
                 fingerprint: item.fingerprint.clone(),
-                color: edge_color(&model::RootedCorpus::ambient(docs), &item),
+                color: edge_color(corpus, &item),
             });
         }
     }

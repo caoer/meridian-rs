@@ -578,7 +578,16 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
             return (axis, VibeDebt::unknown(fail.message));
         }
     };
-    let colors: Vec<Color> = view::walk::lock_pin_colors(&docs)
+    // U11/F6 — the REAL mount table, through the one loader `mrd walk` and
+    // `mrd check` use. `lock_pin_colors(&docs)` resolved against an EMPTY table,
+    // so this axis could not vary on the cross-root axis at all: a bound root's
+    // pin rolled up `grey(unmounted)` matched, drifted or restored. Fixing only
+    // `check` would have made these two planes disagree — the guarantee at
+    // `check/src/layer0.rs` is that they agree BY CONSTRUCTION, and it stays true
+    // because both are fed the same corpus and the same table.
+    let mounts = crate::walk_cmd::load_mounts();
+    let corpus = mounts.rooted(&docs);
+    let colors: Vec<Color> = view::walk::lock_pin_colors_rooted(&corpus, mounts.set())
         .into_iter()
         .map(|p| p.color)
         .collect();

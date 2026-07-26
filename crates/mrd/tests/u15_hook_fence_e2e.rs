@@ -322,6 +322,182 @@ fn the_fence_refuses_a_commit_carrying_an_out_of_band_write() {
     );
 }
 
+// ── ARM 2b — the INDEX refusal (F1): the interval the commit spans ───────────
+
+/// **The fence REFUSES a commit whose INDEX carries an out-of-band write, with
+/// the worktree restored byte-exact** — F1, the false green the shipped fence
+/// shipped with.
+///
+/// # The sequence is the reviewer's, and the byte-exactness is the whole gate
+/// `mrd pin` writes a `^facts` anchor into the target, so an undo that
+/// reconstructs the file by hand does not restore it — and the fence then refuses
+/// for the WRONG REASON (the worktree really did drift), which reads exactly like
+/// the defect being absent. **The comfortable answer came from the inexact
+/// restore.** Here the governed bytes are CAPTURED and written back verbatim, so
+/// the worktree is provably identical and the index is provably not — both
+/// asserted below before the commit is attempted.
+///
+/// The control is [`the_fence_accepts_a_commit_whose_writes_were_all_governed`]:
+/// same hook, same binary, same corpus shape, one interval's bytes different.
+#[test]
+fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
+    let sb = sandbox();
+    let ws = sb.corpus("refuses-index");
+    sb.install_fence(&ws);
+
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+    git_ok(&ws, &["add", "-A"]);
+    let seeded = sb.commit(&ws, "governed baseline", &[]);
+    assert!(
+        seeded.status.success(),
+        "the baseline commit must land, or this leg measures a fence that \
+         refuses everything: {}",
+        said(&seeded)
+    );
+    assert_eq!(
+        sb.run(&ws, &["check"]).status.code(),
+        Some(0),
+        "BASELINE: the corpus is green before the forge"
+    );
+
+    // The byte-exact capture — after `mrd pin`, so it carries the `^facts` anchor.
+    let governed = std::fs::read(ws.join("source.md")).expect("capture governed bytes");
+
+    // (1) forge the PINNED section out of band, and prove the verb can see it.
+    let forged = String::from_utf8(governed.clone())
+        .expect("utf-8 fixture")
+        .replace("the pinned body", "FORGED out of band");
+    std::fs::write(ws.join("source.md"), &forged).expect("forge");
+    assert_eq!(
+        sb.run(&ws, &["check"]).status.code(),
+        Some(1),
+        "the forge is visible while it is in the WORKTREE — this is the sensitivity \
+         the leg below shows is interval-bound, not absent"
+    );
+
+    // (2) stage it, the way anyone stages their work; (3) restore the worktree.
+    git_ok(&ws, &["add", "source.md"]);
+    std::fs::write(ws.join("source.md"), &governed).expect("restore byte-exact");
+
+    assert_eq!(
+        std::fs::read(ws.join("source.md")).expect("read back"),
+        governed,
+        "THE WORKTREE IS BYTE-EXACT — if this fails the leg below is measuring an \
+         imperfect undo and would 'refuse' for the wrong reason"
+    );
+    let staged_bytes = git_bytes(&ws, &["show", ":source.md"]);
+    assert_ne!(
+        staged_bytes, governed,
+        "and THE INDEX IS NOT — the divergence is the fixture"
+    );
+    assert!(
+        String::from_utf8_lossy(&staged_bytes).contains("FORGED out of band"),
+        "the index carries the forgery itself, not merely different bytes"
+    );
+
+    // The assert: the fence speaks about what is BEING COMMITTED.
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "the index carries the forge", &[]);
+    assert!(
+        !commit.status.success(),
+        "THE ASSERT IS THE REFUSAL — git commits the INDEX, so a fence that only \
+         reads the worktree passes forged bytes into history: {}",
+        said(&commit)
+    );
+    assert_eq!(
+        head_count(&ws),
+        before,
+        "R40 — refused means git recorded NO commit"
+    );
+    // And history is the oracle: whatever the hook printed, the bytes are what
+    // matter. `git show HEAD:source.md` is where F1 was caught.
+    assert!(
+        !String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:source.md"]))
+            .contains("FORGED out of band"),
+        "*** FORGED BYTES IN HISTORY *** — the defect this arm exists for"
+    );
+    let text = said(&commit);
+    assert!(
+        text.contains("meridian fence: refusing"),
+        "the refusal cites the fence: {text}"
+    );
+    assert!(
+        text.contains("staged"),
+        "AND IT NAMES THE INTERVAL (S3-R29): a refusal an operator cannot locate \
+         is one they cannot act on, and the worktree here is clean: {text}"
+    );
+    // S3-R104 — ASSERT THE CAUSE, because this arm has two independent refusing
+    // detectors and a later fix could delete one of them without failing anything.
+    // The pin plane is the one that names the forgery; the journal plane's grey is
+    // the second, and it survives the interval predicate only because a forged tree
+    // matches no receipt. Measured post-predicate-fix: both are present.
+    assert!(
+        text.contains("content-drifted"),
+        "the refusal must name WHAT it saw — a pin whose target drifted — or this arm \
+         could later pass on a refusal that has nothing to do with the forgery: {text}"
+    );
+}
+
+/// **The fence still ACCEPTS the same corpus once the forgery is out of BOTH
+/// intervals** — the redden pair's other arm, over the exact repository the leg
+/// above refused.
+///
+/// Without it, the refusal above is satisfied by a fence that refuses every
+/// commit with anything staged at all — which is what widening an interval most
+/// plausibly breaks, and it would brick every governed commit on the fleet.
+#[test]
+fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
+    let sb = sandbox();
+    let ws = sb.corpus("accepts-index");
+    sb.install_fence(&ws);
+
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+    let governed = std::fs::read(ws.join("source.md")).expect("governed bytes");
+
+    // The refusal, first, so the acceptance below is measured over a corpus this
+    // fence genuinely stops — never over one that would have committed anyway.
+    let forged = String::from_utf8(governed.clone())
+        .expect("utf-8 fixture")
+        .replace("the pinned body", "FORGED out of band");
+    std::fs::write(ws.join("source.md"), &forged).expect("forge");
+    git_ok(&ws, &["add", "source.md"]);
+    std::fs::write(ws.join("source.md"), &governed).expect("restore byte-exact");
+    assert!(
+        !sb.commit(&ws, "refused", &[]).status.success(),
+        "the control: this tree is refused"
+    );
+
+    // Take the forgery out of the INDEX too, and stage the rest of the governed
+    // write with it: `mrd pin` wrote BOTH the lock in `claim.md` and the anchor in
+    // `source.md`, and a commit recording one without the other records a tree no
+    // receipt vouches for. An ordinary `git add -A` is what a governed commit does.
+    git_ok(&ws, &["add", "-A"]);
+    assert_eq!(
+        git_bytes(&ws, &["show", ":source.md"]),
+        governed,
+        "the fixture: both intervals now carry the governed bytes"
+    );
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "governed", &[]);
+    assert!(
+        commit.status.success(),
+        "THE ACCEPTANCE — the widened interval must let a governed commit through: {}",
+        said(&commit)
+    );
+    assert_eq!(
+        head_count(&ws),
+        before + 1,
+        "R40 — the state change, not the exit"
+    );
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:source.md"]))
+            .contains("the pinned body"),
+        "and the governed bytes are what landed"
+    );
+}
+
 // ── ARM 3 — the ORPHAN refusal (criterion 5 as AMENDED, S3-R71(a)) ───────────
 
 /// **The fence REFUSES a commit that would strand an anchor obligation** — the
@@ -383,6 +559,420 @@ fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
         said(&commit).contains("meridian fence: refusing"),
         "citing its why: {}",
         said(&commit)
+    );
+}
+
+// ── THE ACCEPTANCE THE FIRST INTERVAL FIX BROKE (found by fbd87f1c) ──────────
+
+/// **A legitimately-governed PARTIAL STAGE is ACCEPTED** — `git add` followed by a
+/// further governed write, which on a fleet doing continuous governed writes is the
+/// common path, and which `git add -p` reaches on every hunk it leaves behind.
+///
+/// # The corpus contains no out-of-band write at all
+/// `mrd pin` (governed) → `mrd put` edit ONE (governed) → `git add notes.md` →
+/// `mrd put` edit TWO (governed). The index now holds the EXACT post-edit-ONE
+/// bytes: a state the engine itself wrote and journaled. **The deployed engine
+/// accepts this commit (`2 -> 3`); the first interval fix refused it (`2 -> 2`) —
+/// a FALSE RED, and the suite did not catch it because no arm asserted the
+/// acceptance direction for partial staging.**
+///
+/// # Why it refused, measured, because the fix turns on it
+/// The staged snapshot is INTERNALLY INCONSISTENT and legitimately so: `git add
+/// notes.md` stages content without the journal, so the staged tree folds to
+/// `^r-000002`'s `root_after` while the staged journal still ends at `^r-000001`.
+/// Dating a snapshot against its own journal's LAST row therefore reports
+/// *"something advanced the tree that the journal does not account for"* — when the
+/// engine wrote every byte of both states.
+///
+/// **The discriminator is that a legitimate intermediate state matches SOME receipt
+/// in the record, and a forgery matches NONE.** The refusal arms above are this
+/// arm's control: they must keep refusing in the same run, and
+/// [`a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded`] is
+/// the one that proves the widening did not open the journal door.
+#[test]
+fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
+    let sb = sandbox();
+    let ws = sb.corpus("governed-partial-stage");
+    sb.install_fence(&ws);
+
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+    git_ok(&ws, &["add", "-A"]);
+    assert!(
+        sb.commit(&ws, "governed baseline", &[]).status.success(),
+        "the baseline commit lands"
+    );
+
+    // Governed write ONE, then the ORDINARY partial stage.
+    let one = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match("alpha", "alpha-ONE"));
+    assert_eq!(one.status.code(), Some(0), "put ONE: {}", said(&one));
+    let after_one = std::fs::read(ws.join("plan.md")).expect("post-ONE bytes");
+    git_ok(&ws, &["add", "plan.md"]);
+
+    // Governed write TWO — the journal advances past what is staged.
+    let two = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match("beta", "beta-TWO"));
+    assert_eq!(two.status.code(), Some(0), "put TWO: {}", said(&two));
+
+    // THE FIXTURE'S OWN PRECONDITIONS, so a pass cannot come from a corpus that
+    // never reached the state under test.
+    assert_eq!(
+        git_bytes(&ws, &["show", ":plan.md"]),
+        after_one,
+        "the index holds the EXACT post-ONE governed bytes — byte-identical, so \
+         nothing here is forged"
+    );
+    assert_ne!(
+        std::fs::read(ws.join("plan.md")).expect("worktree"),
+        after_one,
+        "and the worktree has moved on, or the two intervals do not differ and this \
+         arm is vacuous"
+    );
+    assert_eq!(
+        sb.run(&ws, &["check"]).status.code(),
+        Some(0),
+        "every byte on disk is governed: the worktree interval is green and cannot \
+         be what refuses"
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "commit the staged governed state", &[]);
+    assert!(
+        commit.status.success(),
+        "THE ACCEPTANCE — every byte in this commit was written by a governed door, \
+         so refusing it is a FALSE RED that brakes `git add` + any further governed \
+         write, the common path on a fleet: {}",
+        said(&commit)
+    );
+    assert_eq!(
+        head_count(&ws),
+        before + 1,
+        "R40 — the state change, not the exit"
+    );
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:plan.md"])).contains("alpha-ONE"),
+        "and what landed is the governed intermediate state that was staged"
+    );
+}
+
+/// **A MIXED two-receipt stage is REFUSED — the predicate is over the TREE, not
+/// per path** (ratified S3-R103, superseding R102(a)'s per-path phrasing).
+///
+/// Two governed writes to two files, then only the SECOND file staged: the index
+/// carries `b.md`'s new bytes beside `a.md`'s HEAD bytes — **a combination no
+/// governed write ever produced**, though every individual path's bytes came from
+/// some receipt. A per-path predicate would accept it; the tree-form predicate
+/// refuses, and refusing is the safe direction because the commit would record a
+/// tree the record cannot date.
+///
+/// This arm is what separates the two readings, so a later narrowing to per-path
+/// fails here rather than shipping.
+#[test]
+fn a_mixed_two_receipt_stage_is_refused_because_the_predicate_is_over_the_tree() {
+    let sb = sandbox();
+    let ws = sb.corpus("mixed-two-receipt");
+    // The two files are committed BEFORE the fence is installed, exactly as
+    // `corpus()` commits its own: writing them is an out-of-band write, and the
+    // fence would refuse that commit for the right reason and mask this arm.
+    write(&ws, "a.md", "# A\n\n## Log\n\nalpha\n");
+    write(&ws, "b.md", "# B\n\n## Log\n\nbeta\n");
+    git_ok(&ws, &["add", "-A"]);
+    git_ok(&ws, &["commit", "-qm", "two files"]);
+    sb.install_fence(&ws);
+
+    let edit = |file: &str, heading: &str, old: &str, new: &str| {
+        let batch = serde_json::to_string(&serde_json::json!([{
+            "target": {"hpath": [{"h": heading}, {"h": "Log"}]},
+            "edit": {"match": {"old": old, "new": new}},
+        }]))
+        .expect("edits json");
+        let out = sb.run_stdin(&ws, &["put", file], &batch);
+        assert_eq!(out.status.code(), Some(0), "mrd put {file}: {}", said(&out));
+    };
+    edit("a.md", "A", "alpha", "alpha-ONE"); // receipt N   : tree (a@1, b@0)
+    edit("b.md", "B", "beta", "beta-TWO"); // receipt N+1 : tree (a@1, b@1)
+
+    // Stage ONLY b.md: the index becomes (a@0 from HEAD, b@1) — a tree that was
+    // never on disk and that no receipt recorded.
+    git_ok(&ws, &["add", "b.md"]);
+    assert!(
+        !String::from_utf8_lossy(&git_bytes(&ws, &["show", ":a.md"])).contains("alpha-ONE"),
+        "the fixture IS the subject: the index still holds a.md's PRE-write bytes"
+    );
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", ":b.md"])).contains("beta-TWO"),
+        "beside b.md's post-write bytes — each governed, the COMBINATION never produced"
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "mixed two-receipt stage", &[]);
+    assert!(
+        !commit.status.success(),
+        "THE PREDICATE IS OVER THE TREE: every path's bytes came from a receipt, and \
+         the tree they compose did not. A per-path reading would accept this: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+}
+
+// ── THE OTHER DOORS ONTO THE SAME INTERVAL GAP (F1 names them) ───────────────
+
+/// **`git commit <pathspec>` records a THIRD interval, and asking git is what
+/// makes the fence see it.**
+///
+/// `git commit -- <paths>` is `--only`: the commit tree is **HEAD plus the named
+/// paths' worktree bytes**, ignoring the index. So a governed write to a file the
+/// commit does not name is LEFT BEHIND, and the tree that lands is one no receipt
+/// ever produced — while the worktree is entirely governed and a worktree check is
+/// honestly green.
+///
+/// Here `mrd pin` writes `claim.md`'s lock and `source.md`'s anchor, `mrd put`
+/// writes `plan.md`, nothing is staged, and the commit names `plan.md` alone. The
+/// recorded tree carries the governed `plan.md` and **HEAD's lock-less
+/// `claim.md`**.
+///
+/// **Measured on the deployed engine: the commit LANDS, `1 -> 2`.** It is refused
+/// here because git materialises that tree into a temporary index and hands the
+/// hook `GIT_INDEX_FILE` — so a fence that ASKS GIT what is being committed sees
+/// the third interval for free, where one reading `.git/index` by hand would not.
+///
+/// *An earlier version of this arm staged a forgery and committed `-- source.md`.
+/// It passed on the DEFECTIVE engine too — `--only` takes the worktree bytes for a
+/// named path, so there was nothing to commit and git refused for its own reasons.
+/// A gate that passes on the engine carrying the defect measures nothing.*
+#[test]
+fn a_pathspec_commit_is_refused_over_the_tree_git_builds_for_it() {
+    let sb = sandbox();
+    let ws = sb.corpus("pathspec");
+    sb.install_fence(&ws);
+
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+    let put = sb.run_stdin(
+        &ws,
+        &["put", "plan.md"],
+        &goals_match("alpha", "alpha prime"),
+    );
+    assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
+    assert_eq!(
+        sb.run(&ws, &["check"]).status.code(),
+        Some(0),
+        "THE FIXTURE'S POINT: every byte on disk is governed, so the worktree \
+         interval is honestly green and cannot be what refuses below"
+    );
+
+    let before = head_count(&ws);
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&ws)
+        .args(["commit", "-m", "pathspec: plan.md only", "--", "plan.md"])
+        .env("PATH", sb.hook_path())
+        .env("XDG_CACHE_HOME", &sb.cache_home)
+        .env("HOME", &sb.home)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("git commit <pathspec>");
+    assert!(
+        !commit.status.success(),
+        "the tree this commit records — HEAD's lock-less claim.md beside a governed \
+         plan.md — is one no receipt produced: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+    assert!(
+        String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:plan.md"])).contains("alpha beta"),
+        "and HEAD still carries the pre-write plan.md — nothing landed"
+    );
+    // S3-R104 — THIS ARM HAS EXACTLY ONE REFUSING DETECTOR, so it names it. The pin
+    // plane is GREEN here (no lock is drifted); the refusal is the journal plane
+    // being unable to date a tree the record never produced. Measured after the
+    // interval predicate widened: the grey survives, because HEAD's lock-less
+    // claim.md beside a governed plan.md is a combination no receipt recorded. If a
+    // later change turns that grey green, this assert fails instead of the arm
+    // silently passing on nothing.
+    let text = said(&commit);
+    assert!(
+        text.contains(check::GREY_CANNOT_ASSESS),
+        "the ONE detector that refuses this arm must still be the one refusing: {text}"
+    );
+    assert!(
+        text.contains("staged"),
+        "and it must be the STAGED interval that says so — the worktree is green: {text}"
+    );
+}
+
+/// **A write landing BETWEEN `git add` AND HOOK FIRE is refused** — the case F1
+/// calls the normal one on a common dir with a live fleet, where another agent
+/// writes while a commit is in flight.
+///
+/// The concurrent writer is simulated where it is deterministic: the bytes change
+/// after staging and before the hook runs, which is exactly the state such a race
+/// leaves. **A sleep-and-hope race would prove less** — it would pass when it
+/// happened to lose.
+///
+/// Here the WORKTREE holds the ungoverned bytes and the index holds governed ones,
+/// so the refusal comes from the worktree interval — the mirror of
+/// [`the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write`], and the
+/// reason BOTH intervals are assessed rather than the index replacing the
+/// worktree.
+#[test]
+fn a_write_landing_after_git_add_is_refused_by_the_other_interval() {
+    let sb = sandbox();
+    let ws = sb.corpus("interleaved");
+    sb.install_fence(&ws);
+    let put = sb.run_stdin(
+        &ws,
+        &["put", "plan.md"],
+        &goals_match("alpha", "alpha prime"),
+    );
+    assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
+    git_ok(&ws, &["add", "-A"]);
+
+    // The other agent writes, after the stage, before the hook.
+    write(
+        &ws,
+        "plan.md",
+        "# Plan\n\n## Goals\n\nanother agent was here\n",
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "raced", &[]);
+    assert!(
+        !commit.status.success(),
+        "a commit taken while an ungoverned write is on disk is not one anybody \
+         vouched for: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+}
+
+/// **A forged RESERVED JOURNAL in the index is refused** — the journal is
+/// root-EXCLUDED from the hash domain by named law, so it is the one file whose
+/// bytes no fold covers, and the interval overlay has to pick it out by hand.
+///
+/// Staged forgery, worktree restored byte-exact: without the journal's own
+/// interval being read from the index, the chain would be recomputed over the
+/// worktree's honest journal while the commit recorded the forged one.
+#[test]
+fn a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded() {
+    let sb = sandbox();
+    let ws = sb.corpus("journal-index");
+    sb.install_fence(&ws);
+    // TWO governed writes, so the journal carries two rows: chain continuity is a
+    // property of a row PAIR, and a single-row journal has no link to break.
+    for (old, new) in [("alpha", "alpha prime"), ("beta", "beta prime")] {
+        let put = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match(old, new));
+        assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
+    }
+    git_ok(&ws, &["add", "-A"]);
+    assert!(
+        sb.commit(&ws, "governed baseline", &[]).status.success(),
+        "the baseline commit lands"
+    );
+
+    let journal = ws.join("meridian").join("journal.md");
+    let honest = std::fs::read(&journal).expect("the journal exists after a governed write");
+    let rows = String::from_utf8(honest.clone()).expect("utf-8 journal");
+    assert_eq!(
+        rows.lines().filter(|l| l.contains("root_after=")).count(),
+        2,
+        "the fixture IS the subject: two rows, so there is a link to break"
+    );
+    // Break the LINK, not the last root: the last row's `root_after` still dates
+    // the live tree, so the baseline is CURRENT and the refusal below is the chain
+    // recompute finding a forged row — not a stale-baseline grey standing in for it.
+    let first_after = field(rows.lines().next().expect("row 1"), "root_after=");
+    let forged = rows.replace(
+        &format!("root_before={first_after}"),
+        "root_before=b3:0000000000000000000000000000000000000000000000000000000000000000",
+    );
+    assert_ne!(forged, rows, "the fixture must actually change the journal");
+    std::fs::write(&journal, &forged).expect("forge the journal");
+    git_ok(&ws, &["add", "meridian/journal.md"]);
+    std::fs::write(&journal, &honest).expect("restore byte-exact");
+    assert_eq!(
+        std::fs::read(&journal).expect("read back"),
+        honest,
+        "the worktree journal is byte-exact"
+    );
+
+    let before = head_count(&ws);
+    let commit = sb.commit(&ws, "the index carries a forged journal", &[]);
+    assert!(
+        !commit.status.success(),
+        "the journal being outside the merkle domain is exactly why it needs its \
+         own interval read: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+}
+
+/// **A VERSION SKEW — this fence, an OLDER `mrd` on PATH — fails CLOSED and names
+/// the skew.**
+///
+/// The hook resolves its engine at commit time and never bakes one in (D11), so a
+/// fence written by a new engine can be run against an old one. The old engine
+/// answers `unknown flag: --staged` and exits 2, and **the fence then refuses every
+/// commit** — measured on the deployed `980008813ff69586…` by the re-verifier's
+/// harness, which puts no engine on `PATH`. That is the ordinary state of a
+/// cutover, not a corner.
+///
+/// It must fail CLOSED — falling back to a plain `mrd check` would restore the F1
+/// false green — but a bare "exited 2" leaves an operator with a bricked repository
+/// and no idea why. The stand-in for the old engine is a script that answers
+/// exactly as one does: exit 2 with `unknown flag`.
+#[test]
+fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
+    let sb = sandbox();
+    let ws = sb.corpus("version-skew");
+    sb.install_fence(&ws);
+
+    // An `mrd` that behaves like an engine predating `--staged`: exit 2 on the
+    // flag. Everything else about the fence is unchanged, so the refusal below is
+    // attributable to the skew and nothing else.
+    let old = sb.tmp.path().join("old-bin");
+    std::fs::create_dir_all(&old).expect("old bin dir");
+    std::fs::write(
+        old.join("mrd"),
+        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--staged\" ]; then\n    \
+         echo 'mrd: unknown flag: --staged' >&2\n    exit 2\n  fi\ndone\nexit 0\n",
+    )
+    .expect("write old mrd");
+    std::fs::set_permissions(
+        old.join("mrd"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .expect("chmod");
+
+    git_ok(&ws, &["add", "-A"]);
+    let before = head_count(&ws);
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&ws)
+        .args(["commit", "-m", "under an older engine"])
+        .env("PATH", format!("{}:{SYSTEM_PATH}", old.display()))
+        .env("XDG_CACHE_HOME", &sb.cache_home)
+        .env("HOME", &sb.home)
+        .env_remove("MERIDIAN_WORKSPACE")
+        .output()
+        .expect("git commit");
+    assert!(
+        !commit.status.success(),
+        "FAIL CLOSED: an engine that cannot be asked about the index cannot vouch \
+         for the commit, and falling back to the worktree question is the defect \
+         this unit removed: {}",
+        said(&commit)
+    );
+    assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
+    let text = said(&commit);
+    assert!(
+        text.contains("OLDER than this fence"),
+        "AND IT NAMES THE SKEW — a bricked repository with only `exited 2` to read \
+         is how a guard gets deleted: {text}"
+    );
+    assert!(
+        text.contains("command -v mrd") && text.contains("mrd hook status"),
+        "and it names the two commands that DECIDE the cause, rather than accusing \
+         (an unreadable workspace also exits 2): {text}"
     );
 }
 
@@ -831,6 +1421,23 @@ fn git_ok(dir: &Path, args: &[&str]) {
     );
 }
 
+/// A git answer as RAW BYTES — `git show :path` / `git show HEAD:path`, where a
+/// lossy string conversion would hide exactly the byte difference under test.
+fn git_bytes(dir: &Path, args: &[&str]) -> Vec<u8> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git runs in the test environment");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+}
+
 fn git_out(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -890,6 +1497,16 @@ fn said(out: &Output) -> String {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     )
+}
+
+/// One `key=value` field of a journal row, by its `key=` prefix — the row grammar
+/// is space-separated, so the value runs to the next space.
+fn field(row: &str, key: &str) -> String {
+    let rest = row.split_once(key).expect("the row carries the field").1;
+    rest.split_whitespace()
+        .next()
+        .expect("the field carries a value")
+        .to_owned()
 }
 
 /// A one-edit `match` batch in the wire §4.4 grammar, against `Plan/Goals`.
