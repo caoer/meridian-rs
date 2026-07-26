@@ -306,6 +306,132 @@ fn the_md_write_surface_is_exactly_the_verbs_this_file_covers() {
     );
 }
 
+/// The masked page: the token sits in a frontmatter VALUE, where the one grammar
+/// mints no link node — so the document carries **no claim** while it stands.
+/// A write that closes the fence early turns those same bytes into a body claim
+/// link that nobody computed and no payload supplies.
+const MASKED: &str = "\
+---
+status: todo
+source: [[guide#^goal@green.b3af12cd|G]]
+---
+
+# Tasks
+
+## Log
+
+- existing line
+";
+
+/// The `md.set_field` value that closes the frontmatter after the FIRST key. It
+/// carries no `@`, so nothing here is the strip's to remove.
+const CLOSING_VALUE: &str = "todo\n---\n";
+
+/// The bytes this batch lands, spliced INDEPENDENTLY of the executor — the
+/// oracle for "what would be on disk". Deriving it from `fp::candidate` would
+/// ask the strip's own machinery whether the strip has anything to do.
+fn would_land(seed: &str) -> String {
+    seed.replacen("status: todo", "status: todo\n---\n", 1)
+}
+
+/// The frontmatter key `source`, resolved off the page as it stands. `Ok` means
+/// the token is still masked inside the fence; `Err` means the fence closed
+/// above it and those bytes are body now.
+fn source_is_frontmatter(root: &fs::WorkspaceRoot) -> bool {
+    let doc = fs::load(root, std::path::Path::new("page.md")).expect("load");
+    model::resolve(&doc, &model::Ref::FmKey("source".to_owned())).is_ok()
+}
+
+/// **The COMPOSED arm (R44 item 3 / fix8), the one origin with no payload to
+/// strip.** The token is not introduced — no payload carries it — and it is not
+/// retained — the pre-image has no claim at all, because frontmatter is not a
+/// claim-link position. This batch MAKES it a claim by un-masking bytes it does
+/// not supply, so there is nothing to remove and nobody to attribute it to: the
+/// only honest outcome is a loud refusal with nothing applied.
+///
+/// The three preconditions are asserted, not assumed, so this test cannot pass
+/// on a refusal that came from somewhere else: the pre-image carries no claim,
+/// the payload carries no token, and the bytes this batch would land DO carry
+/// one — the last measured by an independent splice, never by the strip's own
+/// candidate.
+#[test]
+fn a_composed_claim_token_is_refused_with_nothing_applied() {
+    assert!(
+        syntax::fp_removals(MASKED).is_empty(),
+        "precondition: the pre-image carries NO claim, so `retained` is not the honest origin"
+    );
+    assert!(
+        !CLOSING_VALUE.contains('@'),
+        "precondition: the payload carries no token, so `introduced` is not the honest origin"
+    );
+    let landed = would_land(MASKED);
+    assert!(
+        !syntax::fp_removals(&landed).is_empty(),
+        "precondition: the bytes this batch would land DO carry a claim — that is the forgery:\n\
+         {landed}"
+    );
+
+    let (_tmp, root) = workspace(MASKED);
+    let refused = apply(&root, &[set_field("status", CLOSING_VALUE)]);
+    let Err(ExecError::FpClaim { cause, .. }) = &refused else {
+        panic!("a composed claim token must refuse: {refused:?}");
+    };
+    assert!(
+        cause.contains("COMPOSE"),
+        "the refusal must be the COMPOSED arm, not attribution or re-validation: {cause}"
+    );
+    assert_eq!(
+        page_text(&root),
+        MASKED,
+        "a refusal applies nothing — the page is byte-identical"
+    );
+}
+
+/// **The anti-vacuity CONTROL (fix4's device, R26 applied to the harness).**
+/// The refusal above is only evidence if the write it refuses is one this batch
+/// could really have made. Same page, same edit, same closing value — only the
+/// masked value is token-free — and the write COMMITS, proving the window is
+/// genuinely open: `source` stops being a frontmatter key and its link lands in
+/// a position where a token WOULD be a claim.
+///
+/// If `md.set_field` ever escapes newlines, or the fm-key span moves, or the
+/// dialect stops calling that position a claim link, the window closes — and
+/// then the test above would refuse for some other reason (or stop refusing)
+/// while still looking green. This fails LOUD instead.
+#[test]
+fn the_frontmatter_close_window_is_genuinely_open() {
+    let clean = MASKED.replace(TOKEN, "");
+    assert!(
+        !clean.contains('@'),
+        "the control's page differs from the guard's by the token alone"
+    );
+    let (_tmp, root) = workspace(&clean);
+    assert!(
+        source_is_frontmatter(&root),
+        "before the write, the masked key IS frontmatter — that is what masks it"
+    );
+
+    apply(&root, &[set_field("status", CLOSING_VALUE)])
+        .expect("the same edit, token-free, commits — the window is open");
+
+    let text = page_text(&root);
+    assert!(
+        !source_is_frontmatter(&root),
+        "the fence closed above it: the key is body now, not frontmatter:\n{text}"
+    );
+    assert_eq!(
+        text,
+        would_land(&clean),
+        "the independent splice is what actually landed — the oracle is honest:\n{text}"
+    );
+    let decorated = text.replace("^goal|G", &format!("^goal{TOKEN}|G"));
+    assert!(
+        !syntax::fp_removals(&decorated).is_empty(),
+        "the un-masked line sits where a token IS a claim — the position the guard defends:\n\
+         {decorated}"
+    );
+}
+
 /// A non-md descriptor never reaches the page at all — the choke point refuses it
 /// before any I/O, which is why the strip's surface is the md domain and not the
 /// whole effect set.
