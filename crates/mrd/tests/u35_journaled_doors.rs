@@ -505,7 +505,6 @@ fn door_1_realise_truth_file_then_the_installed_fence() {
     let ws = sb.corpus(
         "door1-realise-truth-file",
         &[
-            (".meridian.toml", ""),
             ("conventions/INDEX.md", &armed_index(&check_md("v1"))),
             (
                 &format!("conventions/{SLUG}/CHECK.md"),

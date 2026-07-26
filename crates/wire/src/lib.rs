@@ -942,6 +942,21 @@ pub enum ResponseBody {
         root: Option<Root>,
         #[serde(skip_serializing_if = "Option::is_none")]
         storage: Option<String>,
+        /// The canonical root that ACTUALLY BOUND — the second optional
+        /// additive field on this shape, by the same §3.2 evolution law
+        /// `storage` already exercised ("tolerant client — unknown response
+        /// fields … are ignored"), so it needs no proto bump and no cap string.
+        ///
+        /// It exists because the marker-retirement ruling requires every
+        /// resolution to name the tier and root that answered, never silently —
+        /// and a binding IS a resolution. `storage` cannot serve this: it is a
+        /// hashed drawer directory, so it identifies the drawer without naming
+        /// the tree. Even under the exact-or-refuse law of
+        /// `registry::Registry::pin_declared`, the bound root may differ from
+        /// the string the caller declared, because canonicalization rewrites
+        /// symlinks and on-disk case. Absent exactly when `storage` is.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
     },
     /// v2 §4.1: the map — header `file_rev` + ambient `root` (the commit-guard
     /// idiom made ambient: read a toc, later pass `if_root`), rows in frozen

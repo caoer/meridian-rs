@@ -203,24 +203,61 @@ impl Registry {
         ResolveOutcome::Miss
     }
 
-    /// Resolve + pin storage for a hello workspace-target (decision 0002 §4, U3).
+    /// Pin storage for a **declared** root — the `hello` frame's `workspace`
+    /// field (decision 0002 §4, U3; marker-retirement ruling, 2026-07-26).
     ///
-    /// Folds the ancestor-walk resolve and the storage pin into one step:
-    /// - [`resolve`](Self::resolve) walks `target` and its ancestors for a
-    ///   registered workspace; a hit is already pinned, so its canonical path is
-    ///   used directly (no second registration under an already-registered root);
-    /// - a miss pins `target` fresh via [`register`](Self::register) — the SAME
-    ///   canonicalize → deny-ceiling → drawer-sentinel path (risk R2: reuse the
-    ///   one registration path, never a second copy).
+    /// **Exact, or refuse.** The declared path is pinned at exactly that path:
+    /// no ancestor walk, so a declaration can never widen to an enclosing
+    /// registered workspace. This is the `26-13` jail premise — the workspace
+    /// root IS the read/put jail root, one explicit already-enforced path — and
+    /// a declaration that could silently bind an ancestor would not be that.
+    ///
+    /// Registration reuses [`register`](Self::register) whole: the SAME
+    /// canonicalize → deny-ceiling → drawer-sentinel path (risk R2: reuse the
+    /// one registration path, never a second copy). An already-registered
+    /// declared path is adopted **at that same path**, which is reuse, not
+    /// widening.
+    ///
+    /// # Why exact, rather than keeping the ancestor walk here
+    /// The walk looked like a nesting guard and was not one:
+    /// [`register`](Self::register) has no equal-or-nested refusal (unlike the
+    /// mount table's INV-4), so registering `/a/b/c` before `/a` leaves both
+    /// registered anyway. The walk therefore only made the outcome depend on
+    /// registration *order* — not a guarantee, and the cost was a silent bind.
+    ///
+    /// The canonical root still may not equal the declared string (symlinks and
+    /// on-disk case both rewrite it), so the caller learns what actually bound
+    /// from the `workspace` field of the hello response, never by assuming.
     ///
     /// Returns the canonical workspace root and its drawer directory
-    /// ([`cache::drawer_dir`]) — the storage pin the hello response reports. Does
-    /// NOT warm the engine; the caller warms and binds the connection
-    /// ([`warm_or_build`](Self::warm_or_build)).
-    pub fn pin(&self, target: &Path) -> PinOutcome {
-        let workspace = match self.resolve(target) {
+    /// ([`cache::drawer_dir`]). Does NOT warm the engine; the caller warms and
+    /// binds the connection ([`warm_or_build`](Self::warm_or_build)).
+    pub fn pin_declared(&self, root: &Path) -> PinOutcome {
+        let workspace = match self.register(root) {
+            RegisterOutcome::Registered(entry) | RegisterOutcome::Adopted(entry) => entry.workspace,
+            RegisterOutcome::Denied(reason) => return PinOutcome::Denied(reason),
+            RegisterOutcome::Error(message) => return PinOutcome::Error(message),
+        };
+        let drawer = cache::drawer_dir(&self.cache_root, &workspace);
+        PinOutcome::Pinned { workspace, drawer }
+    }
+
+    /// Resolve + pin storage for a **cwd** — a hint, not a declaration.
+    ///
+    /// Here the ancestor walk is correct: a cwd is a position inside a tree, so
+    /// the enclosing registered workspace is the right answer.
+    /// [`resolve`](Self::resolve) walks `cwd` and its ancestors; a hit is
+    /// already pinned, so its canonical path is used directly (no second
+    /// registration under an already-registered root); a miss pins `cwd` fresh
+    /// via [`register`](Self::register).
+    ///
+    /// Split from [`pin_declared`](Self::pin_declared) deliberately: one
+    /// function serving both a declaration and a hint was the defect — it made
+    /// widening the silent default for callers who had stated their root.
+    pub fn pin_for_cwd(&self, cwd: &Path) -> PinOutcome {
+        let workspace = match self.resolve(cwd) {
             ResolveOutcome::Adopted(entry) => entry.workspace,
-            ResolveOutcome::Miss => match self.register(target) {
+            ResolveOutcome::Miss => match self.register(cwd) {
                 RegisterOutcome::Registered(entry) | RegisterOutcome::Adopted(entry) => {
                     entry.workspace
                 }
@@ -401,14 +438,15 @@ impl Registry {
 
     /// Resolve `cwd` to its canonical workspace, disk drawer, and drawer
     /// directory (V2 §Q2). Reuses the one canonicalize → deny-ceiling → sentinel
-    /// path via [`pin`](Self::pin), then addresses the drawer under THIS
-    /// registry's `cache_root` (never the ambient `CacheDrawer::open`, so a test
-    /// cache root is honored).
+    /// path via [`pin_for_cwd`](Self::pin_for_cwd) — the cwd-shaped pin, since
+    /// the input here really is a position inside a tree — then addresses the
+    /// drawer under THIS registry's `cache_root` (never the ambient
+    /// `CacheDrawer::open`, so a test cache root is honored).
     fn resolve_drawer(
         &self,
         cwd: &str,
     ) -> Result<(PathBuf, cache::CacheDrawer, PathBuf), Box<ErrorBody>> {
-        let workspace = match self.pin(Path::new(cwd)) {
+        let workspace = match self.pin_for_cwd(Path::new(cwd)) {
             PinOutcome::Pinned { workspace, .. } => workspace,
             PinOutcome::Denied(reason) => {
                 return Err(wire_serve::bad_request(format!(

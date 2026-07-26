@@ -1,6 +1,6 @@
 [package]
 name = "registry"
-description = "The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server plus client library. The daemon is the sole writer of warm tier-4 registrations — canonicalize, deny-ceiling enforce, first-writer-wins insert, drawer sentinel via cache, atomic state file, idle-reap (decision 0001 round 5)."
+description = "The daemon-held workspace registry (watchman model): a unix-socket NDJSON RPC server plus client library. The daemon is the sole writer of warm registrations — canonicalize, deny-ceiling enforce, first-writer-wins insert, drawer sentinel via cache, atomic state file, idle-reap (decision 0001 round 5). A DECLARED root (the hello `workspace` field) pins exactly and never widens to a registered ancestor; the ancestor walk serves cwd hints only."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -601,28 +601,41 @@ fn hello(
     }
 }
 
-/// Resolve + pin + warm + bind the connection for a `hello`'s workspace-target.
+/// Pin + warm + bind the connection for a `hello`'s **declared** workspace.
 ///
 /// A workspace-less hello is a pure version handshake: negotiate `proto` + list
 /// `caps`, bind and pin nothing. With a target, the storage pin reuses the
 /// registry's one canonicalize → deny-ceiling → sentinel path (risk R2, via
-/// [`Registry::pin`]); the warm reflects current disk (U1 residency); the bind
-/// swaps the read ops' corpus source from the deleted `attach` to `hello`.
+/// [`Registry::pin_declared`]); the warm reflects current disk (U1 residency);
+/// the bind swaps the read ops' corpus source from the deleted `attach` to
+/// `hello`.
+///
+/// `hello.workspace` is a DECLARATION, so it pins exactly
+/// ([`Registry::pin_declared`], never the cwd-shaped
+/// [`Registry::pin_for_cwd`]): the bound root can never widen to an enclosing
+/// registered workspace. The response then NAMES the root that actually bound,
+/// because canonicalization can still rewrite the declared spelling (symlinks,
+/// on-disk case) — the ruling's "never silently" applied to the binding itself.
 fn hello_body(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
     workspace: Option<String>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    let (root, storage) = match workspace {
-        None => (None, None),
-        Some(target) => match registry.pin(Path::new(&target)) {
+    let (root, storage, bound) = match workspace {
+        None => (None, None, None),
+        Some(target) => match registry.pin_declared(Path::new(&target)) {
             PinOutcome::Pinned { workspace, drawer } => {
                 registry
                     .warm_or_build(&workspace)
                     .map_err(|e| warm_err_to_wire(&e))?;
                 let root = registry.with_engine(&workspace, |engine| engine.map(engine_root));
+                let bound = workspace.to_string_lossy().into_owned();
                 *attached = Some(workspace);
-                (root, Some(drawer.to_string_lossy().into_owned()))
+                (
+                    root,
+                    Some(drawer.to_string_lossy().into_owned()),
+                    Some(bound),
+                )
             }
             PinOutcome::Denied(reason) => {
                 return Err(wire_serve::bad_request(format!(
@@ -642,6 +655,7 @@ fn hello_body(
         caps: CAPS.iter().map(ToString::to_string).collect(),
         root,
         storage,
+        workspace: bound,
     })
 }
 

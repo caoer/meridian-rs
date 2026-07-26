@@ -176,7 +176,8 @@ fn e2e_tier4_no_daemon_is_ephemeral_and_writes_nothing() {
 fn e2e_downgrade_future_schema_sentinel_is_cold_exit0() {
     let sb = sandbox();
     let ws = sb.dir("marked");
-    std::fs::write(ws.join(".meridian.toml"), "version = 1\n").unwrap();
+    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    std::fs::create_dir_all(ws.join(".git")).unwrap();
     let canonical = std::fs::canonicalize(&ws).unwrap();
 
     // Plant a future-schema sentinel a newer binary would have written.
@@ -196,8 +197,8 @@ fn e2e_downgrade_future_schema_sentinel_is_cold_exit0() {
     );
     let v = json(&out);
     assert_eq!(
-        v["source"], "marker",
-        "the marker still resolves the workspace"
+        v["source"], "git-root",
+        "the `.git` anchor still resolves the workspace"
     );
     assert_eq!(
         v["state"], "cold",
@@ -302,12 +303,12 @@ fn graceful_kill(child: &mut std::process::Child) {
 // ===========================================================================
 
 impl Sandbox {
-    /// A marker workspace `tmp/<name>` (a `.meridian.toml`, so `resolve` is
-    /// tier-2 and never needs a daemon) seeded with `files`. Returns its
+    /// An ANCHORED workspace `tmp/<name>` (a `.git` entry, so the ladder answers
+    /// git-root and never needs a daemon) seeded with `files`. Returns its
     /// canonical path.
-    fn marker_ws(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
+    fn anchored_ws(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let ws = self.dir(name);
-        std::fs::write(ws.join(".meridian.toml"), "version = 1\n").expect("marker");
+        std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
         for (rel, content) in files {
             std::fs::write(ws.join(rel), content).expect("seed file");
         }
@@ -374,7 +375,7 @@ fn wait_dead(pid: i32, timeout: Duration) -> bool {
 #[test]
 fn e2e_links_cold_auto_spawns_and_answers_warm() {
     let sb = sandbox();
-    let ws = sb.marker_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
+    let ws = sb.anchored_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
 
     // Cold: no daemon running. `mrd links` must auto-spawn one and answer.
     let warm = sb.run(&ws, &["links", "--json"]);
@@ -445,7 +446,7 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
 #[test]
 fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
     let sb = sandbox();
-    let ws = sb.marker_ws(
+    let ws = sb.anchored_ws(
         "proj",
         &[
             ("a.md", "# A\n\nsee [[b]] and [[ghost]]\n"),
@@ -497,7 +498,7 @@ fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
 #[test]
 fn e2e_links_respawns_after_daemon_sigkill() {
     let sb = sandbox();
-    let ws = sb.marker_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
+    let ws = sb.anchored_ws("proj", &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
 
     // First use auto-spawns daemon d1 and answers warm.
     let first = sb.run(&ws, &["links", "--json"]);

@@ -1,11 +1,13 @@
 //! The per-invocation resolution flow (decision 0001 rounds 4-5, spec §1).
 //!
-//! Tiers 1-3 are pure filesystem functions ([`workspace::resolve`]); a hit
-//! opens the hashed drawer directly. A tier-4 bare tree asks a running daemon
-//! whether the cwd sits inside a registered ancestor — a socket answer adopts
-//! it, silence or a miss degrades to an ephemeral, per-invocation store that
-//! writes NOTHING and never fails (shipped `NewStore("")` precedent). A bare
-//! tree is never silently registered here.
+//! The ladder's answered rungs are pure filesystem functions
+//! ([`workspace::resolve`]); a root opens the hashed drawer directly. When the
+//! ladder answers nothing — [`workspace::Answer::root`] is `None`, the cwd
+//! default — this asks a running daemon whether the cwd sits inside a
+//! registered ancestor: a socket answer adopts it, silence or a miss degrades
+//! to an ephemeral, per-invocation store that writes NOTHING and never fails
+//! (shipped `NewStore("")` precedent). An unanchored tree is never silently
+//! registered here.
 
 use std::path::{Path, PathBuf};
 
@@ -18,24 +20,25 @@ use crate::{Fail, Format, current_dir};
 
 /// How the workspace for this invocation was resolved.
 pub(crate) enum Source {
-    /// Tiers 1-3: env override, `.meridian.toml` marker, or git root — resolved
-    /// purely, the hashed drawer opened directly.
+    /// The ladder answered — env override or git root — resolved purely, the
+    /// hashed drawer opened directly.
     Direct(Tier),
-    /// A tier-4 bare tree adopted from a running daemon's registered ancestor.
+    /// The ladder answered nothing, and a running daemon adopted the cwd from a
+    /// registered ancestor.
     DaemonAdopted,
-    /// A tier-4 bare tree with no daemon (or a registry miss): ephemeral,
-    /// per-invocation, writes nothing.
+    /// The ladder answered nothing and no daemon did either (or a registry
+    /// miss): ephemeral, per-invocation, writes nothing.
     Ephemeral,
 }
 
 impl Source {
     /// A stable lowercase label for JSON / human output.
+    ///
+    /// The ladder's own words are reused ([`Tier::word`]) rather than restated
+    /// here, so the CLI cannot drift from the tier vocabulary it reports.
     pub(crate) fn label(&self) -> &'static str {
         match self {
-            Source::Direct(Tier::EnvOverride) => "env-override",
-            Source::Direct(Tier::Marker) => "marker",
-            Source::Direct(Tier::GitRoot) => "git-root",
-            Source::Direct(Tier::Bare) => "bare",
+            Source::Direct(tier) => tier.word(),
             Source::DaemonAdopted => "daemon-adopted",
             Source::Ephemeral => "ephemeral",
         }
@@ -63,19 +66,26 @@ impl Resolved {
 
 /// Resolve the workspace for `cwd` per the settled ladder.
 pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, ResolveError> {
-    let resolution = workspace::resolve(cwd)?;
-    match resolution.tier {
-        Tier::EnvOverride | Tier::Marker | Tier::GitRoot => Ok(Resolved {
-            drawer: CacheDrawer::open(&resolution.workspace),
-            source: Source::Direct(resolution.tier),
-            workspace: resolution.workspace,
+    let answer = workspace::resolve(cwd)?;
+    match answer.root() {
+        // A rung answered: that root IS the workspace, drawer opened directly.
+        Some(root) => Ok(Resolved {
+            drawer: CacheDrawer::open(root),
+            source: Source::Direct(answer.tier()),
+            workspace: root.to_path_buf(),
         }),
-        Tier::Bare => Ok(resolve_bare(cwd, resolution.workspace)),
+        // Nothing anchored this tree. Taking the cwd anyway is the deliberate
+        // demotion `root_or_cwd` marks — and it buys no registration: the
+        // daemon may adopt it, otherwise the store is ephemeral.
+        None => Ok(resolve_unanchored(
+            cwd,
+            answer.root_or_cwd().to_path_buf(),
+        )),
     }
 }
 
-/// A tier-4 bare tree: ask the daemon, else degrade to ephemeral.
-fn resolve_bare(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
+/// An unanchored tree: ask the daemon, else degrade to ephemeral.
+fn resolve_unanchored(cwd: &Path, bare_workspace: PathBuf) -> Resolved {
     // A socket that answers with a registered ancestor wins; any transport
     // failure (no daemon) or a miss falls through to ephemeral.
     if let Ok(client) = Client::from_default()

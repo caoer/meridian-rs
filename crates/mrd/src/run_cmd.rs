@@ -219,9 +219,14 @@ impl RunArgs {
 pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     let parsed = RunArgs::parse(tail)?;
     let cwd = current_dir()?;
-    let resolution = workspace::resolve(&cwd)
+    let answer = workspace::resolve(&cwd)
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
-    let root = fs::WorkspaceRoot(resolution.workspace);
+    // `root_or_cwd` preserves today's behavior exactly: an unanchored tree runs
+    // against the cwd. Whether `mrd run` should instead REFUSE a cwd-default
+    // answer is the run-plane/surfaces card's call, not this one's — the
+    // accessor is here so that acceptance is visible in the source and
+    // greppable, rather than inherited from a struct field.
+    let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
     let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| fail_address(&e))?;
     let conventions = caps::load_conventions(&root.0).map_err(|e| fail_caps(&e))?;
 

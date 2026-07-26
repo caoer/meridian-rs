@@ -78,7 +78,9 @@ fn truth_file_and_index_resolve_the_same_divergence_differently() {
     // The live CHECK.md DRIFTS to v2 (an out-of-band law edit). The INDEX still
     // pins v1 — a file↔index divergence.
     let drifted = check_md("v2-edited");
-    write(root, ".meridian.toml", "");
+    // Anchor the workspace at `root`. The retired `.meridian.toml` marker used
+    // to do this; a `.git` entry is the surviving structural anchor.
+    std::fs::create_dir_all(root.join(".git")).expect("git anchor");
     write(root, "conventions/INDEX.md", &index_v1);
     write(root, "conventions/reviewer-not-owner/CHECK.md", &drifted);
 
@@ -171,7 +173,9 @@ fn truth_file_lands_the_index_through_the_atomic_candidate_write() {
 
     let original = check_md("v1");
     let drifted = check_md("v2-edited");
-    write(root, ".meridian.toml", "");
+    // Anchor the workspace at `root`. The retired `.meridian.toml` marker used
+    // to do this; a `.git` entry is the surviving structural anchor.
+    std::fs::create_dir_all(root.join(".git")).expect("git anchor");
     write(root, "conventions/INDEX.md", &armed_index(&original));
     write(root, "conventions/reviewer-not-owner/CHECK.md", &drifted);
 

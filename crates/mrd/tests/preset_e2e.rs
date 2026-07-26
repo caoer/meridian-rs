@@ -104,7 +104,8 @@ fn stderr(out: &Output) -> String {
 fn workspace(sb: &Sandbox) -> PathBuf {
     let ws = sb.tmp.path().join("ws");
     std::fs::create_dir_all(ws.join("presets")).unwrap();
-    std::fs::write(ws.join(".meridian.toml"), "version = 1\n").unwrap();
+    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    std::fs::create_dir_all(ws.join(".git")).unwrap();
     std::fs::write(ws.join("presets/session.md"), SESSION_PRESET).unwrap();
     std::fs::write(ws.join("presets/broken.md"), BROKEN_PRESET).unwrap();
     ws

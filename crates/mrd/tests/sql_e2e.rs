@@ -84,10 +84,11 @@ impl Sandbox {
 
 /// A tier-2 (marker) workspace `ws` seeded with `files` — both `mrd` and the
 /// daemon resolve it to the same canonical directory (marker-anchored).
-fn write_marker_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
+fn write_anchored_ws(sb: &Sandbox, name: &str, files: &[(&str, &str)]) -> (PathBuf, PathBuf) {
     let ws = sb.tmp.path().join(name);
     std::fs::create_dir_all(&ws).expect("ws");
-    std::fs::write(ws.join(".meridian.toml"), "# marker\n").expect("marker");
+    // Anchored by a `.git` entry — the retired marker no longer anchors.
+    std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
     for (rel, content) in files {
         let path = ws.join(rel);
         if let Some(parent) = path.parent() {
@@ -214,7 +215,7 @@ fn walk_count(dir: &Path, name: &str) -> usize {
 #[test]
 fn od8_default_is_unverified_verify_folds() {
     let sb = sandbox();
-    let (ws, canonical) = write_marker_ws(
+    let (ws, canonical) = write_anchored_ws(
         &sb,
         "od8",
         &[("plan.md", "---\ntype: task\nstatus: todo\n---\n# Plan\n")],
@@ -254,7 +255,7 @@ fn od8_default_is_unverified_verify_folds() {
 #[test]
 fn q5_stale_surfaces_after_mutation_both_fingerprints_travel() {
     let sb = sandbox();
-    let (ws, canonical) = write_marker_ws(&sb, "stale", &[("a.md", "# A\n")]);
+    let (ws, canonical) = write_anchored_ws(&sb, "stale", &[("a.md", "# A\n")]);
     let published = publish_view(&sb, &canonical);
     let published_as_of = read_stamp_as_of(&published);
 
@@ -311,7 +312,7 @@ fn read_stamp_as_of(path: &Path) -> String {
 #[test]
 fn ro_attach_insert_is_refused() {
     let sb = sandbox();
-    let (ws, canonical) = write_marker_ws(&sb, "ro", &[("a.md", "# A\n")]);
+    let (ws, canonical) = write_anchored_ws(&sb, "ro", &[("a.md", "# A\n")]);
     publish_view(&sb, &canonical);
 
     let out = sb.run_no_daemon(
@@ -339,7 +340,7 @@ fn no_wal_replay_defense_refuses_shadowed_file() {
     // Publish corpus A, then move disk to corpus B, then shadow the published
     // file with a `.wal`. A managed reader must NOT open (and replay) the
     // shadowed A-generation file — it degrades to an ephemeral build of live B.
-    let (ws, canonical) = write_marker_ws(&sb, "wal", &[("a.md", "# A\n")]);
+    let (ws, canonical) = write_anchored_ws(&sb, "wal", &[("a.md", "# A\n")]);
     let published = publish_view(&sb, &canonical);
 
     std::fs::write(ws.join("b.md"), "# B\n").unwrap(); // corpus is now {a, b}
@@ -382,7 +383,7 @@ fn wal_sidecar(path: &Path) -> PathBuf {
 #[test]
 fn q5_daemon_served_view_path_client_is_fresh_with_rows() {
     let sb = sandbox();
-    let (ws, _canonical) = write_marker_ws(
+    let (ws, _canonical) = write_anchored_ws(
         &sb,
         "served",
         &[("plan.md", "---\ntype: task\nstatus: todo\n---\n# Plan\n")],
