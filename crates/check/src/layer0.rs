@@ -3,8 +3,9 @@
 //! mechanical journal TRACE … pack-free").
 //!
 //! Three pack-free reads over the run plane, none of which writes a byte:
-//! - [`journal_trace`] — chain recompute (the U2.1 [`receipt::journal::check_chain`]
-//!   primitive) + the `foreign_edit` detector (last-receipt-vs-live);
+//! - [`journal_trace`] — the baseline check (last-receipt-vs-live) and, only when
+//!   that baseline is current, the chain recompute (the U2.1
+//!   [`receipt::journal::check_chain`] primitive);
 //! - [`claims_realised`] — observe each claim against the current tree and report
 //!   the drifted ones (the realise engine's pure detection, run read-only here).
 
@@ -14,102 +15,172 @@ use fs::WorkspaceRoot;
 use realise::{CheckOutcome, Claim};
 use receipt::journal::{ChainReport, ParsedRow, check_chain, parse_rows};
 
-/// The journal TRACE over a workspace: chain continuity by full recompute plus
-/// the `foreign_edit` detector. Both are mechanical, source-3 facts of the
-/// reserved receipt journal and the live tree — no convention, no cap.
+/// The journal TRACE over a workspace: what the reserved receipt journal can
+/// still prove about the live tree. Mechanical, source-3, no convention, no cap.
+///
+/// **A verdict requires a CURRENT baseline** (S3-R8). Both journal detectors rest
+/// on one assumption — that the last receipt's recorded `root_after` still
+/// accounts for the live tree — and that assumption fails in two measured ways:
+///
+/// - the journal carries **no row** ([`JournalTrace::NoBaseline`]): a pin/put-only
+///   workspace journals nothing, so a silent detector proves nothing;
+/// - the last receipt **no longer matches** the live tree
+///   ([`JournalTrace::StaleBaseline`]): a governed `splice` advances the tree root
+///   and writes no journal row, so the mismatch is produced by ordinary governed
+///   work exactly as it is by an out-of-writer edit.
+///
+/// So the trace spells both as states of its own instead of letting the detectors
+/// report a green they never earned (the false green) or a red they cannot support
+/// (the false red). *Outside sight is never verified* (R26; S5 honest degradation).
 #[derive(Debug)]
-pub struct JournalTrace {
-    /// The chain-continuity report from the U2.1 primitive — red cites the
-    /// spliced/forged row that fails to continue the chain.
-    pub chain: ChainReport,
-    /// The `foreign_edit` finding, present iff the live tree root no longer
-    /// continues the last receipt's recorded `root_after` — an out-of-writer
-    /// edit with no receipt.
-    pub foreign_edit: Option<ForeignEdit>,
+pub enum JournalTrace {
+    /// **Grey — cannot assess.** The reserved journal carries no row: no pair of
+    /// rows to recompute a chain over, no last receipt to attribute the live tree
+    /// against.
+    NoBaseline,
+    /// **Grey — cannot assess.** The journal carries rows, but its last receipt
+    /// does not account for the live tree. The cause is NOT determinable from
+    /// here: an out-of-writer edit and a governed splice leave the identical
+    /// evidence, because a splice moves the root and journals nothing.
+    StaleBaseline(BaselineMismatch),
+    /// The last receipt accounts for the live tree: the baseline is current, so the
+    /// journal's own rows are a verdict.
+    Assessed {
+        /// The chain-continuity report from the U2.1 primitive — red cites the
+        /// spliced/forged row that fails to continue the chain.
+        chain: ChainReport,
+    },
 }
 
-/// A `foreign_edit`: the tree moved with no journal row to explain it (d2 §3;
-/// refusal-amendment: "an out-of-writer edit renders red convention-free; a check
-/// finding, not a door refusal"). Cites the last governed receipt and both roots.
+/// The evidence of a stale baseline: the last governed receipt, the root it
+/// recorded, and the root the tree folds to now.
+///
+/// This was `ForeignEdit`, and the rename is the correction: the same three facts
+/// were rendered as the CLAIM *"an out-of-writer edit landed with no receipt"*,
+/// which is false whenever a governed splice moved the root — measured on the
+/// deployed binary against a fully governed corpus (finding-01). The evidence
+/// stays; the accusation is withdrawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForeignEdit {
-    /// The last receipt row's anchor (`r-NNNNNN`) — the last governed write.
+pub struct BaselineMismatch {
+    /// The last receipt row's anchor (`r-NNNNNN`) — the last journaled write.
     pub last_receipt: String,
-    /// The tree root the last receipt recorded (`root_after`).
+    /// The tree root that receipt recorded (`root_after`).
     pub recorded_root: String,
-    /// The live tree root now — it differs, so an out-of-writer edit landed.
+    /// The live tree root now — it differs, so the baseline is out of date.
     pub live_root: String,
 }
 
 impl JournalTrace {
-    /// The TRACE found a lie: a broken chain or a foreign edit.
+    /// The TRACE found a lie: the journal's own rows fail to chain, read against a
+    /// baseline that is current. Grey is not red — a trace that could not look at
+    /// anything, or could not date what it looked at, is a different answer from
+    /// "the tree is honest".
     #[must_use]
     pub fn is_red(&self) -> bool {
-        self.chain.is_red() || self.foreign_edit.is_some()
+        match self {
+            JournalTrace::NoBaseline | JournalTrace::StaleBaseline(_) => false,
+            JournalTrace::Assessed { chain } => chain.is_red(),
+        }
     }
 
-    /// A red render citing the broken row and/or the foreign edit, or `None` when
-    /// the TRACE is green. This is the string the `check --core` verb renders.
+    /// The TRACE could not assess: it has no baseline, or cannot show the baseline
+    /// it has is current. Never green, never red — grey.
+    #[must_use]
+    pub fn cannot_assess(&self) -> bool {
+        matches!(
+            self,
+            JournalTrace::NoBaseline | JournalTrace::StaleBaseline(_)
+        )
+    }
+
+    /// A red render citing the broken row, or `None` when the TRACE is not red.
+    /// This is the string the `check --core` verb renders.
     #[must_use]
     pub fn red_summary(&self) -> Option<String> {
-        if !self.is_red() {
+        let JournalTrace::Assessed { chain } = self else {
             return None;
+        };
+        chain.red_summary()
+    }
+
+    /// The grey render: what could not be assessed and why, or `None` when the
+    /// TRACE had a current baseline to read.
+    #[must_use]
+    pub fn grey_summary(&self) -> Option<String> {
+        match self {
+            JournalTrace::NoBaseline => Some(NO_BASELINE_DETAIL.to_string()),
+            JournalTrace::StaleBaseline(m) => Some(format!(
+                "the live tree root {} does not continue the last receipt ^{} (recorded \
+                 root_after={}), and a governed splice advances the root without journaling a \
+                 row — so the journal cannot date the tree, and neither detector can be read",
+                m.live_root, m.last_receipt, m.recorded_root
+            )),
+            JournalTrace::Assessed { .. } => None,
         }
-        let mut lines = Vec::new();
-        if let Some(chain) = self.chain.red_summary() {
-            lines.push(chain);
-        }
-        if let Some(fe) = &self.foreign_edit {
-            lines.push(format!(
-                "foreign_edit: the tree root {} does not continue the last receipt ^{} \
-                 (recorded root_after={}) — an out-of-writer edit landed with no receipt",
-                fe.live_root, fe.last_receipt, fe.recorded_root
-            ));
-        }
-        Some(lines.join("\n"))
     }
 }
 
+/// The one sentence that explains the empty-journal grey — the engine states the
+/// missing evidence, never a colour alone.
+pub const NO_BASELINE_DETAIL: &str = "the receipt journal carries no row, so the chain recompute and the \
+     foreign_edit trace have nothing to compare against";
+
+/// The reason word this grey carries, verbatim on BOTH faces — the human render
+/// and `--json` — per S3-R6. The colour alone is not the answer: `grey(unmounted)`
+/// and `grey(cannot-assess)` are different refusals that share exit 1, so the word
+/// is what tells them apart. One spelling, ruled centrally, because U11/U14 render
+/// the same grammar.
+pub const GREY_CANNOT_ASSESS: &str = "grey(cannot-assess)";
+
 /// Recompute the journal TRACE over `root`: read the reserved receipt journal
-/// page, recompute chain continuity ([`check_chain`]), and compare the last
-/// receipt's recorded `root_after` against the live tree root — a mismatch is a
-/// [`ForeignEdit`]. Reads two things (the journal bytes and the tree fold); writes
-/// nothing.
+/// page, date it against the live tree, and recompute chain continuity
+/// ([`check_chain`]) only when the dating holds. Reads two things (the journal
+/// bytes and the tree fold); writes nothing.
 ///
 /// The journal is root-EXCLUDED, so its own bytes never enter the live tree fold
 /// — splicing a forged row changes the chain (caught by [`check_chain`]) but not
-/// the tree root, keeping the two detectors independent.
+/// the tree root.
+///
+/// **The baseline is checked before anything is claimed** (S3-R8): zero rows is
+/// [`JournalTrace::NoBaseline`]; a last receipt that no longer accounts for the
+/// live tree is [`JournalTrace::StaleBaseline`]. Both are grey. Only past that
+/// gate does the chain recompute become a verdict a reader can act on.
 ///
 /// # Errors
 /// [`io::Error`] when the journal page or the domain snapshot cannot be read.
 pub fn journal_trace(root: &WorkspaceRoot) -> io::Result<JournalTrace> {
     let page = read_journal(root)?;
     let rows = parse_rows(&page);
-    let chain = check_chain(&rows);
     let live_root = fs::domain_snapshot(root)?.1.0;
-    let foreign_edit = detect_foreign_edit(&rows, &live_root);
-    Ok(JournalTrace {
-        chain,
-        foreign_edit,
-    })
+    match detect_baseline(&rows, &live_root) {
+        None => Ok(JournalTrace::NoBaseline),
+        Some(Err(mismatch)) => Ok(JournalTrace::StaleBaseline(mismatch)),
+        Some(Ok(())) => Ok(JournalTrace::Assessed {
+            chain: check_chain(&rows),
+        }),
+    }
 }
 
-/// **The writer-attribution check** (d2 §3 journal TRACE, "last-receipt-vs-live
-/// catching `foreign_edit`"): the live tree root must equal the last receipt's
-/// recorded `root_after`, so every byte of the tree is attributable to a governed
-/// write. When they differ, an out-of-writer edit landed with no receipt — a
-/// [`ForeignEdit`]. An empty journal has no last receipt, so no baseline and no
-/// finding (nothing was ever governed to attribute against).
-fn detect_foreign_edit(rows: &[ParsedRow], live_root: &str) -> Option<ForeignEdit> {
+/// **The baseline check** (d2 §3 journal TRACE, "last-receipt-vs-live"): can the
+/// journal date the tree it is being read against? `None` = no rows at all;
+/// `Some(Err)` = the last receipt's recorded `root_after` is not the live root;
+/// `Some(Ok)` = the last receipt accounts for the live tree.
+///
+/// A mismatch is deliberately NOT called a `foreign_edit` any more. The same
+/// evidence is produced by an out-of-writer edit and by an ordinary governed
+/// splice (which advances the root and writes no journal row), so naming one of
+/// the two is a claim wider than the evidence — measured as a false red on a fully
+/// governed corpus (finding-01).
+fn detect_baseline(rows: &[ParsedRow], live_root: &str) -> Option<Result<(), BaselineMismatch>> {
     let last = rows.last()?;
     if last.root_after == live_root {
-        return None;
+        return Some(Ok(()));
     }
-    Some(ForeignEdit {
+    Some(Err(BaselineMismatch {
         last_receipt: last.anchor.clone(),
         recorded_root: last.root_after.clone(),
         live_root: live_root.to_string(),
-    })
+    }))
 }
 
 /// Read the reserved receipt journal page bytes, or the empty string when the
@@ -167,7 +238,7 @@ mod tests {
     use super::*;
 
     /// Build a [`ParsedRow`] with the two roots and an anchor — the columns the
-    /// `foreign_edit` detector reads (line number is irrelevant to detection).
+    /// baseline check reads (line number is irrelevant to detection).
     fn row(anchor: &str, root_before: &str, root_after: &str) -> ParsedRow {
         ParsedRow {
             anchor: anchor.to_string(),
@@ -199,46 +270,107 @@ mod tests {
         }
     }
 
-    /// The writer-attribution check fires: when the live root differs from the
-    /// last receipt's recorded `root_after`, a `foreign_edit` is detected citing
-    /// the last receipt and both roots. Dropping the `root_after == live_root`
-    /// comparison makes [`detect_foreign_edit`] return `None`, and this test FAILS
-    /// (the gate's falsification).
+    /// The baseline check fires: when the live root differs from the last
+    /// receipt's recorded `root_after`, the baseline is stale and the mismatch
+    /// cites the last receipt and both roots. Dropping the comparison makes
+    /// [`detect_baseline`] answer `Some(Ok)`, and this test FAILS (the gate's
+    /// falsification).
     #[test]
-    fn foreign_edit_fires_when_live_root_drifts_from_last_receipt() {
+    fn baseline_is_stale_when_live_root_drifts_from_last_receipt() {
         let rows = [
             row("r-000001", "b3:0", "b3:1"),
             row("r-000002", "b3:1", "b3:2"),
         ];
-        let fe = detect_foreign_edit(&rows, "b3:LIVE_DRIFTED")
-            .expect("live root != last receipt root_after must fire foreign_edit");
-        assert_eq!(fe.last_receipt, "r-000002", "cites the last receipt");
-        assert_eq!(fe.recorded_root, "b3:2", "the recorded root_after");
-        assert_eq!(fe.live_root, "b3:LIVE_DRIFTED", "the live root");
+        let m = detect_baseline(&rows, "b3:LIVE_DRIFTED")
+            .expect("rows are present, so there IS a baseline to date")
+            .expect_err("live root != last receipt root_after ⇒ the baseline is stale");
+        assert_eq!(m.last_receipt, "r-000002", "cites the last receipt");
+        assert_eq!(m.recorded_root, "b3:2", "the recorded root_after");
+        assert_eq!(m.live_root, "b3:LIVE_DRIFTED", "the live root");
     }
 
-    /// The writer-attribution check is load-bearing in BOTH directions: when the
-    /// live root EQUALS the last receipt's recorded root, the tree is attributed
-    /// and there is NO `foreign_edit`. A detector that always fired fails here; one
-    /// that never fired fails the test above. Together they pin the comparison.
+    /// The baseline check is load-bearing in BOTH directions: when the live root
+    /// EQUALS the last receipt's recorded root, the journal dates the tree and the
+    /// rows may be read. A check that always faulted fails here; one that never
+    /// faulted fails the test above. Together they pin the comparison.
     #[test]
-    fn no_foreign_edit_when_live_root_matches_last_receipt() {
+    fn baseline_is_current_when_live_root_matches_last_receipt() {
         let rows = [
             row("r-000001", "b3:0", "b3:1"),
             row("r-000002", "b3:1", "b3:2"),
         ];
         assert_eq!(
-            detect_foreign_edit(&rows, "b3:2"),
-            None,
-            "live root == last receipt root_after ⇒ attributed, no foreign_edit"
+            detect_baseline(&rows, "b3:2"),
+            Some(Ok(())),
+            "live root == last receipt root_after ⇒ the baseline is current"
         );
     }
 
-    /// An empty journal has no last receipt — no baseline to attribute against, so
-    /// no `foreign_edit` finding (a genesis tree is not a lie).
+    /// An empty journal has no last receipt — there is no baseline to date at all,
+    /// which [`journal_trace`] answers as [`JournalTrace::NoBaseline`] (grey).
     #[test]
-    fn empty_journal_has_no_foreign_edit() {
-        assert_eq!(detect_foreign_edit(&[], "b3:anything"), None);
+    fn empty_journal_has_no_baseline_to_attribute_against() {
+        assert_eq!(detect_baseline(&[], "b3:anything"), None);
+    }
+
+    /// The grey is a state of the TRACE, not a colour a renderer chooses: it is
+    /// neither red nor summarisable as red, and it says why in words.
+    #[test]
+    fn no_baseline_is_grey_and_never_red() {
+        let trace = JournalTrace::NoBaseline;
+        assert!(!trace.is_red(), "grey is not red");
+        assert!(trace.cannot_assess(), "grey names itself");
+        assert_eq!(trace.red_summary(), None, "nothing to report as a lie");
+        assert_eq!(
+            trace.grey_summary().as_deref(),
+            Some(NO_BASELINE_DETAIL),
+            "the grey carries its reason"
+        );
+        assert_eq!(
+            GREY_CANNOT_ASSESS, "grey(cannot-assess)",
+            "S3-R6 rules ONE spelling for this reason word, shared with U11/U14 — \
+             a local respelling fractures three units"
+        );
+    }
+
+    /// **The false red, withdrawn** (S3-R8). A stale baseline is grey, not red:
+    /// the same mismatch is left by an out-of-writer edit and by a governed splice
+    /// (which advances the root and journals nothing), so check states the
+    /// mismatch as evidence and declines to name a cause.
+    #[test]
+    fn a_stale_baseline_is_grey_and_names_both_possible_causes() {
+        let trace = JournalTrace::StaleBaseline(BaselineMismatch {
+            last_receipt: "r-000001".to_string(),
+            recorded_root: "b3:RECORDED".to_string(),
+            live_root: "b3:LIVE".to_string(),
+        });
+        assert!(
+            !trace.is_red(),
+            "a governed splice produces this state — accusing it is the false red"
+        );
+        assert!(trace.cannot_assess(), "grey names itself");
+        assert_eq!(trace.red_summary(), None, "no lie may be claimed from it");
+        let grey = trace.grey_summary().expect("the grey carries its reason");
+        assert!(
+            grey.contains("r-000001") && grey.contains("b3:RECORDED") && grey.contains("b3:LIVE"),
+            "the EVIDENCE survives the withdrawn claim: {grey}"
+        );
+        assert!(
+            grey.contains("governed splice"),
+            "and it names why the evidence is ambiguous: {grey}"
+        );
+    }
+
+    /// A TRACE read against a current baseline is assessed: it can be green (and
+    /// `cannot_assess` is false), so the grey cannot leak into that path.
+    #[test]
+    fn an_assessed_trace_is_never_grey() {
+        let trace = JournalTrace::Assessed {
+            chain: check_chain(&[row("r-000001", "b3:0", "b3:1")]),
+        };
+        assert!(!trace.cannot_assess(), "rows were read — this is a verdict");
+        assert!(!trace.is_red(), "one honest row, no break");
+        assert_eq!(trace.grey_summary(), None);
     }
 
     /// A drifted claim surfaces as a [`ClaimFinding`]; a converged one does not.

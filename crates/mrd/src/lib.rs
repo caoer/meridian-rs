@@ -115,8 +115,14 @@ usage:
   mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
                            recomputes the receipt journal's chain continuity and
                            the foreign_edit trace (last-receipt-vs-live) over the
-                           resolved workspace. Writes nothing. Exits: 0 green / 1 a
-                           chain break or foreign_edit finding / 2 bad invocation
+                           resolved workspace. Writes nothing. When the journal
+                           cannot date the live tree — no rows, or a last receipt
+                           the tree no longer matches — both detectors refuse
+                           grey(cannot-assess) instead of claiming a green they
+                           never read or an out-of-writer edit they cannot
+                           identify. Exits: 0 green / 1 a chain break, or
+                           grey(cannot-assess) — the exit says do-not-proceed, the
+                           reason word says why / 2 bad invocation
   mrd cache ls             list registered drawers
   mrd cache clean [--all]  reap stale / orphaned / retired drawers (--all: every
                            drawer)

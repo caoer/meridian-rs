@@ -6,8 +6,10 @@
 //! - [`spliced_journal_caught_through_check`] — the U2.1 spliced-row fixture
 //!   caught THROUGH `check` itself (chain red, the forged row cited), not just at
 //!   the library level;
-//! - [`foreign_edit_caught_through_check`] — an out-of-writer edit reddens
-//!   convention-free (last-receipt-vs-live);
+//! - [`a_moved_tree_is_a_stale_baseline_whoever_moved_it`] — a tree that no longer
+//!   matches the last receipt is grey, not red: an out-of-writer edit and a
+//!   governed splice leave identical evidence (S3-R8, superseding the
+//!   `foreign_edit` RED this file used to assert);
 //! - [`layer1_run_is_read_only`] — a layer-1 armed run over the tree mutates
 //!   nothing (no rev, no journal row, no file byte).
 
@@ -18,7 +20,7 @@ use fs::WorkspaceRoot;
 use fs::domain::RESERVED_JOURNAL_PATH;
 use receipt::journal::{JournalRow, parse_rows, render_row};
 use wire::Path as WirePath;
-use wire_serve::write::{CreateArgs, create};
+use wire_serve::write::{CreateArgs, SpliceArgs, create, splice};
 
 /// Birth `path` with `body` through the production guarded-create write path — the
 /// real journal-row-minting edge (no in-memory double). Panics on refusal (the
@@ -35,6 +37,39 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     };
     create(root, 0, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));
+}
+
+/// Edit `path`'s body through the PRODUCTION splice write path — a fully governed
+/// write (flock, CAS, armed gate, receipt), which advances the tree root and
+/// journals nothing. That asymmetry with [`produce`] is the mechanism under test.
+fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, new: &str) {
+    let args = SpliceArgs {
+        id: None,
+        path: WirePath(path.to_string()),
+        actor: Some("agent:alice".to_string()),
+        now: None,
+        receipt: None,
+        if_root: None,
+        dry: false,
+        force: false,
+        edits: vec![wire::Edit {
+            target: wire::SecRef::Hpath {
+                hpath: vec![wire::HpathSeg {
+                    h: "A".to_string(),
+                    n: None,
+                }],
+            },
+            edit: wire::EditShape::Match {
+                old: old.to_string(),
+                new: new.to_string(),
+            },
+            if_node_rev: None,
+        }],
+        plan_edits: Vec::new(),
+        pin: None,
+    };
+    splice(root, 0, &args, &[], None)
+        .unwrap_or_else(|e| panic!("production splice on {path} refused: {e:?}"));
 }
 
 /// Read the reserved journal page bytes.
@@ -94,11 +129,20 @@ fn spliced_journal_caught_through_check() {
     std::fs::write(root.0.join(RESERVED_JOURNAL_PATH), format!("{spliced}\n"))
         .expect("rewrite journal");
 
-    // Through check itself (not the bare check_chain library call).
+    // Through check itself (not the bare check_chain library call). The last
+    // honest row still records the LIVE root — the journal is root-excluded, so
+    // the forged line moved no tree byte — which keeps the baseline current and
+    // the chain break the isolated signal.
     let trace = check::journal_trace(&root).expect("journal trace");
-    assert!(trace.chain.is_red(), "the spliced row breaks the chain");
+    let check::JournalTrace::Assessed { chain } = &trace else {
+        panic!(
+            "the journal's last receipt still accounts for the live tree — this TRACE is \
+             assessed, not grey"
+        );
+    };
+    assert!(chain.is_red(), "the spliced row breaks the chain");
     assert_eq!(
-        trace.chain.breaks[0].row_anchor, "r-000099",
+        chain.breaks[0].row_anchor, "r-000099",
         "the forged row is cited first"
     );
     let summary = trace.red_summary().expect("red render");
@@ -106,49 +150,78 @@ fn spliced_journal_caught_through_check() {
         summary.contains("^r-000099"),
         "the red render cites the forged row: {summary}"
     );
-    assert!(
-        trace.foreign_edit.is_none(),
-        "the root-excluded journal splice does not move the tree root — no foreign_edit"
-    );
 }
 
-/// **`foreign_edit` fixture** (task gate). One honest write records the tree root;
-/// an out-of-writer edit (a raw `std::fs::write`, not the engine) moves the tree
-/// with no journal row. `check`'s journal TRACE compares the live root against the
-/// last receipt's recorded `root_after` and reddens `foreign_edit`, convention-free
-/// (no convention armed). The chain stays green — one honest row, no break.
+/// **The stale-baseline fixture, in BOTH of its causes** (S3-R8). One honest write
+/// records the tree root. Then the tree moves — once by an out-of-writer edit, once
+/// by an ordinary GOVERNED splice — and the two leave the journal in the *same*
+/// state, because a splice advances the root and writes no row.
+///
+/// This test supersedes `foreign_edit_caught_through_check`, which asserted RED on
+/// the first case. That red was measured on the deployed binary against a fully
+/// governed corpus and it accused a legitimate write (finding-01, corrected). So
+/// check now states the mismatch as evidence and refuses to name a cause: grey,
+/// not red — and the two causes are asserted to be indistinguishable, which is the
+/// whole reason the claim was withdrawn.
 #[test]
-fn foreign_edit_caught_through_check() {
+fn a_moved_tree_is_a_stale_baseline_whoever_moved_it() {
+    // ── cause 1: an out-of-writer edit ──────────────────────────────────────
     let dir = tempfile::tempdir().expect("tmpdir");
     let root = WorkspaceRoot(dir.path().to_path_buf());
-
     produce(&root, "a.md", "# A\n\nalpha\n");
     let recorded = live_root(&root); // the root the receipt r-000001 recorded
 
-    // An out-of-writer edit — bytes change with no governed write, no journal row.
     std::fs::write(root.0.join("a.md"), "# A\n\nEDITED OUT OF BAND\n").expect("raw edit");
     let now = live_root(&root);
     assert_ne!(recorded, now, "the out-of-band edit moved the tree root");
 
     let trace = check::journal_trace(&root).expect("journal trace");
-    let fe = trace
-        .foreign_edit
-        .as_ref()
-        .expect("an out-of-writer edit renders red convention-free");
+    let check::JournalTrace::StaleBaseline(m) = &trace else {
+        panic!("the live tree no longer matches the last receipt: that is a stale baseline");
+    };
+    assert_eq!(m.last_receipt, "r-000001", "cites the last journaled write");
     assert_eq!(
-        fe.last_receipt, "r-000001",
-        "cites the last governed receipt"
-    );
-    assert_eq!(
-        fe.recorded_root, recorded,
+        m.recorded_root, recorded,
         "the receipt's recorded root_after"
     );
-    assert_eq!(fe.live_root, now, "the drifted live root");
-    assert!(trace.is_red(), "foreign_edit reddens the core");
+    assert_eq!(m.live_root, now, "the drifted live root");
     assert!(
-        trace.chain.is_green(),
-        "one honest row, no chain break — foreign_edit is the isolated signal"
+        !trace.is_red(),
+        "the evidence is real but it does not identify a culprit — grey, not red"
     );
+    assert!(trace.cannot_assess(), "and it says so");
+
+    // ── cause 2: a fully GOVERNED splice, no out-of-band edit anywhere ───────
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let governed = WorkspaceRoot(dir.path().to_path_buf());
+    produce(&governed, "a.md", "# A\n\nalpha\n");
+    let recorded = live_root(&governed);
+    let rows_before = parse_rows(&read_journal(&governed)).len();
+
+    splice_through_the_write_path(&governed, "a.md", "alpha", "beta");
+
+    let rows_after = parse_rows(&read_journal(&governed)).len();
+    assert_eq!(
+        rows_before, rows_after,
+        "the mechanism, asserted not assumed: a governed splice journals NO row"
+    );
+    assert_ne!(
+        recorded,
+        live_root(&governed),
+        "and it DOES move the tree root — which is what staleness is"
+    );
+
+    let trace = check::journal_trace(&governed).expect("journal trace");
+    assert!(
+        matches!(trace, check::JournalTrace::StaleBaseline(_)),
+        "the governed corpus lands in the SAME state as the out-of-band one"
+    );
+    assert!(
+        !trace.is_red(),
+        "THE FALSE RED: accusing this workspace of an out-of-writer edit is what \
+         the ratified fence would have blocked every governed commit for"
+    );
+    assert!(trace.cannot_assess(), "it reports what it cannot prove");
 }
 
 /// **read-only** (task gate). A layer-1 armed run over the tree mutates nothing:
@@ -254,7 +327,47 @@ fn clean_production_writes_leave_a_green_core() {
     assert_eq!(rows.len(), 2, "two honest rows");
 
     let trace = check::journal_trace(&root).expect("journal trace");
-    assert!(trace.chain.is_green(), "honest writes chain");
-    assert!(trace.foreign_edit.is_none(), "no out-of-writer edit");
+    let check::JournalTrace::Assessed { chain } = &trace else {
+        panic!("two governed creates left a current baseline — this TRACE is assessed, not grey");
+    };
+    assert!(chain.is_green(), "honest writes chain");
     assert!(!trace.is_red(), "a clean tree is green convention-free");
+    assert!(
+        !trace.cannot_assess(),
+        "the last receipt accounts for the live tree — this green is earned, not vacuous"
+    );
+}
+
+/// **S3-R5, at the engine surface.** A workspace with no governed write has no
+/// journal row, so the TRACE is grey: it cannot assess, it is not red, and it
+/// carries no green for a caller to render. The very next governed write gives it
+/// a baseline and the same workspace becomes assessable — the grey is about the
+/// evidence, not about the workspace being new.
+#[test]
+fn a_workspace_with_no_journal_row_cannot_be_assessed() {
+    let dir = tempfile::tempdir().expect("tmpdir");
+    let root = WorkspaceRoot(dir.path().to_path_buf());
+    std::fs::write(dir.path().join("a.md"), "# A\n\nalpha\n").expect("raw write");
+    assert!(
+        !root.0.join(RESERVED_JOURNAL_PATH).exists(),
+        "nothing governed has written here"
+    );
+
+    let trace = check::journal_trace(&root).expect("journal trace");
+    assert!(trace.cannot_assess(), "no rows, no verdict");
+    assert!(!trace.is_red(), "grey is not red");
+    assert_eq!(
+        trace.red_summary(),
+        None,
+        "no lie was found — none was read"
+    );
+
+    // One governed write later, the same tree IS assessable.
+    produce(&root, "b.md", "# B\n\nbeta\n");
+    let trace = check::journal_trace(&root).expect("journal trace");
+    assert!(
+        !trace.cannot_assess(),
+        "a journaled write is the baseline the detectors needed"
+    );
+    assert!(!trace.is_red(), "the governed write is attributable");
 }

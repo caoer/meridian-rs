@@ -91,7 +91,9 @@ mrd walk <PAGE> [--down] [--depth N]
                          the context-assembly listing over the pin graph;
                          every answer cites the revs it read
 mrd check [--core]       the pure READ validity verb: receipt-chain continuity
-                         + the foreign_edit trace; writes nothing
+                         + the foreign_edit trace; writes nothing. Refuses
+                         grey(cannot-assess) when the journal cannot date the
+                         live tree (no rows, or a stale last receipt)
 mrd status [--cwd PATH]  the bare drift + freshness summary (pure-local,
                          O(armed), fetch-less)
 mrd sql <QUERY>          client-side SQL over the daemon-published DuckDB view
@@ -146,6 +148,42 @@ every other write uses: one flock, one rename (`docs/wire-contract-v3-amendment.
 A pin written through the resident daemon or MCP is gated: the actor must have
 read that exact selector in this session, in mode `sections`. "You cannot attest
 content that was never in your context."
+
+### `mrd check` — grey when it cannot date the tree
+
+Both layer-0 journal detectors rest on ONE assumption: that the last receipt's
+recorded `root_after` still accounts for the live tree. The assumption fails in
+two measured ways, and the same mechanism causes both — **a governed `splice`
+advances the tree root and writes no journal row**:
+
+| journal state | what it used to say | truth |
+|---|---|---|
+| **no rows** (a `pin`/`put`-only workspace) | `chain: green · foreign_edit: none`, exit 0 | nothing was assessed — an out-of-band edit is invisible |
+| **rows, then any governed splice** | `foreign_edit: RED`, exit 1 | it accused a fully governed workspace |
+
+So `mrd check` now renders **`grey(cannot-assess)`** on both detector lines
+whenever it cannot show its baseline is current, `--json` carries `core.chain` and
+`core.foreign_edit` as `null` plus a `cannot_assess` block (`reason:
+"grey(cannot-assess)"` — the same word, plus the `baseline` evidence when there is
+any), and the verb exits **1**. `red` stays `false` — grey is not red. Where the
+last receipt DOES account for the live tree, every byte of the render is what it
+always was.
+
+The `foreign_edit` **accusation** is withdrawn, not the evidence: the mismatch is
+still printed with both roots and the last receipt. What check no longer does is
+name a culprit it cannot identify — an out-of-writer edit and a governed splice
+leave the same trace.
+
+**The exit triad stays closed** (0 green / 1 finding / 2 bad invocation): grey
+refuses on leg 1 rather than inventing a fourth code, because the exit code
+answers exactly one question — *may this proceed?* — and red and grey both answer
+no. The *reason* is a different fact, and it lives in the output where a reader
+can read it: `grey(cannot-assess)` versus `red(…)`.
+
+**This is honest degradation, not the missing capability.** A workspace that has
+ever been spliced still refuses — now truthfully. Making `check` able to answer
+(journaling the splice, or reading the pin plane, which it has no `lock`/`git`/
+`view` dep for) is a separate unit with its own gates.
 
 ### The composed status line
 
