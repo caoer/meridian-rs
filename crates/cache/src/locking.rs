@@ -16,11 +16,47 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
-/// An exclusive advisory lock on a drawer directory, released on drop.
+/// An exclusive advisory lock on a drawer directory, released on drop — by an
+/// EXPLICIT unlock, not by the fd close (see the [`Drop`] impl: relying on the
+/// close leaks the lock into any concurrently forking subprocess, and this lock
+/// is the one whose leak HANGS).
 #[derive(Debug)]
 pub struct DrawerLock {
-    // Held open for its fd; `flock` is released when the fd closes on drop.
-    _dir: File,
+    // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
+    dir: File,
+}
+
+/// Release the lock EXPLICITLY, before the fd closes — the S7/R19 fix, applied
+/// here third, and here it matters most.
+///
+/// # Why the fd close is not enough (measured on the two siblings, not theorised)
+/// A `flock` lock belongs to the open file DESCRIPTION, and a `fork` duplicates
+/// every descriptor. Any thread in this process spawning any subprocess — the
+/// `git` the registry daemon's connection threads fork inside `splice`, a bash
+/// task, anything — transiently holds a copy of this fd between its fork and its
+/// exec, even with `FD_CLOEXEC` set (CLOEXEC acts at exec, not at fork). If this
+/// guard dropped in that window, closing our fd would NOT release the lock: the
+/// child's copy keeps the description alive until it execs.
+///
+/// **The consequence here is worse than on either sibling.** [`Self::acquire`]
+/// is the only blocking acquire in the codebase (`LOCK_EX` with no `LOCK_NB`),
+/// so a leaked description does not degrade to `fs::WriteLock`'s and
+/// `run::executor::WorkspaceLock`'s fast typed `workspace_busy` refusal — it
+/// degrades to a HANG on a lock whose holder has already finished. The two live
+/// paths, both inside the registry daemon: the process-lifetime singleton, whose
+/// leak makes a successor refuse *"another daemon is already running"* for a
+/// daemon that has exited; and the per-drawer lock [`crate::register`] takes
+/// from a connection thread.
+///
+/// `LOCK_UN` acts on the description itself, so one unlock here releases the
+/// lock no matter how many copies of the fd exist. Pinned by
+/// `tests/drawer_lock_release.rs`, whose control test proves the fork window it
+/// measures is genuinely open.
+impl Drop for DrawerLock {
+    fn drop(&mut self) {
+        // SAFETY: flock on a valid open fd we own; the fd outlives the call.
+        unsafe { libc::flock(self.dir.as_raw_fd(), libc::LOCK_UN) };
+    }
 }
 
 impl DrawerLock {
@@ -58,7 +94,7 @@ fn flock(drawer_dir: &Path, op: libc::c_int) -> io::Result<DrawerLock> {
     if rc != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(DrawerLock { _dir: dir })
+    Ok(DrawerLock { dir })
 }
 
 #[cfg(test)]
