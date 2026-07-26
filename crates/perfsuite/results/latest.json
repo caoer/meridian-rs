@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "created_utc": "2026-07-18 17:44 UTC",
-  "git_sha": "9338e3e",
-  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "created_utc": "2026-07-26 08:51 UTC",
+  "git_sha": "7bcc74b9",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "machine": {
     "hostname": "zmax",
     "os": "macos",
@@ -33,8 +33,8 @@
     },
     {
       "claim_id": "assemble.p99.file",
-      "measured": null,
-      "verdict": "UNTESTED"
+      "measured": 85.247,
+      "verdict": "MEASURED"
     },
     {
       "claim_id": "project.p99.file",
@@ -48,27 +48,27 @@
     },
     {
       "claim_id": "transport.codec.ndjson_roundtrip_p99",
-      "measured": 19.343,
+      "measured": 23.343,
       "verdict": "MEASURED"
     },
     {
       "claim_id": "transport.codec.proto_roundtrip_p99",
-      "measured": null,
-      "verdict": "UNTESTED"
+      "measured": 5.503,
+      "verdict": "MEASURED"
     },
     {
       "claim_id": "ingest.cold.vault_1gb",
-      "measured": 22188.716458,
+      "measured": 34336.029917,
       "verdict": "PASS"
     },
     {
       "claim_id": "ingest.codec.ndjson.vault_1gb",
-      "measured": 1782.094042,
+      "measured": 3974.977375,
       "verdict": "PASS"
     },
     {
       "claim_id": "ingest.codec.proto.vault_1gb",
-      "measured": 582.9683329999999,
+      "measured": 1232.450875,
       "verdict": "PASS"
     },
     {
@@ -80,75 +80,214 @@
       "claim_id": "policy.pack_load.fixtures",
       "measured": null,
       "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "policy.evaluate.p99.vault_1gb",
+      "measured": 96.191,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "policy.evaluate.p99.fence_bomb",
+      "measured": 130.879,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "policy.eval.budget.steps.vault_1gb",
+      "measured": 10000.0,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "policy.eval.budget.mem.vault_1gb",
+      "measured": 4194304.0,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "policy.splice.match_scan.p99",
+      "measured": 139.647,
+      "verdict": "MEASURED"
+    },
+    {
+      "claim_id": "view.build.p99.vault_2026",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "view.freshfold.p99.vault_1gb",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "view.freshfold.envelope.filecount",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "view.freshfold.envelope.bytes",
+      "measured": null,
+      "verdict": "UNTESTED"
+    },
+    {
+      "claim_id": "view.sql.roundtrip.p99.vault_2026",
+      "measured": null,
+      "verdict": "UNTESTED"
     }
   ],
   "measurements": [
     {
+      "id": "assemble.p99.file",
+      "value": 85.247,
+      "unit": "us",
+      "samples": 8000,
+      "dist": {
+        "mean_us": 28.03421262500004,
+        "p50_us": 19.887,
+        "p90_us": 35.423,
+        "p99_us": 85.247,
+        "p999_us": 1223.679,
+        "max_us": 16244.735
+      }
+    },
+    {
       "id": "ingest.codec.ndjson.vault_1gb",
-      "value": 1782.094042,
+      "value": 3974.977375,
       "unit": "ms",
       "samples": 1,
       "dist": null
     },
     {
       "id": "ingest.codec.proto.vault_1gb",
-      "value": 582.9683329999999,
+      "value": 1232.450875,
       "unit": "ms",
       "samples": 1,
       "dist": null
     },
     {
       "id": "ingest.cold.vault_1gb",
-      "value": 22188.716458,
+      "value": 34336.029917,
       "unit": "ms",
       "samples": 1,
       "dist": null
     },
     {
+      "id": "policy.eval.budget.mem.vault_1gb",
+      "value": 4194304.0,
+      "unit": "bytes",
+      "samples": 200,
+      "dist": null
+    },
+    {
+      "id": "policy.eval.budget.steps.vault_1gb",
+      "value": 10000.0,
+      "unit": "steps",
+      "samples": 200,
+      "dist": null
+    },
+    {
+      "id": "policy.evaluate.p99.fence_bomb",
+      "value": 130.879,
+      "unit": "us",
+      "samples": 8000,
+      "dist": {
+        "mean_us": 62.05512799999997,
+        "p50_us": 60.063,
+        "p90_us": 65.919,
+        "p99_us": 130.879,
+        "p999_us": 306.687,
+        "max_us": 1080.319
+      }
+    },
+    {
+      "id": "policy.evaluate.p99.vault_1gb",
+      "value": 96.191,
+      "unit": "us",
+      "samples": 8000,
+      "dist": {
+        "mean_us": 44.88549899999996,
+        "p50_us": 43.423,
+        "p90_us": 49.887,
+        "p99_us": 96.191,
+        "p999_us": 201.215,
+        "max_us": 339.199
+      }
+    },
+    {
+      "id": "policy.splice.match_scan.p99",
+      "value": 139.647,
+      "unit": "us",
+      "samples": 8000,
+      "dist": {
+        "mean_us": 114.44987599999996,
+        "p50_us": 115.071,
+        "p90_us": 126.847,
+        "p99_us": 139.647,
+        "p999_us": 168.575,
+        "max_us": 211.583
+      }
+    },
+    {
       "id": "transport.codec.ndjson_roundtrip_p99",
-      "value": 19.343,
+      "value": 23.343,
       "unit": "us",
       "samples": 20000,
       "dist": {
-        "mean_us": 8.207133400000004,
-        "p50_us": 12.255,
-        "p90_us": 15.711,
-        "p99_us": 19.343,
-        "p999_us": 27.007,
-        "max_us": 70.975
+        "mean_us": 10.53486465,
+        "p50_us": 8.335,
+        "p90_us": 20.335,
+        "p99_us": 23.343,
+        "p999_us": 34.719,
+        "max_us": 70.335
+      }
+    },
+    {
+      "id": "transport.codec.proto_roundtrip_p99",
+      "value": 5.503,
+      "unit": "us",
+      "samples": 20000,
+      "dist": {
+        "mean_us": 2.7165825,
+        "p50_us": 4.667,
+        "p90_us": 5.087,
+        "p99_us": 5.503,
+        "p999_us": 7.251,
+        "max_us": 31.967
       }
     }
   ],
   "criterion": [
     {
-      "id": "assemble_noop_until_rung_1",
-      "mean_ns": 0.7889392563095501,
-      "median_ns": 0.6884393519160781
+      "id": "assemble_build_vault2026",
+      "mean_ns": 93723.80561387344,
+      "median_ns": 74709.02179465823
     },
     {
       "id": "parse/placeholder_corpus_traversal",
-      "mean_ns": 102.88983321937911,
-      "median_ns": 91.1117553908642
+      "mean_ns": 143.46861992210162,
+      "median_ns": 135.5052763254062
     },
     {
-      "id": "policy_noop_until_rung_6",
-      "mean_ns": 0.8494531088347048,
-      "median_ns": 0.730154546683545
-    },
-    {
-      "id": "project_noop_until_rung_1",
-      "mean_ns": 0.6021511455055518,
-      "median_ns": 0.5249128720029476
+      "id": "policy_evaluate_vault1gb_batch",
+      "mean_ns": 8915940.498333333,
+      "median_ns": 8905583.333333332
     },
     {
       "id": "roundtrip/ndjson_decode_1000",
-      "mean_ns": 7544185.67875,
-      "median_ns": 6800372.375
+      "mean_ns": 11111327.083333336,
+      "median_ns": 11036124.916666668
     },
     {
       "id": "roundtrip/ndjson_encode_1000",
-      "mean_ns": 1579181.800363344,
-      "median_ns": 1554893.4821428573
+      "mean_ns": 2263145.439444443,
+      "median_ns": 2166339.138888889
+    },
+    {
+      "id": "roundtrip/proto_decode_1000",
+      "mean_ns": 1940984.3352000008,
+      "median_ns": 1942672.5
+    },
+    {
+      "id": "roundtrip/proto_encode_1000",
+      "mean_ns": 682785.7096492827,
+      "median_ns": 672744.7693050194
     }
   ]
 }
