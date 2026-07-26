@@ -465,13 +465,45 @@ impl Env {
     }
 }
 
-/// Which rung of the chain supplied the path.
+/// Which rung of the chain supplied the path — the resolution's **origin**, as
+/// opposed to its result.
+///
+/// Public because the result alone cannot answer the question. Measured (U33):
+/// `MERIDIAN_CONFIG=$HOME/MERIDIAN.md` and an unset `MERIDIAN_CONFIG` resolve to
+/// the same path, so two environments differing in exactly the variable this
+/// chain is made of were **byte-identical** at every surface that publishes it.
+/// An operator debugging a stale exported override had nothing to read.
+///
+/// The type is `Rung` because schema §2.1 numbers the chain's steps; the word it
+/// prints is `origin` because that is the question a reader is asking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Rung {
+pub enum Rung {
     /// Rung 1 — `MERIDIAN_CONFIG` stated it. An unusable path here is state C.
     Override,
     /// Rung 2 — `$HOME/MERIDIAN.md`. An absent file here is state A.
     Default,
+}
+
+impl Rung {
+    /// The operator-facing word — the SAME two spellings `mrd --help` uses for
+    /// the chain, so the help and the output cannot drift into two vocabularies.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Rung::Override => CONFIG_ENV_VAR,
+            Rung::Default => "$HOME/MERIDIAN.md",
+        }
+    }
+}
+
+/// Which rung of the chain answers, without touching the filesystem — the
+/// sibling of [`resolve_path`], reading the same one decision.
+///
+/// # Errors
+/// [`Reason::HomeUnresolvable`], on exactly the condition [`resolve_path`]
+/// raises it: rung 1 states nothing and `$HOME` is unset or empty.
+pub fn rung(env: &Env) -> Result<Rung, ConfigError> {
+    resolve_rung(env).map(|(_, rung)| rung)
 }
 
 /// Resolve the bootstrap chain to a path, without touching the filesystem.

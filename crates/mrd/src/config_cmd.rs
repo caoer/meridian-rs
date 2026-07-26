@@ -36,6 +36,18 @@
 //! elision it works around is named in its own output rather than left for an
 //! operator to rediscover.
 //!
+//! # It reports the RESOLVED state, including where the resolution came from (U33)
+//! The table printed is the **bound** one, never the file's literal blocks. The
+//! same rule reaches the entry point itself: the line carries `origin:` — which
+//! rung of the chain supplied the path.
+//!
+//! That word exists because of a measurement, not a preference. Before it,
+//! `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd config` and `mrd config` with the
+//! variable unset printed **byte-identical output** — two environments differing
+//! in exactly the variable the chain is made of, indistinguishable at the only
+//! surface that publishes the chain. An operator debugging a stale exported
+//! override could read the endpoint and never the path taken to it.
+//!
 //! Exits: **0** resolved and every root **bound** / **1** the config refused
 //! (its message, verbatim) **or any root refuses** — grey and red alike, each
 //! with its own reason word / **2** bad invocation.
@@ -58,11 +70,15 @@ use crate::{Fail, Format};
 /// [`Fail`] exit 1 when the chain refuses — a malformed config, a stated path
 /// that is not a readable regular file, or an unbuildable `$HOME`.
 pub(crate) fn run(format: Format) -> Result<(), Fail> {
+    let env = config::Env::from_process();
+    // The ORIGIN is read from the same env the resolution is, and before it:
+    // the chain's answer to "which rung" is what the resolved path cannot say
+    // for itself when both rungs name one file (U33).
+    let rung = config::rung(&env).map_err(|e| Fail::findings(e.to_string()))?;
     // The refusal rides verbatim: it already names what is broken, where, that
     // nothing loaded, and the fix. Re-wording it here would be a second
     // spelling of the same fact.
-    let resolution =
-        config::resolve(&config::Env::from_process()).map_err(|e| Fail::findings(e.to_string()))?;
+    let resolution = config::resolve(&env).map_err(|e| Fail::findings(e.to_string()))?;
     // A bind refusal rides verbatim for the same reason a parse refusal does:
     // it already names the mount, the line, that nothing loaded, and the fix.
     let table = resolution
@@ -73,10 +89,10 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
         Format::Json => {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&to_json(&resolution, &table)).expect("json")
+                serde_json::to_string_pretty(&to_json(&resolution, &table, rung)).expect("json")
             );
         }
-        Format::Human => print!("{}", render_human(&resolution, &table)),
+        Format::Human => print!("{}", render_human(&resolution, &table, rung)),
     }
 
     if table.is_clear() {
@@ -105,10 +121,17 @@ fn state(resolution: &config::Resolution) -> &'static str {
     }
 }
 
-fn to_json(resolution: &config::Resolution, table: &config::mount::MountTable) -> Value {
+fn to_json(
+    resolution: &config::Resolution,
+    table: &config::mount::MountTable,
+    rung: config::Rung,
+) -> Value {
     json!({
         "path": resolution.path().display().to_string(),
         "state": state(resolution),
+        // The SAME word the human line carries, for the same reason the mount
+        // state words are one spelling across both faces.
+        "origin": rung.word(),
         "file_rev": resolution.file_rev(),
         "fingerprint": resolution.config().and_then(config::Config::fingerprint),
         "clear": table.is_clear(),
@@ -134,18 +157,27 @@ fn to_json(resolution: &config::Resolution, table: &config::mount::MountTable) -
     })
 }
 
-fn render_human(resolution: &config::Resolution, table: &config::mount::MountTable) -> String {
+fn render_human(
+    resolution: &config::Resolution,
+    table: &config::mount::MountTable,
+    rung: config::Rung,
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
     // The resolved path VERBATIM, which is the spelling a refusal from the same
     // chain carries. Abbreviating it to `~/MERIDIAN.md` here would give one
     // file two spellings across two faces of one verb.
+    //
+    // Then the ORIGIN, because the path cannot say where it came from: when a
+    // stale `MERIDIAN_CONFIG` happens to name the default file, the resolved
+    // path is identical either way and only this word tells them apart (U33).
     let _ = write!(
         out,
-        "{}  {}",
+        "{}  {}  origin:{}",
         resolution.path().display(),
-        state(resolution)
+        state(resolution),
+        rung.word()
     );
     if let Some(rev) = resolution.file_rev() {
         let _ = write!(out, "  file_rev:{rev}");
