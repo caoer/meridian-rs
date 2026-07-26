@@ -457,16 +457,19 @@ pub struct LockItem {
     /// resolving `to_path` against the ambient corpus is exactly FINDING 03's
     /// wrong-bytes success.
     pub to_root: Option<addr::MountName>,
-    /// Set when this edge names a root **this machine does not bind** (or binds
-    /// without being able to read). Carries the missing mount name.
+    /// Set when this edge's ROOT could not be resolved to a readable corpus —
+    /// carrying the computed grey reason itself, not merely the fact that
+    /// something was wrong.
     ///
-    /// The row renders **grey `unmounted`**, never red and never
-    /// `file_not_found`: nothing drifted, the ledger simply cannot see from
-    /// here. It is a DISTINCT field from [`LockItem::lock_refusal`] because they
-    /// are distinct facts — a refused lock is unreadable HERE, an unmounted root
-    /// is unreachable FROM here — and one field carrying both would force every
-    /// consumer to re-derive which it was holding.
-    pub unmounted: Option<addr::MountName>,
+    /// **It carries the REASON because the causes must stay distinct (S3-R50).**
+    /// A root nothing declares and a root that is declared but unreadable are
+    /// different facts with different fixes, and a carrier that recorded only
+    /// "unresolved" would force the renderer to guess which — which is how one
+    /// of them ended up prescribing an action the user had already taken.
+    ///
+    /// Distinct from [`LockItem::lock_refusal`]: a refused lock is unreadable
+    /// HERE, an unresolvable root is unreachable FROM here.
+    pub root_refusal: Option<model::selector::GreyReason>,
 }
 
 /// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
@@ -566,7 +569,13 @@ pub fn page_lock_items_in_rooted_corpus(
                 item.to_root = Some(root);
                 item.to_path = path;
             }
-            model::RefResolution::Unmounted(root) => item.unmounted = Some(root),
+            model::RefResolution::Unmounted(root) => {
+                item.root_refusal = Some(model::selector::GreyReason::Unmounted { root });
+            }
+            model::RefResolution::PathUnseeable { root, path, detail } => {
+                item.root_refusal =
+                    Some(model::selector::GreyReason::PathUnseeable { root, path, detail });
+            }
             // Unresolved and malformed both keep the declared spelling, which is
             // what the red `selector-unresolved` render reports.
             model::RefResolution::NotFound | model::RefResolution::Malformed(_) => {}
@@ -819,7 +828,7 @@ fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
                     // its root in the spelling, and which root it RESOLVED into is a
                     // mount-table fact this seam has not consulted yet.
                     to_root: None,
-                    unmounted: None,
+                    root_refusal: None,
                 });
                 current = Some(out.len() - 1);
             }
@@ -895,7 +904,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 // its root in the spelling, and which root it RESOLVED into is a
                 // mount-table fact this seam has not consulted yet.
                 to_root: None,
-                unmounted: None,
+                root_refusal: None,
             });
             return;
         }
@@ -923,7 +932,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             // its root in the spelling, and which root it RESOLVED into is a
             // mount-table fact this seam has not consulted yet.
             to_root: None,
-            unmounted: None,
+            root_refusal: None,
         });
     }
 }
@@ -1019,7 +1028,7 @@ fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
         // its root in the spelling, and which root it RESOLVED into is a
         // mount-table fact this seam has not consulted yet.
         to_root: None,
-        unmounted: None,
+        root_refusal: None,
     })
 }
 

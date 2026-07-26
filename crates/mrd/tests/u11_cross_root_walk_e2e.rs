@@ -285,7 +285,27 @@ fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
         text.contains("sessions"),
         "and it names the missing mount: {text}",
     );
-    assert!(!text.contains("red"), "never red — nothing drifted: {text}");
+    // The TONE is what must not be red — asserted on the entry row's colour
+    // label, not by hunting the substring "red" in the whole output.
+    //
+    // The crude form of this assertion FAILED once the teaching refusal gained
+    // its output path, because the refusal's own wording carries the ratified
+    // sentence "Not red: nothing drifted". That was the instrument crying wolf
+    // at correct behaviour — S3-R23(1): a check that cannot tell its true
+    // positive from its false one is deleted by the next person it inconveniences,
+    // and then the invariant has no guard at all.
+    let entry_row = text
+        .lines()
+        .find(|l| l.contains("sessions:notes.md"))
+        .unwrap_or_else(|| panic!("no entry row: {text}"));
+    assert!(
+        entry_row.contains("grey unmounted"),
+        "the row's colour label is the grey: {entry_row}",
+    );
+    assert!(
+        !entry_row.contains(" red "),
+        "and it is never red — nothing drifted: {entry_row}",
+    );
 }
 
 /// **GATE 2 — unmounted and missing-file are DISTINCT CLASSES.** A
