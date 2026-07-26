@@ -26,6 +26,29 @@ realise = { workspace = true }
 # (Change / Convention / Refusal), and the U1.4 arming vocabulary (Enforcement /
 # ArmedRef). The armed set evaluates read-only through this, verbatim.
 policy = { workspace = true }
+# ── U14: the PIN PLANE (S3-R3 — an APPLICATION, not a charter change) ────────
+# The fence's verb was structurally blind to half its own job: with no `lock` and
+# no `git`, NO run output could contain a pin verdict, because the code could not
+# construct one (FINDING 01). `git` is by its own charter "a std-only leaf, no
+# production dependency" — being taken as a dependency is what a leaf exists for
+# — and `laws.md` § Additivity governs. An anchoring read is PURE: it asks git
+# questions and writes nothing, so `check`'s charter ("the pure READ verb") is
+# unchanged.
+#
+# The lock grammar's ONE owner, so the `objects:` plane this crate reads is the
+# same plane `mrd status`'s gauge and `mrd walk`'s listing read. A second lock
+# parser is how two planes come to disagree about one page.
+lock = { workspace = true }
+# The object store handle. `git::Repo` is a handle and never a singleton (seam
+# rule D12), so the per-root law (U13) is one classification run against whichever
+# repository the caller names.
+git = { workspace = true }
+# Types only, and already in this crate's effective surface: `fs::build_corpus`
+# hands back `model::Document`s and `lock::find` takes one. Both arrive with
+# `lock` regardless (it depends on them), so naming them adds no crate to the
+# graph — it only lets the signatures say what they already carry.
+model = { workspace = true }
+addr = { workspace = true }
 
 [dev-dependencies]
 # The end-to-end fixtures mount a REAL tmpdir workspace and seed its journal
