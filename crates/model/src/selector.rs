@@ -179,6 +179,33 @@ pub enum GreyReason {
         /// bind.
         root: addr::MountName,
     },
+    /// **A cross-root address naming a root the file DECLARES but this machine
+    /// cannot READ** — the path is absent, unreadable, or holds no corpus
+    /// (`docs/address-grammar.md` § 8 M6).
+    ///
+    /// **A DIFFERENT cause from [`GreyReason::Unmounted`], and S3-R43 rules it a
+    /// different reason word.** Both are grey and both refuse on exit 1; what
+    /// separates them is what a reader must DO. `Unmounted`'s refusal says
+    /// *"declare it in `~/MERIDIAN.md`"*; here the root **is** declared, so that
+    /// sentence is false and its fix is already done. This one names **the
+    /// PATH** — the thing that is actually wrong.
+    ///
+    /// > A teaching refusal that prescribes a COMPLETED ACTION is worse than a
+    /// > bare class: it spends the user's trust AND their time, and leaves no
+    /// > signal pointing at the real cause.
+    ///
+    /// S3-R6 does not license collapsing the two: it established
+    /// `grey(unmounted)` and `grey(cannot-assess)` as TWO words inside ONE
+    /// vocabulary at ONE exit code. It forbids re-spelling one CONCEPT across
+    /// crates; it does not require two CAUSES to share one word.
+    PathUnseeable {
+        /// The canonical name the file declares.
+        root: addr::MountName,
+        /// The path it is declared at — what the refusal tells a reader to check.
+        path: String,
+        /// The underlying reason, verbatim.
+        detail: String,
+    },
     /// A `meridian-lock` pin whose pinned value is not a fingerprint token at
     /// all ([`crate::fingerprint::ContentVerdict::Malformed`]). Unreadable, so
     /// it was never measured — grey, never red.
@@ -563,6 +590,43 @@ pub fn render_unmounted(root: &addr::MountName, address: &str) -> String {
          just cannot see from here. Refs to mounted roots remain served. \
          Fix: declare '{root}' in ~/MERIDIAN.md as a mount entry \
          (name / path / kind); see [[address-grammar]]."
+    )
+}
+
+/// The DECLARED-but-unreadable teaching refusal, carried VERBATIM as the
+/// provenance anchor (S3-R43 / S3-R49). [`render_path_unseeable`] reproduces
+/// this wording with the real root, path and reason interpolated; this const
+/// pins the exemplar so a drift in the wording is a visible test failure — the
+/// same shape as [`D1_TEACHING_REFUSAL_EXEMPLAR`] and
+/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
+///
+/// **The word is REUSED, not minted (S3-R49).** Round 2 was ruled a new word,
+/// `root-unreachable`; the enumeration this unit was obliged to run found that
+/// `config::mount::MountState::PathUnseeable` already ships
+/// **`grey(path-unseeable)`** for the same observed state, citing the same M6
+/// row, with a teaching that already names the path. The bare word is
+/// [`addr::PATH_UNSEEABLE_REASON_WORD`] — **one source**, wrapped by each plane's
+/// own renderer rather than spelled twice.
+///
+/// **It names the PATH, never the mount entry**, because the mount entry is
+/// already correct — that is the whole distinction S3-R43 draws.
+pub const GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR: &str = "grey(path-unseeable): root 'assets' is declared, but the path it binds could not be read: /Volumes/media/assets (No such file or directory (os error 2)). Not red: nothing drifted, you just cannot see from here. Refs to readable roots remain served. Fix: check that /Volumes/media/assets exists and is readable, or change the mount entry's path; see [[address-grammar]].";
+
+/// Render the S3-R43 teaching refusal for an address naming a DECLARED root this
+/// machine cannot read. Wording carried verbatim from
+/// [`GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR`].
+///
+/// **Deliberately never says "declare it".** The root IS declared; prescribing
+/// the declaration again is the defect this refusal exists to remove.
+#[must_use]
+pub fn render_path_unseeable(root: &addr::MountName, path: &str, detail: &str) -> String {
+    let word = addr::PATH_UNSEEABLE_REASON_WORD;
+    format!(
+        "grey({word}): root '{root}' is declared, but the path it binds could not \
+         be read: {path} ({detail}). Not red: nothing drifted, you just cannot \
+         see from here. Refs to readable roots remain served. Fix: check that \
+         {path} exists and is readable, or change the mount entry's path; \
+         see [[address-grammar]]."
     )
 }
 

@@ -360,6 +360,11 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         // `color_label` composes into `grey unmounted (root 'x')`. The same
         // ruling binds u14i, U14 and U15 — do not re-spell it.
         Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
+        // S3-R49 — the BARE form of the ONE shared word. `config`'s mount plane
+        // wraps the same const as `grey(path-unseeable)`; this plane takes it
+        // bare and `color_label` wraps. The two agree by construction: a
+        // compile-time assertion in `config` fails the BUILD if they drift.
+        Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
         Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
         Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
@@ -382,6 +387,44 @@ pub fn color_detail(color: &Color) -> Option<String> {
         // is the one-line form the listing carries, and it still names the root
         // — a refusal that cannot say WHICH mount is missing teaches nothing.
         Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
+        // The PATH is the detail here, never the mount entry — the entry is
+        // already correct, which is the whole distinction S3-R43 draws.
+        Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
+            Some(format!("{path} ({detail})"))
+        }
+        _ => None,
+    }
+}
+
+/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
+/// reason word already says everything.
+///
+/// **S3-R51 — this is the output path `render_unmounted` did not have.** Round 1
+/// shipped a pinned teaching-refusal exemplar that NOTHING called: the walk
+/// rendered [`color_label`] and the refusal existed only as a `const` and its
+/// tests. That is S3-R23(4)'s weakened middle — an assertion claiming a wording
+/// no user could ever see.
+///
+/// **WIRED rather than struck**, and the reason is that the two options are not
+/// symmetric. D8 requires a *teaching* refusal naming the missing mount, and it
+/// is a gate on this unit's card; striking the renderer would have left that gate
+/// satisfied only in its weaker half — the reason word names the mount, but
+/// nothing teaches the fix — and narrowing a criterion is the Advisor's pen
+/// (R27), not an implementer's. Wiring closes the weakened middle AND discharges
+/// D8 in full, so it strictly dominates. The two never collided, so nothing
+/// routed up.
+///
+/// `address` is the ref as the page DECLARED it — the refusal echoes what the
+/// author wrote, not what resolution made of it.
+#[must_use]
+pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
+    match color {
+        Color::Grey(GreyReason::Unmounted { root }) => {
+            Some(model::selector::render_unmounted(root, address))
+        }
+        Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
+            Some(model::selector::render_path_unseeable(root, path, detail))
+        }
         _ => None,
     }
 }
@@ -474,7 +517,8 @@ fn steps_from(
                     // Only an AMBIENT edge reverses into an ambient page: a
                     // cross-root edge whose in-root path happens to equal an
                     // ambient path names a different document entirely.
-                    if edge.to_root.is_none() && edge.unmounted.is_none() && edge.to_path == page {
+                    if edge.to_root.is_none() && edge.root_refusal.is_none() && edge.to_path == page
+                    {
                         steps.push(Step {
                             selector: src.clone(),
                             pinned_rev: edge.pinned_rev.clone(),
@@ -503,7 +547,7 @@ fn step_selector(src: &str, edge: &LockItem) -> String {
     // An UNMOUNTED edge never resolved, so it is named by the address the page
     // declared — the only honest name available, and the one the refusal teaches
     // against.
-    if edge.unmounted.is_some() {
+    if edge.root_refusal.is_some() {
         return edge.declared_ref.clone();
     }
     edge_address(edge)
@@ -584,8 +628,8 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     // unmounted root is ABSENT — which classifies as red `selector-unresolved`.
     // Checking grey second would therefore render exactly the plausible-looking
     // wrong answer this unit exists to remove.
-    if let Some(root) = &edge.unmounted {
-        return Color::Grey(GreyReason::Unmounted { root: root.clone() });
+    if let Some(reason) = &edge.root_refusal {
+        return Color::Grey(reason.clone());
     }
     // The target's bytes come from the root the address RESOLVED INTO — never
     // the ambient corpus. Reading the ambient one here is FINDING 03's wrong

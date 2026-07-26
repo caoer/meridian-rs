@@ -360,6 +360,28 @@ impl fmt::Display for Addr {
     }
 }
 
+/// **THE reason word for a root that is DECLARED but cannot be read here — the
+/// ONE source, in the BARE form (S3-R49).**
+///
+/// It lives in this leaf because TWO planes print it and a second literal is how
+/// one state grows two spellings:
+///
+/// - the **mount** plane (`config::mount::MountState::PathUnseeable`) wraps it as
+///   `grey(path-unseeable)` — the form `mrd config` prints;
+/// - the **address** plane (`model::selector` / `view::walk`) takes it BARE, the
+///   form `color_reason` returns, and lets its own renderer wrap.
+///
+/// **Reused, never minted.** U11 round 2 was ruled a NEW word
+/// (`root-unreachable`) and the enumeration this unit was obliged to run found
+/// that U7 already shipped this one for the same observed state, citing the same
+/// M6 row, with a teaching that already names the path. Minting a synonym would
+/// have been exactly the cross-crate re-spelling S3-R6 forbids.
+///
+/// **The wrapping is derived, not duplicated:** each plane's wrapped spelling is
+/// checked against this const at COMPILE TIME, so the two agree by construction
+/// rather than by two literals that happen to match today.
+pub const PATH_UNSEEABLE_REASON_WORD: &str = "path-unseeable";
+
 /// **The ONE lexical confinement predicate for a corpus-relative path.**
 ///
 /// A path is confined when it is non-empty, does not start with `/`, has no
@@ -408,12 +430,37 @@ pub fn confined(path: &str) -> bool {
 /// and a second implementation of an address fact is the exact defect D12 keeps
 /// producing: one question, two answers.
 ///
-/// The surface is deliberately the two questions a resolver asks — *is this
-/// name bound*, and *which names are bound* (so a refusal can teach). Anything
-/// beyond that is U11's to add once its real needs are known.
+/// The surface answers the three questions a resolver asks — *is this name
+/// bound*, *which names are bound* (so a refusal can teach), and — S3-R43 —
+/// *is this name DECLARED but unreadable here*, which is a different fact from
+/// both and needs its own answer.
+///
+/// **Why the third question exists (S3-R43).** Round 1 carried only "bound or
+/// not", so a root the file DECLARES but this machine cannot read was
+/// indistinguishable from one nobody ever declared. The refusal for the second
+/// says *"declare it in `~/MERIDIAN.md`"* — on the first that sentence is FALSE
+/// and the prescribed fix is ALREADY DONE. A teaching refusal that prescribes a
+/// completed action is worse than a bare class: it spends the user's trust and
+/// their time and leaves no signal pointing at the real cause.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MountSet {
     bound: Vec<MountName>,
+    unreachable: Vec<UnreachableRoot>,
+}
+
+/// A root the mount table DECLARES but this machine cannot read — the path is
+/// absent, unreadable, or holds no corpus.
+///
+/// Carries the PATH, because that is what its refusal must name: the mount entry
+/// is already correct, so naming the entry teaches nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachableRoot {
+    /// The canonical name the file declares.
+    pub name: MountName,
+    /// The path it is declared at — what a reader must go and check.
+    pub path: String,
+    /// The underlying reason, verbatim from the filesystem or the corpus build.
+    pub detail: String,
 }
 
 impl MountSet {
@@ -426,7 +473,33 @@ impl MountSet {
                 names.push(name);
             }
         }
-        MountSet { bound: names }
+        MountSet {
+            bound: names,
+            unreachable: Vec::new(),
+        }
+    }
+
+    /// Record a DECLARED root this machine cannot read, with the path to check
+    /// and the underlying reason. Chainable.
+    ///
+    /// Such a name is **not** bound — [`MountSet::is_bound`] stays false — but it
+    /// is not undeclared either, and [`MountSet::unreachable`] is how a resolver
+    /// tells the two apart.
+    #[must_use]
+    pub fn with_unreachable(
+        mut self,
+        name: MountName,
+        path: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.bound.retain(|n| n != &name);
+        self.unreachable.retain(|u| u.name != name);
+        self.unreachable.push(UnreachableRoot {
+            name,
+            path: path.into(),
+            detail: detail.into(),
+        });
+        self
     }
 
     /// Does this machine bind `name`?
@@ -439,6 +512,19 @@ impl MountSet {
     #[must_use]
     pub fn bound_names(&self) -> &[MountName] {
         &self.bound
+    }
+
+    /// Is `name` DECLARED but unreadable here? `None` when it is bound, or when
+    /// nothing declares it at all.
+    #[must_use]
+    pub fn unreachable(&self, name: &MountName) -> Option<&UnreachableRoot> {
+        self.unreachable.iter().find(|u| &u.name == name)
+    }
+
+    /// Every declared-but-unreadable root.
+    #[must_use]
+    pub fn unreachable_roots(&self) -> &[UnreachableRoot] {
+        &self.unreachable
     }
 }
 

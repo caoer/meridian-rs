@@ -1791,20 +1791,40 @@ impl CorpusIndex {
             };
         };
 
-        // (a) The mount table is the authority on binding. An unbound name is
-        //     GREY — never `file_not_found`, never red (R-3: grey outranks red;
-        //     nothing drifted, the ledger simply cannot see from here).
+        // (a) The mount table is the authority, and it answers TWO questions,
+        //     not one — S3-R43. A name it does not know at all is GREY
+        //     `unmounted`, and the fix is to declare it. A name it DECLARES but
+        //     cannot read is a different cause with a different fix: the entry
+        //     is already right, so the refusal must name the PATH.
+        //
+        //     Round 1 collapsed these, and the collapse was not theoretical —
+        //     `mrd walk` told a user to declare a root that `mrd config`, one
+        //     command away, was already reporting as declared-and-unreadable.
+        //     A teaching refusal that prescribes a COMPLETED ACTION spends the
+        //     user's trust and their time and points at nothing.
         if !mounts.is_bound(&root) {
-            return RefResolution::Unmounted(root);
+            return match mounts.unreachable(&root) {
+                Some(u) => RefResolution::PathUnseeable {
+                    root,
+                    path: u.path.clone(),
+                    detail: u.detail.clone(),
+                },
+                None => RefResolution::Unmounted(root),
+            };
         }
 
-        // (b) Bound, but this process holds no corpus for it — the path is
-        //     absent or unreadable (§ 8 M6). Same MEANING, so the same reason
-        //     word: this machine cannot see into that root right now. Inventing
-        //     a second spelling here would be exactly the local vocabulary
-        //     S3-R6 forbids.
+        // (b) The table says bound, but this process holds no corpus for it.
+        //     That is a caller inconsistency rather than a machine fact, and it
+        //     is reported as unreachable — never as UNDECLARED, which is the one
+        //     thing it demonstrably is not.
         let Some(mounted) = corpus.root(&root) else {
-            return RefResolution::Unmounted(root);
+            return RefResolution::PathUnseeable {
+                root,
+                path: String::new(),
+                detail: "the mount table binds this root, but no corpus for it \
+                         was loaded in this process"
+                    .to_owned(),
+            };
         };
 
         // (c) An OPAQUE root has no parse and no sections, so a `#selector`
@@ -1991,9 +2011,24 @@ pub enum RefResolution {
         /// The corpus path inside that root.
         path: String,
     },
-    /// The address names a root this machine does not bind, or binds without
-    /// being able to read. **GREY, never red and never `file_not_found`.**
+    /// The address names a root **nothing declares** — the mount table has never
+    /// heard of it. **GREY, never red and never `file_not_found`.** Its refusal
+    /// teaches the declaration.
     Unmounted(MountName),
+    /// The address names a root the file **DECLARES** but this machine cannot
+    /// read. Also grey, also exit 1 — but a **different cause with a different
+    /// fix**, so S3-R43 gives it its own reason word and a refusal naming the
+    /// PATH. Telling a user to declare a root they have already declared is the
+    /// defect this variant exists to remove.
+    PathUnseeable {
+        /// The canonical name the file declares.
+        root: MountName,
+        /// The path it binds — what the refusal tells a reader to check. Empty
+        /// only in the caller-inconsistency case, where no path is known.
+        path: String,
+        /// The underlying reason, verbatim.
+        detail: String,
+    },
     /// Well-formed, its root (if any) bound and readable — but the path names
     /// nothing in THAT root's corpus.
     NotFound,
@@ -2018,11 +2053,26 @@ impl RefResolution {
         }
     }
 
-    /// Did this address name a root this machine cannot see into?
+    /// Did this address name a root **nothing declares**?
+    ///
+    /// Deliberately NOT true for [`RefResolution::PathUnseeable`]: that root
+    /// IS declared, and a caller that treats the two alike reproduces exactly
+    /// the false teaching S3-R43 removed.
     #[must_use]
     pub fn unmounted(&self) -> Option<&MountName> {
         match self {
             RefResolution::Unmounted(root) => Some(root),
+            _ => None,
+        }
+    }
+
+    /// Did this address name a root that is DECLARED but unreadable here?
+    #[must_use]
+    pub fn path_unseeable(&self) -> Option<(&MountName, &str, &str)> {
+        match self {
+            RefResolution::PathUnseeable { root, path, detail } => {
+                Some((root, path.as_str(), detail.as_str()))
+            }
             _ => None,
         }
     }

@@ -16,6 +16,10 @@ workspace = true
 # is what "config is content" means — so this crate is downstream of `model`
 # and mints no rev law of its own (schema §7.1).
 model = { workspace = true }
+# S3-R49 — the ONE source for the `path-unseeable` reason word this plane and the
+# address plane both print. A std-only leaf already in the graph via `model`; no
+# new external crate enters, `cargo deny` unchanged.
+addr = { workspace = true }
 syntax = { workspace = true }
 # The reserved `meridian-*` block-language namespace predicate
 # (`lock::is_meridian_lang`). ONE predicate for every engine block, never an
