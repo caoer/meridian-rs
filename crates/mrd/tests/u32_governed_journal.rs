@@ -263,12 +263,24 @@ fn governed_writes_leave_check_green() {
         // verdict line and no exit code**: this leg still asserts exit 0 above, and
         // `s4r21_fence_line.rs` holds the exit invariant directly by reading one
         // checkout fenced and unfenced.
+        //
+        // AMENDED by card `fence-clause-axis`, adjudicated by the advisor ruling
+        // it carries: the count's clause claims only what the count measured.
+        // `0 of 3 doors carry this engine's fence` asserted CURRENCY that
+        // `Coverage::fenced_doors` never takes — visible on a skewed checkout,
+        // where the same clause read `3 of 3 doors carry this engine's fence`
+        // beside the word `installed-superseded`. The count keeps its semantics
+        // (coverage, blind to generation, contract unmoved) and the clause now
+        // names that axis: `… carry this engine's fence marker, at any
+        // generation`. **Only that clause moved** — every verdict line here is
+        // byte-identical and the exit code above is unmoved.
         format!(
             "check core {}\n  interval: worktree — the bytes on disk. The git INDEX was not \
              read, so this says nothing about what a commit would record: `mrd check --staged` \
              asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
              anchoring: 0 anchored · 0 pending-anchor · 1 never-anchored\n  fence: absent — 0 \
-             of 3 doors carry this engine's fence; `$GIT_DIR/hooks` is never a tracked path, \
+             of 3 doors carry this engine's fence marker, at any generation; \
+             `$GIT_DIR/hooks` is never a tracked path, \
              so no clone, fetch or pull carries a fence and a fresh checkout is unfenced BY \
              DESIGN — `mrd hook install` fences this one, per checkout and opt-in · REPORTED, \
              never gated on — fence coverage is a property of this local checkout and not of \
