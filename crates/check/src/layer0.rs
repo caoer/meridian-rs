@@ -206,6 +206,105 @@ pub fn journal_trace_of(journal_page: &str, live_root: &str) -> JournalTrace {
     }
 }
 
+/// [`journal_trace_of`] for an interval that is **not the worktree**, dated against
+/// the RECORD rather than only against its own last row.
+///
+/// `staged_page`/`staged_root` are that interval's own journal bytes and fold;
+/// `worktree_page` is the worktree's journal — the most complete record of what the
+/// engine has written, and the one the worktree pass separately validates in the
+/// same run.
+///
+/// # The predicate this widens, stated because the claim changed (S3-R29)
+/// Dating a snapshot against its OWN journal's last row asks *"are these bytes the
+/// CURRENT governed state?"* — and **a legitimately staged intermediate state is
+/// not.** `git add` stages content without the journal, so an ordinary
+/// `git add` → further governed write leaves the staged tree folding to an earlier
+/// receipt's `root_after` while the staged journal still ends before it. Measured:
+/// the staged fold equalled `^r-000002`'s `root_after` while the staged journal
+/// ended at `^r-000001`. Refusing that is a FALSE RED — the engine wrote every byte
+/// of both states — and it brakes `git add -p` and every `git add` followed by a
+/// further governed write, which is the common path on a fleet writing continuously.
+///
+/// So the question here is *"were these bytes PRODUCED BY A GOVERNED WRITE, and is
+/// the journal being committed a truthful prefix of the record?"* — weaker than the
+/// worktree's question, and **the two conditions are a PAIR because each catches
+/// what the other misses**:
+///
+/// - **membership alone** would let a staged JOURNAL forgery through: the journal is
+///   root-EXCLUDED from the hash domain, so splicing a row moves no fold at all.
+/// - **the prefix alone** would let a staged CONTENT forgery through: forging a
+///   governed file leaves the journal untouched, so the prefix holds trivially.
+///
+/// Neither condition is sufficient and the arms that prove it are separate
+/// (`a_staged_journal_forgery_…` and
+/// `the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write`).
+///
+/// # It only WIDENS — it never turns a red into a green
+/// The own-journal test runs first and unchanged, and the chain recompute runs on
+/// the STAGED rows whichever way the baseline was satisfied, so a spliced row still
+/// reddens. A forgery matches no receipt and keeps the grey it had.
+#[must_use]
+pub fn staged_trace(staged_page: &str, staged_root: &str, worktree_page: &str) -> JournalTrace {
+    let rows = parse_rows(staged_page);
+    let recorded = parse_rows(worktree_page);
+    let accounted = || is_prefix_of(&rows, &recorded) && accounts_for(&recorded, staged_root);
+    match detect_baseline(&rows, staged_root) {
+        // Its own journal dates it: the shipped answer, untouched.
+        Some(Ok(())) => JournalTrace::Assessed {
+            chain: check_chain(&rows),
+        },
+        Some(Err(mismatch)) => {
+            if accounted() {
+                JournalTrace::Assessed {
+                    chain: check_chain(&rows),
+                }
+            } else {
+                JournalTrace::StaleBaseline(mismatch)
+            }
+        }
+        // No rows staged at all — a repository whose journal is not committed. The
+        // empty row list is trivially a prefix, so this rests entirely on the fold
+        // matching a receipt in the record; with no record either, it stays grey.
+        None => {
+            if accounted() {
+                JournalTrace::Assessed {
+                    chain: check_chain(&rows),
+                }
+            } else {
+                JournalTrace::NoBaseline
+            }
+        }
+    }
+}
+
+/// Is `rows` a PREFIX of `recorded` — the same rows, in the same order, from the
+/// start? A staged journal that is an earlier prefix of the record is a truthful
+/// earlier journal; one that diverges anywhere has a row the record does not have.
+///
+/// Compared field by field on the three facts a row asserts (its anchor and its two
+/// roots), never by page bytes: a prefix must survive reformatting of the page it
+/// sits in, and a row whose ROOTS were altered must not survive at all.
+fn is_prefix_of(rows: &[ParsedRow], recorded: &[ParsedRow]) -> bool {
+    rows.len() <= recorded.len()
+        && rows.iter().zip(recorded).all(|(a, b)| {
+            a.anchor == b.anchor && a.root_before == b.root_before && a.root_after == b.root_after
+        })
+}
+
+/// Does the RECORD account for `root` — is it a tree root some governed write
+/// produced (a row's `root_after`) or started from (a `root_before`, which covers
+/// the genesis state no row's `root_after` names)?
+///
+/// **This is the whole discriminator between a legitimate intermediate state and a
+/// forgery**: the engine only ever recorded roots it produced, so a forged tree
+/// matches nothing here, while every state the engine passed through matches
+/// exactly one row.
+fn accounts_for(recorded: &[ParsedRow], root: &str) -> bool {
+    recorded
+        .iter()
+        .any(|row| row.root_after == root || row.root_before == root)
+}
+
 /// **The baseline check** (d2 §3 journal TRACE, "last-receipt-vs-live"): can the
 /// journal date the tree it is being read against? `None` = no rows at all;
 /// `Some(Err)` = the last receipt's recorded `root_after` is not the live root;
@@ -1034,5 +1133,180 @@ mod tests {
         let err = claims_realised(&root, std::slice::from_ref(&claim))
             .expect_err("a faulting observation is an error, not a drift");
         assert_eq!(err.reason, "observation faulted");
+    }
+
+    // ── the STAGED interval's baseline: the PAIR, each condition shown NECESSARY ──
+
+    /// A journal page from `(anchor, root_before, root_after)` triples — the three
+    /// facts a row asserts, in the shipped row grammar.
+    fn journal(rows: &[(&str, &str, &str)]) -> String {
+        use std::fmt::Write as _;
+        let mut page = String::new();
+        for (anchor, before, after) in rows {
+            let _ = writeln!(
+                page,
+                "- op=splice path=p.md root_before={before} root_after={after} edits=0 ^{anchor}"
+            );
+        }
+        page
+    }
+
+    /// The RECORD used by every case below: three governed writes, r1 -> r2 -> r3.
+    fn record() -> String {
+        journal(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:R1", "b3:R2"),
+            ("r-000003", "b3:R2", "b3:R3"),
+        ])
+    }
+
+    /// **THE FALSE RED, FIXED.** A legitimate partial stage: the staged journal is an
+    /// earlier PREFIX (it ends at r1) while the staged tree folds to r2's
+    /// `root_after`, because `git add` stages content without the journal. Dating it
+    /// against its own last row calls that "something advanced the tree that the
+    /// journal does not account for" — when the engine wrote both states.
+    #[test]
+    fn a_staged_intermediate_governed_state_is_accounted_for() {
+        let staged = journal(&[("r-000001", "b3:GENESIS", "b3:R1")]);
+        // The two conditions, measured apart — this is the arm that says WHY it passes.
+        let rows = parse_rows(&staged);
+        let recorded = parse_rows(&record());
+        assert!(is_prefix_of(&rows, &recorded), "a truthful earlier journal");
+        assert!(
+            accounts_for(&recorded, "b3:R2"),
+            "a root the engine produced"
+        );
+        // And its own journal does NOT date it, which is why the shipped test alone
+        // produced the false red.
+        assert!(
+            matches!(detect_baseline(&rows, "b3:R2"), Some(Err(_))),
+            "the own-journal test fails here BY CONSTRUCTION — that is the false red"
+        );
+        assert!(
+            matches!(
+                staged_trace(&staged, "b3:R2", &record()),
+                JournalTrace::Assessed { ref chain } if chain.is_green()
+            ),
+            "so the record dates it instead, and the chain over the staged rows is green"
+        );
+    }
+
+    /// **MEMBERSHIP IS NECESSARY — the prefix alone would let a CONTENT forgery
+    /// through.** Forging a governed file leaves the journal untouched, so the prefix
+    /// condition holds trivially; only membership can tell that no governed write
+    /// ever produced these bytes.
+    #[test]
+    fn a_forged_tree_is_refused_and_the_prefix_condition_alone_would_not_see_it() {
+        let staged = journal(&[("r-000001", "b3:GENESIS", "b3:R1")]);
+        let rows = parse_rows(&staged);
+        let recorded = parse_rows(&record());
+        assert!(
+            is_prefix_of(&rows, &recorded),
+            "THE POINT: the forgery did not touch the journal, so the prefix holds"
+        );
+        assert!(
+            !accounts_for(&recorded, "b3:FORGED"),
+            "and membership is the ONLY condition that fails — it is load-bearing"
+        );
+        assert!(
+            matches!(
+                staged_trace(&staged, "b3:FORGED", &record()),
+                JournalTrace::StaleBaseline(_)
+            ),
+            "so the interval refuses, grey, with the evidence it has"
+        );
+    }
+
+    /// **THE PREFIX IS NECESSARY on the widened path** — membership alone would let a
+    /// journal the record does not contain vouch for a staged tree.
+    ///
+    /// The journal is root-EXCLUDED from the hash domain, so rows invented only in
+    /// the index move no fold. Here the staged tree folds to a REAL recorded root
+    /// (so membership passes) while the staged journal carries a row the record
+    /// never had — and the widened path refuses it on the prefix alone.
+    #[test]
+    fn the_widened_path_refuses_a_journal_the_record_does_not_contain() {
+        let staged = journal(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:R1", "b3:INVENTED"),
+        ]);
+        let rows = parse_rows(&staged);
+        let recorded = parse_rows(&record());
+        // The widened path is the one under test: this journal does NOT date the
+        // staged tree by itself, so acceptance can only come from the record.
+        assert!(
+            matches!(detect_baseline(&rows, "b3:R2"), Some(Err(_))),
+            "the own-journal test does not date it — the widening is what is being asked"
+        );
+        assert!(
+            accounts_for(&recorded, "b3:R2"),
+            "THE POINT: membership PASSES — the staged tree is a real recorded root"
+        );
+        assert!(
+            !is_prefix_of(&rows, &recorded),
+            "and the prefix is the ONLY condition that fails — it is load-bearing"
+        );
+        assert!(
+            matches!(
+                staged_trace(&staged, "b3:R2", &record()),
+                JournalTrace::StaleBaseline(_)
+            ),
+            "so it refuses"
+        );
+    }
+
+    /// **RESIDUAL #2's staged face, asserted as the state it is rather than left to
+    /// be discovered.** A journal fabricated in the index whose invented row DATES
+    /// its own staged tree is ACCEPTED — the own-journal test is satisfied and the
+    /// chain is continuous, so neither the record nor `check_chain` is consulted.
+    ///
+    /// **This is not new and it is not this widening's doing**: it is the same
+    /// answer the first interval fix gave, and the same answer the shipped engine
+    /// gives (which never reads the index at all). It is
+    /// `fs::domain::RESERVED_JOURNAL_PATH` residual 2 — *root-preserving online
+    /// forged-row insertion* — reached through the index, and it still requires
+    /// writing the reserved journal out of band, which the receipt-engine-only
+    /// restriction refuses and the git witness records.
+    ///
+    /// Asserted here so that a later reader finds the boundary stated, not implied:
+    /// **the prefix condition bounds the WIDENED path, not the own-journal path.**
+    #[test]
+    fn a_fabricated_journal_that_dates_its_own_staged_tree_is_residual_two_not_a_new_hole() {
+        let staged = journal(&[
+            ("r-000001", "b3:GENESIS", "b3:R1"),
+            ("r-000002", "b3:R1", "b3:FABRICATED"),
+        ]);
+        let rows = parse_rows(&staged);
+        assert!(
+            check_chain(&rows).is_green(),
+            "the fabricated row CHAINS, so the chain recompute cannot see it"
+        );
+        assert!(
+            matches!(detect_baseline(&rows, "b3:FABRICATED"), Some(Ok(()))),
+            "and it dates its own staged tree, so the own-journal test accepts first"
+        );
+        assert!(
+            matches!(
+                staged_trace(&staged, "b3:FABRICATED", &record()),
+                JournalTrace::Assessed { ref chain } if chain.is_green()
+            ),
+            "ACCEPTED — stated plainly. The record is not consulted on this path, and \
+             pretending otherwise in a test name would be the false claim this lane hunts"
+        );
+        assert!(
+            !accounts_for(&parse_rows(&record()), "b3:FABRICATED"),
+            "the record never produced that root — which is what an s4 rider now owns"
+        );
+    }
+
+    /// **A workspace with no record refuses, rather than accepting anything.** An
+    /// empty row list is trivially a prefix, so this case rests entirely on
+    /// membership — and with nothing recorded, nothing is accounted for.
+    #[test]
+    fn an_empty_record_accounts_for_nothing() {
+        assert!(
+            matches!(staged_trace("", "b3:R2", ""), JournalTrace::NoBaseline),
+            "no rows anywhere is not a licence"
+        );
     }
 }

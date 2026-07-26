@@ -49,7 +49,7 @@ use model::Document;
 pub use layer0::{
     BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace, NO_BASELINE_DETAIL,
     OrphanedBlob, PinPlane, PinRow, claims_realised, journal_page, journal_trace, journal_trace_of,
-    pin_plane,
+    pin_plane, staged_trace,
 };
 pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
 
@@ -233,6 +233,29 @@ pub fn core_of(
 ) -> CoreReport {
     CoreReport {
         trace: journal_trace_of(journal_page, live_root),
+        drifted_claims: Vec::new(),
+        pins: pin_plane(root, docs, pins),
+    }
+}
+
+/// [`core_of`] for an interval dated against the RECORD — the worktree's journal —
+/// rather than only against its own last row ([`staged_trace`]).
+///
+/// The pin plane and the object store are unchanged; the only difference is the
+/// journal TRACE, because a legitimately staged INTERMEDIATE governed state is not
+/// the current one and refusing it is a false red. `worktree_journal` is the record;
+/// the worktree pass validates it in the same run.
+#[must_use]
+pub fn core_of_staged(
+    root: &WorkspaceRoot,
+    journal_page: &str,
+    live_root: &str,
+    worktree_journal: &str,
+    docs: &BTreeMap<String, Document>,
+    pins: &[PinRow],
+) -> CoreReport {
+    CoreReport {
+        trace: staged_trace(journal_page, live_root, worktree_journal),
         drifted_claims: Vec::new(),
         pins: pin_plane(root, docs, pins),
     }
