@@ -252,10 +252,18 @@ fn governed_writes_leave_check_green() {
     assert_eq!(
         stdout(&out),
         format!(
-            "check core {}\n  chain: green\n  foreign_edit: none\n",
+            "check core {}\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
+             anchoring: 0 anchored · 0 pending-anchor · 1 never-anchored\n",
             root.0.display()
         ),
-        "and it is the honest green, earned against a current baseline"
+        "and it is the honest green, earned against a current baseline — U14 added \
+         the two PIN-PLANE lines and the journal lines above are unmoved, which is \
+         what this gate was written to pin.\n\
+         The `never-anchored` count is the ORDINARY state here and check is GREEN \
+         over it: a non-vibe `mrd pin` hashes without `-w`, so between the pin and \
+         `git add` the blob is in no object database. Refusing on that state — or \
+         on the `pending-anchor` one a `git add` produces — would refuse every \
+         governed commit there has ever been"
     );
 
     // (2) `mrd put` — a batch splice, so the row is not a pin special case.
