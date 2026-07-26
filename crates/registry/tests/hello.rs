@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::symlink;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -208,51 +209,261 @@ fn hello_with_an_unknown_rev_is_a_loud_refusal() {
     );
 }
 
-/// `hello` folds `Registry::resolve`'s ancestor walk: a hello from a SUBDIR of
-/// an already-pinned workspace binds to (and pins) the registered ancestor, not
-/// a second nested workspace. The storage pin is the ancestor's drawer, and the
-/// registry still holds exactly one entry.
+/// **The exact-or-refuse gate** (marker-retirement ruling, 2026-07-26).
+///
+/// `hello.workspace` is a DECLARATION, so it binds exactly the declared path
+/// even when an ancestor is already registered. This test replaced one that
+/// asserted the opposite — that a subdir hello resolved UP to the registered
+/// ancestor — which is the defect the ruling names: a declared root silently
+/// widening to an enclosing tree. The read/put jail root must be the one
+/// explicit path the caller declared, so this is the regression test for that
+/// bug and must not be weakened back into an ancestor walk.
+///
+/// Note the ancestor walk itself is not gone: it lives on in
+/// `Registry::pin_for_cwd`, where the input really is a cwd hint.
 #[test]
-fn hello_folds_the_ancestor_walk_resolve() {
+fn hello_declaration_binds_exactly_never_a_registered_ancestor() {
     let tmp = TempDir::new().unwrap();
     let ws = write_ws(
         &tmp,
         "ws",
         &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")],
     );
-    fs::create_dir_all(ws.join("sub/deep")).unwrap();
+    let nested = ws.join("sub/deep");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("c.md"), "# C\n").unwrap();
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // Pin the workspace root.
+    // Register the ANCESTOR first — the precondition that used to swallow the
+    // declaration below.
     let root_pin = conn.hello(&ws);
     let root_storage = root_pin["body"]["storage"]
         .as_str()
         .expect("root hello pins storage")
         .to_string();
+    let root_bound = root_pin["body"]["workspace"]
+        .as_str()
+        .expect("hello names the bound root")
+        .to_string();
 
-    // Hello from a subdir resolves UP to the registered ancestor: same drawer.
-    let sub_pin = conn.hello(&ws.join("sub/deep"));
+    // Now DECLARE the nested path. It must bind itself, not the ancestor.
+    let sub_pin = conn.hello(&nested);
+    let sub_bound = sub_pin["body"]["workspace"]
+        .as_str()
+        .expect("hello names the bound root");
     assert_eq!(
+        Path::new(sub_bound),
+        fs::canonicalize(&nested).unwrap(),
+        "a declared path binds ITSELF, never a registered ancestor: {sub_pin}"
+    );
+    assert_ne!(
+        sub_bound, root_bound,
+        "the declaration did not widen to the ancestor: {sub_pin}"
+    );
+    assert_ne!(
         sub_pin["body"]["storage"].as_str(),
         Some(root_storage.as_str()),
-        "a subdir hello pins the ANCESTOR's drawer (ancestor walk): {sub_pin}"
+        "an exactly-bound declaration gets its OWN drawer: {sub_pin}"
     );
 
-    // No nested registration: the ancestor walk kept the registry at one entry.
+    // Both are registered now — the declaration registered itself.
+    let listed = conn.call(&json!({"op": "list"}));
+    assert_eq!(
+        listed["entries"].as_array().map(Vec::len),
+        Some(2),
+        "the declared path registered itself alongside the ancestor: {listed}"
+    );
+
+    // And the bound corpus is the DECLARED tree's, not the ancestor's: `c.md`
+    // is addressable at its root, while the ancestor's `a.md` is not in scope.
+    let toc = conn.call(&json!({"op": "toc", "path": "c.md"}));
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "the declared tree's own file is addressable: {toc}"
+    );
+
+    server.shutdown();
+}
+
+/// **Landing evidence for the 26-13 jail premise.** A declared path that is a
+/// SYMLINK binds the canonicalized real path, and the hello response NAMES it.
+///
+/// This is why clause 1 survives exact-or-refuse: "exact" means no ancestor
+/// widening, NOT identical bytes. Canonicalization still rewrites the caller's
+/// spelling, so a caller that assumed its own string was the jail root would be
+/// wrong — it learns the real root from the answer instead.
+#[test]
+fn a_declared_symlink_binds_the_canonical_root_and_the_answer_names_it() {
+    let tmp = TempDir::new().unwrap();
+    let real = write_ws(&tmp, "real/proj", &[("a.md", "# A\n")]);
+    // tmp/link -> tmp/real, so tmp/link/proj is a second spelling of `real`.
+    symlink(tmp.path().join("real"), tmp.path().join("link")).unwrap();
+    let declared = tmp.path().join("link/proj");
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    // FIXTURE PRECONDITION, asserted before anything about `hello`. If the
+    // symlink silently failed, or a platform handed us an already-canonical
+    // temp root, the declared and canonical spellings would coincide and every
+    // assertion below would hold VACUOUSLY. Fail as mis-constructed instead.
+    // (Provenance: `./tmp` does not realpath through `/private` while the macOS
+    // default TMPDIR does — two workers once measured one commit red and green,
+    // neither wrong. Nothing here hardcodes `/private`; the expected value is
+    // derived at runtime, and the temp root is reported on failure.)
+    let canonical = fs::canonicalize(&real).unwrap();
+    assert_ne!(
+        declared.as_path(),
+        canonical.as_path(),
+        "MIS-CONSTRUCTED FIXTURE: the declared spelling must differ from the \
+         canonical root or this test discriminates nothing. Built under {}",
+        tmp.path().display()
+    );
+
+    let hi = conn.hello(&declared);
+    assert_eq!(hi["ok"], json!(true), "symlinked declaration ok: {hi}");
+
+    let bound = hi["body"]["workspace"]
+        .as_str()
+        .expect("hello names the bound root");
+
+    // The answer names the CANONICAL root...
+    assert_eq!(
+        Path::new(bound),
+        canonical,
+        "the answer names the canonicalized bound root: {hi}"
+    );
+    // ...which is NOT the string the caller declared. Without this field the
+    // caller could not learn that.
+    assert_ne!(
+        Path::new(bound),
+        declared.as_path(),
+        "the bound root differs from the declared spelling — the field is \
+         load-bearing, not decorative: {hi}"
+    );
+
+    // Declaring the real path is the SAME workspace: one identity, one entry.
+    let again = conn.hello(&real);
+    assert_eq!(
+        again["body"]["workspace"].as_str(),
+        Some(bound),
+        "both spellings name one identity: {again}"
+    );
     let listed = conn.call(&json!({"op": "list"}));
     assert_eq!(
         listed["entries"].as_array().map(Vec::len),
         Some(1),
-        "the ancestor walk avoids a nested registration: {listed}"
+        "two spellings of one tree register once: {listed}"
     );
 
-    // The subdir connection is bound to the ancestor's corpus.
-    let links = conn.call(&json!({"op": "links", "path": "a.md"}));
+    server.shutdown();
+}
+
+/// **The ceiling-escape gate.** A declared path that LOOKS ordinary — an entry
+/// directly under the temp root, a sibling of paths that bind fine — but which
+/// RESOLVES into a denied root must refuse.
+///
+/// The ceiling is symlink-safe twice over, and this pins both layers at once:
+/// `Registry::register` canonicalizes before applying the ceiling, and
+/// `workspace::deny_reason` independently canonicalizes its argument
+/// (`resolve_ref`). Either alone would stop the escape; a refactor would have
+/// to break both to let a symlink walk through, and this test notices if it
+/// does. It also pins that the ceiling is about the RESOLVED tree, not the
+/// spelling — the same law the mount table reuses whole.
+#[test]
+fn a_declaration_whose_canonical_target_is_denied_refuses() {
+    let tmp = TempDir::new().unwrap();
+    // `/tmp` is a denied root (DenyReason::TempDir), denied by its CANONICAL
+    // form, so this holds wherever /tmp resolves to.
+    let escape = tmp.path().join("escape");
+    symlink("/tmp", &escape).unwrap();
+    let ordinary = write_ws(&tmp, "ordinary", &[("a.md", "# A\n")]);
+
+    // PRECONDITION — the discrimination. A sibling real directory in the SAME
+    // temp root binds fine, so the refusal below cannot be "everything under
+    // the temp root is denied". The only difference is where the link points.
     assert_eq!(
-        links["body"]["files"]["a.md"]["resolved"]["b.md"],
-        json!(1),
-        "the bound corpus is the ancestor's: {links}"
+        workspace::deny_reason(&ordinary),
+        None,
+        "MIS-CONSTRUCTED FIXTURE: an ordinary sibling must be allowed, or the \
+         refusal proves nothing about symlink escape. Built under {}",
+        tmp.path().display()
+    );
+    assert!(
+        workspace::deny_reason(&escape).is_some(),
+        "MIS-CONSTRUCTED FIXTURE: the escaping link must be denied. Built \
+         under {}",
+        tmp.path().display()
+    );
+    // And the escape is denied for its TARGET, not its own spelling: the link
+    // sits under the temp root, whose real entries are allowed above.
+    assert_ne!(
+        fs::canonicalize(&escape).unwrap(),
+        escape.as_path(),
+        "MIS-CONSTRUCTED FIXTURE: the link must actually resolve elsewhere. \
+         Built under {}",
+        tmp.path().display()
+    );
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let refused = conn.hello(&escape);
+    assert_eq!(
+        refused["ok"],
+        json!(false),
+        "a declaration resolving into the deny ceiling refuses: {refused}"
+    );
+    assert_eq!(
+        refused["error"]["code"],
+        json!("bad_request"),
+        "the refusal is bad_request: {refused}"
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("deny ceiling")),
+        "the refusal names its cause: {refused}"
+    );
+
+    // Nothing bound, nothing registered.
+    let listed = conn.call(&json!({"op": "list"}));
+    assert_eq!(
+        listed["entries"].as_array().map(Vec::len),
+        Some(0),
+        "a refused declaration registers nothing: {listed}"
+    );
+
+    server.shutdown();
+}
+
+/// The same property through a second mechanism: on a case-insensitive
+/// filesystem a case-variant declaration binds the on-disk casing, and the
+/// answer names it. Skipped on a case-sensitive filesystem, where the variant
+/// is genuinely a different path.
+#[test]
+fn a_declared_case_variant_binds_the_on_disk_casing_and_the_answer_names_it() {
+    let tmp = TempDir::new().unwrap();
+    let real = write_ws(&tmp, "MixedCase", &[("a.md", "# A\n")]);
+    let variant = tmp.path().join("mixedcase");
+    if !fs::canonicalize(&variant).is_ok_and(|c| c == fs::canonicalize(&real).unwrap()) {
+        eprintln!("note: filesystem is case-sensitive; case-variant test skipped");
+        return;
+    }
+
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.hello(&variant);
+    let bound = hi["body"]["workspace"]
+        .as_str()
+        .expect("hello names the bound root");
+    assert_eq!(
+        Path::new(bound).file_name().unwrap(),
+        "MixedCase",
+        "the answer names the ON-DISK casing, not the declared spelling: {hi}"
     );
 
     server.shutdown();
@@ -278,6 +489,16 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
     assert!(
         hi["body"]["storage"].is_null(),
         "a workspace-less hello pins nothing: {hi}"
+    );
+    // The `None` arm of the bound-root field: ABSENT, never an empty string —
+    // "nothing bound" and "bound the empty path" must not look alike.
+    assert!(
+        hi["body"]["workspace"].is_null(),
+        "a workspace-less hello names no bound root: {hi}"
+    );
+    assert!(
+        !hi["body"].as_object().unwrap().contains_key("workspace"),
+        "the field is omitted entirely, not serialized as null/empty: {hi}"
     );
     // v3 session: the binding cursor is spelled `fingerprint`, and it is absent
     // (nothing bound) — never `root`.

@@ -237,6 +237,10 @@ fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
         // The sidecar runs one workspace per process and opens its drawer
         // client-side; the resident daemon is the one that pins storage (§4).
         storage: None,
+        // Nothing was declared to this process over the wire — its root is its
+        // launch argument, not a `hello` field — so there is no bound root to
+        // report back. The daemon is the arm that answers this.
+        workspace: None,
     }
 }
 

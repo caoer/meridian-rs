@@ -344,6 +344,14 @@ message HelloResponse {
   // canonicalize → deny-ceiling → sentinel path. Additive, never renumbered;
   // absent on a workspace-less handshake and on the sidecar.
   optional string storage = 5;
+  // The canonical root that ACTUALLY BOUND (marker-retirement ruling,
+  // 2026-07-26): `hello.workspace` is a declaration and binds exactly, but
+  // canonicalization still rewrites symlinks and on-disk case, so the caller
+  // learns its real jail root here rather than assuming its own spelling
+  // survived. `storage` cannot serve this — it is a hashed drawer directory,
+  // which identifies the drawer without naming the tree. Additive, never
+  // renumbered; absent exactly when `storage` is.
+  optional string workspace = 6;
 }
 
 message TocResponse {

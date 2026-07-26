@@ -497,12 +497,14 @@ fn body_to_pb(b: wire::ResponseBody) -> pb::response::Body {
             caps,
             root,
             storage,
+            workspace,
         } => pb::response::Body::Hello(pb::HelloResponse {
             proto,
             server,
             caps,
             root: root.map(|r| r.0),
             storage,
+            workspace,
         }),
         wire::ResponseBody::Toc {
             path,
@@ -1242,12 +1244,14 @@ fn body_from_pb(b: pb::response::Body) -> wire::ResponseBody {
             caps,
             root,
             storage,
+            workspace,
         }) => wire::ResponseBody::Hello {
             proto,
             server,
             caps,
             root: root.map(wire::Root),
             storage,
+            workspace,
         },
         pb::response::Body::Toc(pb::TocResponse {
             path,
@@ -2211,13 +2215,15 @@ fn sample_responses() -> Vec<wire::Response> {
             ],
             root: Some(root.clone()),
             storage: Some("/home/zt/.cache/meridian/abc123/v1".into()), // the pinned drawer
+            workspace: Some("/home/zt/wiki".into()), // the root that actually bound
         },
         wire::ResponseBody::Hello {
             proto: 1,
             server: "meridian-sidecar".into(),
             caps: vec!["hello".into()],
-            root: None,    // the engine may not have walked yet
-            storage: None, // a workspace-less handshake pins nothing
+            root: None,      // the engine may not have walked yet
+            storage: None,   // a workspace-less handshake pins nothing
+            workspace: None, // ...and so binds no root to name
         },
         wire::ResponseBody::Toc {
             path: wire::Path("notes/plan.md".into()),

@@ -16,9 +16,14 @@ struct Sandbox {
     home: PathBuf,
 }
 
-/// A MARKED workspace (`.meridian.toml`, tier 2) that is deliberately NOT a git
-/// repository — the marker is what keeps the resolution ladder off the ancestor
-/// git search, so `git hash-object -w` is the only thing that can fail.
+/// A workspace that is deliberately NOT a git repository, anchored explicitly so
+/// the resolution ladder never falls to the ancestor git search — `git
+/// hash-object -w` stays the only thing that can fail.
+///
+/// The retired `.meridian.toml` marker used to anchor this. With the marker
+/// gone, `MERIDIAN_WORKSPACE` is the surviving way to anchor a non-git tree,
+/// and it is set per-subprocess in [`run`] (never on this process), so the
+/// suite stays parallel-safe.
 fn sandbox() -> (Sandbox, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sb = Sandbox {
@@ -29,7 +34,6 @@ fn sandbox() -> (Sandbox, PathBuf) {
     std::fs::create_dir_all(&sb.home).expect("home");
     let ws = sb.tmp.path().join("project");
     std::fs::create_dir_all(&ws).expect("mkdir");
-    std::fs::write(ws.join(".meridian.toml"), "").expect("marker");
     std::fs::write(ws.join("claim.md"), "# Claim\n\nA claim.\n").expect("claim");
     std::fs::write(ws.join("source.md"), "# Source\n\n## Note\n\ntext here\n").expect("source");
     (sb, ws)
@@ -43,7 +47,8 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .env("HOME", &sb.home)
         // Spawn-impossible: no resident daemon ever starts.
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
-        .env_remove("MERIDIAN_WORKSPACE")
+        // The explicit anchor: this tree is the workspace, and it is not git.
+        .env("MERIDIAN_WORKSPACE", cwd)
         .output()
         .expect("spawn mrd")
 }

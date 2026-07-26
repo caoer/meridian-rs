@@ -3,18 +3,37 @@
 //!
 //! # Charter
 //! **Owns:** the discovery ladder as pure filesystem functions
-//! (env override → `.meridian.toml` marker walk-up → git root → bare),
-//! the canonicalization that defines identity (symlinks and on-disk case
-//! resolved to one spelling), and the deny-ceiling predicate that refuses
-//! poisonous workspace paths (`$HOME`, `/`, mount points, `/tmp`, XDG base
-//! dirs, the meridian cache root).
+//! (env override → git root → cwd default), the canonicalization that
+//! defines identity (symlinks and on-disk case resolved to one spelling),
+//! and the deny-ceiling predicate that refuses poisonous workspace paths
+//! (`$HOME`, `/`, mount points, `/tmp`, XDG base dirs, the meridian cache
+//! root).
 //!
 //! **Never does:** disk writes of any kind. No registration, no sentinel,
 //! no cache directory creation — this crate only *names* a situation.
-//! Tiers 1-3 resolve with no daemon and no side effects; tier 4 returns a
-//! [`Tier::Bare`] outcome carrying the canonical cwd, and NEVER
-//! auto-registers. Warming a bare tree is an explicit `init` or the
+//! Every rung resolves with no daemon and no side effects; the bottom rung
+//! returns an [`Answer::CwdDefault`] carrying the canonical cwd, and NEVER
+//! auto-registers. Warming an unanchored tree is an explicit `init` or the
 //! daemon's job (decision 0001, round 5), not this crate's.
+//!
+//! # The ladder answers ONE question, and the explicit planes sit above it
+//! This ladder answers *"which root does this path belong to"*. Two other
+//! planes answer *"which root did someone name"*, and neither is a rung
+//! here:
+//!
+//! - the **mount table** (`config::MountTable`) — name ↔ vault ↔ path for
+//!   the roots this machine binds. It cannot be a rung: `config` depends on
+//!   this crate for [`deny_reason`], so a declaration rung here would be a
+//!   dependency cycle. A root's `MERIDIAN.md` self-declaration
+//!   (`type: meridian-root`) is therefore read by `config`, never here —
+//!   existence-only detection is exactly what the retired marker did wrong,
+//!   since it cannot tell a root declaration from a config.
+//! - the **declared root** on the serve path — the `hello` frame's
+//!   `workspace` field, pinned exactly by `registry::Registry::pin_declared`.
+//!   A daemon has no meaningful cwd, so it never enters this ladder at all.
+//!
+//! The three planes meet at exactly one point: [`deny_reason`], reused whole
+//! by both, never re-implemented.
 //!
 //! **Dependencies:** `std` plus a single edge to `cache` for the one owner of
 //! cache-root resolution (the deny ceiling must name the same root the drawer
@@ -45,14 +64,6 @@ use std::path::{Path, PathBuf};
 /// Environment variable that pins the workspace explicitly (tier 1).
 pub const ENV_WORKSPACE: &str = "MERIDIAN_WORKSPACE";
 
-/// The canonical marker filename. `meridian-rs` is its only writer;
-/// existence alone defines identity — the contents are never parsed here.
-const MARKER_CANONICAL: &str = ".meridian.toml";
-
-/// The legacy Go marker, recognized by EXISTENCE ONLY during transition.
-/// Its contents (YAML) are never parsed; it is an identity anchor only.
-const MARKER_LEGACY: &str = ".meridian.yaml";
-
 /// The git identity anchor. Present as a directory in a normal checkout,
 /// or as a FILE in a linked worktree (`gitdir:` pointer). Either spelling
 /// anchors the workspace at the directory that contains it; the pointer is
@@ -62,38 +73,117 @@ const GIT_ENTRY: &str = ".git";
 /// Ceiling on the ancestor walk. Bounds the stat calls per resolution so a
 /// pathological deep tree (or a hung network mount) cannot make discovery
 /// unbounded. Real workspace paths sit far below 64 path components; a
-/// marker or `.git` above this depth is not found, which degrades to the
-/// next tier rather than hanging (M3, adversarial review).
+/// `.git` above this depth is not found, which degrades to the next rung
+/// rather than hanging (M3, adversarial review).
 const MAX_WALK_DEPTH: usize = 64;
 
-/// Which tier of the discovery ladder resolved the workspace.
+/// Which rung of the discovery ladder answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
-    /// Tier 1: the [`ENV_WORKSPACE`] override named the workspace.
+    /// The [`ENV_WORKSPACE`] override named the workspace — explicit.
     EnvOverride,
-    /// Tier 2: the nearest ancestor holding a marker file.
-    Marker,
-    /// Tier 3: the nearest ancestor holding a `.git` entry.
+    /// The nearest ancestor holding a `.git` entry — inferred from
+    /// filesystem structure.
     GitRoot,
-    /// Tier 4: no override, marker, or git — the canonical cwd itself,
+    /// Nothing answered: the canonical cwd, a convenience default that is
     /// named but never registered.
-    Bare,
+    CwdDefault,
 }
 
-/// The resolved workspace identity: the canonical workspace path plus the
-/// tier that resolved it. When `tier` is [`Tier::Bare`], `workspace` is the
-/// canonical cwd.
+impl Tier {
+    /// A stable lowercase label for JSON / human output.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::EnvOverride => "env-override",
+            Self::GitRoot => "git-root",
+            Self::CwdDefault => "cwd-default",
+        }
+    }
+}
+
+/// What the ladder answered, and which rung answered it.
+///
+/// # Why this is an enum with no public path field
+/// The previous shape was a struct carrying a public `workspace: PathBuf`
+/// beside its tier. That let every caller take the path and never read the
+/// tier — so an unanchored cwd became "the workspace" silently, which is the
+/// named failure mode of the marker-retirement ruling ("every resolution
+/// states which tier and which root answered — never silently").
+///
+/// The field is therefore deleted. [`Answer::root`] returns `None` for
+/// [`Answer::CwdDefault`], so a caller cannot reach a defaulted path by
+/// accident; reaching it takes [`Answer::root_or_cwd`], which is an explicit,
+/// greppable acknowledgment at the call site. [`Display`](fmt::Display)
+/// writes the provenance sentence — tier AND root — so no caller has to
+/// assemble it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolution {
-    /// The canonical workspace path (symlinks and on-disk case resolved).
-    pub workspace: PathBuf,
-    /// The tier that produced `workspace`.
-    pub tier: Tier,
+pub enum Answer {
+    /// [`ENV_WORKSPACE`] named this root.
+    EnvOverride {
+        /// The canonical workspace path.
+        root: PathBuf,
+    },
+    /// The nearest ancestor `.git` entry anchored this root.
+    GitRoot {
+        /// The canonical workspace path.
+        root: PathBuf,
+    },
+    /// Nothing answered — the canonical cwd, offered as a default only.
+    CwdDefault {
+        /// The canonical current directory.
+        cwd: PathBuf,
+    },
 }
 
-/// A failure to resolve a workspace. Discovery itself never fails for
-/// tiers 2-4 (a missing marker/git simply falls through to bare); only
-/// canonicalization can fail.
+impl Answer {
+    /// The root when something actually answered, `None` when the ladder
+    /// fell through to the cwd default.
+    ///
+    /// This is the honest accessor: a `None` forces the caller to decide what
+    /// an unanchored tree means for it, rather than inheriting a silent cwd.
+    #[must_use]
+    pub fn root(&self) -> Option<&Path> {
+        match self {
+            Self::EnvOverride { root } | Self::GitRoot { root } => Some(root),
+            Self::CwdDefault { .. } => None,
+        }
+    }
+
+    /// The path in every case, including the demoted default.
+    ///
+    /// Calling this IS the acknowledgment that a defaulted answer is
+    /// acceptable here — it is deliberately more verbose than [`root`](Self::root)
+    /// and greppable in review.
+    #[must_use]
+    pub fn root_or_cwd(&self) -> &Path {
+        match self {
+            Self::EnvOverride { root } | Self::GitRoot { root } => root,
+            Self::CwdDefault { cwd } => cwd,
+        }
+    }
+
+    /// Which rung answered.
+    #[must_use]
+    pub fn tier(&self) -> Tier {
+        match self {
+            Self::EnvOverride { .. } => Tier::EnvOverride,
+            Self::GitRoot { .. } => Tier::GitRoot,
+            Self::CwdDefault { .. } => Tier::CwdDefault,
+        }
+    }
+}
+
+impl fmt::Display for Answer {
+    /// The provenance sentence: the tier word, then the path it named.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.tier().word(), self.root_or_cwd().display())
+    }
+}
+
+/// A failure to resolve a workspace. Discovery itself never fails below the
+/// override rung (a missing `.git` simply falls through to the cwd default);
+/// only canonicalization can fail.
 #[derive(Debug)]
 pub enum ResolveError {
     /// [`ENV_WORKSPACE`] named a path that could not be canonicalized —
@@ -163,7 +253,7 @@ pub fn canonicalize(path: &Path) -> Result<PathBuf, ResolveError> {
 /// Returns [`ResolveError::EnvWorkspaceNotFound`] when the override names an
 /// unresolvable path, or [`ResolveError::Canonicalize`] when `cwd` itself
 /// cannot be canonicalized.
-pub fn resolve(cwd: &Path) -> Result<Resolution, ResolveError> {
+pub fn resolve(cwd: &Path) -> Result<Answer, ResolveError> {
     resolve_with_override(cwd, env::var_os(ENV_WORKSPACE).as_deref())
 }
 
@@ -179,9 +269,10 @@ pub fn resolve(cwd: &Path) -> Result<Resolution, ResolveError> {
 pub fn resolve_with_override(
     cwd: &Path,
     workspace_override: Option<&OsStr>,
-) -> Result<Resolution, ResolveError> {
-    // Tier 1 — explicit override wins. A relative override resolves against
-    // the given cwd, so the function stays independent of the process cwd.
+) -> Result<Answer, ResolveError> {
+    // Rung 1 — the explicit override wins. A relative override resolves
+    // against the given cwd, so the function stays independent of the
+    // process cwd.
     if let Some(raw) = workspace_override.filter(|value| !value.is_empty()) {
         let candidate = Path::new(raw);
         let joined = if candidate.is_absolute() {
@@ -189,56 +280,32 @@ pub fn resolve_with_override(
         } else {
             cwd.join(candidate)
         };
-        let workspace =
+        let root =
             fs::canonicalize(&joined).map_err(|source| ResolveError::EnvWorkspaceNotFound {
                 path: joined,
                 source,
             })?;
-        return Ok(Resolution {
-            workspace,
-            tier: Tier::EnvOverride,
-        });
+        return Ok(Answer::EnvOverride { root });
     }
 
     // Canonicalize the cwd ONCE (M3): ancestors are then derived by
     // path-component trimming — no per-ancestor canonicalize syscall.
     let canonical = canonicalize(cwd)?;
 
-    // Tiers 2 and 3 share one upward walk. A marker beats git GLOBALLY, so
-    // the first marker found (nearest) wins outright; git is only a
-    // fallback, so we remember the nearest `.git` but keep climbing for a
-    // higher marker before committing to it.
-    let mut nearest_git: Option<PathBuf> = None;
+    // Rung 2 — the nearest `.git`. With the marker retired there is nothing
+    // that beats git from higher up, so the first hit wins outright and the
+    // walk stops; no second candidate has to be remembered.
     for dir in canonical.ancestors().take(MAX_WALK_DEPTH) {
-        if has_marker(dir) {
-            return Ok(Resolution {
-                workspace: dir.to_path_buf(),
-                tier: Tier::Marker,
+        if has_git(dir) {
+            return Ok(Answer::GitRoot {
+                root: dir.to_path_buf(),
             });
         }
-        if nearest_git.is_none() && has_git(dir) {
-            nearest_git = Some(dir.to_path_buf());
-        }
-    }
-    if let Some(git_root) = nearest_git {
-        return Ok(Resolution {
-            workspace: git_root,
-            tier: Tier::GitRoot,
-        });
     }
 
-    // Tier 4 — bare. Named, never registered.
-    Ok(Resolution {
-        workspace: canonical,
-        tier: Tier::Bare,
-    })
-}
-
-/// True when `dir` holds a marker file — the canonical `.meridian.toml` or
-/// the legacy `.meridian.yaml`. Existence defines identity; contents are
-/// never read.
-fn has_marker(dir: &Path) -> bool {
-    dir.join(MARKER_CANONICAL).exists() || dir.join(MARKER_LEGACY).exists()
+    // Rung 3 — nothing answered. Named, never registered, and reachable only
+    // through `root_or_cwd`.
+    Ok(Answer::CwdDefault { cwd: canonical })
 }
 
 /// True when `dir` holds a `.git` entry — directory or file. A file is a
