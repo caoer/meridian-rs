@@ -693,9 +693,15 @@ fn a_second_pin_unions_into_the_existing_lock_block() {
     let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
     let found = lock::find(&doc).expect("parses").expect("present");
     assert_eq!(found.lock.pins.len(), 2, "both claims are held");
-    assert_eq!(found.lock.pins[0].declared_ref.to_string(), first.declared_ref);
+    assert_eq!(
+        found.lock.pins[0].declared_ref.to_string(),
+        first.declared_ref
+    );
     assert_eq!(found.lock.pins[0].fingerprint, first.fingerprint);
-    assert_eq!(found.lock.pins[1].declared_ref.to_string(), second.declared_ref);
+    assert_eq!(
+        found.lock.pins[1].declared_ref.to_string(),
+        second.declared_ref
+    );
     assert_eq!(
         doc.raw.matches("```meridian-lock").count(),
         1,

@@ -89,18 +89,18 @@ const PINNED: &[(&str, &str, Class)] = &[
         "pub fn parse",
         Class::InternalReader,
     ),
-    ("crates/view/src/walk.rs", "fn page_of", Class::InternalReader),
+    (
+        "crates/view/src/walk.rs",
+        "fn page_of",
+        Class::InternalReader,
+    ),
     (
         "crates/view/src/read_face.rs",
         "fn split_selector",
         Class::InternalReader,
     ),
     // ---- Not addresses: pinned so a real ingress stays distinguishable -----
-    (
-        "crates/model/src/walk.rs",
-        "fn stage2",
-        Class::NotAnAddress,
-    ),
+    ("crates/model/src/walk.rs", "fn stage2", Class::NotAnAddress),
     (
         "crates/view/src/read_face.rs",
         "fn block_hash_algo",
@@ -150,7 +150,10 @@ fn scan() -> BTreeSet<(String, String)> {
     let crates = root.join("crates");
     let mut found = BTreeSet::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for entry in fs::read_dir(&crates).expect("crates/ is readable").flatten() {
+    for entry in fs::read_dir(&crates)
+        .expect("crates/ is readable")
+        .flatten()
+    {
         let path = entry.path();
         // `crates/addr` OWNS the split — it is the one place the grammar is
         // implemented, so it is not a door.
@@ -267,9 +270,18 @@ fn every_ingress_class_is_populated_and_the_arithmetic_closes() {
         "every pinned row carries exactly one class",
     );
     for (class, why) in [
-        (Class::MarkdownBody, "`[[sessions:notes.md#Design]]` in a body IS a cross-root address"),
-        (Class::CliArgv, "`mrd pin 'sessions:notes.md#Design'` is a cross-root address"),
-        (Class::WireDecode, "a `root:`-bearing target decodes into a plain String"),
+        (
+            Class::MarkdownBody,
+            "`[[sessions:notes.md#Design]]` in a body IS a cross-root address",
+        ),
+        (
+            Class::CliArgv,
+            "`mrd pin 'sessions:notes.md#Design'` is a cross-root address",
+        ),
+        (
+            Class::WireDecode,
+            "a `root:`-bearing target decodes into a plain String",
+        ),
     ] {
         assert!(
             count(class) > 0,

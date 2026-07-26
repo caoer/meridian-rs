@@ -1776,7 +1776,7 @@ fn lock_engine_edit(
     // force it: a malformed ref refuses at the write door instead of being
     // minted into a lock nothing can read back.
     let declared_ref = addr::Addr::parse(&pin.fact.declared_ref).map_err(|err| {
-        bad_request(&format!(
+        bad_request(format!(
             "refused: the pin ref \"{}\" is not an address — {err}",
             pin.fact.declared_ref
         ))
