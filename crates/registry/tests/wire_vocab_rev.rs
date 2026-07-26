@@ -177,6 +177,10 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
         "fingerprint",
         "splice.if_fingerprint",
         "links.require_fingerprint",
+        // S3 U1 (R23): the v3-era splice amendments, advertised as dotted
+        // `op.field` caps because a v3 session honours both fields.
+        "splice.plan_edits",
+        "splice.pin",
     ] {
         assert!(
             hi_caps.contains(&want.to_string()),
@@ -282,6 +286,16 @@ fn v2_session_emits_root_and_never_fingerprint() {
         assert!(
             hi_caps.contains(&want.to_string()),
             "v2 caps carry `{want}`: {hi}"
+        );
+    }
+    // S3 U1 (R23), the other direction of discovery honesty: a v2 session
+    // REFUSES both v3-era splice amendments at the field wall, so advertising
+    // them here would be a FALSE advertisement. The frozen v2 constant is why.
+    for forbidden in ["splice.pin", "splice.plan_edits"] {
+        assert!(
+            !hi_caps.contains(&forbidden.to_string()),
+            "a v2 session refuses `{forbidden}`'s field, so v2 caps must NOT \
+             advertise it: {hi}"
         );
     }
 

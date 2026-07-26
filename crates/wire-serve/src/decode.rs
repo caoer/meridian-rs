@@ -18,6 +18,33 @@ use crate::rev::Rev;
 /// Envelope keys every request may carry beside the op fields.
 const ENVELOPE: [&str; 2] = ["id", "op"];
 
+/// `splice`'s FROZEN v2 field set (wire v2 §4.4). Never grows — a v2 session's
+/// field wall is byte-identical for the life of the contract.
+pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
+    "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
+];
+
+/// `splice`'s v3 field set: the v2 list plus the v3-era amendments.
+///
+/// This array is the ONE owner of "which splice fields exist under v3", and the
+/// v3-era amendments are exactly `SPLICE_V3_FIELDS \ SPLICE_V2_FIELDS`. R23:
+/// each of those amendments MUST be advertised by the v3 caps projection as
+/// `splice.<field>` — enforced by the enumeration test
+/// [`crate::rev::tests::v3_splice_amendments_are_all_advertised`], which derives
+/// its expected set from these two arrays rather than from a hand-copied list.
+pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
+    "path",
+    "actor",
+    "now",
+    "receipt",
+    "if_root",
+    "dry",
+    "force",
+    "edits",
+    "plan_edits",
+    "pin",
+];
+
 /// Strict-decode one request object into a [`wire::Op`], validating its field
 /// set by hand (§3.2 server law). Both hosts call this — the sidecar over stdio
 /// and the resident daemon over its socket — so the strict pass is one
@@ -243,26 +270,11 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
 /// v2 the list is FROZEN, so a v2 `plan_edits` refuses on the existing
 /// unknown-field wall byte-for-byte (fixture-pinned negative).
 fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
-    const V2_FIELDS: [&str; 8] = [
-        "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
-    ];
-    const V3_FIELDS: [&str; 10] = [
-        "path",
-        "actor",
-        "now",
-        "receipt",
-        "if_root",
-        "dry",
-        "force",
-        "edits",
-        "plan_edits",
-        "pin",
-    ];
     let op = "splice";
     if rev == Rev::V3 {
-        check_fields(obj, op, &V3_FIELDS)?;
+        check_fields(obj, op, &SPLICE_V3_FIELDS)?;
     } else {
-        check_fields(obj, op, &V2_FIELDS)?;
+        check_fields(obj, op, &SPLICE_V2_FIELDS)?;
     }
     let now = opt_str(obj, op, "now")?;
     if let Some(n) = &now
