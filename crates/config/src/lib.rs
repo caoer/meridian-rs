@@ -636,13 +636,28 @@ pub fn parse(raw: &str, path: &Path) -> Result<Config, ConfigError> {
                 tool_name_lines.push((decl.name.clone(), name_line));
                 tools.push(decl);
             }
-            // Another engine block-language in the reserved namespace. SKIPPED,
-            // following the shipped precedent for exactly this case — "an
-            // engine block is form-3's (or a later engine reader's), never a
-            // form-2 chain block" (`crates/view/src/read_face.rs:622-648`). The
-            // schema's §3.1 table names two languages and rules nothing about a
-            // third; reported to the stage-3 leader as a spec gap rather than
-            // ruled here.
+            // A THIRD reserved language — neither mount nor tool, and not one the
+            // engine writes. **RULED (U36): skipped, never refused.**
+            //
+            // The reservation exists precisely so a later reader can claim a
+            // language this crate has no grammar for; refusing would let a block
+            // belonging to someone else fail the whole config to load, which is
+            // the opposite of what reserving it bought. It follows the shipped
+            // precedent for exactly this case — "an engine block is form-3's (or
+            // a later engine reader's), never a form-2 chain block"
+            // (`crates/view/src/read_face.rs:622-648`).
+            //
+            // What made this skip DANGEROUS was the other half, now fixed: the
+            // block was skipped here AND elided by the render face, so it
+            // vanished twice over and no surface reported it. Under U36 elision
+            // is derived from `lock::is_engine_emitted`, an unclaimed language
+            // has no writer, and the render face SHOWS it. The skip drops it from
+            // the mount table while the reader still sees the bytes — so the
+            // silence this comment used to describe no longer exists.
+            //
+            // Fixtured in `crates/testsuite/tests/u36_per_language_elision.rs`
+            // (`an_unclaimed_reserved_language_renders_and_config_skips_it`) —
+            // the rule and its fixture in one motion (S3-R14 item 3(a)).
             _ => {}
         }
     }

@@ -18,10 +18,18 @@
 //!   the transitive pin graph complete, and it is a property of WHERE the
 //!   block lives, not of this crate's code (fixtured all the same).
 //!
-//! # Namespace (#8 §1)
+//! # Namespace (#8 §1) — and readership, which is a different question (U36)
 //! The whole `meridian-*` prefix is reserved as the engine's block-language
-//! namespace — [`is_meridian_lang`] is the one predicate ("elide
-//! ` ```meridian-* `") so tooling never grows an enumerated list.
+//! namespace — [`is_meridian_lang`] is the one predicate for *"is this ours?"*,
+//! uniform over the prefix, so tooling never grows an enumerated list.
+//!
+//! **Reservation is not readership.** *"Should a reader see it?"* is answered by
+//! [`is_engine_emitted`], derived from the registered canonical writers
+//! ([`EngineEmitted`], [`engine_emits!`]). The two answers come apart exactly
+//! where it matters: the engine writes a `meridian-lock`, so it is elided from
+//! the render face; a human writes a `meridian-mount` and `config` only PARSES
+//! it, so it renders. One predicate serving both is what made a config file
+//! render as a config file that declares nothing.
 //!
 //! # Planes (#8 §2)
 //! `objects:` — whole-file blob shas, the retrieval plane (git's world, the
@@ -59,6 +67,135 @@ pub fn is_meridian_lang(lang: &str) -> bool {
 #[must_use]
 pub fn is_lock_lang(lang: &str) -> bool {
     lang.split_whitespace().next() == Some(LANG)
+}
+
+// ── The engine-emits property: READERSHIP, per language (U36) ──────────────
+//
+// A namespace answers *"is this ours?"* — [`is_meridian_lang`], uniform over
+// `meridian-*`, and it does not move. Elision answers a DIFFERENT question,
+// *"should a reader see it?"*, and the two answers come apart exactly where it
+// matters: the engine writes a `meridian-lock`, so no human authored it and the
+// render face elides it as noise; a human writes a `meridian-mount`, and
+// `config` only PARSES it, so the render face must show it. One predicate
+// serving both questions is what made a config file render as a config file
+// that declares nothing, with no signal.
+//
+// The property is *"does the ENGINE EMIT this block's bytes?"* — never *"does a
+// crate NAME this language?"*. `config` names `meridian-mount` in a `pub const`
+// and parses it; a mention-keyed predicate would elide it and reproduce the
+// defect wearing derivation clothes.
+//
+// It is derived, never listed. `#8 §1` bars an enumerated list wherever it
+// lives, because a list silently omits new members. Here the set is assembled
+// by the LINKER from declarations that live beside their writers, so there is
+// no list to omit from — and a declaration cannot be written without a writer,
+// which is what [`EngineEmittedLang::of`]'s bound enforces.
+
+/// A block language whose bytes THE ENGINE EMITS: the engine owns its one
+/// canonical writer (#8 §3, engine sole-writer).
+///
+/// Implementing this is what makes a language engine-emitted, and therefore
+/// render-elided. A language the engine only PARSES has no impl and is not
+/// elided — the user authored those bytes on purpose.
+pub trait EngineEmitted {
+    /// The fence info-string first token this writer emits under.
+    const LANG: &'static str;
+
+    /// Emit the canonical block bytes. This method is the property: a type that
+    /// cannot produce the bytes cannot claim the engine emits them.
+    fn emit_canonical(&self) -> String;
+}
+
+/// One registered engine-emitted language — the declaration a canonical writer
+/// leaves beside itself, collected by the linker.
+///
+/// The field is private and [`of`](Self::of) is the only constructor, so this
+/// value cannot be minted for a language that has no writer. That seal is what
+/// separates this from a list of names: a registration is *evidence of a
+/// writer*, not an assertion about one.
+#[derive(Debug)]
+pub struct EngineEmittedLang {
+    lang: &'static str,
+}
+
+impl EngineEmittedLang {
+    /// Declare `T`'s language engine-emitted. The `T: EngineEmitted` bound is
+    /// the seal — no writer, no declaration.
+    #[must_use]
+    pub const fn of<T: EngineEmitted>() -> Self {
+        EngineEmittedLang { lang: T::LANG }
+    }
+
+    /// The declared language.
+    #[must_use]
+    pub const fn lang(&self) -> &'static str {
+        self.lang
+    }
+}
+
+inventory::collect!(EngineEmittedLang);
+
+#[doc(hidden)]
+pub use inventory;
+
+/// Declare `$t` the engine's canonical writer for its block language, and
+/// register that language as engine-emitted — ONE motion, invoked beside the
+/// writer, so a new engine block's readership consequence cannot be forgotten
+/// separately from the block.
+///
+/// ```
+/// struct MyBlock;
+///
+/// impl lock::EngineEmitted for MyBlock {
+///     const LANG: &'static str = "meridian-myblock";
+///     fn emit_canonical(&self) -> String {
+///         "```meridian-myblock\nversion: 1\n```".to_string()
+///     }
+/// }
+/// lock::engine_emits!(MyBlock);
+///
+/// fn main() {
+///     // The declaration is what makes it engine-emitted, so the render face
+///     // elides it — with no elision predicate edited anywhere.
+///     assert!(lock::is_engine_emitted("meridian-myblock"));
+///     // A reserved language nobody writes stays visible to readers.
+///     assert!(!lock::is_engine_emitted("meridian-unwritten"));
+///     assert!(lock::is_meridian_lang("meridian-unwritten"));
+/// }
+/// ```
+#[macro_export]
+macro_rules! engine_emits {
+    ($t:ty) => {
+        $crate::inventory::submit! { $crate::EngineEmittedLang::of::<$t>() }
+    };
+}
+
+impl EngineEmitted for Lock {
+    const LANG: &'static str = LANG;
+
+    fn emit_canonical(&self) -> String {
+        render(self)
+    }
+}
+
+engine_emits!(Lock);
+
+/// Does the ENGINE EMIT this fence info string's block? The first whitespace
+/// token decides, matching every other reader.
+///
+/// This is the elision law (#8 §1 as applied per-language by U36) and it is
+/// **not** [`is_meridian_lang`]. Reservation is uniform; readership is not.
+/// A `meridian-*` language with no registered writer is a human's bytes — a
+/// declaration the engine parses, or one no reader claims yet — and a reader
+/// sees it.
+#[must_use]
+pub fn is_engine_emitted(lang: &str) -> bool {
+    let Some(tok) = lang.split_whitespace().next() else {
+        return false;
+    };
+    inventory::iter::<EngineEmittedLang>
+        .into_iter()
+        .any(|e| e.lang == tok)
 }
 
 /// One claim-plane entry (#8 §2): the declared selector and the full
@@ -647,7 +784,43 @@ mod tests {
         }
     }
 
-    /// The namespace law (#8 §1): one predicate for every engine block.
+    /// The engine-emits property (U36): READERSHIP, derived from the registered
+    /// canonical writers — not from the namespace, and not from a list of names.
+    ///
+    /// The two predicates are asserted against each other here, because the
+    /// whole point is that they DISAGREE for a reserved language the engine does
+    /// not write. `meridian-journal` is the live example: reserved, and — as of
+    /// this commit, measured — emitted by nothing in `src/`.
+    #[test]
+    fn engine_emits_is_not_the_namespace() {
+        // Emitted: `Lock` implements `EngineEmitted` and declares itself.
+        assert!(is_engine_emitted(LANG));
+        assert!(is_engine_emitted("meridian-lock trailing-token"));
+        assert_eq!(<Lock as EngineEmitted>::LANG, LANG);
+        // The impl really emits — the property is the writer, not the name.
+        let l = Lock::new();
+        assert_eq!(l.emit_canonical(), render(&l));
+
+        // Reserved but NOT emitted: no writer claims these, so a reader sees them.
+        for lang in ["meridian-mount", "meridian-tool", "meridian-journal"] {
+            assert!(is_meridian_lang(lang), "`{lang}` is reserved");
+            assert!(
+                !is_engine_emitted(lang),
+                "`{lang}` has no canonical writer, so the engine does not emit it"
+            );
+        }
+
+        // Outside the namespace: neither predicate fires (the acceptance half —
+        // without it, "not emitted" is satisfied by a predicate returning false
+        // for everything).
+        for lang in ["rust", "yaml", "meridian", ""] {
+            assert!(!is_meridian_lang(lang));
+            assert!(!is_engine_emitted(lang));
+        }
+    }
+
+    /// The namespace law (#8 §1): one predicate for every engine block. This is
+    /// RESERVATION and it did not move — U36 changed readership only.
     #[test]
     fn namespace_predicate() {
         assert!(is_meridian_lang("meridian-lock"));

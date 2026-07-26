@@ -92,6 +92,12 @@ starlark = "=0.14.2"
 anyhow = "1"
 # sha256 over canonical-path bytes = the cache drawer key (crates/cache).
 sha2 = "0.10"
+# Linker-assembled registration, used by `lock` for the engine-emits property
+# (#8 §1, U36): each canonical writer declares its own block language next to
+# itself, so the engine-emitted SET is collected by the linker and no list of
+# names exists anywhere to silently omit a new member. Already in the lock via
+# starlark's own tree — this makes the existing edge direct, not new.
+inventory = "0.3"
 pulldown-cmark = "0.13"
 # The DuckDB view-organ sink (crates/view, a write-only C2 leaf). `bundled`
 # compiles the vendored amalgamation so the gate SQL is pinned to one DuckDB
