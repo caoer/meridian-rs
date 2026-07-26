@@ -2108,6 +2108,7 @@ dependencies = [
 name = "model"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "blake3",
  "syntax",
 ]
@@ -2116,6 +2117,7 @@ dependencies = [
 name = "mrd"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "allocative",
  "anyhow",
  "blake3",

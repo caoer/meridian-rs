@@ -49,8 +49,25 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let docs = build_docs(&resolved.workspace)?;
 
-    let report =
-        walk::walk(&docs, &parsed.page, parsed.direction, parsed.depth).map_err(walk_error)?;
+    // U11 — the mount table, loaded from `MERIDIAN.md`, and one corpus per
+    // BOUND root. `mounts` owns the document maps; `corpus` borrows them, so the
+    // owner must outlive the borrow — hence two bindings rather than one
+    // expression.
+    let mounts = load_mounts();
+    let mount_set = addr::MountSet::new(mounts.iter().map(|m| m.name.clone()));
+    let mut corpus = model::RootedCorpus::ambient(&docs);
+    for mount in &mounts {
+        corpus = corpus.with_root(mount.name.clone(), mount.kind.clone(), &mount.docs);
+    }
+
+    let report = walk::walk_rooted(
+        &corpus,
+        &mount_set,
+        &parsed.page,
+        parsed.direction,
+        parsed.depth,
+    )
+    .map_err(walk_error)?;
 
     match parsed.format {
         Format::Json => {
@@ -65,13 +82,102 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .iter()
         .filter(|e| walk::color_tone(&e.color) == "red")
         .count();
-    if reds > 0 {
+    // S3-R6 — grey REFUSES, on exit 1, with its own reason word. `grey(unmounted)`
+    // rides the SAME exit code as red and stays distinct from it in the human
+    // line and in `--json`. **No fourth exit code**, and `--force` is the escape.
+    //
+    // Scoped to this ONE grey deliberately: the pre-existing greys
+    // (`immutable-root`, `declared-unpinned`, …) keep exiting 0, because they
+    // describe edges the ledger was never asked to measure. An unmounted root is
+    // different — the address ASKED a question this machine cannot answer, and
+    // exiting 0 there would make unmounting a root a way to turn a red into a
+    // pass through an edit to `~/MERIDIAN.md`, which cannot itself be attested.
+    let unmounted = report
+        .entries
+        .iter()
+        .filter(|e| walk::color_reason(&e.color) == Some("unmounted"))
+        .count();
+    if reds > 0 || unmounted > 0 {
+        let mut findings = Vec::new();
+        if reds > 0 {
+            findings.push(format!("{reds} red edge(s)"));
+        }
+        if unmounted > 0 {
+            findings.push(format!("{unmounted} grey(unmounted) edge(s)"));
+        }
         return Err(Fail {
             code: EXIT_FINDING,
-            message: format!("{reds} red edge(s) in the walk"),
+            message: format!("{} in the walk", findings.join(", ")),
         });
     }
     Ok(())
+}
+
+/// One mounted root's corpus, owned — the backing store `RootedCorpus` borrows.
+struct MountedCorpus {
+    name: addr::MountName,
+    kind: model::RootKind,
+    docs: BTreeMap<String, Document>,
+}
+
+/// Load `MERIDIAN.md`'s mount table and build one corpus per **bound** root.
+///
+/// **Never fails the walk.** A machine with no `MERIDIAN.md`, an unparseable
+/// one, or a root whose path is unreadable simply binds fewer roots — and a ref
+/// into a root that is not bound renders **grey `unmounted`**, which is the
+/// correct answer and a far better one than bricking the CLI. Failing here would
+/// break every single-root workspace on the planet to serve the cross-root case
+/// (`docs/address-grammar.md` § 8, M6: absence is the topology working as
+/// designed, not a parse failure).
+///
+/// Only `MountState::Bound` roots enter the set, so `MountSet::bound_names`
+/// stays TRUTHFUL — a refusal that lists an unreadable root among what is
+/// available teaches the wrong fix.
+fn load_mounts() -> Vec<MountedCorpus> {
+    let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
+        return Vec::new();
+    };
+    let Some(cfg) = resolution.config() else {
+        return Vec::new();
+    };
+    let Ok(table) = config::mount::bind(cfg) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for mount in table.mounts() {
+        if mount.state().refuses() {
+            continue; // unseeable / undeclared / drifted — grey, not bound
+        }
+        let (Ok(name), Some(path)) = (addr::MountName::parse(mount.name()), mount.canonical_path())
+        else {
+            continue;
+        };
+        let kind = match mount.kind() {
+            config::MountKind::Vault => model::RootKind::Vault,
+            config::MountKind::GitFolder => {
+                model::RootKind::Opaque(config::MountKind::GitFolder.as_str().to_owned())
+            }
+        };
+        // A root whose corpus will not build is unreadable FROM here — the M6
+        // grey, reached by simply not binding it.
+        if let Ok(docs) = build_docs_at(path) {
+            out.push(MountedCorpus { name, kind, docs });
+        }
+    }
+    out
+}
+
+/// [`build_docs`] without the workspace-resolution wrapper — a mount path is
+/// already canonical (canonicalize-at-bind, § 8 B-1), so re-resolving it would
+/// ask a second owner the question the mount table already answered.
+fn build_docs_at(root: &Path) -> Result<BTreeMap<String, Document>, Fail> {
+    let root = fs::WorkspaceRoot(root.to_path_buf());
+    let (files, _fingerprint) = fs::domain_snapshot(&root)
+        .map_err(|e| Fail::tool(format!("cannot read the mounted corpus: {e}")))?;
+    let (_index, docs) = fs::build_corpus(files)
+        .map_err(|e| Fail::tool(format!("cannot build the mounted corpus: {e}")))?;
+    Ok(docs)
 }
 
 /// The parsed `walk` invocation: the root page, direction, optional depth bound,
