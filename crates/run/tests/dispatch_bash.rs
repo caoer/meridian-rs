@@ -275,6 +275,15 @@ fn a_timeout_is_distinct_and_refuses_phase2() {
     assert!(out.stdout.is_ok());
 }
 
+/// Zero descriptors on a clean exit is not a fault — and it is not silence
+/// either. The run happened, so it gets a completion receipt.
+///
+/// The `applied: None` this used to assert was the defect, not the contract:
+/// with no completion receipt, "authorised and never started" and "ran and
+/// changed nothing" were the same bytes, and the toolchain doctor every agent
+/// skill-load runs is exactly a zero-effect task. The original intent — an
+/// empty batch is not an error, and the page is untouched — is asserted below
+/// unchanged.
 #[test]
 fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     let (_tmp, root) = workspace();
@@ -286,13 +295,53 @@ fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
         dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch, &caps), &mut live).unwrap();
 
     assert!(out.status.success());
-    assert!(matches!(
-        out.phase2,
-        Phase2::Applied { ref effects, applied: None } if effects.is_empty()
-    ));
+    // Not a fault: the empty batch applied, and it applied NOTHING.
+    let Phase2::Applied { effects, applied } = &out.phase2 else {
+        panic!("an empty batch on a clean exit is not a fault, got {:?}", out.phase2);
+    };
+    assert!(effects.is_empty(), "no descriptors were emitted");
+    assert!(
+        applied.is_some(),
+        "the run happened, so it must leave a completion receipt — without one \
+         it is indistinguishable from a run that never started"
+    );
+    assert_eq!(
+        applied.as_ref().unwrap().applied,
+        0,
+        "a completion receipt for an empty batch applies zero effects"
+    );
+    // Unchanged intent: the page the task did not touch stays byte-identical.
     assert_eq!(
         std::fs::read_to_string(root.0.join("page.md")).unwrap(),
         PAGE
+    );
+}
+
+/// The join the orphan lint needs: a completed run leaves BOTH receipts — the
+/// phase-1 pre-exec anchor and a phase-2 completion — at distinct anchors, even
+/// when it emitted no effects. A pre-exec receipt with no completion is then a
+/// readable state rather than an indistinguishable one.
+#[test]
+fn a_completed_zero_effect_run_leaves_both_receipts() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::none();
+
+    dispatch_bash::run(
+        &root,
+        &dispatch_of("echo ok", &scratch, &caps),
+        &mut Vec::new(),
+    )
+    .unwrap();
+
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    assert!(
+        receipts.contains("^p-000001"),
+        "the phase-1 pre-exec anchor is present: {receipts}"
+    );
+    assert!(
+        receipts.contains("^r-000001"),
+        "the phase-2 completion anchor is present: {receipts}"
     );
 }
 

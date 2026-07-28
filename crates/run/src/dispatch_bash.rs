@@ -331,10 +331,17 @@ pub fn run(
             ExecStatus::TimedOut { .. } => Phase2::RefusedTimeout,
             ExecStatus::Exited { code: 0 } => match shim::parse(&result.shim) {
                 Err(e) => Phase2::RefusedShim(e),
-                Ok(descriptors) if descriptors.is_empty() => Phase2::Applied {
-                    effects: Vec::new(),
-                    applied: None,
-                },
+                // A run that emitted no descriptors still HAPPENED, and the
+                // completion receipt is the only record that says so. Skipping
+                // it here made "authorised and never started" and "ran and
+                // changed nothing" the same bytes — one phase-1 receipt each,
+                // with no outcome field to tell them apart. That is not a rare
+                // shape: the toolchain doctor every agent skill-load runs is
+                // exactly a zero-effect task.
+                //
+                // A completion IS an event, so it belongs in the attested
+                // record (unlike a refusal, which asserts a non-event and is
+                // logged outside it). The batch is empty; the receipt is not.
                 Ok(descriptors) => {
                     let effects = shim::to_effects(
                         &descriptors,
