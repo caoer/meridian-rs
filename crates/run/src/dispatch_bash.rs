@@ -22,9 +22,14 @@
 //!
 //! # Failure matrix (S2/S6/#21)
 //! - phase-1 refusal → nothing ran, nothing committed ([`BashError::Phase1`]).
-//! - exec nonzero / signaled → phase 2 REFUSES; the phase-1 pre-exec receipt
-//!   stands committed and reported (it is the orphan-lint anchor, S2).
-//! - timeout → the group is `SIGKILL`ed; a DISTINCT state, phase 2 refuses.
+//! - exec nonzero → the effect batch REFUSES, and the run is still RECORDED:
+//!   **completion is not success** (G3b). The completion receipt carries the exit
+//!   code, so a check that reported a finding is no longer the same bytes as a
+//!   crash ([`Phase2::RefusedExecFailed`]).
+//! - signaled → the step did NOT complete; no completion receipt is written and the
+//!   phase-1 pre-exec receipt stands alone (the orphan-lint anchor, S2).
+//! - timeout → the group is `SIGKILL`ed; a DISTINCT state, phase 2 refuses and
+//!   no completion receipt is written — the run did not finish.
 //! - truncated / malformed shim stream → fails closed, the WHOLE phase-2
 //!   batch refuses (S6).
 //! - executor refusal in phase 2 → typed, nothing applied.
@@ -136,9 +141,20 @@ pub enum Phase2 {
         /// descriptor — nothing to apply is not a fault).
         applied: Option<Applied>,
     },
-    /// The step exited nonzero or was signaled — phase 2 refuses; phase 1
-    /// stands committed (S2). The code / signal is in [`BashOutcome::status`].
-    RefusedExecFailed,
+    /// The step exited NONZERO — the effect batch refuses (nothing the block
+    /// emitted applies), and the run is recorded anyway: **completion is not
+    /// success** (G3b). The completion receipt carries the exit code, so a check
+    /// that merely found something is no longer the same bytes as a crash.
+    /// The code is in [`BashOutcome::status`].
+    RefusedExecFailed {
+        /// The completion receipt commit — an EMPTY batch under a real receipt.
+        applied: Applied,
+    },
+    /// The step was killed by a signal the supervisor did not send — it did
+    /// NOT complete, so no completion receipt is written and the pre-exec receipt
+    /// stands alone (the orphan lint finds it, correctly). The signal is in
+    /// [`BashOutcome::status`].
+    RefusedSignaled,
     /// The wall-clock ceiling passed (#21) — the group was `SIGKILL`ed and
     /// phase 2 refuses.
     RefusedTimeout,
@@ -329,7 +345,8 @@ pub fn run(
     let phase2 = if detection.is_clean() {
         match &result.status {
             ExecStatus::TimedOut { .. } => Phase2::RefusedTimeout,
-            ExecStatus::Exited { code: 0 } => match shim::parse(&result.shim) {
+            ExecStatus::Signaled { .. } => Phase2::RefusedSignaled,
+            ExecStatus::Exited { code } => match shim::parse(&result.shim) {
                 Err(e) => Phase2::RefusedShim(e),
                 // A run that emitted no descriptors still HAPPENED, and the
                 // completion receipt is the only record that says so. Skipping
@@ -342,19 +359,31 @@ pub fn run(
                 // A completion IS an event, so it belongs in the attested
                 // record (unlike a refusal, which asserts a non-event and is
                 // logged outside it). The batch is empty; the receipt is not.
+                // U13: the sealed exec facts ride the completion receipt.
                 Ok(descriptors) => {
-                    let effects = shim::to_effects(
-                        &descriptors,
-                        d.task,
-                        d.invocation_id,
-                        &root_after_phase1.0,
-                    );
-                    // U13: the sealed exec facts ride the completion receipt.
                     let exec = exec_record(&result.status, &stdout, &d.env);
-                    apply_phase2(root, d, &root_after_phase1, effects, exec.as_ref())
+                    if *code == 0 {
+                        let effects = shim::to_effects(
+                            &descriptors,
+                            d.task,
+                            d.invocation_id,
+                            &root_after_phase1.0,
+                        );
+                        apply_phase2(root, d, &root_after_phase1, effects, exec.as_ref())
+                    } else {
+                        // G3b: COMPLETION IS NOT SUCCESS. The descriptors are
+                        // discarded — a failed block's effects never apply,
+                        // which was always the correct half of this refusal —
+                        // and the run is still recorded, because it ran to an
+                        // exit and the engine holds the proof (the code, the
+                        // sealed stdout log). Without this the wiki's own
+                        // idiom, a check page that exits nonzero on a finding,
+                        // left the same bytes as a crash: one lone pre-exec
+                        // receipt the orphan lint can only call unauditable.
+                        completion_receipt(root, d, &root_after_phase1, exec.as_ref())
+                    }
                 }
             },
-            ExecStatus::Exited { .. } | ExecStatus::Signaled { .. } => Phase2::RefusedExecFailed,
         }
     } else {
         Phase2::RefusedDetection
@@ -410,6 +439,51 @@ fn preflight(
     log.append(refusal.as_bytes()).map_err(BashError::Record)?;
     log.seal().map_err(BashError::Record)?;
     Err(BashError::Detection(OpenRefusal::Guard(e)))
+}
+
+/// G3b — the completion receipt for a failed run: the run exited NONZERO under a clean window, so the
+/// batch is empty by policy and the receipt records the completion with its
+/// exit code.
+///
+/// The empty batch is the point. `apply` is the ONE choke point, so routing the
+/// record through it with `effects: &[]` reuses the whole commit discipline
+/// (lock, pin validation, receipt address) without inventing a second write
+/// path — the same shape the zero-effect completion receipt already takes. What
+/// distinguishes the two records is the `exec.exit_code` riding the receipt,
+/// which is a fact the engine SEALED rather than one a reader infers.
+///
+/// A commit failure here leaves the pre-exec receipt alone and the orphan lint
+/// finds it — the honest outcome, since the record could not be written.
+fn completion_receipt(
+    root: &fs::WorkspaceRoot,
+    d: &BashDispatch<'_>,
+    root_after_phase1: &MerkleRoot,
+    exec: Option<&record::ExecRecord>,
+) -> Phase2 {
+    match executor::apply(
+        root,
+        &ApplyRequest {
+            page: d.page,
+            task: d.task,
+            task_rev: d.task_rev,
+            invocation_id: d.invocation_id,
+            now: d.now,
+            effects: &[],
+            caps: d.caps,
+            pin_root: root_after_phase1,
+            live_root: root_after_phase1,
+            receipt: d.receipt.clone(),
+            takeover: d.takeover,
+            exec,
+            depth: 0,
+        },
+    ) {
+        Ok(applied) => Phase2::RefusedExecFailed { applied },
+        Err(error) => Phase2::RefusedExec {
+            effects: Vec::new(),
+            error,
+        },
+    }
 }
 
 /// Phase 2: the shim batch through the executor's one choke point, pinned

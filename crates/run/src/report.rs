@@ -336,7 +336,8 @@ fn outcome_effects(outcome: &TaskOutcome) -> &[Effect] {
         TaskOutcome::Starlark(o) => &o.effects,
         TaskOutcome::Bash(o) => match &o.phase2 {
             Phase2::Applied { effects, .. } | Phase2::RefusedExec { effects, .. } => effects,
-            Phase2::RefusedExecFailed
+            Phase2::RefusedExecFailed { .. }
+            | Phase2::RefusedSignaled
             | Phase2::RefusedTimeout
             | Phase2::RefusedShim(_)
             | Phase2::RefusedDetection => &[],
@@ -350,9 +351,10 @@ fn outcome_effects(outcome: &TaskOutcome) -> &[Effect] {
 fn classify(report: &RunReport, applied: &[EffectLine], unexecuted: &[EffectLine]) -> ReportState {
     if let TaskOutcome::Bash(o) = &report.outcome {
         match &o.phase2 {
-            Phase2::RefusedTimeout => return ReportState::Interrupted,
-            Phase2::RefusedExecFailed if signaled(&o.status) => return ReportState::Interrupted,
-            Phase2::RefusedExecFailed
+            Phase2::RefusedTimeout | Phase2::RefusedSignaled => {
+                return ReportState::Interrupted;
+            }
+            Phase2::RefusedExecFailed { .. }
             | Phase2::RefusedShim(_)
             | Phase2::RefusedDetection
             | Phase2::RefusedExec { .. } => {
@@ -377,15 +379,6 @@ fn classify(report: &RunReport, applied: &[EffectLine], unexecuted: &[EffectLine
         return ReportState::UnexecutedNoCapability;
     }
     ReportState::Applied
-}
-
-/// A bash step that was signaled (not a clean nonzero exit) is interrupted —
-/// the #21 distinction the report must keep.
-fn signaled(status: &ExecStatus) -> bool {
-    matches!(
-        status,
-        ExecStatus::Signaled { .. } | ExecStatus::TimedOut { .. }
-    )
 }
 
 /// The exec-window out-of-band-delta line. The bracket is U6b's and rides the

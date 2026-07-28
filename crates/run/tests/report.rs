@@ -183,11 +183,36 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
 #[test]
 fn bash_phase1_committed_phase2_refused_is_partial() {
     let r = report::render(&bash(
-        Phase2::RefusedExecFailed,
+        Phase2::RefusedExecFailed {
+            applied: completion_applied(),
+        },
         ExecStatus::Exited { code: 7 },
         Some("- run {} ^p-000001"),
     ));
     assert_eq!(r.state, ReportState::Partial);
+}
+
+/// G3b: a signaled step did NOT complete, so it is interrupted — never the
+/// `partial` a recorded nonzero exit renders.
+#[test]
+fn a_signaled_step_is_interrupted_not_partial() {
+    let r = report::render(&bash(
+        Phase2::RefusedSignaled,
+        ExecStatus::Signaled { signal: 9 },
+        Some("- run {} ^p-000001"),
+    ));
+    assert_eq!(r.state, ReportState::Interrupted);
+}
+
+/// The completion receipt an exited-nonzero run commits: an EMPTY batch under a
+/// real receipt line.
+fn completion_applied() -> run::executor::Applied {
+    run::executor::Applied {
+        applied: 0,
+        event: None,
+        receipt_line: Some("- run {} ^r-000001".to_owned()),
+        file_rev_after: "b3:after".to_owned(),
+    }
 }
 
 #[test]
