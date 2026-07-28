@@ -1,5 +1,5 @@
 //! Exec-window detection bracket (run-plane U6b): residual-compare over the
-//! §12 hash domain, the `mdfs_config.yaml` change bracket, and symlink
+//! §12 hash domain, the domain-config change bracket, and symlink
 //! refusal in the guarded walk.
 //!
 //! # What this is
@@ -28,12 +28,18 @@
 //! `Display` so downstream reports inherit it.
 //!
 //! # Config bracket (#20)
-//! The detection domain itself is config: a step that rewrites
-//! `mdfs_config.yaml` could widen the ignore list so its next writes fall
+//! The detection domain itself is config: a step that rewrites the domain
+//! config could widen the ignore list so its next writes fall
 //! outside detection. The guard captures the raw config bytes at open and
 //! refuses at close — BEFORE the residual diff, so a widened domain never
 //! filters it — if they changed. Byte equality subsumes the planned hash
-//! compare. [`StepGuard::config_state`] + [`StepGuard::verify_config`] are
+//! compare.
+//!
+//! BOTH declaration surfaces are bracketed — `meridian/domain.md` and the
+//! legacy `mdfs_config.yaml`. #20 is about the DOMAIN moving, not about one
+//! filename: a bracket watching a single file while the workspace declares its
+//! ignore list in the other would reintroduce exactly the laundering it exists
+//! to stop. [`StepGuard::config_state`] + [`StepGuard::verify_config`] are
 //! the SEAM for mid-run continuity: the run layer is expected to pin every
 //! step to the config the run started under (surfaced there as
 //! `ExecBracket::open_pinned`); this module only provides the predicate.
@@ -64,7 +70,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::WorkspaceRoot;
-use crate::domain::{CONFIG_FILE_NAME, Domain};
+use crate::domain::{CONFIG_FILE_NAME, DOMAIN_CONFIG_PATH, Domain};
 
 /// The detection bracket around one exec window: pre-step domain snapshot +
 /// captured config state, consumed by [`StepGuard::close`] (one bracket, one
@@ -78,11 +84,21 @@ pub struct StepGuard {
     pre: BTreeMap<String, Vec<u8>>,
 }
 
-/// The captured `mdfs_config.yaml` state: raw bytes, or absent. Byte equality
-/// is the #20 bracket predicate — strictly stronger than a hash compare, and
-/// absent-vs-present is a change like any other.
+/// The captured domain-config state: the raw bytes of BOTH declaration
+/// surfaces, each present or absent. Byte equality is the #20 bracket
+/// predicate — strictly stronger than a hash compare, and absent-vs-present is
+/// a change like any other.
+///
+/// Both surfaces are captured because #20 is about the DOMAIN moving, not
+/// about one filename. A bracket watching only `mdfs_config.yaml` while the
+/// workspace declares its ignore list in [`DOMAIN_CONFIG_PATH`] would let a
+/// step widen the domain mid-window and never notice — the exact laundering
+/// #20 exists to stop, reintroduced by the surface change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigState(Option<Vec<u8>>);
+pub struct ConfigState {
+    md: Option<Vec<u8>>,
+    yaml: Option<Vec<u8>>,
+}
 
 /// One governed change the step is entitled to have made: the full post-edit
 /// bytes of one workspace-relative file (create-or-replace; forward-slash
@@ -168,7 +184,7 @@ impl fmt::Display for GuardError {
             }
             GuardError::ConfigChanged => write!(
                 f,
-                "{CONFIG_FILE_NAME} changed during exec window — the detection domain itself moved; refusing",
+                "the domain config ({DOMAIN_CONFIG_PATH} or {CONFIG_FILE_NAME}) changed during exec window — the detection domain itself moved; refusing",
             ),
             GuardError::OutOfBand(delta) => delta.fmt(f),
         }
@@ -291,28 +307,54 @@ impl ConfigState {
     /// Non-UTF-8 config is refused as `InvalidData` — the same refusal
     /// [`Domain::load`] makes.
     fn parse_domain(&self) -> Result<Domain, GuardError> {
-        match &self.0 {
-            None => Ok(Domain::new()),
-            Some(bytes) => {
-                let text = std::str::from_utf8(bytes).map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("non-UTF-8 content refused: {e}"),
-                    )
-                })?;
-                Ok(Domain::from_config(text))
-            }
+        // Same precedence and same ambiguity refusal as `Domain::load`. If the
+        // guard resolved a config differently from the read path, the bracket
+        // would be detecting against a domain nothing else uses.
+        match (&self.md, &self.yaml) {
+            (Some(_), Some(_)) => Err(GuardError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
+                     The exec-window bracket cannot pick one without guessing which domain the \
+                     step is detected against. Remedy: keep {DOMAIN_CONFIG_PATH} and delete \
+                     {CONFIG_FILE_NAME}."
+                ),
+            ))),
+            (Some(bytes), None) => Ok(Domain::from_markdown(config_text(bytes)?)),
+            (None, Some(bytes)) => Ok(Domain::from_config(config_text(bytes)?)),
+            (None, None) => Ok(Domain::new()),
         }
     }
+}
+
+/// A captured config's bytes as text, refusing non-UTF-8 rather than lossily
+/// decoding a file that decides what is attested.
+fn config_text(bytes: &[u8]) -> Result<&str, GuardError> {
+    std::str::from_utf8(bytes).map_err(|e| {
+        GuardError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("non-UTF-8 content refused: {e}"),
+        ))
+    })
 }
 
 /// Read `mdfs_config.yaml` without following links: absent ⇒
 /// `ConfigState(None)`; a symlinked config refuses (#25 covers the domain's
 /// own definition file too).
 fn read_config(root: &WorkspaceRoot) -> Result<ConfigState, GuardError> {
-    match read_nofollow(&root.0.join(CONFIG_FILE_NAME), CONFIG_FILE_NAME) {
-        Ok(bytes) => Ok(ConfigState(Some(bytes))),
-        Err(GuardError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(ConfigState(None)),
+    Ok(ConfigState {
+        md: read_config_file(root, DOMAIN_CONFIG_PATH)?,
+        yaml: read_config_file(root, CONFIG_FILE_NAME)?,
+    })
+}
+
+/// One config surface's bytes, or `None` when it is absent. Read `O_NOFOLLOW`
+/// like every other guarded read: a symlinked config is a domain declaration
+/// whose bytes live somewhere the bracket cannot vouch for.
+fn read_config_file(root: &WorkspaceRoot, rel: &str) -> Result<Option<Vec<u8>>, GuardError> {
+    match read_nofollow(&root.0.join(rel), rel) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(GuardError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
