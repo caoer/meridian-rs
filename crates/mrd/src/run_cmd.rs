@@ -345,10 +345,17 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
     };
     let cause = match &outcome.phase2 {
         Phase2::Applied { .. } => return Ok(()),
-        Phase2::RefusedExecFailed => match &outcome.status {
-            ExecStatus::Exited { code } => {
-                format!("bash exited {code} — phase 2 refused; committed phase-1 state stands")
-            }
+        // G3b: the effects refused, the run was recorded. Both halves are said,
+        // in that order — the operator's next move follows from the exit code,
+        // not from the receipt.
+        Phase2::RefusedExecFailed { .. } => match &outcome.status {
+            ExecStatus::Exited { code } => format!(
+                "bash exited {code} — no effect applied; the run is recorded with its exit code"
+            ),
+            // Unreachable: this variant is built only under `Exited`.
+            other => format!("bash ended {other:?} — phase 2 refused"),
+        },
+        Phase2::RefusedSignaled => match &outcome.status {
             ExecStatus::Signaled { signal } => {
                 let leg = u8::try_from(128 + *signal).unwrap_or(1);
                 return Err(Fail {
@@ -356,9 +363,8 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
                     message: format!("bash was signaled ({signal}) — run interrupted"),
                 });
             }
-            ExecStatus::TimedOut { limit } => {
-                format!("bash timed out after {}s", limit.as_secs())
-            }
+            // Unreachable: this variant is built only under `Signaled`.
+            other => format!("bash ended {other:?} — phase 2 refused"),
         },
         Phase2::RefusedTimeout => {
             "bash timed out — process group killed, phase 2 refused".to_owned()

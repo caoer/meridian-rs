@@ -205,6 +205,11 @@ fn a_clean_run_applies_the_shim_batch_two_phase() {
     assert_eq!(log, b"running\n");
 }
 
+/// G3b, the pair's first half — COMPLETION IS NOT SUCCESS. A block that ran to
+/// a nonzero exit gets its effects refused AND its completion recorded, because
+/// the wiki's own idiom is a check page that exits nonzero on a finding. Before
+/// this, such a run left one lone pre-exec receipt: the same bytes as a crash,
+/// and the orphan lint could only call it unauditable.
 #[test]
 fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     let (_tmp, root) = workspace();
@@ -217,16 +222,65 @@ fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
 
     assert_eq!(out.status, ExecStatus::Exited { code: 7 });
-    assert!(matches!(out.phase2, Phase2::RefusedExecFailed));
-    // Nothing applied; the pre-exec receipt stands committed (orphan-lint
-    // anchor) and no completion line joined it.
+    let Phase2::RefusedExecFailed { applied } = &out.phase2 else {
+        panic!("expected a recorded exec failure, got {:?}", out.phase2);
+    };
+    // The refusal half, unchanged and still the law: the block emitted a
+    // set_field descriptor and NOTHING of it applied.
+    assert_eq!(applied.applied, 0);
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
+    // The record half, new: the pre-exec receipt is JOINED by a completion
+    // receipt carrying the exit code, so this run is no longer an orphan.
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    assert!(receipts.contains("^p-000001"));
+    assert!(receipts.contains("^r-000001"), "completion receipt: {receipts}");
+    assert!(
+        receipts.contains("\"exit_code\":7"),
+        "the completion receipt carries the exit code: {receipts}"
+    );
+    assert!(
+        !receipts.contains("set_field"),
+        "the refused effects are NOT recorded as applied: {receipts}"
+    );
+}
+
+/// G3b, the pair's second half — a true crash STILL leaves an orphan. A
+/// signaled step did not run to an exit, so no completion can honestly be
+/// written and the lone pre-exec receipt is the correct record. This is the
+/// assertion that keeps the first half from becoming "every run gets a
+/// receipt", which would delete the orphan lint's whole population.
+#[test]
+fn a_signaled_step_records_no_completion_and_stays_an_orphan() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::parse("md.set_field").unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    // A valid stream, then the step kills ITSELF — the supervisor's own
+    // step-end SIGKILL would be indistinguishable from a timeout, so the
+    // signal has to come from inside the block.
+    let src = format!("{EMIT_SET_FIELD}\nkill -TERM $$\nsleep 5");
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+
+    assert!(
+        matches!(out.status, ExecStatus::Signaled { .. }),
+        "expected a signaled step, got {:?}",
+        out.status
+    );
+    assert!(matches!(out.phase2, Phase2::RefusedSignaled));
     assert_eq!(
         std::fs::read_to_string(root.0.join("page.md")).unwrap(),
         PAGE
     );
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(receipts.contains("^p-000001"));
-    assert!(!receipts.contains("^r-000001"));
+    assert!(
+        !receipts.contains("^r-000001"),
+        "a crash leaves the orphan anchor alone: {receipts}"
+    );
 }
 
 #[test]
