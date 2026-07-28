@@ -25,8 +25,31 @@ use std::path::{Component, Path};
 
 use crate::WorkspaceRoot;
 
-/// The custom-ignore config file. Not markdown ⇒ never in its own domain.
+/// The legacy custom-ignore config file. Not markdown ⇒ never in its own
+/// domain. Superseded by [`DOMAIN_CONFIG_PATH`]; still read when it is the only
+/// config present, so existing workspaces keep working.
 pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
+
+/// The custom-ignore config, as markdown — the declaration surface a workspace
+/// should use.
+///
+/// Markdown because the workspace convention is that configuration a human
+/// maintains is a page they can read: the ignore list rides the FRONTMATTER
+/// (frontmatter filters, body reads) and the body carries the rationale for
+/// each entry, which a bare YAML file has nowhere to put. It joins the reserved
+/// path family already here — [`RESERVED_JOURNAL_PATH`],
+/// [`RESERVED_INDEX_PATH`], [`ATTESTED_MARKER_PATH`].
+///
+/// # This file is inside its own hash domain, deliberately
+/// Unlike [`CONFIG_FILE_NAME`] (non-md, structurally outside), a `.md` config
+/// is hashed like any other page. That is the correct behaviour, not a wrinkle
+/// to paper over: the file that DEFINES the attested surface should itself be
+/// attested, so a change to the ignore list moves the root and is visible as a
+/// fact rather than as a silent reshaping of what gets checked. It pairs with
+/// the `version` field, which exists so an ignore-list change is a deliberate,
+/// root-advancing act. Bootstrap is not circular — read the config, compute the
+/// domain, then hash the domain including the config.
+pub const DOMAIN_CONFIG_PATH: &str = "meridian/domain.md";
 
 /// The ONE reserved receipt-journal page (d2 §2.1 A3/A9; node-rev-merkle-spec
 /// §10 open-question 3). The receipt engine appends one row per guarded write
@@ -145,18 +168,48 @@ impl Domain {
         }
     }
 
-    /// Read `mdfs_config.yaml` from the workspace root, or the default domain
-    /// when the file is absent.
+    /// Parse the domain from the markdown config page ([`DOMAIN_CONFIG_PATH`]).
+    ///
+    /// The ignore list rides the frontmatter block and takes the same schema
+    /// [`from_config`](Self::from_config) accepts — the SURFACE moved, the
+    /// pattern semantics did not. A page with no frontmatter yields the default
+    /// domain: a config that declares nothing ignores nothing.
+    #[must_use]
+    pub fn from_markdown(md: &str) -> Self {
+        Self::from_config(frontmatter(md).unwrap_or(""))
+    }
+
+    /// Read the workspace's domain config, or the default domain when none is
+    /// present.
+    ///
+    /// [`DOMAIN_CONFIG_PATH`] is the surface; [`CONFIG_FILE_NAME`] is still
+    /// honoured when it is the ONLY config, so existing workspaces keep
+    /// working.
     ///
     /// # Errors
-    /// I/O failure reading an existing config file. An absent file is not an
+    /// I/O failure reading an existing config file. An absent config is not an
     /// error — it yields [`Domain::new`].
+    ///
+    /// **Both present is an error, not a precedence rule.** Two live ignore
+    /// lists are two answers to "what is attested here", and silently picking
+    /// one means the file a reader is looking at may not be the file in force —
+    /// the ambiguity is reported rather than resolved.
     pub fn load(root: &WorkspaceRoot) -> io::Result<Domain> {
-        let path = root.0.join(CONFIG_FILE_NAME);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Ok(Domain::from_config(&text)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Domain::new()),
-            Err(e) => Err(e),
+        let md = read_optional(&root.0.join(DOMAIN_CONFIG_PATH))?;
+        let yaml = read_optional(&root.0.join(CONFIG_FILE_NAME))?;
+        match (md, yaml) {
+            (Some(_), Some(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "two domain configs are present: {DOMAIN_CONFIG_PATH} and {CONFIG_FILE_NAME}. \
+                     They may declare different ignore lists, so which files are attested would \
+                     depend on a precedence rule no reader of either file can see. \
+                     Remedy: keep {DOMAIN_CONFIG_PATH} and delete {CONFIG_FILE_NAME}."
+                ),
+            )),
+            (Some(text), None) => Ok(Domain::from_markdown(&text)),
+            (None, Some(text)) => Ok(Domain::from_config(&text)),
+            (None, None) => Ok(Domain::new()),
         }
     }
 
@@ -205,10 +258,110 @@ impl Domain {
         }
         !ignored
     }
+
+    /// May a traversal skip `rel_dir` and everything beneath it WITHOUT
+    /// changing the hash domain?
+    ///
+    /// This is the difference between filtering and pruning, and it is the
+    /// whole cost story: [`contains`](Self::contains) answers per FILE, so a
+    /// walk that filters afterwards has already paid the `stat` for every
+    /// entry it then discards. Pruning declines to descend at all.
+    ///
+    /// Sound, not merely fast — it answers `true` only when BOTH hold:
+    ///
+    /// 1. the directory itself is ignored by last-match-wins, so every path
+    ///    beneath it inherits the ignore; and
+    /// 2. no `!` rule could re-include anything beneath it. gitignore
+    ///    semantics let `!archive/index.md` survive `archive/**`, and a
+    ///    pruned directory would silently drop that file out of the domain —
+    ///    a WRONG ROOT, not a slow one. When re-inclusion cannot be ruled
+    ///    out the answer is `false` and the walk pays for the descent.
+    ///
+    /// Reserved paths are never pruned: they must stay reachable regardless of
+    /// what the ignore list says about the directory holding them.
+    #[must_use]
+    pub fn prunes_dir(&self, rel_dir: &Path) -> bool {
+        let segments: Vec<&str> = rel_dir
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => s.to_str(),
+                _ => None,
+            })
+            .collect();
+        // Never prune the workspace root itself.
+        if segments.is_empty() {
+            return false;
+        }
+        // Never prune a directory on the way to a reserved path.
+        if RESERVED_DIR_PREFIXES
+            .iter()
+            .any(|reserved| is_prefix_of_reserved(&segments, reserved))
+        {
+            return false;
+        }
+        let mut ignored = false;
+        for rule in &self.rules {
+            if rule.matches(&segments) {
+                ignored = !rule.negate;
+            }
+        }
+        if !ignored {
+            return false;
+        }
+        !self
+            .rules
+            .iter()
+            .any(|rule| rule.negate && rule.could_reinclude_under(&segments))
+    }
+}
+
+/// Reserved paths whose parent directories must stay walkable whatever the
+/// ignore list says. Kept as segment lists so the check is spelling-proof.
+const RESERVED_DIR_PREFIXES: &[&str] = &[
+    RESERVED_JOURNAL_PATH,
+    RESERVED_INDEX_PATH,
+    ATTESTED_MARKER_PATH,
+];
+
+/// Is `dir` a directory on the path to `reserved`?
+fn is_prefix_of_reserved(dir: &[&str], reserved: &str) -> bool {
+    let rsegs: Vec<&str> = reserved.split('/').filter(|s| !s.is_empty()).collect();
+    // The reserved file's own leaf is not a directory, so a prefix must be
+    // strictly shorter than the full reserved path.
+    dir.len() < rsegs.len() && dir.iter().zip(rsegs.iter()).all(|(d, r)| d == r)
 }
 
 fn is_markdown(p: &Path) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md"))
+}
+
+/// Read a file that may legitimately not exist. `None` is absence; every other
+/// I/O failure stays an error rather than degrading into "no config", which
+/// would silently widen the attested surface on an unreadable file.
+fn read_optional(path: &Path) -> io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The frontmatter block of a markdown page: the text between a leading `---`
+/// fence and the next `---` line. `None` when the page does not open with one.
+fn frontmatter(md: &str) -> Option<&str> {
+    let rest = md
+        .strip_prefix("---\n")
+        .or_else(|| md.strip_prefix("---\r\n"))?;
+    let end = rest
+        .lines()
+        .scan(0usize, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        })
+        .find(|(_, line)| line.trim_end() == "---")
+        .map(|(start, _)| start)?;
+    Some(&rest[..end])
 }
 
 /// Is `rel` the ONE reserved receipt-journal page? The single source of truth
@@ -303,6 +456,27 @@ impl Rule {
             // Unanchored: match at any depth.
             (0..=path.len()).any(|i| match_segs(&self.segs, &path[i..]))
         }
+    }
+
+    /// Could this `!` rule re-include some path strictly BENEATH `dir`?
+    ///
+    /// Deliberately conservative — it answers the question that makes pruning
+    /// safe, so every uncertain case answers `true` (walk it) rather than
+    /// risk dropping a re-included file out of the hash domain. Two cases
+    /// admit no cheap proof and are therefore assumed reachable:
+    /// an unanchored rule (basename semantics — it matches at any depth), and
+    /// any rule containing `**` (which absorbs arbitrary segments).
+    /// Otherwise the rule names a fixed-depth path, and it can only reach
+    /// under `dir` when `dir` is a proper prefix of that path.
+    fn could_reinclude_under(&self, dir: &[&str]) -> bool {
+        if !self.anchored || self.segs.iter().any(|s| s == "**") {
+            return true;
+        }
+        dir.len() < self.segs.len()
+            && dir
+                .iter()
+                .zip(self.segs.iter())
+                .all(|(d, p)| seg_glob(p, d))
     }
 }
 

@@ -91,19 +91,62 @@ fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Resul
     Ok(())
 }
 
-/// The §12 hash domain: [`walk`] narrowed to the files whose bytes enter the
-/// merkle root — md-only, dot-segment-ignored, and custom-ignored removed. This
-/// is where `walk` gains the [`domain`] filter; the filter gates HASHING, never
-/// `load` — an ignored md file is absent here yet still addressable by path
-/// (`hash ⊂ addressable`, §12.1).
+/// The §12 hash domain: the files whose bytes enter the merkle root — md-only,
+/// dot-segment-ignored, and custom-ignored removed. The filter gates HASHING,
+/// never `load` — an ignored md file is absent here yet still addressable by
+/// path (`hash ⊂ addressable`, §12.1).
+///
+/// # Why this is its own traversal and not `walk().filter()`
+/// Ignore-for-corpus and addressable-on-demand are DIFFERENT SETS, so they get
+/// different walks. [`walk`] must keep descending everywhere — that is what
+/// makes `.github/README.md` addressable (§12.1) — while this walk may decline
+/// to descend at all, because nothing under a soundly-pruned directory can
+/// reach the root.
+///
+/// Filtering after a full walk pays `stat` for every entry it then discards;
+/// on a real vault the discarded majority IS the cost (the walk is
+/// syscall-bound, not parse-bound). Pruning is sound only where re-inclusion
+/// is impossible — [`domain::Domain::prunes_dir`] carries that proof, and
+/// declines whenever a `!` rule could reach beneath.
+///
+/// Dot-directories are pruned structurally: [`domain::Domain::contains`] holds
+/// the dot rule ABOVE custom rules precisely so no `!` can lift a dot path,
+/// which makes not descending them equivalent to filtering them out.
 ///
 /// # Errors
 /// I/O failure traversing the root.
 pub fn hash_domain(root: &WorkspaceRoot, domain: &domain::Domain) -> io::Result<Vec<PathBuf>> {
-    Ok(walk(root)?
-        .into_iter()
-        .filter(|rel| domain.contains(rel))
-        .collect())
+    let mut out = Vec::new();
+    walk_domain_dir(&root.0, &PathBuf::new(), domain, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn walk_domain_dir(
+    abs_dir: &Path,
+    rel_dir: &Path,
+    domain: &domain::Domain,
+    out: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let rel = rel_dir.join(&name);
+        if file_type.is_dir() {
+            // Dot-segment: structurally outside the hash domain at any depth.
+            if name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if domain.prunes_dir(&rel) {
+                continue;
+            }
+            walk_domain_dir(&entry.path(), &rel, domain, out)?;
+        } else if file_type.is_file() && domain.contains(&rel) {
+            out.push(rel);
+        }
+    }
+    Ok(())
 }
 
 /// The domain files of a workspace as `(workspace-relative path, raw bytes)`
