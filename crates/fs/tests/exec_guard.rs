@@ -172,6 +172,66 @@ fn config_widening_attack_refused() {
     assert!(matches!(guard.close(&[]), Err(GuardError::ConfigChanged)));
 }
 
+/// #20 through the MARKDOWN surface — the hostile fixture for the config
+/// bracket after `meridian/domain.md` became a declaration surface.
+///
+/// The attack is the same one `config_widening_attack_refused` covers, aimed at
+/// the other file: the window rewrites the markdown config to ignore the
+/// directory it is about to write into. If the bracket watched only
+/// `mdfs_config.yaml`, this close would return the residual diff computed under
+/// the WIDENED domain — i.e. clean — and the rogue write would be laundered.
+///
+/// This test fails against a bracket that captures one surface. It is the
+/// demonstration that moving the config surface did not move the hole.
+#[test]
+fn config_widening_attack_through_markdown_surface_refused() {
+    let (_tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"drafts/**\"\n---\n\n# Domain\n",
+    );
+    let guard = StepGuard::open(&root).unwrap();
+
+    // Widen the domain mid-window, then write outside the ORIGINAL domain.
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"drafts/**\"\n  - \"notes/**\"\n---\n\n# Domain\n",
+    );
+    write(&root.0, "notes/rogue.md", "hidden by the new ignore?\n");
+
+    assert!(
+        matches!(guard.close(&[]), Err(GuardError::ConfigChanged)),
+        "widening the markdown domain config mid-window must refuse, exactly as \
+         widening the yaml one does"
+    );
+}
+
+/// The guard must resolve the SAME domain the read path resolves. If it parsed
+/// only the legacy surface it would detect against the DEFAULT domain while
+/// `check`/`status` used the declared ignore list — two different answers to
+/// "what is attested here", and the guard's would be the wrong one.
+#[test]
+fn guard_honours_the_markdown_domain_config() {
+    let (_tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"drafts/**\"\n---\n\n# Domain\n",
+    );
+    let guard = StepGuard::open(&root).unwrap();
+
+    // An ignored path is outside detection: writing there is not a residual.
+    write(&root.0, "drafts/scratch.md", "ignored by the declared domain\n");
+
+    assert!(
+        guard.close(&[]).is_ok(),
+        "a write under a path the markdown config ignores is outside the \
+         detection domain, so the bracket must close clean"
+    );
+}
+
 /// #20, present→absent: deleting the config mid-window is a domain change
 /// like any other — refused.
 #[test]
