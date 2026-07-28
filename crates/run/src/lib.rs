@@ -76,9 +76,7 @@ pub mod shim;
 pub mod snapshot;
 
 pub use address::{AddressError, ResolvedTask, TaskBinding};
-pub use caps::{
-    Cap, CapResolution, CapSet, CapSource, CapsError, ConventionSource, Conventions,
-};
+pub use caps::{Cap, CapResolution, CapSet, CapSource, CapsError, ConventionSource, Conventions};
 pub use contracts::{Contract, ContractError, ContractViolation};
 pub use dispatch_bash::{BashDispatch, BashError, BashOutcome, Phase2};
 pub use dispatch_starlark::{DispatchError, DispatchOutcome, StarlarkDispatch};

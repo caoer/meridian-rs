@@ -39,8 +39,8 @@
 //! whole surface is `&WorkspaceRoot` / `&Change` in, a report out.
 
 pub mod layer0;
-pub mod orphan;
 pub mod layer1;
+pub mod orphan;
 
 use std::collections::BTreeMap;
 

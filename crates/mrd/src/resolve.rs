@@ -78,10 +78,7 @@ pub(crate) fn resolve_runtime(cwd: &Path) -> Result<Resolved, ResolveError> {
         // Nothing anchored this tree. Taking the cwd anyway is the deliberate
         // demotion `root_or_cwd` marks — and it buys no registration: the
         // daemon may adopt it, otherwise the store is ephemeral.
-        None => Ok(resolve_unanchored(
-            cwd,
-            answer.root_or_cwd().to_path_buf(),
-        )),
+        None => Ok(resolve_unanchored(cwd, answer.root_or_cwd().to_path_buf())),
     }
 }
 

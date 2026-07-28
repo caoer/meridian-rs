@@ -235,7 +235,8 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     // second is `None`, so no convention ceiling is in force.
     let declaring_root = answer.root();
     let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| fail_address(&e))?;
-    let (conventions, _source) = caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
+    let (conventions, _source) =
+        caps::load_conventions(declaring_root).map_err(|e| fail_caps(&e))?;
 
     if parsed.list {
         return list_tasks(&root, &parsed.page, &doc, &conventions, parsed.format());

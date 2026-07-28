@@ -943,10 +943,16 @@ impl Coverage {
         if self.foreign().is_some() {
             return "foreign-hook";
         }
-        if self.first_currency(|c| matches!(c, Currency::Ahead { .. })).is_some() {
+        if self
+            .first_currency(|c| matches!(c, Currency::Ahead { .. }))
+            .is_some()
+        {
             return "installed-ahead";
         }
-        if self.first_currency(|c| c == Currency::Unversioned).is_some() {
+        if self
+            .first_currency(|c| c == Currency::Unversioned)
+            .is_some()
+        {
             return "installed-unversioned";
         }
         if self
@@ -1054,10 +1060,7 @@ impl Coverage {
             .find(|d| matches!(d.here, HookHere::Foreign { .. }))
     }
 
-    fn first_currency_door(
-        &self,
-        pred: impl Fn(Currency) -> bool,
-    ) -> Option<(&Door, Currency)> {
+    fn first_currency_door(&self, pred: impl Fn(Currency) -> bool) -> Option<(&Door, Currency)> {
         self.doors.iter().find_map(|d| match &d.here {
             HookHere::Ours { installed_version } => {
                 let c = currency(*installed_version);
@@ -1349,7 +1352,11 @@ mod tests {
         // opened the gate, because non-emptiness is a fact about the keystroke
         // and not about the word.
         for no in ["0", "false", "FALSE", "no", "off", "", " ", "   "] {
-            assert_eq!(parse_force(Some(no)), Force::No, "{no:?} means do NOT force");
+            assert_eq!(
+                parse_force(Some(no)),
+                Force::No,
+                "{no:?} means do NOT force"
+            );
         }
         assert_eq!(parse_force(None), Force::No, "unset fences");
         for bad in ["maybe", "2", "yolo", "t rue"] {
@@ -1408,7 +1415,10 @@ mod tests {
             bypass.contains("BYPASSED") && bypass.contains(">&2"),
             "a forced commit that printed nothing was indistinguishable from an honest one"
         );
-        let not_a_force = force_leg.split(";;").nth(1).expect("the fence-normally leg");
+        let not_a_force = force_leg
+            .split(";;")
+            .nth(1)
+            .expect("the fence-normally leg");
         assert!(
             !not_a_force.contains("printf"),
             "the fence-normally leg must stay silent, or the notice says nothing"
@@ -1451,10 +1461,7 @@ mod tests {
         };
         // ACCEPTANCE: the full set reads `installed`.
         let full = Coverage {
-            doors: FENCED_HOOKS
-                .iter()
-                .map(|n| door(n, ours.clone()))
-                .collect(),
+            doors: FENCED_HOOKS.iter().map(|n| door(n, ours.clone())).collect(),
         };
         assert_eq!(full.word(), "installed");
         assert_eq!(full.teaching(), None);

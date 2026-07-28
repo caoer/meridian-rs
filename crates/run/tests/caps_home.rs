@@ -5,7 +5,7 @@
 //! Every test here fails against the retired contract; the failures were
 //! recorded before the implementation changed, not asserted afterwards.
 
-use run::caps::{self, Cap, CapSet, CapSource, ConventionSource, Conventions, CapsError};
+use run::caps::{self, Cap, CapSet, CapSource, CapsError, ConventionSource, Conventions};
 use run::fence::TaskLanguage;
 
 /// A root that declares itself, plus whatever `run.*` keys the test needs.
@@ -25,7 +25,10 @@ fn set(caps: &[&str]) -> CapSet {
 #[test]
 fn conventions_load_from_the_root_declaration() {
     let tmp = tempfile::tempdir().unwrap();
-    declare(tmp.path(), "run.caps.fix-*: md.set_field, md.append_section\n");
+    declare(
+        tmp.path(),
+        "run.caps.fix-*: md.set_field, md.append_section\n",
+    );
 
     let (conv, source) = caps::load_conventions(Some(tmp.path())).unwrap();
     assert_eq!(source, ConventionSource::Declared(tmp.path().to_path_buf()));
@@ -107,7 +110,9 @@ fn no_root_is_the_empty_table_stated_never_an_error() {
     assert_eq!(source, ConventionSource::NoRoot);
     assert_eq!(source.root(), None);
     assert!(
-        source.to_string().contains("no convention ceiling in force"),
+        source
+            .to_string()
+            .contains("no convention ceiling in force"),
         "the absence of a ceiling must be stated, not implied: {source}"
     );
 
@@ -124,7 +129,10 @@ fn an_undeclared_root_is_distinct_from_no_root() {
     let (conv, source) = caps::load_conventions(Some(tmp.path())).unwrap();
 
     assert_eq!(conv, Conventions::none());
-    assert_eq!(source, ConventionSource::Undeclared(tmp.path().to_path_buf()));
+    assert_eq!(
+        source,
+        ConventionSource::Undeclared(tmp.path().to_path_buf())
+    );
     assert_ne!(source, ConventionSource::NoRoot);
     assert_eq!(source.root(), Some(tmp.path()));
 }
@@ -211,7 +219,10 @@ fn a_retired_marker_grants_nothing() {
 
     let (conv, source) = caps::load_conventions(Some(tmp.path())).unwrap();
     assert_eq!(conv, Conventions::none(), "the marker must grant nothing");
-    assert_eq!(source, ConventionSource::Undeclared(tmp.path().to_path_buf()));
+    assert_eq!(
+        source,
+        ConventionSource::Undeclared(tmp.path().to_path_buf())
+    );
 
     // And it cannot ceiling anything either: an explicit grant passes whole,
     // because a retired file is not a policy plane.

@@ -307,7 +307,8 @@ fn e2e_init_below_a_git_root_names_the_tier_and_root_it_resolves_to() {
     let v = json(&out);
 
     assert_eq!(
-        v["workspace"], canon_inner.to_string_lossy().as_ref(),
+        v["workspace"],
+        canon_inner.to_string_lossy().as_ref(),
         "init declared the directory it was pointed at"
     );
     assert_eq!(v["declaration_state"], "created");
@@ -316,7 +317,8 @@ fn e2e_init_below_a_git_root_names_the_tier_and_root_it_resolves_to() {
         "the ladder answers git-root, not the declaration"
     );
     assert_eq!(
-        v["resolved_root"], canon_repo.to_string_lossy().as_ref(),
+        v["resolved_root"],
+        canon_repo.to_string_lossy().as_ref(),
         "and it names the REPO, not the declared directory"
     );
     assert_eq!(
