@@ -1190,6 +1190,15 @@ fn render_report(report: &CoreReport) -> String {
             );
         }
     }
+
+    // ── the RUN PLANE (G3) ──────────────────────────────────────────────────
+    // Pre-exec receipts with no completion. REPORTED, never gated on — like
+    // the fence line, this does not move check's exit. Receipts from before
+    // the completion marker can never clear, and a permanent red is how a
+    // reader learns to stop reading a plane.
+    if let Some(rendered) = check::orphan::render(&report.orphans) {
+        let _ = writeln!(out, "{rendered}");
+    }
     out
 }
 
