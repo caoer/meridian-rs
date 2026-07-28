@@ -66,6 +66,93 @@ fn dispatch_of<'a>(
     }
 }
 
+/// G3 gate 1: a run the guard would refuse writes NOTHING to the attested
+/// domain — no pre-exec receipt, no journal row, every domain file
+/// byte-identical.
+///
+/// Before the pre-flight, the bracket could only refuse AFTER the phase-1
+/// commit, so a refused run left an attested receipt for an exec that never
+/// started plus a journal row dating the tree to it — and nothing downstream
+/// could tell that record from a completed zero-effect run's, because those
+/// write no completion receipt either.
+#[cfg(unix)]
+#[test]
+fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
+    let (tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::default();
+
+    let secret = tmp.path().join("secret.md"); // OUT of tree, beside the ws
+    std::fs::write(&secret, "out-of-tree\n").unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("linked.md")).unwrap();
+
+    let before = domain_digest(&root);
+    let err = dispatch_bash::run(
+        &root,
+        &dispatch_of("echo hi\nprintf 'end:1\\n' >&3\n", &scratch, &caps),
+        &mut Vec::new(),
+    )
+    .expect_err("the guarded walk must refuse this workspace");
+    assert!(matches!(err, BashError::Detection(_)), "got {err:?}");
+
+    assert_eq!(
+        before,
+        domain_digest(&root),
+        "a refused run must leave every attested file byte-identical"
+    );
+    assert!(
+        !root.0.join("receipts/2026-07-22.md").exists(),
+        "no pre-exec receipt may be committed for a run that never started"
+    );
+    assert!(
+        !root.0.join(fs::domain::RESERVED_JOURNAL_PATH).exists(),
+        "no journal row may date the tree to a run that never started"
+    );
+}
+
+/// G3 gate 2: the refusal is not silenced, it is relocated. It lands in the
+/// run log under `.meridian/` — dot-path, outside the hash domain — carrying
+/// the reason, the refused path, and the invocation that never started.
+#[cfg(unix)]
+#[test]
+fn a_preflight_refusal_is_findable_in_the_run_log() {
+    let (tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let caps = CapSet::default();
+    std::fs::write(tmp.path().join("secret.md"), "out-of-tree\n").unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("linked.md")).unwrap();
+
+    let _ = dispatch_bash::run(
+        &root,
+        &dispatch_of("echo hi\n", &scratch, &caps),
+        &mut Vec::new(),
+    );
+
+    let runs = root.0.join(".meridian/runs");
+    let logged: String = std::fs::read_dir(&runs)
+        .expect("the run log directory exists")
+        .filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok())
+        .collect();
+    assert!(logged.contains("pre-flight refused"), "got: {logged}");
+    assert!(logged.contains("linked.md"), "the refused path is named");
+    assert!(logged.contains("inv-1"), "the would-be invocation is named");
+    assert!(logged.contains("never started"), "the outcome is unambiguous");
+}
+
+/// Every domain file's bytes, folded to one digest — the "did anything
+/// attested move" question, asked without depending on any engine output.
+fn domain_digest(root: &fs::WorkspaceRoot) -> Vec<(String, Vec<u8>)> {
+    let domain = fs::domain::Domain::load(root).unwrap();
+    fs::hash_domain(root, &domain)
+        .unwrap()
+        .into_iter()
+        .map(|rel| {
+            let bytes = std::fs::read(root.0.join(&rel)).unwrap_or_default();
+            (rel.to_string_lossy().into_owned(), bytes)
+        })
+        .collect()
+}
+
 #[test]
 fn a_clean_run_applies_the_shim_batch_two_phase() {
     let (_tmp, root) = workspace();
