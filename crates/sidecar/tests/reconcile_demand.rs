@@ -81,7 +81,10 @@ fn r_with_other() -> String {
     oracle(&[
         ("notes/other.md", OTHER),
         ("notes/plan.md", &wsfix("s0/notes/plan.md")),
-        ("receipts/2026-07-18.md", &wsfix("s0/receipts/2026-07-18.md")),
+        (
+            "receipts/2026-07-18.md",
+            &wsfix("s0/receipts/2026-07-18.md"),
+        ),
     ])
 }
 
@@ -186,7 +189,11 @@ fn the_fold_budget_is_the_demand_law() {
     let (_d, root) = s0();
     let log = Rc::new(RefCell::new(Vec::new()));
     let ops = [
-        (r#"{"id":1,"op":"hello","proto":1}"#, 1, "hello: its own root"),
+        (
+            r#"{"id":1,"op":"hello","proto":1}"#,
+            1,
+            "hello: its own root",
+        ),
         (r#"{"id":2,"op":"cat","path":"notes/plan.md"}"#, 0, "cat"),
         (
             r#"{"id":3,"op":"extract","path":"notes/plan.md"}"#,
@@ -247,7 +254,11 @@ fn a_one_shot_cat_pays_no_fold_at_all() {
         vec![line(r#"{"id":1,"op":"cat","path":"notes/plan.md"}"#)],
     );
     assert_eq!(fs::fold_count() - before, 0, "a cat folds NOTHING");
-    assert_eq!(frames[0].1["ok"], true, "and still answers: {}", frames[0].1);
+    assert_eq!(
+        frames[0].1["ok"], true,
+        "and still answers: {}",
+        frames[0].1
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +307,11 @@ fn arm2_a_live_sub_is_served_on_a_cat_line() {
             line(r#"{"id":2,"op":"cat","path":"notes/plan.md"}"#),
         ],
     );
-    assert_eq!(frames.len(), 3, "ack, notification, cat response: {frames:?}");
+    assert_eq!(
+        frames.len(),
+        3,
+        "ack, notification, cat response: {frames:?}"
+    );
     assert!(
         is_notification(&frames[1].1),
         "the external Delta reached the subscriber on a cat line: {}",

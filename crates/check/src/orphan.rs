@@ -126,7 +126,9 @@ fn receipt_lines(raw: &str) -> impl Iterator<Item = (usize, &str)> {
 /// The invocation id of an anchor with `prefix`, or `None` when the line
 /// carries no such anchor. The anchor is the LAST token of a receipt line.
 fn anchor_id<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
-    let token = line.rsplit_once(char::is_whitespace).map_or(line, |(_, t)| t);
+    let token = line
+        .rsplit_once(char::is_whitespace)
+        .map_or(line, |(_, t)| t);
     let id = token.strip_prefix(prefix)?;
     (!id.is_empty()).then_some(id)
 }
@@ -142,9 +144,8 @@ pub fn render(orphans: &[OrphanedRun]) -> Option<String> {
     if orphans.is_empty() {
         return None;
     }
-    let (historic, live): (Vec<_>, Vec<_>) = orphans
-        .iter()
-        .partition(|o| o.before_completions_existed);
+    let (historic, live): (Vec<_>, Vec<_>) =
+        orphans.iter().partition(|o| o.before_completions_existed);
 
     let mut lines = Vec::new();
     lines.push(format!(
@@ -247,10 +248,16 @@ mod tests {
         let found = orphans_on_page("receipts/run.md", &raw);
         let rendered = render(&found).expect("two orphans render");
         assert!(rendered.contains("2 orphaned"), "{rendered}");
-        assert!(rendered.contains("1 unauditable-by-construction"), "{rendered}");
+        assert!(
+            rendered.contains("1 unauditable-by-construction"),
+            "{rendered}"
+        );
         assert!(rendered.contains("1 live"), "{rendered}");
         // Both are named — the era changes the wording, never the verdict.
-        assert!(rendered.contains("run-live") || rendered.contains("live"), "{rendered}");
+        assert!(
+            rendered.contains("run-live") || rendered.contains("live"),
+            "{rendered}"
+        );
         assert!(rendered.contains("old"), "{rendered}");
     }
 

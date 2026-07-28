@@ -90,7 +90,10 @@ fn the_whole_defect_era_renders_as_unauditable_not_as_live_incidents() {
 
     let rendered = render(&found).expect("five orphans render");
     assert!(rendered.contains("5 orphaned"), "{rendered}");
-    assert!(rendered.contains("5 unauditable-by-construction"), "{rendered}");
+    assert!(
+        rendered.contains("5 unauditable-by-construction"),
+        "{rendered}"
+    );
     assert!(rendered.contains("0 live"), "{rendered}");
     assert!(
         rendered.contains("will never clear"),
@@ -98,10 +101,7 @@ fn the_whole_defect_era_renders_as_unauditable_not_as_live_incidents() {
          mistaken for neglect: {rendered}"
     );
     // The verdict does not soften: every invocation is still named.
-    for id in [
-        "1785255857862-35849",
-        "1785268805357-94789",
-    ] {
+    for id in ["1785255857862-35849", "1785268805357-94789"] {
         assert!(rendered.contains(id), "{id} must be named in the render");
     }
 }

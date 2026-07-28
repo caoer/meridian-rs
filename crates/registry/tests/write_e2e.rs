@@ -316,8 +316,14 @@ fn create_births_on_the_daemon_and_the_next_read_serves_the_newborn() {
         .lines()
         .find(|l| l.contains(&format!("^{anchor}")))
         .unwrap_or_else(|| panic!("anchor `{anchor}` names a real row:\n{journal}"));
-    assert!(row.contains("create"), "the row records the birth op: {row}");
-    assert!(row.contains("notes/newborn.md"), "the row names the path: {row}");
+    assert!(
+        row.contains("create"),
+        "the row records the birth op: {row}"
+    );
+    assert!(
+        row.contains("notes/newborn.md"),
+        "the row names the path: {row}"
+    );
 
     // v3 vocabulary, and a real root advance.
     assert_ne!(

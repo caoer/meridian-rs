@@ -208,8 +208,8 @@ fn install_spawns_git_inside_the_lock_and_still_leaves_it_free() {
     let root = dir.path().canonicalize().expect("canonical tempdir");
     init_repo(&root);
 
-    let (fenceable, _state) = mrd::hook::install(&root, &mrd::hook::Force::No)
-        .expect("a clean git repo is fenceable");
+    let (fenceable, _state) =
+        mrd::hook::install(&root, &mrd::hook::Force::No).expect("a clean git repo is fenceable");
 
     assert_eq!(
         fenceable.hook_paths.len(),
@@ -223,7 +223,9 @@ fn install_spawns_git_inside_the_lock_and_still_leaves_it_free() {
             path.display()
         );
         let mode = std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(path).expect("stat the hook").permissions(),
+            &std::fs::metadata(path)
+                .expect("stat the hook")
+                .permissions(),
         );
         assert_eq!(
             mode & 0o111,

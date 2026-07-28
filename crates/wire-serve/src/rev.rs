@@ -401,7 +401,10 @@ mod tests {
             .iter()
             .map(|c| c.as_str().expect("cap is a string"))
             .collect();
-        assert!(caps.contains(&"create"), "v3 advertises the birth op: {caps:?}");
+        assert!(
+            caps.contains(&"create"),
+            "v3 advertises the birth op: {caps:?}"
+        );
         assert!(
             !caps.iter().any(|c| c.starts_with("create.")),
             "the birth op ships at OP grain — no dotted create.<field> cap: {caps:?}"

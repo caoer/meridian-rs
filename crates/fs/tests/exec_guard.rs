@@ -223,7 +223,11 @@ fn guard_honours_the_markdown_domain_config() {
     let guard = StepGuard::open(&root).unwrap();
 
     // An ignored path is outside detection: writing there is not a residual.
-    write(&root.0, "drafts/scratch.md", "ignored by the declared domain\n");
+    write(
+        &root.0,
+        "drafts/scratch.md",
+        "ignored by the declared domain\n",
+    );
 
     assert!(
         guard.close(&[]).is_ok(),
@@ -414,9 +418,12 @@ fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
     // A link in the ignored subtree: outside detection by declaration.
     std::fs::create_dir_all(root.0.join("vendor/libs")).unwrap();
     std::os::unix::fs::symlink(&secret, root.0.join("vendor/libs/x.md")).unwrap();
-    let guard = StepGuard::open(&root)
-        .expect("a link under an ignored directory must not refuse the walk");
-    assert!(guard.close(&[]).is_ok(), "and must not refuse at close either");
+    let guard =
+        StepGuard::open(&root).expect("a link under an ignored directory must not refuse the walk");
+    assert!(
+        guard.close(&[]).is_ok(),
+        "and must not refuse at close either"
+    );
 
     // The same link on a path the workspace DID NOT ignore still refuses —
     // the ignore set narrows the detection domain, it does not disarm #25.

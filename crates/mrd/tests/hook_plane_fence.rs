@@ -33,7 +33,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use mrd::hook::{FENCED_HOOKS, FENCE_VERSION};
+use mrd::hook::{FENCE_VERSION, FENCED_HOOKS};
 
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -75,7 +75,10 @@ impl Fixture {
             ws,
         };
         git_ok(&fixture.ws, &["init", "-q", "-b", "main"]);
-        git_ok(&fixture.ws, &["config", "user.email", "fence@example.invalid"]);
+        git_ok(
+            &fixture.ws,
+            &["config", "user.email", "fence@example.invalid"],
+        );
         git_ok(&fixture.ws, &["config", "user.name", "fence"]);
         fixture.write("plan.md", "# Plan\n\n## Goals\n\nalpha\n");
         let init = fixture.mrd(&["init"]);
@@ -379,7 +382,11 @@ fn install_covers_every_door_and_one_body_serves_them_all() {
         .filter_map(Result::ok)
         .filter(|e| !e.file_name().to_string_lossy().ends_with(".sample"))
         .count();
-    assert_eq!(non_sample, FENCED_HOOKS.len(), "unit: non-sample hook files");
+    assert_eq!(
+        non_sample,
+        FENCED_HOOKS.len(),
+        "unit: non-sample hook files"
+    );
 }
 
 /// **`git merge` and `git am` are refused; `git cherry-pick` LANDS, as declared.**
@@ -472,9 +479,14 @@ fn a_root_fenced_at_one_door_is_partial_and_install_completes_it() {
         json["state"], "installed-partial",
         "reporting this as `installed` is the coverage claim that was false: {json}"
     );
-    let teaching = json["detail"].as_str().expect("a partial set owes a teaching");
+    let teaching = json["detail"]
+        .as_str()
+        .expect("a partial set owes a teaching");
     for name in FENCED_HOOKS.iter().skip(1) {
-        assert!(teaching.contains(name), "the teaching names {name}: {teaching}");
+        assert!(
+            teaching.contains(name),
+            "the teaching names {name}: {teaching}"
+        );
     }
 
     // ACCEPTANCE, same run: install completes it and SAYS it completed rather
@@ -632,7 +644,12 @@ fn a_fence_from_the_future_refuses_the_downgrade_and_says_which_way_the_skew_run
     // ACCEPTANCE — a deliberate rollback stays possible through the ratified
     // escape, and is never silent about being one.
     let out = fx.mrd_forced(&["hook", "install"], "1");
-    assert_eq!(out.status.code(), Some(0), "forced rollback: {}", said(&out));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "forced rollback: {}",
+        said(&out)
+    );
     assert_eq!(fx.status_json()["fence_version"], FENCE_VERSION);
     // And an UNPARSEABLE escape is not permission — the same fail-closed law the
     // fence body's third leg runs, in its Rust spelling.

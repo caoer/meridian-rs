@@ -198,7 +198,9 @@ fn empty_explicit_declaration_is_explicit_read_only() {
 
 #[test]
 fn conventions_parse_out_of_a_declaration_document() {
-    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field, md.append_section\n---\n");
+    let d = doc(
+        "---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: md.set_field, md.append_section\n---\n",
+    );
     let conv = caps::conventions_from_declaration(&d).unwrap();
     let (pattern, set) = conv.matching("fix-drift").unwrap();
     assert_eq!(pattern, "fix-*");
@@ -216,13 +218,15 @@ fn a_declaration_without_caps_keys_is_the_empty_table() {
 
 #[test]
 fn a_malformed_cap_entry_is_a_loud_error_never_no_policy() {
-    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: not_namespaced\n---\n");
+    let d =
+        doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fix-*: not_namespaced\n---\n");
     assert!(matches!(
         caps::conventions_from_declaration(&d).unwrap_err(),
         CapsError::BadCap { .. }
     ));
 
-    let d = doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.set_field\n---\n");
+    let d =
+        doc("---\ntype: meridian-root\nversion: 1\nname: r\nrun.caps.fi*x: md.set_field\n---\n");
     assert!(matches!(
         caps::conventions_from_declaration(&d).unwrap_err(),
         CapsError::BadPattern { .. }

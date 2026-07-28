@@ -136,7 +136,10 @@ fn a_preflight_refusal_is_findable_in_the_run_log() {
     assert!(logged.contains("pre-flight refused"), "got: {logged}");
     assert!(logged.contains("linked.md"), "the refused path is named");
     assert!(logged.contains("inv-1"), "the would-be invocation is named");
-    assert!(logged.contains("never started"), "the outcome is unambiguous");
+    assert!(
+        logged.contains("never started"),
+        "the outcome is unambiguous"
+    );
 }
 
 /// Every domain file's bytes, folded to one digest — the "did anything
@@ -236,7 +239,10 @@ fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     // receipt carrying the exit code, so this run is no longer an orphan.
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(receipts.contains("^p-000001"));
-    assert!(receipts.contains("^r-000001"), "completion receipt: {receipts}");
+    assert!(
+        receipts.contains("^r-000001"),
+        "completion receipt: {receipts}"
+    );
     assert!(
         receipts.contains("\"exit_code\":7"),
         "the completion receipt carries the exit code: {receipts}"
@@ -351,7 +357,10 @@ fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     assert!(out.status.success());
     // Not a fault: the empty batch applied, and it applied NOTHING.
     let Phase2::Applied { effects, applied } = &out.phase2 else {
-        panic!("an empty batch on a clean exit is not a fault, got {:?}", out.phase2);
+        panic!(
+            "an empty batch on a clean exit is not a fault, got {:?}",
+            out.phase2
+        );
     };
     assert!(effects.is_empty(), "no descriptors were emitted");
     assert!(

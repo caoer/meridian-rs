@@ -233,7 +233,11 @@ fn markdown_config_declares_the_domain() {
 fn two_domain_configs_refuse_rather_than_pick() {
     let tmp = tempfile::tempdir().unwrap();
     let root_path = tmp.path();
-    write(root_path, "meridian/domain.md", "---\nignore:\n  - \"a/**\"\n---\n");
+    write(
+        root_path,
+        "meridian/domain.md",
+        "---\nignore:\n  - \"a/**\"\n---\n",
+    );
     write(root_path, "mdfs_config.yaml", "ignore:\n  - \"b/**\"\n");
 
     let root = WorkspaceRoot(root_path.to_path_buf());
@@ -257,9 +261,8 @@ fn markdown_config_without_frontmatter_is_the_default_domain() {
 /// directory on the way to one is never pruned.
 #[test]
 fn reserved_paths_are_never_pruned_away() {
-    let domain = Domain::from_config(
-        "version: 1\nignore:\n  - \"meridian/**\"\n  - \"conventions/**\"\n",
-    );
+    let domain =
+        Domain::from_config("version: 1\nignore:\n  - \"meridian/**\"\n  - \"conventions/**\"\n");
     assert!(
         !domain.prunes_dir(Path::new("meridian")),
         "meridian/ holds the reserved journal and attested marker"
