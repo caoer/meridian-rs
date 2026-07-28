@@ -163,7 +163,36 @@ fn run_history(workspace_arg: &Path, slug: &str) -> Result<HistoryReport, Fail> 
         ));
     }
 
-    Ok(HistoryReport::assemble(slug, &rows, results))
+    let mut report = HistoryReport::assemble(slug, &rows, results);
+    report.archived = archived_boundary(&workspace, &rows);
+    Ok(report)
+}
+
+/// The genesis boundary (G2): what this tier did NOT calibrate over.
+///
+/// A journal that opens with an `op=genesis` row is a POST-RESET journal, and
+/// that row's `path` is the archive holding everything before it. Reading it
+/// here costs one file read and turns a silent truncation into a stated one:
+/// the tier reports a number, and a number without its population is the
+/// failure this lane keeps re-learning.
+///
+/// This CONSUMES the pointer G2 records rather than scanning for archive-shaped
+/// filenames — the row is the authority on where the rows went.
+///
+/// Note what this is NOT: traversal. The rows in the archive are not
+/// calibrated, because their git-anchor JOIN would have to target the path they
+/// were APPENDED to, not the path they now live in. That is its own card.
+fn archived_boundary(
+    workspace: &Path,
+    rows: &[receipt::journal::ParsedRow],
+) -> Option<(String, usize)> {
+    let first = rows.first()?;
+    if first.op != "genesis" {
+        return None;
+    }
+    let archive_rel = first.path.clone();
+    let text = std::fs::read_to_string(workspace.join(&archive_rel)).ok()?;
+    Some((archive_rel, receipt::journal::parse_rows(&text).len()))
 }
 
 /// Resolve the workspace argument against cwd and confirm it is a directory.
@@ -496,6 +525,10 @@ struct HistoryReport {
     rows: Vec<RowResult>,
     /// CHECK faults on real history (each collapses the run to exit 2).
     errors: Vec<String>,
+    /// The genesis boundary (G2): `(archive path, rows it holds)` when this
+    /// journal opens with a genesis row. `None` means no reset has happened —
+    /// never "the archive is empty".
+    archived: Option<(String, usize)>,
 }
 
 impl HistoryReport {
@@ -517,6 +550,9 @@ impl HistoryReport {
             undeclared: 0,
             rows: results,
             errors: Vec::new(),
+            // Filled by the caller, which holds the workspace path the archive
+            // is read from (this fold is path-free by construction).
+            archived: None,
         };
         for r in &report.rows {
             // The verdict drives the pass/declared/undeclared/error tallies; grey is
@@ -560,6 +596,13 @@ impl HistoryReport {
             "journal span: {span}  ({} row(s), {in_scope} in scope, {} out of scope)",
             self.total_rows, self.out_of_scope
         );
+        if let Some((archive, count)) = &self.archived {
+            let _ = writeln!(
+                s,
+                "not calibrated: {count} row(s) predate a genesis reset and live in {archive} \
+                 — this run did not traverse them"
+            );
+        }
         let _ = writeln!(
             s,
             "fidelity: B full-bytes={}  A structural={}  C grey={}\n",
@@ -669,6 +712,13 @@ impl HistoryReport {
         let value = json!({
             "convention": self.slug,
             "journal_span": span,
+            // The genesis boundary (G2) — absent when no reset has happened,
+            // never an empty object, so a consumer cannot read "no archive" as
+            // "an archive with nothing in it".
+            "not_calibrated": self.archived.as_ref().map(|(archive, rows)| json!({
+                "archive": archive,
+                "rows": rows,
+            })),
             "rows": rows,
             "fidelity": {
                 "full_bytes": self.full_bytes,
@@ -744,5 +794,34 @@ Prose bullets without item= are skipped:
             Some("a b c")
         );
         assert_eq!(extract_reason("item=r-1 no reason"), None);
+    }
+
+    /// G2 boundary: a post-genesis journal states what it did NOT calibrate
+    /// over, using the pointer the genesis row records.
+    #[test]
+    fn the_genesis_boundary_is_read_from_the_pointer() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("meridian")).unwrap();
+        std::fs::write(
+            tmp.path().join("meridian/arch.md"),
+            "- op=splice path=a.md root_before=b3:1 root_after=b3:2 edits=0 ^r-000001\n\
+             - op=splice path=b.md root_before=b3:2 root_after=b3:3 edits=0 ^r-000002\n",
+        )
+        .unwrap();
+        let live = "- op=genesis path=meridian/arch.md root_before=b3:3 root_after=b3:4 edits=0 ^r-000001\n";
+        let rows = receipt::journal::parse_rows(live);
+
+        let found = archived_boundary(tmp.path(), &rows).expect("the pointer resolves");
+        assert_eq!(found, ("meridian/arch.md".to_owned(), 2));
+    }
+
+    /// A journal that never had a reset reports NO boundary — absent, never a
+    /// zero, so a reader cannot mistake "no archive" for "an empty archive".
+    #[test]
+    fn a_journal_without_a_genesis_row_has_no_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let live = "- op=splice path=a.md root_before=b3:1 root_after=b3:2 edits=0 ^r-000001\n";
+        let rows = receipt::journal::parse_rows(live);
+        assert!(archived_boundary(tmp.path(), &rows).is_none());
     }
 }

@@ -212,6 +212,27 @@ const DOORS: &[DoorPin] = &[
         label: "the run plane's candidate (run::fp::candidate)",
         class: Door::OutsideThisUnit,
     },
+    // ---- mrd/journal_cmd.rs — G2's genesis, two mints in two functions ----
+    // Both land the ENGINE's own bytes on a CLI path, the same shape as the
+    // realise doors above: outside `write.rs`/`read.rs`, so outside this unit
+    // and stated rather than absorbed. Neither carries agent-plane addresses —
+    // one is a header the verb composes, the other is the empty string.
+    DoorPin {
+        file: "crates/mrd/src/journal_cmd.rs",
+        door_fn: "genesis",
+        mint_fn: "write_archive",
+        guard_fn: None,
+        label: "journal genesis: the archive page the reset moves rows into",
+        class: Door::OutsideThisUnit,
+    },
+    DoorPin {
+        file: "crates/mrd/src/journal_cmd.rs",
+        door_fn: "genesis",
+        mint_fn: "truncate_journal",
+        guard_fn: None,
+        label: "journal genesis: emptying the live journal after the archive is durable",
+        class: Door::OutsideThisUnit,
+    },
 ];
 
 fn workspace_root() -> PathBuf {
@@ -563,8 +584,8 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         "lock_write, the promotion and commit_batch land engine-composed bytes",
     );
     assert_eq!(
-        outside, 3,
-        "two realise doors and the run plane — stated, not absorbed",
+        outside, 5,
+        "two realise doors, the run plane, and G2's two genesis mints — stated, not absorbed",
     );
     assert_eq!(
         translated + guarded + outside,

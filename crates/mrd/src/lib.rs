@@ -38,6 +38,7 @@ mod history_cmd;
 pub mod hook;
 mod hook_cmd;
 mod init;
+mod journal_cmd;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
@@ -242,6 +243,22 @@ usage:
                            dirs; undeclared content renders as findings, NEVER a
                            prune. Exits: 0 converged (or dry) / 1 a finding / 2 bad
                            invocation
+  mrd journal genesis --ruling <REF> [--archive PATH] [--dry] [--json]
+                           the GOVERNED reset of the receipt journal (G2): move
+                           every row to a dated archive page, truncate, and open
+                           the new chain with a `op=genesis` row naming that
+                           archive. The write door refuses the reserved journal,
+                           so the only alternative was a hand rewrite — which
+                           teaches that the attested record is editable when it
+                           is inconvenient. --ruling is REQUIRED: the engine
+                           never invents a justification it was not given. The
+                           row attaches to the ARCHIVE (in the hash domain, so
+                           its creation really does move the root); truncating
+                           the journal moves none, by design. Rows are
+                           superseded, never destroyed. NOTE the chain reads
+                           grey(no-baseline) afterwards, not green. Exits: 0
+                           done (or dry) / 1 the plane refused (nothing to
+                           archive, archive exists) / 2 bad invocation
   mrd realise <PAGE> [--dry] [--truth index|file]
                            the reconciliation loop (U3.5b): observe -> check ->
                            apply (only on drift, once) -> re-check over the page's
@@ -358,6 +375,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
         "realise" => realise_cmd::run(&args[1..]),
+        "journal" => journal_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
