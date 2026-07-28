@@ -58,6 +58,19 @@
 //!   §12 hash domain is md-only and dot-excluded, so the guard cannot see
 //!   them. An explicit S1 gap, distinct from the out-of-tree honor system.
 //! - **Dot-path symlinks** sit in the same gap: not walked, not refused.
+//! - **Ignored directories are not walked and their links are not refused.**
+//!   An ignored path is outside the detection domain by the workspace's own
+//!   declaration, so a symlink there can make out-of-tree bytes readable at a
+//!   path nothing attests. Two things keep this from being #25 reopened: the
+//!   ignore list is itself bracketed (a step cannot widen it mid-window to
+//!   manufacture the spot), and an ignored file never enters the hash domain,
+//!   so nothing it points at can reach a hash, attest or receipt surface. What
+//!   it does NOT buy is unreadability — a bash step could already read any
+//!   out-of-tree file directly, with or without a link, because this bracket
+//!   detects writes and has never sandboxed reads.
+//!   Without this, one link anywhere in a vendored subtree refuses the whole
+//!   walk and no bracket can open: field-notes carries 2,670 non-dot symlinks,
+//!   2,669 of them under a single ignored asset store.
 //! - **Residual escape window** (S3): background children are process-group
 //!   killed at step end (U6a); a write landing between that kill and the
 //!   close-snapshot read — or after close — is outside the bracket.
@@ -367,7 +380,7 @@ fn strict_domain_files(
     domain: &Domain,
 ) -> Result<BTreeMap<String, Vec<u8>>, GuardError> {
     let mut files = BTreeMap::new();
-    for rel in walk_strict(root)? {
+    for rel in walk_strict(root, domain)? {
         if !domain.contains(&rel) {
             continue;
         }
@@ -383,9 +396,9 @@ fn strict_domain_files(
 /// descend into dot-prefixed entries — those are structurally outside the
 /// detection domain (the named dot-path gap), and refusing links there would
 /// false-positive on `.git` internals.
-fn walk_strict(root: &WorkspaceRoot) -> Result<Vec<PathBuf>, GuardError> {
+fn walk_strict(root: &WorkspaceRoot, domain: &Domain) -> Result<Vec<PathBuf>, GuardError> {
     let mut out = Vec::new();
-    walk_strict_dir(&root.0, &PathBuf::new(), &mut out)?;
+    walk_strict_dir(&root.0, &PathBuf::new(), domain, &mut out)?;
     out.sort();
     Ok(out)
 }
@@ -393,6 +406,7 @@ fn walk_strict(root: &WorkspaceRoot) -> Result<Vec<PathBuf>, GuardError> {
 fn walk_strict_dir(
     abs_dir: &Path,
     rel_dir: &Path,
+    domain: &Domain,
     out: &mut Vec<PathBuf>,
 ) -> Result<(), GuardError> {
     for entry in std::fs::read_dir(abs_dir)? {
@@ -403,13 +417,25 @@ fn walk_strict_dir(
         }
         let rel = rel_dir.join(&name);
         let file_type = entry.file_type()?;
+        // An ignored directory is outside the detection domain by the
+        // workspace's own declaration, so its contents are not walked and its
+        // links are not refused — the same shape as the dot-path gap, and
+        // named alongside it in the module's accepted-gaps list.
+        //
+        // Checked BEFORE the symlink refusal, which is the whole point: a
+        // corpus that carries a vendored tree (extracted archives, asset
+        // stores) is otherwise unrunnable, because ONE link anywhere refuses
+        // the entire walk and `mrd run` can never open a bracket.
+        if file_type.is_dir() && domain.prunes_dir(&rel) {
+            continue;
+        }
         if file_type.is_symlink() {
             return Err(GuardError::Symlink {
                 path: rel.to_string_lossy().replace('\\', "/"),
             });
         }
         if file_type.is_dir() {
-            walk_strict_dir(&entry.path(), &rel, out)?;
+            walk_strict_dir(&entry.path(), &rel, domain, out)?;
         } else if file_type.is_file()
             && Path::new(&name)
                 .extension()

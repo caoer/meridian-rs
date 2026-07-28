@@ -391,6 +391,86 @@ fn symlink_laundering_refused_at_close() {
     }
 }
 
+/// The ignore set reaches the guarded walk: a link inside an IGNORED directory
+/// does not refuse, while an identical link on a non-ignored path still does.
+///
+/// Both halves matter and the pairing is the point. Without the first, one link
+/// anywhere in a vendored subtree refuses the whole walk and no bracket can ever
+/// open — field-notes carries 2,670 non-dot symlinks, 2,669 under one ignored
+/// asset store, which is precisely why `mrd run` could not execute there.
+/// Without the second, the ignore set would be a way to switch #25 off.
+#[cfg(unix)]
+#[test]
+fn links_under_an_ignored_dir_do_not_refuse_but_others_still_do() {
+    let (tmp, root) = workspace();
+    let secret = tmp.path().join("secret.md"); // OUT of tree, beside ws/
+    std::fs::write(&secret, "out-of-tree secret\n").unwrap();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"vendor/**\"\n---\n\n# Domain\n",
+    );
+
+    // A link in the ignored subtree: outside detection by declaration.
+    std::fs::create_dir_all(root.0.join("vendor/libs")).unwrap();
+    std::os::unix::fs::symlink(&secret, root.0.join("vendor/libs/x.md")).unwrap();
+    let guard = StepGuard::open(&root)
+        .expect("a link under an ignored directory must not refuse the walk");
+    assert!(guard.close(&[]).is_ok(), "and must not refuse at close either");
+
+    // The same link on a path the workspace DID NOT ignore still refuses —
+    // the ignore set narrows the detection domain, it does not disarm #25.
+    std::os::unix::fs::symlink(&secret, root.0.join("notes/x.md")).unwrap();
+    match StepGuard::open(&root) {
+        Err(GuardError::Symlink { path }) => assert_eq!(path, "notes/x.md"),
+        other => panic!("expected Symlink refusal on the non-ignored path, got {other:?}"),
+    }
+}
+
+/// Not walking a path is not the same as not detecting through it. A write
+/// aimed THROUGH a link in an ignored directory, whose real target is an
+/// attested in-tree file, is caught at the TARGET.
+///
+/// This is what makes the ignored-directory gap safe rather than a bypass:
+/// detection compares domain STATE, not the path a writer travelled. The link
+/// is unwalked and unrefused, and the write still cannot land unseen, because
+/// the file it actually changed is in the baseline.
+#[cfg(unix)]
+#[test]
+fn a_write_through_an_ignored_link_is_caught_at_its_attested_target() {
+    let (_tmp, root) = workspace();
+    write(
+        &root.0,
+        "meridian/domain.md",
+        "---\nversion: 1\nignore:\n  - \"vendor/**\"\n---\n\n# Domain\n",
+    );
+    write(&root.0, "notes/target.md", "original attested bytes\n");
+
+    // The link lives in the ignored subtree; its target is attested.
+    std::fs::create_dir_all(root.0.join("vendor")).unwrap();
+    std::os::unix::fs::symlink(
+        root.0.join("notes/target.md"),
+        root.0.join("vendor/link.md"),
+    )
+    .unwrap();
+
+    let guard = StepGuard::open(&root).expect("ignored-dir link must not refuse");
+
+    // Write through the link — this really rewrites notes/target.md.
+    std::fs::write(root.0.join("vendor/link.md"), "smuggled bytes\n").unwrap();
+
+    match guard.close(&[]) {
+        Err(GuardError::OutOfBand(delta)) => {
+            assert_eq!(
+                delta.altered,
+                vec!["notes/target.md".to_string()],
+                "the residual must name the attested TARGET, not the link"
+            );
+        }
+        other => panic!("expected OutOfBand naming the target, got {other:?}"),
+    }
+}
+
 /// #25 at open: a pre-existing symlink (file or directory) means no
 /// trustworthy baseline — open itself refuses.
 #[cfg(unix)]
