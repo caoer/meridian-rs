@@ -225,6 +225,35 @@ impl StepGuard {
     /// no `detected` label without detection actually landed).
     pub const GUARANTEE_CLASS: &'static str = "detected";
 
+    /// Would [`open`](Self::open) refuse this workspace right now?
+    ///
+    /// The WALK half of `open` without the byte reads — same config, same
+    /// domain, same guarded traversal, so it answers the refusal question with
+    /// the same predicate and cannot drift from it. It captures no baseline and
+    /// returns no guard; it is a question, not a bracket.
+    ///
+    /// # Why a caller wants this BEFORE committing anything
+    /// The bracket opens against the root the phase-1 receipt commit made, so
+    /// by the time `open` can refuse, that receipt is already on disk and the
+    /// never-rollback rule keeps it there — a receipt for a run whose exec
+    /// never starts. Asking first turns that case into a refusal with zero
+    /// writes.
+    ///
+    /// **This narrows the window, it does not close it.** A link appearing
+    /// between this probe and `open` still refuses after the commit. The probe
+    /// makes that rare; it cannot make it impossible, and no caller should
+    /// claim it does.
+    ///
+    /// # Errors
+    /// The same refusals [`open`](Self::open) would raise from its walk:
+    /// [`GuardError::Symlink`], or [`GuardError::Io`].
+    pub fn probe(root: &WorkspaceRoot) -> Result<(), GuardError> {
+        let config = read_config(root)?;
+        let domain = config.parse_domain()?;
+        walk_strict(root, &domain)?;
+        Ok(())
+    }
+
     /// Open the bracket: capture the config state and the pre-step domain
     /// snapshot through the guarded (symlink-refusing) walk.
     ///

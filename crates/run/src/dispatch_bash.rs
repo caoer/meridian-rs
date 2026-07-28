@@ -218,7 +218,30 @@ pub fn run(
 ) -> Result<BashOutcome, BashError> {
     // 0. The stdout log — created first, so an unwritable log refuses the
     // run before anything commits.
-    let mut log = RunLog::create(&root.0, d.invocation_id).map_err(BashError::Record)?;
+    let log = RunLog::create(&root.0, d.invocation_id).map_err(BashError::Record)?;
+
+    // 0b. PRE-FLIGHT (G3): ask the guard whether it would refuse, BEFORE
+    // anything commits.
+    //
+    // The bracket at step 2 opens against the root the phase-1 receipt made,
+    // so by the time it can refuse, that receipt is committed and ruling 2
+    // keeps it there — an attested receipt for a run whose exec never starts,
+    // and a journal row dating the tree to it. Nothing downstream can tell
+    // that record from a completed run's, because a zero-effect run writes no
+    // completion receipt either (`descriptors.is_empty()` short-circuits
+    // phase 2). Asking first turns the whole case into a refusal that writes
+    // NOTHING to the attested domain.
+    //
+    // This NARROWS the window; it does not close it. A link appearing between
+    // this probe and the open at step 2 still lands a receipt, and
+    // never-rollback still holds. That residue is real, it is why the orphan
+    // lint exists, and it must not be described as elimination.
+    //
+    // The refusal is recorded where a refusal belongs: the run log, under the
+    // dot-path `.meridian/`, outside the hash domain. A refusal is the
+    // assertion that nothing happened — recording it must not perturb the
+    // thing being attested.
+    let mut log = preflight(root, d, log)?;
 
     // 1. THE LOCKED WINDOW (u4-gate addendum on #19): the phase-1 commit and
     // the root_after_phase1 snapshot happen under ONE flock — no gap another
@@ -339,6 +362,47 @@ pub fn run(
         detection,
         phase2,
     })
+}
+
+/// G3 pre-flight: ask the guard whether it would refuse, BEFORE anything
+/// commits.
+///
+/// The bracket at step 2 opens against the root the phase-1 receipt made, so by
+/// the time it can refuse, that receipt is committed and ruling 2 keeps it there
+/// — an attested receipt for a run whose exec never starts, and a journal row
+/// dating the tree to it. Nothing downstream can tell that record from a
+/// completed run's: a zero-effect run writes no completion receipt either
+/// (`descriptors.is_empty()` short-circuits phase 2). Asking first turns the
+/// whole case into a refusal that writes NOTHING to the attested domain.
+///
+/// This NARROWS the window; it does not close it. A link appearing between this
+/// probe and the open at step 2 still lands a receipt, and never-rollback still
+/// holds. That residue is real, it is what the orphan lint is for, and it must
+/// not be described as elimination.
+///
+/// A refusal is the assertion that nothing happened, so recording it must not
+/// perturb the thing being attested: the reason, the refused path and the
+/// would-be invocation go to the run log under `.meridian/`, outside the hash
+/// domain, beside the stdout this run would have captured.
+/// Takes the log by value and hands it back unrefused: sealing it consumes it,
+/// and a refusal seals it here rather than leaving a half-written record.
+fn preflight(
+    root: &fs::WorkspaceRoot,
+    d: &BashDispatch<'_>,
+    mut log: RunLog,
+) -> Result<RunLog, BashError> {
+    let Err(e) = fs::guard::StepGuard::probe(root) else {
+        return Ok(log);
+    };
+    let refusal = format!(
+        "pre-flight refused before any commit: {e}\n\
+         invocation: {} (never started)\n\
+         page: {} task: {}\n",
+        d.invocation_id, d.page, d.task,
+    );
+    log.append(refusal.as_bytes()).map_err(BashError::Record)?;
+    log.seal().map_err(BashError::Record)?;
+    Err(BashError::Detection(OpenRefusal::Guard(e)))
 }
 
 /// Phase 2: the shim batch through the executor's one choke point, pinned
