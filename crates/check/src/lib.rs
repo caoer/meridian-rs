@@ -39,6 +39,7 @@
 //! whole surface is `&WorkspaceRoot` / `&Change` in, a report out.
 
 pub mod layer0;
+pub mod orphan;
 pub mod layer1;
 
 use std::collections::BTreeMap;
@@ -78,6 +79,17 @@ pub struct CoreReport {
     pub drifted_claims: Vec<ClaimFinding>,
     /// The pin plane: red/grey pins, and the `objects:` blobs no ref reaches.
     pub pins: PinPlane,
+    /// The run plane: pre-exec receipts with no completion (G3).
+    ///
+    /// **REPORTED, never gated on** — it does not move [`is_red`](Self::is_red)
+    /// or the exit code, following the fence line's precedent. The reason is the
+    /// T1 lesson rather than timidity: receipts written before the completion
+    /// marker are unauditable by construction and can NEVER clear, so gating on
+    /// them would install a permanent red, and a permanent red is how readers
+    /// learn to bump past a plane without reading it. Gating on LIVE orphans
+    /// once the historic era has aged out is a separate decision that changes
+    /// exit codes, so it needs its own ruling.
+    pub orphans: Vec<orphan::OrphanedRun>,
 }
 
 impl CoreReport {
@@ -200,6 +212,7 @@ pub fn core(
         trace,
         drifted_claims,
         pins: pin_plane(root, docs, pins),
+        orphans: orphan::orphaned_runs(docs),
     })
 }
 
@@ -235,6 +248,7 @@ pub fn core_of(
         trace: journal_trace_of(journal_page, live_root),
         drifted_claims: Vec::new(),
         pins: pin_plane(root, docs, pins),
+        orphans: orphan::orphaned_runs(docs),
     }
 }
 
@@ -258,6 +272,7 @@ pub fn core_of_staged(
         trace: staged_trace(journal_page, live_root, worktree_journal),
         drifted_claims: Vec::new(),
         pins: pin_plane(root, docs, pins),
+        orphans: orphan::orphaned_runs(docs),
     }
 }
 
