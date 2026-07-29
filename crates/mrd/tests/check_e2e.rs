@@ -22,6 +22,7 @@ use std::process::{Command, Output, Stdio};
 
 use fs::WorkspaceRoot;
 use fs::domain::RESERVED_JOURNAL_PATH;
+use mrd::hook::FENCE_VERSION;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
 
@@ -140,12 +141,12 @@ fn no_repo_fence(root: &Path) -> serde_json::Value {
         "state": "not-a-git-repo",
         "fenceable": false,
         "teaching": format!(
-            "{} is not a git repository, so there is no hook directory to install into. A \
+            "{} is not a git repository, so there is no hook directory to place a fence in. A \
              meridian workspace does not have to be a git repository — this is a supported \
              state, not a fault in the workspace.",
             root.display()
         ),
-        "engine_version": 3,
+        "engine_version": FENCE_VERSION,
         "gates_the_exit": false,
     })
 }
@@ -237,7 +238,7 @@ fn check_is_green_when_the_journal_carries_create_rows() {
              read, so this says nothing about what a commit would record: `mrd check --staged` \
              asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
              anchoring: no pinned objects\n  fence: not-a-git-repo — {ws} is not a git \
-             repository, so there is no hook directory to install into. A meridian workspace \
+             repository, so there is no hook directory to place a fence in. A meridian workspace \
              does not have to be a git repository — this is a supported state, not a fault in \
              the workspace · REPORTED, never gated on — fence coverage is a property of this \
              local checkout and not of the corpus, so this line does not move check's exit\n",

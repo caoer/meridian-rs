@@ -31,6 +31,7 @@
 //! Regenerable outside cargo by the same recipe:
 //! `results/f6-mount-sight-repro.sh` in the session tree, engine as a parameter.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -140,7 +141,37 @@ impl Sandbox {
         child.wait_with_output().expect("wait mrd")
     }
 
-    /// A real `git commit` with the fence on `PATH` — ours first, so the installed
+    /// Place the fence the way `mrd skill hook`'s document says to: the one fenced
+    /// block off that verb's stdout, at every door under the common dir, `chmod
+    /// +x`. There is no installer — the document is the contract.
+    fn place_fence(&self) {
+        let out = self.run(&self.ws, &["skill", "hook"]);
+        assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
+        let doc = String::from_utf8_lossy(&out.stdout).into_owned();
+        let mut lines = doc.lines();
+        lines
+            .by_ref()
+            .find(|l| l.starts_with("```"))
+            .expect("the document carries a fenced block");
+        let mut body = String::new();
+        for line in lines.by_ref() {
+            if line.starts_with("```") {
+                break;
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        let hooks = self.ws.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        for door in ["pre-commit", "pre-merge-commit", "pre-applypatch"] {
+            let path = hooks.join(door);
+            std::fs::write(&path, &body).expect("place the fence");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x");
+        }
+    }
+
+    /// A real `git commit` with the fence on `PATH` — ours first, so the placed
     /// hook runs the engine under test and never a deployed one.
     fn commit(&self, message: &str) -> Output {
         Command::new("git")
@@ -331,13 +362,7 @@ fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
     let sb = sandbox();
     sb.cross_root_corpus();
 
-    let install = sb.run(&sb.ws, &["hook", "install"]);
-    assert_eq!(
-        install.status.code(),
-        Some(0),
-        "hook install: {}",
-        said(&install)
-    );
+    sb.place_fence();
     git_ok(&sb.ws, &["add", "-A"]);
 
     let before = head_count(&sb.ws);
@@ -365,13 +390,7 @@ fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
 fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
     let sb = sandbox();
     sb.cross_root_corpus();
-    let install = sb.run(&sb.ws, &["hook", "install"]);
-    assert_eq!(
-        install.status.code(),
-        Some(0),
-        "install: {}",
-        said(&install)
-    );
+    sb.place_fence();
 
     std::fs::write(sb.other.join("doc.md"), DOC_DRIFTED).expect("drift the target root");
     git_ok(&sb.ws, &["add", "-A"]);

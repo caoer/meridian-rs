@@ -535,14 +535,15 @@ const FENCE_REPORTED: &str = "REPORTED, never gated on — fence coverage is a p
 /// because there is no path by which they could differ.
 ///
 /// # Read-only, and it leaves no souvenir
-/// It reads through [`hook::status`], which surveys and reads the doors without
-/// taking the install lock. A root must not come away with an `mrd-hook.lock` in
-/// its git dir as the souvenir of being looked at.
+/// It reads through [`hook::status`], which opens the door files and nothing
+/// else. A root must not come away with anything in its git dir as the souvenir
+/// of being looked at — and since the install plane retired there is no writer in
+/// this engine that could leave one.
 struct Fence {
     /// The one word for this checkout: [`hook::Coverage::word`] when the root can
     /// carry a fence, [`hook::Unfenceable::word`] when it cannot. **Never
     /// re-spelled here** (S3-R6) — an operator who learned these words from
-    /// `mrd hook status` reads the same ones off this face.
+    /// `mrd skill hook`'s document reads the same ones off this face.
     word: &'static str,
     /// What was observed, and what can be done about it.
     teaching: String,
@@ -580,15 +581,15 @@ struct FenceDoor {
 /// here produces a value a caller could turn into a [`Fail`].
 fn observe_fence(workspace: &Path) -> Fence {
     match hook::status(workspace) {
-        Ok((_, coverage)) => {
+        Ok(coverage) => {
             let fenced = coverage.fenced_doors();
             Fence {
                 word: coverage.word(),
                 // `Coverage::teaching` is silent on the two states where the set
-                // agrees with itself, because `mrd hook status` prints the door
-                // set beside it and its reader came looking. **This reader did
-                // not** — the line is unasked-for, and `absent` is precisely the
-                // state row 21 exists to stop being silent about.
+                // agrees with itself, because a reader who went looking for the
+                // door set has it in front of them. **This reader did not** —
+                // the line is unasked-for, and `absent` is precisely the state
+                // row 21 exists to stop being silent about.
                 teaching: coverage
                     .teaching()
                     .unwrap_or_else(|| agreed_teaching(fenced)),
@@ -624,8 +625,8 @@ fn agreed_teaching(fenced: usize) -> String {
     // count cannot say is WHY, and that is what each says instead.
     if fenced == 0 {
         "`$GIT_DIR/hooks` is never a tracked path, so no clone, fetch or pull carries a fence \
-         and a fresh checkout is unfenced BY DESIGN — `mrd hook install` fences this one, per \
-         checkout and opt-in"
+         and a fresh checkout is unfenced BY DESIGN — `mrd skill hook` emits what to place to \
+         fence this one, per checkout and opt-in"
             .to_owned()
     } else {
         "this checkout is fully fenced, at the generation this engine writes".to_owned()
@@ -651,9 +652,9 @@ fn agreed_teaching(fenced: usize) -> String {
 /// it replaced (*"carry this engine's fence"*) asserted the currency the count
 /// never took: beside `installed-superseded` it was false as written, and beside
 /// `installed-ahead` it contradicted its own teaching one clause later. That is
-/// `hook.rs`'s standing hazard — *nothing can prompt an operator to run
-/// `mrd hook install` if the status face calls a superseded fence "installed"* —
-/// compressed into a sub-sentence.
+/// `hook.rs`'s standing hazard — *nothing can prompt an operator to re-place a
+/// fence if the reporting face calls a superseded one "installed"* — compressed
+/// into a sub-sentence.
 fn fence_lines(fence: &Fence) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();

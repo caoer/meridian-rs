@@ -282,7 +282,8 @@ fn governed_writes_leave_check_green() {
              of 3 doors carry this engine's fence marker, at any generation; \
              `$GIT_DIR/hooks` is never a tracked path, \
              so no clone, fetch or pull carries a fence and a fresh checkout is unfenced BY \
-             DESIGN — `mrd hook install` fences this one, per checkout and opt-in · REPORTED, \
+             DESIGN — `mrd skill hook` emits what to place to fence this one, per checkout \
+             and opt-in · REPORTED, \
              never gated on — fence coverage is a property of this local checkout and not of \
              the corpus, so this line does not move check's exit\n  fence doors: pre-commit \
              absent · pre-merge-commit absent · pre-applypatch absent\n",

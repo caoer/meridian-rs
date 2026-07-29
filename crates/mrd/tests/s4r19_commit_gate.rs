@@ -54,12 +54,15 @@
 //! - **7** — fold `NoRecord` into the tampering leg: every fresh clone is accused.
 //! - **8** — fail open on an absent record: an unvouched corpus commits freely.
 //!
-//! # The fence here is a TEST FIXTURE, not `mrd hook`
-//! `crates/mrd/src/hook.rs` is out of this card's scope and is owned by a card
-//! running in parallel. This harness installs its own `pre-commit` that execs the
-//! scoped question — exactly as `u35_journaled_doors` installs one that execs
-//! `mrd check` — so the real-`git commit` arms are driven with zero edits to the
-//! hook plane.
+//! # The fence here is a TEST FIXTURE, not the shipped one
+//! This harness places its own `pre-commit` that execs the scoped question —
+//! exactly as `u35_journaled_doors` places one that execs `mrd check` — so these
+//! arms measure `--commit-gate` itself and not the contract built on it.
+//!
+//! The shipped fence caught up on 2026-07-29: `mrd skill hook`'s emitted body now
+//! runs `mrd check --commit-gate`, which was this card's parallel-card scope when
+//! the note above was written. `crates/mrd/tests/skill_hook_emit.rs` holds it
+//! there; `crates/mrd/tests/u15_hook_fence_e2e.rs` drives the real thing.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};

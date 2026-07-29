@@ -523,8 +523,8 @@ charitable reading, and rows this document does not own say who does.**
 | 8 | Cross-root pin whose target root is later unmounted | § 6.2 R-3 | **grey, never red** — nothing drifted, the ledger stopped being able to measure |
 | 9 | A stored `obsidian://` URI hand-edited by a human | § 9.4 row P9 | read-back translation **fails loudly**, never guesses |
 | 10 | `MERIDIAN.md` pins a root it declares, and that root drifts | **not this document's** | **U7 owns it** (mount-as-claim, S3-R7 ③ — load-bearing, since the fence's only bypass is an edit to `~/MERIDIAN.md`). The address grammar has no part in it |
-| 11 | Hook installed, `mrd` later uninstalled | **not this document's** | **U15 owns it** — fail closed with teaching, `--no-verify` named in the message |
-| 12 | Two worktrees, one hook dir, different meridian workspaces | **not this document's** | **U15 owns it** (D11 — install per git common dir; the workspace-root ≠ worktree-top-level case refuses with teaching) |
+| 11 | Hook placed, `mrd` later uninstalled | **not this document's** | **U15 owns it** — fail closed with teaching, `--no-verify` named in the message |
+| 12 | Two worktrees, one hook dir, different meridian workspaces | **not this document's** | **U15 owns it** (D11 — placed per git common dir; the workspace-root ≠ worktree-top-level case is a stated refusal in `mrd skill hook`'s document) |
 | 13 | A subprocess forked while `DrawerLock` is held | **not this document's** | **U16 owns it** — explicit `LOCK_UN` in `Drop` (R19) |
 
 **No row of plan §6 is unanswerable by this grammar.** Rows 10–13 are answered by naming their real

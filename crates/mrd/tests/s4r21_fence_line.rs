@@ -32,8 +32,11 @@
 //! iterated the set under test could not fail when the set shrank, which is the
 //! vacuity this fleet bought the hard way.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+use mrd::hook::FENCE_VERSION;
 
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -120,14 +123,27 @@ impl Sandbox {
         ws
     }
 
-    /// Fence the checkout through the REAL `mrd hook install`, and assert the
+    /// Fence the checkout the way `mrd skill hook`'s document says to — the body
+    /// off that verb's stdout, written to every door, `chmod +x` — and assert the
     /// state change on disk rather than the command's exit (R40).
+    ///
+    /// **The bytes are the emitted contract's, never a transcription.** These arms
+    /// read a fence's declared generation back off the disk and compare it against
+    /// the engine's; a fixture that typed its own fence would be comparing the test
+    /// to itself.
     fn fence(&self, ws: &Path) {
-        let out = self.run(ws, &["hook", "install"]);
-        assert_eq!(out.status.code(), Some(0), "hook install: {}", said(&out));
+        let out = self.run(ws, &["skill", "hook"]);
+        assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
+        let body = fence_body(&stdout(&out));
+        let hooks = hooks_dir(ws);
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
         for door in ["pre-commit", "pre-merge-commit", "pre-applypatch"] {
+            let path = hooks.join(door);
+            std::fs::write(&path, &body).expect("place the fence");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x");
             assert!(
-                hooks_dir(ws).join(door).exists(),
+                path.exists(),
                 "the fixture IS the assert's subject: {door} must be on disk"
             );
         }
@@ -188,12 +204,33 @@ fn hooks_dir(ws: &Path) -> PathBuf {
     }
 }
 
-/// The marker line's opening, as `mrd hook install` writes it. What follows the
-/// generation is prose (`— the meridian pre-commit fence.`), so both helpers
-/// below take the FIRST token after this prefix and never the rest of the line.
+/// The fence body, extracted the way `mrd skill hook`'s document says to extract
+/// it: the one fenced block, and it is the file.
+/// `crates/mrd/tests/skill_hook_emit.rs` holds the document to there being exactly
+/// one.
+fn fence_body(doc: &str) -> String {
+    let mut lines = doc.lines();
+    let mut body = String::new();
+    lines
+        .by_ref()
+        .find(|l| l.starts_with("```"))
+        .expect("the document carries a fenced block");
+    for line in lines {
+        if line.starts_with("```") {
+            return body;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    panic!("the fenced block is never closed");
+}
+
+/// The marker line's opening, as the emitted body carries it. What follows the
+/// generation is prose (`— the meridian commit fence.`), so both helpers below
+/// take the FIRST token after this prefix and never the rest of the line.
 const MARKER_PREFIX: &str = "# mrd-hook-fence ";
 
-/// The generation ONE installed door declares, read off the file itself — the
+/// The generation ONE placed door declares, read off the file itself — the
 /// fixture's own ground truth, never `mrd`'s reading of it.
 fn declared_version(ws: &Path, door: &str) -> Option<u32> {
     std::fs::read_to_string(hooks_dir(ws).join(door))
@@ -204,7 +241,7 @@ fn declared_version(ws: &Path, door: &str) -> Option<u32> {
 }
 
 /// Restate ONE door's declared generation, leaving the fence this engine wrote
-/// otherwise byte-for-byte as `mrd hook install` left it.
+/// otherwise byte-for-byte as `mrd skill hook`'s body was placed.
 ///
 /// **The marker LINE is found rather than this engine's number spelled.** A
 /// literal `# mrd-hook-fence 3` here would turn into a silent no-op the day
@@ -548,7 +585,7 @@ fn a_foreign_hook_at_one_door_is_reported_as_foreign_from_check() {
 /// per-door line says which door is stale.**
 ///
 /// The hazard is the one `hook.rs` names in its own module doc: *nothing can
-/// prompt an operator to run `mrd hook install` if the status face calls a
+/// prompt an operator to re-place a fence if the reporting face calls a
 /// superseded fence "installed"*. `mrd check` is a second status face, and an
 /// operator standing behind a previous generation's fence while being told they
 /// are current has no reason to refresh it.
@@ -595,18 +632,6 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
              {skewed:?}"
         );
     }
-    // And the face that already holds this word agrees the state is reachable, so
-    // a red arm below names check's render rather than a broken fixture.
-    let status = sb.run(&ws, &["hook", "status", "--json"]);
-    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
-        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
-    assert_eq!(
-        status_json["state"],
-        "installed-superseded",
-        "the already-armed face reads the fixture as superseded: {}",
-        said(&status)
-    );
-
     let out = sb.run(&ws, &["check"]);
     let line = fence_line(&out);
     assert!(
@@ -646,16 +671,16 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
     assert_eq!(
         block["doors"],
         serde_json::json!([
-            { "name": "pre-commit", "state": "installed", "fence_version": 3 },
+            { "name": "pre-commit", "state": "installed", "fence_version": FENCE_VERSION },
             { "name": "pre-merge-commit", "state": "installed-superseded", "fence_version": 1 },
-            { "name": "pre-applypatch", "state": "installed", "fence_version": 3 },
+            { "name": "pre-applypatch", "state": "installed", "fence_version": FENCE_VERSION },
         ]),
         "each door's own state and its own declared generation, never the asking \
          engine's: {}",
         said(&out)
     );
 
-    // R40 — check REPORTS the skew and refreshes nothing. `mrd hook install` is
+    // R40 — check REPORTS the skew and refreshes nothing. Re-placing the fence is
     // the operator's move, and a status face that took it would be a writer.
     assert_eq!(
         declared_version(&ws, "pre-merge-commit"),
@@ -668,7 +693,7 @@ fn a_version_skewed_door_is_superseded_from_check_and_the_line_names_it() {
 /// line has to exist at all.**
 ///
 /// # `installed-ahead` is the one word whose remedy INVERTS
-/// Every other word on this surface means *"run `mrd hook install`"*. That one
+/// Every other word on this surface means *"re-place the fence"*. That one
 /// means *"do not — the `mrd` answering is the one that is behind"*. A render
 /// that flattened it to plain `installed` would not merely under-inform: it
 /// would route an operator into **downgrading their own fence** with the stale
@@ -713,18 +738,6 @@ fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
         "the control that first draft got wrong — the MARKER must survive the \
          retag, or this measures `foreign-hook` instead of `installed-unversioned`"
     );
-    // The already-armed face agrees the states are reachable, so a red arm below
-    // names check's render rather than a broken fixture.
-    let status = sb.run(&ws, &["hook", "status", "--json"]);
-    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
-        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
-    assert_eq!(
-        status_json["state"],
-        "installed-ahead",
-        "the face that already holds these words reads the fixture: {}",
-        said(&status)
-    );
-
     let out = sb.run(&ws, &["check"]);
     let line = fence_line(&out);
     assert!(
@@ -732,10 +745,10 @@ fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
         "the word whose remedy inverts is named ahead of every other: {line}"
     );
     assert!(
-        line.contains("do NOT run"),
+        line.contains("do NOT re-place"),
         "THE REASON THIS ARM EXISTS: the remedy INVERTS here, and a reader sent \
-         to `mrd hook install` by this line would downgrade their own fence: \
-         {line}"
+         to re-place from `mrd skill hook` by this line would downgrade their own \
+         fence: {line}"
     );
 
     // THE CLAIM. The set word carried `installed-ahead` and could carry nothing
@@ -760,7 +773,7 @@ fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
     assert_eq!(
         block["doors"],
         serde_json::json!([
-            { "name": "pre-commit", "state": "installed", "fence_version": 3 },
+            { "name": "pre-commit", "state": "installed", "fence_version": FENCE_VERSION },
             { "name": "pre-merge-commit", "state": "installed-ahead", "fence_version": 999 },
             { "name": "pre-applypatch", "state": "installed-unversioned", "fence_version": null },
         ]),
@@ -797,7 +810,7 @@ fn the_ahead_and_unversioned_doors_each_keep_their_own_word_on_the_line() {
 /// # The hazard is the flatten, and it is the worst one on this axis
 /// A render that read this set as plain `installed` would tell an operator they
 /// are current when the fence's currency **cannot be judged at all** — and
-/// `mrd hook install` refuses this door rather than guessing, so an operator who
+/// The document says to refuse this door rather than guess, so an operator who
 /// is never told will never find out why their next install refuses.
 ///
 /// # The count still says 3 of 3, and that is the design
@@ -835,18 +848,6 @@ fn an_unversioned_door_alone_carries_the_set_word_rather_than_flattening_to_inst
          higher-precedence word takes the set: {untouched:?} vs {:?}",
         declared_version(&ws, "pre-applypatch")
     );
-    // And the already-armed face agrees precedence lands HERE, so a red arm below
-    // names check's render rather than a fixture that never reached the state.
-    let status = sb.run(&ws, &["hook", "status", "--json"]);
-    let status_json: serde_json::Value = serde_json::from_slice(&status.stdout)
-        .unwrap_or_else(|e| panic!("hook status --json did not parse ({e}): {}", said(&status)));
-    assert_eq!(
-        status_json["state"],
-        "installed-unversioned",
-        "the face that already holds this word reads the fixture: {}",
-        said(&status)
-    );
-
     let out = sb.run(&ws, &["check"]);
     let line = fence_line(&out);
     assert!(
@@ -857,7 +858,7 @@ fn an_unversioned_door_alone_carries_the_set_word_rather_than_flattening_to_inst
         !line.contains("fence: installed —"),
         "THE HAZARD: a fence whose currency cannot be judged, reported as \
          current, is the silent wrong answer this lane exists to kill — and the \
-         operator is never told why `mrd hook install` then refuses: {line}"
+         operator is never told why the document then says to refuse: {line}"
     );
     assert_eq!(
         fence_count_clause(&out),
@@ -984,7 +985,7 @@ fn a_workspace_with_no_repository_names_that_state_rather_than_staying_silent() 
 /// and the line says so instead of reporting a bare absence.**
 ///
 /// # Why `absent` here would be the worst reading on this face
-/// `absent` carries the teaching *"`mrd hook install` fences this one"*. Follow it
+/// `absent` carries the teaching *"`mrd skill hook` emits what to place"*. Follow it
 /// on a redirected root and the install writes a file **git will never run** —
 /// and, when the redirect points at another checkout, writes it into someone
 /// else's hook directory. The operator ends up believing they are fenced while
@@ -1028,7 +1029,7 @@ fn a_redirected_hooks_path_is_named_on_the_check_face_rather_than_read_as_unfenc
     );
     assert!(
         !line.contains("fence: absent"),
-        "THE HAZARD: `absent` teaches `mrd hook install`, and on this root that \
+        "THE HAZARD: `absent` teaches `mrd skill hook`, and on this root that \
          writes a file git will never run — a checkout that reads as fenced and \
          gates nothing: {line}"
     );
@@ -1131,8 +1132,8 @@ fn a_workspace_below_the_worktree_top_level_names_both_roots_rather_than_reading
     );
     assert!(
         !line.contains("fence: absent"),
-        "THE HAZARD: `absent` teaches `mrd hook install` HERE, and a fence \
-         installed for a nested workspace covers the whole top-level instead: \
+        "THE HAZARD: `absent` teaches `mrd skill hook` HERE, and a fence \
+         placed for a nested workspace covers the whole top-level instead: \
          {line}"
     );
     assert!(
@@ -1143,7 +1144,7 @@ fn a_workspace_below_the_worktree_top_level_names_both_roots_rather_than_reading
          which directory the fence would cover: {line}"
     );
     assert!(
-        line.contains("Install from"),
+        line.contains("Ask from"),
         "with the remedy pointing at the top-level rather than at this root: \
          {line}"
     );
@@ -1246,52 +1247,105 @@ fn a_root_git_cannot_answer_for_is_named_rather_than_read_as_a_bare_absence() {
 
 // ── the promises the reading makes about itself ─────────────────────────────
 
-/// **Emitting the line performs NO WRITE.** A root must not come away with an
-/// `mrd-hook.lock` in its git dir as the souvenir of being looked at — the
-/// property `hook.rs` § *"Why the guards run twice"* protects.
+/// **Emitting the line performs NO WRITE: a root looked at is a root untouched.**
 ///
-/// The positive control is the point: `mrd hook install` DOES take the lock and
-/// does leave the file, so this probe is proven able to find one before its
-/// absence is read as evidence.
+/// The retired install plane took an `flock` in `$GIT_COMMON_DIR` and left an
+/// `mrd-hook.lock` behind, so this arm's original claim was the narrow one — the
+/// READ path must not take that lock. With no writer left in the engine at all,
+/// the claim widens to what it always meant: **nothing `mrd check` does changes a
+/// byte of the git directory**, and this arm is what stops a future reader from
+/// re-introducing one quietly.
+///
+/// # The probe has a control, because an absence is not evidence on its own
+/// A "nothing changed" assert passes just as well over a snapshot function that
+/// sees nothing at all. So the snapshot is proven able to notice a change —
+/// [`git_dir_snapshot`] is run over the same directory before and after a single
+/// touched file — before its stability across `mrd check` is read as meaning
+/// anything.
 #[test]
-fn reporting_the_fence_takes_no_lock_and_leaves_no_souvenir() {
+fn reporting_the_fence_writes_nothing_into_the_git_directory() {
     let sb = sandbox();
-    let source = sb.corpus("lock-source");
-    sb.fence(&source);
-    let common = PathBuf::from(git_out(&source, &["rev-parse", "--git-common-dir"]));
-    let source_common = if common.is_absolute() {
-        common
-    } else {
-        source.join(common)
-    };
-    // THE POSITIVE CONTROL — install takes the lock, so the probe below can see one.
+    let ws = sb.corpus("souvenir");
+    sb.fence(&ws);
+    let git_dir = hooks_dir(&ws)
+        .parent()
+        .expect("the git dir holds hooks/")
+        .to_path_buf();
+
+    // THE POSITIVE CONTROL — the probe can see a git dir change, so its silence
+    // downstream is evidence rather than a blind assert.
+    let baseline = git_dir_snapshot(&git_dir);
+    std::fs::write(git_dir.join("mrd-control-probe"), "x").expect("write the probe file");
+    assert_ne!(
+        git_dir_snapshot(&git_dir),
+        baseline,
+        "the control failed: this snapshot cannot see a new file in the git dir, so \
+         its stability below would mean nothing"
+    );
+    std::fs::remove_file(git_dir.join("mrd-control-probe")).expect("remove the probe file");
+    let before = git_dir_snapshot(&git_dir);
+    assert_eq!(before, baseline, "the control cleaned up after itself");
+
+    let out = sb.run(&ws, &["check"]);
     assert!(
-        source_common.join("mrd-hook.lock").exists(),
-        "the control: `mrd hook install` leaves its lock file, so a missing one \
-         downstream is evidence rather than a blind probe"
+        fence_line(&out).contains("fence: installed"),
+        "the run really did read the fence: {}",
+        fence_line(&out)
+    );
+    assert_eq!(
+        git_dir_snapshot(&git_dir),
+        before,
+        "reading the doors changed the git directory — a root looked at is a root \
+         untouched, and there is no writer left in this engine that may leave a \
+         souvenir"
     );
 
-    let clone = sb.tmp.path().join("lock-clone");
+    // The same claim on the other side of the fence's existence: an UNFENCED
+    // checkout must not acquire anything either, which is the state a fresh clone
+    // is in and the one the retired lock file used to appear in.
+    let clone = sb.tmp.path().join("souvenir-clone");
     let cloned = Command::new("git")
         .args(["clone", "-q"])
-        .arg(&source)
+        .arg(&ws)
         .arg(&clone)
         .output()
         .expect("git clone");
     assert!(cloned.status.success(), "clone: {}", said(&cloned));
-    let clone_lock = clone.join(".git").join("mrd-hook.lock");
-    assert!(!clone_lock.exists(), "FIXTURE: the clone starts clean");
-
+    let clone_git = clone.join(".git");
+    let before = git_dir_snapshot(&clone_git);
     let out = sb.run(&clone, &["check"]);
     assert!(
         fence_line(&out).contains("fence: absent"),
-        "the run really did read the fence: {}",
+        "the clone really did read as unfenced: {}",
         fence_line(&out)
     );
-    assert!(
-        !clone_lock.exists(),
-        "and it left no lock file behind — a root looked at is a root untouched"
+    assert_eq!(
+        git_dir_snapshot(&clone_git),
+        before,
+        "an unfenced checkout comes away byte-identical from being looked at"
     );
+}
+
+/// Every path under a git directory, with its size — enough to notice a file
+/// appearing, vanishing, or being rewritten, and cheap enough to take twice.
+fn git_dir_snapshot(dir: &Path) -> Vec<(PathBuf, u64)> {
+    fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.metadata() {
+                Ok(meta) if meta.is_dir() => walk(&path, out),
+                Ok(meta) => out.push((path, meta.len())),
+                Err(_) => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, &mut out);
+    out.sort();
+    out
 }
 
 /// **The `--json` face**, and the shape law that bit this session already: *an
@@ -1315,14 +1369,14 @@ fn the_json_fence_block_carries_the_doors_and_omits_them_when_there_are_none() {
             "state": "installed",
             "fenceable": true,
             "teaching": "this checkout is fully fenced, at the generation this engine writes",
-            "engine_version": 3,
+            "engine_version": FENCE_VERSION,
             // The claim, machine-readable: a consumer reads off this face that the
             // block did not decide the exit.
             "gates_the_exit": false,
             "doors": [
-                { "name": "pre-commit", "state": "installed", "fence_version": 3 },
-                { "name": "pre-merge-commit", "state": "installed", "fence_version": 3 },
-                { "name": "pre-applypatch", "state": "installed", "fence_version": 3 },
+                { "name": "pre-commit", "state": "installed", "fence_version": FENCE_VERSION },
+                { "name": "pre-merge-commit", "state": "installed", "fence_version": FENCE_VERSION },
+                { "name": "pre-applypatch", "state": "installed", "fence_version": FENCE_VERSION },
             ],
             "fenced_doors": 3,
             "total_doors": 3,

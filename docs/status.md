@@ -1,5 +1,5 @@
 ---
-updated: 2026-07-24
+updated: 2026-07-29
 ---
 
 # Status
@@ -189,6 +189,45 @@ ever been spliced still refuses — now truthfully. Making `check` able to answe
 (journaling the splice, or reading the pin plane, which it has no `lock`/`git`/
 `view` dep for) is a separate unit with its own gates.
 
+#### Two independent axes: WHICH BYTES, and WHICH QUESTION
+
+`mrd check [--core] [--staged] [--commit-gate] [--json]`.
+
+**`--staged` picks the interval.** `domain_snapshot` reads the worktree; git
+commits the INDEX. Forge a pinned section, `git add` it, restore the governed
+bytes to the worktree, and an unscoped check answers green over bytes no commit
+would record. `--staged` assesses the index whenever it carries anything the
+worktree does not, and the exit is worst-of across both intervals, each refusal
+naming which one it came from.
+
+**`--commit-gate` picks the question, and implies `--staged`.** Without it the
+verb asks *"is everything this corpus's record says true?"* — a claim about the
+whole write history, **permanent** once a row breaks. With it the verb asks the
+narrower, per-commit one: *were these bytes produced by a governed write?*
+
+Three distinct propositions rode the single exit `1`: a journal chain break
+(about the **past**, permanent by design), an out-of-band write in this index
+(about **this interval**, per-commit), and `grey(cannot-assess)` (about
+**evidence availability**, per-state). A commit fence branches on the code alone,
+so past the first break its verdict stopped varying with what was staged — a
+guard whose answer no longer depends on the thing it guards carries zero
+information about it, and the per-commit enforcement is destroyed with it. The
+fix is not a fourth code: it is asking the question whose answer is actually
+per-commit. **This is why the emitted fence body runs `mrd check --commit-gate`
+and not `mrd check --staged`.**
+
+| | gates the exit | reads |
+|---|---|---|
+| unscoped | worst-of across every interval assessed | the whole write history |
+| `--commit-gate` | ONE interval — the one a commit records | whether the record accounts for it, and whether its pins hold |
+
+**The permanence is untouched.** Unscoped `mrd check` stays red forever, citing
+the same row; under `--commit-gate` the standing break is **printed on stderr at
+every commit**, pass or refuse. The blocking is downgraded; the telling never is.
+And a gated pass over a broken record is never spelled green — it carries the
+weaker word `accounted(unvouched-record)`, because the record that accounts for
+the interval may itself hold a forged row.
+
 ### The composed status line
 
 `mrd status` renders five orthogonal axes on one line, worst-of WITHIN each axis
@@ -287,19 +326,44 @@ a root **and still resolves to the git root** — init says so, and names the tw
 ways to change the answer (`MERIDIAN_WORKSPACE`, or address the root by name
 through the mount table). Whoever used a marker to carve a sub-root uses one of
 those, or registers the tree with the daemon.
+### `mrd skill hook` — the commit fence, as a DOCUMENT
 
-### `mrd hook` — the pre-commit fence (U15)
+`mrd skill hook` prints one markdown document to stdout and does nothing else:
+no file is written, no git directory is read, no workspace is resolved. **The
+markdown IS the contract** — what to place, where, when to refuse to place it,
+how to verify — and the agent reading it does the placing. Exits 0 (the document
+was written) or 2 (bad invocation). There is no `--json` face: a JSON envelope
+around a markdown string is a second contract for the same bytes.
 
-`mrd hook install | uninstall | status [PATH] [--json]` installs a hook that
-calls `mrd check --staged` and rejects on its exit. `PATH` is the meridian
-workspace root and defaults to the current directory.
+**The install plane was deleted, not shimmed** (2026-07-29; `mrd hook` no longer
+parses, and USAGE names the successor). A verb that wrote into `$GIT_DIR` had to
+carry an uninstaller that refused a foreign file, an `flock` held across a
+read-decide-write section spawning `git` three times inside it, a downgrade guard
+with its own environment escape, and a partial-coverage migration state — four
+planes of imperative machinery encoding rules that are, in the end, prose. They
+are now legible content of the emitted document instead of code paths that have
+to be trusted, and the one thing that cannot be prose — reading bytes off a disk
+to say what generation is standing there — is what stayed, as `mrd check`'s
+`fence:` line.
 
-**The install set is three doors, and that is a claim about coverage.**
-`pre-commit`, `pre-merge-commit` and `pre-applypatch` are every hook git
-dispatches for a commit it builds from a prepared index, so `mrd check --staged`
-is the correct question at all three and **one body serves them all**. An install
-set of one let `git merge` and `git am` land commits past a fence that printed
-nothing.
+**The door set is three, and that is a claim about coverage.** `pre-commit`,
+`pre-merge-commit` and `pre-applypatch` are every hook git dispatches for a commit
+it builds from a prepared index, so the fence's question is the same at all three
+and **one body serves them all**. A set of one let `git merge` and `git am` land
+commits past a fence that printed nothing.
+
+**Placed per `$GIT_COMMON_DIR`, not per worktree.** N linked worktrees are N
+meridian workspaces sharing ONE `hooks/` directory, so the fence is written once
+and reads the committing worktree from git's working directory at run time — it
+bakes no path in. Per `--git-dir` writes N files of which git runs one; per
+worktree top-level overwrites the same file N times. The `chmod +x` is part of
+placing it: a hook git cannot execute is a hook git skips, silently.
+
+**The body runs `mrd check --commit-gate`** and rejects on its exit — the scoped
+question above. It holds **zero markdown semantics**: nothing in it parses a
+selector, reads a rev, or spells a colour word, and refusal's legal home stays
+engine-side. `crates/mrd/tests/skill_hook_emit.rs` asserts that over the emitted
+bytes rather than promising it.
 
 **Three commit-creating paths stay open and are declared, not papered over:**
 `git cherry-pick`, `git revert` and `git rebase` replay dispatch no veto-capable
@@ -308,24 +372,12 @@ reaches history through `commit`, `merge`, or `am`* — it is **not** *no drift
 reaches history*. Across the replay paths the engine's read-time `mrd check` is
 the only guarantee.
 
-**Fence coverage is per checkout and opt-in, permanently.** `$GIT_DIR/hooks` is
-never a tracked path, so no clone can carry the fence. A global
-`init.templateDir` would transport it and is refused on its collateral: it fences
-every unrelated repository the operator clones or inits, abolishing the opt-in
-premise the fence body's design rests on.
-
-**The hook holds zero markdown semantics — it is an adapter over the engine.**
-Refusal's legal home stays engine-side; the fence covers the one door the engine
-cannot see, the out-of-band write (a human in Obsidian, a bash edit). Nothing in
-the installed file parses a selector, reads a rev, or spells a colour word, and
-`crates/mrd/src/hook.rs`'s own test asserts that rather than promising it.
-
-**Installed per `$GIT_COMMON_DIR`, not per worktree.** N linked worktrees are N
-meridian workspaces sharing ONE `hooks/` directory, so the fence is written once
-and reads the committing worktree from git's working directory at run time — it
-bakes no path in. Installing per `--git-dir` would write N files of which git
-runs one; installing per worktree top-level would overwrite the same file N
-times.
+**Coverage is per checkout and opt-in, permanently.** `$GIT_DIR/hooks` is never a
+tracked path, so no clone can carry the fence. A global `init.templateDir` would
+transport it and is refused on its collateral: it fences every unrelated
+repository the operator clones or inits, abolishing the opt-in premise the body's
+no-membership-test design rests on. A fresh clone being unfenced is a supported
+state, which is why `mrd check` says so unasked.
 
 **Escapes at commit time**, both named in every refusal the fence prints:
 `MRD_HOOK_FORCE=1 git commit …` (the ratified `--force`, in the spelling a hook
@@ -345,47 +397,44 @@ never what it said.
 **The fence declares its own generation and the engine reads it.**
 `# mrd-hook-fence <n>` on line 2 is parsed and compared against the engine's own,
 yielding a three-valued relation — a byte-equality test collapsed *older* and
-*newer* into one answer and then asserted a direction it never measured.
+*newer* into one answer and then asserted a direction it never measured. The
+document and `crates/mrd/src/hook.rs`'s `FENCE_VERSION` are held to each other by
+the emitter's design tests, so a body change without a bump fails in CI rather
+than shipping.
 
-| `hook status` state | Meaning | Remedy |
+| `mrd check` fence state | Meaning | Remedy |
 |---|---|---|
 | `installed` | every door carries this engine's fence | — |
-| `installed-partial` | some doors unfenced | `mrd hook install` |
-| `installed-superseded` | the fence is older than this engine | `mrd hook install` |
-| `installed-ahead` | **the fence is NEWER than the engine answering** | put the current engine first on PATH — **do NOT install**, which would downgrade the fence |
-| `installed-unversioned` | marker present, generation undeclarable | `mrd hook install` refuses rather than guessing |
+| `installed-partial` | some doors unfenced | place the body at the rest |
+| `installed-superseded` | the fence is older than this engine emits | re-place from `mrd skill hook` |
+| `installed-ahead` | **the fence is NEWER than the engine answering** | put the current engine first on PATH — **do NOT re-place**, which would downgrade the fence |
+| `installed-unversioned` | marker present, generation undeclarable | refuse rather than guess |
 | `foreign-hook` | a door carries a file this engine did not write | move or remove it |
 
-`install` **refuses a downgrade** (`fence-ahead`) and an undeclarable generation
-(`fence-unversioned`), escapable only by `MRD_HOOK_FORCE=1` so a deliberate
-rollback stays possible and never silent. Both faces report `fence_version` (what
-the files declare) beside `engine_version` (what this engine writes): a verdict
-that does not disclose its judge cannot be checked by a third party, and in a
-version skew both participants are inside it.
+The document tells its reader to refuse the last three, plus a submodule (its
+hooks live at `<super>/.git/modules/<name>/hooks`, which this engine does not
+compute), a set `core.hooksPath` (git runs hooks from there, and if that path
+already carries a `pre-commit`, writing there would write into another checkout's
+hook directory), a workspace root that is not the worktree top-level, and a root
+that is not a git repository at all — a supported workspace state with simply
+nowhere to put a hook, not a fault.
 
-| The root is | `install` | Why |
-|---|---|---|
-| a clean git repository | installs, `chmod +x` | — |
-| already carrying a `pre-commit` this engine did not write | **refuses, naming the file and quoting its first line** | never silently overwrite another tool's artifact |
-| a submodule | **refuses, naming the superproject** | its hooks live at `<super>/.git/modules/<name>/hooks`, which this engine does not compute |
-| setting `core.hooksPath` | **refuses, naming the path** | git runs hooks from there; anything written here is a silent no-op — and when that path already carries a `pre-commit`, installing would write into another checkout's hook directory |
-| a workspace root that is not the worktree top-level | **refuses with teaching** | "this workspace" and "this repository" name different directories |
-| not a git repository at all | **refuses, naming it a supported state** | `MERIDIAN_WORKSPACE` anchors a non-git tree and `cwd-default` accepts one, so this is a legal workspace with simply nowhere to install a hook — not a fault in the workspace |
+At commit time the fence **fails closed**: `mrd` absent from `PATH` refuses with a
+teaching message naming both escapes and how to delete the file, because a commit
+nobody could vouch for is not a verified one. An `mrd` on PATH that predates
+`--commit-gate` exits 2, which the body handles with a refusal naming the skew and
+the commands that decide it — the ordinary state of a cutover, and it still fails
+closed rather than falling back to a check that reads the wrong bytes.
 
-`uninstall` ships with the installer and removes **only** a hook carrying the
-engine's marker — a `pre-commit` it did not write is refused, byte-untouched. A
-guard with no exit is one an operator disables by deleting the tool.
+**Verify with `mrd check`.** Its `fence:` line carries the set's word, the count of
+doors carrying the marker, and a teaching; its `fence doors:` line names each door
+with its own word so a disagreement can be located. Under `--json` the same
+reading is the `fence` object with `doors[]`, `fenced_doors`, `total_doors`,
+`engine_version` and `gates_the_exit: false`. **That line never moves the exit
+code** — fence coverage is a property of a local checkout, not of the corpus.
 
-At commit time the hook **fails closed**: `mrd` absent from `PATH` refuses with a
-teaching message naming both escapes and the uninstall, because a commit nobody
-could vouch for is not a verified one.
-
-The install lock (`$GIT_COMMON_DIR/mrd-hook.lock`) is held across the guards and
-the write and **releases explicitly, never by fd close** (R19) — the guards fork
-`git` three times inside that critical section, and each fork transiently
-duplicates the lock fd. Proven by `crates/mrd/tests/u15_hook_lock_release.rs`,
-whose control holds the fork window open with a raw `fork(2)` child parked on
-`pause()` rather than racing for it.
+Nothing in this engine writes into a git directory any more, so a root that is
+merely looked at comes away byte-identical, including the roots that refuse.
 
 ## Tests
 

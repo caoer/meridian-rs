@@ -366,8 +366,8 @@ fn e2e_reinit_leaves_a_valid_declaration_untouched() {
 }
 
 /// A `MERIDIAN.md` that is present but does NOT read as a root declaration
-/// refuses (exit 2) and is left byte-untouched — the law `mrd hook install`
-/// already follows for a hook it did not write. The obvious accident is the
+/// refuses (exit 2) and is left byte-untouched — the same law `mrd skill hook`'s
+/// document states for a hook this engine did not write. The obvious accident is the
 /// machine config copied into a tree.
 #[test]
 fn e2e_init_refuses_a_meridian_md_that_is_not_a_root_declaration() {
