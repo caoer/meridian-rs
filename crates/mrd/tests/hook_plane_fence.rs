@@ -1,10 +1,17 @@
-//! **The hook plane's gates, each proved able to say NO.**
+//! **The fence body's gates, each proved able to say NO — as PLACED from the
+//! emitted contract.**
 //!
-//! Every arm here drives the REAL installed fence through a REAL `git` operation
-//! and reads what git did. Nothing is asserted about a hand-transcribed hook: the
-//! artifact under test is the file `mrd hook install` writes, and where a fixture
-//! needs bytes the installer would not write today (a fence from the future) it is
-//! **derived from the installed file by editing one datum**, never typed out.
+//! Every arm here drives a real fence through a real `git` operation and reads
+//! what git did. Nothing is asserted about a hand-transcribed hook: the artifact
+//! under test is **the body `mrd skill hook` emits**, extracted from that verb's
+//! stdout exactly as its document tells a reader to extract it and placed exactly
+//! where its document says to place it ([`Fixture::place`]).
+//!
+//! That is what makes these design tests of the NEW contract rather than survivors
+//! of the old one. The installer they used to call is deleted; the document is the
+//! contract now, and a document whose body does not fence is a contract that lies.
+//! `crates/mrd/tests/skill_hook_emit.rs` measures the document's CLAIMS; this file
+//! measures whether following them fences a repository.
 //!
 //! # THE TRAP THIS FILE IS WRITTEN AGAINST
 //! **A hook fix tested by running the hook and asserting exit 0 has built an
@@ -18,22 +25,22 @@
 //!   FORCED under `[ -n "${MRD_HOOK_FORCE:-}" ]`, and the unparseable ones did too;
 //! - the force path printed NOTHING, so no arm could tell a forced commit from an
 //!   honest one;
-//! - `git merge` and `git am` landed commits past an install set of one;
-//! - a fence from a newer engine reported `installed` and `install` overwrote it.
+//! - `git merge` and `git am` landed commits past a door set of one.
 //!
 //! # THE INSTRUMENT'S OWN CONTROL
 //! These arms need a tree the fence is actively refusing, so anything that lands
 //! landed past a fence that was trying to say no. A scratch workspace with no
-//! receipt journal is that tree: `mrd check --staged` answers
+//! receipt journal is that tree: `mrd check --commit-gate` answers
 //! `grey(cannot-assess)` and refuses. **That precondition is ASSERTED, never
-//! assumed** — [`Fixture::refusing`] runs the verb directly and fails loudly if it
-//! ever stops refusing, because a green `mrd check` would make every refusal arm
+//! assumed** — [`Fixture::refusing`] runs the verb the body runs and fails loudly
+//! if it ever stops refusing, because a green answer would make every refusal arm
 //! below pass for the wrong reason and look exactly like a working fence.
 
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use mrd::hook::{FENCE_VERSION, FENCED_HOOKS};
+use mrd::hook::FENCED_HOOKS;
 
 /// The binary every drive goes through — the real CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -104,20 +111,6 @@ impl Fixture {
             .expect("spawn mrd")
     }
 
-    /// `mrd` with the ratified escape set — the CLI half of the same grammar the
-    /// fence body runs.
-    fn mrd_forced(&self, args: &[&str], force: &str) -> Output {
-        Command::new(mrd_bin())
-            .args(args)
-            .current_dir(&self.ws)
-            .env("XDG_CACHE_HOME", &self.cache_home)
-            .env("HOME", &self.home)
-            .env_remove("MERIDIAN_WORKSPACE")
-            .env("MRD_HOOK_FORCE", force)
-            .output()
-            .expect("spawn mrd")
-    }
-
     /// A real git operation, run the way an operator runs it: the hook fires and
     /// our `mrd` is the only one on `PATH`.
     fn git(&self, args: &[&str], force: Option<&str>) -> Output {
@@ -136,27 +129,53 @@ impl Fixture {
         c.output().expect("spawn git")
     }
 
-    fn install(&self) -> Output {
-        let out = self.mrd(&["hook", "install"]);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "hook install on a clean repo: {}",
-            said(&out)
-        );
-        out
+    /// **Place the fence the way the contract says to** — extract the one fenced
+    /// block from `mrd skill hook`, write it to every door under the common dir,
+    /// chmod +x. There is no installer to call: the document is the contract, and
+    /// this function is a test doing exactly what its reader is told to do.
+    ///
+    /// It is deliberately mechanical. A helper that "knew" the body would be
+    /// measuring a transcription; every byte here comes off the emitter's stdout.
+    fn place(&self) {
+        let doors = &FENCED_HOOKS[..];
+        self.place_at(doors);
+    }
+
+    /// The same placement, over a chosen subset — for the partial-coverage arm,
+    /// which needs a checkout fenced at fewer doors than the set claims.
+    fn place_at(&self, doors: &[&str]) {
+        let body = fence_body(&self.emit());
+        let hooks = common_dir(&self.ws).join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        for name in doors {
+            let path = hooks.join(name);
+            std::fs::write(&path, &body).expect("place the fence");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x");
+        }
+    }
+
+    /// The document, as an agent receives it.
+    fn emit(&self) -> String {
+        let out = self.mrd(&["skill", "hook"]);
+        assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
+        stdout(&out)
     }
 
     /// **The instrument's control, asserted rather than assumed.** Every refusal
     /// arm below rests on this tree being one the fence is actively refusing; a
-    /// green `mrd check --staged` would make all of them pass for the wrong
-    /// reason, and pass silently.
+    /// green answer would make all of them pass for the wrong reason, and pass
+    /// silently.
+    ///
+    /// It asks the question THE FENCE ASKS. A control on a different invocation
+    /// than the body runs is a control over a different verdict — which is how the
+    /// fence came to ship asking a permanent question in the first place.
     fn refusing(&self) {
-        let out = self.mrd(&["check", "--staged"]);
+        let out = self.mrd(&["check", "--commit-gate"]);
         assert_ne!(
             out.status.code(),
             Some(0),
-            "the control failed: this fixture's tree must be one `mrd check --staged` \
+            "the control failed: this fixture's tree must be one `mrd check --commit-gate` \
              REFUSES, or every arm resting on it measures nothing. Output: {}",
             said(&out)
         );
@@ -182,12 +201,36 @@ impl Fixture {
             .expect("a commit count")
     }
 
-    fn status_json(&self) -> serde_json::Value {
-        let out = self.mrd(&["hook", "status", "--json"]);
-        serde_json::from_str(&stdout(&out)).unwrap_or_else(|e| {
-            panic!("hook status --json is not json ({e}): {}", said(&out));
-        })
+    /// The checkout's fence coverage, off the face that reports it now: `mrd
+    /// check`'s `fence` block. The retired `hook status` verb was a second reader
+    /// of the same doors; there is one.
+    fn fence_json(&self) -> serde_json::Value {
+        let out = self.mrd(&["check", "--json"]);
+        let value: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap_or_else(|e| {
+            panic!("check --json is not json ({e}): {}", said(&out));
+        });
+        value["fence"].clone()
     }
+}
+
+/// The fence body, extracted the way the document says to extract it: the one
+/// fenced block, and it is the file. `crates/mrd/tests/skill_hook_emit.rs` holds
+/// the document to there being exactly one.
+fn fence_body(doc: &str) -> String {
+    let mut lines = doc.lines();
+    let mut body = String::new();
+    lines
+        .by_ref()
+        .find(|l| l.starts_with("```"))
+        .expect("the document carries a fenced block");
+    for line in lines {
+        if line.starts_with("```") {
+            return body;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    panic!("the fenced block is never closed");
 }
 
 // ── ROW 22 — the force value is PARSED, and the force path is RENDERED ───────
@@ -205,7 +248,7 @@ impl Fixture {
 #[test]
 fn the_force_value_is_parsed_and_both_sides_of_the_grammar_answer_apart() {
     let fx = Fixture::new("grammar");
-    fx.install();
+    fx.place();
     fx.refusing();
 
     // REFUSAL ARMS — the fence runs, and this tree is one it refuses.
@@ -261,7 +304,7 @@ fn the_force_value_is_parsed_and_both_sides_of_the_grammar_answer_apart() {
 #[test]
 fn an_unparseable_force_value_refuses_the_commit_and_names_itself() {
     let fx = Fixture::new("third-leg");
-    fx.install();
+    fx.place();
     fx.refusing();
 
     for value in ["maybe", "2", "yolo", "t rue", "*"] {
@@ -291,7 +334,7 @@ fn an_unparseable_force_value_refuses_the_commit_and_names_itself() {
 #[test]
 fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     let fx = Fixture::new("rendered");
-    fx.install();
+    fx.place();
     fx.refusing();
 
     // ACCEPTANCE — a forced commit says so, on stderr, naming the value.
@@ -332,18 +375,23 @@ fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     );
 }
 
-// ── ROW 20 — the install set is a claim about coverage ───────────────────────
+// ── ROW 20 — the door set is a claim about coverage ──────────────────────────
 
-/// **Every door git dispatches for a commit built from a prepared index carries
-/// the fence, and they carry the SAME bytes.**
+/// **Following the document's placement instruction leaves every door git
+/// dispatches for a commit built from a prepared index carrying the fence, and
+/// carrying the SAME bytes — executable.**
+///
+/// The mode bit is the half a reader most easily drops: a hook git cannot execute
+/// is a hook git SKIPS, silently, so a placement that forgot the `chmod` produces
+/// a checkout that reports `installed` and fences nothing.
 ///
 /// The absence claim has its positive control in the same assertion: `pre-commit`
 /// is checked alongside the two that were missing, so zero hits from a broken
 /// fixture cannot look like a clean result.
 #[test]
-fn install_covers_every_door_and_one_body_serves_them_all() {
+fn placing_covers_every_door_and_one_body_serves_them_all() {
     let fx = Fixture::new("doors");
-    fx.install();
+    fx.place();
 
     // NAMED, not read off the constant under test. An arm parameterised by the
     // set it is measuring cannot fail when that set shrinks — measured: with
@@ -362,11 +410,9 @@ fn install_covers_every_door_and_one_body_serves_them_all() {
         assert!(
             path.exists(),
             "{name} is a door git dispatches for a commit it builds from a prepared \
-             index, and an install set without it is a bypass"
+             index, and a door set without it is a bypass"
         );
-        let mode = std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(&path).expect("stat").permissions(),
-        );
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "{name}: mode {mode:o}");
         bodies.push(std::fs::read_to_string(&path).expect("read"));
     }
@@ -398,7 +444,7 @@ fn install_covers_every_door_and_one_body_serves_them_all() {
 #[test]
 fn the_closed_doors_refuse_and_the_declared_open_one_still_lands() {
     let fx = Fixture::new("merge");
-    fx.install();
+    fx.place();
     fx.refusing();
 
     // A side branch, built past the fence with git's own escape so the setup does
@@ -463,23 +509,24 @@ fn the_closed_doors_refuse_and_the_declared_open_one_still_lands() {
 }
 
 /// **A root carrying only `pre-commit` reports the PARTIAL state, not
-/// `installed`** — the migration every already-fenced root is in, said out loud.
+/// `installed`** — and it is a real bypass, proved by a real `git merge` landing
+/// through the door nobody placed.
+///
+/// The reporting half alone would be satisfied by a word; the merge is what makes
+/// `installed-partial` mean something. Completing the set closes it, in the same
+/// run, so the arm cannot pass by refusing everything.
 #[test]
-fn a_root_fenced_at_one_door_is_partial_and_install_completes_it() {
+fn a_root_fenced_at_one_door_is_partial_and_a_merge_walks_through_the_others() {
     let fx = Fixture::new("partial");
-    fx.install();
-    // Reduce the set to what the previous install wrote, from the installer's own
-    // bytes rather than a transcription.
-    for name in FENCED_HOOKS.iter().skip(1) {
-        std::fs::remove_file(fx.door(name)).expect("remove");
-    }
+    fx.place_at(&["pre-commit"]);
+    fx.refusing();
 
-    let json = fx.status_json();
+    let json = fx.fence_json();
     assert_eq!(
         json["state"], "installed-partial",
         "reporting this as `installed` is the coverage claim that was false: {json}"
     );
-    let teaching = json["detail"]
+    let teaching = json["teaching"]
         .as_str()
         .expect("a partial set owes a teaching");
     for name in FENCED_HOOKS.iter().skip(1) {
@@ -489,273 +536,44 @@ fn a_root_fenced_at_one_door_is_partial_and_install_completes_it() {
         );
     }
 
-    // ACCEPTANCE, same run: install completes it and SAYS it completed rather
-    // than reporting an idempotent refresh that did not happen.
-    let out = fx.install();
+    // THE BYPASS IS REAL, not merely reported. A side branch merged in dispatches
+    // `pre-merge-commit`, and there is nothing standing in that door.
+    git_ok(&fx.ws, &["checkout", "-q", "-b", "side"]);
+    fx.write("side.md", "# Side\n\nside work\n");
+    git_ok(&fx.ws, &["add", "-A"]);
+    let out = fx.git(&["commit", "--no-verify", "-m", "side"], None);
+    assert!(out.status.success(), "setup commit: {}", said(&out));
+    git_ok(&fx.ws, &["checkout", "-q", "main"]);
+
+    let before = fx.head_count();
+    let merged = fx.git(&["merge", "--no-ff", "-m", "merge side", "side"], None);
+    // `> before` rather than `+ 1`: a --no-ff merge makes the side branch's own
+    // commits reachable too, so the count grows by more than the merge commit.
     assert!(
-        stdout(&out).contains("completed"),
-        "a migration is not a refresh, and reporting it as one hides the doors that \
-         were open until just now: {}",
-        said(&out)
+        merged.status.success() && fx.head_count() > before,
+        "the open door is a BYPASS, and this arm exists to show it is not a wording: {}",
+        said(&merged)
     );
-    assert_eq!(fx.status_json()["state"], "installed");
-}
 
-/// **Uninstall removes every door, and refuses the whole set when any one of them
-/// is foreign** — naming which. A partial teardown on the strength of a decision
-/// the next door reverses is the overwrite defect wearing the other sign.
-#[test]
-fn uninstall_clears_the_set_and_a_foreign_door_refuses_the_whole_teardown() {
-    let fx = Fixture::new("teardown");
-    fx.install();
+    // ACCEPTANCE, same run: placing at every door closes it, and the same merge
+    // shape is refused. Without this half the arm passes on a fence that refuses
+    // nothing at all.
+    fx.place();
+    assert_eq!(fx.fence_json()["state"], "installed");
+    git_ok(&fx.ws, &["checkout", "-q", "side"]);
+    fx.write("side.md", "# Side\n\nmore side work\n");
+    git_ok(&fx.ws, &["add", "-A"]);
+    let out = fx.git(&["commit", "--no-verify", "-m", "side 2"], None);
+    assert!(out.status.success(), "setup commit: {}", said(&out));
+    git_ok(&fx.ws, &["checkout", "-q", "main"]);
 
-    // REFUSAL — a foreign hook at the SECOND door, with an owned first door as
-    // the control: the refusal must name the foreign one, not the owned one.
-    let foreign = fx.door("pre-merge-commit");
-    std::fs::write(&foreign, "#!/bin/sh\n# LEFTHOOK: do not remove\nexit 0\n").expect("write");
-    let out = fx.mrd(&["hook", "uninstall"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    let text = said(&out);
+    let before = fx.head_count();
+    let merged = fx.git(&["merge", "--no-ff", "-m", "merge side 2", "side"], None);
     assert!(
-        text.contains("foreign-hook") && text.contains("pre-merge-commit"),
-        "a foreign hook beside an owned one must name WHICH door is foreign: {text}"
+        !merged.status.success() && fx.head_count() == before,
+        "the completed set must refuse the merge the partial one let through: {}",
+        said(&merged)
     );
-    assert!(
-        fx.door("pre-commit").exists(),
-        "R40 — the refusal must leave the set untouched, not half torn down"
-    );
-    assert!(foreign.exists(), "R40 — the foreign file is still there");
-
-    // ACCEPTANCE — with the foreign file gone, uninstall clears every door.
-    std::fs::remove_file(&foreign).expect("remove");
-    let out = fx.mrd(&["hook", "uninstall"]);
-    assert_eq!(out.status.code(), Some(0), "uninstall: {}", said(&out));
-    for name in FENCED_HOOKS {
-        assert!(
-            !fx.door(name).exists(),
-            "R40 — uninstall exited 0 with {name} still on disk"
-        );
-    }
-    assert_eq!(fx.status_json()["state"], "absent");
-}
-
-// ── ROWS 23 + 26 — the version line is the datum the reader reads ────────────
-
-/// **The fence's own generation is reported, beside the generation of the engine
-/// that judged it.**
-///
-/// `# mrd-hook-fence <n>` has been in the bytes since the plane shipped and
-/// nothing parsed it: the reader decided by marker, so a fence from another
-/// generation answered "installed". A verdict that does not disclose its judge
-/// cannot be checked by a third party, which is the only way a skew is ever
-/// caught — in a skew both participants are inside it.
-#[test]
-fn status_reports_the_fence_the_file_declares_and_the_engine_that_judged_it() {
-    let fx = Fixture::new("versions");
-    fx.install();
-
-    let json = fx.status_json();
-    assert_eq!(json["state"], "installed");
-    assert_eq!(
-        json["fence_version"], FENCE_VERSION,
-        "the number the FILE declares: {json}"
-    );
-    assert_eq!(
-        json["engine_version"], FENCE_VERSION,
-        "and the number THIS ENGINE writes, so a third party can compare them: {json}"
-    );
-    let doors = json["hooks"].as_array().expect("the install set");
-    assert_eq!(doors.len(), FENCED_HOOKS.len());
-    for (door, name) in doors.iter().zip(FENCED_HOOKS) {
-        assert_eq!(door["name"], name);
-        assert_eq!(door["state"], "installed");
-        assert_eq!(door["fence_version"], FENCE_VERSION);
-    }
-}
-
-/// **A fence from the FUTURE is `installed-ahead`, and `install` refuses to
-/// downgrade it.**
-///
-/// This is the skew's own scenario. An operator whose `mrd` is behind the fence
-/// reads a refusal telling them to run `mrd hook install`, runs it, and the OLD
-/// engine writes the OLD fence — silently restoring the worktree-reading false
-/// green. The word did not exist and the guard did not either.
-///
-/// The fixture is the installer's own bytes with **one datum edited**, so this
-/// arm speaks about the fence and not about a transcription of it.
-///
-/// # The anti-vacuity control, in the same run
-/// `installed-ahead` could be a constant. So the same fixture is first measured
-/// at the engine's own generation and must report `installed` with the install
-/// accepted — the two verdicts differ only by the digit on line 2.
-#[test]
-fn a_fence_from_the_future_refuses_the_downgrade_and_says_which_way_the_skew_runs() {
-    let fx = Fixture::new("ahead");
-    fx.install();
-
-    // CONTROL — at this engine's own generation, everything is ordinary.
-    assert_eq!(fx.status_json()["state"], "installed");
-    assert_eq!(fx.mrd(&["hook", "install"]).status.code(), Some(0));
-
-    // The fence a NEWER engine would have written: the installed bytes, one datum
-    // changed.
-    let future = FENCE_VERSION + 7;
-    for name in FENCED_HOOKS {
-        let path = fx.door(name);
-        let body = std::fs::read_to_string(&path).expect("read the installed fence");
-        let bumped = body.replace(
-            &format!("# mrd-hook-fence {FENCE_VERSION}"),
-            &format!("# mrd-hook-fence {future}"),
-        );
-        assert_ne!(bumped, body, "the fixture must actually change the datum");
-        std::fs::write(&path, &bumped).expect("write");
-    }
-
-    // REFUSAL — the report inverts.
-    let json = fx.status_json();
-    assert_eq!(
-        json["state"], "installed-ahead",
-        "the equality test collapsed `older` and `newer` into one `false` and then \
-         asserted a direction it never measured: {json}"
-    );
-    assert_eq!(json["fence_version"], future);
-    assert_eq!(json["engine_version"], FENCE_VERSION);
-    let teaching = json["detail"].as_str().expect("the skew owes a teaching");
-    assert!(
-        teaching.contains("do NOT run `mrd hook install`"),
-        "every other state's remedy is `install`; this one's is the reverse: {teaching}"
-    );
-
-    // REFUSAL — and install declines to write the older fence.
-    let before = std::fs::read_to_string(fx.door("pre-commit")).expect("read");
-    let out = fx.mrd(&["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    assert!(
-        said(&out).contains("fence-ahead"),
-        "the reason word names the observed state: {}",
-        said(&out)
-    );
-    assert_eq!(
-        std::fs::read_to_string(fx.door("pre-commit")).expect("read"),
-        before,
-        "R40 — the refusal must leave the newer fence byte-identical"
-    );
-
-    // ACCEPTANCE — a deliberate rollback stays possible through the ratified
-    // escape, and is never silent about being one.
-    let out = fx.mrd_forced(&["hook", "install"], "1");
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "forced rollback: {}",
-        said(&out)
-    );
-    assert_eq!(fx.status_json()["fence_version"], FENCE_VERSION);
-    // And an UNPARSEABLE escape is not permission — the same fail-closed law the
-    // fence body's third leg runs, in its Rust spelling.
-    for name in FENCED_HOOKS {
-        let path = fx.door(name);
-        let body = std::fs::read_to_string(&path).expect("read");
-        std::fs::write(
-            &path,
-            body.replace(
-                &format!("# mrd-hook-fence {FENCE_VERSION}"),
-                &format!("# mrd-hook-fence {future}"),
-            ),
-        )
-        .expect("write");
-    }
-    let out = fx.mrd_forced(&["hook", "install"], "yolo");
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "an unreadable escape is not permission: {}",
-        said(&out)
-    );
-}
-
-/// **A marker-bearing fence that declares no generation refuses rather than
-/// guessing** — and the report never substitutes the asking engine's number.
-///
-/// An undeclarable generation is not a known-old one. The plane's standing rule
-/// is that an unreadable file is not an absent one; the same reading applies to
-/// an unreadable datum inside a readable file.
-///
-/// # The fixture, and what it is NOT
-/// The marker and the version live on the same line, so deleting that line makes
-/// the file foreign rather than unversioned — a different state with a different
-/// word, and the arm that measured it first is what found this out. The reachable
-/// state is a generation that declares itself with something no `u32` parses,
-/// which is what a future fence tagging itself `next` would look like to this
-/// engine.
-#[test]
-fn an_undeclarable_generation_refuses_and_is_never_read_as_this_engines() {
-    let fx = Fixture::new("unversioned");
-    fx.install();
-    for name in FENCED_HOOKS {
-        let path = fx.door(name);
-        let body = std::fs::read_to_string(&path).expect("read");
-        let tagged = body.replace(
-            &format!("# mrd-hook-fence {FENCE_VERSION}"),
-            "# mrd-hook-fence next",
-        );
-        assert_ne!(tagged, body, "the fixture must actually change the datum");
-        assert!(
-            tagged.contains("mrd-hook-fence"),
-            "the control: the marker must SURVIVE, or this measures `foreign-hook` \
-             instead — which is what the first draft of this arm did"
-        );
-        std::fs::write(&path, tagged).expect("write");
-    }
-
-    let json = fx.status_json();
-    assert_eq!(json["state"], "installed-unversioned", "{json}");
-    assert!(
-        json["fence_version"].is_null(),
-        "a fence that cannot say what it is has not said it is current, and the \
-         asking engine's number may never stand in for the file's: {json}"
-    );
-    assert_eq!(json["engine_version"], FENCE_VERSION);
-
-    let out = fx.mrd(&["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    assert!(said(&out).contains("fence-unversioned"), "{}", said(&out));
-}
-
-/// **A fence OLDER than this engine is `installed-superseded`, and install
-/// refreshes it.** The specificity control for the two arms above: a change that
-/// made `installed-ahead` reachable by breaking this would have moved the defect
-/// rather than closed it.
-#[test]
-fn an_older_fence_is_superseded_and_install_still_refreshes_it() {
-    let fx = Fixture::new("superseded");
-    fx.install();
-    for name in FENCED_HOOKS {
-        let path = fx.door(name);
-        let body = std::fs::read_to_string(&path).expect("read");
-        std::fs::write(
-            &path,
-            body.replace(
-                &format!("# mrd-hook-fence {FENCE_VERSION}"),
-                "# mrd-hook-fence 1",
-            ),
-        )
-        .expect("write");
-    }
-
-    let json = fx.status_json();
-    assert_eq!(json["state"], "installed-superseded", "{json}");
-    assert_eq!(json["fence_version"], 1);
-    assert!(
-        json["detail"]
-            .as_str()
-            .expect("a teaching")
-            .contains("refreshes it"),
-        "the remedy here IS install, and the operator has to be told so: {json}"
-    );
-
-    assert_eq!(fx.mrd(&["hook", "install"]).status.code(), Some(0));
-    assert_eq!(fx.status_json()["fence_version"], FENCE_VERSION);
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

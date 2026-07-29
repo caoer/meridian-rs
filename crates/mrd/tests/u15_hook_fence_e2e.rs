@@ -1,7 +1,18 @@
-//! **U15 — criterion 5: the pre-commit fence, RUN AS AN INSTALLED HOOK IN A REAL
-//! REPOSITORY.** Never an asserted function: every leg here installs the real
-//! hook through the real `mrd hook install`, then drives a real `git commit` and
-//! reads what git did.
+//! **U15 — criterion 5: the commit fence, RUN AS A PLACED HOOK IN A REAL
+//! REPOSITORY.** Never an asserted function: every leg here places the fence
+//! **`mrd skill hook` emits** — extracted from that verb's stdout exactly as its
+//! document tells a reader to extract it ([`Sandbox::place_fence`]) — then drives
+//! a real `git commit` and reads what git did.
+//!
+//! # What retired with the installer, and what did not
+//! The verb plane that used to write these files is deleted. Its refusal arms
+//! (a foreign hook, a submodule, a redirected `core.hooksPath`, a downgrade, a
+//! non-repository) went with it: those are rules an agent now reads and acts on,
+//! and `crates/mrd/tests/skill_hook_emit.rs` measures that the document still
+//! carries every one of them. **What could not retire is this file's subject** —
+//! whether following that document actually fences a repository. A contract whose
+//! body does not refuse an out-of-band write is a contract that lies, and no
+//! amount of document-grepping catches it.
 //!
 //! # The three arms, and why the third is not optional (S3-R8(c))
 //! A guard proven only by what it blocks is indistinguishable from a guard that
@@ -29,12 +40,13 @@
 //!
 //! # The discriminator is the PAIR, never one leg's exit
 //! Every refusal leg here has the acceptance leg as its control: the same
-//! installed hook, the same binary, the same repository shape — one corpus
+//! placed hook, the same binary, the same repository shape — one corpus
 //! commits and the other does not. An exit code on its own would be satisfied by
 //! a hook that refuses everything, including the one that refuses because `mrd`
 //! is missing.
 
 use std::io::Write as _;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -185,41 +197,60 @@ impl Sandbox {
         ws
     }
 
-    /// Install the fence and assert the STATE CHANGE, not the exit code (R40):
-    /// **every door** git dispatches for a commit built from a prepared index
-    /// carries an executable fence. Returns `pre-commit`, which is the door the
-    /// arms in this file drive.
+    /// **Place the fence the way `mrd skill hook`'s document says to**, and
+    /// assert the STATE CHANGE rather than an exit code (R40): every door git
+    /// dispatches for a commit built from a prepared index carries an executable
+    /// fence. Returns `pre-commit`, which is the door the arms in this file drive.
     ///
-    /// The three names are literals rather than a read of `FENCED_HOOKS`: an
-    /// assertion parameterised by the set it measures cannot fail when that set
-    /// shrinks.
-    fn install_fence(&self, ws: &Path) -> PathBuf {
-        let out = self.run(ws, &["hook", "install"]);
-        assert_eq!(
-            out.status.code(),
-            Some(0),
-            "hook install on a clean repo: {}",
-            said(&out)
-        );
+    /// The body comes off the emitter's stdout, extracted exactly as the document
+    /// tells its reader to extract it — so these arms measure the shipped
+    /// contract, not a transcription of it. The three names are literals rather
+    /// than a read of `FENCED_HOOKS`: an assertion parameterised by the set it
+    /// measures cannot fail when that set shrinks.
+    fn place_fence(&self, ws: &Path) -> PathBuf {
+        let out = self.run(ws, &["skill", "hook"]);
+        assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
+        let body = fence_body(&stdout(&out));
         let hooks = common_dir(ws).join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
         for name in ["pre-commit", "pre-merge-commit", "pre-applypatch"] {
             let hook = hooks.join(name);
-            assert!(
-                hook.exists(),
-                "R40 — install exited 0 without writing {}",
-                hook.display()
-            );
-            let mode = std::os::unix::fs::PermissionsExt::mode(
-                &std::fs::metadata(&hook).expect("stat hook").permissions(),
-            );
+            std::fs::write(&hook, &body).expect("place the fence");
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod +x — a hook git cannot execute is a hook git skips");
+            let mode = std::fs::metadata(&hook)
+                .expect("stat hook")
+                .permissions()
+                .mode();
             assert_eq!(
                 mode & 0o111,
                 0o111,
-                "chmod+x is the install, not a decoration on it: {name} mode {mode:o}"
+                "chmod+x is part of placing the fence, not a decoration on it: \
+                 {name} mode {mode:o}"
             );
         }
         hooks.join("pre-commit")
     }
+}
+
+/// The fence body, extracted the way the document says to extract it: the one
+/// fenced block, and it is the file. `crates/mrd/tests/skill_hook_emit.rs` holds
+/// the document to there being exactly one.
+fn fence_body(doc: &str) -> String {
+    let mut lines = doc.lines();
+    let mut body = String::new();
+    lines
+        .by_ref()
+        .find(|l| l.starts_with("```"))
+        .expect("the document carries a fenced block");
+    for line in lines {
+        if line.starts_with("```") {
+            return body;
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    panic!("the fenced block is never closed");
 }
 
 // ── ARM 1 — THE ACCEPTANCE (S3-R8(c)) ────────────────────────────────────────
@@ -239,7 +270,7 @@ impl Sandbox {
 fn the_fence_accepts_a_commit_whose_writes_were_all_governed() {
     let sb = sandbox();
     let ws = sb.corpus("accepts");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
     assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -286,7 +317,7 @@ fn the_fence_accepts_a_commit_whose_writes_were_all_governed() {
 fn the_fence_refuses_a_commit_carrying_an_out_of_band_write() {
     let sb = sandbox();
     let ws = sb.corpus("refuses-out-of-band");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     // Govern the corpus first, so the journal has a current baseline and the
     // refusal below is attributable to the out-of-band edit and nothing else.
@@ -352,7 +383,7 @@ fn the_fence_refuses_a_commit_carrying_an_out_of_band_write() {
 fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
     let sb = sandbox();
     let ws = sb.corpus("refuses-index");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
     assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -459,7 +490,7 @@ fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
 fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
     let sb = sandbox();
     let ws = sb.corpus("accepts-index");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
     assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -520,7 +551,7 @@ fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
 fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
     let sb = sandbox();
     let ws = sb.corpus("refuses-orphan");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(
         &ws,
@@ -602,7 +633,7 @@ fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
 fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
     let sb = sandbox();
     let ws = sb.corpus("governed-partial-stage");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
     assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -686,7 +717,7 @@ fn a_mixed_two_receipt_stage_is_refused_because_the_predicate_is_over_the_tree()
     write(&ws, "b.md", "# B\n\n## Log\n\nbeta\n");
     git_ok(&ws, &["add", "-A"]);
     git_ok(&ws, &["commit", "-qm", "two files"]);
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let edit = |file: &str, heading: &str, old: &str, new: &str| {
         let batch = serde_json::to_string(&serde_json::json!([{
@@ -752,7 +783,7 @@ fn a_mixed_two_receipt_stage_is_refused_because_the_predicate_is_over_the_tree()
 fn a_pathspec_commit_is_refused_over_the_tree_git_builds_for_it() {
     let sb = sandbox();
     let ws = sb.corpus("pathspec");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
     let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
     assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -809,25 +840,38 @@ fn a_pathspec_commit_is_refused_over_the_tree_git_builds_for_it() {
     );
 }
 
-/// **A write landing BETWEEN `git add` AND HOOK FIRE is refused** — the case F1
-/// calls the normal one on a common dir with a live fleet, where another agent
-/// writes while a commit is in flight.
+/// **A write landing BETWEEN `git add` AND HOOK FIRE does not block the governed
+/// index — and is TOLD, never withheld.** Then the same bytes, STAGED, are
+/// refused. The pair is the contract; either half alone is satisfied by a fence
+/// that does the wrong thing.
 ///
-/// The concurrent writer is simulated where it is deterministic: the bytes change
-/// after staging and before the hook runs, which is exactly the state such a race
-/// leaves. **A sleep-and-hope race would prove less** — it would pass when it
-/// happened to lose.
+/// This is the case F1 calls the normal one on a common dir with a live fleet:
+/// another agent writes while a commit is in flight. The concurrent writer is
+/// simulated where it is deterministic — the bytes change after staging and before
+/// the hook runs, exactly the state such a race leaves. A sleep-and-hope race would
+/// prove less; it would pass when it happened to lose.
 ///
-/// Here the WORKTREE holds the ungoverned bytes and the index holds governed ones,
-/// so the refusal comes from the worktree interval — the mirror of
-/// [`the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write`], and the
-/// reason BOTH intervals are assessed rather than the index replacing the
-/// worktree.
+/// # THIS ARM CHANGED WITH THE SCOPED QUESTION, DELIBERATELY
+/// Under the retired `mrd check --staged` the exit was worst-of ACROSS intervals,
+/// so the worktree's ungoverned bytes refused a commit that would not have recorded
+/// them. `--commit-gate` names ONE interval — **the one a commit records** — because
+/// a finding from the other swamps a clean answer about the bytes actually being
+/// committed, which is how a permanent fact came to be spent as a per-commit
+/// verdict (S4-R19).
+///
+/// **The guarantee is unweakened where it counts**: nothing ungoverned reaches
+/// history. The racing write is still on disk, still ungoverned, and still refused
+/// the moment anyone stages it — which is the second half below. What changed is
+/// that it no longer blocks a commit it is not part of.
+///
+/// **And the blocking is what was downgraded, never the telling**: the standing
+/// fact rides stderr on every gated run that has one, so this commit is not silent
+/// about the tree it was taken over.
 #[test]
-fn a_write_landing_after_git_add_is_refused_by_the_other_interval() {
+fn a_write_landing_after_git_add_does_not_block_the_governed_index_but_is_told() {
     let sb = sandbox();
     let ws = sb.corpus("interleaved");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
     let put = sb.run_stdin(
         &ws,
         &["put", "plan.md"],
@@ -843,13 +887,34 @@ fn a_write_landing_after_git_add_is_refused_by_the_other_interval() {
         "# Plan\n\n## Goals\n\nanother agent was here\n",
     );
 
+    // ACCEPTANCE — the index holds governed bytes, and those are what commits.
     let before = head_count(&ws);
     let commit = sb.commit(&ws, "raced", &[]);
     assert!(
-        !commit.status.success(),
-        "a commit taken while an ungoverned write is on disk is not one anybody \
-         vouched for: {}",
+        commit.status.success(),
+        "the interval this commit records was produced by a governed write, and the \
+         gate reads that interval: {}",
         said(&commit)
+    );
+    assert_eq!(head_count(&ws), before + 1, "R40 — the commit was recorded");
+    let text = said(&commit);
+    assert!(
+        text.contains("does not vouch for itself") && text.contains("STANDING"),
+        "the blocking was downgraded and the TELLING was not: a commit taken over a \
+         tree the record cannot date must say so, every time: {text}"
+    );
+
+    // REFUSAL, same run, same bytes — staged this time. Without this half the arm
+    // is satisfied by a gate that accepts everything, which is the stuck-open fence
+    // the scoped question must not have traded the stuck-closed one for.
+    git_ok(&ws, &["add", "-A"]);
+    let before = head_count(&ws);
+    let refused = sb.commit(&ws, "and now it is staged", &[]);
+    assert!(
+        !refused.status.success(),
+        "the ungoverned write is refused the moment it is part of what a commit \
+         records — nothing ungoverned reaches history: {}",
+        said(&refused)
     );
     assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
 }
@@ -865,7 +930,7 @@ fn a_write_landing_after_git_add_is_refused_by_the_other_interval() {
 fn a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded() {
     let sb = sandbox();
     let ws = sb.corpus("journal-index");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
     // TWO governed writes, so the journal carries two rows: chain continuity is a
     // property of a row PAIR, and a single-row journal has no link to break.
     for (old, new) in [("alpha", "alpha prime"), ("beta", "beta prime")] {
@@ -919,31 +984,31 @@ fn a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded() {
 /// the skew.**
 ///
 /// The hook resolves its engine at commit time and never bakes one in (D11), so a
-/// fence written by a new engine can be run against an old one. The old engine
-/// answers `unknown flag: --staged` and exits 2, and **the fence then refuses every
-/// commit** — measured on the deployed `980008813ff69586…` by the re-verifier's
-/// harness, which puts no engine on `PATH`. That is the ordinary state of a
-/// cutover, not a corner.
+/// fence placed from a new engine's document can be run against an old one. The
+/// old engine answers `unknown flag: --commit-gate` and exits 2, and **the fence
+/// then refuses every commit**. That is the ordinary state of a cutover, not a
+/// corner — and this contract's cutover is exactly it, because the generation the
+/// document now emits runs a flag the previous fence's engine may not carry.
 ///
-/// It must fail CLOSED — falling back to a plain `mrd check` would restore the F1
-/// false green — but a bare "exited 2" leaves an operator with a bricked repository
-/// and no idea why. The stand-in for the old engine is a script that answers
-/// exactly as one does: exit 2 with `unknown flag`.
+/// It must fail CLOSED — falling back to an unscoped `mrd check` would restore the
+/// F1 false green — but a bare "exited 2" leaves an operator with a bricked
+/// repository and no idea why. The stand-in for the old engine is a script that
+/// answers exactly as one does: exit 2 with `unknown flag`.
 #[test]
 fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
     let sb = sandbox();
     let ws = sb.corpus("version-skew");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
 
-    // An `mrd` that behaves like an engine predating `--staged`: exit 2 on the
-    // flag. Everything else about the fence is unchanged, so the refusal below is
-    // attributable to the skew and nothing else.
+    // An `mrd` that behaves like an engine predating `--commit-gate`: exit 2 on
+    // the flag. Everything else about the fence is unchanged, so the refusal below
+    // is attributable to the skew and nothing else.
     let old = sb.tmp.path().join("old-bin");
     std::fs::create_dir_all(&old).expect("old bin dir");
     std::fs::write(
         old.join("mrd"),
-        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--staged\" ]; then\n    \
-         echo 'mrd: unknown flag: --staged' >&2\n    exit 2\n  fi\ndone\nexit 0\n",
+        "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = \"--commit-gate\" ]; then\n    \
+         echo 'mrd: unknown flag: --commit-gate' >&2\n    exit 2\n  fi\ndone\nexit 0\n",
     )
     .expect("write old mrd");
     std::fs::set_permissions(
@@ -979,7 +1044,7 @@ fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
          is how a guard gets deleted: {text}"
     );
     assert!(
-        text.contains("command -v mrd") && text.contains("mrd hook status"),
+        text.contains("command -v mrd") && text.contains("mrd check"),
         "and it names the two commands that DECIDE the cause, rather than accusing \
          (an unreadable workspace also exits 2): {text}"
     );
@@ -995,7 +1060,7 @@ fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
 fn both_escapes_carry_a_commit_the_fence_refused() {
     let sb = sandbox();
     let ws = sb.corpus("escapes");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
     let put = sb.run_stdin(
         &ws,
         &["put", "plan.md"],
@@ -1057,7 +1122,7 @@ fn both_escapes_carry_a_commit_the_fence_refused() {
 fn the_fence_fails_closed_when_mrd_is_not_on_path() {
     let sb = sandbox();
     let ws = sb.corpus("no-mrd");
-    sb.install_fence(&ws);
+    sb.place_fence(&ws);
     write(&ws, "plan.md", "# Plan\n\n## Goals\n\nanything\n");
     git_ok(&ws, &["add", "-A"]);
 
@@ -1076,258 +1141,28 @@ fn the_fence_fails_closed_when_mrd_is_not_on_path() {
         "and it TEACHES rather than failing obscurely: {text}"
     );
     assert!(
-        text.contains("mrd hook uninstall"),
+        text.contains("remove:") && text.contains("rm \"$0\""),
         "naming the exit, because a guard with no exit is one an operator \
-         disables by deleting the tool: {text}"
-    );
-}
-
-// ── UNINSTALL — the exit, asserted as a state change (R40) ───────────────────
-
-/// **Uninstall works**, and the assert is a STATE CHANGE in both halves: the hook
-/// file is gone, AND the repository commits again the tree that was refused.
-///
-/// The second half is what makes this more than a file deletion: an uninstall
-/// that removed the file while leaving something else fencing would pass a
-/// file-existence assert and fail the operator.
-#[test]
-fn uninstall_removes_the_fence_and_the_repository_commits_again() {
-    let sb = sandbox();
-    let ws = sb.corpus("uninstall");
-    let hook = sb.install_fence(&ws);
-    let put = sb.run_stdin(
-        &ws,
-        &["put", "plan.md"],
-        &goals_match("alpha", "alpha prime"),
-    );
-    assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
-    write(&ws, "plan.md", "# Plan\n\n## Goals\n\nrewritten by hand\n");
-    git_ok(&ws, &["add", "-A"]);
-
-    // The control: the fence is genuinely refusing this tree right now.
-    assert!(
-        !sb.commit(&ws, "refused", &[]).status.success(),
-        "an uninstall over a tree that commits anyway proves nothing"
-    );
-
-    let out = sb.run(&ws, &["hook", "uninstall"]);
-    assert_eq!(out.status.code(), Some(0), "uninstall: {}", said(&out));
-    assert!(
-        !hook.exists(),
-        "R40 — uninstall exited 0 with {} still on disk",
-        hook.display()
-    );
-
-    let before = head_count(&ws);
-    let commit = sb.commit(&ws, "after uninstall", &[]);
-    assert!(
-        commit.status.success(),
-        "the repository must commit again — a guard with no exit is one an \
-         operator disables by deleting the tool: {}",
-        said(&commit)
-    );
-    assert_eq!(head_count(&ws), before + 1, "R40 — it committed");
-}
-
-/// Uninstall **refuses a `pre-commit` this engine did not write** — the overwrite
-/// defect wearing the other sign. The foreign file is still on disk afterwards.
-#[test]
-fn uninstall_refuses_a_hook_the_engine_did_not_write() {
-    let sb = sandbox();
-    let ws = sb.corpus("uninstall-foreign");
-    let hooks = common_dir(&ws).join("hooks");
-    std::fs::create_dir_all(&hooks).expect("hooks dir");
-    let foreign = hooks.join("pre-commit");
-    std::fs::write(&foreign, "#!/bin/sh\n# LEFTHOOK: do not remove\nexit 0\n").expect("write");
-
-    let out = sb.run(&ws, &["hook", "uninstall"]);
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "refusing on the finding leg: {}",
-        said(&out)
-    );
-    assert!(
-        foreign.exists(),
-        "R40 — the file this engine does not own is still there"
-    );
-    assert!(
-        said(&out).contains("foreign-hook") && said(&out).contains("LEFTHOOK"),
-        "naming the existing file's own words rather than guessing at a tool: {}",
-        said(&out)
-    );
-}
-
-// ── the PER-ROOT refusals: D11 and D12, driven ───────────────────────────────
-
-/// **A `pre-commit` that already exists is refused BY DEFAULT, naming the file.**
-/// This is `field-notes`'s measured state (four live lefthook hooks) reproduced as
-/// a fixture, because the operator root itself may not be written to by a test.
-#[test]
-fn install_refuses_an_existing_foreign_pre_commit_naming_it() {
-    let sb = sandbox();
-    let ws = sb.corpus("foreign-hook");
-    let hooks = common_dir(&ws).join("hooks");
-    std::fs::create_dir_all(&hooks).expect("hooks dir");
-    let foreign = hooks.join("pre-commit");
-    let body = "#!/bin/sh\n# LEFTHOOK FILE — do not edit\nlefthook run pre-commit\n";
-    std::fs::write(&foreign, body).expect("write");
-
-    let out = sb.run(&ws, &["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    assert_eq!(
-        std::fs::read_to_string(&foreign).expect("read back"),
-        body,
-        "R40 — NEVER silently overwrite a file the engine does not own: the \
-         bytes are byte-identical after the refusal"
-    );
-    let text = said(&out);
-    assert!(
-        text.contains("foreign-hook"),
-        "the reason word names the observed state: {text}"
-    );
-    assert!(
-        text.contains(&foreign.display().to_string()),
-        "and the refusal NAMES THE EXISTING FILE: {text}"
-    );
-}
-
-/// **`core.hooksPath` set: refused with the reason, never a silent no-op
-/// install** (D11). The fixture reproduces `ccc-statusd`'s measured state — the
-/// redirect points OUTSIDE the repository at a directory that already carries its
-/// own `pre-commit`, so installing anyway would write into another checkout's
-/// hook directory.
-#[test]
-fn install_refuses_a_root_whose_hooks_path_redirects_elsewhere() {
-    let sb = sandbox();
-    let ws = sb.corpus("hooks-path");
-    let elsewhere = sb.tmp.path().join("other-checkout").join(".githooks");
-    std::fs::create_dir_all(&elsewhere).expect("elsewhere");
-    std::fs::write(elsewhere.join("pre-commit"), "#!/bin/sh\nexit 0\n").expect("their hook");
-    git_ok(
-        &ws,
-        &["config", "core.hooksPath", &elsewhere.display().to_string()],
-    );
-
-    let out = sb.run(&ws, &["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    assert!(
-        !common_dir(&ws).join("hooks").join("pre-commit").exists(),
-        "R40 — and it wrote NOTHING: a file git would never run is worse than \
-         no file, because it reads as installed"
-    );
-    let text = said(&out);
-    assert!(
-        text.contains("hooks-path-redirected") && text.contains(&elsewhere.display().to_string()),
-        "the reason word plus the path git will actually use: {text}"
-    );
-    assert!(
-        text.contains("another checkout's hook directory"),
-        "and the stronger true thing: the redirect target already has a \
-         pre-commit, so installing would write into someone else's repo: {text}"
-    );
-}
-
-/// **A submodule refuses loudly with a named reason** (D12). Nothing in this
-/// engine can compute `<super>/.git/modules/<name>/hooks`, so it refuses rather
-/// than installing where git will not look.
-///
-/// # This arm's member was CONSTRUCTED, and that is the point
-/// The card's population named `ccc-statusd` for this arm; re-measurement found
-/// `.git` there is a DIRECTORY — it is a superproject, not a submodule, and its
-/// real refusal is `hooks-path-redirected`. A gate asserting "refused twice"
-/// there would have been satisfied by the hooksPath refusal alone while proving
-/// nothing about D12. So the member is built here (U8's `undeclared-probe` root
-/// is the shipped precedent): a real `git submodule add`, a real superproject, a
-/// real refusal. **An arm whose population empties gets a member constructed,
-/// not deleted.**
-#[test]
-fn install_refuses_a_submodule_naming_the_superproject() {
-    let sb = sandbox();
-    let inner = sb.corpus("submodule-inner");
-    let outer = sb.corpus("submodule-outer");
-
-    let added = Command::new("git")
-        .arg("-C")
-        .arg(&outer)
-        // `--force` only steps past an ambient ignore rule the operator's global
-        // git config may carry over a tempdir path; it changes nothing about
-        // what is built. The fixture is adjudicated by git's OWN answer below,
-        // never by the fact that this command succeeded.
-        .args([
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            "--force",
-        ])
-        .arg(&inner)
-        .arg("vendor/inner")
-        .output()
-        .expect("git submodule add");
-    assert!(
-        added.status.success(),
-        "the fixture IS the assert's subject — a real submodule: {}",
-        said(&added)
-    );
-    let sub = outer.join("vendor").join("inner");
-    assert_eq!(
-        git_out(&sub, &["rev-parse", "--show-superproject-working-tree"]),
-        outer
-            .canonicalize()
-            .expect("canonical outer")
-            .to_string_lossy(),
-        "R40 — git itself calls this a submodule; the fixture is not asserted by \
-         its own construction"
-    );
-
-    let out = sb.run(&sub, &["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    let text = said(&out);
-    assert!(text.contains("submodule"), "the reason word: {text}");
-    assert!(
-        text.contains(".git/modules/"),
-        "and it names WHY nothing here can reach that hook dir: {text}"
-    );
-}
-
-/// **A root that is not a git repository at all**: `MERIDIAN_WORKSPACE` anchors
-/// a non-git tree and the cwd default accepts one, so this is a SUPPORTED
-/// workspace state — the refusal names it as such rather than as a fault in the
-/// workspace. (The retired marker tier used to be the reason; the property
-/// outlived it.)
-#[test]
-fn install_refuses_a_root_that_is_not_a_git_repository() {
-    let sb = sandbox();
-    let ws = sb.tmp.path().join("not-git");
-    std::fs::create_dir_all(&ws).expect("mkdir");
-    write(&ws, "page.md", "# Page\n\nbody\n");
-    let init = sb.run(&ws, &["init"]);
-    assert!(init.status.success(), "mrd init: {}", said(&init));
-
-    let out = sb.run(&ws, &["hook", "install"]);
-    assert_eq!(out.status.code(), Some(1), "refused: {}", said(&out));
-    let text = said(&out);
-    assert!(text.contains("not-a-git-repo"), "the reason word: {text}");
-    assert!(
-        text.contains("supported state"),
-        "and it says so — this is not an error condition of the workspace: {text}"
+         disables by deleting the tool — and with no uninstaller to name, the \
+         fence has to say how to delete itself: {text}"
     );
 }
 
 // ── the WORKTREE edge (D11): N workspaces, ONE hook dir ──────────────────────
 
-/// **The worktree case installs per git COMMON dir**, and the one installed hook
-/// fences the linked worktree it is committing from.
+/// **Placing per git COMMON dir from a linked worktree lands in the MAIN
+/// repository's `hooks/`**, and that one file fences the linked worktree it is
+/// committing from.
 ///
-/// This is D11 ruled and then run: the install from a linked worktree lands in
-/// the MAIN repository's `hooks/`, not in the worktree's own git dir — and the
-/// hook still fires for a commit made in the linked worktree, because it reads
-/// the committing worktree from git's working directory instead of baking a path
-/// in at install time.
+/// This is D11 ruled and then run. The document tells its reader to resolve
+/// `git rev-parse --git-common-dir`, and this arm is what makes that instruction
+/// load-bearing rather than decorative: asked from a linked worktree, that command
+/// answers the MAIN repository's git dir, so the fence lands where git will look
+/// for it from every worktree. The hook then reads the committing worktree from
+/// git's working directory instead of baking a path in — which is what makes one
+/// file correct for N workspaces.
 #[test]
-fn a_linked_worktree_installs_into_the_common_dir_and_is_fenced_by_it() {
+fn a_linked_worktree_places_into_the_common_dir_and_is_fenced_by_it() {
     let sb = sandbox();
     let main = sb.corpus("worktree-main");
     let linked = sb.tmp.path().join("worktree-linked");
@@ -1358,8 +1193,10 @@ fn a_linked_worktree_installs_into_the_common_dir_and_is_fenced_by_it() {
          common dir, which is the whole reason D11 had to pick a side"
     );
 
-    let out = sb.run(&linked, &["hook", "install"]);
-    assert_eq!(out.status.code(), Some(0), "install: {}", said(&out));
+    // Placed from the LINKED worktree, following the document's instruction —
+    // `place_fence` resolves the common dir the same way the document tells its
+    // reader to, so where it lands is the instruction's answer and not the test's.
+    sb.place_fence(&linked);
     let in_common = linked_common.join("hooks").join("pre-commit");
     assert!(
         in_common.exists(),
@@ -1393,29 +1230,6 @@ fn a_linked_worktree_installs_into_the_common_dir_and_is_fenced_by_it() {
     );
     assert_eq!(head_count(&linked), before, "R40 — no commit was recorded");
 }
-
-/// Install is **idempotent and says which it was**: a second install over this
-/// engine's own fence reports `already-installed` rather than pretending a fresh
-/// write, and never trips the foreign-hook refusal on its own artifact.
-#[test]
-fn a_second_install_reports_already_installed_rather_than_refusing_itself() {
-    let sb = sandbox();
-    let ws = sb.corpus("idempotent");
-    sb.install_fence(&ws);
-    let again = sb.run(&ws, &["hook", "install"]);
-    assert_eq!(
-        again.status.code(),
-        Some(0),
-        "second install: {}",
-        said(&again)
-    );
-    assert!(
-        stdout(&again).contains("already-installed"),
-        "the two are different facts about the disk and are reported apart: {}",
-        stdout(&again)
-    );
-}
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn git_ok(dir: &Path, args: &[&str]) {

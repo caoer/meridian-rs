@@ -165,7 +165,7 @@ pub(crate) fn run(
 /// Absent → write it, then read it back through the OWNER and report the name
 /// `config` read. Already valid → leave it byte-for-byte. Present but not
 /// readable as a declaration → refuse; init never overwrites another writer's
-/// file (the law `mrd hook install` already follows for a foreign hook).
+/// file (the same law `mrd skill hook`'s document states for a foreign hook).
 fn declare(
     target: &Path,
     declaration_path: &Path,

@@ -84,6 +84,59 @@ fn usage_teaches_the_new_pin_grammar_and_no_retired_verb() {
     );
 }
 
+/// **`mrd hook` is retired with no alias and no shim** (hook-rework ruling,
+/// 2026-07-29). The install / uninstall / status plane wrote into `$GIT_DIR` and
+/// carried an uninstaller, a lock, a downgrade guard and an ownership check to do
+/// it safely; `mrd skill hook` emits the document that says what to place instead,
+/// and the reader places it.
+///
+/// The refusal is the CLI's own — the verb name resolves to nothing, so USAGE
+/// prints and the successor is one line away. A shim that quietly emitted the
+/// document for `mrd hook install` would leave an operator believing a file had
+/// been written.
+#[test]
+fn mrd_hook_no_longer_parses_and_usage_teaches_the_emitter() {
+    for args in [
+        vec!["hook", "install"],
+        vec!["hook", "uninstall"],
+        vec!["hook", "status"],
+        vec!["hook"],
+    ] {
+        let out = mrd(&args);
+        assert_eq!(code(&out), 2, "{args:?} is a retired verb");
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown subcommand: hook"),
+            "the CLI refuses the retired verb rather than shimming it: {err}"
+        );
+        assert!(
+            err.contains("mrd skill hook"),
+            "and USAGE — printed on the same refusal — names the successor: {err}"
+        );
+    }
+}
+
+/// USAGE teaches the emitter's contract and no retired hook grammar: no
+/// `install`, no `uninstall`, no `status` hanging off `hook`.
+#[test]
+fn usage_teaches_the_emitter_and_no_retired_hook_grammar() {
+    let out = mrd(&["attest", "x"]);
+    let usage = stderr(&out);
+    assert!(
+        !usage.contains("mrd hook <install"),
+        "USAGE still teaches the retired hook plane:\n{usage}"
+    );
+    assert!(
+        usage.contains("mrd skill hook"),
+        "USAGE teaches the emitter:\n{usage}"
+    );
+    assert!(
+        usage.contains("--commit-gate"),
+        "and names the question the emitted body asks — the one thing an operator \
+         reading only USAGE most needs to know changed:\n{usage}"
+    );
+}
+
 /// USAGE teaches no retired MARKER either (marker-retirement ruling,
 /// 2026-07-26). `mrd init`'s line sold `.meridian.toml` — a file the engine now
 /// reads nowhere — so the help text was advertising a contract that had died.
