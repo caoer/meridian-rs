@@ -775,6 +775,53 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// The `EffectKind` ↔ globals tie. A consumer building a capability ceiling
+    /// resolves declared caps to constructor names through
+    /// [`EffectKind::constructor`]; if that mapping drifted from what this kernel
+    /// registers, the ceiling would allow a name no rule can call, or refuse one it
+    /// can. Both directions are pinned: every kind's constructor is registered, and
+    /// every registered constructor belongs to a kind.
+    #[test]
+    fn every_effect_kind_constructor_is_registered() {
+        let names: HashSet<String> = effect_globals()
+            .names()
+            .map(|n| n.as_str().to_owned())
+            .collect();
+        let derived: HashSet<String> = EffectKind::ALL
+            .iter()
+            .map(|k| k.constructor().to_owned())
+            .collect();
+        println!("POPULATION derived constructors = {derived:?}");
+
+        for kind in EffectKind::ALL {
+            assert!(
+                names.contains(kind.constructor()),
+                "{} names constructor `{}`, which is not registered",
+                kind.as_str(),
+                kind.constructor()
+            );
+            assert_eq!(
+                EffectKind::from_wire_name(kind.as_str()),
+                Some(kind),
+                "wire identity must round-trip"
+            );
+        }
+
+        // The other direction: the standard library is not a capability, so the
+        // registered set MINUS the standard globals must be exactly the derived set.
+        let standard: HashSet<String> = GlobalsBuilder::standard()
+            .build()
+            .names()
+            .map(|n| n.as_str().to_owned())
+            .collect();
+        let registered_ctors: HashSet<String> = names.difference(&standard).cloned().collect();
+        println!("POPULATION registered non-standard globals = {registered_ctors:?}");
+        assert_eq!(
+            registered_ctors, derived,
+            "a constructor exists that no EffectKind names (or vice versa)"
+        );
+    }
+
     /// The closed capability surface: every effect constructor is present, and no
     /// filesystem / network / eval name is — the purity assertion at the source of
     /// truth (the globals themselves), not merely behaviorally.

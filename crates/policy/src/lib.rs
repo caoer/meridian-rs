@@ -44,6 +44,7 @@ mod convention;
 /// path consults before any splice. Byte-exact against the U0 defs goldens.
 pub mod defs;
 mod gate;
+mod hook;
 mod index;
 mod pack;
 mod seed;
@@ -71,12 +72,18 @@ pub use pack::{FactDoc, facts_from_document};
 pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 
 /// The convention loader (U1.3): `conventions/<slug>/` folder grammar, the CHECK
-/// capability ceiling (FIX/HOOK/VIEW deferred), and `paths:` scope. A loaded
+/// and HOOK capability ceilings (FIX/VIEW deferred), and `paths:` scope. A loaded
 /// [`Convention`] runs its `check_change` over a [`Change`], returning the
 /// [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its passing scenario.
 pub use convention::{
     Capability, CheckOutcome, Convention, ConventionFiles, LoadError, Refusal, load_convention,
 };
+
+/// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
+/// declared severity, scope, effect caps, per-eval budget, the VERBATIM `how:` block
+/// (frozen data the engine never interprets), and a predicate whose capability
+/// ceiling was enforced at load. [`SLICE1_CAPS`] is what slice 1 admits.
+pub use hook::{Hook, SLICE1_CAPS};
 
 /// The throwaway seed convention (U1.3): a real `reviewer-not-owner` `check_change`
 /// the harness (U1.2) and the door (U4.2) pre-test against before U4.4's floor lands.

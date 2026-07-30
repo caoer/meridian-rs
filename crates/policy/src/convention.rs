@@ -21,12 +21,19 @@
 //! a strict subset of the one identifier charset (`[A-Za-z0-9-]`, contract §2.4 /
 //! decision 011). See `validate_slug` § THE INTAKE CHARSET.
 //!
-//! # What v1 loads (rulings § v1 ships CHECK only)
-//! v1 loads the CHECK capability ONLY. A convention that declares a FIX / HOOK /
-//! VIEW file is refused with a named deferral ([`LoadError::CapabilityDeferred`]) —
-//! those are named power ceilings deferred until a real subject needs them, never
-//! silently ignored. The CHECK power ceiling itself is enforced by the evaluator
-//! ([`crate::check_eval`]).
+//! # What loads (rulings § v1 ships CHECK only, § capability grammar)
+//! CHECK (the law leg) and HOOK (the emit leg) load. A convention that declares a
+//! FIX / VIEW file is refused with a named deferral
+//! ([`LoadError::CapabilityDeferred`]) — those are named power ceilings deferred
+//! until a real subject needs them, never silently ignored. The CHECK power ceiling
+//! is enforced by the evaluator ([`crate::check_eval`]); HOOK's is enforced at LOAD
+//! ([`crate::hook`]).
+//!
+//! HOOK's own deferral said *"until a real subject needs them"*, and a status
+//! subscription is that subject. **A convention may carry HOOK without CHECK** — a
+//! reaction is not a law, and HOOK exists as a distinct name precisely so the two
+//! are never confused. A folder carrying neither is still refused: it declares no
+//! capability at all.
 //!
 //! # Scope (rulings § scoping — the Claude-rules pattern)
 //! `CHECK.md` frontmatter declares `paths:` — a flat glob list (obsidian-legal),
@@ -36,6 +43,7 @@
 
 use crate::change::Change;
 use crate::check_eval::{self, CheckError, CheckLimits, CheckTelemetry};
+use crate::hook::Hook;
 
 /// The four capability files a convention folder may carry. Each earns a file iff
 /// it needs a distinct power ceiling (rulings § capability grammar); v1 loads
@@ -75,8 +83,10 @@ impl Capability {
         }
     }
 
-    /// The capabilities deferred in v1, in declaration order.
-    const DEFERRED: [Capability; 3] = [Capability::Fix, Capability::Hook, Capability::View];
+    /// The capabilities still deferred, in declaration order. HOOK left this list
+    /// when its stated deferral condition was met (a status subscription is the real
+    /// subject); FIX's mutate power and VIEW's read face have no such subject yet.
+    const DEFERRED: [Capability; 2] = [Capability::Fix, Capability::View];
 }
 
 /// Caller-provided access to a convention folder's files — the loader stays
@@ -106,10 +116,12 @@ pub enum LoadError {
     /// outside the convention-slug charset `[a-z][a-z0-9-]*` (R45/R46 — the slug is
     /// stamped verbatim into the attested INDEX and the reserved journal).
     SlugInvalid { slug: String, reason: String },
-    /// `CHECK.md` is absent or unreadable — a convention with no CHECK has no law.
+    /// The folder declares NO capability the loader can load — no readable
+    /// `CHECK.md` and no `HOOK.md`. A convention with neither a law nor a reaction
+    /// is not a convention.
     CheckMissing { detail: String },
-    /// The convention declares a deferred capability (FIX / HOOK / VIEW). v1 loads
-    /// CHECK only; the refusal names the capability and the deferral.
+    /// The convention declares a deferred capability (FIX / VIEW). The refusal names
+    /// the capability and the deferral.
     CapabilityDeferred { capability: Capability },
     /// `CHECK.md` is malformed: no frontmatter, no `paths:` scope, an empty scope,
     /// or no fenced `def check_change` predicate block.
@@ -117,6 +129,17 @@ pub enum LoadError {
     /// The CHECK predicate failed the load gate (over-long, over-nested, or
     /// unparseable starlark) under the full limits.
     CheckInvalid { source: CheckError },
+    /// `HOOK.md` is malformed — the reason names the offending field.
+    HookMalformed { reason: String },
+    /// `HOOK.md` declares a real effect cap that slice 1 does not carry. A named
+    /// ceiling, never a silent ignore.
+    HookCapDeferred { cap: String },
+    /// The HOOK predicate failed the load gate (over-long, over-nested, or
+    /// unparseable starlark) under the full limits.
+    HookPredicateInvalid { reason: String },
+    /// The HOOK predicate reaches for a constructor its declared `caps:` do not
+    /// grant — refused at LOAD, before any change reaches it.
+    HookCeiling { reason: String },
 }
 
 impl std::fmt::Display for LoadError {
@@ -125,9 +148,12 @@ impl std::fmt::Display for LoadError {
             LoadError::SlugInvalid { slug, reason } => {
                 write!(f, "convention slug '{slug}' is invalid: {reason}")
             }
-            LoadError::CheckMissing { detail } => {
-                write!(f, "convention has no readable CHECK.md: {detail}")
-            }
+            LoadError::CheckMissing { detail } => write!(
+                f,
+                "convention declares no loadable capability — no readable CHECK.md \
+                 ({detail}) and no HOOK.md. Add CHECK.md for a law, or HOOK.md for a \
+                 reaction"
+            ),
             LoadError::CapabilityDeferred { capability } => write!(
                 f,
                 "convention declares a {cap} file, but v1 ships CHECK only — the {cap} \
@@ -138,6 +164,22 @@ impl std::fmt::Display for LoadError {
             LoadError::Malformed { reason } => write!(f, "CHECK.md is malformed: {reason}"),
             LoadError::CheckInvalid { source } => {
                 write!(f, "CHECK.md predicate failed the load gate: {source}")
+            }
+            LoadError::HookMalformed { reason } => write!(f, "HOOK.md is malformed: {reason}"),
+            LoadError::HookCapDeferred { cap } => write!(
+                f,
+                "HOOK.md declares the cap `{cap}`, which slice 1 does not carry — slice 1 \
+                 admits `proto.send` only. The cap is a named power ceiling deferred until a \
+                 real subject needs it, never silently ignored"
+            ),
+            LoadError::HookPredicateInvalid { reason } => {
+                write!(f, "HOOK.md predicate failed the load gate: {reason}")
+            }
+            LoadError::HookCeiling { reason } => {
+                write!(
+                    f,
+                    "HOOK.md predicate is outside its capability ceiling: {reason}"
+                )
             }
         }
     }
@@ -182,7 +224,11 @@ impl CheckOutcome {
 pub struct Convention {
     slug: String,
     scope: Vec<String>,
-    check_source: String,
+    /// The CHECK predicate, when the convention carries a law. `None` for a
+    /// HOOK-only convention — a reaction is not a law.
+    check_source: Option<String>,
+    /// The HOOK declaration, when the convention carries a reaction.
+    hook: Option<Hook>,
     limits: CheckLimits,
 }
 
@@ -204,11 +250,21 @@ impl Convention {
     /// concern (the CHECK is never run against it).
     #[must_use]
     pub fn matches_path(&self, path: &str) -> bool {
-        self.scope.iter().any(|glob| glob_match(glob, path))
+        path_in_scope(&self.scope, path)
+    }
+
+    /// The HOOK declaration, when the convention carries one.
+    #[must_use]
+    pub fn hook(&self) -> Option<&Hook> {
+        self.hook.as_ref()
     }
 
     /// Run the CHECK predicate over one [`Change`] under the convention's full
     /// limits, returning the [`CheckOutcome`] (the refusals it emitted).
+    ///
+    /// A convention with no CHECK **passes everything**: it emits no refusals because
+    /// it declares no law. This is the HOOK-without-CHECK case, and it is silence by
+    /// construction rather than by accident — a reaction never vetoes.
     ///
     /// The caller is responsible for scoping — `check_change` runs on the change it
     /// is handed. Pair with [`Convention::matches_path`] on the change's document
@@ -217,7 +273,12 @@ impl Convention {
     /// # Errors
     /// [`CheckError`] — a budget/parse/runtime fault or a missing `check_change`.
     pub fn check_change(&self, change: &Change) -> Result<CheckOutcome, CheckError> {
-        let refusals = check_eval::run_check_change(&self.check_source, change, self.limits)?;
+        let Some(source) = &self.check_source else {
+            return Ok(CheckOutcome {
+                refusals: Vec::new(),
+            });
+        };
+        let refusals = check_eval::run_check_change(source, change, self.limits)?;
         Ok(CheckOutcome { refusals })
     }
 
@@ -227,25 +288,37 @@ impl Convention {
     /// telemetry for its fuel + heap p50/p99 budgets.
     ///
     /// # Errors
-    /// [`CheckError`] — a budget/parse/runtime fault or a missing `check_change`.
+    /// [`CheckError`] — a budget/parse/runtime fault, a missing `check_change`, or
+    /// [`CheckError::MissingEntry`] when the convention declares no CHECK at all
+    /// (the metered path reports the absence rather than inventing a zero reading).
     pub fn check_change_metered(&self, change: &Change) -> Result<CheckTelemetry, CheckError> {
-        check_eval::run_check_change_metered(&self.check_source, change, self.limits)
+        let source = self.check_source.as_ref().ok_or(CheckError::MissingEntry)?;
+        check_eval::run_check_change_metered(source, change, self.limits)
     }
 
-    /// The CHECK source (for tests and later units that re-run it).
+    /// The CHECK source, when the convention carries a law (for tests and later units
+    /// that re-run it).
     #[must_use]
-    pub fn check_source(&self) -> &str {
-        &self.check_source
+    pub fn check_source(&self) -> Option<&str> {
+        self.check_source.as_deref()
     }
 }
 
 /// Load the convention `conventions/<slug>/` through the injected `files` accessor
 /// under the given full limits.
 ///
-/// Pipeline: validate the slug (never a dot-dir) → require `CHECK.md` → refuse any
-/// declared deferred capability (FIX / HOOK / VIEW) → parse `CHECK.md`'s `paths:`
-/// scope + fenced `def check_change` predicate → parse-gate the predicate under the
-/// full limits → admit.
+/// Pipeline: validate the slug (never a dot-dir) → refuse any declared deferred
+/// capability (FIX / VIEW) → require at least one of `CHECK.md` / `HOOK.md` → parse
+/// each present capability and parse-gate its predicate under the full limits →
+/// admit.
+///
+/// **Fail-closed, never partial:** a convention that declares two capabilities and
+/// gets one of them wrong loads NEITHER. The whole folder is the unit.
+///
+/// The convention's scope is `CHECK.md`'s `paths:` when it carries a law, and
+/// `HOOK.md`'s when it carries only a reaction. A HOOK always answers scope through
+/// its own [`Hook::matches_path`], so a convention carrying both can scope its law
+/// and its reaction differently.
 ///
 /// # Errors
 /// [`LoadError`] — see its variants.
@@ -256,40 +329,66 @@ pub fn load_convention(
 ) -> Result<Convention, LoadError> {
     validate_slug(slug)?;
 
-    // 1. CHECK.md is required — a convention with no CHECK has no law.
-    let check_md =
-        files
-            .read(Capability::Check.filename())
-            .map_err(|e| LoadError::CheckMissing {
-                detail: e.to_string(),
-            })?;
-
-    // 2. Capability ceiling — v1 ships CHECK only. A declared FIX / HOOK / VIEW is a
-    //    named deferral, never a silent drop.
+    // 1. Capability ceiling — a declared FIX / VIEW is a named deferral, never a
+    //    silent drop. Checked BEFORE anything is parsed: a folder reaching for a
+    //    deferred power is refused for that reach, not for some later detail of a
+    //    file it also happens to carry.
     for capability in Capability::DEFERRED {
         if files.exists(capability.filename()) {
             return Err(LoadError::CapabilityDeferred { capability });
         }
     }
 
-    // 3. Parse CHECK.md: `paths:` scope frontmatter + the fenced predicate.
-    let scope = parse_scope(&check_md)?;
-    let check_source =
-        crate::pack::extract_fenced_starlark(&check_md).ok_or_else(|| LoadError::Malformed {
-            reason: "no fenced ```starlark block defining `def check_change(change)`".to_string(),
-        })?;
-
-    // 4. Parse-gate the predicate under the FULL limits (source-size + nesting +
-    //    parse) — authoring faults surface here, once, at load.
-    check_eval::validate_check_source(&check_source, limits)
-        .map_err(|source| LoadError::CheckInvalid { source })?;
+    // 2. At least one loadable capability, and each present one fully parsed. CHECK
+    //    is the law leg, HOOK the emit leg; either alone is a convention, neither is
+    //    not. Matching on the pair keeps "one capability is present" a fact of the
+    //    control flow rather than an invariant a later arm has to assume.
+    let load_hook = |md: &str| crate::hook::load_hook(md, limits);
+    let (scope, check_source, hook) = match (
+        files.read(Capability::Check.filename()),
+        files.read(Capability::Hook.filename()),
+    ) {
+        (Err(check_err), Err(_)) => {
+            return Err(LoadError::CheckMissing {
+                detail: check_err.to_string(),
+            });
+        }
+        (Ok(check_md), hook_md) => {
+            let (scope, source) = parse_check(&check_md, limits)?;
+            let hook = match hook_md {
+                Ok(hook_md) => Some(load_hook(&hook_md)?),
+                Err(_) => None,
+            };
+            (scope, Some(source), hook)
+        }
+        // HOOK-only: the reaction's scope IS the convention's scope.
+        (Err(_), Ok(hook_md)) => {
+            let hook = load_hook(&hook_md)?;
+            (hook.scope().to_vec(), None, Some(hook))
+        }
+    };
 
     Ok(Convention {
         slug: slug.to_string(),
         scope,
         check_source,
+        hook,
         limits,
     })
+}
+
+/// Parse `CHECK.md`: the `paths:` scope frontmatter and the fenced predicate,
+/// parse-gated under the FULL limits (source-size + nesting + parse) so authoring
+/// faults surface here, once, at load.
+fn parse_check(check_md: &str, limits: CheckLimits) -> Result<(Vec<String>, String), LoadError> {
+    let scope = parse_scope(check_md)?;
+    let source =
+        crate::pack::extract_fenced_starlark(check_md).ok_or_else(|| LoadError::Malformed {
+            reason: "no fenced ```starlark block defining `def check_change(change)`".to_string(),
+        })?;
+    check_eval::validate_check_source(&source, limits)
+        .map_err(|source| LoadError::CheckInvalid { source })?;
+    Ok((scope, source))
 }
 
 /// Validate a convention slug: non-empty, no path separator, no `..`, never a
@@ -429,6 +528,13 @@ fn parse_scope(check_md: &str) -> Result<Vec<String>, LoadError> {
 
 // ── obsidian-legal glob matching ──────────────────────────────────────────────
 
+/// Whether `path` matches any glob in `scope` — the one scope answer, shared by
+/// [`Convention::matches_path`] and [`Hook::matches_path`] so a capability can never
+/// drift into a second glob grammar.
+pub(crate) fn path_in_scope(scope: &[String], path: &str) -> bool {
+    scope.iter().any(|glob| glob_match(glob, path))
+}
+
 /// Match a `path` against one obsidian-legal glob. Segments split on `/`; `**`
 /// matches zero or more whole segments; within a segment `*` matches any run of
 /// non-`/` characters and every other character is literal. This is the flat glob
@@ -525,6 +631,26 @@ def check_change(change):
 ```
 ";
 
+    const VALID_HOOK: &str = "\
+---
+kind: hook
+severity: info
+paths: [\"tasks/*.md\"]
+caps:  [proto.send]
+budget: { steps: 10000, mem: 4194304 }
+how:
+  route:    { info: channel-review }
+  wake_policy: never-cold
+---
+
+# task-status-notify
+
+```starlark
+def on_change(event):
+    send(to = [\"reviewer\"], message = \"task → review\")
+```
+";
+
     #[test]
     fn valid_convention_loads() {
         let files = MemFiles::new().with("CHECK.md", VALID_CHECK);
@@ -555,15 +681,112 @@ def check_change(change):
         );
     }
 
+    /// The deferral NARROWED rather than disappeared: VIEW (and FIX, above) still
+    /// refuse, and HOOK — whose deferral said *"until a real subject needs them"* —
+    /// no longer does, because a status subscription is that subject.
     #[test]
-    fn hook_and_view_also_defer() {
-        for (rel, capability) in [("HOOK.md", Capability::Hook), ("VIEW.md", Capability::View)] {
-            let files = MemFiles::new()
-                .with("CHECK.md", VALID_CHECK)
-                .with(rel, "# deferred\n");
-            let err = load_convention("s", &files, CheckLimits::default()).unwrap_err();
-            assert_eq!(err, LoadError::CapabilityDeferred { capability });
-        }
+    fn view_still_defers_and_hook_no_longer_does() {
+        let files = MemFiles::new()
+            .with("CHECK.md", VALID_CHECK)
+            .with("VIEW.md", "# deferred\n");
+        assert_eq!(
+            load_convention("s", &files, CheckLimits::default()).unwrap_err(),
+            LoadError::CapabilityDeferred {
+                capability: Capability::View
+            }
+        );
+
+        let files = MemFiles::new()
+            .with("CHECK.md", VALID_CHECK)
+            .with("HOOK.md", VALID_HOOK);
+        let conv = load_convention("s", &files, CheckLimits::default())
+            .expect("HOOK is no longer a deferred capability");
+        assert!(conv.hook().is_some(), "the HOOK loaded alongside the CHECK");
+        assert!(conv.check_source().is_some(), "the CHECK is still there");
+    }
+
+    /// A convention may carry HOOK WITHOUT CHECK — a reaction is not a law. With no
+    /// law it refuses nothing, and the reaction's scope is the convention's scope.
+    #[test]
+    fn hook_without_check_loads_and_refuses_nothing() {
+        let files = MemFiles::new().with("HOOK.md", VALID_HOOK);
+        let conv = load_convention("task-status-notify", &files, CheckLimits::default())
+            .expect("a reaction is not a law — HOOK alone is a convention");
+        println!("POPULATION scope = {:?}", conv.scope());
+        assert!(conv.hook().is_some());
+        assert_eq!(conv.check_source(), None, "no law declared");
+        assert_eq!(conv.scope(), &["tasks/*.md".to_string()]);
+        assert!(conv.matches_path("tasks/x.md"));
+    }
+
+    /// A folder declaring NEITHER capability is refused — it is not a convention.
+    #[test]
+    fn neither_capability_is_refused() {
+        let files = MemFiles::new().with("README.md", "# not a capability\n");
+        let err = load_convention("s", &files, CheckLimits::default()).unwrap_err();
+        println!("POPULATION no-capability -> {err}");
+        assert!(matches!(err, LoadError::CheckMissing { .. }), "{err:?}");
+        assert!(
+            err.to_string().contains("HOOK.md"),
+            "the refusal teaches both legal paths: {err}"
+        );
+    }
+
+    /// FAIL-CLOSED, never partial: a folder whose CHECK is perfect and whose HOOK is
+    /// malformed loads ZERO capabilities. The folder is the unit.
+    ///
+    /// Both directions, so the property is shown rather than assumed for one arm.
+    #[test]
+    fn one_bad_capability_loads_zero_capabilities() {
+        let bad_hook = VALID_HOOK.replace("severity: info\n", "");
+        let files = MemFiles::new()
+            .with("CHECK.md", VALID_CHECK)
+            .with("HOOK.md", &bad_hook);
+        let err = load_convention("s", &files, CheckLimits::default())
+            .expect_err("a bad HOOK sinks the whole folder, good CHECK or not");
+        println!("POPULATION good-check-bad-hook -> {err}");
+        assert!(matches!(err, LoadError::HookMalformed { .. }), "{err:?}");
+
+        let bad_check =
+            "---\ntitle: no scope\n---\n\n```starlark\ndef check_change(change):\n    pass\n```\n";
+        let files = MemFiles::new()
+            .with("CHECK.md", bad_check)
+            .with("HOOK.md", VALID_HOOK);
+        let err = load_convention("s", &files, CheckLimits::default())
+            .expect_err("a bad CHECK sinks the whole folder, good HOOK or not");
+        println!("POPULATION bad-check-good-hook -> {err}");
+        assert!(matches!(err, LoadError::Malformed { .. }), "{err:?}");
+
+        // The control: each file is individually fine, so the two refusals above are
+        // caused by the single mutation in each arm.
+        let files = MemFiles::new()
+            .with("CHECK.md", VALID_CHECK)
+            .with("HOOK.md", VALID_HOOK);
+        assert!(load_convention("s", &files, CheckLimits::default()).is_ok());
+    }
+
+    /// A convention carrying BOTH may scope its law and its reaction differently —
+    /// the CHECK answers `Convention::matches_path`, the HOOK answers its own.
+    #[test]
+    fn check_and_hook_carry_independent_scopes() {
+        let files = MemFiles::new()
+            .with("CHECK.md", VALID_CHECK) // paths: tasks/**
+            .with("HOOK.md", VALID_HOOK); // paths: tasks/*.md
+        let conv = load_convention("s", &files, CheckLimits::default()).unwrap();
+        let hook = conv.hook().unwrap();
+        println!(
+            "POPULATION check scope = {:?} | hook scope = {:?}",
+            conv.scope(),
+            hook.scope()
+        );
+        assert!(
+            conv.matches_path("tasks/deep/nested.md"),
+            "CHECK spans depth"
+        );
+        assert!(
+            !hook.matches_path("tasks/deep/nested.md"),
+            "the HOOK declared a shallower scope and keeps it"
+        );
     }
 
     #[test]
@@ -582,13 +805,28 @@ def check_change(change):
         );
     }
 
+    /// A folder carrying ONLY a deferred capability is refused for the DEFERRAL, not
+    /// for the missing CHECK.
+    ///
+    /// This test asserted `CheckMissing` before HOOK was un-deferred. The variant
+    /// changed because the capability ceiling now runs before any file is read, and
+    /// that ordering is deliberate: once CHECK is optional, "no readable CHECK.md and
+    /// no HOOK.md" would be a true but useless thing to tell someone whose folder
+    /// plainly declares VIEW. The refusal should name the reach the author actually
+    /// made. Still loud, still fail-closed — a more specific reason.
+    /// `neither_capability_is_refused` covers the original intent (a folder that
+    /// declares nothing at all).
     #[test]
-    fn missing_check_is_loud() {
+    fn a_folder_with_only_a_deferred_capability_names_the_deferral() {
         let files = MemFiles::new().with("VIEW.md", "# no check\n");
-        assert!(matches!(
-            load_convention("s", &files, CheckLimits::default()),
-            Err(LoadError::CheckMissing { .. })
-        ));
+        let err = load_convention("s", &files, CheckLimits::default()).unwrap_err();
+        println!("POPULATION view-only -> {err}");
+        assert_eq!(
+            err,
+            LoadError::CapabilityDeferred {
+                capability: Capability::View
+            }
+        );
     }
 
     #[test]

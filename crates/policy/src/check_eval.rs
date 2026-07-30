@@ -16,7 +16,9 @@
 //! (no file/net/os/clock/random), and no effect-descriptor / mutate / emit builtin
 //! is registered — so a CHECK that names `set_field`, `send`, `open`, or `now`
 //! reaches an unbound name and faults [`CheckError::Runtime`]. FIX's mutate power
-//! and HOOK's outward reach are not on this surface — v1 ships CHECK only.
+//! and HOOK's outward reach are not on THIS surface: HOOK loads (it is the emit leg,
+//! and its ceiling is enforced at load by [`crate::hook`]), but it is a separate
+//! capability with separate globals — a CHECK never gains a descriptor constructor.
 //!
 //! # Full `EvalLimits`, never fuel alone (plan §4 preamble, security F5)
 //! Every guard the `effects` kernel (`crates/effects/src/kernel.rs`) applies is
@@ -24,9 +26,19 @@
 //! source-size (`max_source_bytes`), and parser nesting ([`MAX_NESTING_DEPTH`]) —
 //! so a runaway loop, recursion bomb, huge allocation, over-long source, or
 //! pathologically nested source terminates the predicate, never hangs and never
-//! aborts the loader. This mirrors that kernel pattern rather than depending on it:
-//! `policy` is the correctness gate, `effects` is the advisory kernel, and the gate
-//! does not take a dependency edge on the advisory crate.
+//! aborts the loader. This mirrors that kernel pattern rather than calling it:
+//! `policy` is the correctness gate and `effects` is the advisory kernel, so CHECK —
+//! which decides whether a write is ADMITTED — evaluates on its own metered core and
+//! borrows no code from the advisory crate.
+//!
+//! The crate does now carry one edge on `effects`, and it is deliberately not this
+//! one: [`crate::hook`] load-gates HOOK predicates through `effects::validate`,
+//! because a HOOK predicate is WRITTEN in the effects rule language (`on_change`
+//! over the descriptor constructors) and that language's own validator is the honest
+//! gate for it. HOOK is advisory by charter — it may never veto or mutate — so the
+//! correctness path still takes nothing from the advisory kernel. If a future change
+//! makes a CHECK verdict depend on `effects`, that is the line this paragraph exists
+//! to defend.
 
 use std::cell::RefCell;
 

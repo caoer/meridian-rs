@@ -50,6 +50,16 @@ starlark = { workspace = true }
 # `violation()` fact-API builtin (rulepack-api@1) uses it. Already in the lock via
 # starlark's own tree — zero marginal build cost.
 anyhow = { workspace = true }
+# HOOK (U1.3, the emit leg). A HOOK predicate is written in the EFFECTS rule
+# language — `on_change(event)` over the descriptor constructors — not in CHECK's
+# `check_change`/`refuse` language. So its load gate is that language's own
+# validator (`effects::validate`) and its capability vocabulary is `EffectKind`.
+# This is the one edge `policy` takes on `effects`, and it is CAPABILITY-SHAPED:
+# HOOK is the advisory leg by charter ("may never veto or mutate"), so the
+# correctness gate is not taking a correctness dependency on the advisory kernel —
+# it is loading a declaration written in the advisory kernel's language. CHECK's
+# own evaluator still mirrors rather than imports (see `check_eval`'s header).
+effects = { workspace = true }
 
 [dev-dependencies]
 # TEST-ONLY: the §11.1 worked-verdict gate builds a real `model::Document` from the
