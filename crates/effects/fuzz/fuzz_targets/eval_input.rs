@@ -5,7 +5,7 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use effects::{eval_with_limits, ChangeEvent, EvalLimits, Rule};
+use effects::{eval_with_limits, ChangeEvent, EventFacts, EvalLimits, Rule};
 
 #[derive(Arbitrary, Debug)]
 struct Input {
@@ -33,6 +33,8 @@ fuzz_target!(|input: Input| {
         file: input.file,
         sections_changed: input.sections_changed,
         fields_changed: input.fields_changed,
+        changes: vec![],
+        facts: EventFacts::default(),
         fingerprint_before: input.fingerprint_before,
         fingerprint_after: input.fingerprint_after,
         depth: input.depth,
