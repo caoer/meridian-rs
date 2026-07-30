@@ -1,0 +1,22 @@
+---
+source: crates/policy/src/hook.rs
+assertion_line: 1135
+expression: first
+---
+[
+  {
+    "intents": [
+      {
+        "rule_id": "task-review-notify",
+        "seq": 0,
+        "action": "notify",
+        "target": "e4201e72",
+        "severity": "info",
+        "payload": "<@&review> {{not_rendered}}\n\"quoted\" \\ trailing",
+        "receipt": "tasks/x.md#^r-6794ce82d1d5aff1"
+      }
+    ],
+    "narrowed": [],
+    "how": "how:\n  route:    { info: channel-review, error: telegram }\n  batching: 30s\n  wake_policy: never-cold\n"
+  }
+]

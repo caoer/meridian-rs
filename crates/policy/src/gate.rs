@@ -67,6 +67,10 @@ impl ArmedConvention {
     pub fn enforcement(&self) -> Enforcement {
         self.enforcement
     }
+
+    pub(crate) fn convention(&self) -> &Convention {
+        &self.convention
+    }
 }
 
 /// The verified armed law of a workspace, resolved inside the trusted write path
