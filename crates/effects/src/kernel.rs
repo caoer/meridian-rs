@@ -417,6 +417,71 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
+    /// `intent(action, target, severity, payload, receipt)` — the reaction
+    /// plane's constructor, in the panel's own noun. `action` names the effect
+    /// kind: a wire identity (`proto.send`) or the one documented alias
+    /// (`notify` ≈ `proto.send`). Every other argument is carried VERBATIM — the
+    /// engine never composes a message, resolves a target, or ranks importance;
+    /// that is the HOW, and it is Go's business.
+    ///
+    /// This grants no capability. It can name any kind, including one the
+    /// convention did not declare — and that is deliberate: the load ceiling can
+    /// only see constructor NAMES, so a kind chosen by a runtime string is caught
+    /// downstream by the capability filter, which drops it and REPORTS it. The two
+    /// layers are complementary, not redundant.
+    fn intent(
+        #[starlark(require = named)] action: String,
+        #[starlark(require = named)] target: Option<String>,
+        #[starlark(require = named)] severity: Option<String>,
+        #[starlark(require = named)] payload: Option<String>,
+        #[starlark(require = named)] receipt: Option<String>,
+        eval: &mut Evaluator<'_, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let kind = crate::action_kind(&action).ok_or_else(|| {
+            anyhow::anyhow!(
+                "intent: unknown action {action:?} — name an effect kind ({}) or the alias `notify`",
+                EffectKind::ALL
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        let mut args = BTreeMap::new();
+        args.insert("action".to_owned(), ArgValue::Str(action));
+        insert_opt(&mut args, "target", target);
+        insert_opt(&mut args, "severity", severity);
+        insert_opt(&mut args, "payload", payload);
+        insert_opt(&mut args, "receipt", receipt);
+        store(eval)?.push(kind, args);
+        Ok(NoneType)
+    }
+
+    /// `receipt_addr(path, rev)` — the address an outcome will be written to,
+    /// minted BEFORE any delivery is attempted (constraint 8). Returns the
+    /// canonical `path#^anchor` string, the contract's own §6.1 spelling.
+    ///
+    /// `path` passes through untouched: the predicate decides WHERE the receipt
+    /// lives. Only the anchor is the engine's, and it is a pure function of
+    /// `(path, rev)` — no clock, no counter, no invented directory layout — so the
+    /// same change re-evaluated names the same address, which is what makes an
+    /// undelivered intent findable rather than merely regrettable.
+    fn receipt_addr(
+        #[starlark(require = pos)] path: String,
+        #[starlark(require = pos)] rev: String,
+    ) -> anyhow::Result<String> {
+        // A `#` in the path would make `path#^anchor` ambiguous — the address
+        // could not be split back into its two halves. Refuse it here rather than
+        // mint an address nobody can resolve.
+        if path.is_empty() || path.contains('#') {
+            return Err(anyhow::anyhow!(
+                "receipt_addr: path {path:?} is empty or contains `#`, which would make the \
+                 `path#^anchor` address ambiguous"
+            ));
+        }
+        Ok(crate::receipt_address(&path, &rev))
+    }
+
     /// `proto.notice` — a low-severity advisory `message`.
     fn notice(
         #[starlark(require = named)] message: String,
@@ -859,18 +924,103 @@ mod tests {
         }
 
         // The other direction: the standard library is not a capability, so the
-        // registered set MINUS the standard globals must be exactly the derived set.
+        // registered set MINUS the standard globals must be exactly the derived
+        // set PLUS the reaction vocabulary. `intent` and `receipt_addr` are
+        // builtins that grant no kind, so they belong to neither the standard
+        // library nor `EffectKind` — both sides read `REACTION_VOCAB`, so this
+        // cannot be satisfied by hand-listing the names in two places.
         let standard: HashSet<String> = GlobalsBuilder::standard()
             .build()
             .names()
             .map(|n| n.as_str().to_owned())
             .collect();
         let registered_ctors: HashSet<String> = names.difference(&standard).cloned().collect();
+        let expected: HashSet<String> = derived
+            .iter()
+            .cloned()
+            .chain(crate::REACTION_VOCAB.iter().map(|s| (*s).to_string()))
+            .collect();
         println!("POPULATION registered non-standard globals = {registered_ctors:?}");
+        println!("POPULATION reaction vocab = {:?}", crate::REACTION_VOCAB);
         assert_eq!(
-            registered_ctors, derived,
-            "a constructor exists that no EffectKind names (or vice versa)"
+            registered_ctors, expected,
+            "a global exists that neither an EffectKind nor REACTION_VOCAB names (or vice versa)"
         );
+    }
+
+    /// `receipt_addr` is a PURE function of `(path, rev)` — the property the
+    /// armed-not-delivered mechanism rests on, since an intent's address must be
+    /// re-derivable to find out whether its outcome ever landed.
+    #[test]
+    fn receipt_address_is_pure_and_collision_separated() {
+        let a = crate::receipt_address("tasks/t.md", "abc123");
+        println!("POPULATION receipt_address = {a}");
+        assert_eq!(a, crate::receipt_address("tasks/t.md", "abc123"), "pure");
+        assert!(a.starts_with("tasks/t.md#^r-"), "path passes through: {a}");
+        assert_ne!(
+            a,
+            crate::receipt_address("tasks/t.md", "abc124"),
+            "rev matters"
+        );
+        assert_ne!(
+            a,
+            crate::receipt_address("tasks/u.md", "abc123"),
+            "path matters"
+        );
+        // The separator earns its place: without it these two would collide.
+        assert_ne!(
+            crate::receipt_address("a", "bc"),
+            crate::receipt_address("ab", "c"),
+            "the \\0 separator prevents a concatenation collision"
+        );
+        let anchor = a.rsplit("#^").next().unwrap();
+        assert!(
+            anchor
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+            "the anchor stays inside the one block-id charset: {anchor}"
+        );
+    }
+
+    /// A path carrying `#` cannot be made into an unambiguous `path#^anchor`
+    /// address, so `receipt_addr` refuses it rather than minting one nobody can
+    /// split back apart.
+    #[test]
+    fn receipt_addr_refuses_a_path_that_would_make_the_address_ambiguous() {
+        let event = ChangeEvent::new("f.md", "a", "b");
+        for bad in ["", "notes/plan.md#Goals"] {
+            let src = format!("def on_change(event):\n    receipt_addr({bad:?}, \"rev\")\n");
+            let err = crate::eval(&[Rule::new("r", src)], &event)
+                .expect_err("an ambiguous receipt path must fault");
+            println!("POPULATION receipt_addr({bad:?}) -> {err}");
+        }
+        // The control: a normal path still mints an address, so the refusals above
+        // are about `#` and emptiness, not about the builtin being unreachable.
+        let ok = crate::eval(
+            &[Rule::new(
+                "r",
+                "def on_change(event):\n    receipt_addr(\"tasks/t.md\", \"rev\")\n",
+            )],
+            &event,
+        );
+        assert!(ok.is_ok(), "a normal path mints an address: {ok:?}");
+    }
+
+    /// `action` resolves the wire identities plus the ONE documented alias, and
+    /// nothing else — an unknown action is a fault, never a guess.
+    #[test]
+    fn action_kind_resolves_wire_names_and_the_one_alias() {
+        assert_eq!(crate::action_kind("notify"), Some(EffectKind::Send));
+        for kind in EffectKind::ALL {
+            assert_eq!(crate::action_kind(kind.as_str()), Some(kind));
+        }
+        for unknown in ["send", "shout", "", "proto.telepathy", "NOTIFY"] {
+            assert_eq!(
+                crate::action_kind(unknown),
+                None,
+                "{unknown} must not resolve"
+            );
+        }
     }
 
     /// The closed capability surface: every effect constructor is present, and no
