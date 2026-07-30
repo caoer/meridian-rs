@@ -37,15 +37,19 @@
 //! # The ceiling is enforced at LOAD, not at eval
 //! A HOOK predicate is written in the `effects` rule language, so its power ceiling
 //! is the descriptor constructors that language registers. [`Hook`] resolves the
-//! declared `caps:` to exactly those constructor names and statically resolves the
-//! predicate's free names against them: a predicate that calls `set_field` under
-//! `caps: [proto.send]` is refused when the convention loads, before any change ever
-//! reaches it. This is the `check_when_vocab` precedent (§11.2) applied to the emit
-//! leg — the same `using-undefined` name resolution, a different closed vocabulary.
+//! declared `caps:` to exactly those constructor names, adds the non-capability
+//! reaction vocabulary, and statically resolves the predicate's free names against
+//! that closed set. A predicate that calls `set_field` under `caps: [proto.send]` is
+//! refused when the convention loads, before any change ever reaches it. This is the
+//! `check_when_vocab` precedent (§11.2) applied to the emit leg — the same
+//! `using-undefined` name resolution, a different closed vocabulary.
 
 use std::collections::HashSet;
 
-use effects::{EffectKind, EvalLimits, Rule};
+use effects::{
+    ArgValue, CapabilitySet, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits,
+    REACTION_VOCAB, Rule,
+};
 use starlark::analysis::AstModuleLint;
 use starlark::environment::GlobalsBuilder;
 use starlark::syntax::{AstModule, Dialect};
@@ -120,6 +124,212 @@ impl Hook {
     #[must_use]
     pub fn source(&self) -> &str {
         &self.source
+    }
+}
+
+/// One armed reaction descriptor after the HOOK's capability ceiling has admitted
+/// it. The descriptor says only what was armed. Delivery state has no place in this
+/// type because delivery has not happened yet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Intent {
+    /// The armed convention that emitted this intent.
+    pub rule_id: String,
+    /// Outcome-wide emission order for this change.
+    pub seq: u32,
+    /// The action exactly as the predicate wrote it (`notify` is not rewritten).
+    pub action: String,
+    /// The opaque target, carried without resolution.
+    pub target: Option<String>,
+    /// The opaque classification, carried without ranking.
+    pub severity: Option<String>,
+    /// The opaque payload, carried without rendering.
+    pub payload: Option<String>,
+    /// The receipt address minted before delivery.
+    pub receipt: String,
+}
+
+/// One in-scope HOOK's advisory result. This type has no refusal arm and no
+/// conversion into the blocking gate: a reaction cannot veto or mutate the landed
+/// write. `narrowed` names complete descriptors the declared caps dropped.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HookOutcome {
+    /// Intents admitted by the HOOK's declared caps.
+    pub intents: Vec<Intent>,
+    /// Intents dropped by the HOOK's declared caps, retained as report data.
+    pub narrowed: Vec<Intent>,
+    /// The declaration's `how:` block, byte-for-byte and uninterpreted.
+    pub how: String,
+}
+
+/// A fault while evaluating an already-loaded HOOK.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookEvalError {
+    /// The sealed effects evaluator rejected or exhausted the predicate.
+    Eval(EvalError),
+    /// A descriptor did not have the reaction-plane intent shape. In particular,
+    /// every armed intent must name its action and pre-delivery receipt.
+    MalformedIntent {
+        /// The emitting convention.
+        rule_id: String,
+        /// The shape fault.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for HookEvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eval(error) => error.fmt(f),
+            Self::MalformedIntent { rule_id, reason } => {
+                write!(f, "HOOK `{rule_id}` emitted a malformed intent: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HookEvalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Eval(error) => Some(error),
+            Self::MalformedIntent { .. } => None,
+        }
+    }
+}
+
+impl From<EvalError> for HookEvalError {
+    fn from(error: EvalError) -> Self {
+        Self::Eval(error)
+    }
+}
+
+/// Evaluate every armed, in-scope HOOK over one landed change.
+///
+/// The input is [`crate::ArmedConvention`], not a bare [`Hook`], so an unarmed
+/// declaration cannot enter by accident. Each predicate runs through
+/// [`effects::eval_with_limits`] under its declared [`EvalBudget`]. The declared
+/// caps then partition the result through [`CapabilitySet::route`]; denied intents
+/// remain in `narrowed` as named report data. Sequence numbers are reassigned across
+/// the complete outcome, so the first intent from two different HOOKs cannot both
+/// be `0`.
+///
+/// One [`HookOutcome`] is returned per armed, in-scope HOOK in input order. A
+/// check-only convention and an out-of-scope HOOK are silent.
+///
+/// # Errors
+/// A predicate fault or budget exhaustion returns [`HookEvalError::Eval`]. A direct
+/// legacy descriptor constructor that cannot supply the mandatory arm-time receipt
+/// returns [`HookEvalError::MalformedIntent`]; it is never silently discarded.
+pub fn evaluate_hooks(
+    armed: &[crate::ArmedConvention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookOutcome>, HookEvalError> {
+    evaluate_loaded_hooks(
+        armed
+            .iter()
+            .filter_map(|armed| armed.convention().hook().map(|hook| (armed.slug(), hook))),
+        event,
+    )
+}
+
+fn evaluate_loaded_hooks<'a>(
+    hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
+    event: &ChangeEvent,
+) -> Result<Vec<HookOutcome>, HookEvalError> {
+    let mut outcomes = Vec::new();
+    let mut next_seq = 0_u32;
+
+    for (rule_id, hook) in hooks {
+        if !hook.matches_path(&event.file) {
+            continue;
+        }
+
+        let limits = EvalLimits {
+            fuel: hook.budget.steps,
+            mem: hook.budget.mem,
+            ..EvalLimits::default()
+        };
+        let mut effects =
+            effects::eval_with_limits(&[Rule::new(rule_id, hook.source())], event, limits)?;
+        for effect in &mut effects {
+            effect.seq = next_seq;
+            next_seq = next_seq
+                .checked_add(1)
+                .ok_or_else(|| HookEvalError::MalformedIntent {
+                    rule_id: rule_id.to_string(),
+                    reason: "outcome sequence exceeds u32".to_string(),
+                })?;
+        }
+
+        let caps: CapabilitySet = hook.caps.iter().copied().collect();
+        let (admitted, dropped) = caps.route(effects);
+        outcomes.push(HookOutcome {
+            intents: admitted
+                .into_iter()
+                .map(intent_from_effect)
+                .collect::<Result<_, _>>()?,
+            narrowed: dropped
+                .into_iter()
+                .map(intent_from_effect)
+                .collect::<Result<_, _>>()?,
+            how: hook.how.clone(),
+        });
+    }
+
+    Ok(outcomes)
+}
+
+fn intent_from_effect(effect: Effect) -> Result<Intent, HookEvalError> {
+    let rule_id = effect.rule_id;
+    let mut args = effect.args;
+    let action = take_string(&mut args, &rule_id, "action", true)?.expect("required action");
+    let receipt = take_string(&mut args, &rule_id, "receipt", true)?.expect("required receipt");
+    if effects::action_kind(&action) != Some(effect.kind) {
+        return Err(HookEvalError::MalformedIntent {
+            rule_id,
+            reason: format!(
+                "action {action:?} does not name the emitted kind `{}`",
+                effect.kind.as_str()
+            ),
+        });
+    }
+    let target = take_string(&mut args, &rule_id, "target", false)?;
+    let severity = take_string(&mut args, &rule_id, "severity", false)?;
+    let payload = take_string(&mut args, &rule_id, "payload", false)?;
+    if let Some((name, _)) = args.into_iter().next() {
+        return Err(HookEvalError::MalformedIntent {
+            rule_id,
+            reason: format!("unexpected argument {name:?}"),
+        });
+    }
+
+    Ok(Intent {
+        rule_id,
+        seq: effect.seq,
+        action,
+        target,
+        severity,
+        payload,
+        receipt,
+    })
+}
+
+fn take_string(
+    args: &mut std::collections::BTreeMap<String, ArgValue>,
+    rule_id: &str,
+    name: &str,
+    required: bool,
+) -> Result<Option<String>, HookEvalError> {
+    match args.remove(name) {
+        Some(ArgValue::Str(value)) => Ok(Some(value)),
+        Some(ArgValue::List(_)) => Err(HookEvalError::MalformedIntent {
+            rule_id: rule_id.to_string(),
+            reason: format!("argument {name:?} must be a string"),
+        }),
+        None if required => Err(HookEvalError::MalformedIntent {
+            rule_id: rule_id.to_string(),
+            reason: format!("missing required argument {name:?}"),
+        }),
+        None => Ok(None),
     }
 }
 
@@ -312,8 +522,9 @@ fn extract_how_block(frontmatter: &str) -> Option<&str> {
 }
 
 /// The capability ceiling, enforced at LOAD. Statically resolve the predicate's free
-/// names against the Starlark standard library plus exactly the constructors the
-/// declared caps grant; any other global name is a reach the ceiling does not admit.
+/// names against the Starlark standard library, the non-capability reaction vocabulary,
+/// and exactly the constructors the declared caps grant. Any other global name is a
+/// reach the ceiling does not admit.
 ///
 /// `using-undefined` is starlark's own name resolution, so locals, parameters and
 /// comprehension bindings are tracked properly and attribute access (`event.path`) is
@@ -325,6 +536,7 @@ fn check_ceiling(source: &str, caps: &[EffectKind]) -> Result<(), LoadError> {
         .names()
         .map(|n| n.as_str().to_owned())
         .collect();
+    allowed.extend(REACTION_VOCAB.iter().map(|name| (*name).to_owned()));
     for cap in caps {
         allowed.insert(cap.constructor().to_owned());
     }
@@ -382,12 +594,12 @@ fn eval_limits_from(limits: CheckLimits) -> EvalLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use effects::{ChangeFact, ChangeFactKind, EventFacts};
 
-    /// Design §5.2's `HOOK.md` declaration, verbatim in its frontmatter — the form
-    /// this card exists to load. The predicate is the SHIPPED reaction language
-    /// (`on_change(event)` over the descriptor constructors); the design's own
-    /// `when(delta, facts, now)` body needs `intent()` / `receipt_addr()`, which are
-    /// C2's to register — see `the_designs_own_predicate_body_is_not_loadable_yet`.
+    /// Design §5.2's `HOOK.md` declaration, verbatim in its frontmatter. Its tiny
+    /// direct-`send` predicate is the C1 loader baseline; C2's positive boundary below
+    /// swaps in the founding `intent()` / `receipt_addr()` body without weakening the
+    /// direct-constructor ceiling controls.
     const FOUNDING_HOOK: &str = "\
 ---
 kind: hook
@@ -780,21 +992,283 @@ def on_change(event):
         assert_eq!(hook.caps(), &[EffectKind::Send]);
     }
 
-    /// The design's own §5.2 predicate BODY is not loadable yet, and that is the
-    /// correct boundary rather than a defect: `intent()` and `receipt_addr()` are
-    /// C2's to register, so today they are reaches outside the ceiling. C1 loads the
-    /// DECLARATION; C2 gives the predicate its constructors.
+    /// The design's own §5.2 predicate BODY loads under exactly `[proto.send]`.
+    /// The two reaction vocabulary names grant no capability: misspelling either
+    /// faults at load, and a direct `md.*` constructor remains outside the ceiling.
     #[test]
-    fn the_designs_own_predicate_body_is_not_loadable_yet() {
+    fn the_designs_own_predicate_body_loads_with_each_boundary_load_bearing() {
         let page = FOUNDING_HOOK.replace(
             "    send(to = [\"reviewer\"], message = \"task → review\")",
             "    return intent(action = \"notify\", target = \"r\", \
              receipt = receipt_addr(\"tasks/x.md\", \"abc\"))",
         );
-        let err = load(&page).expect_err("intent()/receipt_addr() do not exist yet");
+        let hook = load(&page).expect("reaction vocabulary is admitted under proto.send");
+        assert_eq!(hook.caps(), &[EffectKind::Send]);
+
+        for (vocab, denied_name, mutation) in [
+            ("intent", "intnt", page.replace("intent(", "intnt(")),
+            (
+                "receipt_addr",
+                "receipt_adrr",
+                page.replace("receipt_addr(", "receipt_adrr("),
+            ),
+        ] {
+            let err = load(&mutation).expect_err("a misspelled reaction name is refused at load");
+            let text = err.to_string();
+            println!("POPULATION missing {vocab} -> {text}");
+            assert!(matches!(err, LoadError::HookCeiling { .. }), "{err:?}");
+            assert!(
+                text.contains(denied_name),
+                "the refusal names the misspelled {vocab} reach: {text}"
+            );
+        }
+
+        let direct_md = page.replace(
+            "    return intent(action = \"notify\", target = \"r\", \
+             receipt = receipt_addr(\"tasks/x.md\", \"abc\"))",
+            "    set_field(field = \"status\", value = \"done\")",
+        );
+        let err = load(&direct_md).expect_err("reaction vocabulary does not grant md.set_field");
         let text = err.to_string();
-        println!("POPULATION design predicate -> {text}");
+        println!("POPULATION direct md constructor -> {text}");
         assert!(matches!(err, LoadError::HookCeiling { .. }), "{err:?}");
-        assert!(text.contains("intent"), "names what is missing: {text}");
+        assert!(
+            text.contains("set_field"),
+            "names the denied constructor: {text}"
+        );
+        assert!(
+            text.contains("proto.send"),
+            "names the exact cap ceiling: {text}"
+        );
+    }
+
+    const BASE_SOURCE: &str = "\
+def on_change(event):
+    send(to = [\"reviewer\"], message = \"task → review\")
+";
+
+    const DESIGN_SOURCE: &str = "\
+def on_change(event):
+    for delta in event.changes:
+        if delta.kind != \"frontmatter\" or delta.key != \"status\":
+            continue
+        if delta.new != \"review\":
+            continue
+        return intent(
+            action = \"notify\",
+            target = event.facts.fm.get(\"reviewer\"),
+            severity = \"info\",
+            payload = event.facts.fm.get(\"hostile\"),
+            receipt = receipt_addr(event.file, event.fingerprint_after),
+        )
+";
+
+    fn page_with_source(source: &str) -> String {
+        let page = FOUNDING_HOOK.replace(BASE_SOURCE, source);
+        assert_ne!(page, FOUNDING_HOOK, "test source replacement must bite");
+        page
+    }
+
+    fn review_event() -> ChangeEvent {
+        ChangeEvent {
+            file: "tasks/x.md".to_string(),
+            sections_changed: Vec::new(),
+            fields_changed: vec!["status".to_string()],
+            changes: vec![ChangeFact {
+                kind: ChangeFactKind::Frontmatter,
+                key: "status".to_string(),
+                old: Some("in-progress".to_string()),
+                new: Some("review".to_string()),
+                hpath: Vec::new(),
+            }],
+            facts: EventFacts {
+                path: "tasks/x.md".to_string(),
+                frontmatter: vec![
+                    ("reviewer".to_string(), "e4201e72".to_string()),
+                    (
+                        "hostile".to_string(),
+                        "<@&review> {{not_rendered}}\n\"quoted\" \\ trailing".to_string(),
+                    ),
+                ],
+            },
+            fingerprint_before: "rev-before".to_string(),
+            fingerprint_after: "rev-after".to_string(),
+            depth: 0,
+        }
+    }
+
+    fn evaluate_named<'a>(
+        hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
+        event: &ChangeEvent,
+    ) -> Result<Vec<HookOutcome>, HookEvalError> {
+        evaluate_loaded_hooks(hooks, event)
+    }
+
+    /// The same `(HOOK, event)` produces the same intent bytes twice. The golden
+    /// pins the complete armed-not-delivered shape, including the receipt and the
+    /// byte-identical opaque payload and `how:` block.
+    #[test]
+    fn the_same_hook_event_is_deterministic_and_golden() {
+        let hook = load(&page_with_source(DESIGN_SOURCE)).expect("design HOOK loads");
+        let event = review_event();
+        let first =
+            evaluate_named([("task-review-notify", &hook)], &event).expect("design HOOK evaluates");
+        let second =
+            evaluate_named([("task-review-notify", &hook)], &event).expect("the replay evaluates");
+        assert_eq!(
+            first, second,
+            "same input must yield byte-identical intents"
+        );
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].intents.len(), 1);
+        assert!(first[0].narrowed.is_empty());
+
+        let intent = &first[0].intents[0];
+        assert_eq!(intent.action, "notify", "the alias is carried verbatim");
+        assert_eq!(intent.target.as_deref(), Some("e4201e72"));
+        assert_eq!(
+            intent.payload.as_deref(),
+            Some("<@&review> {{not_rendered}}\n\"quoted\" \\ trailing"),
+            "Rust neither renders nor rewrites the hostile payload"
+        );
+        assert_eq!(
+            intent.receipt,
+            effects::receipt_address("tasks/x.md", "rev-after"),
+            "receipt is pure in path and the landed revision"
+        );
+        assert_eq!(first[0].how, FOUNDING_HOW, "HOW is byte-identical");
+        insta::assert_json_snapshot!("hook_outcome_armed_not_delivered", first);
+    }
+
+    /// `intent(action = …)` is vocabulary, not authority. A runtime-selected
+    /// `md.*` kind passes the load lint, then the exact `[proto.send]` cap drops it
+    /// and retains the complete descriptor in the named `narrowed` report.
+    #[test]
+    fn an_out_of_caps_intent_is_dropped_and_named() {
+        let source = DESIGN_SOURCE.replace("action = \"notify\"", "action = \"md.set_field\"");
+        let hook = load(&page_with_source(&source)).expect("runtime action strings load");
+        assert_eq!(hook.caps(), &[EffectKind::Send], "allowlist did not widen");
+
+        let outcomes = evaluate_named([("runtime-md", &hook)], &review_event())
+            .expect("out-of-cap routing is a report, not an eval fault");
+        assert!(outcomes[0].intents.is_empty(), "md.* cannot survive");
+        assert_eq!(outcomes[0].narrowed.len(), 1);
+        assert_eq!(outcomes[0].narrowed[0].action, "md.set_field");
+        assert_eq!(outcomes[0].narrowed[0].rule_id, "runtime-md");
+    }
+
+    /// Kernel sequence numbers are per rule, so both descriptors arrive as zero.
+    /// The HOOK evaluator assigns one outcome-wide ordinal and preserves rule ids.
+    #[test]
+    fn two_hooks_on_one_change_receive_distinct_sequence_numbers() {
+        let first = load(&page_with_source(DESIGN_SOURCE)).expect("first HOOK loads");
+        let second = load(&page_with_source(DESIGN_SOURCE)).expect("second HOOK loads");
+        let outcomes = evaluate_named(
+            [("first-hook", &first), ("second-hook", &second)],
+            &review_event(),
+        )
+        .expect("both HOOKs evaluate");
+
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].intents[0].seq, 0);
+        assert_eq!(outcomes[1].intents[0].seq, 1);
+        assert_eq!(outcomes[0].intents[0].rule_id, "first-hook");
+        assert_eq!(outcomes[1].intents[0].rule_id, "second-hook");
+        assert_eq!(
+            outcomes[0].intents[0].receipt, outcomes[1].intents[0].receipt,
+            "the same (path, new_rev) always names the same receipt"
+        );
+    }
+
+    /// The frontmatter's per-eval budget, not the kernel default, controls the run.
+    #[test]
+    fn evaluation_uses_the_hooks_declared_budget() {
+        let page = page_with_source(DESIGN_SOURCE).replace(
+            "budget: { steps: 10000, mem: 4194304 }",
+            "budget: { steps: 1, mem: 4194304 }",
+        );
+        let hook = load(&page).expect("the tiny budget is valid declaration data");
+        let error = evaluate_named([("tiny-budget", &hook)], &review_event())
+            .expect_err("one Starlark step cannot complete the predicate");
+        assert_eq!(
+            error,
+            HookEvalError::Eval(EvalError::Budget {
+                fuel: 1,
+                mem: 4_194_304,
+            })
+        );
+    }
+
+    /// The load lint sees bare globals but deliberately does not inspect attribute
+    /// names. Therefore bare `actor` faults at LOAD, while `event.actor` loads and
+    /// faults at EVAL because the payload struct has no such attribute.
+    #[test]
+    fn bare_actor_faults_at_load_but_event_actor_faults_at_eval() {
+        let bare = page_with_source("def on_change(event):\n    x = actor\n");
+        let error = load(&bare).expect_err("a bare actor name is outside the load ceiling");
+        let text = error.to_string();
+        println!("POPULATION bare actor load fault -> {text}");
+        assert!(matches!(error, LoadError::HookCeiling { .. }), "{error:?}");
+        assert!(
+            text.contains("actor"),
+            "load fault names the bare reach: {text}"
+        );
+
+        let attribute = page_with_source("def on_change(event):\n    x = event.actor\n");
+        let hook = load(&attribute).expect("attribute names are not global reaches");
+        let error = evaluate_named([("attribute-smuggler", &hook)], &review_event())
+            .expect_err("the event carries no actor fact");
+        let text = error.to_string();
+        println!("POPULATION event.actor eval fault -> {text}");
+        assert!(matches!(
+            error,
+            HookEvalError::Eval(EvalError::Runtime { .. })
+        ));
+        assert!(
+            text.contains("actor"),
+            "eval fault names the absent attribute: {text}"
+        );
+    }
+
+    /// A reaction can return refusal-looking data, but that value is not a gate
+    /// outcome and emits no refusal. Reaching for the CHECK-only `refuse` constructor
+    /// is itself denied at load.
+    #[test]
+    fn a_hook_outcome_cannot_express_a_refusal() {
+        let hook = load(&page_with_source(
+            "def on_change(event):\n    return \"refuse the write\"\n",
+        ))
+        .expect("plain return data has no blocking power");
+        let outcomes = evaluate_named([("looks-refusing", &hook)], &review_event())
+            .expect("refusal-looking return data cannot fault the landed write");
+        assert_eq!(
+            outcomes,
+            vec![HookOutcome {
+                intents: Vec::new(),
+                narrowed: Vec::new(),
+                how: FOUNDING_HOW.to_string(),
+            }]
+        );
+
+        let calls_refuse = page_with_source(
+            "def on_change(event):\n    refuse(message = \"no\", passing_scenario = \"yes\")\n",
+        );
+        let error = load(&calls_refuse).expect_err("HOOK cannot name CHECK's refusal constructor");
+        assert!(matches!(error, LoadError::HookCeiling { .. }), "{error:?}");
+        assert!(error.to_string().contains("refuse"));
+    }
+
+    /// Scope is part of the evaluator boundary: an armed HOOK outside the changed
+    /// path is not run and produces no outcome.
+    #[test]
+    fn an_out_of_scope_hook_is_silent() {
+        let hook = load(&page_with_source(DESIGN_SOURCE)).expect("HOOK loads");
+        let mut event = review_event();
+        event.file = "notes/x.md".to_string();
+        assert!(
+            evaluate_named([("task-only", &hook)], &event)
+                .expect("scope filtering does not evaluate")
+                .is_empty()
+        );
     }
 }

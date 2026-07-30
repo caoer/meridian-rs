@@ -83,8 +83,9 @@ pub use convention::{
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
 /// declared severity, scope, effect caps, per-eval budget, the VERBATIM `how:` block
 /// (frozen data the engine never interprets), and a predicate whose capability
-/// ceiling was enforced at load. [`SLICE1_CAPS`] is what slice 1 admits.
-pub use hook::{Hook, SLICE1_CAPS};
+/// ceiling was enforced at load. [`evaluate_hooks`] runs armed, in-scope HOOKs and
+/// returns advisory-only [`HookOutcome`]s; [`SLICE1_CAPS`] is what slice 1 admits.
+pub use hook::{Hook, HookEvalError, HookOutcome, Intent, SLICE1_CAPS, evaluate_hooks};
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]
 /// into the `on_change(event)` argument a HOOK predicate reads. It attaches the

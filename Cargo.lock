@@ -2368,6 +2368,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "effects",
+ "insta",
  "model",
  "serde",
  "serde_yaml",

@@ -68,3 +68,4 @@ effects = { workspace = true }
 # takes pre-built `&Document`s, so `syntax` stays OUT of the production dependency edge
 # (`model` is the only production dep); it enters here for tests only.
 syntax = { workspace = true }
+insta = { workspace = true }
