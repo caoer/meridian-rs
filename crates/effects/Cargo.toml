@@ -21,6 +21,12 @@ anyhow = { workspace = true }
 # Effect descriptors serialize for golden snapshots and the (reserved) wire
 # `effects[]` field. serde derive only — pure, no I/O.
 serde = { workspace = true }
+# `receipt_addr(path, rev)` mints a receipt anchor as `blake3(path \0 rev)[:16]` —
+# the SAME rev law the world model and the attested INDEX already speak (contract
+# §1: blake3-256, first 16 hex), so a receipt address is not a second hash grammar.
+# Version "1" matches `model`'s and `policy`'s pins — one graph copy. Pure compute,
+# no I/O; the crate stays advisory and side-effect free.
+blake3 = "1"
 
 [dev-dependencies]
 # Golden descriptor snapshots (rule + event → exact effect set).

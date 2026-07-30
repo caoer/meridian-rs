@@ -225,6 +225,52 @@ impl EffectKind {
     }
 }
 
+/// The reaction plane's vocabulary — builtins that are NOT capabilities and grant
+/// no effect kind.
+///
+/// A capability ceiling built from [`EffectKind`] must admit these unconditionally,
+/// exactly as it admits the Starlark standard library: `intent` is the panel's noun
+/// for emitting a descriptor the caps still gate, and `receipt_addr` computes an
+/// address. Neither can do anything a declared cap does not already permit.
+///
+/// One exported source so a consumer's allow-set and this kernel's registered
+/// globals cannot drift — pinned in both directions by `kernel`'s
+/// `every_effect_kind_constructor_is_registered`.
+pub const REACTION_VOCAB: [&str; 2] = ["intent", "receipt_addr"];
+
+/// The [`EffectKind`] an `intent(action = …)` names: a wire identity
+/// (`"proto.send"`), or the ONE documented alias — the panel writes
+/// `action = "notify"` where the shipped kernel writes `proto.send`, and the design
+/// states they are the same thing at two names. No other alias exists; an unknown
+/// action is a loud fault, never a guess.
+#[must_use]
+pub fn action_kind(action: &str) -> Option<EffectKind> {
+    match action {
+        "notify" => Some(EffectKind::Send),
+        other => EffectKind::from_wire_name(other),
+    }
+}
+
+/// The receipt address for `(path, rev)` in the contract's `path#^anchor` spelling
+/// (§6.1: ordinary markdown inside the hash domain — any md path plus a block
+/// anchor).
+///
+/// Pure in its inputs and free of any clock or counter, so the same change
+/// re-evaluated names the same address. The anchor is `r-` plus the first 16 hex of
+/// `blake3(path \0 rev)` — inside the one block-id charset (`[A-Za-z0-9-]`,
+/// decision 011 / contract §2.4), and separator-delimited so
+/// `("a", "bc")` and `("ab", "c")` cannot collide.
+#[must_use]
+pub fn receipt_address(path: &str, rev: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(rev.as_bytes());
+    let digest = hasher.finalize().to_hex();
+    let anchor = &digest.as_str()[..16];
+    format!("{path}#^r-{anchor}")
+}
+
 impl Serialize for EffectKind {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(self.as_str())
