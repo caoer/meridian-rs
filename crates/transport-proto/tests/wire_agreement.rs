@@ -782,7 +782,61 @@ fn delta_file_to_pb(f: wire::DeltaFile) -> pb::DeltaFile {
     }
 }
 
+fn intent_to_pb(intent: wire::Intent) -> pb::Intent {
+    let wire::Intent {
+        rule_id,
+        seq,
+        action,
+        target,
+        severity,
+        payload,
+        receipt,
+    } = intent;
+    pb::Intent {
+        rule_id,
+        seq,
+        action,
+        target,
+        severity,
+        payload,
+        receipt,
+    }
+}
+
+fn effect_finding_to_pb(finding: wire::EffectFinding) -> pb::EffectFinding {
+    let finding = match finding {
+        wire::EffectFinding::BudgetExceeded {
+            rule_id,
+            steps,
+            mem,
+        } => pb::effect_finding::Finding::BudgetExceeded(pb::BudgetExceeded {
+            rule_id,
+            steps,
+            mem,
+        }),
+    };
+    pb::EffectFinding {
+        finding: Some(finding),
+    }
+}
+
+fn effect_envelope_to_pb(envelope: wire::EffectEnvelope) -> pb::EffectEnvelope {
+    let wire::EffectEnvelope {
+        intents,
+        narrowed,
+        findings,
+        how,
+    } = envelope;
+    pb::EffectEnvelope {
+        intents: intents.into_iter().map(intent_to_pb).collect(),
+        narrowed: narrowed.into_iter().map(intent_to_pb).collect(),
+        findings: findings.into_iter().map(effect_finding_to_pb).collect(),
+        how,
+    }
+}
+
 fn delta_frame_to_pb(f: wire::DeltaFrame) -> pb::DeltaFrame {
+    let wire::DeltaFrame { delta, effects } = f;
     let wire::Delta {
         seq,
         root_before,
@@ -790,7 +844,7 @@ fn delta_frame_to_pb(f: wire::DeltaFrame) -> pb::DeltaFrame {
         actor,
         now,
         files,
-    } = f.delta;
+    } = delta;
     pb::DeltaFrame {
         delta: Some(pb::Delta {
             seq,
@@ -800,6 +854,7 @@ fn delta_frame_to_pb(f: wire::DeltaFrame) -> pb::DeltaFrame {
             now,
             files: files.into_iter().map(delta_file_to_pb).collect(),
         }),
+        effects: effects.into_iter().map(effect_envelope_to_pb).collect(),
     }
 }
 
@@ -1539,7 +1594,58 @@ fn delta_file_from_pb(f: pb::DeltaFile) -> wire::DeltaFile {
     }
 }
 
+fn intent_from_pb(intent: pb::Intent) -> wire::Intent {
+    let pb::Intent {
+        rule_id,
+        seq,
+        action,
+        target,
+        severity,
+        payload,
+        receipt,
+    } = intent;
+    wire::Intent {
+        rule_id,
+        seq,
+        action,
+        target,
+        severity,
+        payload,
+        receipt,
+    }
+}
+
+fn effect_finding_from_pb(finding: pb::EffectFinding) -> wire::EffectFinding {
+    match finding.finding.expect("finding oneof set") {
+        pb::effect_finding::Finding::BudgetExceeded(pb::BudgetExceeded {
+            rule_id,
+            steps,
+            mem,
+        }) => wire::EffectFinding::BudgetExceeded {
+            rule_id,
+            steps,
+            mem,
+        },
+    }
+}
+
+fn effect_envelope_from_pb(envelope: pb::EffectEnvelope) -> wire::EffectEnvelope {
+    let pb::EffectEnvelope {
+        intents,
+        narrowed,
+        findings,
+        how,
+    } = envelope;
+    wire::EffectEnvelope {
+        intents: intents.into_iter().map(intent_from_pb).collect(),
+        narrowed: narrowed.into_iter().map(intent_from_pb).collect(),
+        findings: findings.into_iter().map(effect_finding_from_pb).collect(),
+        how,
+    }
+}
+
 fn delta_frame_from_pb(f: pb::DeltaFrame) -> wire::DeltaFrame {
+    let pb::DeltaFrame { delta, effects } = f;
     let pb::Delta {
         seq,
         root_before,
@@ -1547,7 +1653,7 @@ fn delta_frame_from_pb(f: pb::DeltaFrame) -> wire::DeltaFrame {
         actor,
         now,
         files,
-    } = f.delta.expect("delta is required");
+    } = delta.expect("delta is required");
     wire::DeltaFrame {
         delta: wire::Delta {
             seq,
@@ -1557,6 +1663,7 @@ fn delta_frame_from_pb(f: pb::DeltaFrame) -> wire::DeltaFrame {
             now,
             files: files.into_iter().map(delta_file_from_pb).collect(),
         },
+        effects: effects.into_iter().map(effect_envelope_from_pb).collect(),
     }
 }
 
@@ -2194,6 +2301,35 @@ fn sample_create_bodies() -> Vec<wire::ResponseBody> {
     ]
 }
 
+fn sample_effect_envelope() -> wire::EffectEnvelope {
+    wire::EffectEnvelope {
+        intents: vec![wire::Intent {
+            rule_id: "task-review-notify".into(),
+            seq: 0,
+            action: "notify".into(),
+            target: Some("e4201e72".into()),
+            severity: Some("info".into()),
+            payload: Some("review requested".into()),
+            receipt: "tasks/x.md#^r-6794ce82d1d5aff1".into(),
+        }],
+        narrowed: vec![wire::Intent {
+            rule_id: "blocked-md-effect".into(),
+            seq: 1,
+            action: "md.set_field".into(),
+            target: None,
+            severity: None,
+            payload: None,
+            receipt: "tasks/x.md#^r-6794ce82d1d5aff1".into(),
+        }],
+        findings: vec![wire::EffectFinding::BudgetExceeded {
+            rule_id: "slow-hook".into(),
+            steps: 50_000,
+            mem: 4_194_304,
+        }],
+        how: "how:\n  route: channel-review\n".into(),
+    }
+}
+
 /// D3-DELTA: the diff arm — batches over the full §7.1 surface (both
 /// §2.1 identities, absent-vs-present optionals, every change class, an
 /// external delta with `actor`/`now` absent, renamed with `from_path`).
@@ -2201,6 +2337,7 @@ fn sample_diff_body() -> wire::ResponseBody {
     wire::ResponseBody::Diff {
         batches: vec![
             wire::DeltaFrame {
+                effects: vec![sample_effect_envelope()],
                 delta: wire::Delta {
                     seq: 1,
                     root_before: wire::Root("b3:aa".into()),
@@ -2250,6 +2387,7 @@ fn sample_diff_body() -> wire::ResponseBody {
             },
             wire::DeltaFrame {
                 // external change: actor/now ABSENT (§7.1 law, A8)
+                effects: vec![],
                 delta: wire::Delta {
                     seq: 2,
                     root_before: wire::Root("b3:bb".into()),
@@ -2501,6 +2639,24 @@ fn every_response_body_and_error_code_survives_wire_proto_wire() {
         };
         assert_eq!(response_from_pb(back), resp);
     }
+}
+
+#[test]
+fn populated_notification_survives_wire_proto_wire() {
+    let wire::ResponseBody::Diff { mut batches } = sample_diff_body() else {
+        unreachable!("the sample is a diff body")
+    };
+    let notification = batches.remove(0);
+    assert!(!notification.effects.is_empty());
+    let frame = pb::Frame {
+        kind: Some(pb::frame::Kind::Notification(delta_frame_to_pb(
+            notification.clone(),
+        ))),
+    };
+    let Some(pb::frame::Kind::Notification(back)) = roundtrip(&frame).kind else {
+        panic!("notification frame must decode as notification")
+    };
+    assert_eq!(delta_frame_from_pb(back), notification);
 }
 
 /// P6-VERDICTS strict-decode precision: a proto `Verdict` whose `severity` is the

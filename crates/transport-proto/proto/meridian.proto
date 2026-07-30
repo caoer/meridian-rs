@@ -19,14 +19,14 @@ syntax = "proto3";
 
 package meridian.v1;
 
-// One frame: request or response. Field 3 is reserved for rung-4+ event
-// frames (the v1 sidecar emits none — same reservation as the NDJSON layer).
+// One frame: request, response, or live notification. Notification field 3
+// consumes the event-frame slot reserved at transport birth.
 message Frame {
   oneof kind {
     Request request = 1;
     Response response = 2;
+    DeltaFrame notification = 3;
   }
-  reserved 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -584,10 +584,44 @@ message DiffResponse {
   repeated DeltaFrame batches = 1;
 }
 
-// One live notification frame body: `{"delta":{…}}` (v2 §7.1 worked frames;
-// events carry no id, §3.1 classification).
+// One live notification frame body. `effects` is an additive sibling of the
+// frozen Delta and is absent on JSON / empty on proto when no reaction armed.
+// Each envelope can later gain `wake_at` beside `intents` without reshaping the
+// slice-1 field.
 message DeltaFrame {
   Delta delta = 1;
+  repeated EffectEnvelope effects = 2;
+}
+
+// One reaction evaluation's complete C2 outcome. `how` stays opaque.
+message EffectEnvelope {
+  repeated Intent intents = 1;
+  repeated Intent narrowed = 2;
+  repeated EffectFinding findings = 3;
+  string how = 4;
+}
+
+// Armed, pre-delivery intent. Delivery state has no field.
+message Intent {
+  string rule_id = 1;
+  uint32 seq = 2;
+  string action = 3;
+  optional string target = 4;
+  optional string severity = 5;
+  optional string payload = 6;
+  string receipt = 7;
+}
+
+message EffectFinding {
+  oneof finding {
+    BudgetExceeded budget_exceeded = 1;
+  }
+}
+
+message BudgetExceeded {
+  string rule_id = 1;
+  uint64 steps = 2;
+  uint64 mem = 3;
 }
 
 // The fifth wire noun (v2 §7.1, frozen at birth): one Delta = one batch =
