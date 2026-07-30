@@ -39,7 +39,7 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind};
+use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts};
 use model::{
     Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
     SpliceRequest, SpliceVerdict, delta,
@@ -1039,6 +1039,24 @@ pub fn synthesize_event(
         file: page.to_owned(),
         sections_changed: sections,
         fields_changed: fields,
+        // The cascade path cannot fill these, and saying so is better than
+        // half-filling them. `changes` needs the OLD and NEW value of each key and
+        // `facts` needs the document's frontmatter; both come from a
+        // `policy::Change`'s two DocFacts, which this path does not have — it
+        // synthesizes from `model::delta` node entries, which carry identities and
+        // revs, never values.
+        //
+        // Empty is fail-closed: a reaction reading `event.changes` sees nothing and
+        // does not fire, rather than firing on a value it guessed. It cannot bite
+        // slice 1, whose cap allowlist is `proto.send` only — no `md.*` effect can
+        // be emitted, so no cascade generation exists to carry a reaction.
+        //
+        // Worth knowing before extending this: `fd.nodes` is EMPTY whenever one
+        // splice touches frontmatter AND a body section, because the changed range
+        // then has no addressable container (measured, card C0). So the two fields
+        // above are already silent for exactly the edit shape a gated close makes.
+        changes: Vec::new(),
+        facts: EventFacts::default(),
         fingerprint_before: fd.file_rev_before.map(|r| r.0).unwrap_or_default(),
         fingerprint_after: fd.file_rev_after.map(|r| r.0).unwrap_or_default(),
         depth: applied_depth + 1,

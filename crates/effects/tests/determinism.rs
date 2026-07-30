@@ -5,7 +5,7 @@
 
 mod support;
 
-use effects::{ChangeEvent, Effect, EvalLimits, Rule, RunCtx, eval, eval_run};
+use effects::{ChangeEvent, Effect, EvalLimits, EventFacts, Rule, RunCtx, eval, eval_run};
 use proptest::prelude::*;
 use support::all_rules;
 
@@ -25,6 +25,8 @@ fn any_event() -> impl Strategy<Value = ChangeEvent> {
                 file,
                 sections_changed: sections,
                 fields_changed: fields,
+                changes: vec![],
+                facts: EventFacts::default(),
                 fingerprint_before: before,
                 fingerprint_after: after,
                 depth,
@@ -140,6 +142,8 @@ fn eval_is_identical_across_thread_counts() {
         file: "tasks/t.md".into(),
         sections_changed: vec!["Status".into()],
         fields_changed: vec!["status".into()],
+        changes: vec![],
+        facts: EventFacts::default(),
         fingerprint_before: "aaa".into(),
         fingerprint_after: "bbb".into(),
         depth: 0,
@@ -169,6 +173,8 @@ fn effect_order_follows_rule_slice_order() {
         file: "tasks/t.md".into(),
         sections_changed: vec!["Status".into()],
         fields_changed: vec!["status".into()],
+        changes: vec![],
+        facts: EventFacts::default(),
         fingerprint_before: "aaa".into(),
         fingerprint_after: "bbb".into(),
         depth: 0,

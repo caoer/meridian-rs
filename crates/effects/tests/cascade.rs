@@ -6,7 +6,7 @@
 
 mod support;
 
-use effects::{ChangeEvent, Domain, EvalLimits, eval_with_limits};
+use effects::{ChangeEvent, Domain, EvalLimits, EventFacts, eval_with_limits};
 use support::rule;
 
 fn limits(max_depth: u32) -> EvalLimits {
@@ -21,6 +21,8 @@ fn status_event(depth: u32) -> ChangeEvent {
         file: "tasks/t.md".into(),
         sections_changed: vec![],
         fields_changed: vec!["status".into()],
+        changes: vec![],
+        facts: EventFacts::default(),
         fingerprint_before: "aaa".into(),
         fingerprint_after: "bbb".into(),
         depth,

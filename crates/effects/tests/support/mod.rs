@@ -4,7 +4,7 @@
 // items look unused / non-reexported from any single crate's vantage.
 #![allow(dead_code, unreachable_pub)]
 
-use effects::{ChangeEvent, Rule};
+use effects::{ChangeEvent, EventFacts, Rule};
 
 /// Load a committed rule fixture by file stem (its id = the stem).
 pub fn rule(stem: &str) -> Rule {
@@ -45,6 +45,8 @@ pub fn event(
         file: file.to_owned(),
         sections_changed: sections.iter().map(|s| (*s).to_owned()).collect(),
         fields_changed: fields.iter().map(|s| (*s).to_owned()).collect(),
+        changes: vec![],
+        facts: EventFacts::default(),
         fingerprint_before: before.to_owned(),
         fingerprint_after: after.to_owned(),
         depth: 0,

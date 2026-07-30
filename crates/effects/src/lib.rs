@@ -328,10 +328,78 @@ pub struct IdempotencyKey {
     pub seq: u32,
 }
 
+/// What one [`ChangeFact`] is about. The founding reaction predicate's own
+/// discriminator (`delta.kind != "frontmatter"`), so it is a closed two-value
+/// vocabulary rather than a free string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeFactKind {
+    /// A frontmatter key whose value changed. Carries `key`, `old`, `new`.
+    Frontmatter,
+    /// A section whose content changed. Carries `hpath`.
+    Section,
+}
+
+impl ChangeFactKind {
+    /// The string a predicate compares against.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeFactKind::Frontmatter => "frontmatter",
+            ChangeFactKind::Section => "section",
+        }
+    }
+}
+
+/// One thing that changed, WITH its values — the fact `fields_changed` (names
+/// only) could not express.
+///
+/// A frontmatter fact carries `key` plus `old`/`new`; absence is real, so a key
+/// that did not exist before has `old: None` and a deleted key has `new: None`.
+///
+/// A section fact carries `hpath` and **no body text, ever**. A subscription
+/// classifies on small values; section bodies are unbounded, and putting one in a
+/// reaction payload would make every large edit an expensive event. What changed
+/// is addressable; a consumer that wants the content reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChangeFact {
+    /// Whether this is a frontmatter key or a section.
+    pub kind: ChangeFactKind,
+    /// The frontmatter key. Empty for a section fact.
+    pub key: String,
+    /// The value before, when there was one. Always `None` for a section fact.
+    pub old: Option<String>,
+    /// The value after, when there is one. Always `None` for a section fact.
+    pub new: Option<String>,
+    /// The section's heading path. Empty for a frontmatter fact.
+    pub hpath: Vec<String>,
+}
+
+/// The world-model facts a reaction may read: the changed document as it NOW
+/// stands. This is how a reaction reads its target off the card (ZT 24-01 — the
+/// card defines the notification target).
+///
+/// **What is deliberately absent is the point.** There is no actor, no session,
+/// no invocation identity here, and there must never be: a WHEN clause naming an
+/// actor fact is refused, and the engine must not observe the observer. The
+/// derivation drops `actor` even though the change plane carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct EventFacts {
+    /// The document's path.
+    pub path: String,
+    /// Its frontmatter properties in document order, AFTER the change.
+    pub frontmatter: Vec<(String, String)>,
+}
+
 /// The semantic change event — one `on_change` payload (0003 §3). Meridian diffs
 /// semantically, so a rule filters on payload granularity (which sections, which
 /// fields) rather than "file changed". There is exactly one hook; there is no
 /// `on_section_change` kind.
+///
+/// `changes` and `facts` are the reaction plane's additions: `fields_changed`
+/// names WHICH keys moved, `changes` says what they moved FROM and TO, and
+/// `facts` carries the document those keys live on. The entry did not change —
+/// `on_change(event)` is still the one change-plane entry; its argument grew.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChangeEvent {
     /// The changed file's workspace path.
@@ -340,6 +408,10 @@ pub struct ChangeEvent {
     pub sections_changed: Vec<String>,
     /// Frontmatter field names whose value changed.
     pub fields_changed: Vec<String>,
+    /// What changed, with values — frontmatter keys and sections.
+    pub changes: Vec<ChangeFact>,
+    /// The changed document's facts as it now stands.
+    pub facts: EventFacts,
     /// The pre-change fingerprint.
     pub fingerprint_before: String,
     /// The post-change fingerprint.
@@ -362,6 +434,8 @@ impl ChangeEvent {
             file: file.into(),
             sections_changed: Vec::new(),
             fields_changed: Vec::new(),
+            changes: Vec::new(),
+            facts: EventFacts::default(),
             fingerprint_before: fingerprint_before.into(),
             fingerprint_after: fingerprint_after.into(),
             depth: 0,

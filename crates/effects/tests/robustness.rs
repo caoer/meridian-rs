@@ -5,7 +5,7 @@
 //! never hang, never crash. If any case looped, the suite would hang; if any
 //! panicked, proptest would fail — so a green run IS the liveness proof.
 
-use effects::{ChangeEvent, EvalLimits, Rule, eval_with_limits};
+use effects::{ChangeEvent, EvalLimits, EventFacts, Rule, eval_with_limits};
 use proptest::prelude::*;
 
 /// Tight limits keep each fuzz case fast (a valid infinite loop still terminates
@@ -34,6 +34,8 @@ fn any_event() -> impl Strategy<Value = ChangeEvent> {
                 file,
                 sections_changed: sections,
                 fields_changed: fields,
+                changes: vec![],
+                facts: EventFacts::default(),
                 fingerprint_before: before,
                 fingerprint_after: after,
                 depth,

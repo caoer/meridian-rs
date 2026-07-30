@@ -34,8 +34,19 @@ use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
 use crate::{
-    ArgValue, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits, Provenance, Rule, RunCtx,
+    ArgValue, ChangeEvent, ChangeFact, Effect, EffectKind, EvalError, EvalLimits, EventFacts,
+    Provenance, Rule, RunCtx,
 };
+
+/// An optional string as a Starlark value: the string, or `None`. Absence stays
+/// absence — a missing frontmatter value must not arrive as `""`, or a predicate
+/// cannot tell "the key was empty" from "the key was not there".
+fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
+    match o {
+        Some(s) => heap.alloc(s),
+        None => Value::new_none(),
+    }
+}
 
 /// Max parser NESTING depth — brackets `([{` or a run of consecutive unary
 /// operators (`not`, `-`, `+`, `~`). The Starlark recursive-descent parser
@@ -734,10 +745,17 @@ fn alloc_event<'v>(heap: Heap<'v>, event: &ChangeEvent) -> Value<'v> {
         .iter()
         .map(|s| heap.alloc(s.as_str()))
         .collect();
+    let changes: Vec<Value<'v>> = event
+        .changes
+        .iter()
+        .map(|c| alloc_change_fact(heap, c))
+        .collect();
     heap.alloc(AllocStruct([
         ("file", heap.alloc(event.file.as_str())),
         ("sections_changed", heap.alloc(sections)),
         ("fields_changed", heap.alloc(fields)),
+        ("changes", heap.alloc(changes)),
+        ("facts", alloc_event_facts(heap, &event.facts)),
         (
             "fingerprint_before",
             heap.alloc(event.fingerprint_before.as_str()),
@@ -747,6 +765,39 @@ fn alloc_event<'v>(heap: Heap<'v>, event: &ChangeEvent) -> Value<'v> {
             heap.alloc(event.fingerprint_after.as_str()),
         ),
         ("depth", heap.alloc(event.depth)),
+    ]))
+}
+
+/// Allocate one `{kind, key, old, new, hpath}` change fact. `old`/`new` are
+/// `None` when the value did not exist on that side — absence is a fact a
+/// predicate must be able to see, so it is `None` and never an empty string.
+fn alloc_change_fact<'v>(heap: Heap<'v>, fact: &ChangeFact) -> Value<'v> {
+    let hpath: Vec<Value<'v>> = fact.hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
+    heap.alloc(AllocStruct([
+        ("kind", heap.alloc(fact.kind.as_str())),
+        ("key", heap.alloc(fact.key.as_str())),
+        ("old", opt_str(heap, fact.old.as_deref())),
+        ("new", opt_str(heap, fact.new.as_deref())),
+        ("hpath", heap.alloc(hpath)),
+    ]))
+}
+
+/// Allocate the injected `event.facts`: `{path, fm}` and NOTHING else.
+///
+/// `fm` is a dict so a predicate reads `event.facts.fm.get("reviewer")`. The
+/// absences here are the law, not an omission: no actor, no session, no
+/// invocation identity reaches this surface, so an actor-fact WHEN clause is a
+/// `NameError` rather than a policy anyone has to remember to enforce.
+fn alloc_event_facts<'v>(heap: Heap<'v>, facts: &EventFacts) -> Value<'v> {
+    let fm = heap.alloc(AllocDict(
+        facts
+            .frontmatter
+            .iter()
+            .map(|(k, v)| (heap.alloc(k.as_str()), heap.alloc(v.as_str()))),
+    ));
+    heap.alloc(AllocStruct([
+        ("path", heap.alloc(facts.path.as_str())),
+        ("fm", fm),
     ]))
 }
 

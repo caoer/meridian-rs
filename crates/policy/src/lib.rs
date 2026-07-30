@@ -47,6 +47,7 @@ mod gate;
 mod hook;
 mod index;
 mod pack;
+mod reaction;
 mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
@@ -84,6 +85,12 @@ pub use convention::{
 /// (frozen data the engine never interprets), and a predicate whose capability
 /// ceiling was enforced at load. [`SLICE1_CAPS`] is what slice 1 admits.
 pub use hook::{Hook, SLICE1_CAPS};
+
+/// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]
+/// into the `on_change(event)` argument a HOOK predicate reads. It attaches the
+/// values behind `fields_changed` and the changed document's frontmatter, and it
+/// drops `actor` — the engine must not observe the observer.
+pub use reaction::derive_event;
 
 /// The throwaway seed convention (U1.3): a real `reviewer-not-owner` `check_change`
 /// the harness (U1.2) and the door (U4.2) pre-test against before U4.4's floor lands.
