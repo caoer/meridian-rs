@@ -2366,6 +2366,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "effects",
  "model",
  "serde",
  "serde_yaml",

@@ -192,6 +192,37 @@ impl EffectKind {
             | EffectKind::Warn => Domain::Proto,
         }
     }
+
+    /// The Starlark constructor name a rule calls to mint this descriptor — the
+    /// wire identity minus its domain prefix (`proto.send` → `send`).
+    ///
+    /// A consumer that enforces a capability ceiling at LOAD time (the HOOK
+    /// declaration in `policy`) resolves declared caps to the exact global names a
+    /// predicate may reach for. That set must be the one the kernel actually
+    /// registers, so the mapping lives here beside the registration and is pinned
+    /// to it by `kernel`'s `every_effect_kind_constructor_is_registered` — never
+    /// re-derived by a caller splitting [`EffectKind::as_str`] on the dot.
+    #[must_use]
+    pub fn constructor(self) -> &'static str {
+        match self {
+            EffectKind::SetField => "set_field",
+            EffectKind::AppendSection => "append_section",
+            EffectKind::RefreshView => "refresh_view",
+            EffectKind::Send => "send",
+            EffectKind::Remind => "remind",
+            EffectKind::Ask => "ask",
+            EffectKind::Notice => "notice",
+            EffectKind::Warn => "warn",
+        }
+    }
+
+    /// The [`EffectKind`] a wire identity names (`"proto.send"` → [`EffectKind::Send`]),
+    /// or `None` when the string is not one of the eight — the closed surface is the
+    /// vocabulary, so an unknown name is denied rather than guessed at.
+    #[must_use]
+    pub fn from_wire_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
 }
 
 impl Serialize for EffectKind {

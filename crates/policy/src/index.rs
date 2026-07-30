@@ -424,6 +424,47 @@ mod tests {
         sweep(&files, slug, CheckLimits::default()).expect("a well-formed convention sweeps")
     }
 
+    /// **A named gap, pinned rather than hidden.** A HOOK-only convention LOADS
+    /// (`load_convention` admits it — a reaction is not a law), but it does not
+    /// SWEEP, because the INDEX pins `blake3(CHECK.md)` as its evidence rev and a
+    /// HOOK-only folder has no `CHECK.md` to hash.
+    ///
+    /// This is fail-closed and therefore safe: an unswept convention is never a row,
+    /// never armed, never enforced. It is NOT decided here what a HOOK-only
+    /// convention should pin — that is an attestation question for the arming act
+    /// (what rev does a reviewer attest when the evidence is a reaction?), and
+    /// answering it inside the loader would be minting law. The test exists so the
+    /// gap is visible and dated rather than discovered later by someone whose
+    /// convention silently never armed.
+    #[test]
+    fn a_hook_only_convention_loads_but_does_not_yet_sweep() {
+        let hook_md = "\
+---
+kind: hook
+severity: info
+paths: [\"tasks/*.md\"]
+caps:  [proto.send]
+budget: { steps: 10000, mem: 4194304 }
+how:
+  route: { info: channel-review }
+---
+
+```starlark
+def on_change(event):
+    send(to = [\"reviewer\"], message = \"m\")
+```
+";
+        let files = MemFiles::with("HOOK.md", hook_md);
+
+        load_convention("task-status-notify", &files, CheckLimits::default())
+            .expect("a HOOK-only convention loads");
+
+        let err = sweep(&files, "task-status-notify", CheckLimits::default())
+            .expect_err("but it does not sweep — the evidence rev is blake3(CHECK.md)");
+        println!("POPULATION hook-only sweep -> {err}");
+        assert!(matches!(err, LoadError::CheckMissing { .. }), "{err:?}");
+    }
+
     #[test]
     fn severity_orders_block_over_warn_over_off() {
         assert!(Enforcement::Block > Enforcement::Warn);
