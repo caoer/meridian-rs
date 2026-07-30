@@ -3373,6 +3373,7 @@ pub fn assemble_delta(
             now,
             files,
         },
+        effects: Vec::new(),
     }
 }
 

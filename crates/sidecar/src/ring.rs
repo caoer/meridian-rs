@@ -125,6 +125,7 @@ mod tests {
                 now: None,
                 files: vec![],
             },
+            effects: vec![],
         }
     }
 

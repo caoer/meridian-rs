@@ -6,8 +6,9 @@
 //! **Owns:** the wire nouns (`path`/`span`/`node_rev`/`root`), the §2.1 mint
 //! address grammar, the op request/response shapes, the node object, and the
 //! error envelope — everything that crosses the process boundary, exactly as
-//! the frozen contract states it (`docs/wire-contract-v2.md`; the contract
-//! text is normative, this crate transcribes it and never restates its rules).
+//! the frozen contract states it (`docs/wire-contract-v2.md` plus additive
+//! amendment `docs/wire-contract-v2-effects-amendment.md`; the contract text is
+//! normative, this crate transcribes it and never restates its rules).
 //!
 //! **Never does:** framing, transport, I/O, business logic. Dependencies are serde
 //! only, by law — this crate must be consumable by any future client (tests, Go
@@ -1323,9 +1324,57 @@ pub enum Severity {
 /// events carry no `id`, §3.1 classification). `diff.batches` elements are
 /// exactly this shape, byte-identical to the live emission (§7.3 replay ≡
 /// live).
+///
+/// The reaction plane is an additive sibling of the frozen [`Delta`]: no
+/// effects serializes the pre-amendment frame byte-for-byte. Each envelope owns
+/// reaction outputs at one evaluation boundary, so a later schedule consumer
+/// can add `wake_at` beside `intents` without reshaping the slice-1 field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaFrame {
     pub delta: Delta,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectEnvelope>,
+}
+
+/// One reaction evaluation's wire envelope. Slice 1 carries the complete C2
+/// HOOK outcome; later reaction consumers extend this object additively.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectEnvelope {
+    /// Intents admitted by the HOOK's declared capability ceiling.
+    pub intents: Vec<Intent>,
+    /// Complete intents dropped by the capability ceiling, retained as report
+    /// data rather than silently discarded.
+    pub narrowed: Vec<Intent>,
+    /// Advisory evaluation findings that emitted no intent.
+    pub findings: Vec<EffectFinding>,
+    /// The declaration's `how:` block, byte-for-byte and uninterpreted.
+    pub how: String,
+}
+
+/// One armed reaction descriptor. It says only what the evaluation armed;
+/// delivery has not happened, so delivery state is intentionally unrepresentable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Intent {
+    pub rule_id: String,
+    pub seq: u32,
+    pub action: String,
+    pub target: Option<String>,
+    pub severity: Option<String>,
+    pub payload: Option<String>,
+    /// The canonical receipt address minted before delivery.
+    pub receipt: String,
+}
+
+/// A named advisory finding from reaction evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EffectFinding {
+    /// The predicate exhausted its declared evaluation budget.
+    BudgetExceeded {
+        rule_id: String,
+        steps: u64,
+        mem: u64,
+    },
 }
 
 /// The fifth wire noun (v2 §7.1, frozen at contract birth): one Delta = one
