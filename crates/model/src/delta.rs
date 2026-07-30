@@ -377,6 +377,163 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
+    // -----------------------------------------------------------------
+    // C0 — the one-put gated close over a realistic task card.
+    // -----------------------------------------------------------------
+
+    /// The fixture the three C0 cases splice over: a task card carrying a
+    /// `status:` key in frontmatter and a `## Verdict` body section — the two
+    /// halves the ratified gating law requires in ONE `put`.
+    fn task_card(status: &str, verdict: &str) -> String {
+        format!(
+            "---\ntype: task\nstatus: {status}\nowner: e4201e72\n---\n\n\
+             # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
+             ## Verdict\n\n{verdict}\n"
+        )
+    }
+
+    fn verdict_hpath() -> Ref {
+        Ref::Hpath(vec![
+            crate::HpathSeg {
+                h: "Task: widget-rollout".into(),
+                n: None,
+            },
+            crate::HpathSeg {
+                h: "Verdict".into(),
+                n: None,
+            },
+        ])
+    }
+
+    /// C0 control 1 — the `status:` line alone names `fm_key`. This is the
+    /// biting control for the gated-close case: it proves the probe can see
+    /// an `fm_key` entry at all.
+    #[test]
+    fn c0_status_alone_names_fm_key() {
+        let b = doc(&task_card("in-progress", "pending"));
+        let a = doc(&task_card("review", "pending"));
+        let got = node_deltas(&b, &a);
+        println!("C0 case 1 (status alone) population = {got:#?}");
+        assert_eq!(got.len(), 1, "population: {got:?}");
+        assert_eq!(got[0].target, Ref::FmKey("status".into()));
+        assert_eq!(got[0].change, NodeChangeKind::Edited);
+    }
+
+    /// C0 control 2 — the `## Verdict` body alone names its `hpath`. The
+    /// biting control for the section half: it proves the probe can see an
+    /// `Hpath` entry at all.
+    #[test]
+    fn c0_verdict_section_alone_names_hpath() {
+        let b = doc(&task_card("in-progress", "pending"));
+        let a = doc(&task_card("in-progress", "passed - gates green"));
+        let got = node_deltas(&b, &a);
+        println!("C0 case 2 (section alone) population = {got:#?}");
+        assert_eq!(got.len(), 1, "population: {got:?}");
+        assert_eq!(got[0].target, verdict_hpath());
+        assert_eq!(got[0].change, NodeChangeKind::Edited);
+    }
+
+    /// C0 case 3 — the ratified one-put gated close: `status:` AND the
+    /// `## Verdict` section in ONE splice. **Observed 2026-07-30: no node
+    /// entries at all** — neither the `fm_key` of case 1 nor the `hpath` of
+    /// case 2, though each half alone produces one. The joint edit collapses
+    /// to one contiguous range that only the Document root contains, and
+    /// `identity_of` has no arm for `NodeKind::Document`. The file-level fact
+    /// survives; the node inventory does not.
+    ///
+    /// This is a pin on OBSERVED behaviour, not a ratification of it: what
+    /// §7.1's deepest-section law requires when no addressable node contains
+    /// the range is an open contract question. If that question is answered
+    /// by emitting something, this test fails — deliberately.
+    #[test]
+    fn c0_gated_close_one_put_emits_no_node_entries() {
+        let b = doc(&task_card("in-progress", "pending"));
+        let a = doc(&task_card("review", "passed - gates green"));
+
+        // the mechanism precondition: ONE range spanning frontmatter → body.
+        // Without this the emptiness below could pass vacuously.
+        let (_, ar) = changed_ranges(&b.raw, &a.raw).expect("bytes differ");
+        let changed = &a.raw[ar.clone()];
+        assert!(
+            changed.starts_with("review") && changed.ends_with("passed - gates green"),
+            "one range must span the status line through the Verdict body: {changed:?}"
+        );
+
+        let got = node_deltas(&b, &a);
+        println!("C0 case 3 (gated close, one put) population = {got:#?}");
+        assert!(
+            got.is_empty(),
+            "observed 2026-07-30: no node entries for the joint edit; got {got:?}"
+        );
+
+        // the file-level fact is unaffected — only the node inventory is empty
+        let fd = file_delta(Some(&b), Some(&a)).expect("file changed");
+        assert_eq!(fd.change, FileChangeKind::Modified);
+        assert!(fd.file_rev_before.is_some() && fd.file_rev_after.is_some());
+        assert!(fd.nodes.is_empty(), "{:?}", fd.nodes);
+    }
+
+    /// C0 case 3b — the gated close as practiced: the `## Verdict` section is
+    /// APPENDED (genuinely added) while `status:` flips, in one splice.
+    /// **Observed 2026-07-30: also empty** — a section that was truly added
+    /// yields no `added` entry, because the after-range still opens inside
+    /// the frontmatter. The collapse is not edit-shape-dependent.
+    #[test]
+    fn c0_gated_close_appending_verdict_also_emits_nothing() {
+        let b = doc(
+            "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
+                     # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n",
+        );
+        let a = doc("---\ntype: task\nstatus: review\nowner: e4201e72\n---\n\n\
+                     # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
+                     ## Verdict\n\npassed - gates green\n");
+
+        // Control: the same append WITHOUT the status flip is visible — so
+        // the emptiness below is caused by the joint edit, not by the append
+        // being invisible.
+        //
+        // Observed 2026-07-30, and NOT what this control was written to
+        // expect: the append names the PARENT section `# Task: …` as `Edited`,
+        // never the added `## Verdict` as `Added`. The changed range is
+        // `"\n## Verdict\n\npassed - gates green\n"` — it opens with the blank
+        // line that terminates `## Objective`, so the `## Verdict` span does
+        // not contain it. `trim_final_terminator` trims a trailing terminator;
+        // nothing trims a leading one. The `appended_anchor_block_*` test
+        // above escapes this only because its fixture has no blank line
+        // before the appended block.
+        let alone = node_deltas(
+            &doc(
+                "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
+                  # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n",
+            ),
+            &doc(
+                "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\
+                  # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
+                  ## Verdict\n\npassed - gates green\n",
+            ),
+        );
+        println!("C0 case 3b control (append alone) population = {alone:#?}");
+        assert_eq!(alone.len(), 1, "append alone must be visible: {alone:?}");
+        assert_eq!(
+            alone[0].target,
+            Ref::Hpath(vec![crate::HpathSeg {
+                h: "Task: widget-rollout".into(),
+                n: None
+            }]),
+            "observed: the parent section, not {:?}",
+            verdict_hpath()
+        );
+        assert_eq!(alone[0].change, NodeChangeKind::Edited);
+
+        let got = node_deltas(&b, &a);
+        println!("C0 case 3b (append verdict + flip status) population = {got:#?}");
+        assert!(
+            got.is_empty(),
+            "observed 2026-07-30: the added section vanishes when the same \
+             splice touches frontmatter; got {got:?}"
+        );
+    }
+
     /// File-level tenses (§7.1): created carries after-rev only, deleted
     /// carries before-rev only, unchanged is None.
     #[test]
