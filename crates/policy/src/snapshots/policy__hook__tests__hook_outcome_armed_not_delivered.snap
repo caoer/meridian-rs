@@ -1,6 +1,6 @@
 ---
 source: crates/policy/src/hook.rs
-assertion_line: 1135
+assertion_line: 1195
 expression: first
 ---
 [
@@ -17,6 +17,7 @@ expression: first
       }
     ],
     "narrowed": [],
+    "findings": [],
     "how": "how:\n  route:    { info: channel-review, error: telegram }\n  batching: 30s\n  wake_policy: never-cold\n"
   }
 ]

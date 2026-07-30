@@ -148,15 +148,34 @@ pub struct Intent {
     pub receipt: String,
 }
 
+/// A named advisory finding from one HOOK evaluation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HookFinding {
+    /// The predicate exhausted its declared per-eval budget. Its partial effects are
+    /// discarded, but later HOOKs still evaluate over the same landed change.
+    BudgetExceeded {
+        /// The convention whose predicate exhausted its budget.
+        rule_id: String,
+        /// The declared Starlark step ceiling.
+        steps: u64,
+        /// The declared eval-heap byte ceiling.
+        mem: u64,
+    },
+}
+
 /// One in-scope HOOK's advisory result. This type has no refusal arm and no
 /// conversion into the blocking gate: a reaction cannot veto or mutate the landed
-/// write. `narrowed` names complete descriptors the declared caps dropped.
+/// write. `narrowed` names complete descriptors the declared caps dropped, while
+/// `findings` names evaluation conditions that produced no descriptor.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct HookOutcome {
     /// Intents admitted by the HOOK's declared caps.
     pub intents: Vec<Intent>,
     /// Intents dropped by the HOOK's declared caps, retained as report data.
     pub narrowed: Vec<Intent>,
+    /// Advisory evaluation findings, such as `budget_exceeded`.
+    pub findings: Vec<HookFinding>,
     /// The declaration's `how:` block, byte-for-byte and uninterpreted.
     pub how: String,
 }
@@ -215,10 +234,13 @@ impl From<EvalError> for HookEvalError {
 /// One [`HookOutcome`] is returned per armed, in-scope HOOK in input order. A
 /// check-only convention and an out-of-scope HOOK are silent.
 ///
+/// Budget exhaustion is returned as a named [`HookFinding::BudgetExceeded`] and
+/// evaluation continues with later HOOKs.
+///
 /// # Errors
-/// A predicate fault or budget exhaustion returns [`HookEvalError::Eval`]. A direct
-/// legacy descriptor constructor that cannot supply the mandatory arm-time receipt
-/// returns [`HookEvalError::MalformedIntent`]; it is never silently discarded.
+/// A non-budget predicate fault returns [`HookEvalError::Eval`]. A descriptor that
+/// does not carry the canonical receipt for the landed change returns
+/// [`HookEvalError::MalformedIntent`]; it is never silently discarded.
 pub fn evaluate_hooks(
     armed: &[crate::ArmedConvention],
     event: &ChangeEvent,
@@ -249,7 +271,23 @@ fn evaluate_loaded_hooks<'a>(
             ..EvalLimits::default()
         };
         let mut effects =
-            effects::eval_with_limits(&[Rule::new(rule_id, hook.source())], event, limits)?;
+            match effects::eval_with_limits(&[Rule::new(rule_id, hook.source())], event, limits) {
+                Ok(effects) => effects,
+                Err(EvalError::Budget { fuel, mem }) => {
+                    outcomes.push(HookOutcome {
+                        intents: Vec::new(),
+                        narrowed: Vec::new(),
+                        findings: vec![HookFinding::BudgetExceeded {
+                            rule_id: rule_id.to_string(),
+                            steps: fuel,
+                            mem,
+                        }],
+                        how: hook.how.clone(),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
         for effect in &mut effects {
             effect.seq = next_seq;
             next_seq = next_seq
@@ -260,17 +298,19 @@ fn evaluate_loaded_hooks<'a>(
                 })?;
         }
 
+        let expected_receipt = effects::receipt_address(&event.file, &event.fingerprint_after);
         let caps: CapabilitySet = hook.caps.iter().copied().collect();
         let (admitted, dropped) = caps.route(effects);
         outcomes.push(HookOutcome {
             intents: admitted
                 .into_iter()
-                .map(intent_from_effect)
+                .map(|effect| intent_from_effect(effect, &expected_receipt))
                 .collect::<Result<_, _>>()?,
             narrowed: dropped
                 .into_iter()
-                .map(intent_from_effect)
+                .map(|effect| intent_from_effect(effect, &expected_receipt))
                 .collect::<Result<_, _>>()?,
+            findings: Vec::new(),
             how: hook.how.clone(),
         });
     }
@@ -278,11 +318,19 @@ fn evaluate_loaded_hooks<'a>(
     Ok(outcomes)
 }
 
-fn intent_from_effect(effect: Effect) -> Result<Intent, HookEvalError> {
+fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {
     let rule_id = effect.rule_id;
     let mut args = effect.args;
     let action = take_string(&mut args, &rule_id, "action", true)?.expect("required action");
     let receipt = take_string(&mut args, &rule_id, "receipt", true)?.expect("required receipt");
+    if receipt != expected_receipt {
+        return Err(HookEvalError::MalformedIntent {
+            rule_id,
+            reason: format!(
+                "receipt {receipt:?} does not name this landed change; expected {expected_receipt:?}"
+            ),
+        });
+    }
     if effects::action_kind(&action) != Some(effect.kind) {
         return Err(HookEvalError::MalformedIntent {
             rule_id,
@@ -1180,23 +1228,94 @@ def on_change(event):
         );
     }
 
-    /// The frontmatter's per-eval budget, not the kernel default, controls the run.
+    /// A predicate may spell any receipt string, but only the canonical arm-time
+    /// address for this landed `(path, new_rev)` may cross the evaluator boundary.
     #[test]
-    fn evaluation_uses_the_hooks_declared_budget() {
-        let page = page_with_source(DESIGN_SOURCE).replace(
+    fn every_intent_receipt_must_name_the_exact_landed_change() {
+        let receipt_line =
+            "            receipt = receipt_addr(event.file, event.fingerprint_after),\n";
+        let mutations = [
+            ("missing", DESIGN_SOURCE.replace(receipt_line, "")),
+            (
+                "empty",
+                DESIGN_SOURCE.replace(receipt_line, "            receipt = \"\",\n"),
+            ),
+            (
+                "arbitrary",
+                DESIGN_SOURCE.replace(receipt_line, "            receipt = \"forged\",\n"),
+            ),
+            (
+                "wrong path",
+                DESIGN_SOURCE.replace(
+                    receipt_line,
+                    "            receipt = receipt_addr(\"tasks/other.md\", event.fingerprint_after),\n",
+                ),
+            ),
+            (
+                "wrong revision",
+                DESIGN_SOURCE.replace(
+                    receipt_line,
+                    "            receipt = receipt_addr(event.file, \"not-the-landed-rev\"),\n",
+                ),
+            ),
+        ];
+
+        for (name, source) in mutations {
+            assert_ne!(source, DESIGN_SOURCE, "{name}: mutation must bite");
+            let hook = load(&page_with_source(&source)).expect("receipt mutations load");
+            let error = evaluate_named([(name, &hook)], &review_event())
+                .expect_err("a forged receipt must not arm");
+            let text = error.to_string();
+            assert!(
+                matches!(error, HookEvalError::MalformedIntent { .. }),
+                "{name}: {error:?}"
+            );
+            assert!(
+                text.contains("receipt"),
+                "{name}: fault names receipt: {text}"
+            );
+        }
+
+        let hook = load(&page_with_source(DESIGN_SOURCE)).expect("canonical receipt loads");
+        let event = review_event();
+        let first = evaluate_named([("canonical", &hook)], &event).expect("canonical receipt arms");
+        let second = evaluate_named([("canonical", &hook)], &event).expect("replay arms");
+        let expected = effects::receipt_address(&event.file, &event.fingerprint_after);
+        assert_eq!(first[0].intents[0].receipt, expected);
+        assert_eq!(first[0].intents[0].receipt, second[0].intents[0].receipt);
+    }
+
+    /// Budget exhaustion is advisory report data, not an error frame. One exhausted
+    /// HOOK must not suppress a later valid HOOK over the same landed change.
+    #[test]
+    fn budget_exhaustion_is_named_and_does_not_abort_later_hooks() {
+        let exhausted_page = page_with_source(DESIGN_SOURCE).replace(
             "budget: { steps: 10000, mem: 4194304 }",
             "budget: { steps: 1, mem: 4194304 }",
         );
-        let hook = load(&page).expect("the tiny budget is valid declaration data");
-        let error = evaluate_named([("tiny-budget", &hook)], &review_event())
-            .expect_err("one Starlark step cannot complete the predicate");
+        let exhausted = load(&exhausted_page).expect("the tiny budget is declaration data");
+        let valid = load(&page_with_source(DESIGN_SOURCE)).expect("the valid HOOK loads");
+
+        let outcomes = evaluate_named(
+            [("tiny-budget", &exhausted), ("valid-after-budget", &valid)],
+            &review_event(),
+        )
+        .unwrap_or_else(|error| panic!("budget exhaustion must be a finding, not {error:?}"));
+
+        assert_eq!(outcomes.len(), 2, "both in-scope HOOKs report an outcome");
         assert_eq!(
-            error,
-            HookEvalError::Eval(EvalError::Budget {
-                fuel: 1,
+            outcomes[0].findings,
+            vec![HookFinding::BudgetExceeded {
+                rule_id: "tiny-budget".to_string(),
+                steps: 1,
                 mem: 4_194_304,
-            })
+            }],
+            "the exhausted HOOK names its budget_exceeded finding"
         );
+        assert!(outcomes[0].intents.is_empty());
+        assert_eq!(outcomes[1].intents.len(), 1, "the later HOOK still arms");
+        assert_eq!(outcomes[1].intents[0].rule_id, "valid-after-budget");
+        assert!(outcomes[1].findings.is_empty());
     }
 
     /// The load lint sees bare globals but deliberately does not inspect attribute
@@ -1246,6 +1365,7 @@ def on_change(event):
             vec![HookOutcome {
                 intents: Vec::new(),
                 narrowed: Vec::new(),
+                findings: Vec::new(),
                 how: FOUNDING_HOW.to_string(),
             }]
         );
