@@ -174,6 +174,43 @@ fn append_section_lands_inside_the_section() {
 }
 
 #[test]
+fn joint_field_and_section_batch_synthesizes_event_without_node_names() {
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let applied = apply(
+        &root,
+        &Req {
+            effects: &[
+                set_field("status", "done", 0),
+                append("Log", "- appended", 1),
+            ],
+            caps: write_caps(),
+            pin: now.clone(),
+            live: now,
+            receipt: Some(receipt_addr(1)),
+            takeover: false,
+        },
+    )
+    .unwrap();
+
+    let text = page_text(&root);
+    assert!(text.contains("status: done"), "{text}");
+    assert!(text.contains("- existing line\n- appended\n"), "{text}");
+    assert_eq!(applied.applied, 2);
+
+    let event = applied.event.expect("a real change synthesizes an event");
+    eprintln!(
+        "POPULATION synthesized fields={} sections={}",
+        event.fields_changed.len(),
+        event.sections_changed.len()
+    );
+    assert!(event.fields_changed.is_empty(), "{event:?}");
+    assert!(event.sections_changed.is_empty(), "{event:?}");
+    assert_ne!(event.fingerprint_before, event.fingerprint_after);
+    assert_eq!(event.depth, 1);
+}
+
+#[test]
 fn choke_point_denies_undeclared_kind_before_any_io() {
     let (_tmp, root) = workspace();
     let now = current_root(&root);
