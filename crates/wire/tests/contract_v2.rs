@@ -765,6 +765,7 @@ fn absent_actor_now_absent_on_the_wire() {
 /// decision 012 — no `keys` slot exists to serialize).
 fn e3_delta() -> wire::DeltaFrame {
     wire::DeltaFrame {
+        effects: vec![],
         delta: wire::Delta {
             seq: 1,
             root_before: wire::Root(
@@ -834,6 +835,7 @@ fn e3_delta_json() -> Value {
 /// E4's delta, every value from the frozen §7.1 frame.
 fn e4_delta() -> wire::DeltaFrame {
     wire::DeltaFrame {
+        effects: vec![],
         delta: wire::Delta {
             seq: 2,
             root_before: wire::Root(
@@ -913,6 +915,70 @@ fn worked_e3_e4_delta_frames_match_contract() {
     }
 }
 
+/// C5's pre-edit byte golden: this is the exact E3 notification frame before
+/// the additive `effects` field exists. An empty effect set must keep these bytes.
+#[test]
+fn no_effects_e3_frame_preserves_pre_c5_bytes() {
+    let bytes = serde_json::to_vec(&e3_delta()).unwrap();
+    assert_eq!(
+        bytes,
+        br#"{"delta":{"seq":1,"root_before":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","root_after":"b3:10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","files":[{"path":"notes/plan.md","change":"modified","file_rev_before":"e3c4acaceb75b907","file_rev_after":"a9794a262e67ed02","nodes":[{"hpath":[{"h":"Goals"},{"h":"Q3"}],"change":"edited","node_rev_before":"33d5b0e1b27cb48b","node_rev_after":"41f643f034e5681f","span_after":[49,75]}]},{"path":"receipts/2026-07-18.md","change":"modified","file_rev_before":"920a40c4ee23d37c","file_rev_after":"2731acfa39bbb92c","nodes":[{"anchor":"r-000042","change":"added","node_rev_after":"639a2dca46f6fcc8","span_after":[26,248]}]}]}}"#
+    );
+}
+
+#[test]
+fn populated_effects_are_pre_delivery_additive_and_future_extensible() {
+    #[derive(serde::Deserialize)]
+    struct LegacyDeltaFrame {
+        delta: wire::Delta,
+    }
+
+    const RECEIPT: &str = "tasks/x.md#^r-6794ce82d1d5aff1";
+
+    let mut frame = e3_delta();
+    let frozen_delta = frame.delta.clone();
+    frame.effects = vec![wire::EffectEnvelope {
+        intents: vec![wire::Intent {
+            rule_id: "task-review-notify".into(),
+            seq: 0,
+            action: "notify".into(),
+            target: Some("e4201e72".into()),
+            severity: Some("info".into()),
+            payload: Some("review requested".into()),
+            receipt: RECEIPT.into(),
+        }],
+        narrowed: vec![],
+        findings: vec![],
+        how: "how:\n  route: channel-review\n".into(),
+    }];
+
+    let value = serde_json::to_value(&frame).unwrap();
+    assert_eq!(value["effects"][0]["intents"][0]["receipt"], RECEIPT);
+    assert!(
+        !value.to_string().contains("delivered"),
+        "delivery state is not representable on the armed-intent wire shape"
+    );
+    assert_eq!(
+        value["delta"],
+        serde_json::to_value(&frozen_delta).unwrap(),
+        "the additive sibling must not reshape Delta"
+    );
+
+    let legacy: LegacyDeltaFrame = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(legacy.delta, frozen_delta);
+
+    let mut future = value;
+    future["effects"][0]
+        .as_object_mut()
+        .unwrap()
+        .insert("wake_at".into(), json!("2026-07-18T12:50:00Z"));
+    let current: wire::DeltaFrame = serde_json::from_value(future).unwrap();
+    assert_eq!(
+        current, frame,
+        "future wake_at is an additive envelope field"
+    );
+}
+
 /// §4.7/§7.3 replay ≡ live: the diff response body carries the SAME frame
 /// objects as the live notifications — `diff(R0,R2)` is the two worked
 /// deltas, byte-identical, in one `batches` array. No second diff dialect.
@@ -951,6 +1017,7 @@ fn external_delta_absent_actor_now_and_no_keys_slot() {
             now: None,
             files: e3_delta().delta.files.clone(),
         },
+        effects: vec![],
     };
     let v = serde_json::to_value(&frame).unwrap();
     let delta = v["delta"].as_object().unwrap();
