@@ -13,6 +13,7 @@
 //! These conversion fns are test-local on purpose: the lib-level seam joins
 //! with sidecar proto negotiation, and this file is its reference when it does.
 
+use prost::Message as _;
 use transport_proto::pb;
 
 // ---------------------------------------------------------------------------
@@ -2639,6 +2640,63 @@ fn every_response_body_and_error_code_survives_wire_proto_wire() {
         };
         assert_eq!(response_from_pb(back), resp);
     }
+}
+
+#[test]
+fn absent_intent_fields_agree_between_json_and_protobuf() {
+    let intent = wire::Intent {
+        rule_id: "blocked-md-effect".into(),
+        seq: 1,
+        action: "md.set_field".into(),
+        target: None,
+        severity: None,
+        payload: None,
+        receipt: "tasks/x.md#^r-6794ce82d1d5aff1".into(),
+    };
+
+    assert_eq!(
+        serde_json::to_value(&intent).expect("serialize JSON intent"),
+        serde_json::json!({
+            "rule_id": "blocked-md-effect",
+            "seq": 1,
+            "action": "md.set_field",
+            "receipt": "tasks/x.md#^r-6794ce82d1d5aff1",
+        })
+    );
+
+    let proto = intent_to_pb(intent.clone());
+    assert!(proto.target.is_none());
+    assert!(proto.severity.is_none());
+    assert!(proto.payload.is_none());
+    assert_eq!(intent_from_pb(proto), intent);
+}
+
+#[test]
+fn empty_effects_preserve_pre_c5_protobuf_bytes() {
+    // Captured from parent commit 8a6500d3, before DeltaFrame.effects existed.
+    const PRE_C5_DELTA_FRAME: &[u8] = &[
+        0x0a, 0x17, 0x08, 0x07, 0x12, 0x09, 0x62, 0x33, 0x3a, 0x62, 0x65, 0x66, 0x6f, 0x72, 0x65,
+        0x1a, 0x08, 0x62, 0x33, 0x3a, 0x61, 0x66, 0x74, 0x65, 0x72,
+    ];
+    let frame = wire::DeltaFrame {
+        delta: wire::Delta {
+            seq: 7,
+            root_before: wire::Root("b3:before".into()),
+            root_after: wire::Root("b3:after".into()),
+            actor: None,
+            now: None,
+            files: vec![],
+        },
+        effects: vec![],
+    };
+
+    let proto = delta_frame_to_pb(frame.clone());
+    assert!(proto.effects.is_empty());
+    assert_eq!(proto.encode_to_vec(), PRE_C5_DELTA_FRAME);
+
+    let decoded = pb::DeltaFrame::decode(PRE_C5_DELTA_FRAME).expect("decode pre-C5 fixture");
+    assert!(decoded.effects.is_empty());
+    assert_eq!(delta_frame_from_pb(decoded), frame);
 }
 
 #[test]
