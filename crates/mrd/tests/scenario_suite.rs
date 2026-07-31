@@ -25,6 +25,11 @@ fn scenarios(sub: &str) -> PathBuf {
         .join(sub)
 }
 
+fn hook_scenarios() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/conventions/task-status-notify/scenarios")
+}
+
 /// Run `mrd test <path> --json`, returning `(exit_code, parsed_report)`.
 fn run_json(path: &Path) -> (i32, Value) {
     let out = mrd()
@@ -126,6 +131,24 @@ fn create_scenario_journals_the_birth() {
     assert_eq!(
         s["expect_ok"], true,
         "t.journal carries the create row, t.doc the bytes"
+    );
+}
+
+#[test]
+fn hook_scenarios_assert_the_emitted_effect_set_on_t_result() {
+    let (code, report) = run_json(&hook_scenarios());
+    assert_eq!(code, 0, "both HOOK scenarios must pass: {report}");
+    assert_eq!(report["summary"]["passed"], 2);
+    assert_eq!(report["summary"]["failed"], 0);
+    assert_eq!(
+        scenario(&report, "hook-move-to-review")["expect_ok"],
+        true,
+        "the matching scenario asserts the complete armed effect"
+    );
+    assert_eq!(
+        scenario(&report, "hook-other-status-is-silent")["expect_ok"],
+        true,
+        "the nonmatching scenario asserts an empty effect set"
     );
 }
 

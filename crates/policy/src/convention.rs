@@ -46,15 +46,15 @@ use crate::check_eval::{self, CheckError, CheckLimits, CheckTelemetry};
 use crate::hook::Hook;
 
 /// The four capability files a convention folder may carry. Each earns a file iff
-/// it needs a distinct power ceiling (rulings § capability grammar); v1 loads
-/// [`Capability::Check`] and defers the rest.
+/// it needs a distinct power ceiling (rulings § capability grammar); this slice loads
+/// [`Capability::Check`] and [`Capability::Hook`] and defers FIX/VIEW.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     /// `CHECK.md` — reads the change + pinned facts, produces findings / refusals.
     Check,
     /// `FIX.md` — mutates the change under caps (deferred).
     Fix,
-    /// `HOOK.md` — reacts outward to the landed change under effect caps (deferred).
+    /// `HOOK.md` — reacts outward to the landed change under declared effect caps.
     Hook,
     /// `VIEW.md` — the capability-locked read face (deferred).
     View,
@@ -327,6 +327,33 @@ pub fn load_convention(
     files: &dyn ConventionFiles,
     limits: CheckLimits,
 ) -> Result<Convention, LoadError> {
+    load_convention_with_hook_loader(slug, files, limits, crate::hook::load_hook)
+}
+
+/// Load a convention for the `test --corpus` pre-arming proof.
+///
+/// This differs from [`load_convention`] only for HOOK capability admission:
+/// counterfactual `md.*` descriptors may load so the tier can prove whether their
+/// trigger graph is quiescent. The returned declaration is not armed, cannot enter
+/// [`crate::evaluate_hooks`], and applies no effect. The production loader remains
+/// pinned to [`crate::SLICE1_CAPS`].
+///
+/// # Errors
+/// The same [`LoadError`] surface as [`load_convention`].
+pub fn load_convention_for_corpus(
+    slug: &str,
+    files: &dyn ConventionFiles,
+    limits: CheckLimits,
+) -> Result<Convention, LoadError> {
+    load_convention_with_hook_loader(slug, files, limits, crate::hook::load_hook_for_corpus)
+}
+
+fn load_convention_with_hook_loader(
+    slug: &str,
+    files: &dyn ConventionFiles,
+    limits: CheckLimits,
+    hook_loader: fn(&str, CheckLimits) -> Result<Hook, LoadError>,
+) -> Result<Convention, LoadError> {
     validate_slug(slug)?;
 
     // 1. Capability ceiling — a declared FIX / VIEW is a named deferral, never a
@@ -343,7 +370,7 @@ pub fn load_convention(
     //    is the law leg, HOOK the emit leg; either alone is a convention, neither is
     //    not. Matching on the pair keeps "one capability is present" a fact of the
     //    control flow rather than an invariant a later arm has to assume.
-    let load_hook = |md: &str| crate::hook::load_hook(md, limits);
+    let load_hook = |md: &str| hook_loader(md, limits);
     let (scope, check_source, hook) = match (
         files.read(Capability::Check.filename()),
         files.read(Capability::Hook.filename()),
