@@ -6,7 +6,17 @@ convention_rev: hook@1
 A different status still uses the production splice, but the HOOK stays silent.
 
 ```json ^put
-{ "op": "splice", "path": "tasks/card.md", "target": {"fm_key": "status"}, "at": "upsert", "text": "blocked" }
+{
+  "op": "splice",
+  "path": "tasks/card.md",
+  "actor": "mrd-test",
+  "edits": [
+    {
+      "target": {"fm_key": "status"},
+      "edit": {"put": {"at": "upsert", "text": "blocked"}}
+    }
+  ]
+}
 ```
 
 ```starlark ^expect

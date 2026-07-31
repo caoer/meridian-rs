@@ -77,8 +77,8 @@ pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 /// [`Convention`] runs its `check_change` over a [`Change`], returning the
 /// [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its passing scenario.
 pub use convention::{
-    Capability, CheckOutcome, Convention, ConventionFiles, LoadError, Refusal, load_convention,
-    load_convention_for_corpus,
+    Capability, CheckOutcome, Convention, ConventionFiles, CounterfactualConvention, LoadError,
+    Refusal, load_convention, load_convention_for_corpus,
 };
 
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
@@ -87,8 +87,9 @@ pub use convention::{
 /// ceiling was enforced at load. [`evaluate_hooks`] runs armed, in-scope HOOKs and
 /// returns advisory-only [`HookOutcome`]s; [`SLICE1_CAPS`] is what slice 1 admits.
 pub use hook::{
-    Hook, HookEvalError, HookFinding, HookOutcome, Intent, SLICE1_CAPS, evaluate_hooks,
-    evaluate_hooks_for_test,
+    CounterfactualHookTelemetry, Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry,
+    Intent, SLICE1_CAPS, evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks,
+    evaluate_hooks_for_test, evaluate_hooks_for_test_metered,
 };
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]

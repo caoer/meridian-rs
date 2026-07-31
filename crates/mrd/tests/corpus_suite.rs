@@ -343,6 +343,45 @@ fn deliberately_cyclic_hooks_fail_only_quiescence() {
 }
 
 #[test]
+fn loaded_hook_omitted_from_rules_is_still_dead() {
+    let (code, report) = run_hook_json("dead-hook-omitted-from-rules");
+    assert_eq!(
+        code, 1,
+        "a loaded dead HOOK cannot hide outside `rules`: {report}"
+    );
+    assert_eq!(
+        report["declared_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["summary"]["mismatches"], 0);
+}
+
+#[test]
+fn duplicate_identical_cases_are_acyclic_but_the_real_cycle_still_bites() {
+    let (code, report) = run_hook_json("duplicate-identical-cases");
+    assert_eq!(
+        code, 0,
+        "global duplicate work is not a causal cycle: {report}"
+    );
+    assert_eq!(report["summary"]["cases"], 2);
+    assert_eq!(report["summary"]["matched"], 2);
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(report["quiescence"]["cycle"], Value::Null);
+
+    let (cycle_code, cycle) = run_hook_json("cyclic-hooks");
+    assert_eq!(cycle_code, 1);
+    assert_eq!(cycle["quiescence"]["verdict"], "cycle");
+    assert_eq!(
+        cycle["quiescence"]["cycle"],
+        serde_json::json!(["cycle-alpha", "cycle-beta", "cycle-alpha"])
+    );
+}
+
+#[test]
 fn malformed_spec_is_a_tool_failure() {
     // A ```case block whose JSON will not parse is exit 2 (tool failure), not a
     // findings run — it emits no report on stdout.

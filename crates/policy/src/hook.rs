@@ -47,7 +47,7 @@
 use std::collections::HashSet;
 
 use effects::{
-    ArgValue, CapabilitySet, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits,
+    ArgValue, CapabilitySet, ChangeEvent, Domain, Effect, EffectKind, EvalError, EvalLimits,
     REACTION_VOCAB, Rule,
 };
 use starlark::analysis::AstModuleLint;
@@ -75,9 +75,10 @@ const CORPUS_COUNTERFACTUAL_CAPS: [EffectKind; 3] = [
 
 /// A loaded `HOOK.md`: its declared scope, severity, caps, per-eval budget, the
 /// verbatim `how:` block, and the parse- and ceiling-validated predicate.
-/// Construction is sealed to [`load_hook`] — a `Hook` in hand has passed the
-/// frontmatter grammar, the slice-1 cap allowlist, the full-limits load gate, and the
-/// capability ceiling.
+/// Public construction is sealed to [`load_hook`], so a publicly reachable `Hook`
+/// has passed the slice-1 cap gate. The corpus-only widened constructor remains
+/// private and its value is sealed inside [`crate::CounterfactualConvention`]; no
+/// widened `Hook` crosses this crate's ordinary policy surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
     severity: String,
@@ -262,9 +263,44 @@ pub fn evaluate_hooks(
     )
 }
 
+/// One production-shaped pre-arming HOOK outcome with its exact evaluator meter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookTestTelemetry {
+    /// The convention evaluated for this row, even when it emitted nothing.
+    pub rule_id: String,
+    /// The canonical intent projection, including `narrowed` and typed findings.
+    pub outcome: HookOutcome,
+    /// Starlark ticks spent by this one HOOK evaluation.
+    pub fuel_used: u64,
+    /// Peak evaluator heap for this one HOOK evaluation.
+    pub mem_used: u64,
+}
+
+/// One widened HOOK outcome owned exclusively by the corpus proof.
+///
+/// Raw typed effects remain necessary here because the proof applies `md.*` through
+/// the production writer. This type cannot enter ordinary HOOK evaluation or arming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterfactualHookTelemetry {
+    /// The emitting convention.
+    pub rule_id: String,
+    /// Effects admitted by the counterfactual declaration's caps.
+    pub effects: Vec<Effect>,
+    /// Complete effects denied by those caps.
+    pub narrowed: Vec<Effect>,
+    /// Typed evaluator findings, such as budget exhaustion.
+    pub findings: Vec<HookFinding>,
+    /// The declaration's opaque HOW bytes.
+    pub how: String,
+    /// Starlark ticks spent by this one HOOK evaluation.
+    pub fuel_used: u64,
+    /// Peak evaluator heap for this one HOOK evaluation.
+    pub mem_used: u64,
+}
+
 /// Evaluate loaded conventions before arming for the tier-1 scenario proof.
 ///
-/// This is the same pure descriptor evaluator and intent projection as
+/// This is the same policy-owned descriptor evaluator and intent projection as
 /// [`evaluate_hooks`], but its input is a loaded [`crate::Convention`] rather than an
 /// attested INDEX row. It grants no arming state and applies no effect. The scenario
 /// runner uses it only after routing the declared `^put` through the production write
@@ -276,18 +312,100 @@ pub fn evaluate_hooks_for_test(
     conventions: &[crate::Convention],
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
-    evaluate_loaded_hooks(
+    evaluate_hooks_for_test_metered(conventions, event)
+        .map(|rows| rows.into_iter().map(|row| row.outcome).collect())
+}
+
+/// The tier-1 evaluator plus exact meters for `test --corpus`.
+///
+/// # Errors
+/// The same [`HookEvalError`] surface as [`evaluate_hooks`].
+pub fn evaluate_hooks_for_test_metered(
+    conventions: &[crate::Convention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
+    evaluate_loaded_hooks_metered(
         conventions
             .iter()
             .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
         event,
-    )
+        EvalLimits::default().max_depth,
+    )?
+    .into_iter()
+    .map(project_hook_telemetry)
+    .collect()
+}
+
+/// Evaluate widened declarations only inside the corpus proof.
+///
+/// This API accepts only [`crate::CounterfactualConvention`], so widened caps cannot
+/// cross into ordinary policy code. It shares metering, capability routing, global
+/// sequencing, and typed findings with production evaluation. Non-Markdown effects
+/// still pass canonical intent validation; `md.*` stays raw so the proof can execute
+/// it through the production writer. Explicit graph fuel replaces runtime depth
+/// suppression.
+///
+/// # Errors
+/// A non-budget predicate fault has the same [`HookEvalError::Eval`] surface as the
+/// production evaluator.
+pub fn evaluate_counterfactual_hooks_for_corpus_metered(
+    conventions: &[crate::CounterfactualConvention],
+    event: &ChangeEvent,
+) -> Result<Vec<CounterfactualHookTelemetry>, HookEvalError> {
+    evaluate_loaded_hooks_metered(
+        conventions
+            .iter()
+            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+        event,
+        u32::MAX,
+    )?
+    .into_iter()
+    .map(|row| {
+        for effect in row.effects.iter().chain(&row.narrowed) {
+            if effect.kind.domain() != Domain::Md {
+                intent_from_effect(effect.clone(), &row.expected_receipt)?;
+            }
+        }
+        Ok(CounterfactualHookTelemetry {
+            rule_id: row.rule_id,
+            effects: row.effects,
+            narrowed: row.narrowed,
+            findings: row.findings,
+            how: row.how,
+            fuel_used: row.fuel_used,
+            mem_used: row.mem_used,
+        })
+    })
+    .collect()
+}
+
+struct RawHookTelemetry {
+    rule_id: String,
+    effects: Vec<Effect>,
+    narrowed: Vec<Effect>,
+    findings: Vec<HookFinding>,
+    how: String,
+    expected_receipt: String,
+    fuel_used: u64,
+    mem_used: u64,
 }
 
 fn evaluate_loaded_hooks<'a>(
     hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
+    evaluate_loaded_hooks_metered(hooks, event, EvalLimits::default().max_depth)?
+        .into_iter()
+        .map(project_hook_telemetry)
+        .map(|row| row.map(|row| row.outcome))
+        .collect()
+}
+
+fn evaluate_loaded_hooks_metered<'a>(
+    hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
+    event: &ChangeEvent,
+    max_depth: u32,
+) -> Result<Vec<RawHookTelemetry>, HookEvalError> {
     let mut outcomes = Vec::new();
     let mut next_seq = 0_u32;
 
@@ -299,26 +417,25 @@ fn evaluate_loaded_hooks<'a>(
         let limits = EvalLimits {
             fuel: hook.budget.steps,
             mem: hook.budget.mem,
+            max_depth,
             ..EvalLimits::default()
         };
-        let mut effects =
-            match effects::eval_with_limits(&[Rule::new(rule_id, hook.source())], event, limits) {
-                Ok(effects) => effects,
-                Err(EvalError::Budget { fuel, mem }) => {
-                    outcomes.push(HookOutcome {
-                        intents: Vec::new(),
-                        narrowed: Vec::new(),
-                        findings: vec![HookFinding::BudgetExceeded {
-                            rule_id: rule_id.to_string(),
-                            steps: fuel,
-                            mem,
-                        }],
-                        how: hook.how.clone(),
-                    });
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            };
+        let telemetry =
+            effects::eval_telemetry(&[Rule::new(rule_id, hook.source())], event, limits)
+                .pop()
+                .expect("one HOOK produces one telemetry row");
+        let (mut effects, findings) = match telemetry.outcome {
+            Ok(effects) => (effects, Vec::new()),
+            Err(EvalError::Budget { fuel, mem }) => (
+                Vec::new(),
+                vec![HookFinding::BudgetExceeded {
+                    rule_id: rule_id.to_string(),
+                    steps: fuel,
+                    mem,
+                }],
+            ),
+            Err(error) => return Err(error.into()),
+        };
         for effect in &mut effects {
             effect.seq = next_seq;
             next_seq = next_seq
@@ -329,24 +446,43 @@ fn evaluate_loaded_hooks<'a>(
                 })?;
         }
 
-        let expected_receipt = effects::receipt_address(&event.file, &event.fingerprint_after);
         let caps: CapabilitySet = hook.caps.iter().copied().collect();
-        let (admitted, dropped) = caps.route(effects);
-        outcomes.push(HookOutcome {
-            intents: admitted
-                .into_iter()
-                .map(|effect| intent_from_effect(effect, &expected_receipt))
-                .collect::<Result<_, _>>()?,
-            narrowed: dropped
-                .into_iter()
-                .map(|effect| intent_from_effect(effect, &expected_receipt))
-                .collect::<Result<_, _>>()?,
-            findings: Vec::new(),
+        let (effects, narrowed) = caps.route(effects);
+        outcomes.push(RawHookTelemetry {
+            rule_id: rule_id.to_string(),
+            effects,
+            narrowed,
+            findings,
             how: hook.how.clone(),
+            expected_receipt: effects::receipt_address(&event.file, &event.fingerprint_after),
+            fuel_used: telemetry.fuel_used,
+            mem_used: telemetry.mem_used,
         });
     }
 
     Ok(outcomes)
+}
+
+fn project_hook_telemetry(row: RawHookTelemetry) -> Result<HookTestTelemetry, HookEvalError> {
+    Ok(HookTestTelemetry {
+        rule_id: row.rule_id,
+        outcome: HookOutcome {
+            intents: row
+                .effects
+                .into_iter()
+                .map(|effect| intent_from_effect(effect, &row.expected_receipt))
+                .collect::<Result<_, _>>()?,
+            narrowed: row
+                .narrowed
+                .into_iter()
+                .map(|effect| intent_from_effect(effect, &row.expected_receipt))
+                .collect::<Result<_, _>>()?,
+            findings: row.findings,
+            how: row.how,
+        },
+        fuel_used: row.fuel_used,
+        mem_used: row.mem_used,
+    })
 }
 
 fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {

@@ -6,7 +6,17 @@ convention_rev: hook@1
 The exact production splice moves the task to review and arms one intent.
 
 ```json ^put
-{ "op": "splice", "path": "tasks/card.md", "target": {"fm_key": "status"}, "at": "upsert", "text": "review" }
+{
+  "op": "splice",
+  "path": "tasks/card.md",
+  "actor": "mrd-test",
+  "edits": [
+    {
+      "target": {"fm_key": "status"},
+      "edit": {"put": {"at": "upsert", "text": "review"}}
+    }
+  ]
+}
 ```
 
 ```starlark ^expect

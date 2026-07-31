@@ -11,9 +11,13 @@ the legal path the firing scenario cites.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "verdicts/close-1.md",
-  "edits": [],
-  "properties": { "outcome": "approve" }
+  "actor": "carol",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "outcome"}, "edit": {"put": {"at": "upsert", "text": "approve"}}}
+  ]
 }
 ```
 

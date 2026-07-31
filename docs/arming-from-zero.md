@@ -71,7 +71,13 @@ pre-arming gate:
   and require zero UNDECLARED refusals against the pinned
   `conventions/<slug>/GOLDEN.md` list.
 
-A convention that has not passed the tiers is not ready to arm.
+Passing all three tiers is **pre-arm qualification**, not armability. The current
+attestation contract below pins `CHECK.md` only. A HOOK-only convention therefore
+remains fail-closed and cannot be armed until the later ARM card settles the pending
+HOOK attestation and activation-field contract. C6a proves the reaction; it does not
+invent that contract.
+
+A convention that has not passed the tiers is not qualified for arming review.
 
 ### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
 

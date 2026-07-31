@@ -11,9 +11,13 @@ path the firing scenario cites.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/ship-cache.md",
-  "edits": [],
-  "properties": { "status": "closed" }
+  "actor": "worker-a",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "status"}, "edit": {"put": {"at": "upsert", "text": "closed"}}}
+  ]
 }
 ```
 
