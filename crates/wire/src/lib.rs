@@ -1358,8 +1358,11 @@ pub struct Intent {
     pub rule_id: String,
     pub seq: u32,
     pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub severity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<String>,
     /// The canonical receipt address minted before delivery.
     pub receipt: String,
