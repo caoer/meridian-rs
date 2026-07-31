@@ -6,8 +6,8 @@
 //! ` ```conventions ` list. `counterfactual: true` admits `md.*` descriptors in
 //! this tier only so quiescence can be falsified without widening runtime caps.
 //!
-//! - ` ```rules ` — the DECLARED CHECK citations and HOOK slugs. Any one with no
-//!   observed emission is a dead rule.
+//! - ` ```rules ` — the DECLARED CHECK citations. Every loaded HOOK slug joins the
+//!   liveness universe automatically; omitting it from this fence cannot hide a dead HOOK.
 //! - ` ```case ` — one synthetic change as JSON: `{doc, actor?, force?, set?,
 //!   remove?, expect}`. `expect` is one rule id, a list of ids, or `"pass"`.
 //!
@@ -19,9 +19,9 @@
 //!   `expect` (a single rule id, or `"pass"` for no fire). A doc outside the
 //!   convention's `paths:` scope is never run — it can only pass (scope gating is
 //!   observable here). A mismatch is a finding.
-//! - **zero dead rules** — every DECLARED rule must fire at least once over the
-//!   corpus; a declared rule with zero fires is reported DEAD (a finding). A rule
-//!   the convention fired that the spec never declared is a `surprise` finding.
+//! - **zero dead rules** — every CHECK citation in `rules` and every loaded HOOK
+//!   must fire at least once over the corpus. A non-firing member is DEAD; a CHECK
+//!   citation that fires without declaration is a `surprise` finding.
 //! - **fuel + heap budgets** — exact ticks and peak heap, reduced to
 //!   p50/p99/max over all in-scope evaluations.
 //! - **FIX/HOOK quiescence** — follow reachable `md.*` descriptors through a
@@ -37,15 +37,20 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use effects::{ArgValue, CapabilitySet, Domain, Effect, EffectKind, EvalError, EvalLimits, Rule};
+use effects::{ArgValue, Domain, Effect, EffectKind};
+use fs::WorkspaceRoot;
 use model::{Document, NodeKind};
 use policy::ConventionFiles;
 use policy::{
-    Change, ChangeOp, CheckError, CheckLimits, Convention, Invocation, derive_change, derive_event,
-    load_convention, load_convention_for_corpus, load_seed_convention,
+    Change, ChangeOp, CheckError, CheckLimits, Convention, CounterfactualConvention, HookEvalError,
+    HookFinding, Invocation, derive_change, derive_event,
+    evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks_for_test_metered,
+    load_convention, load_convention_for_corpus, load_seed_convention, seed_convention_files,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use wire::{Edit, EditShape, HpathSeg, Path as WirePath, PutAt, SecRef};
+use wire_serve::write::{SpliceArgs, splice};
 
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
 use crate::{Fail, Format};
@@ -90,8 +95,8 @@ struct Spec {
     counterfactual: bool,
     /// The corpus root (the 18-02 corpus / governed tree), resolved absolute.
     corpus_root: PathBuf,
-    /// The declared rule set — the citations dead-rule detection is measured
-    /// against (in declaration order, deduplicated).
+    /// Declared CHECK citation ids (in declaration order, deduplicated). Loaded
+    /// HOOK slugs enter liveness from the convention set, never from this fence.
     declared_rules: Vec<String>,
     /// The synthetic-change cases, in file order.
     cases: Vec<CaseSpec>,
@@ -278,13 +283,180 @@ impl ConventionFiles for DirConventionFiles {
     }
 }
 
-/// Load a spec's convention through the loader under the default full limits.
+enum LoadedConventions {
+    Production(Vec<Convention>),
+    Counterfactual(Vec<CounterfactualConvention>),
+}
+
+#[derive(Clone, Copy)]
+enum ConventionView<'a> {
+    Production(&'a Convention),
+    Counterfactual(&'a CounterfactualConvention),
+}
+
+impl<'a> ConventionView<'a> {
+    fn slug(self) -> &'a str {
+        match self {
+            Self::Production(convention) => convention.slug(),
+            Self::Counterfactual(convention) => convention.slug(),
+        }
+    }
+
+    fn scope(self) -> &'a [String] {
+        match self {
+            Self::Production(convention) => convention.scope(),
+            Self::Counterfactual(convention) => convention.scope(),
+        }
+    }
+
+    fn has_check(self) -> bool {
+        match self {
+            Self::Production(convention) => convention.check_source().is_some(),
+            Self::Counterfactual(convention) => convention.has_check(),
+        }
+    }
+
+    fn matches_path(self, path: &str) -> bool {
+        match self {
+            Self::Production(convention) => convention.matches_path(path),
+            Self::Counterfactual(convention) => convention.matches_path(path),
+        }
+    }
+
+    fn check_change_metered(self, change: &Change) -> Result<policy::CheckTelemetry, CheckError> {
+        match self {
+            Self::Production(convention) => convention.check_change_metered(change),
+            Self::Counterfactual(convention) => convention.check_change_metered(change),
+        }
+    }
+
+    fn has_hook(self) -> bool {
+        match self {
+            Self::Production(convention) => convention.hook().is_some(),
+            Self::Counterfactual(convention) => convention.has_hook(),
+        }
+    }
+
+    fn hook_matches_path(self, path: &str) -> bool {
+        match self {
+            Self::Production(convention) => convention
+                .hook()
+                .is_some_and(|hook| hook.matches_path(path)),
+            Self::Counterfactual(convention) => convention.hook_matches_path(path),
+        }
+    }
+}
+
+struct HookRun {
+    rule_id: String,
+    fired: bool,
+    effects: Vec<Effect>,
+    narrowed: Vec<String>,
+    findings: Vec<HookFinding>,
+    fuel: u64,
+    mem: u64,
+}
+
+impl LoadedConventions {
+    fn views(&self) -> Vec<ConventionView<'_>> {
+        match self {
+            Self::Production(conventions) => {
+                conventions.iter().map(ConventionView::Production).collect()
+            }
+            Self::Counterfactual(conventions) => conventions
+                .iter()
+                .map(ConventionView::Counterfactual)
+                .collect(),
+        }
+    }
+
+    fn evaluate_hooks(&self, event: &effects::ChangeEvent) -> Result<Vec<HookRun>, HookEvalError> {
+        match self {
+            Self::Production(conventions) => {
+                Ok(evaluate_hooks_for_test_metered(conventions, event)?
+                    .into_iter()
+                    .map(|row| HookRun {
+                        rule_id: row.rule_id,
+                        fired: !row.outcome.intents.is_empty(),
+                        effects: Vec::new(),
+                        narrowed: row
+                            .outcome
+                            .narrowed
+                            .iter()
+                            .map(|intent| format!("{}:{}", intent.rule_id, intent.action))
+                            .collect(),
+                        findings: row.outcome.findings,
+                        fuel: row.fuel_used,
+                        mem: row.mem_used,
+                    })
+                    .collect())
+            }
+            Self::Counterfactual(conventions) => Ok(
+                evaluate_counterfactual_hooks_for_corpus_metered(conventions, event)?
+                    .into_iter()
+                    .map(|row| {
+                        let fired = !row.effects.is_empty();
+                        HookRun {
+                            rule_id: row.rule_id,
+                            fired,
+                            effects: row.effects,
+                            narrowed: row
+                                .narrowed
+                                .iter()
+                                .map(|effect| {
+                                    format!("{}:{}", effect.rule_id, effect.kind.as_str())
+                                })
+                                .collect(),
+                            findings: row.findings,
+                            fuel: row.fuel_used,
+                            mem: row.mem_used,
+                        }
+                    })
+                    .collect(),
+            ),
+        }
+    }
+}
+
+/// Load a spec's conventions through either the production loader or the opaque
+/// counterfactual proof loader. A widened declaration never becomes `Convention`.
 ///
 /// # Errors
 /// [`Fail::tool`] — a convention folder that will not load (a `LoadError`), or a
 /// seed convention that no longer satisfies the loader.
-fn load_spec_conventions(spec: &Spec) -> Result<Vec<Convention>, Fail> {
+fn load_spec_conventions(spec: &Spec) -> Result<LoadedConventions, Fail> {
     let limits = CheckLimits::default();
+    if spec.counterfactual {
+        let mut loaded = Vec::with_capacity(spec.conventions.len());
+        for convention in &spec.conventions {
+            let convention = match convention {
+                ConventionRef::Seed => load_convention_for_corpus(
+                    policy::SEED_CONVENTION_SLUG,
+                    &seed_convention_files(),
+                    limits,
+                )
+                .map_err(|error| Fail::tool(format!("seed convention failed to load: {error}")))?,
+                ConventionRef::Folder { slug, dir } => {
+                    let files = DirConventionFiles { dir: dir.clone() };
+                    load_convention_for_corpus(slug, &files, limits).map_err(|error| {
+                        Fail::tool(format!("convention `{slug}` failed to load: {error}"))
+                    })?
+                }
+            };
+            if loaded
+                .iter()
+                .any(|existing: &CounterfactualConvention| existing.slug() == convention.slug())
+            {
+                return Err(Fail::tool(format!(
+                    "corpus spec declares convention `{}` more than once",
+                    convention.slug()
+                )));
+            }
+            loaded.push(convention);
+        }
+        return Ok(LoadedConventions::Counterfactual(loaded));
+    }
+
     let mut loaded = Vec::with_capacity(spec.conventions.len());
     for convention in &spec.conventions {
         let convention = match convention {
@@ -292,12 +464,7 @@ fn load_spec_conventions(spec: &Spec) -> Result<Vec<Convention>, Fail> {
                 .map_err(|error| Fail::tool(format!("seed convention failed to load: {error}")))?,
             ConventionRef::Folder { slug, dir } => {
                 let files = DirConventionFiles { dir: dir.clone() };
-                let result = if spec.counterfactual {
-                    load_convention_for_corpus(slug, &files, limits)
-                } else {
-                    load_convention(slug, &files, limits)
-                };
-                result.map_err(|error| {
+                load_convention(slug, &files, limits).map_err(|error| {
                     Fail::tool(format!("convention `{slug}` failed to load: {error}"))
                 })?
             }
@@ -313,7 +480,7 @@ fn load_spec_conventions(spec: &Spec) -> Result<Vec<Convention>, Fail> {
         }
         loaded.push(convention);
     }
-    Ok(loaded)
+    Ok(LoadedConventions::Production(loaded))
 }
 
 // ── running the corpus ────────────────────────────────────────────────────────
@@ -343,6 +510,8 @@ struct CaseResult {
     effects: Vec<Effect>,
     /// The initial case's post-mutation bytes, used only by counterfactual chaining.
     after_md: String,
+    /// Complete descriptors denied by the declared capability ceiling.
+    narrowed_effects: Vec<String>,
     /// Named budget findings, kept distinct from structural evaluation faults.
     budget_findings: Vec<String>,
 }
@@ -363,7 +532,8 @@ impl CaseResult {
 /// # Errors
 /// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, or a path
 /// that escapes the corpus mount.
-fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
+fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fail> {
+    let views = conventions.views();
     let mut results = Vec::with_capacity(spec.cases.len());
     for (index, case) in spec.cases.iter().enumerate() {
         results.push(run_case(conventions, spec, index, case)?);
@@ -377,9 +547,22 @@ fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
             fired.extend(rules.iter().cloned());
         }
     }
-    let declared: BTreeSet<String> = spec.declared_rules.iter().cloned().collect();
-    let dead_rules: Vec<String> = spec
-        .declared_rules
+
+    // The `rules` fence declares CHECK citation ids only. Every loaded HOOK is a
+    // liveness subject whether or not an author remembered to repeat its slug there.
+    let mut declared_rules = spec.declared_rules.clone();
+    for hook_slug in views
+        .iter()
+        .copied()
+        .filter(|convention| convention.has_hook())
+        .map(ConventionView::slug)
+    {
+        if !declared_rules.iter().any(|rule| rule == hook_slug) {
+            declared_rules.push(hook_slug.to_owned());
+        }
+    }
+    let declared: BTreeSet<String> = declared_rules.iter().cloned().collect();
+    let dead_rules: Vec<String> = declared_rules
         .iter()
         .filter(|rule| !fired.contains(*rule))
         .cloned()
@@ -401,8 +584,9 @@ fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
 
     Ok(Report {
         name: spec.name.clone(),
-        convention_slugs: conventions
+        convention_slugs: views
             .iter()
+            .copied()
             .map(|convention| convention.slug().to_owned())
             .collect(),
         convention_sources: spec
@@ -411,11 +595,12 @@ fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
             .map(convention_source_label)
             .collect(),
         corpus_root: spec.corpus_root.display().to_string(),
-        scopes: conventions
+        scopes: views
             .iter()
+            .copied()
             .map(|convention| convention.scope().to_vec())
             .collect(),
-        declared_rules: spec.declared_rules.clone(),
+        declared_rules,
         results,
         dead_rules,
         surprise_rules,
@@ -427,7 +612,7 @@ fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
 
 /// Run one initial synthetic change through every declared CHECK and HOOK.
 fn run_case(
-    conventions: &[Convention],
+    conventions: &LoadedConventions,
     spec: &Spec,
     index: usize,
     case: &CaseSpec,
@@ -441,8 +626,8 @@ fn run_case(
             on_disk.display()
         ))
     })?;
-    let after_md = apply_mutation(&before_md, &case.set, &case.remove);
     let doc_path = rel.to_string_lossy().replace('\\', "/");
+    let after_md = apply_case_mutation(&doc_path, &before_md, case)?;
     let before = build_doc(&doc_path, &before_md);
     let after = build_doc(&doc_path, &after_md);
     let change = synth_change(&before, &after, case);
@@ -454,10 +639,11 @@ fn run_case(
     let mut fuel = Vec::new();
     let mut mem = Vec::new();
     let mut errors = Vec::new();
+    let mut narrowed_effects = Vec::new();
     let mut budget_findings = Vec::new();
 
-    for convention in conventions {
-        if convention.check_source().is_some() && convention.matches_path(&doc_path) {
+    for convention in conventions.views() {
+        if convention.has_check() && convention.matches_path(&doc_path) {
             in_scope = true;
             match convention.check_change_metered(&change) {
                 Ok(telemetry) => {
@@ -473,36 +659,34 @@ fn run_case(
                 Err(error) => errors.push(check_error_label(&error)),
             }
         }
-
-        let Some(hook) = convention.hook() else {
-            continue;
-        };
-        if !hook.matches_path(&doc_path) {
-            continue;
+        if convention.has_hook() && convention.hook_matches_path(&doc_path) {
+            in_scope = true;
         }
-        in_scope = true;
-        let telemetry = evaluate_hook(convention, &event);
-        fuel.push(telemetry.fuel);
-        mem.push(telemetry.mem);
-        match telemetry.outcome {
-            Ok(emitted) => {
-                if !emitted.is_empty() {
-                    fired.insert(convention.slug().to_owned());
+    }
+
+    let hook_rows = conventions
+        .evaluate_hooks(&event)
+        .map_err(|error| Fail::tool(format!("HOOK evaluation failed: {error}")))?;
+    for row in hook_rows {
+        fuel.push(row.fuel);
+        mem.push(row.mem);
+        if row.fired {
+            fired.insert(row.rule_id.clone());
+        }
+        effects.extend(row.effects);
+        narrowed_effects.extend(row.narrowed);
+        for finding in row.findings {
+            match finding {
+                HookFinding::BudgetExceeded {
+                    rule_id,
+                    steps,
+                    mem,
+                } => {
+                    let finding = format!("{rule_id}: budget_exceeded steps={steps} mem={mem}");
+                    budget_findings.push(finding.clone());
+                    errors.push(finding);
                 }
-                effects.extend(emitted);
             }
-            Err(HookRunError::Budget { steps, mem }) => {
-                let finding = format!(
-                    "{}: budget_exceeded steps={steps} mem={mem}",
-                    convention.slug()
-                );
-                budget_findings.push(finding.clone());
-                errors.push(finding);
-            }
-            Err(HookRunError::Eval(detail)) => errors.push(format!(
-                "{}: HOOK evaluation failed: {detail}",
-                convention.slug()
-            )),
         }
     }
 
@@ -527,52 +711,9 @@ fn run_case(
         mem,
         effects,
         after_md,
+        narrowed_effects,
         budget_findings,
     })
-}
-
-struct HookTelemetry {
-    fuel: u64,
-    mem: u64,
-    outcome: Result<Vec<Effect>, HookRunError>,
-}
-
-enum HookRunError {
-    Budget { steps: u64, mem: u64 },
-    Eval(String),
-}
-
-fn evaluate_hook(convention: &Convention, event: &effects::ChangeEvent) -> HookTelemetry {
-    let hook = convention.hook().expect("caller selected a HOOK");
-    let budget = hook.budget();
-    let telemetry = effects::eval_telemetry(
-        &[Rule::new(convention.slug(), hook.source())],
-        event,
-        EvalLimits {
-            fuel: budget.steps,
-            mem: budget.mem,
-            // Corpus quiescence must not borrow the runtime cascade suppression as
-            // its proof. Counterfactual search has its own explicit fuel below.
-            max_depth: u32::MAX,
-            ..EvalLimits::default()
-        },
-    )
-    .pop()
-    .expect("one rule produces one telemetry row");
-    let outcome = match telemetry.outcome {
-        Ok(effects) => {
-            let caps: CapabilitySet = hook.caps().iter().copied().collect();
-            let (admitted, _narrowed) = caps.route(effects);
-            Ok(admitted)
-        }
-        Err(EvalError::Budget { fuel, mem }) => Err(HookRunError::Budget { steps: fuel, mem }),
-        Err(error) => Err(HookRunError::Eval(error.to_string())),
-    };
-    HookTelemetry {
-        fuel: telemetry.fuel_used,
-        mem: telemetry.mem_used,
-        outcome,
-    }
 }
 
 const QUIESCENCE_FUEL: usize = 256;
@@ -614,19 +755,23 @@ struct PendingEffect {
     markdown: String,
     effect: Effect,
     chain: Vec<String>,
+    /// Signatures on this causal lineage only. A global duplicate is not a cycle.
+    ancestors: BTreeSet<String>,
 }
 
 /// Follow only reachable `md.*` descriptors from the declared synthetic cases.
-/// A repeated `(state, pending descriptor)` proves a deterministic cycle that can
-/// keep firing. Terminal `proto.*` descriptors add no graph edge, which makes the
-/// slice-1 `[proto.send]` verdict explicitly acyclic rather than implicitly skipped.
+/// A signature recurring in its own causal ancestry proves a deterministic cycle.
+/// Identical work from another case or a converging branch may be deduplicated after
+/// this ancestry check, but it never manufactures a cycle. Terminal `proto.*`
+/// descriptors add no graph edge, which keeps slice 1 explicitly acyclic.
 fn prove_quiescence(
-    conventions: &[Convention],
+    conventions: &LoadedConventions,
     results: &[CaseResult],
 ) -> Result<Quiescence, Fail> {
     let nodes = conventions
-        .iter()
-        .filter(|convention| convention.hook().is_some())
+        .views()
+        .into_iter()
+        .filter(|convention| convention.has_hook())
         .map(|convention| convention.slug().to_owned())
         .collect();
     let mut proof = Quiescence {
@@ -642,17 +787,22 @@ fn prove_quiescence(
         mem_samples: Vec::new(),
     };
     let mut queue = initial_counterfactuals(results);
-    let mut seen = BTreeSet::new();
+    let mut completed = BTreeSet::new();
 
-    while let Some(pending) = queue.pop_front() {
-        if !seen.insert(pending_signature(&pending)) {
+    while let Some(mut pending) = queue.pop_front() {
+        let signature = pending_signature(&pending);
+        if pending.ancestors.contains(&signature) {
             proof.cycle = Some(repeated_cycle(&pending.chain));
             break;
+        }
+        if !completed.insert(signature.clone()) {
+            continue;
         }
         if proof.steps >= proof.fuel_limit {
             proof.fuel_exhausted = true;
             break;
         }
+        pending.ancestors.insert(signature);
         proof.steps += 1;
         advance_counterfactual(&pending, conventions, &mut queue, &mut proof)?;
         if proof.fault.is_some() {
@@ -676,6 +826,7 @@ fn initial_counterfactuals(results: &[CaseResult]) -> VecDeque<PendingEffect> {
                     markdown: result.after_md.clone(),
                     effect: effect.clone(),
                     chain: vec![effect.rule_id.clone()],
+                    ancestors: BTreeSet::new(),
                 })
         })
         .collect()
@@ -694,11 +845,13 @@ fn pending_signature(pending: &PendingEffect) -> String {
 
 fn advance_counterfactual(
     pending: &PendingEffect,
-    conventions: &[Convention],
+    conventions: &LoadedConventions,
     queue: &mut VecDeque<PendingEffect>,
     proof: &mut Quiescence,
 ) -> Result<(), Fail> {
-    let Some(after_md) = apply_md_effect(&pending.markdown, &pending.effect)? else {
+    let Some(after_md) =
+        apply_counterfactual_effect(&pending.path, &pending.markdown, &pending.effect)?
+    else {
         return Ok(());
     };
     let before = build_doc(&pending.path, &pending.markdown);
@@ -720,41 +873,35 @@ fn advance_counterfactual(
         u32::try_from(pending.chain.len()).unwrap_or(u32::MAX),
     );
 
-    for convention in conventions {
-        let Some(hook) = convention.hook() else {
-            continue;
-        };
-        if !hook.matches_path(&pending.path) {
-            continue;
+    let rows = match conventions.evaluate_hooks(&event) {
+        Ok(rows) => rows,
+        Err(error) => {
+            proof.fault = Some(format!("HOOK evaluation failed: {error}"));
+            return Ok(());
         }
-        let telemetry = evaluate_hook(convention, &event);
-        proof.fuel_samples.push(telemetry.fuel);
-        proof.mem_samples.push(telemetry.mem);
-        let emitted = match telemetry.outcome {
-            Ok(effects) => effects,
-            Err(HookRunError::Budget { steps, mem }) => {
-                proof.fault = Some(format!(
-                    "{}: budget_exceeded steps={steps} mem={mem}",
-                    convention.slug()
-                ));
-                return Ok(());
-            }
-            Err(HookRunError::Eval(detail)) => {
-                proof.fault = Some(format!(
-                    "{}: HOOK evaluation failed: {detail}",
-                    convention.slug()
-                ));
-                return Ok(());
-            }
-        };
-        enqueue_emitted(pending, convention, &after_md, emitted, queue, proof);
+    };
+    for row in rows {
+        proof.fuel_samples.push(row.fuel);
+        proof.mem_samples.push(row.mem);
+        if let Some(HookFinding::BudgetExceeded {
+            rule_id,
+            steps,
+            mem,
+        }) = row.findings.into_iter().next()
+        {
+            proof.fault = Some(format!(
+                "{rule_id}: budget_exceeded steps={steps} mem={mem}"
+            ));
+            return Ok(());
+        }
+        enqueue_emitted(pending, &row.rule_id, &after_md, row.effects, queue, proof);
     }
     Ok(())
 }
 
 fn enqueue_emitted(
     pending: &PendingEffect,
-    convention: &Convention,
+    rule_id: &str,
     after_md: &str,
     emitted: Vec<Effect>,
     queue: &mut VecDeque<PendingEffect>,
@@ -765,18 +912,19 @@ fn enqueue_emitted(
     }
     proof
         .edges
-        .insert((pending.emitter.clone(), convention.slug().to_owned()));
-    proof.fired_rules.insert(convention.slug().to_owned());
+        .insert((pending.emitter.clone(), rule_id.to_owned()));
+    proof.fired_rules.insert(rule_id.to_owned());
     let mut chain = pending.chain.clone();
-    chain.push(convention.slug().to_owned());
+    chain.push(rule_id.to_owned());
     for effect in emitted {
         if effect.kind.domain() == Domain::Md {
             queue.push_back(PendingEffect {
-                emitter: convention.slug().to_owned(),
+                emitter: rule_id.to_owned(),
                 path: pending.path.clone(),
                 markdown: after_md.to_owned(),
                 effect,
                 chain: chain.clone(),
+                ancestors: pending.ancestors.clone(),
             });
         }
     }
@@ -793,31 +941,52 @@ fn repeated_cycle(chain: &[String]) -> Vec<String> {
     chain[start..].to_vec()
 }
 
-fn apply_md_effect(markdown: &str, effect: &Effect) -> Result<Option<String>, Fail> {
-    match effect.kind {
-        EffectKind::SetField => {
-            let field = effect_arg(effect, "field")?;
-            let value = effect_arg(effect, "value")?;
-            let after = apply_mutation(
-                markdown,
-                &BTreeMap::from([(field.to_owned(), value.to_owned())]),
-                &[],
-            );
-            Ok((after != markdown).then_some(after))
-        }
+fn apply_counterfactual_effect(
+    path: &str,
+    markdown: &str,
+    effect: &Effect,
+) -> Result<Option<String>, Fail> {
+    let edit = match effect.kind {
+        EffectKind::SetField => Edit {
+            target: SecRef::FmKey {
+                fm_key: effect_arg(effect, "field")?.to_owned(),
+            },
+            edit: EditShape::Put {
+                at: PutAt::Upsert,
+                text: effect_arg(effect, "value")?.to_owned(),
+            },
+            if_node_rev: None,
+        },
         EffectKind::AppendSection => {
             let section = effect_arg(effect, "section")?;
-            let content = effect_arg(effect, "content")?;
-            let after = append_to_section(markdown, section, content).ok_or_else(|| {
-                Fail::tool(format!(
-                    "counterfactual effect from `{}` names missing section {section:?}",
-                    effect.rule_id
-                ))
-            })?;
-            Ok((after != markdown).then_some(after))
+            let hpath = section
+                .split('/')
+                .map(|heading| {
+                    if heading.is_empty() {
+                        return Err(Fail::tool(format!(
+                            "counterfactual section path {section:?} contains an empty segment"
+                        )));
+                    }
+                    Ok(HpathSeg {
+                        h: heading.to_owned(),
+                        n: None,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Edit {
+                target: SecRef::Hpath { hpath },
+                edit: EditShape::Put {
+                    at: PutAt::End,
+                    text: effect_arg(effect, "content")?.to_owned(),
+                },
+                if_node_rev: None,
+            }
         }
-        _ => Ok(None),
-    }
+        _ => return Ok(None),
+    };
+    let actor = format!("rule:{}", effect.rule_id);
+    let after = apply_production_edit(path, markdown, Some(&actor), false, edit)?;
+    Ok((after != markdown).then_some(after))
 }
 
 fn effect_arg<'a>(effect: &'a Effect, name: &str) -> Result<&'a str, Fail> {
@@ -834,40 +1003,102 @@ fn effect_arg<'a>(effect: &'a Effect, name: &str) -> Result<&'a str, Fail> {
     }
 }
 
-fn append_to_section(markdown: &str, section: &str, content: &str) -> Option<String> {
-    let wanted = section.rsplit('/').next().unwrap_or(section);
-    let mut start = None;
-    let mut end = markdown.len();
-    let mut offset = 0usize;
-    let mut level = 0usize;
-    for line in markdown.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches('\n');
-        let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
-        let is_heading = hashes > 0 && trimmed.as_bytes().get(hashes) == Some(&b' ');
-        if is_heading {
-            let heading = trimmed[hashes + 1..].trim();
-            if start.is_none() && heading == wanted {
-                start = Some(offset + line.len());
-                level = hashes;
-            } else if start.is_some() && hashes <= level {
-                end = offset;
-                break;
+/// Build a synthetic before/after pair through production semantics. Sets use the
+/// live splice writer. Removals use the production model's exact fm-key grain because
+/// the wire has no delete-property verb; no Markdown or YAML parser lives here.
+fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<String, Fail> {
+    let mut after = before.to_owned();
+    for field in &case.remove {
+        let doc = build_doc(path, &after);
+        let target = match model::resolve(&doc, &model::Ref::FmKey(field.clone())) {
+            Ok(target) => target,
+            Err(model::ResolveError::NotFound) => continue,
+            Err(model::ResolveError::Ambiguous(_)) => {
+                return Err(Fail::tool(format!(
+                    "frontmatter key {field:?} resolved ambiguously"
+                )));
             }
-        }
-        offset += line.len();
+        };
+        // `remove` describes the synthetic AFTER state, not an effect or a wire
+        // operation. The current writer intentionally has no delete-property verb.
+        // Use the production model's full fm-key grain (including multiline YAML
+        // continuations) and remove exactly that span; no second parser is involved.
+        after.replace_range(target.span, "");
     }
-    start?;
-    let mut out = markdown.to_owned();
-    let mut insertion = String::new();
-    if end > 0 && !out[..end].ends_with('\n') {
-        insertion.push('\n');
+    for (field, value) in &case.set {
+        after = apply_production_edit(
+            path,
+            &after,
+            case.actor.as_deref(),
+            case.force,
+            Edit {
+                target: SecRef::FmKey {
+                    fm_key: field.clone(),
+                },
+                edit: EditShape::Put {
+                    at: PutAt::Upsert,
+                    text: value.clone(),
+                },
+                if_node_rev: None,
+            },
+        )?;
     }
-    insertion.push_str(content);
-    if !insertion.ends_with('\n') {
-        insertion.push('\n');
+    Ok(after)
+}
+
+fn apply_production_edit(
+    path: &str,
+    before: &str,
+    actor: Option<&str>,
+    force: bool,
+    edit: Edit,
+) -> Result<String, Fail> {
+    let dir = tempfile::tempdir()
+        .map_err(|error| Fail::tool(format!("cannot create corpus proof tmpdir: {error}")))?;
+    let root = WorkspaceRoot(dir.path().to_path_buf());
+    let rel = confine(path).map_err(Fail::tool)?;
+    let full = dir.path().join(&rel);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            Fail::tool(format!(
+                "cannot create corpus proof parent {}: {error}",
+                parent.display()
+            ))
+        })?;
     }
-    out.insert_str(end, &insertion);
-    Some(out)
+    std::fs::write(&full, before).map_err(|error| {
+        Fail::tool(format!(
+            "cannot mount corpus proof document {}: {error}",
+            full.display()
+        ))
+    })?;
+
+    let args = SpliceArgs {
+        id: None,
+        path: WirePath(path.to_owned()),
+        actor: actor.map(str::to_owned),
+        now: None,
+        receipt: None,
+        if_root: None,
+        dry: false,
+        force,
+        edits: vec![edit],
+        plan_edits: Vec::new(),
+        pin: None,
+    };
+    splice(&root, 0, &args, &[], None).map_err(|error| {
+        Fail::tool(format!(
+            "production splice refused counterfactual write to {path}: {:?}: {}",
+            error.code,
+            error.message.as_deref().unwrap_or_default()
+        ))
+    })?;
+    std::fs::read_to_string(&full).map_err(|error| {
+        Fail::tool(format!(
+            "cannot read production splice result {}: {error}",
+            full.display()
+        ))
+    })
 }
 
 /// Derive the `rulepack-api@2` change for a synthetic frontmatter mutation over
@@ -897,75 +1128,6 @@ fn build_doc(path: &str, md: &str) -> Document {
         path.clone_into(p);
     }
     doc
-}
-
-/// Apply a synthetic frontmatter mutation to `before` — set/replace scalar keys,
-/// remove keys — producing the AFTER markdown. A synthetic change, NOT a
-/// production write (write fidelity is the tier-1 scenario runner's concern); it
-/// only needs a valid AFTER state for the `@2` change derivation. A doc with no
-/// leading `---` frontmatter grows one when keys are set.
-fn apply_mutation(before: &str, set: &BTreeMap<String, String>, remove: &[String]) -> String {
-    let (inner, body) = split_frontmatter(before);
-    let mut lines = inner.unwrap_or_default();
-
-    // Replace / drop existing keys.
-    let mut handled: BTreeSet<String> = BTreeSet::new();
-    lines.retain_mut(|line| {
-        let Some((k, _)) = line.split_once(':') else {
-            return true; // a continuation / list line — never a scalar key
-        };
-        let key = k.trim().to_owned();
-        if remove.contains(&key) {
-            return false;
-        }
-        if let Some(v) = set.get(&key) {
-            *line = format!("{key}: {v}");
-            handled.insert(key);
-        }
-        true
-    });
-    // Append set keys the block did not already carry (declaration order).
-    for (k, v) in set {
-        if !handled.contains(k) {
-            lines.push(format!("{k}: {v}"));
-        }
-    }
-
-    if lines.is_empty() {
-        // No frontmatter and nothing to set → the body is unchanged.
-        return body;
-    }
-    let mut out = String::from("---\n");
-    for line in &lines {
-        out.push_str(line);
-        out.push('\n');
-    }
-    out.push_str("---\n");
-    out.push_str(&body);
-    out
-}
-
-/// Split a leading `---\n … \n---` frontmatter block into its inner lines (each
-/// stripped of its trailing newline) and the remaining body. Returns `(None,
-/// whole)` when the text has no terminated frontmatter block (the ground-truth
-/// rule: frontmatter only when bytes 0..3 are `---\n`).
-fn split_frontmatter(text: &str) -> (Option<Vec<String>>, String) {
-    let Some(after) = text.strip_prefix("---\n") else {
-        return (None, text.to_owned());
-    };
-    let mut inner = Vec::new();
-    let mut consumed = 0usize;
-    for line in after.split_inclusive('\n') {
-        let trimmed = line.strip_suffix('\n').unwrap_or(line);
-        if trimmed == "---" {
-            let body_start = consumed + line.len();
-            return (Some(inner), after[body_start..].to_owned());
-        }
-        inner.push(trimmed.to_owned());
-        consumed += line.len();
-    }
-    // Unterminated frontmatter — treat the whole text as body.
-    (None, text.to_owned())
 }
 
 /// A short label for a `check_change` eval fault (for the report).
@@ -1202,6 +1364,13 @@ impl Report {
         {
             let _ = writeln!(out, "- budget finding: `{finding}`");
         }
+        for narrowed in self
+            .results
+            .iter()
+            .flat_map(|result| &result.narrowed_effects)
+        {
+            let _ = writeln!(out, "- narrowed effect: `{narrowed}`");
+        }
         out.push('\n');
     }
 
@@ -1259,6 +1428,7 @@ impl Report {
                     "matched": r.matched(),
                     "fuel_used": r.fuel.iter().sum::<u64>(),
                     "mem_used": r.mem.iter().max().copied().unwrap_or(0),
+                    "narrowed_effects": r.narrowed_effects,
                     "budget_findings": r.budget_findings,
                 })
             })
@@ -1320,14 +1490,27 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_mutation, percentile, split_frontmatter};
     use std::collections::BTreeMap;
 
-    fn set(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-            .collect()
+    use effects::{ArgValue, Effect, EffectKind, Provenance};
+
+    use super::{apply_counterfactual_effect, percentile};
+
+    fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
+        Effect {
+            kind,
+            rule_id: "proof-control".to_owned(),
+            seq: 0,
+            depth: 0,
+            provenance: Provenance::Change {
+                fingerprint_before: "before".to_owned(),
+                fingerprint_after: "after".to_owned(),
+            },
+            args: args
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), ArgValue::Str((*value).to_owned())))
+                .collect::<BTreeMap<_, _>>(),
+        }
     }
 
     #[test]
@@ -1341,50 +1524,41 @@ mod tests {
     }
 
     #[test]
-    fn mutation_replaces_an_existing_scalar_key() {
-        let before = "---\nowner: alice\nstatus: open\n---\n# T\n\nbody\n";
-        let after = apply_mutation(before, &set(&[("status", "closed")]), &[]);
-        assert!(after.contains("status: closed"), "status replaced: {after}");
-        assert!(after.contains("owner: alice"), "owner preserved");
-        assert!(after.ends_with("# T\n\nbody\n"), "body byte-preserved");
-    }
-
-    #[test]
-    fn mutation_appends_a_missing_key_and_removes_one() {
-        let before = "---\nstatus: open\ndraft: true\n---\nbody\n";
-        let after = apply_mutation(before, &set(&[("owner", "agent:x")]), &["draft".to_owned()]);
-        assert!(after.contains("owner: agent:x"), "owner appended");
-        assert!(!after.contains("draft"), "draft removed: {after}");
-        assert!(after.contains("status: open"), "status preserved");
-    }
-
-    #[test]
-    fn mutation_grows_frontmatter_when_absent() {
-        let before = "# Just a heading\n\nbody\n";
-        let after = apply_mutation(before, &set(&[("owner", "agent:x")]), &[]);
-        assert!(
-            after.starts_with("---\nowner: agent:x\n---\n"),
-            "fm grown: {after}"
-        );
-        assert!(
-            after.ends_with("# Just a heading\n\nbody\n"),
-            "body preserved"
+    fn counterfactual_set_field_replaces_the_complete_multiline_yaml_node() {
+        let before = "---\nlabels:\n  - alpha\n  - beta\nstatus: open\n---\n# Card\n";
+        let after = apply_counterfactual_effect(
+            "tasks/card.md",
+            before,
+            &effect(
+                EffectKind::SetField,
+                &[("field", "labels"), ("value", "done")],
+            ),
+        )
+        .expect("production writer accepts the effect")
+        .expect("the effect changes bytes");
+        assert_eq!(
+            after, "---\nlabels: done\nstatus: open\n---\n# Card\n",
+            "production frontmatter node semantics remove continuation lines"
         );
     }
 
     #[test]
-    fn mutation_without_frontmatter_or_sets_is_identity() {
-        let before = "# heading\n\nbody\n";
-        assert_eq!(apply_mutation(before, &BTreeMap::new(), &[]), before);
-    }
-
-    #[test]
-    fn split_frontmatter_finds_the_block() {
-        let (inner, body) = split_frontmatter("---\na: 1\nb: 2\n---\nrest\n");
-        assert_eq!(inner.unwrap(), vec!["a: 1".to_owned(), "b: 2".to_owned()]);
-        assert_eq!(body, "rest\n");
-        let (none, whole) = split_frontmatter("no frontmatter\n");
-        assert!(none.is_none());
-        assert_eq!(whole, "no frontmatter\n");
+    fn counterfactual_append_uses_the_full_hpath_and_ignores_fenced_headings() {
+        let before = "# A\n\n## Notes\n\nleft\n\n```text\n# B\n## Notes\nfake\n```\n\n# B\n\n## Notes\n\nright\n";
+        let after = apply_counterfactual_effect(
+            "tasks/card.md",
+            before,
+            &effect(
+                EffectKind::AppendSection,
+                &[("section", "B/Notes"), ("content", "\nadded\n")],
+            ),
+        )
+        .expect("production writer accepts the effect")
+        .expect("the effect changes bytes");
+        assert_eq!(
+            after,
+            "# A\n\n## Notes\n\nleft\n\n```text\n# B\n## Notes\nfake\n```\n\n# B\n\n## Notes\n\nright\n\nadded\n",
+            "only the real B/Notes section receives the append"
+        );
     }
 }

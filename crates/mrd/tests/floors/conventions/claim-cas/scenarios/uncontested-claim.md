@@ -11,9 +11,13 @@ the firing scenario cites.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/unclaimed.md",
-  "edits": [],
-  "properties": { "owner": "worker-b" }
+  "actor": "worker-b",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "owner"}, "edit": {"put": {"at": "upsert", "text": "worker-b"}}}
+  ]
 }
 ```
 

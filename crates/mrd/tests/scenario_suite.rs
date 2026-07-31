@@ -30,6 +30,15 @@ fn hook_scenarios() -> PathBuf {
         .join("tests/hook-tier/conventions/task-status-notify/scenarios")
 }
 
+fn forged_receipt_scenarios() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/conventions/forged-receipt/scenarios")
+}
+
+fn forged_receipt_corpus_spec() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/hook-tier/corpus/specs/forged-receipt.md")
+}
+
 /// Run `mrd test <path> --json`, returning `(exit_code, parsed_report)`.
 fn run_json(path: &Path) -> (i32, Value) {
     let out = mrd()
@@ -137,8 +146,8 @@ fn create_scenario_journals_the_birth() {
 #[test]
 fn hook_scenarios_assert_the_emitted_effect_set_on_t_result() {
     let (code, report) = run_json(&hook_scenarios());
-    assert_eq!(code, 0, "both HOOK scenarios must pass: {report}");
-    assert_eq!(report["summary"]["passed"], 2);
+    assert_eq!(code, 0, "all HOOK scenarios must pass: {report}");
+    assert_eq!(report["summary"]["passed"], 3);
     assert_eq!(report["summary"]["failed"], 0);
     assert_eq!(
         scenario(&report, "hook-move-to-review")["expect_ok"],
@@ -149,6 +158,41 @@ fn hook_scenarios_assert_the_emitted_effect_set_on_t_result() {
         scenario(&report, "hook-other-status-is-silent")["expect_ok"],
         true,
         "the nonmatching scenario asserts an empty effect set"
+    );
+    assert_eq!(
+        scenario(&report, "hook-batch-move-and-reassign")["expect_ok"],
+        true,
+        "the real wire `edits[]` batch lands both typed puts"
+    );
+}
+
+#[test]
+fn forged_receipt_is_rejected_by_the_same_policy_boundary_in_both_tiers() {
+    let (scenario_code, scenario_report) = run_json(&forged_receipt_scenarios());
+    assert_eq!(
+        scenario_code, 2,
+        "the forged descriptor is a hard authoring fault"
+    );
+    let scenario_error = scenario(&scenario_report, "hook-forged-receipt")["error"]
+        .as_str()
+        .expect("scenario error string");
+
+    let corpus = mrd()
+        .arg("test")
+        .arg("--corpus")
+        .arg(forged_receipt_corpus_spec())
+        .output()
+        .expect("run forged-receipt corpus control");
+    assert_eq!(corpus.status.code(), Some(2));
+    let corpus_error = String::from_utf8_lossy(&corpus.stderr);
+    let shared = "HOOK `forged-receipt` emitted a malformed intent: receipt \"forged\" does not name this landed change";
+    assert!(
+        scenario_error.contains(shared),
+        "tier 1 must expose the policy error: {scenario_error}"
+    );
+    assert!(
+        corpus_error.contains(shared),
+        "corpus tier must expose the same policy error: {corpus_error}"
     );
 }
 

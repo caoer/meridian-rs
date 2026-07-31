@@ -304,6 +304,77 @@ impl Convention {
     }
 }
 
+/// A convention loaded only for the `test --corpus` counterfactual proof.
+///
+/// This wrapper is deliberately not [`Convention`]. Its widened HOOK cannot enter
+/// ordinary policy evaluation, arming, or the production loader by type. The public
+/// surface exposes only the facts the proof needs; the widened [`Hook`] stays behind
+/// the policy-owned corpus evaluator.
+///
+/// ```compile_fail
+/// use policy::{Convention, CounterfactualConvention};
+///
+/// fn cannot_enter_ordinary_policy(proof: CounterfactualConvention) {
+///     let _ordinary: Convention = proof;
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CounterfactualConvention {
+    inner: Convention,
+}
+
+impl CounterfactualConvention {
+    /// The convention's subject slug.
+    #[must_use]
+    pub fn slug(&self) -> &str {
+        self.inner.slug()
+    }
+
+    /// The convention's declared default scope.
+    #[must_use]
+    pub fn scope(&self) -> &[String] {
+        self.inner.scope()
+    }
+
+    /// Whether the CHECK leg matches `path`.
+    #[must_use]
+    pub fn matches_path(&self, path: &str) -> bool {
+        self.inner.matches_path(path)
+    }
+
+    /// Whether the convention carries a CHECK leg.
+    #[must_use]
+    pub fn has_check(&self) -> bool {
+        self.inner.check_source().is_some()
+    }
+
+    /// Run the CHECK leg through the ordinary metered evaluator.
+    ///
+    /// # Errors
+    /// The same [`CheckError`] surface as [`Convention::check_change_metered`].
+    pub fn check_change_metered(&self, change: &Change) -> Result<CheckTelemetry, CheckError> {
+        self.inner.check_change_metered(change)
+    }
+
+    /// Whether the convention carries a counterfactual HOOK leg.
+    #[must_use]
+    pub fn has_hook(&self) -> bool {
+        self.inner.hook().is_some()
+    }
+
+    /// Whether the counterfactual HOOK leg matches `path`.
+    #[must_use]
+    pub fn hook_matches_path(&self, path: &str) -> bool {
+        self.inner
+            .hook()
+            .is_some_and(|hook| hook.matches_path(path))
+    }
+
+    pub(crate) fn hook(&self) -> Option<&Hook> {
+        self.inner.hook()
+    }
+}
+
 /// Load the convention `conventions/<slug>/` through the injected `files` accessor
 /// under the given full limits.
 ///
@@ -334,9 +405,10 @@ pub fn load_convention(
 ///
 /// This differs from [`load_convention`] only for HOOK capability admission:
 /// counterfactual `md.*` descriptors may load so the tier can prove whether their
-/// trigger graph is quiescent. The returned declaration is not armed, cannot enter
-/// [`crate::evaluate_hooks`], and applies no effect. The production loader remains
-/// pinned to [`crate::SLICE1_CAPS`].
+/// trigger graph is quiescent. The widened declaration is returned as the opaque
+/// [`CounterfactualConvention`], so it cannot enter [`crate::evaluate_hooks`], an
+/// armed set, or any API accepting an ordinary [`Convention`]. The production loader
+/// remains pinned to [`crate::SLICE1_CAPS`].
 ///
 /// # Errors
 /// The same [`LoadError`] surface as [`load_convention`].
@@ -344,8 +416,9 @@ pub fn load_convention_for_corpus(
     slug: &str,
     files: &dyn ConventionFiles,
     limits: CheckLimits,
-) -> Result<Convention, LoadError> {
+) -> Result<CounterfactualConvention, LoadError> {
     load_convention_with_hook_loader(slug, files, limits, crate::hook::load_hook_for_corpus)
+        .map(|inner| CounterfactualConvention { inner })
 }
 
 fn load_convention_with_hook_loader(

@@ -11,9 +11,13 @@ counterpart has the author arm their own convention.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "conventions/candidate/CHECK.md",
-  "edits": [],
-  "properties": { "arm": "block" }
+  "actor": "reviewer-r",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "arm"}, "edit": {"put": {"at": "upsert", "text": "block"}}}
+  ]
 }
 ```
 

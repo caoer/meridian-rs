@@ -11,9 +11,13 @@ winner (`worker-a`) — `claim_cas`. The legal path is [[uncontested-claim]].
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/wire-journal.md",
-  "edits": [],
-  "properties": { "owner": "worker-b" }
+  "actor": "worker-b",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "owner"}, "edit": {"put": {"at": "upsert", "text": "worker-b"}}}
+  ]
 }
 ```
 
