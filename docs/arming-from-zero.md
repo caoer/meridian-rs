@@ -40,11 +40,11 @@ transition; rung 5 is steady state.
 
 ### 1. Fill the slot
 
-Author the convention folder `conventions/<slug>/`: `CHECK.md` (the `paths:`
-scope + the fenced `def check_change(change)` predicate), `base/` (the
-before-world fixtures), `scenarios/` (the firing + passing teaching pages). The
-CHECK's power ceiling is fixed at v1 — CHECK only, `refuse(message, passing)` the
-one builtin; a `FIX`/`HOOK`/`VIEW` file is refused with a named deferral (U1.3).
+Author the convention folder `conventions/<slug>/`: `CHECK.md` for a law and/or
+`HOOK.md` for a reaction, `base/` for the before-world fixtures, and `scenarios/`
+for the firing + passing teaching pages. CHECK keeps its fixed refusal ceiling.
+HOOK may emit only its declared caps, with slice 1 pinned to `proto.send`.
+`FIX.md` and `VIEW.md` remain named deferrals (U1.3).
 
 ### 2. Author the floor
 
@@ -59,13 +59,17 @@ them.
 Before arming, prove the convention against all three `mrd test` tiers — the
 pre-arming gate:
 
-- **scenarios** (`mrd test <dir>`, U1.2) — the named firing + passing scenarios
-  hold through the production write path.
+- **scenarios** (`mrd test <dir>`, U1.2) — every named Given/When/Then scenario
+  runs through the production write path. A HOOK asserts its emitted effect set
+  as `t.result.effects` through the same `^expect` Starlark surface.
 - **`--corpus`** (`mrd test --corpus <spec>`, U1.5) — fire-where-expected over a
-  governed tree, **zero dead rules**, and a fuel/heap p50/p99 budget.
+  governed tree, **zero dead rules**, fuel/heap p50/p99, and FIX/HOOK quiescence
+  by a reachable trigger graph plus bounded counterfactual chaining. This tier
+  alone may admit `md.*` counterfactuals; it does not widen the armed caps.
 - **`--history`** (`mrd test --history <ws> --convention <slug>`, U1.6) —
-  reconstruct the workspace's own past; every would-refuse row is either fixed
-  or declared in `conventions/<slug>/GOLDEN.md` with a reason.
+  reconstruct the workspace's own past, report the exact journal span examined,
+  and require zero UNDECLARED refusals against the pinned
+  `conventions/<slug>/GOLDEN.md` list.
 
 A convention that has not passed the tiers is not ready to arm.
 

@@ -353,6 +353,56 @@ fn json_surface_carries_fidelity_and_verdicts() {
 /// A golden exception row with no declared reason is a malformed golden list — a
 /// declared exception must state why (exit 2, loud).
 #[test]
+fn hook_history_reports_zero_undeclared_over_an_exact_span() {
+    let dir = seeded_workspace();
+    let ws = dir.path();
+    write(
+        ws,
+        "conventions/task-status-notify/HOOK.md",
+        include_str!("hook-tier/conventions/task-status-notify/HOOK.md"),
+    );
+
+    let out = mrd(&[
+        "test",
+        "--history",
+        ws.to_str().unwrap(),
+        "--convention",
+        "task-status-notify",
+        "--json",
+    ]);
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("HOOK history JSON parses");
+    assert_eq!(
+        code(&out),
+        0,
+        "a HOOK never invents a write refusal: {report}\n{}",
+        stderr(&out)
+    );
+    assert_eq!(report["summary"]["undeclared"], 0);
+    assert_eq!(report["journal_span"]["first"], "r-000001");
+    assert_eq!(report["journal_span"]["last"], "r-000004");
+    assert_eq!(report["convention"], "task-status-notify");
+
+    let human = mrd(&[
+        "test",
+        "--history",
+        ws.to_str().unwrap(),
+        "--convention",
+        "task-status-notify",
+    ]);
+    let human_stdout = stdout(&human);
+    assert_eq!(code(&human), 0, "HOOK history human report passes");
+    assert!(
+        human_stdout.contains("journal span: ^r-000001..^r-000004"),
+        "the report names the exact span: {human_stdout}"
+    );
+    assert!(
+        human_stdout.contains("0 UNDECLARED would-refuse"),
+        "the report names the zero-UNDECLARED verdict: {human_stdout}"
+    );
+}
+
+#[test]
 fn golden_exception_without_a_reason_is_refused() {
     let dir = seeded_workspace();
     let ws = dir.path();

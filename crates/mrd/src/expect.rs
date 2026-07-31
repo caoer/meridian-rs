@@ -2,8 +2,9 @@
 //!
 //! A scenario's `^expect` block is fenced Starlark defining `def expect(t):`.
 //! The runner injects the post-write world as `t` — `t.result` (the write
-//! outcome), `t.doc(path)` (a mounted document's text, read AFTER the writes),
-//! and `t.journal` (the reserved journal page text) — and calls `expect(t)`.
+//! outcome plus `t.result.effects` for armed HOOK intents), `t.doc(path)` (a
+//! mounted document's text, read AFTER the writes), and `t.journal` (the reserved
+//! journal page text) — and calls `expect(t)`.
 //! An assertion that does not hold, an unknown `t.` attribute, a runaway loop,
 //! or a source-level `DoS` all fault LOUD: the scenario fails, never silently.
 //!
@@ -36,7 +37,7 @@ use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 use starlark::values::{AllocValue, Heap, StarlarkValue, Value, ValueLike};
 
-use crate::test_cmd::{PutOutcome, confine};
+use crate::test_cmd::{PutOutcome, ScenarioEffect, confine};
 
 /// The eval-thread stack (mirrors the effect kernel): even with nesting bounded,
 /// deep parse frames plus the bounded runtime call-stack exceed a default thread
@@ -150,6 +151,7 @@ fn eval_expect(
                 code: result.code.clone(),
                 message: result.message.clone(),
                 verdicts: result.verdicts.clone(),
+                effects: result.effects.clone(),
                 journal: journal.to_owned(),
             });
 
@@ -272,6 +274,8 @@ struct Tester {
     message: String,
     /// The verdict rule names the write raised (`t.result.verdicts`).
     verdicts: Vec<String>,
+    /// The HOOK intents armed by the landed write (`t.result.effects`).
+    effects: Vec<ScenarioEffect>,
     /// The reserved journal page text after the writes (`t.journal`).
     journal: String,
 }
@@ -280,6 +284,28 @@ impl fmt::Display for Tester {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "<tester ok={}>", self.result_ok)
     }
+}
+
+fn alloc_effect<'v>(heap: Heap<'v>, effect: &ScenarioEffect) -> Value<'v> {
+    heap.alloc(AllocStruct([
+        ("rule_id", heap.alloc(effect.rule_id.as_str())),
+        ("seq", heap.alloc(effect.seq)),
+        ("action", heap.alloc(effect.action.as_str())),
+        ("target", alloc_optional_str(heap, effect.target.as_deref())),
+        (
+            "severity",
+            alloc_optional_str(heap, effect.severity.as_deref()),
+        ),
+        (
+            "payload",
+            alloc_optional_str(heap, effect.payload.as_deref()),
+        ),
+        ("receipt", heap.alloc(effect.receipt.as_str())),
+    ]))
+}
+
+fn alloc_optional_str<'v>(heap: Heap<'v>, value: Option<&str>) -> Value<'v> {
+    value.map_or_else(Value::new_none, |value| heap.alloc(value))
 }
 
 #[starlark::values::starlark_value(type = "tester")]
@@ -292,12 +318,18 @@ impl<'v> StarlarkValue<'v> for Tester {
                     .iter()
                     .map(|v| heap.alloc(v.as_str()))
                     .collect();
+                let effects: Vec<Value<'v>> = self
+                    .effects
+                    .iter()
+                    .map(|effect| alloc_effect(heap, effect))
+                    .collect();
                 Some(heap.alloc(AllocStruct([
                     ("ok", heap.alloc(self.result_ok)),
                     ("refused", heap.alloc(!self.result_ok)),
                     ("code", heap.alloc(self.code.as_str())),
                     ("message", heap.alloc(self.message.as_str())),
                     ("verdicts", heap.alloc(verdicts)),
+                    ("effects", heap.alloc(effects)),
                 ])))
             }
             "journal" => Some(heap.alloc(self.journal.as_str())),

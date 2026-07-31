@@ -5,14 +5,13 @@
 //! A scenario is a markdown file: YAML frontmatter (`scenario`, `convention_rev`,
 //! `cas`, `pairs`) plus fenced blocks —
 //!
-//! - ` ```base <path> ` — a file mounted at `<path>` in a REAL tmpdir (the
-//!   scenario's world), one block per file;
-//! - ` ```put ` — a JSON write action routed through the PRODUCTION write path
-//!   (`wire_serve::write` splice / create / remove over the real mount — NO
-//!   in-memory double, so the harness exercises exactly what the door does);
-//! - ` ```expect ` — fenced Starlark `def expect(t)` asserting over the post-write
-//!   world (`t.result` / `t.doc(path)` / `t.journal`), run under FULL `EvalLimits`
-//!   ([`crate::expect`]).
+//! - sibling `base/` files, or an inline ` ```base <path> ` block, mount into a
+//!   REAL tmpdir as the scenario's before-world;
+//! - ` ```json ^put ` (legacy ` ```put ` also accepted) routes the exact JSON
+//!   operation through production `wire_serve::write`;
+//! - ` ```starlark ^expect ` (legacy ` ```expect ` also accepted) asserts over
+//!   `t.result` / `t.doc(path)` / `t.journal`. For a sibling HOOK convention,
+//!   `t.result.effects` carries the production-shaped armed intents.
 //!
 //! # Fire / pass, observed — and the pairing lint
 //! A scenario FIRES when its `^put` sequence is refused (the first refusal is
@@ -36,6 +35,11 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use fs::WorkspaceRoot;
+use model::{Document, NodeKind};
+use policy::{
+    ChangeOp, CheckLimits, Convention, ConventionFiles, Invocation, derive_change, derive_event,
+    evaluate_hooks_for_test, load_convention,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use wire::ResponseBody;
@@ -113,7 +117,9 @@ fn run_suite(path: &Path) -> Result<SuiteReport, Fail> {
             .and_then(|s| s.to_str())
             .unwrap_or("scenario")
             .to_owned();
-        match parse_scenario(&stem, &text) {
+        match parse_scenario(&stem, &text).and_then(|mut scenario| {
+            hydrate_sibling_convention(file, &mut scenario).map(|()| scenario)
+        }) {
             Ok(scenario) => results.push(run_scenario(&scenario)),
             Err(msg) => results.push(ScenarioResult {
                 name: stem,
@@ -199,6 +205,9 @@ struct Scenario {
     puts: Vec<PutJson>,
     /// The fenced `def expect(t)` starlark, if present.
     expect: Option<String>,
+    /// A sibling convention loaded from `<convention>/scenarios/`, when this page
+    /// uses Doc 1's folder shape. Inline scenarios leave this empty.
+    conventions: Vec<Convention>,
 }
 
 /// One `^put` action, as declared in a ` ```put ` JSON block. Flat + forgiving:
@@ -256,13 +265,13 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
     let mut puts = Vec::new();
     let mut expect = None;
     for (info, body) in scan_blocks(text) {
-        let mut toks = info.split_whitespace();
-        match toks.next() {
+        let tokens: Vec<&str> = info.split_whitespace().collect();
+        match tokens.first().copied() {
             Some("base") => {
-                let path = toks
-                    .next()
+                let path = tokens
+                    .get(1)
                     .ok_or_else(|| "```base needs a path (```base notes/todo.md)".to_owned())?;
-                base.push((path.to_owned(), body));
+                base.push(((*path).to_owned(), body));
             }
             Some("put") => {
                 let pj: PutJson = serde_json::from_str(&body)
@@ -270,6 +279,12 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
                 puts.push(pj);
             }
             Some("expect") => expect = Some(body),
+            _ if tokens.contains(&"^put") => {
+                let pj: PutJson = serde_json::from_str(&body)
+                    .map_err(|e| format!("^put JSON did not parse: {e}"))?;
+                puts.push(pj);
+            }
+            _ if tokens.contains(&"^expect") => expect = Some(body),
             _ => {}
         }
     }
@@ -281,7 +296,97 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
         base,
         puts,
         expect,
+        conventions: Vec::new(),
     })
+}
+
+struct DirConventionFiles<'a> {
+    dir: &'a Path,
+}
+
+impl ConventionFiles for DirConventionFiles<'_> {
+    fn read(&self, rel_path: &str) -> std::io::Result<String> {
+        std::fs::read_to_string(self.dir.join(rel_path))
+    }
+
+    fn exists(&self, rel_path: &str) -> bool {
+        self.dir.join(rel_path).exists()
+    }
+}
+
+/// Apply Doc 1's convention-folder shape when `file` lives directly under a
+/// `scenarios/` directory: mount every sibling `base/` file at its relative path
+/// and load the convention capability page beside it. Existing inline `base <path>`
+/// blocks remain valid and cannot be silently shadowed by a sibling fixture.
+fn hydrate_sibling_convention(file: &Path, scenario: &mut Scenario) -> Result<(), String> {
+    let Some(scenarios_dir) = file.parent() else {
+        return Ok(());
+    };
+    if scenarios_dir.file_name().and_then(|name| name.to_str()) != Some("scenarios") {
+        return Ok(());
+    }
+    let convention_dir = scenarios_dir
+        .parent()
+        .ok_or_else(|| "scenario directory has no convention parent".to_owned())?;
+
+    let base_dir = convention_dir.join("base");
+    if base_dir.is_dir() {
+        let mut files = Vec::new();
+        collect_base_files(&base_dir, &base_dir, &mut files)?;
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, content) in files {
+            if scenario.base.iter().any(|(existing, _)| existing == &path) {
+                return Err(format!(
+                    "base path {path:?} is declared both in sibling base/ and an inline block"
+                ));
+            }
+            scenario.base.push((path, content));
+        }
+    }
+
+    let declares_capability =
+        convention_dir.join("CHECK.md").is_file() || convention_dir.join("HOOK.md").is_file();
+    if !declares_capability {
+        return Ok(());
+    }
+    let slug = convention_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "convention folder has no UTF-8 slug".to_owned())?;
+    let files = DirConventionFiles {
+        dir: convention_dir,
+    };
+    let convention = load_convention(slug, &files, CheckLimits::default())
+        .map_err(|error| format!("convention `{slug}` failed to load: {error}"))?;
+    scenario.conventions.push(convention);
+    Ok(())
+}
+
+fn collect_base_files(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("cannot read sibling base dir {}: {error}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read base entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_base_files(base, &path, out)?;
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .expect("base descendant")
+                .to_string_lossy()
+                .replace('\\', "/");
+            confine(&rel).map_err(|error| format!("sibling base file {rel:?}: {error}"))?;
+            let content = std::fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read sibling base file {rel:?}: {error}"))?;
+            out.push((rel, content));
+        }
+    }
+    Ok(())
 }
 
 /// Parse the leading `--- … ---` YAML frontmatter as flat `key: value` pairs
@@ -346,6 +451,34 @@ fn unwikilink(v: &str) -> String {
 
 // ── running one scenario ─────────────────────────────────────────────────────
 
+/// One armed-not-delivered reaction on the existing `t.result` data surface.
+/// Delivery state is deliberately absent: the scenario observes only what the
+/// landed write armed.
+#[derive(Debug, Clone, allocative::Allocative)]
+pub(crate) struct ScenarioEffect {
+    pub rule_id: String,
+    pub seq: u32,
+    pub action: String,
+    pub target: Option<String>,
+    pub severity: Option<String>,
+    pub payload: Option<String>,
+    pub receipt: String,
+}
+
+impl From<policy::Intent> for ScenarioEffect {
+    fn from(intent: policy::Intent) -> Self {
+        Self {
+            rule_id: intent.rule_id,
+            seq: intent.seq,
+            action: intent.action,
+            target: intent.target,
+            severity: intent.severity,
+            payload: intent.payload,
+            receipt: intent.receipt,
+        }
+    }
+}
+
 /// The outcome of the `^put` sequence — the `t.result` surface the `^expect`
 /// block asserts over.
 #[derive(Debug, Clone)]
@@ -358,6 +491,8 @@ pub(crate) struct PutOutcome {
     pub message: String,
     /// The verdict rule names the write raised (empty on the bare write path).
     pub verdicts: Vec<String>,
+    /// The HOOK intents the committed write armed, with no delivery claim.
+    pub effects: Vec<ScenarioEffect>,
 }
 
 impl PutOutcome {
@@ -367,6 +502,7 @@ impl PutOutcome {
             code: String::new(),
             message: String::new(),
             verdicts: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -376,6 +512,7 @@ impl PutOutcome {
             code: code.to_owned(),
             message: message.into(),
             verdicts: Vec::new(),
+            effects: Vec::new(),
         }
     }
 }
@@ -421,10 +558,12 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
 
     // Apply the puts in order; the FIRST refusal is `t.result` and stops the run.
     let mut result = PutOutcome::committed();
+    let mut effects = Vec::new();
     for pj in &sc.puts {
-        match apply_put(&root, sc.cas, pj) {
-            Ok(outcome) => {
+        match apply_put(&root, sc.cas, pj, &sc.conventions) {
+            Ok(mut outcome) => {
                 let refused = !outcome.ok;
+                effects.append(&mut outcome.effects);
                 result = outcome;
                 if refused {
                     break;
@@ -433,6 +572,7 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
             Err(m) => return base_result(ResultKind::Malformed(format!("```put: {m}"))),
         }
     }
+    result.effects = effects;
 
     let journal = std::fs::read_to_string(dir.path().join(fs::domain::RESERVED_JOURNAL_PATH))
         .unwrap_or_default();
@@ -455,10 +595,17 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
 /// refusal (`bad_path`) fires HERE, before the production call — a harness-surface
 /// refusal, exactly as taxonomy row 22 scopes it. `Err` is a malformed put (a
 /// structural authoring fault), never a write refusal (which is a [`PutOutcome`]).
-fn apply_put(root: &WorkspaceRoot, cas: bool, p: &PutJson) -> Result<PutOutcome, String> {
+fn apply_put(
+    root: &WorkspaceRoot,
+    cas: bool,
+    p: &PutJson,
+    conventions: &[Convention],
+) -> Result<PutOutcome, String> {
     if let Err(msg) = confine(&p.path) {
         return Ok(PutOutcome::refused("bad_path", msg));
     }
+    let rel = PathBuf::from(&p.path);
+    let before_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
     let path = WirePath(p.path.clone());
 
     // CAS is omitted unless the scenario declares it (explicit frontmatter flag):
@@ -475,14 +622,69 @@ fn apply_put(root: &WorkspaceRoot, cas: bool, p: &PutJson) -> Result<PutOutcome,
         None
     };
 
-    match p.op.as_str() {
+    let mut outcome = match p.op.as_str() {
         "splice" => splice_put(root, path, cas, cas_root, p),
         "create" => create_put(root, path, cas_root, p),
         "remove" => remove_put(root, path, cas_root, p),
         other => Err(format!(
             "unknown put op {other:?} (want splice|create|remove)"
         )),
+    }?;
+
+    if outcome.ok && !conventions.is_empty() {
+        let after_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
+        let op = match p.op.as_str() {
+            "splice" => ChangeOp::Splice,
+            "create" => ChangeOp::Create,
+            "remove" => ChangeOp::Remove,
+            _ => unreachable!("validated above"),
+        };
+        outcome.effects = scenario_effects(conventions, &p.path, &before_md, &after_md, op)?;
     }
+    Ok(outcome)
+}
+
+fn scenario_effects(
+    conventions: &[Convention],
+    path: &str,
+    before_md: &str,
+    after_md: &str,
+    op: ChangeOp,
+) -> Result<Vec<ScenarioEffect>, String> {
+    let before = scenario_doc(path, before_md);
+    let after = scenario_doc(path, after_md);
+    let change = derive_change(
+        &before,
+        &after,
+        &[],
+        Invocation {
+            op,
+            actor: Some("mrd-test"),
+            force: false,
+        },
+        &[],
+        &|_: &str| None,
+    );
+    let event = derive_event(&change, &before.root.node_rev.0, &after.root.node_rev.0, 0);
+    let outcomes = evaluate_hooks_for_test(conventions, &event)
+        .map_err(|error| format!("HOOK evaluation failed: {error}"))?;
+    let mut effects = Vec::new();
+    for outcome in outcomes {
+        if let Some(finding) = outcome.findings.first() {
+            return Err(format!("HOOK evaluation finding: {finding:?}"));
+        }
+        effects.extend(outcome.intents.into_iter().map(ScenarioEffect::from));
+    }
+    Ok(effects)
+}
+
+fn scenario_doc(path: &str, md: &str) -> Document {
+    let nodes = syntax::parse(md);
+    let mut doc = model::build(md.to_owned(), nodes);
+    if let NodeKind::Document { path: doc_path, .. } = &mut doc.root.kind {
+        path.clone_into(doc_path);
+    }
+    doc
 }
 
 /// The `splice` arm: one edit (a `put` position or a `match`), routed through the

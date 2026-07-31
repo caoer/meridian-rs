@@ -32,12 +32,26 @@ fn spec(name: &str) -> PathBuf {
         .join(format!("{name}.md"))
 }
 
+fn hook_spec(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/corpus/specs")
+        .join(format!("{name}.md"))
+}
+
 /// Run `mrd test --corpus <spec>` (human report), returning `(exit_code, stdout)`.
 fn run_human(name: &str) -> (i32, String) {
+    run_human_path(spec(name))
+}
+
+fn run_hook_human(name: &str) -> (i32, String) {
+    run_human_path(hook_spec(name))
+}
+
+fn run_human_path(path: PathBuf) -> (i32, String) {
     let out: Output = mrd()
         .arg("test")
         .arg("--corpus")
-        .arg(spec(name))
+        .arg(path)
         .output()
         .expect("run mrd test --corpus");
     (
@@ -49,10 +63,18 @@ fn run_human(name: &str) -> (i32, String) {
 /// Run `mrd test --corpus <spec> --json`, returning `(exit_code, parsed_report)`.
 /// A malformed spec emits no JSON, so this is for the specs that produce a report.
 fn run_json(name: &str) -> (i32, Value) {
+    run_json_path(spec(name))
+}
+
+fn run_hook_json(name: &str) -> (i32, Value) {
+    run_json_path(hook_spec(name))
+}
+
+fn run_json_path(path: PathBuf) -> (i32, Value) {
     let out: Output = mrd()
         .arg("test")
         .arg("--corpus")
-        .arg(spec(name))
+        .arg(path)
         .arg("--json")
         .output()
         .expect("run mrd test --corpus --json");
@@ -231,6 +253,92 @@ fn surprise_rule_fired_but_undeclared_is_reported() {
         report["surprise_rules"],
         serde_json::json!(["scenarios/reviewer-close.md"]),
         "the fired-but-undeclared rule is reported as a surprise"
+    );
+}
+
+#[test]
+fn proto_send_hook_reports_fire_dead_fuel_and_explicit_quiescence() {
+    let (code, report) = run_hook_json("valid-hook");
+    assert_eq!(code, 0, "the valid HOOK corpus must pass: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(report["summary"]["dead_rules"], 0);
+    assert_eq!(report["summary"]["errors"], 0);
+    assert_eq!(report["budgets"]["evals"], 2);
+    assert_eq!(report["quiescence"]["passed"], true);
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(
+        report["quiescence"]["nodes"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["quiescence"]["edges"], serde_json::json!([]));
+    assert_eq!(
+        case(&report, "move-to-review")["fired"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(
+        policy::SLICE1_CAPS,
+        [effects::EffectKind::Send],
+        "the proof did not widen the production cap ceiling"
+    );
+}
+
+#[test]
+fn hook_with_no_matching_case_is_dead() {
+    let (code, report) = run_hook_json("dead-hook");
+    assert_eq!(code, 1, "a dead HOOK is a finding: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+}
+
+#[test]
+fn hook_fuel_breach_is_named_and_fails() {
+    let (code, report) = run_hook_json("fuel-breach");
+    assert_eq!(code, 1, "a HOOK fuel breach is a finding: {report}");
+    let row = case(&report, "matching-change-exhausts-budget");
+    assert_eq!(row["outcome"], "error");
+    let findings = row["budget_findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert!(
+        findings[0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tiny-budget: budget_exceeded steps=1"),
+        "the finding names the HOOK and its declared step ceiling: {findings:?}"
+    );
+}
+
+#[test]
+fn deliberately_cyclic_hooks_fail_only_quiescence() {
+    let (code, report) = run_hook_json("cyclic-hooks");
+    assert_eq!(code, 1, "the cyclic fixture must fail: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(report["summary"]["dead_rules"], 0);
+    assert_eq!(report["summary"]["surprise_rules"], 0);
+    assert_eq!(report["summary"]["errors"], 0);
+    assert_eq!(report["summary"]["findings"], 1);
+    assert_eq!(report["quiescence"]["passed"], false);
+    assert_eq!(report["quiescence"]["verdict"], "cycle");
+    assert_eq!(
+        report["quiescence"]["cycle"],
+        serde_json::json!(["cycle-alpha", "cycle-beta", "cycle-alpha"])
+    );
+    assert_eq!(
+        report["quiescence"]["edges"],
+        serde_json::json!([
+            {"from":"cycle-alpha","to":"cycle-beta"},
+            {"from":"cycle-beta","to":"cycle-alpha"}
+        ])
+    );
+
+    let (human_code, human) = run_hook_human("cyclic-hooks");
+    assert_eq!(human_code, 1);
+    assert!(
+        human.contains("quiescence assertion failed: cycle-alpha → cycle-beta → cycle-alpha"),
+        "the negative receipt fails specifically at quiescence:\n{human}"
     );
 }
 

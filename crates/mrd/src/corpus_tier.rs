@@ -1,25 +1,19 @@
-//! `mrd test --corpus` — the tier-2 corpus runner (U1.5): drive a convention's
-//! `check_change` over SYNTHETIC changes derived from the 18-02 corpus, and
-//! report the three signals the pre-arming gate needs — fire-where-expected,
-//! zero dead rules, and the fuel + heap p50/p99 budgets.
+//! `mrd test --corpus` — the tier-2 pre-arming runner (U1.5): drive CHECK and
+//! HOOK conventions over SYNTHETIC changes derived from a governed corpus.
 //!
 //! # What a corpus-test spec is
-//! A spec is a markdown file (house grammar): YAML frontmatter (`convention`,
-//! `corpus`, optional `corpus_test`) plus fenced blocks —
+//! A spec is a markdown file with `corpus:` plus one `convention:` or a
+//! ` ```conventions ` list. `counterfactual: true` admits `md.*` descriptors in
+//! this tier only so quiescence can be falsified without widening runtime caps.
 //!
-//! - ` ```rules ` — the DECLARED rule set: one rule id per line (a `passing`
-//!   citation the convention's `check_change` can emit). A declared rule that no
-//!   synthetic change fires is a DEAD rule ([the headline signal](Report)).
-//! - ` ```case ` — one synthetic-change case as JSON: `{doc, actor?, force?,
-//!   set?, remove?, expect}`. `doc` names a corpus file (mount-confined within
-//!   the corpus root); the mutation (`set`/`remove` frontmatter edits) produces
-//!   the AFTER state over the corpus doc's real BEFORE bytes; `expect` is the
-//!   rule id the change must fire, or `"pass"`.
+//! - ` ```rules ` — the DECLARED CHECK citations and HOOK slugs. Any one with no
+//!   observed emission is a dead rule.
+//! - ` ```case ` — one synthetic change as JSON: `{doc, actor?, force?, set?,
+//!   remove?, expect}`. `expect` is one rule id, a list of ids, or `"pass"`.
 //!
-//! # The three signals (rulings § test tiers — `test --corpus`)
-//! For each case the tier reads the corpus doc, applies the mutation, derives the
-//! [`rulepack-api@2`](policy) [`Change`] from the before/after STATES, and runs
-//! the convention's `check_change` METERED under FULL `EvalLimits`:
+//! # The four signals (rulings § test tiers — `test --corpus`)
+//! For each case the tier derives the shared [`Change`] from before/after states,
+//! then runs every in-scope CHECK and HOOK under its declared budget:
 //!
 //! - **fire-where-expected** — the set of rules a case fired must EQUAL its
 //!   `expect` (a single rule id, or `"pass"` for no fire). A doc outside the
@@ -28,26 +22,29 @@
 //! - **zero dead rules** — every DECLARED rule must fire at least once over the
 //!   corpus; a declared rule with zero fires is reported DEAD (a finding). A rule
 //!   the convention fired that the spec never declared is a `surprise` finding.
-//! - **fuel + heap budgets** — the exact fuel (ticks) and peak heap each eval
-//!   spent, reduced to p50/p99/max (nearest-rank) over the in-scope evals.
+//! - **fuel + heap budgets** — exact ticks and peak heap, reduced to
+//!   p50/p99/max over all in-scope evaluations.
+//! - **FIX/HOOK quiescence** — follow reachable `md.*` descriptors through a
+//!   trigger graph. A repeated `(state, pending descriptor)` is a cycle that can
+//!   keep firing. The proof has its own fuel and disables runtime depth suppression.
 //!
 //! # Output + exit codes (§4 preamble law, `docs/status.md`)
-//! JSON under `--json`, a human report otherwise. Exit 0 (manifest matched, zero
-//! dead rules), 1 (a fire mismatch, a dead/surprise rule, or a convention eval
-//! fault — findings), 2 (a malformed spec, an unreadable corpus doc, or a
-//! convention that would not load — tool failure).
+//! JSON under `--json`, a human report otherwise. Exit 0 when all four signals are
+//! clean; 1 for a mismatch, dead/surprise rule, budget/eval finding, or failed
+//! quiescence; 2 for malformed input or unreadable state.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use effects::{ArgValue, CapabilitySet, Domain, Effect, EffectKind, EvalError, EvalLimits, Rule};
 use model::{Document, NodeKind};
 use policy::ConventionFiles;
 use policy::{
-    Change, ChangeOp, CheckError, CheckLimits, Convention, Invocation, derive_change,
-    load_convention, load_seed_convention,
+    Change, ChangeOp, CheckError, CheckLimits, Convention, Invocation, derive_change, derive_event,
+    load_convention, load_convention_for_corpus, load_seed_convention,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
@@ -67,8 +64,8 @@ pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
     let spec_dir = spec_file.parent().unwrap_or_else(|| Path::new("."));
     let spec = Spec::parse(&text, spec_dir)?;
 
-    let convention = load_spec_convention(&spec)?;
-    let report = run_corpus(&convention, &spec)?;
+    let conventions = load_spec_conventions(&spec)?;
+    let report = run_corpus(&conventions, &spec)?;
 
     match format {
         Format::Json => println!("{}", report.to_json()),
@@ -86,8 +83,11 @@ pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
 /// One parsed corpus-test spec.
 struct Spec {
     name: String,
-    /// `seed` (the embedded seed convention) or a resolved folder path.
-    convention: ConventionRef,
+    /// One or more conventions. Existing specs use the singular frontmatter key;
+    /// a `conventions` fence adds peers for trigger-graph proofs.
+    conventions: Vec<ConventionRef>,
+    /// Whether `md.*` capabilities are admitted only for counterfactual chaining.
+    counterfactual: bool,
     /// The corpus root (the 18-02 corpus / governed tree), resolved absolute.
     corpus_root: PathBuf,
     /// The declared rule set — the citations dead-rule detection is measured
@@ -126,8 +126,34 @@ struct CaseSpec {
     /// Frontmatter keys to remove in the AFTER state.
     #[serde(default)]
     remove: Vec<String>,
-    /// The rule id the change must fire, or `"pass"` for no fire.
-    expect: String,
+    /// The rule id(s) the change must fire, or `"pass"` for no fire.
+    expect: Expected,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+enum Expected {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Expected {
+    fn rules(&self) -> BTreeSet<String> {
+        match self {
+            Self::One(value) if value == "pass" => BTreeSet::new(),
+            Self::One(value) => BTreeSet::from([value.clone()]),
+            Self::Many(values) => values.iter().cloned().collect(),
+        }
+    }
+
+    fn label(&self) -> String {
+        let rules = self.rules();
+        if rules.is_empty() {
+            "pass".to_owned()
+        } else {
+            rules.into_iter().collect::<Vec<_>>().join(", ")
+        }
+    }
 }
 
 impl Spec {
@@ -141,25 +167,13 @@ impl Spec {
             .cloned()
             .unwrap_or_else(|| "corpus-test".to_owned());
 
-        let convention = match fm.get("convention").map(String::as_str) {
-            Some("seed") => ConventionRef::Seed,
-            Some(path) if !path.is_empty() => {
-                let dir = resolve_rel(spec_dir, path);
-                let slug = dir
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .ok_or_else(|| {
-                        Fail::tool(format!("convention folder {path} has no slug component"))
-                    })?
-                    .to_owned();
-                ConventionRef::Folder { slug, dir }
-            }
-            _ => {
-                return Err(Fail::tool(
-                    "corpus spec frontmatter needs `convention: seed` or a folder path".to_owned(),
-                ));
-            }
-        };
+        let mut conventions = Vec::new();
+        if let Some(path) = fm.get("convention").filter(|path| !path.is_empty()) {
+            conventions.push(parse_convention_ref(spec_dir, path)?);
+        }
+        let counterfactual = fm
+            .get("counterfactual")
+            .is_some_and(|value| value == "true");
 
         let corpus = fm.get("corpus").filter(|c| !c.is_empty()).ok_or_else(|| {
             Fail::tool("corpus spec frontmatter needs a `corpus:` directory".to_owned())
@@ -176,6 +190,15 @@ impl Spec {
         let mut cases = Vec::new();
         for (info, body) in scan_blocks(text) {
             match info.split_whitespace().next() {
+                Some("conventions") => {
+                    for line in body.lines() {
+                        let path = line.trim();
+                        if path.is_empty() || path.starts_with('#') {
+                            continue;
+                        }
+                        conventions.push(parse_convention_ref(spec_dir, path)?);
+                    }
+                }
                 Some("rules") => {
                     for line in body.lines() {
                         let rule = line.trim();
@@ -195,6 +218,11 @@ impl Spec {
                 _ => {}
             }
         }
+        if conventions.is_empty() {
+            return Err(Fail::tool(
+                "corpus spec needs `convention:` or a ```conventions block".to_owned(),
+            ));
+        }
         if cases.is_empty() {
             return Err(Fail::tool(
                 "corpus spec declares no ```case blocks".to_owned(),
@@ -202,12 +230,26 @@ impl Spec {
         }
         Ok(Spec {
             name,
-            convention,
+            conventions,
+            counterfactual,
             corpus_root,
             declared_rules,
             cases,
         })
     }
+}
+
+fn parse_convention_ref(base: &Path, value: &str) -> Result<ConventionRef, Fail> {
+    if value == "seed" {
+        return Ok(ConventionRef::Seed);
+    }
+    let dir = resolve_rel(base, value);
+    let slug = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| Fail::tool(format!("convention folder {value} has no slug component")))?
+        .to_owned();
+    Ok(ConventionRef::Folder { slug, dir })
 }
 
 /// Resolve `rel` against `base` (absolute `rel` is taken as-is).
@@ -241,17 +283,37 @@ impl ConventionFiles for DirConventionFiles {
 /// # Errors
 /// [`Fail::tool`] — a convention folder that will not load (a `LoadError`), or a
 /// seed convention that no longer satisfies the loader.
-fn load_spec_convention(spec: &Spec) -> Result<Convention, Fail> {
+fn load_spec_conventions(spec: &Spec) -> Result<Vec<Convention>, Fail> {
     let limits = CheckLimits::default();
-    match &spec.convention {
-        ConventionRef::Seed => load_seed_convention(limits)
-            .map_err(|e| Fail::tool(format!("seed convention failed to load: {e}"))),
-        ConventionRef::Folder { slug, dir } => {
-            let files = DirConventionFiles { dir: dir.clone() };
-            load_convention(slug, &files, limits)
-                .map_err(|e| Fail::tool(format!("convention `{slug}` failed to load: {e}")))
+    let mut loaded = Vec::with_capacity(spec.conventions.len());
+    for convention in &spec.conventions {
+        let convention = match convention {
+            ConventionRef::Seed => load_seed_convention(limits)
+                .map_err(|error| Fail::tool(format!("seed convention failed to load: {error}")))?,
+            ConventionRef::Folder { slug, dir } => {
+                let files = DirConventionFiles { dir: dir.clone() };
+                let result = if spec.counterfactual {
+                    load_convention_for_corpus(slug, &files, limits)
+                } else {
+                    load_convention(slug, &files, limits)
+                };
+                result.map_err(|error| {
+                    Fail::tool(format!("convention `{slug}` failed to load: {error}"))
+                })?
+            }
+        };
+        if loaded
+            .iter()
+            .any(|existing: &Convention| existing.slug() == convention.slug())
+        {
+            return Err(Fail::tool(format!(
+                "corpus spec declares convention `{}` more than once",
+                convention.slug()
+            )));
         }
+        loaded.push(convention);
     }
+    Ok(loaded)
 }
 
 // ── running the corpus ────────────────────────────────────────────────────────
@@ -272,23 +334,25 @@ struct CaseResult {
     doc: String,
     actor: Option<String>,
     in_scope: bool,
-    expect: String,
+    expect: Expected,
     observed: Observed,
-    /// Fuel + heap the eval spent (`None` when the doc was out of scope or the
-    /// eval faulted — those spend no metered budget the profile should count).
-    fuel: Option<u64>,
-    mem: Option<u64>,
+    /// One exact metering sample per in-scope capability evaluation.
+    fuel: Vec<u64>,
+    mem: Vec<u64>,
+    /// Admitted HOOK descriptors emitted by the initial synthetic change.
+    effects: Vec<Effect>,
+    /// The initial case's post-mutation bytes, used only by counterfactual chaining.
+    after_md: String,
+    /// Named budget findings, kept distinct from structural evaluation faults.
+    budget_findings: Vec<String>,
 }
 
 impl CaseResult {
-    /// Whether the observed outcome matched `expect`. An out-of-scope doc can
-    /// only pass; a fired case must fire EXACTLY the expected rule.
+    /// Whether the observed outcome exactly matched the declared rule set.
     fn matched(&self) -> bool {
         match &self.observed {
-            Observed::Pass { .. } => self.expect == "pass",
-            Observed::Fired { rules } => {
-                self.expect != "pass" && rules.len() == 1 && rules.contains(&self.expect)
-            }
+            Observed::Pass { .. } => self.expect.rules().is_empty(),
+            Observed::Fired { rules } => *rules == self.expect.rules(),
             Observed::Error { .. } => false,
         }
     }
@@ -299,16 +363,17 @@ impl CaseResult {
 /// # Errors
 /// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, or a path
 /// that escapes the corpus mount.
-fn run_corpus(convention: &Convention, spec: &Spec) -> Result<Report, Fail> {
+fn run_corpus(conventions: &[Convention], spec: &Spec) -> Result<Report, Fail> {
     let mut results = Vec::with_capacity(spec.cases.len());
-    for (i, case) in spec.cases.iter().enumerate() {
-        results.push(run_case(convention, spec, i, case)?);
+    for (index, case) in spec.cases.iter().enumerate() {
+        results.push(run_case(conventions, spec, index, case)?);
     }
 
-    // Fired-rule tally → dead + surprise sets.
-    let mut fired: BTreeSet<String> = BTreeSet::new();
-    for r in &results {
-        if let Observed::Fired { rules } = &r.observed {
+    let quiescence = prove_quiescence(conventions, &results)?;
+
+    let mut fired: BTreeSet<String> = quiescence.fired_rules.clone();
+    for result in &results {
+        if let Observed::Fired { rules } = &result.observed {
             fired.extend(rules.iter().cloned());
         }
     }
@@ -316,98 +381,143 @@ fn run_corpus(convention: &Convention, spec: &Spec) -> Result<Report, Fail> {
     let dead_rules: Vec<String> = spec
         .declared_rules
         .iter()
-        .filter(|r| !fired.contains(*r))
+        .filter(|rule| !fired.contains(*rule))
         .cloned()
         .collect();
     let surprise_rules: Vec<String> = fired.difference(&declared).cloned().collect();
 
-    // Fuel + heap p50/p99/max over the in-scope, non-faulted evals.
-    let mut fuel: Vec<u64> = results.iter().filter_map(|r| r.fuel).collect();
-    let mut mem: Vec<u64> = results.iter().filter_map(|r| r.mem).collect();
+    let mut fuel: Vec<u64> = results
+        .iter()
+        .flat_map(|result| result.fuel.iter().copied())
+        .chain(quiescence.fuel_samples.iter().copied())
+        .collect();
+    let mut mem: Vec<u64> = results
+        .iter()
+        .flat_map(|result| result.mem.iter().copied())
+        .chain(quiescence.mem_samples.iter().copied())
+        .collect();
     fuel.sort_unstable();
     mem.sort_unstable();
 
     Ok(Report {
         name: spec.name.clone(),
-        convention_slug: convention.slug().to_owned(),
-        convention_source: convention_source_label(&spec.convention),
+        convention_slugs: conventions
+            .iter()
+            .map(|convention| convention.slug().to_owned())
+            .collect(),
+        convention_sources: spec
+            .conventions
+            .iter()
+            .map(convention_source_label)
+            .collect(),
         corpus_root: spec.corpus_root.display().to_string(),
-        scope: convention.scope().to_vec(),
+        scopes: conventions
+            .iter()
+            .map(|convention| convention.scope().to_vec())
+            .collect(),
         declared_rules: spec.declared_rules.clone(),
         results,
         dead_rules,
         surprise_rules,
         fuel_budget: Budget::of(&fuel),
         mem_budget: Budget::of(&mem),
+        quiescence,
     })
 }
 
-/// Run one case: read the corpus doc, apply the mutation, derive the change, and
-/// run the convention's metered `check_change`.
+/// Run one initial synthetic change through every declared CHECK and HOOK.
 fn run_case(
-    convention: &Convention,
+    conventions: &[Convention],
     spec: &Spec,
     index: usize,
     case: &CaseSpec,
 ) -> Result<CaseResult, Fail> {
     let rel = confine(&case.doc)
-        .map_err(|m| Fail::tool(format!("case {index} doc {:?}: {m}", case.doc)))?;
+        .map_err(|message| Fail::tool(format!("case {index} doc {:?}: {message}", case.doc)))?;
     let on_disk = spec.corpus_root.join(&rel);
-    let before_md = std::fs::read_to_string(&on_disk).map_err(|e| {
+    let before_md = std::fs::read_to_string(&on_disk).map_err(|error| {
         Fail::tool(format!(
-            "case {index}: cannot read corpus doc {}: {e}",
+            "case {index}: cannot read corpus doc {}: {error}",
             on_disk.display()
         ))
     })?;
     let after_md = apply_mutation(&before_md, &case.set, &case.remove);
-
     let doc_path = rel.to_string_lossy().replace('\\', "/");
     let before = build_doc(&doc_path, &before_md);
     let after = build_doc(&doc_path, &after_md);
-    let in_scope = convention.matches_path(&doc_path);
-
-    let name = case.name.clone().unwrap_or_else(|| doc_path.clone());
-    if !in_scope {
-        // Out of scope: the convention is never run — the change can only pass.
-        return Ok(CaseResult {
-            name,
-            doc: doc_path,
-            actor: case.actor.clone(),
-            in_scope,
-            expect: case.expect.clone(),
-            observed: Observed::Pass { in_scope },
-            fuel: None,
-            mem: None,
-        });
-    }
-
     let change = synth_change(&before, &after, case);
-    let (observed, fuel, mem) = match convention.check_change_metered(&change) {
-        Ok(tel) => {
-            let fuel = Some(tel.fuel_used);
-            let mem = Some(tel.mem_used);
-            if tel.refusals.is_empty() {
-                (Observed::Pass { in_scope }, fuel, mem)
-            } else {
-                let rules = tel
-                    .refusals
-                    .iter()
-                    .map(|r| r.passing_scenario.clone())
-                    .collect();
-                (Observed::Fired { rules }, fuel, mem)
+    let event = derive_event(&change, &before.root.node_rev.0, &after.root.node_rev.0, 0);
+
+    let mut in_scope = false;
+    let mut fired = BTreeSet::new();
+    let mut effects = Vec::new();
+    let mut fuel = Vec::new();
+    let mut mem = Vec::new();
+    let mut errors = Vec::new();
+    let mut budget_findings = Vec::new();
+
+    for convention in conventions {
+        if convention.check_source().is_some() && convention.matches_path(&doc_path) {
+            in_scope = true;
+            match convention.check_change_metered(&change) {
+                Ok(telemetry) => {
+                    fuel.push(telemetry.fuel_used);
+                    mem.push(telemetry.mem_used);
+                    fired.extend(
+                        telemetry
+                            .refusals
+                            .into_iter()
+                            .map(|refusal| refusal.passing_scenario),
+                    );
+                }
+                Err(error) => errors.push(check_error_label(&error)),
             }
         }
-        Err(e) => (
-            Observed::Error {
-                detail: check_error_label(&e),
-            },
-            None,
-            None,
-        ),
+
+        let Some(hook) = convention.hook() else {
+            continue;
+        };
+        if !hook.matches_path(&doc_path) {
+            continue;
+        }
+        in_scope = true;
+        let telemetry = evaluate_hook(convention, &event);
+        fuel.push(telemetry.fuel);
+        mem.push(telemetry.mem);
+        match telemetry.outcome {
+            Ok(emitted) => {
+                if !emitted.is_empty() {
+                    fired.insert(convention.slug().to_owned());
+                }
+                effects.extend(emitted);
+            }
+            Err(HookRunError::Budget { steps, mem }) => {
+                let finding = format!(
+                    "{}: budget_exceeded steps={steps} mem={mem}",
+                    convention.slug()
+                );
+                budget_findings.push(finding.clone());
+                errors.push(finding);
+            }
+            Err(HookRunError::Eval(detail)) => errors.push(format!(
+                "{}: HOOK evaluation failed: {detail}",
+                convention.slug()
+            )),
+        }
+    }
+
+    let observed = if !errors.is_empty() {
+        Observed::Error {
+            detail: errors.join("; "),
+        }
+    } else if fired.is_empty() {
+        Observed::Pass { in_scope }
+    } else {
+        Observed::Fired { rules: fired }
     };
 
     Ok(CaseResult {
-        name,
+        name: case.name.clone().unwrap_or_else(|| doc_path.clone()),
         doc: doc_path,
         actor: case.actor.clone(),
         in_scope,
@@ -415,7 +525,349 @@ fn run_case(
         observed,
         fuel,
         mem,
+        effects,
+        after_md,
+        budget_findings,
     })
+}
+
+struct HookTelemetry {
+    fuel: u64,
+    mem: u64,
+    outcome: Result<Vec<Effect>, HookRunError>,
+}
+
+enum HookRunError {
+    Budget { steps: u64, mem: u64 },
+    Eval(String),
+}
+
+fn evaluate_hook(convention: &Convention, event: &effects::ChangeEvent) -> HookTelemetry {
+    let hook = convention.hook().expect("caller selected a HOOK");
+    let budget = hook.budget();
+    let telemetry = effects::eval_telemetry(
+        &[Rule::new(convention.slug(), hook.source())],
+        event,
+        EvalLimits {
+            fuel: budget.steps,
+            mem: budget.mem,
+            // Corpus quiescence must not borrow the runtime cascade suppression as
+            // its proof. Counterfactual search has its own explicit fuel below.
+            max_depth: u32::MAX,
+            ..EvalLimits::default()
+        },
+    )
+    .pop()
+    .expect("one rule produces one telemetry row");
+    let outcome = match telemetry.outcome {
+        Ok(effects) => {
+            let caps: CapabilitySet = hook.caps().iter().copied().collect();
+            let (admitted, _narrowed) = caps.route(effects);
+            Ok(admitted)
+        }
+        Err(EvalError::Budget { fuel, mem }) => Err(HookRunError::Budget { steps: fuel, mem }),
+        Err(error) => Err(HookRunError::Eval(error.to_string())),
+    };
+    HookTelemetry {
+        fuel: telemetry.fuel_used,
+        mem: telemetry.mem_used,
+        outcome,
+    }
+}
+
+const QUIESCENCE_FUEL: usize = 256;
+
+struct Quiescence {
+    nodes: Vec<String>,
+    edges: BTreeSet<(String, String)>,
+    steps: usize,
+    fuel_limit: usize,
+    fuel_exhausted: bool,
+    cycle: Option<Vec<String>>,
+    fault: Option<String>,
+    fired_rules: BTreeSet<String>,
+    fuel_samples: Vec<u64>,
+    mem_samples: Vec<u64>,
+}
+
+impl Quiescence {
+    fn passed(&self) -> bool {
+        self.cycle.is_none() && !self.fuel_exhausted && self.fault.is_none()
+    }
+
+    fn verdict(&self) -> &'static str {
+        if self.cycle.is_some() {
+            "cycle"
+        } else if self.fuel_exhausted {
+            "fuel_exhausted"
+        } else if self.fault.is_some() {
+            "evaluation_fault"
+        } else {
+            "acyclic"
+        }
+    }
+}
+
+struct PendingEffect {
+    emitter: String,
+    path: String,
+    markdown: String,
+    effect: Effect,
+    chain: Vec<String>,
+}
+
+/// Follow only reachable `md.*` descriptors from the declared synthetic cases.
+/// A repeated `(state, pending descriptor)` proves a deterministic cycle that can
+/// keep firing. Terminal `proto.*` descriptors add no graph edge, which makes the
+/// slice-1 `[proto.send]` verdict explicitly acyclic rather than implicitly skipped.
+fn prove_quiescence(
+    conventions: &[Convention],
+    results: &[CaseResult],
+) -> Result<Quiescence, Fail> {
+    let nodes = conventions
+        .iter()
+        .filter(|convention| convention.hook().is_some())
+        .map(|convention| convention.slug().to_owned())
+        .collect();
+    let mut proof = Quiescence {
+        nodes,
+        edges: BTreeSet::new(),
+        steps: 0,
+        fuel_limit: QUIESCENCE_FUEL,
+        fuel_exhausted: false,
+        cycle: None,
+        fault: None,
+        fired_rules: BTreeSet::new(),
+        fuel_samples: Vec::new(),
+        mem_samples: Vec::new(),
+    };
+    let mut queue = initial_counterfactuals(results);
+    let mut seen = BTreeSet::new();
+
+    while let Some(pending) = queue.pop_front() {
+        if !seen.insert(pending_signature(&pending)) {
+            proof.cycle = Some(repeated_cycle(&pending.chain));
+            break;
+        }
+        if proof.steps >= proof.fuel_limit {
+            proof.fuel_exhausted = true;
+            break;
+        }
+        proof.steps += 1;
+        advance_counterfactual(&pending, conventions, &mut queue, &mut proof)?;
+        if proof.fault.is_some() {
+            break;
+        }
+    }
+    Ok(proof)
+}
+
+fn initial_counterfactuals(results: &[CaseResult]) -> VecDeque<PendingEffect> {
+    results
+        .iter()
+        .flat_map(|result| {
+            result
+                .effects
+                .iter()
+                .filter(|effect| effect.kind.domain() == Domain::Md)
+                .map(|effect| PendingEffect {
+                    emitter: effect.rule_id.clone(),
+                    path: result.doc.clone(),
+                    markdown: result.after_md.clone(),
+                    effect: effect.clone(),
+                    chain: vec![effect.rule_id.clone()],
+                })
+        })
+        .collect()
+}
+
+fn pending_signature(pending: &PendingEffect) -> String {
+    serde_json::to_string(&json!({
+        "emitter": pending.emitter,
+        "path": pending.path,
+        "markdown": pending.markdown,
+        "kind": pending.effect.kind.as_str(),
+        "args": pending.effect.args,
+    }))
+    .expect("counterfactual signature serializes")
+}
+
+fn advance_counterfactual(
+    pending: &PendingEffect,
+    conventions: &[Convention],
+    queue: &mut VecDeque<PendingEffect>,
+    proof: &mut Quiescence,
+) -> Result<(), Fail> {
+    let Some(after_md) = apply_md_effect(&pending.markdown, &pending.effect)? else {
+        return Ok(());
+    };
+    let before = build_doc(&pending.path, &pending.markdown);
+    let after = build_doc(&pending.path, &after_md);
+    let synthetic = CaseSpec {
+        name: None,
+        doc: pending.path.clone(),
+        actor: Some(format!("rule:{}", pending.emitter)),
+        force: false,
+        set: BTreeMap::new(),
+        remove: Vec::new(),
+        expect: Expected::One("pass".to_owned()),
+    };
+    let change = synth_change(&before, &after, &synthetic);
+    let event = derive_event(
+        &change,
+        &before.root.node_rev.0,
+        &after.root.node_rev.0,
+        u32::try_from(pending.chain.len()).unwrap_or(u32::MAX),
+    );
+
+    for convention in conventions {
+        let Some(hook) = convention.hook() else {
+            continue;
+        };
+        if !hook.matches_path(&pending.path) {
+            continue;
+        }
+        let telemetry = evaluate_hook(convention, &event);
+        proof.fuel_samples.push(telemetry.fuel);
+        proof.mem_samples.push(telemetry.mem);
+        let emitted = match telemetry.outcome {
+            Ok(effects) => effects,
+            Err(HookRunError::Budget { steps, mem }) => {
+                proof.fault = Some(format!(
+                    "{}: budget_exceeded steps={steps} mem={mem}",
+                    convention.slug()
+                ));
+                return Ok(());
+            }
+            Err(HookRunError::Eval(detail)) => {
+                proof.fault = Some(format!(
+                    "{}: HOOK evaluation failed: {detail}",
+                    convention.slug()
+                ));
+                return Ok(());
+            }
+        };
+        enqueue_emitted(pending, convention, &after_md, emitted, queue, proof);
+    }
+    Ok(())
+}
+
+fn enqueue_emitted(
+    pending: &PendingEffect,
+    convention: &Convention,
+    after_md: &str,
+    emitted: Vec<Effect>,
+    queue: &mut VecDeque<PendingEffect>,
+    proof: &mut Quiescence,
+) {
+    if emitted.is_empty() {
+        return;
+    }
+    proof
+        .edges
+        .insert((pending.emitter.clone(), convention.slug().to_owned()));
+    proof.fired_rules.insert(convention.slug().to_owned());
+    let mut chain = pending.chain.clone();
+    chain.push(convention.slug().to_owned());
+    for effect in emitted {
+        if effect.kind.domain() == Domain::Md {
+            queue.push_back(PendingEffect {
+                emitter: convention.slug().to_owned(),
+                path: pending.path.clone(),
+                markdown: after_md.to_owned(),
+                effect,
+                chain: chain.clone(),
+            });
+        }
+    }
+}
+
+fn repeated_cycle(chain: &[String]) -> Vec<String> {
+    let Some(last) = chain.last() else {
+        return Vec::new();
+    };
+    let start = chain[..chain.len().saturating_sub(1)]
+        .iter()
+        .position(|rule| rule == last)
+        .unwrap_or(0);
+    chain[start..].to_vec()
+}
+
+fn apply_md_effect(markdown: &str, effect: &Effect) -> Result<Option<String>, Fail> {
+    match effect.kind {
+        EffectKind::SetField => {
+            let field = effect_arg(effect, "field")?;
+            let value = effect_arg(effect, "value")?;
+            let after = apply_mutation(
+                markdown,
+                &BTreeMap::from([(field.to_owned(), value.to_owned())]),
+                &[],
+            );
+            Ok((after != markdown).then_some(after))
+        }
+        EffectKind::AppendSection => {
+            let section = effect_arg(effect, "section")?;
+            let content = effect_arg(effect, "content")?;
+            let after = append_to_section(markdown, section, content).ok_or_else(|| {
+                Fail::tool(format!(
+                    "counterfactual effect from `{}` names missing section {section:?}",
+                    effect.rule_id
+                ))
+            })?;
+            Ok((after != markdown).then_some(after))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn effect_arg<'a>(effect: &'a Effect, name: &str) -> Result<&'a str, Fail> {
+    match effect.args.get(name) {
+        Some(ArgValue::Str(value)) => Ok(value),
+        Some(ArgValue::List(_)) => Err(Fail::tool(format!(
+            "counterfactual `{}` argument {name:?} must be a string",
+            effect.kind.as_str()
+        ))),
+        None => Err(Fail::tool(format!(
+            "counterfactual `{}` descriptor is missing {name:?}",
+            effect.kind.as_str()
+        ))),
+    }
+}
+
+fn append_to_section(markdown: &str, section: &str, content: &str) -> Option<String> {
+    let wanted = section.rsplit('/').next().unwrap_or(section);
+    let mut start = None;
+    let mut end = markdown.len();
+    let mut offset = 0usize;
+    let mut level = 0usize;
+    for line in markdown.split_inclusive('\n') {
+        let trimmed = line.trim_end_matches('\n');
+        let hashes = trimmed.chars().take_while(|ch| *ch == '#').count();
+        let is_heading = hashes > 0 && trimmed.as_bytes().get(hashes) == Some(&b' ');
+        if is_heading {
+            let heading = trimmed[hashes + 1..].trim();
+            if start.is_none() && heading == wanted {
+                start = Some(offset + line.len());
+                level = hashes;
+            } else if start.is_some() && hashes <= level {
+                end = offset;
+                break;
+            }
+        }
+        offset += line.len();
+    }
+    start?;
+    let mut out = markdown.to_owned();
+    let mut insertion = String::new();
+    if end > 0 && !out[..end].ends_with('\n') {
+        insertion.push('\n');
+    }
+    insertion.push_str(content);
+    if !insertion.ends_with('\n') {
+        insertion.push('\n');
+    }
+    out.insert_str(end, &insertion);
+    Some(out)
 }
 
 /// Derive the `rulepack-api@2` change for a synthetic frontmatter mutation over
@@ -573,16 +1025,17 @@ fn percentile(sorted: &[u64], p: usize) -> u64 {
 /// spec)`, so re-running is byte-identical (no wall-clock stamp).
 struct Report {
     name: String,
-    convention_slug: String,
-    convention_source: String,
+    convention_slugs: Vec<String>,
+    convention_sources: Vec<String>,
     corpus_root: String,
-    scope: Vec<String>,
+    scopes: Vec<Vec<String>>,
     declared_rules: Vec<String>,
     results: Vec<CaseResult>,
     dead_rules: Vec<String>,
     surprise_rules: Vec<String>,
     fuel_budget: Budget,
     mem_budget: Budget,
+    quiescence: Quiescence,
 }
 
 impl Report {
@@ -602,7 +1055,10 @@ impl Report {
     /// The number of findings — the exit-1 signal. A run is clean (exit 0) iff
     /// every case matched, no declared rule is dead, and no surprise rule fired.
     fn findings(&self) -> usize {
-        self.mismatches() + self.dead_rules.len() + self.surprise_rules.len()
+        self.mismatches()
+            + self.dead_rules.len()
+            + self.surprise_rules.len()
+            + usize::from(!self.quiescence.passed())
     }
 
     /// A one-line findings summary for the exit-1 diagnostic.
@@ -617,6 +1073,9 @@ impl Report {
         }
         if !self.surprise_rules.is_empty() {
             parts.push(format!("{} surprise rule(s)", self.surprise_rules.len()));
+        }
+        if !self.quiescence.passed() {
+            parts.push(format!("quiescence {}", self.quiescence.verdict()));
         }
         parts.join(", ")
     }
@@ -637,87 +1096,144 @@ impl Report {
     }
 
     fn to_human(&self) -> String {
-        let mut s = String::new();
-        let _ = writeln!(s, "# mrd test --corpus — {}\n", self.name);
-        let _ = writeln!(
-            s,
-            "convention: `{}` ({})",
-            self.convention_slug, self.convention_source
-        );
-        let _ = writeln!(s, "corpus: `{}`", self.corpus_root);
-        let _ = writeln!(s, "scope: `{}`", self.scope.join("`, `"));
-        let in_scope = self.results.iter().filter(|r| r.in_scope).count();
-        let _ = writeln!(
-            s,
-            "cases: {} ({in_scope} in-scope eval(s))\n",
-            self.results.len()
-        );
-
-        // Fire-where-expected table.
-        s.push_str("## Fire-where-expected\n\n");
-        s.push_str("| case | doc | actor | expected | observed | ok |\n");
-        s.push_str("|------|-----|-------|----------|----------|:--:|\n");
-        for r in &self.results {
-            let actor = r.actor.as_deref().unwrap_or("(external)");
-            let ok = if r.matched() { "ok" } else { "**MISMATCH**" };
-            let _ = writeln!(
-                s,
-                "| {} | `{}` | `{actor}` | {} | {} | {ok} |",
-                r.name,
-                r.doc,
-                r.expect,
-                Self::observed_cell(r),
-            );
-        }
-        s.push('\n');
-
-        // Dead rules — the headline signal.
-        s.push_str("## Dead rules (declared, never fired)\n\n");
-        if self.dead_rules.is_empty() {
-            s.push_str("_none — every declared rule fired at least once._\n\n");
-        } else {
-            for id in &self.dead_rules {
-                let _ = writeln!(s, "- `{id}`");
-            }
-            s.push('\n');
-        }
-
-        // Surprise rules (fired but never declared).
-        if !self.surprise_rules.is_empty() {
-            s.push_str("## Surprise rules (fired, never declared)\n\n");
-            for id in &self.surprise_rules {
-                let _ = writeln!(s, "- `{id}`");
-            }
-            s.push('\n');
-        }
-
-        // Fuel + heap budgets.
-        s.push_str("## Fuel + heap budgets\n\n");
-        let _ = writeln!(s, "over {} in-scope eval(s):\n", self.fuel_budget.n);
-        s.push_str("| metric | p50 | p99 | max |\n");
-        s.push_str("|--------|----:|----:|----:|\n");
-        let _ = writeln!(
-            s,
-            "| fuel (ticks) | {} | {} | {} |",
-            self.fuel_budget.p50, self.fuel_budget.p99, self.fuel_budget.max
-        );
-        let _ = writeln!(
-            s,
-            "| heap (bytes) | {} | {} | {} |",
-            self.mem_budget.p50, self.mem_budget.p99, self.mem_budget.max
-        );
-        s.push('\n');
-
+        let mut out = String::new();
+        self.write_overview(&mut out);
+        self.write_cases(&mut out);
+        self.write_rule_liveness(&mut out);
+        self.write_budgets(&mut out);
+        self.write_quiescence(&mut out);
         let matched = self.results.len() - self.mismatches();
         let _ = writeln!(
-            s,
+            out,
             "{} case(s): {matched} matched, {} mismatch(es), {} dead rule(s), {} error(s).",
             self.results.len(),
             self.mismatches(),
             self.dead_rules.len(),
             self.errored(),
         );
-        s
+        out
+    }
+
+    fn write_overview(&self, out: &mut String) {
+        let _ = writeln!(out, "# mrd test --corpus — {}\n", self.name);
+        for ((slug, source), scope) in self
+            .convention_slugs
+            .iter()
+            .zip(&self.convention_sources)
+            .zip(&self.scopes)
+        {
+            let _ = writeln!(
+                out,
+                "convention: `{slug}` ({source}) · scope `{}`",
+                scope.join("`, `")
+            );
+        }
+        let _ = writeln!(out, "corpus: `{}`", self.corpus_root);
+        let in_scope = self.results.iter().filter(|result| result.in_scope).count();
+        let _ = writeln!(
+            out,
+            "cases: {} ({in_scope} in-scope case(s))\n",
+            self.results.len()
+        );
+    }
+
+    fn write_cases(&self, out: &mut String) {
+        out.push_str("## Fire-where-expected\n\n");
+        out.push_str("| case | doc | actor | expected | observed | ok |\n");
+        out.push_str("|------|-----|-------|----------|----------|:--:|\n");
+        for result in &self.results {
+            let actor = result.actor.as_deref().unwrap_or("(external)");
+            let ok = if result.matched() {
+                "ok"
+            } else {
+                "**MISMATCH**"
+            };
+            let _ = writeln!(
+                out,
+                "| {} | `{}` | `{actor}` | {} | {} | {ok} |",
+                result.name,
+                result.doc,
+                result.expect.label(),
+                Self::observed_cell(result),
+            );
+        }
+        out.push('\n');
+    }
+
+    fn write_rule_liveness(&self, out: &mut String) {
+        out.push_str("## Dead rules (declared, never fired)\n\n");
+        if self.dead_rules.is_empty() {
+            out.push_str("_none — every declared rule fired at least once._\n\n");
+        } else {
+            for id in &self.dead_rules {
+                let _ = writeln!(out, "- `{id}`");
+            }
+            out.push('\n');
+        }
+        if !self.surprise_rules.is_empty() {
+            out.push_str("## Surprise rules (fired, never declared)\n\n");
+            for id in &self.surprise_rules {
+                let _ = writeln!(out, "- `{id}`");
+            }
+            out.push('\n');
+        }
+    }
+
+    fn write_budgets(&self, out: &mut String) {
+        out.push_str("## Fuel + heap budgets\n\n");
+        let _ = writeln!(out, "over {} in-scope eval(s):\n", self.fuel_budget.n);
+        out.push_str("| metric | p50 | p99 | max |\n");
+        out.push_str("|--------|----:|----:|----:|\n");
+        let _ = writeln!(
+            out,
+            "| fuel (ticks) | {} | {} | {} |",
+            self.fuel_budget.p50, self.fuel_budget.p99, self.fuel_budget.max
+        );
+        let _ = writeln!(
+            out,
+            "| heap (bytes) | {} | {} | {} |",
+            self.mem_budget.p50, self.mem_budget.p99, self.mem_budget.max
+        );
+        out.push('\n');
+        for finding in self
+            .results
+            .iter()
+            .flat_map(|result| &result.budget_findings)
+        {
+            let _ = writeln!(out, "- budget finding: `{finding}`");
+        }
+        out.push('\n');
+    }
+
+    fn write_quiescence(&self, out: &mut String) {
+        out.push_str("## FIX/HOOK quiescence\n\n");
+        let _ = writeln!(
+            out,
+            "verdict: **{}** · graph nodes={} edges={} · counterfactual steps={}/{}",
+            self.quiescence.verdict(),
+            self.quiescence.nodes.len(),
+            self.quiescence.edges.len(),
+            self.quiescence.steps,
+            self.quiescence.fuel_limit,
+        );
+        if self.quiescence.edges.is_empty() {
+            out.push_str("\n_none — emitted effects mutate no corpus state._\n");
+        } else {
+            out.push('\n');
+            for (from, to) in &self.quiescence.edges {
+                let _ = writeln!(out, "- `{from}` → `{to}`");
+            }
+        }
+        if let Some(cycle) = &self.quiescence.cycle {
+            let _ = writeln!(out, "\nquiescence assertion failed: {}", cycle.join(" → "));
+        }
+        if let Some(fault) = &self.quiescence.fault {
+            let _ = writeln!(out, "\nquiescence assertion failed: {fault}");
+        }
+        if self.quiescence.fuel_exhausted {
+            out.push_str("\nquiescence assertion failed: counterfactual fuel exhausted\n");
+        }
+        out.push('\n');
     }
 
     fn to_json(&self) -> String {
@@ -741,17 +1257,21 @@ impl Report {
                     "fired": fired,
                     "error": error,
                     "matched": r.matched(),
-                    "fuel_used": r.fuel,
-                    "mem_used": r.mem,
+                    "fuel_used": r.fuel.iter().sum::<u64>(),
+                    "mem_used": r.mem.iter().max().copied().unwrap_or(0),
+                    "budget_findings": r.budget_findings,
                 })
             })
             .collect();
         let value = json!({
             "corpus_test": self.name,
-            "convention": self.convention_slug,
-            "convention_source": self.convention_source,
+            "convention": self.convention_slugs.first(),
+            "conventions": self.convention_slugs,
+            "convention_source": self.convention_sources.first(),
+            "convention_sources": self.convention_sources,
             "corpus_root": self.corpus_root,
-            "scope": self.scope,
+            "scope": self.scopes.first(),
+            "scopes": self.scopes,
             "declared_rules": self.declared_rules,
             "cases": cases,
             "dead_rules": self.dead_rules,
@@ -769,6 +1289,20 @@ impl Report {
                     "max": self.mem_budget.max,
                 },
             },
+            "quiescence": {
+                "passed": self.quiescence.passed(),
+                "verdict": self.quiescence.verdict(),
+                "nodes": self.quiescence.nodes,
+                "edges": self.quiescence.edges.iter().map(|(from, to)| json!({
+                    "from": from,
+                    "to": to,
+                })).collect::<Vec<_>>(),
+                "steps": self.quiescence.steps,
+                "fuel_limit": self.quiescence.fuel_limit,
+                "fuel_exhausted": self.quiescence.fuel_exhausted,
+                "cycle": self.quiescence.cycle,
+                "fault": self.quiescence.fault,
+            },
             "summary": {
                 "cases": self.results.len(),
                 "matched": self.results.len() - self.mismatches(),
@@ -776,6 +1310,7 @@ impl Report {
                 "dead_rules": self.dead_rules.len(),
                 "surprise_rules": self.surprise_rules.len(),
                 "errors": self.errored(),
+                "quiescence": self.quiescence.verdict(),
                 "findings": self.findings(),
             },
         });

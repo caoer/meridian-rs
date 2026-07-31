@@ -64,6 +64,15 @@ use crate::convention::LoadError;
 /// this slice does not carry it.
 pub const SLICE1_CAPS: [EffectKind; 1] = [EffectKind::Send];
 
+/// Extra descriptor kinds the corpus tier may evaluate while proving quiescence.
+/// This is not an arming allowlist: only the explicitly named corpus loader can use
+/// it, and the ordinary loader remains pinned to [`SLICE1_CAPS`].
+const CORPUS_COUNTERFACTUAL_CAPS: [EffectKind; 3] = [
+    EffectKind::SetField,
+    EffectKind::AppendSection,
+    EffectKind::Send,
+];
+
 /// A loaded `HOOK.md`: its declared scope, severity, caps, per-eval budget, the
 /// verbatim `how:` block, and the parse- and ceiling-validated predicate.
 /// Construction is sealed to [`load_hook`] — a `Hook` in hand has passed the
@@ -253,6 +262,28 @@ pub fn evaluate_hooks(
     )
 }
 
+/// Evaluate loaded conventions before arming for the tier-1 scenario proof.
+///
+/// This is the same pure descriptor evaluator and intent projection as
+/// [`evaluate_hooks`], but its input is a loaded [`crate::Convention`] rather than an
+/// attested INDEX row. It grants no arming state and applies no effect. The scenario
+/// runner uses it only after routing the declared `^put` through the production write
+/// path, so `t.result.effects` observes what that landed change would arm.
+///
+/// # Errors
+/// The same [`HookEvalError`] surface as [`evaluate_hooks`].
+pub fn evaluate_hooks_for_test(
+    conventions: &[crate::Convention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookOutcome>, HookEvalError> {
+    evaluate_loaded_hooks(
+        conventions
+            .iter()
+            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+        event,
+    )
+}
+
 fn evaluate_loaded_hooks<'a>(
     hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
     event: &ChangeEvent,
@@ -391,6 +422,21 @@ fn take_string(
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
 /// [`LoadError::HookPredicateInvalid`], [`LoadError::HookCeiling`].
 pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
+}
+
+/// Load a HOOK for `mrd test --corpus` counterfactual chaining. The ordinary
+/// loader never reaches this allowlist, so admitting `md.*` here cannot widen the
+/// armed runtime's [`SLICE1_CAPS`].
+pub(crate) fn load_hook_for_corpus(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    load_hook_with_caps(hook_md, limits, &CORPUS_COUNTERFACTUAL_CAPS)
+}
+
+fn load_hook_with_caps(
+    hook_md: &str,
+    limits: CheckLimits,
+    allowed_caps: &[EffectKind],
+) -> Result<Hook, LoadError> {
     let malformed = |reason: String| LoadError::HookMalformed { reason };
 
     let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
@@ -423,7 +469,7 @@ pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, Load
     let declared_caps = parsed
         .caps
         .ok_or_else(|| malformed("frontmatter must declare `caps:`".to_string()))?;
-    let caps = resolve_caps(&declared_caps)?;
+    let caps = resolve_caps(&declared_caps, allowed_caps)?;
 
     let budget = parsed
         .budget
@@ -484,7 +530,10 @@ struct HookFrontmatter {
 /// the slice-1 allowlist. An unknown name is malformed (the surface is closed, so a
 /// name outside it is a typo or a later vocabulary, never a guess); a known cap
 /// outside slice 1 is a named deferral.
-fn resolve_caps(declared: &[String]) -> Result<Vec<EffectKind>, LoadError> {
+fn resolve_caps(
+    declared: &[String],
+    allowed_caps: &[EffectKind],
+) -> Result<Vec<EffectKind>, LoadError> {
     let mut out = Vec::with_capacity(declared.len());
     for name in declared {
         let kind = EffectKind::from_wire_name(name).ok_or_else(|| LoadError::HookMalformed {
@@ -497,7 +546,7 @@ fn resolve_caps(declared: &[String]) -> Result<Vec<EffectKind>, LoadError> {
                     .join(", ")
             ),
         })?;
-        if !SLICE1_CAPS.contains(&kind) {
+        if !allowed_caps.contains(&kind) {
             return Err(LoadError::HookCapDeferred {
                 cap: kind.as_str().to_string(),
             });
@@ -862,6 +911,27 @@ how:
         // The control: the one cap slice 1 DOES carry still loads, so the refusals
         // above are about the allowlist, not about `caps:` parsing being broken.
         assert!(load(FOUNDING_HOOK).is_ok(), "proto.send is admitted");
+    }
+
+    #[test]
+    fn corpus_counterfactual_caps_do_not_widen_the_production_loader() {
+        let page = FOUNDING_HOOK
+            .replace("[proto.send]", "[md.set_field]")
+            .replace(
+                "send(to = [\"reviewer\"], message = \"task → review\")",
+                "set_field(field = \"status\", value = \"review\")",
+            );
+        let counterfactual = load_hook_for_corpus(&page, CheckLimits::default())
+            .expect("the corpus tier may evaluate an md.* counterfactual");
+        assert_eq!(counterfactual.caps(), &[EffectKind::SetField]);
+        assert_eq!(SLICE1_CAPS, [EffectKind::Send]);
+        assert!(
+            matches!(
+                load(&page),
+                Err(LoadError::HookCapDeferred { cap }) if cap == "md.set_field"
+            ),
+            "the exact same declaration is still refused by the production loader"
+        );
     }
 
     /// An unknown cap name is malformed — the descriptor surface is closed, so a
