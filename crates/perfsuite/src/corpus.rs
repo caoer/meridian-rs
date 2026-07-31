@@ -1,5 +1,14 @@
-//! Corpus cache: `target/corpora/<recipe-id>/`, generated on first use, keyed
-//! by recipe hash. Corpora are never committed — the recipe is the artifact.
+//! Corpus cache: `<meridian-cache-root>/corpora/<recipe-id>/`, generated on
+//! first use, keyed by recipe hash. Corpora are never committed — the recipe is
+//! the artifact.
+//!
+//! The cache lives under the per-user meridian cache root
+//! (`$XDG_CACHE_HOME/meridian`, else `$HOME/.cache/meridian`), NEVER inside the
+//! repo: the repo is a registerable workspace, and an in-tree corpus enters its
+//! §12 hash domain — a 180k-file perf vault under `target/corpora/` made the
+//! resident daemon warm multi-GB engines and re-read the whole corpus every
+//! pre-warm tick (2026-07-31). The deny ceiling already refuses the cache root
+//! as a workspace, so corpora there are structurally un-warmable.
 //! Regeneration is byte-identical on a given platform; across platforms libm
 //! (`ln`/`cos`) may differ in the last ulp, shifting sampled sizes by bytes,
 //! so cross-platform bit-identity is deliberately not claimed. Claim runs
@@ -44,9 +53,31 @@ pub fn workspace_target() -> PathBuf {
     )
 }
 
+/// The corpora cache root: `$XDG_CACHE_HOME/meridian/corpora`, else
+/// `$HOME/.cache/meridian/corpora` (the same two-rung resolution as
+/// `cache::cache_root` — hand-rolled here so the harness stays seam-free).
+///
+/// Falls back to `target/corpora/` only when NEITHER env var is set: such an
+/// environment cannot run the resident daemon either (its `Config::resolve`
+/// needs the same cache root), so the in-tree fallback can never be warmed.
+#[must_use]
+pub fn corpora_root() -> PathBuf {
+    let non_empty = |key: &str| std::env::var_os(key).filter(|v| !v.is_empty());
+    if let Some(xdg) = non_empty("XDG_CACHE_HOME") {
+        return PathBuf::from(xdg).join("meridian").join("corpora");
+    }
+    if let Some(home) = non_empty("HOME") {
+        return PathBuf::from(home)
+            .join(".cache")
+            .join("meridian")
+            .join("corpora");
+    }
+    workspace_target().join("corpora")
+}
+
 #[must_use]
 pub fn cache_dir(recipe: &Recipe) -> PathBuf {
-    workspace_target().join("corpora").join(recipe.id())
+    corpora_root().join(recipe.id())
 }
 
 /// Generate-or-reuse: returns the corpus directory, valid manifest guaranteed.
