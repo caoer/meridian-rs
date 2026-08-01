@@ -48,6 +48,7 @@ mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
+mod rules_cmd;
 mod run_cmd;
 mod skill_cmd;
 mod sql;
@@ -131,6 +132,34 @@ usage:
                            dependents). Read-only; every answer cites the revs
                            it read. Exits: 0 clean / 1 a red edge / 2 bad
                            invocation or in-snapshot cycle
+  mrd rules [PATH] [--workspace | --user]
+                           the effective-rules print verb: what governs at PATH
+                           (default cwd) after id-based override resolution.
+                           Per rule id, one block — the winning page with its
+                           rev and scope, then every page it SHADOWS beneath it,
+                           winner first in ladder order, never collapsed (`git
+                           config --show-origin`). The scope ladder is user
+                           space (rules under the MERIDIAN.md anchor's scope) ->
+                           workspace root -> folder/session tree, and resolution
+                           is NARROWED to PATH's own chain: a same-id page on a
+                           sibling chain is no conflict. `armed=` is a SEPARATE
+                           column, read from the attested armed set (never
+                           recomputed), so `registered here` and `armed here`
+                           stay distinct — `armed=-` unarmed, `armed=<mode>`
+                           armed on the page that governs,
+                           `armed=<mode>@<page>` armed on a different page (the
+                           freeze: arming pins resolution, later discovery never
+                           moves it), `(drifted)`/`(missing)` when the pinned
+                           page no longer stands. An id in collision at one
+                           scope on one chain renders REFUSED naming every tied
+                           page — never an arbitrary winner, never omitted.
+                           --workspace prints the workspace-root layer alone;
+                           --user the user layer alone (empty, and saying so,
+                           when no MERIDIAN.md anchors a user scope). Read-only:
+                           arms nothing, mints no receipt, spends no cap.
+                           Exits: 0 clean / 1 a finding (a collision, a refused
+                           rule page, a red armed row, an unreadable armed set)
+                           / 2 bad invocation or a PATH outside the workspace
   mrd config               the MERIDIAN.md config plane: resolve the bootstrap
                            chain (MERIDIAN_CONFIG, then $HOME/MERIDIAN.md) and
                            print what it found — the resolved path, the state,
@@ -358,6 +387,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "put" => put_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
+        "rules" => rules_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
         "skill" => skill_cmd::dispatch(&args[1..]),
         "config" => {
