@@ -105,11 +105,13 @@ fn armed_to_pb(a: wire::Armed) -> pb::Armed {
         path,
         edits,
         file_rev_after,
+        effects,
     } = a;
     pb::Armed {
         path: path.0,
         edits: edits.into_iter().map(armed_edit_to_pb).collect(),
         file_rev_after: file_rev_after.map(|r| r.0),
+        effects: effects.into_iter().map(effect_envelope_to_pb).collect(),
     }
 }
 
@@ -966,11 +968,13 @@ fn armed_from_pb(a: pb::Armed) -> wire::Armed {
         path,
         edits,
         file_rev_after,
+        effects,
     } = a;
     wire::Armed {
         path: wire::Path(path),
         edits: edits.into_iter().map(armed_edit_from_pb).collect(),
         file_rev_after: file_rev_after.map(wire::NodeRev),
+        effects: effects.into_iter().map(effect_envelope_from_pb).collect(),
     }
 }
 
@@ -2199,6 +2203,7 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
                     node_rev_after: wire::NodeRev("41f643f034e5681f".into()),
                     span_after: wire::Span(49, 75),
                 }],
+                effects: vec![sample_effect_envelope()],
             },
             receipt: Some(wire::ReceiptFact {
                 path: wire::Path("receipts/2026-07-18.md".into()),
@@ -2243,6 +2248,7 @@ fn sample_splice_bodies() -> Vec<wire::ResponseBody> {
                     node_rev_after: wire::NodeRev("fb49e9df2257fab8".into()),
                     span_after: wire::Span(4, 18),
                 }],
+                effects: vec![],
             },
             receipt: None,
             root_before: wire::Root(

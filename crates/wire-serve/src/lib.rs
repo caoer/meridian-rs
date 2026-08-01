@@ -38,6 +38,7 @@ pub mod decode;
 pub mod gate;
 pub mod plan;
 pub(crate) mod positions;
+pub mod reaction;
 pub mod read;
 pub mod rev;
 pub mod write;

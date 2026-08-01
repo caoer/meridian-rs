@@ -1258,6 +1258,11 @@ pub struct Armed {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_rev_after: Option<NodeRev>,
     pub edits: Vec<ArmedEdit>,
+    /// Reaction outputs this landed batch armed synchronously. Empty on a dry,
+    /// refused, out-of-scope, or never-armed write and omitted to preserve the
+    /// pre-reaction response bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<EffectEnvelope>,
 }
 
 /// One armed edit: target identity echoed in THE grammar (§2.1), rev

@@ -442,6 +442,9 @@ message Armed {
   // file rev without a follow-up toc (latency fact). Absent on dry (nothing
   // written), mirroring root_after's dry-null at file grain.
   optional string file_rev_after = 3;
+  // Reaction outputs armed synchronously by this landed batch. Empty preserves
+  // the pre-reaction response bytes.
+  repeated EffectEnvelope effects = 4;
 }
 
 message ArmedEdit {

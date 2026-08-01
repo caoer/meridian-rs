@@ -4438,6 +4438,7 @@ version = "0.0.0"
 dependencies = [
  "addr",
  "config",
+ "effects",
  "fs",
  "git",
  "lock",

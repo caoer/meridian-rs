@@ -32,6 +32,14 @@ Each array element is one reaction evaluation envelope. `intents` are admitted d
 
 An intent states what evaluation armed before delivery. It has exactly `rule_id`, `seq`, `action`, optional `target`, optional `severity`, optional `payload`, and the canonical `receipt` address. It has no `delivered` field and makes no delivery claim.
 
+## Synchronous write feedback
+
+A successful non-dry `splice` may carry the same envelopes under `body.armed.effects`. The shared write leaf derives them only after the batch lands, from the before/after documents already held by the guarded write. The response is complete before the host flushes any live subscription frame, so it states what the write armed without claiming delivery.
+
+`armed.effects` is omitted when empty. Dry, refused, out-of-scope, and never-armed writes therefore preserve their prior response bytes. An external edit has no acting caller and no splice response; its reaction output exists only on the associated `DeltaFrame`, with `delta.actor` absent.
+
+`transport-proto.Armed.effects = 4` transcribes this additive response field. Empty repeated fields preserve the pre-amendment protobuf response bytes.
+
 ## Additive schedule path
 
 The envelope is an object rather than a bare intent array. A later schedule consumer can add optional `wake_at` beside `intents` without changing `effects`, any existing intent object, or slice-1 data. Slice 1 does not add `wake_at`. On the subscribe path, `delta.root_after` remains the world fingerprint that witnesses the notification.
