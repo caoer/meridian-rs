@@ -210,18 +210,27 @@ rules at sessions/s1
   are unchanged afterwards.
 - **Exit triad:** 0 clean / 1 a finding (a collision, a refused rule page, a red
   armed row, an unreadable armed set) / 2 bad invocation, or a PATH outside the
-  workspace — which is refused rather than quietly answered at the root.
+  workspace or not on disk — refused rather than quietly answered at the root.
+  The not-on-disk refusal forecloses nothing: a folder that does not exist yet
+  can mount no rules of its own, so `mrd rules <nearest-existing-ancestor>`
+  answers the hypothetical exactly. The refusal only declines to dress a typo
+  as an answer.
 
-**A refusal anywhere in the workspace is a finding here.** The discovery index
-carries refusals unnarrowed on purpose (a broken rule page must stay visible
-exactly where someone is looking), and a page whose frontmatter does not parse is
-refused fail-closed — whether it carries a registration tag cannot be answered.
-So a deliberately-malformed fixture inside the hash domain makes this verb exit 1
-for the whole workspace: `mrd rules` in meridian-rs itself reports
-`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`. The
-finding is real (that page IS unreadable to registration); whether an off-chain
-refusal should gate a scoped query's exit is an open question, recorded rather
-than papered over.
+**Refusal scoping is ruled; this build predates the split.** The registration
+ruling's § 3 "Refusal scoping" amendment (2026-08-01) rules that refusals are
+narrowed exactly like rules: a scoped query reddens only for **on-chain**
+refusals — the exact subtree the refused page would have governed — while every
+corpus-wide walk (discovery sweep, ARM act, cutover sweep) reports ALL refusals
+it encounters, always. The mount of a refused page is path-derived (`mount_dir`
+needs no frontmatter), so "cannot be answered" applies to the tag, never the
+mount. The split lands when `RegisterError` gains its mount scope in `policy`
+(with the loader cutover); until then this verb is deliberately PRE-SPLIT
+fail-loud — a refusal anywhere in the workspace exits 1 from any path, which is
+why `mrd rules` in meridian-rs itself currently reports the testsuite's
+deliberately-malformed fixture
+(`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`) from
+everywhere. Fail-closed on the refusal itself is unchanged by the split: a page
+whose frontmatter does not parse never registers.
 
 ### `mrd check` — grey when it cannot date the tree
 
