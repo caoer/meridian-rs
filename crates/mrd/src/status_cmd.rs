@@ -79,7 +79,7 @@ use std::process::Command;
 
 use model::Document;
 use model::selector::{Color, RedReason};
-use policy::{Enforcement, evidence_rev, parse_index_strict};
+use policy::{Enforcement, page_rev, parse_index_strict};
 use receipt::anchor::{
     AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, Observed, TipPosition,
 };
@@ -867,7 +867,7 @@ fn read_armed(workspace: &Path) -> (Vec<ArmedConv>, Option<String>) {
 fn convention_drifted(workspace: &Path, slug: &str, armed_rev: &str) -> bool {
     let rel = format!("conventions/{slug}/CHECK.md");
     match std::fs::read_to_string(workspace.join(&rel)) {
-        Ok(text) => evidence_rev(&text) != armed_rev,
+        Ok(text) => page_rev(&text) != armed_rev,
         Err(_) => true,
     }
 }

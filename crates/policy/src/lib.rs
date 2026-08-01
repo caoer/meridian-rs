@@ -35,6 +35,18 @@
 
 use model::{CorpusIndex, Document};
 
+/// The attested armed-set artifact — the INDEX successor (registration ruling § 4,
+/// amended 2026-08-01). [`armed::arm`] is the ONE act that turns a discovered page
+/// into an armed one: it narrows to an [`armed::ArmRoot`], resolves through the
+/// landed resolver, and pins each winner's page + [`page_rev`] into an
+/// [`armed::ArmedArtifact`] row keyed by (id, arm root).
+///
+/// It is a MODULE, not a flat re-export, because the folder loader's `index::arm`
+/// still lives until the loader cutover retires it — two acts named `arm` in one
+/// namespace would be two names for one thing at exactly the seam where the
+/// difference matters. When `index::arm` dies, nothing here has to be renamed.
+pub mod armed;
+
 mod binding;
 mod change;
 mod check_eval;
@@ -109,7 +121,7 @@ pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_conve
 /// ([`armed_from_index`]), and the arming gate ([`arm`]) that refuses on evidence
 /// drift ([`ArmError::Drift`], `report-rev == armed-rev`).
 pub use index::{
-    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index, evidence_rev,
+    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index,
     generate_index, parse_index_strict, render_rows, sweep,
 };
 

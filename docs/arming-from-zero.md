@@ -76,22 +76,76 @@ pre-arming gate:
   and require zero UNDECLARED refusals against the pinned
   `conventions/<slug>/GOLDEN.md` list.
 
-Passing all three tiers is **pre-arm qualification**, not armability. The current
-attestation contract below pins `CHECK.md` only. A HOOK-only convention therefore
-remains fail-closed and cannot be armed until the later ARM card settles the pending
-HOOK attestation and activation-field contract. C6a proves the reaction; it does not
-invent that contract.
+Passing all three tiers is **pre-arm qualification**, not armability. C6a proves
+the reaction; it does not invent the attestation contract.
+
+That contract is now settled, and rung 4 states it: attestation pins the PAGE
+rev, so a hook page is attestable on exactly the same terms as a check page, and
+the activation field is `off|armed`. What remains open is not the contract but
+the WIRING — no armed row of either kind reaches the write door yet. The legacy
+`conventions/<slug>/` surface still pins `blake3(CHECK.md)`, so a HOOK-only
+FOLDER convention remains fail-closed there until that surface is retired.
 
 A convention that has not passed the tiers is not qualified for arming review.
 
 ### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
 
-Arming attests a convention: a reviewer approves it AT the evidence rev they read
-(`armed-rev = blake3(CHECK.md)[:16]`), then writes the attested INDEX row and,
-on the FIRST arm, creates the once-armed marker. `policy::arm` admits the
-attestation only when the live swept rev (`report-rev`) still equals the approved
-`armed-rev` — a law that drifted since approval is refused, never silently armed
-(`ArmError::Drift`).
+Arming attests a rule: a reviewer approves it AT the rev they read (the
+`armed-rev`), then writes the attested row and, on the FIRST arm, creates the
+once-armed marker. Arming admits the attestation only when the live rev
+(`report-rev`) still equals the approved `armed-rev` — a law that drifted since
+approval is refused, never silently armed.
+
+**The attested rev is the PAGE rev, uniformly.** `armed-rev = page_rev(page
+bytes) = blake3(bytes)[:16]` (`crates/policy/src/registration.rs`,
+`docs/node-rev-merkle-spec.md`). There is no `blake3(CHECK.md)` special case and
+no per-kind fingerprint: check pages and hook pages are attested by the same
+function. This is the grain that closed the original attestation blocker — a
+HOOK page had no `CHECK.md` to hash, so under the old special-casing it could
+not be attested at all.
+
+#### What the ARM act attests (the INDEX successor)
+
+The tag-indexed artifact (`crates/policy/src/armed.rs`, written to
+`meridian/armed-rules.md`) is the INDEX's successor. One artifact per workspace,
+one row per **(id, arm root)**:
+
+| column | content |
+|---|---|
+| `id` | the page's frontmatter `id:` |
+| `page` | workspace path of the RESOLVED page — the override winner |
+| `rev` | the page rev the row is attested at |
+| `scope` | the ARM ROOT: the root the resolution was narrowed to |
+| `mode` | checks `off\|warn\|block` · hooks `off\|armed` |
+
+The act is one indivisible step — narrow to the arm root's chain, resolve through
+the one resolver, pin the winner's page and rev — so `scope` cannot drift from
+the resolution it describes. It is all-or-nothing and reports every fault at
+once: a partial artifact would silently drop a rule the reviewer meant to arm.
+
+Three properties the runbook depends on:
+
+- **Arming freezes resolution.** A page that appears LATER — including a deeper
+  override candidate that live resolution would now prefer — governs nothing
+  until a re-arm. This is the cap-escape guardrail: the tag registers, only ARM
+  activates, so no writer can take over an armed id by dropping a file.
+- **A pinned page that is edited reddens.** Its row does not fire on its new
+  bytes. A red CHECK row refuses the write; a red HOOK row falls silent, because
+  a hook may never veto — refusing a write on a reaction's behalf would hand it
+  exactly the power it is denied.
+- **Mode vocabulary splits by kind.** A hook has no severity axis: it is `off` or
+  it fires. A hook row carrying `warn`/`block`, or a check row carrying `armed`,
+  is refused at the act, so no artifact can render one.
+
+#### What is NOT yet wired (read before trusting this rung)
+
+The artifact and its ARM act are landed and tested as a pure policy surface. The
+write door has NOT been re-keyed onto them: `policy::resolve_armed_set` still
+reads `conventions/INDEX.md` through the folder loader, and no walk yet feeds
+discovery from disk. So today, **arming through this artifact enforces nothing at
+the door for either kind** — HOOK arming in particular is attestable but not yet
+firing. Re-keying the door and retiring the folder surface is the loader-cutover
+card's; feeding the guarded write path is C3's.
 
 The **first** arming write is special, and its specialness is permanent:
 
@@ -122,9 +176,9 @@ Once the marker exists and the INDEX carries `[x]` rows, the door enforces:
 recovery}` pair from the closed §8 taxonomy; `warn` rows render an advisory
 finding and land; `off` rows are ignored. A missing or corrupt INDEX on a
 once-armed workspace fails CLOSED (`convention_fault`). An armed convention whose
-CHECK.md drifts off its pinned `armed-rev` fails CLOSED (`armed_drift`) — re-arm
-at the live rev, or revert the law. `--force` is the only escape, and it is loud:
-journaled AND rendered.
+attested page drifts off its pinned `armed-rev` fails CLOSED (`armed_drift`) —
+re-arm at the live rev, or revert the law. `--force` is the only escape, and it
+is loud: journaled AND rendered.
 
 ## What arming does NOT claim (ATTACK-034 scoping)
 

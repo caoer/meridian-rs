@@ -23,7 +23,7 @@ use std::path::Path;
 use std::process::Command;
 
 use policy::{
-    CheckLimits, ConventionFiles, Enforcement, arm, armed_from_index, evidence_rev, generate_index,
+    CheckLimits, ConventionFiles, Enforcement, arm, armed_from_index, generate_index, page_rev,
     sweep,
 };
 
@@ -135,7 +135,7 @@ fn a_convention_slug_lands_no_claim_token_in_the_armed_index() {
     // assertion above while silently disarming the workspace.
     assert_eq!(
         pinned_rev(&after, LIVE_SLUG).as_deref(),
-        Some(evidence_rev(&v2).as_str()),
+        Some(page_rev(&v2).as_str()),
         "the in-charset law stays armed and re-pins at the live rev:\n{after}"
     );
     assert_ne!(

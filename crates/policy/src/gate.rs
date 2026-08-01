@@ -33,7 +33,8 @@
 use crate::change::Change;
 use crate::check_eval::CheckLimits;
 use crate::convention::{Convention, ConventionFiles, load_convention};
-use crate::index::{ArmedRef, Enforcement, evidence_rev, parse_index_strict};
+use crate::index::{ArmedRef, Enforcement, parse_index_strict};
+use crate::registration::page_rev;
 
 /// A per-slug accessor for a convention folder, injected so [`resolve_armed_set`]
 /// stays I/O-free: given a slug, hand back a [`ConventionFiles`] reading that
@@ -272,7 +273,7 @@ fn resolve_one(
         .map_err(|e| GateFault::ConventionFault {
             detail: format!("armed convention `{}` CHECK.md unreadable: {e}", row.slug),
         })?;
-    let report_rev = evidence_rev(&check_md);
+    let report_rev = page_rev(&check_md);
     if report_rev != row.armed_rev {
         return Err(GateFault::ArmedDrift {
             slug: row.slug.clone(),

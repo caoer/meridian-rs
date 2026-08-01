@@ -509,8 +509,9 @@ impl std::error::Error for RegisterError {}
 /// This is the node-rev-merkle-spec law applied at the document root, whose span
 /// is the whole file (§ 2 hashes the node's span bytes; § 3's file leaf is the
 /// same bytes). ONE fingerprint law for check pages and hook pages alike — the
-/// grain that dissolves the `blake3(CHECK.md)` special-casing, which is why
-/// [`crate::evidence_rev`] delegates here rather than computing a second one.
+/// grain that dissolved the `blake3(CHECK.md)` special-casing: the INDEX's pinned
+/// rev, the tag-indexed artifact's `rev` column, and the gate's drift check all call
+/// THIS function. There is no second fingerprint and no per-kind rev.
 #[must_use]
 pub fn page_rev(bytes: &str) -> String {
     blake3::hash(bytes.as_bytes()).to_hex().as_str()[..16].to_string()
@@ -739,6 +740,45 @@ impl RuleIndex {
     #[must_use]
     pub fn refused(&self) -> &[RegisterError] {
         &self.refused
+    }
+
+    /// Narrow to the candidates that may govern `path` — the § 3 amendment of
+    /// 2026-08-01, which rules resolution NARROWED rather than workspace-global.
+    ///
+    /// The candidate set at a path is exactly the pages mounted AT-OR-ABOVE it: the
+    /// path's own folder chain up to the workspace root, then all of user space (the
+    /// outermost rung, which the ladder already ranks below every workspace page at
+    /// any depth). `path` may name a file or a directory; either way it is the
+    /// directory chain that is compared, with the separator explicit so `a/bc.md`
+    /// never reads as living under `a/b`.
+    ///
+    /// The consequence the ruling draws: two SIBLING scopes carrying the same id are
+    /// no conflict — neither is on the other's chain, so each governs its own subtree
+    /// and both may arm. A collision is therefore same id, same scope, on ONE chain.
+    /// The alternative (global) reading was rejected because it couples independent
+    /// scopes through the id namespace, letting any writer refuse an id
+    /// workspace-wide.
+    ///
+    /// Refusals are carried through UNNARROWED: a rule page that failed to register
+    /// is a fact about the workspace, and hiding it from a narrowed consumer would
+    /// make a broken page invisible exactly where someone is looking.
+    #[must_use]
+    pub fn narrowed_to(&self, path: &str) -> RuleIndex {
+        RuleIndex {
+            registered: self
+                .registered
+                .iter()
+                .filter(|registration| match registration.scope.layer {
+                    ScopeLayer::User => true,
+                    ScopeLayer::Workspace => {
+                        let dir = registration.mount_dir();
+                        dir.is_empty() || path == dir || path.starts_with(&format!("{dir}/"))
+                    }
+                })
+                .cloned()
+                .collect(),
+            refused: self.refused.clone(),
+        }
     }
 
     /// Resolve the override law over the index (§ 3).
@@ -1379,6 +1419,94 @@ mod tests {
         );
     }
 
+    // ── narrowing (§ 3 amendment, 2026-08-01) ─────────────────────────────────
+
+    #[test]
+    fn narrowing_keeps_the_chain_at_or_above_the_path() {
+        use ScopeLayer::{User, Workspace};
+        let index = index_of(&[
+            (User, "rules.md", "u"),
+            (Workspace, "rules.md", "root"),
+            (Workspace, "a/rules.md", "a"),
+            (Workspace, "a/b/rules.md", "ab"),
+            (Workspace, "other/rules.md", "other"),
+        ]);
+        let narrowed = index.narrowed_to("a/b/task.md");
+        let kept: Vec<&str> = narrowed
+            .registered()
+            .iter()
+            .map(|r| r.id().as_str())
+            .collect();
+        assert_eq!(
+            kept,
+            vec!["u", "root", "a", "ab"],
+            "the path's own folder chain up to the workspace root, then user space — \
+             a page on a DIFFERENT branch (`other/`) is not a candidate"
+        );
+    }
+
+    #[test]
+    fn narrowing_never_reaches_below_the_path() {
+        use ScopeLayer::Workspace;
+        let index = index_of(&[(Workspace, "a/b/rules.md", "deep")]);
+        assert!(
+            index.narrowed_to("a").registered().is_empty(),
+            "a page mounted BELOW the path governs its own subtree, not its parent's"
+        );
+        assert_eq!(index.narrowed_to("a/b").registered().len(), 1, "at it, yes");
+    }
+
+    #[test]
+    fn narrowing_makes_siblings_stop_colliding() {
+        use ScopeLayer::Workspace;
+        // The SAME id in two sibling sessions. Globally this is a collision that
+        // refuses the id workspace-wide; narrowed, each governs its own subtree and
+        // both resolve — the denial vector the amendment rejects global for.
+        let index = index_of(&[
+            (Workspace, "sessions/a/rules.md", "shared"),
+            (Workspace, "sessions/b/rules.md", "shared"),
+        ]);
+        assert_eq!(
+            index.resolve().collisions().len(),
+            1,
+            "unnarrowed, the two siblings tie and the id resolves to nothing"
+        );
+
+        for session in ["a", "b"] {
+            let at = index.narrowed_to(&format!("sessions/{session}/task.md"));
+            let set = at.resolve();
+            assert!(set.collisions().is_empty(), "narrowed, there is no tie");
+            assert_eq!(
+                set.get("shared").expect("resolves").winner().page(),
+                format!("sessions/{session}/rules.md"),
+                "each sibling governs its own subtree"
+            );
+        }
+    }
+
+    #[test]
+    fn narrowing_compares_whole_segments_not_string_prefixes() {
+        use ScopeLayer::Workspace;
+        let index = index_of(&[(Workspace, "a/b/rules.md", "x")]);
+        assert!(
+            index.narrowed_to("a/bc/task.md").registered().is_empty(),
+            "`a/bc/` is not inside `a/b/`"
+        );
+    }
+
+    #[test]
+    fn narrowing_carries_refusals_through_unnarrowed() {
+        let bad = "---\ntags: [rules/hook]\n---\n";
+        let index = RuleIndex::discover([offer(ScopeLayer::Workspace, "far/away/bad.md", bad)]);
+        assert_eq!(index.refused().len(), 1);
+        assert_eq!(
+            index.narrowed_to("elsewhere/x.md").refused().len(),
+            1,
+            "a broken rule page stays visible to a narrowed consumer — hiding it would \
+             make it invisible exactly where someone is looking"
+        );
+    }
+
     #[test]
     fn resolution_is_pure_and_repeatable() {
         use ScopeLayer::Workspace;
@@ -1418,11 +1546,9 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
         assert_ne!(page_rev("a"), page_rev("b"));
-        assert_eq!(
-            rev,
-            crate::evidence_rev("hello"),
-            "the CHECK.md evidence rev IS the page rev — one law, not two"
-        );
+        // There is no second fingerprint function left to disagree with this one:
+        // the `blake3(CHECK.md)` alias was deleted rather than kept delegating, so
+        // "one law" is now structural instead of asserted.
     }
 
     #[test]

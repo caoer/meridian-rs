@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use policy::{
-    ArmError, ArmedRef, CheckLimits, ConventionFiles, Enforcement, arm, armed_from_index,
-    evidence_rev, render_rows, sweep,
+    ArmError, ArmedRef, CheckLimits, ConventionFiles, Enforcement, arm, armed_from_index, page_rev,
+    render_rows, sweep,
 };
 
 /// An in-memory convention folder — the disk edge the loader stays free of.
@@ -158,11 +158,11 @@ fn two_conventions_index_rows_byte_expected() {
 
 /// Fixture 2 — a drifted evidence rev refuses arming (shown REFUSING).
 #[test]
-fn drifted_evidence_rev_refuses_arming() {
+fn a_drifted_page_rev_refuses_arming() {
     let limits = CheckLimits::default();
 
     // A reviewer read + approved convention A at its v1 evidence rev.
-    let approved_rev = evidence_rev(CHECK_A);
+    let approved_rev = page_rev(CHECK_A);
 
     // The convention's CHECK.md then DRIFTED (edited predicate). A fresh sweep reads
     // the new rev.

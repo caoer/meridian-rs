@@ -74,7 +74,7 @@ fn code(out: &Output) -> i32 {
 
 /// Write an attested INDEX page pinning `(slug, severity, armed_rev, scope)` rows
 /// and each convention's `CHECK.md`. The pinned `armed_rev` is the REAL
-/// `evidence_rev` of the on-disk bytes, so a row is FRESH; passing a mismatched
+/// `page_rev` of the on-disk bytes, so a row is FRESH; passing a mismatched
 /// `disk_check` makes it DRIFTED (the on-disk rev ≠ the pinned rev).
 fn arm_convention(
     ws: &Path,
@@ -86,7 +86,7 @@ fn arm_convention(
     let dir = ws.join("conventions").join(slug);
     std::fs::create_dir_all(&dir).expect("conv dir");
     std::fs::write(dir.join("CHECK.md"), disk_check).expect("check");
-    let pinned_rev = policy::evidence_rev(pinned_check);
+    let pinned_rev = policy::page_rev(pinned_check);
     format!(
         "- [x] **{slug}** · {severity} · `{pinned_rev}` · [[conventions/{slug}/CHECK.md]] · `{slug}/**`"
     )
