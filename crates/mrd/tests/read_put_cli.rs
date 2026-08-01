@@ -76,9 +76,15 @@ impl Sandbox {
 
     /// A marked workspace holding the two-heading fixture doc.
     fn workspace(&self) -> PathBuf {
+        self.workspace_with(DOC)
+    }
+
+    /// A marked workspace whose `doc.md` holds `body` — the round-trip gates
+    /// need colliding and duplicate headings the shared fixture cannot carry.
+    fn workspace_with(&self, body: &str) -> PathBuf {
         let ws = self.tmp.path().join("project");
         std::fs::create_dir_all(&ws).expect("mkdir");
-        std::fs::write(ws.join("doc.md"), DOC).expect("doc");
+        std::fs::write(ws.join("doc.md"), body).expect("doc");
         let init = self.run(&ws, &["init"]);
         assert!(init.status.success(), "init: {}", stderr(&init));
         ws
@@ -212,6 +218,293 @@ fn read_without_path_is_exit_2() {
         stderr(&out).contains("read needs a PATH"),
         "{}",
         stderr(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// read → put round-trip (fix-08): the address `read` publishes IS a `put`
+// target
+// ---------------------------------------------------------------------------
+//
+// The defect these gates close: `read` published only `hpath`, the sanitized
+// joined string, and `sanitize_heading` is MANY-TO-ONE (`Scratch notes`,
+// `Scratch-notes` and `Scratch/notes` all map to `Scratch-notes`). `put` takes
+// the RAW segment array. So the output grammar was a lossy projection of the
+// input grammar and nothing in the read output recovered the pre-image — the
+// agent loop (read a document, decide an edit, write it) could not close by
+// copying. `hpath_raw` carries the raw array through the read face verbatim.
+
+/// Read `doc.md`'s toc rows as JSON.
+fn toc_rows(sb: &Sandbox, ws: &Path) -> Vec<Value> {
+    let out = sb.run(ws, &["read", "doc.md", "--json"]);
+    assert_eq!(code(&out), 0, "read --json: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    v["read"]["toc"].as_array().expect("toc rows").clone()
+}
+
+/// The published `hpath_raw` of one toc row, asserted to be a real segment
+/// array — the RED half of these gates: at base rev the field is absent.
+fn published_address(row: &Value) -> Value {
+    let raw = row.get("hpath_raw").unwrap_or(&Value::Null);
+    assert!(
+        raw.is_array() && !raw.as_array().expect("array").is_empty(),
+        "the read face must publish hpath_raw as a raw segment array, got {raw} in row {row}"
+    );
+    raw.clone()
+}
+
+/// A one-edit match batch at `target_hpath` — the published address fed back
+/// VERBATIM, never retyped.
+fn match_at(target_hpath: &Value, old: &str, new: &str) -> String {
+    serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": target_hpath},
+        "edit": {"match": {"old": old, "new": new}},
+    }]))
+    .expect("edits json")
+}
+
+/// Gate — the loop closes on a NESTED section: the address `read` publishes,
+/// fed straight back as a `put` target, lands the write on the section that
+/// was read. The ancestor `Scratch notes` survives only in `hpath_raw`; the
+/// sanitized `hpath` (`Scratch-notes/Findings`) never carried it.
+#[test]
+fn read_published_address_round_trips_into_put() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Scratch notes\n\nouter body\n\n## Findings\n\ninner body\n");
+    let rows = toc_rows(&sb, &ws);
+    assert_eq!(rows.len(), 2, "two heading rows: {rows:?}");
+    assert_eq!(
+        rows[1]["hpath"], "Scratch-notes/Findings",
+        "the sanitized address still rides, unrenamed"
+    );
+
+    let addr = published_address(&rows[1]);
+    assert_eq!(
+        addr,
+        serde_json::json!([{"h": "Scratch notes"}, {"h": "Findings"}]),
+        "the raw ancestor text survives the read face"
+    );
+
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
+    assert_eq!(code(&out), 0, "the published address is a put target: {}", stderr(&out));
+    let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
+    assert!(after.contains("INNER body"), "the write landed on the section read: {after}");
+    assert!(after.contains("outer body"), "and nowhere else: {after}");
+}
+
+/// Gate — the sanitized string was never an address: split on `/` and fed back
+/// as a segment array it resolves to nothing. This is the information loss the
+/// round-trip gate above routes around (the refusal's WORDING belongs to the
+/// separate refusal sweep, so only the leg is asserted).
+#[test]
+fn the_sanitized_address_does_not_round_trip() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Scratch notes\n\nouter body\n\n## Findings\n\ninner body\n");
+    let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+    let sanitized = serde_json::json!([{"h": "Scratch-notes"}, {"h": "Findings"}]);
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&sanitized, "inner", "INNER"));
+    assert_eq!(code(&out), 1, "the sanitized spelling addresses nothing");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        before,
+        "and it lands no bytes"
+    );
+}
+
+/// Gate — the collision case: three headings that sanitize to ONE address each
+/// round-trip to their OWN section. On the read face `hpath` is `Scratch-notes`
+/// for all three (and a `--section` selector silently serves the first);
+/// `hpath_raw` distinguishes them byte-exactly, so each published address hits
+/// exactly one section.
+#[test]
+fn each_collider_round_trips_to_its_own_section() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(
+        "# Scratch notes\n\nalpha body\n\n# Scratch-notes\n\nbeta body\n\n# Scratch/notes\n\ngamma body\n",
+    );
+    let rows = toc_rows(&sb, &ws);
+    assert_eq!(rows.len(), 3, "three heading rows: {rows:?}");
+    assert_eq!(
+        rows.iter().map(|r| r.get("hpath").cloned().unwrap_or(Value::Null)).collect::<Vec<_>>(),
+        vec![
+            Value::from("Scratch-notes"),
+            Value::from("Scratch-notes"),
+            Value::from("Scratch-notes")
+        ],
+        "one sanitized address for three sections — the many-to-one map"
+    );
+
+    let addrs: Vec<Value> = rows.iter().map(published_address).collect();
+    assert_eq!(
+        addrs,
+        vec![
+            serde_json::json!([{"h": "Scratch notes"}]),
+            serde_json::json!([{"h": "Scratch-notes"}]),
+            serde_json::json!([{"h": "Scratch/notes"}]),
+        ],
+        "three sections, three distinct published addresses"
+    );
+
+    for (addr, body) in addrs.iter().zip(["alpha", "beta", "gamma"]) {
+        let out = sb.run_stdin(
+            &ws,
+            &["put", "doc.md"],
+            &match_at(addr, &format!("{body} body"), &format!("{body} EDITED")),
+        );
+        assert_eq!(code(&out), 0, "collider {body}: {}", stderr(&out));
+    }
+    let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
+    for body in ["alpha", "beta", "gamma"] {
+        assert!(after.contains(&format!("{body} EDITED")), "{body} landed: {after}");
+    }
+}
+
+/// Gate — the `n` law, both halves. An occurrence index rides ONLY where the
+/// raw text is ambiguous among its siblings: duplicate `# Notes` sections
+/// publish `n`, and the `## Child` unique under its parent publishes none
+/// (an unconditional `n` there would be a lie the resolver rejects). The
+/// published `n` then selects the right duplicate.
+#[test]
+fn occurrence_index_rides_only_where_the_raw_text_is_ambiguous() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(
+        "# Notes\n\nfirst body\n\n# Notes\n\nsecond body\n\n## Child\n\nchild body\n",
+    );
+    let rows = toc_rows(&sb, &ws);
+    assert_eq!(rows.len(), 3, "three heading rows: {rows:?}");
+    assert_eq!(
+        rows.iter().map(published_address).collect::<Vec<_>>(),
+        vec![
+            serde_json::json!([{"h": "Notes", "n": 1}]),
+            serde_json::json!([{"h": "Notes", "n": 2}]),
+            serde_json::json!([{"h": "Notes", "n": 2}, {"h": "Child"}]),
+        ],
+        "n on the ambiguous segment, and ONLY there — Child is unique under its parent"
+    );
+
+    let addr = published_address(&rows[1]);
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "second", "SECOND"));
+    assert_eq!(code(&out), 0, "the disambiguated address writes: {}", stderr(&out));
+    let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
+    assert!(after.contains("SECOND body"), "n=2 selected the second: {after}");
+    assert!(after.contains("first body"), "and left the first alone: {after}");
+}
+
+/// Gate — the case that PROVES `n`-only-where-ambiguous, per leader 2702bc87.
+/// A duplicate PREPENDED above the original invalidates every published
+/// address to it. Under an unconditional `n` the address would read `n=1` and
+/// silently retarget onto the interloper — a wrong write, no refusal. Under
+/// only-where-ambiguous the address carries no `n`, so the same address now
+/// refuses LOUD. Assert the refusal, and that neither section moved.
+#[test]
+fn a_prepended_duplicate_makes_the_published_address_refuse_loud() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Notes\n\noriginal body\n");
+    let addr = published_address(&toc_rows(&sb, &ws)[0]);
+    assert_eq!(
+        addr,
+        serde_json::json!([{"h": "Notes"}]),
+        "unique while unique: no occurrence index invented"
+    );
+
+    // The world changes under the held address: a second `# Notes` arrives ABOVE.
+    std::fs::write(
+        ws.join("doc.md"),
+        "# Notes\n\ninterloper body\n\n# Notes\n\noriginal body\n",
+    )
+    .expect("prepend");
+
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "body", "EDITED"));
+    assert_eq!(code(&out), 1, "the stale address must refuse, not pick: {}", stderr(&out));
+    let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
+    assert!(
+        after.contains("interloper body") && after.contains("original body"),
+        "a refusal writes nothing — neither section moved: {after}"
+    );
+}
+
+/// ACCEPTANCE CRITERION (merge owner d9419c03) — read and put must agree on
+/// what `n` COUNTS. `put` resolves `n` among siblings sharing the RAW TEXT
+/// (`model::resolve_hpath_node`). If the read face numbered on any other basis
+/// — position among all sibling sections, document order, dewey — the
+/// published `{h:"Notes",n:2}` would still be well-formed and would land on
+/// the wrong section SILENTLY, at exit 0. So this asserts by CONTENT, byte for
+/// byte, not by exit code.
+///
+/// The fixture separates the two bases: a unique `## Alpha` sits BEFORE the
+/// duplicates, so "occurrence among same-text siblings" (1, 2 — correct) and
+/// "position among all sibling sections" (2, 3 — wrong) disagree. Both
+/// `## Notes` sections hold IDENTICAL bodies, so no match-text accident can
+/// turn a wrong-sibling write into a loud refusal: it would exit 0 and change
+/// the wrong bytes.
+#[test]
+fn the_n_carrying_address_round_trips_and_n_counts_same_text_siblings() {
+    let sb = sandbox();
+    let doc = "# Parent\n\n## Alpha\n\nalpha body\n\n## Notes\n\nshared body\n\n## Notes\n\nshared body\n";
+    let ws = sb.workspace_with(doc);
+    let rows = toc_rows(&sb, &ws);
+    assert_eq!(
+        rows.iter().map(published_address).collect::<Vec<_>>(),
+        vec![
+            serde_json::json!([{"h": "Parent"}]),
+            serde_json::json!([{"h": "Parent"}, {"h": "Alpha"}]),
+            serde_json::json!([{"h": "Parent"}, {"h": "Notes", "n": 1}]),
+            serde_json::json!([{"h": "Parent"}, {"h": "Notes", "n": 2}]),
+        ],
+        "n counts occurrences among SAME-TEXT siblings (1, 2) — never position \
+         among all sibling sections (which would be 2, 3 here)"
+    );
+
+    // n=1 must land on the FIRST `## Notes`, byte for byte.
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        &match_at(&published_address(&rows[2]), "shared body", "first EDITED"),
+    );
+    assert_eq!(code(&out), 0, "n=1 writes: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        "# Parent\n\n## Alpha\n\nalpha body\n\n## Notes\n\nfirst EDITED\n\n## Notes\n\nshared body\n",
+        "n=1 landed on the first same-text sibling, and only it"
+    );
+
+    // n=2 must land on the SECOND, from the address published before the edit.
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        &match_at(&published_address(&rows[3]), "shared body", "second EDITED"),
+    );
+    assert_eq!(code(&out), 0, "n=2 writes: {}", stderr(&out));
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        "# Parent\n\n## Alpha\n\nalpha body\n\n## Notes\n\nfirst EDITED\n\n## Notes\n\nsecond EDITED\n",
+        "n=2 landed on the second same-text sibling, and only it"
+    );
+}
+
+/// Gate — sections mode publishes the same round-trippable address, so the
+/// read-a-section-then-write-it loop closes without a second read.
+#[test]
+fn sections_mode_publishes_the_round_trippable_address() {
+    let sb = sandbox();
+    let ws = sb.workspace_with("# Scratch notes\n\nouter body\n\n## Findings\n\ninner body\n");
+    let out = sb.run(&ws, &["read", "doc.md", "--section", "Scratch-notes/Findings", "--json"]);
+    assert_eq!(code(&out), 0, "read --section: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let sections = v["read"]["sections"].as_array().expect("sections").clone();
+    assert_eq!(sections.len(), 1);
+
+    let addr = published_address(&sections[0]);
+    assert_eq!(
+        addr,
+        serde_json::json!([{"h": "Scratch notes"}, {"h": "Findings"}]),
+        "the section row carries the raw array too"
+    );
+    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
+    assert_eq!(code(&out), 0, "the section's own address writes: {}", stderr(&out));
+    assert!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back").contains("INNER body"),
+        "the write landed on the section served"
     );
 }
 
