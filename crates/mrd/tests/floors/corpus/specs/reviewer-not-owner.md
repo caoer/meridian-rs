@@ -1,6 +1,6 @@
 ---
 corpus_test: reviewer-not-owner-floor
-convention: ../../conventions/reviewer-not-owner
+rule: ../../rules/reviewer-not-owner.md
 corpus: ../tree
 ---
 
@@ -11,11 +11,11 @@ external actor-less close, pass. The one declared rule fires, so it is not dead:
 this run exits 0.
 
 ```rules
-scenarios/reviewer-close.md
+reviewer-close
 ```
 
 ```case
-{ "name": "owner-self-close", "doc": "tasks/owned-open.md", "actor": "worker-a", "set": {"status": "closed"}, "expect": "scenarios/reviewer-close.md" }
+{ "name": "owner-self-close", "doc": "tasks/owned-open.md", "actor": "worker-a", "set": {"status": "closed"}, "expect": "reviewer-close" }
 ```
 
 ```case

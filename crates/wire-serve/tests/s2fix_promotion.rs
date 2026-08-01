@@ -288,67 +288,56 @@ fn a_bare_eof_terminator_moves_the_fingerprint_while_a_marker_line_does_not() {
 /// `guide.md` and says nothing about the pinning page. That scoping is what
 /// makes this gate DISTINGUISHING — the pinning page's own batch passes the
 /// armed law, so a refusal can only come from gating the promotion itself.
-const FROZEN_GUIDE_CHECK: &str = r#"---
-paths:
-  - guide.md
----
+/// Where the fixture keeps its rule page. Nothing depends on the location — that
+/// is the point of tag registration.
+const RULE_PATH: &str = "rules/frozen-guide.md";
 
-# frozen-guide (fixture convention)
+/// A rule page that refuses every change to `guide.md`. Registers by TAG, carries
+/// no `kind:` key, and cites a passing case on a page that exists.
+const FROZEN_GUIDE_RULE: &str = "---\ntags: [type/rule, rules/check]\nid: frozen.guide\n\
+    paths:\n  - guide.md\n---\n\n# frozen guide (gate fixture)\n\n\
+    ```starlark\ndef check_change(change):\n    refuse(\n        \
+    message = \"frozen-guide: guide.md is frozen by an armed rule\",\n        \
+    passing = \"frozen-guide.md#leave-it-alone\",\n    )\n```\n";
 
-Any change to `guide.md` is refused. The legal path is not changing it.
-
-```starlark
-def check_change(change):
-    refuse(
-        message = "frozen-guide: guide.md is frozen by an armed convention",
-        passing = "scenarios/leave-it-alone.md",
-    )
-```
-"#;
-
-struct PackFiles {
-    dir: std::path::PathBuf,
-}
-
-impl policy::ConventionFiles for PackFiles {
-    fn read(&self, rel: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.dir.join(rel))
-    }
-    fn exists(&self, rel: &str) -> bool {
-        self.dir.join(rel).exists()
-    }
-}
-
-/// Arm `frozen-guide` in the workspace, through the SAME loader the door reads:
-/// the pack on disk, an attested INDEX pinned to the pack's live rev, and the
+/// Arm `frozen.guide` in the workspace, through the SAME surface the door reads:
+/// the rule PAGE on disk, an attested artifact pinned to its live rev, and the
 /// once-armed marker.
+///
+/// BOTH files are written. The artifact alone leaves a workspace the marker says
+/// was never armed, so the gate would be off and this fixture would prove nothing.
 fn arm_frozen_guide(root: &fs::WorkspaceRoot) {
-    let pack = root.0.join("conventions/frozen-guide");
-    std::fs::create_dir_all(pack.join("scenarios")).expect("pack dir");
-    std::fs::write(pack.join("CHECK.md"), FROZEN_GUIDE_CHECK).expect("CHECK.md");
-    std::fs::write(
-        pack.join("scenarios/leave-it-alone.md"),
-        "# leave it alone\n\nThe legal path: do not change `guide.md`.\n",
-    )
-    .expect("scenario");
+    let page = root.0.join(RULE_PATH);
+    std::fs::create_dir_all(page.parent().expect("parent")).expect("rules dir");
+    std::fs::write(&page, FROZEN_GUIDE_RULE).expect("rule page");
 
-    let files = PackFiles { dir: pack };
-    let swept = policy::sweep(&files, "frozen-guide", policy::CheckLimits::default())
-        .expect("the fixture pack loads");
-    let rev = swept.rev().to_string();
-    let armed = policy::arm(swept, &rev, policy::Enforcement::Block).expect("arm at the live rev");
-    std::fs::write(
-        root.0.join(fs::domain::RESERVED_INDEX_PATH),
-        policy::generate_index(&[armed]),
+    let index = policy::RuleIndex::discover([policy::PageRef {
+        layer: policy::ScopeLayer::Workspace,
+        page: RULE_PATH,
+        bytes: FROZEN_GUIDE_RULE,
+    }]);
+    let artifact = policy::armed::arm(
+        &index,
+        &policy::armed::ArmRoot::workspace(),
+        [policy::armed::ArmRequest {
+            id: policy::RuleId::parse("frozen.guide").expect("a legal id"),
+            mode: policy::armed::Mode::Block,
+            attested_rev: policy::page_rev(FROZEN_GUIDE_RULE),
+        }],
     )
-    .expect("INDEX");
+    .expect("arm at the live rev");
+
+    let artifact_path = root.0.join(fs::domain::ARMED_RULES_PATH);
+    std::fs::create_dir_all(artifact_path.parent().expect("artifact parent")).expect("dir");
+    std::fs::write(artifact_path, artifact.render()).expect("artifact");
+
     let marker = root.0.join(fs::domain::ATTESTED_MARKER_PATH);
     std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("marker dir");
     std::fs::write(marker, "").expect("once-armed marker");
 }
 
 #[test]
-fn the_promotion_is_refused_by_an_armed_convention_on_the_target() {
+fn the_promotion_is_refused_by_an_armed_rule_on_the_target() {
     let (_dir, root) = workspace(PINNER, "# Guide\n\n## Omega\n\nbody.\n");
     arm_frozen_guide(&root);
     let guide_before = read(&root, "guide.md");
@@ -360,7 +349,7 @@ fn the_promotion_is_refused_by_an_armed_convention_on_the_target() {
         err.message
             .as_deref()
             .is_some_and(|m| m.contains("frozen-guide")),
-        "the refusal is the armed convention's, naming the rule: {:?} / {:?}",
+        "the refusal is the armed rule's, naming the rule: {:?} / {:?}",
         err.code,
         err.message
     );

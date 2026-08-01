@@ -15,17 +15,13 @@
 //! records that each obvious hand-composition of `select_at` + `verify` is a live
 //! defect, in opposite directions.
 //!
-//! **The once-armed state this leaf supplies is the ARTIFACT's presence, not the
-//! `meridian/attested` marker — deliberately, and only until the door re-keys.**
-//! Through the cutover window two resolution surfaces share that one marker: the
-//! write door still reads the dying `conventions/INDEX.md`. Marking a workspace
-//! once-armed for the artifact therefore makes the INDEX door refuse every write
-//! (measured: `convention_fault`, *"attested INDEX is missing on a workspace that
-//! has been armed"*). One marker cannot pivot two laws, so it binds in the diff that
-//! leaves the door reading only one of them. What that defers is the artifact-ABSENT
-//! case alone, and deleting the artifact is already refused at the door — its path is
-//! reserved ([`fs::domain::ARMED_RULES_PATH`]). The row-DELETION case, which is a
-//! present artifact attesting nothing, is not deferred and is closed here.
+//! The once-armed state is the `meridian/attested` MARKER, read through the same
+//! [`crate::armed_disk`] both hosts use. It is the marker rather than the
+//! artifact's presence because an absent artifact on an armed workspace is a
+//! FAULT, not a disarm: pivoting on the artifact would make deleting it read as
+//! "never armed", which is the silent-disarm attack in its rawest form. Both
+//! armed-law surfaces now pivot on that one marker, so the workspace cannot
+//! disagree with itself about whether it is armed.
 //!
 //! The feeder walks no `conventions/` folder and reads no `kind:` frontmatter to
 //! decide what is armed — both are dead registration surfaces under the ruling. A
@@ -48,12 +44,11 @@
 //! and leaves every other rule at the path firing. Propagating it instead silenced
 //! the whole path, which is the same silent disarm one layer down.
 
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-
 use model::{Document, Edit};
-use policy::armed::{Mode, PageSource};
-use policy::armed_law::{ArmedFault, resolve_armed_law};
+use policy::armed::Mode;
+use policy::armed_law::ArmedFault;
+
+use crate::armed_disk;
 
 /// Evaluate the armed, in-scope HOOKs for one change that has already landed, and
 /// report every fault that kept one from running.
@@ -76,12 +71,13 @@ pub fn feed_landed_change(
     op: policy::ChangeOp,
     actor: Option<&str>,
 ) -> Vec<wire::EffectEnvelope> {
-    // The artifact's PRESENCE is this leaf's once-armed pivot. A never-armed
-    // workspace has no artifact, and the no-op has to be free as well as silent, so
-    // this returns before deriving anything.
-    let Some(artifact) = read_artifact(root) else {
+    // The MARKER is the once-armed pivot. A never-armed workspace reacts to
+    // nothing, and the no-op has to be free as well as silent, so this returns
+    // before deriving anything. On an armed workspace an absent artifact falls
+    // through to the resolver, which reports it as a fault rather than as silence.
+    if !armed_disk::once_armed(root) {
         return Vec::new();
-    };
+    }
 
     let change = policy::derive_change(
         before,
@@ -96,14 +92,7 @@ pub fn feed_landed_change(
         &|_| None,
     );
 
-    let pages = DiskPages::new(root);
-    let law = resolve_armed_law(
-        Some(&artifact),
-        true,
-        &change.doc.path,
-        &pages,
-        policy::CheckLimits::default(),
-    );
+    let law = armed_disk::resolve_at(root, &change.doc.path);
 
     // Every fault reaches the operator, including the ones that refuse at the door:
     // the door is not on this path, and a fault nobody reports is the defect.
@@ -173,54 +162,6 @@ fn rule_id_of(error: &policy::HookEvalError) -> Option<String> {
     match error {
         policy::HookEvalError::MalformedIntent { rule_id, .. } => Some(rule_id.clone()),
         policy::HookEvalError::Eval(_) => None,
-    }
-}
-
-/// Read the attested armed-set artifact, or `None` when it is absent.
-///
-/// An artifact that exists and cannot be read is NOT `None` — a page that is there
-/// and unreadable must never pass for one that was never created, which is the
-/// silent disarm in its rawest form. It reads as an empty page instead, which the
-/// resolver refuses as corrupt.
-fn read_artifact(root: &fs::WorkspaceRoot) -> Option<String> {
-    match std::fs::read_to_string(root.0.join(policy::armed::ARMED_RULES_PATH)) {
-        Ok(page) => Some(page),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => Some(String::new()),
-    }
-}
-
-/// The pinned pages on disk, read once each.
-///
-/// `policy` performs no I/O, so the walk lives here. The cache matters for more than
-/// speed: verification and loading must see the SAME bytes, or a page edited between
-/// the two calls would load a declaration the rev check never approved.
-struct DiskPages<'a> {
-    root: &'a fs::WorkspaceRoot,
-    seen: RefCell<BTreeMap<String, String>>,
-}
-
-impl<'a> DiskPages<'a> {
-    fn new(root: &'a fs::WorkspaceRoot) -> Self {
-        Self {
-            root,
-            seen: RefCell::new(BTreeMap::new()),
-        }
-    }
-}
-
-impl PageSource for DiskPages<'_> {
-    /// Page paths reach here only from a parsed artifact row, which validated them
-    /// as relative, non-escaping workspace paths at intake.
-    fn read(&self, page: &str) -> std::io::Result<String> {
-        if let Some(held) = self.seen.borrow().get(page) {
-            return Ok(held.clone());
-        }
-        let bytes = std::fs::read_to_string(self.root.0.join(page))?;
-        self.seen
-            .borrow_mut()
-            .insert(page.to_string(), bytes.clone());
-        Ok(bytes)
     }
 }
 
@@ -360,6 +301,12 @@ def on_change(event):
             policy::armed::ARMED_RULES_PATH,
             &artifact.render(),
         );
+        // The once-armed MARKER, beside the artifact. Arming is ONE act over TWO
+        // files, and the marker is the pivot both armed-law surfaces read — a
+        // fixture that wrote only the artifact would be testing a workspace this
+        // engine considers never armed, so every reaction below would be a no-op
+        // that passed for a pass.
+        write_page(temp.path(), fs::domain::ATTESTED_MARKER_PATH, "");
         let root = fs::WorkspaceRoot(temp.path().to_path_buf());
         (temp, root)
     }

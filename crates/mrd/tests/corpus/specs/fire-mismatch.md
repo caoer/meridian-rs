@@ -1,20 +1,20 @@
 ---
 corpus_test: reviewer-not-owner-fire-mismatch
-convention: seed
+rule: ../rules/reviewer-not-owner.md
 corpus: ../tree
 ---
 
 # fire-mismatch (load-bearing negative, exit 1)
 
 The load-bearing negative that proves fire-where-expected is ENFORCED, not
-vacuous. The first case closes a task as its own owner (which the seed refuses)
+vacuous. The first case closes a task as its own owner (which the rule refuses)
 but declares `expect: pass` — a WRONG expectation. The tier observes the fire,
 sees it disagree with the manifest, reports the mismatch, and exits 1. The
-second case fires as declared, so `reviewer-close.md` is not dead: the only
+second case fires as declared, so `reviewer-close` is not dead: the only
 finding is the mismatch.
 
 ```rules
-scenarios/reviewer-close.md
+reviewer-close
 ```
 
 ```case
@@ -22,5 +22,5 @@ scenarios/reviewer-close.md
 ```
 
 ```case
-{ "name": "correct-self-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:carol", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "scenarios/reviewer-close.md" }
+{ "name": "correct-self-close", "doc": "tasks/b3-impl-plan.md", "actor": "agent:carol", "set": {"owner": "agent:carol", "status": "closed"}, "expect": "reviewer-close" }
 ```

@@ -34,6 +34,12 @@ transport = { workspace = true }
 config = { workspace = true }
 
 [dev-dependencies]
+# test-only: the two crates that each keep a copy of the armed-plane disk edge.
+# `tests/armed_disk_agreement.rs` pins the copies against each other; nothing else
+# in this crate names either.
+run = { workspace = true }
+# the armed-plane vocabulary the two disk edges both resolve into
+policy = { workspace = true }
 # fixture addresses for the lock gate tests
 addr = { workspace = true }
 serde_json = { workspace = true }

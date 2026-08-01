@@ -1,6 +1,6 @@
 ---
 corpus_test: decoy-close-floor
-convention: ../../conventions/decoy-close
+rule: ../../rules/decoy-close.md
 corpus: ../tree
 ---
 
@@ -11,15 +11,15 @@ A closed-looking marker without the canonical `status: closed` fires
 fires: exit 0.
 
 ```rules
-scenarios/real-close.md
+real-close
 ```
 
 ```case
-{ "name": "decoy-resolution", "doc": "tasks/plain-open.md", "actor": "worker-a", "set": {"resolution": "closed"}, "expect": "scenarios/real-close.md" }
+{ "name": "decoy-resolution", "doc": "tasks/plain-open.md", "actor": "worker-a", "set": {"resolution": "closed"}, "expect": "real-close" }
 ```
 
 ```case
-{ "name": "decoy-done", "doc": "tasks/plain-open.md", "actor": "worker-a", "set": {"done": "true"}, "expect": "scenarios/real-close.md" }
+{ "name": "decoy-done", "doc": "tasks/plain-open.md", "actor": "worker-a", "set": {"done": "true"}, "expect": "real-close" }
 ```
 
 ```case

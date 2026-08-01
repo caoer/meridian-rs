@@ -4,12 +4,12 @@
 //! governed tree (`tests/corpus/tree/` — real 18-02 session task pages, verbatim)
 //! and asserts the three signals the pre-arming gate rests on:
 //!
-//! - **fire-where-expected** — the seed convention fires exactly where the
+//! - **fire-where-expected** — the fixture rule PAGE fires exactly where the
 //!   expected-fire manifest declares (owner-self-close fires, reviewer-close /
 //!   external-edit / out-of-scope pass); a WRONG `expect` is caught as a mismatch.
-//! - **zero dead rules** — a healthy run reports none; a declared rule the corpus
-//!   never fires is reported DEAD (over the seed convention AND over a two-rule
-//!   folder convention with a genuinely-present-but-never-fired rule).
+//! - **zero dead rules** — a healthy run reports none; a declared citation the
+//!   corpus never fires is reported DEAD (over a one-citation page AND over a
+//!   two-citation page with a genuinely-present-but-never-fired citation).
 //! - **fuel + heap budgets** — every run reports p50/p99/max over its in-scope
 //!   evals.
 //!
@@ -105,8 +105,8 @@ fn fire_where_expected_matches_and_exits_zero() {
         code, 0,
         "a matched manifest with no dead rule exits 0: {report}"
     );
-    assert_eq!(report["convention"], "reviewer-not-owner");
-    assert_eq!(report["convention_source"], "seed");
+    assert_eq!(report["rule"], "reviewer-not-owner");
+    assert_eq!(report["rule_source"], "../rules/reviewer-not-owner.md");
     let summary = &report["summary"];
     assert_eq!(summary["cases"], 7);
     assert_eq!(summary["matched"], 7, "every case matched its expect");
@@ -122,7 +122,7 @@ fn fire_where_expected_matches_and_exits_zero() {
     // and the external edit PASS.
     let fire = case(&report, "r3a-self-close");
     assert_eq!(fire["outcome"], "fired");
-    assert_eq!(fire["fired"][0], "scenarios/reviewer-close.md");
+    assert_eq!(fire["fired"][0], "reviewer-close");
     assert_eq!(fire["matched"], true);
     assert_eq!(case(&report, "r3a-reviewer-close")["outcome"], "pass");
     assert_eq!(case(&report, "gatecheck-external-edit")["outcome"], "pass");
@@ -150,13 +150,13 @@ fn fire_where_expected_matches_and_exits_zero() {
 }
 
 #[test]
-fn dead_rule_over_the_seed_convention_is_reported() {
-    // The literal plan Test: a corpus run over the seed convention where the one
-    // declared rule never fires — every case still matches (all pass), yet the
+fn dead_citation_over_a_one_citation_page_is_reported() {
+    // The literal plan Test: a corpus run over a one-citation law where that
+    // declared citation never fires — every case still matches (all pass), yet the
     // dead rule is reported and the run exits 1.
     let (code, report) = run_json("dead-rule");
     assert_eq!(code, 1, "a dead rule is a findings exit (1): {report}");
-    assert_eq!(report["convention"], "reviewer-not-owner");
+    assert_eq!(report["rule"], "reviewer-not-owner");
     assert_eq!(
         report["summary"]["mismatches"], 0,
         "fire-where-expected still holds"
@@ -167,48 +167,49 @@ fn dead_rule_over_the_seed_convention_is_reported() {
     );
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["scenarios/reviewer-close.md"]),
-        "the declared rule the corpus never fired is reported dead"
+        serde_json::json!(["reviewer-close"]),
+        "the declared citation the corpus never fired is reported dead"
     );
 
     // The dead-rule report is SHOWN in the human render (task gate).
     let (hcode, human) = run_human("dead-rule");
     assert_eq!(hcode, 1);
     assert!(
-        human.contains("Dead rules (declared, never fired)")
-            && human.contains("scenarios/reviewer-close.md"),
+        human.contains("Dead rules (declared, never fired)") && human.contains("reviewer-close"),
         "the human report shows the dead rule:\n{human}"
     );
 }
 
 #[test]
-fn dead_rule_in_a_folder_convention_is_reported() {
-    // A two-rule convention loaded from a folder on disk: the LIVE rule fires
-    // where expected, the present-but-never-fired priority rule is reported dead
-    // (the @2 twin of the effect kernel's dead_priority replay rule).
+fn dead_citation_on_a_two_citation_page_is_reported() {
+    // ONE page carrying TWO citations: the LIVE one fires where expected, the
+    // present-but-never-fired priority citation is reported dead (the @2 twin of
+    // the effect kernel's dead_priority replay rule). Liveness is per CITATION,
+    // which is why one page can be half dead — the identity a report row is keyed
+    // on is the citation, not the page.
     let (code, report) = run_json("dead-priority");
     assert_eq!(
         code, 1,
-        "the dead priority rule is a findings exit (1): {report}"
+        "the dead priority citation is a findings exit (1): {report}"
     );
-    assert_eq!(report["convention"], "reviewer-and-priority");
-    assert_ne!(
-        report["convention_source"], "seed",
-        "loaded from a folder, not the embedded seed"
+    assert_eq!(report["rule"], "reviewer-and-priority");
+    assert_eq!(
+        report["rule_source"], "../rules/reviewer-and-priority.md",
+        "the report names the PAGE the law was loaded from"
     );
     assert_eq!(
         report["summary"]["mismatches"], 0,
-        "the live rule fires where expected"
+        "the live citation fires where expected"
     );
-    // The live rule fired; only the priority rule is dead.
+    // The live citation fired; only the priority one is dead.
     assert_eq!(
         case(&report, "r3a-self-close")["fired"][0],
-        "scenarios/reviewer-close.md"
+        "reviewer-close"
     );
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["scenarios/lower-priority.md"]),
-        "only the never-fired priority rule is dead; the reviewer rule is live"
+        serde_json::json!(["lower-priority"]),
+        "only the never-fired priority citation is dead; the reviewer one is live"
     );
 }
 
@@ -237,7 +238,7 @@ fn fire_mismatch_is_caught_and_exits_one() {
 
 #[test]
 fn surprise_rule_fired_but_undeclared_is_reported() {
-    // A rule the convention fired that the manifest never declared is a surprise
+    // A citation the rule emitted that the manifest never declared is a surprise
     // finding — an under-declared expected-fire manifest cannot pass silently.
     let (code, report) = run_json("surprise-rule");
     assert_eq!(code, 1, "a surprise rule is a findings exit (1): {report}");
@@ -251,8 +252,8 @@ fn surprise_rule_fired_but_undeclared_is_reported() {
     );
     assert_eq!(
         report["surprise_rules"],
-        serde_json::json!(["scenarios/reviewer-close.md"]),
-        "the fired-but-undeclared rule is reported as a surprise"
+        serde_json::json!(["reviewer-close"]),
+        "the fired-but-undeclared citation is reported as a surprise"
     );
 }
 
@@ -402,7 +403,7 @@ fn a_later_silent_hook_is_dead_even_beside_a_live_one() {
     assert_eq!(
         report["declared_rules"],
         serde_json::json!(["task-status-notify", "never-fires"]),
-        "liveness subjects come from the loaded convention set, not the fence"
+        "liveness subjects come from the loaded rule set, not the fence"
     );
     assert_eq!(report["dead_rules"], serde_json::json!(["never-fires"]));
     assert_eq!(report["summary"]["mismatches"], 0);

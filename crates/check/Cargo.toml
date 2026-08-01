@@ -1,6 +1,6 @@
 [package]
 name = "check"
-description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is convention-free (chain integrity by full recompute of the receipt journal, claims realised by observe-then-compare, and the mechanical journal TRACE that catches a foreign_edit by last-receipt-vs-live). Layer 1 runs the armed conventions read-only through the U1.3 loader — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
+description = "The check engine (U2.10): the pure READ verb over the run plane — what lies? Layer 0 is rule-free (chain integrity by full recompute of the receipt journal, claims realised by observe-then-compare, and the mechanical journal TRACE that catches a foreign_edit by last-receipt-vs-live). Layer 1 runs the workspace's ARMED RULES read-only over the law policy::resolve_armed_law resolved at the write's own path — the SAME check_change surface the door mounts (U4.2), byte-for-byte. Writes nothing, mints no receipt, needs no cap."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -22,9 +22,12 @@ fs = { workspace = true }
 # surface (observe → CheckOutcome) rather than forking it — the SAME check the
 # realise loop would converge, run here read-only (no apply, no cap).
 realise = { workspace = true }
-# Layer 1: the U1.3 convention loader + the rulepack-api@2 `check_change` surface
-# (Change / Convention / Refusal), and the U1.4 arming vocabulary (Enforcement /
-# ArmedRef). The armed set evaluates read-only through this, verbatim.
+# Layer 1: the rulepack-api@2 `check_change` surface (Change / Rule / Refusal),
+# the resolved armed law it evaluates (ArmedRule — construction sealed to
+# `resolve_armed_law`, so the layer cannot be handed a set the door would not have
+# honoured), the arming vocabulary (armed::Mode), and the ONE armed-law fault
+# vocabulary (ArmedFault) it reports an unevaluable rule in. The armed law
+# evaluates read-only through this, verbatim.
 policy = { workspace = true }
 # ── U14: the PIN PLANE (S3-R3 — an APPLICATION, not a charter change) ────────
 # The fence's verb was structurally blind to half its own job: with no `lock` and

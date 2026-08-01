@@ -10,9 +10,9 @@ identity, so the watcher cannot fire and no downstream edge exists. A proof that
 split the generation into independent writes would derive two rich single-edit
 events and fabricate exactly that edge.
 
-```conventions
-../../conventions/mixed-emitter
-../../conventions/mixed-watcher
+```rule-pages
+../../rules/mixed-emitter.md
+../../rules/mixed-watcher.md
 ```
 
 ```case

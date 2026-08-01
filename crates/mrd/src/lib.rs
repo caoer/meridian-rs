@@ -28,7 +28,6 @@ mod config_cmd;
 mod corpus_tier;
 mod daemon;
 mod engine;
-mod expect;
 mod gc;
 mod history_cmd;
 // The commit-fence READ plane — what is standing in this checkout's hook doors,
@@ -223,24 +222,18 @@ usage:
                            finding (drift / forced / faulted INDEX) / 2 bad
                            invocation
   mrd daemon               run the registry daemon in the foreground
-  mrd test <PATH>          run scenario file(s) (a *.md file, or a dir of them):
-                           mount base/ into a real tmpdir, route ^put through the
-                           production write path, assert ^expect starlark over
-                           t.result (including HOOK effects) / t.doc(path) /
-                           t.journal. Exits: 0 clean / 1 an ^expect failed / 2
-                           malformed or pairing hard error
-  mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK conventions over
+  mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK rule pages over
                            SYNTHETIC changes and report fire-where-expected, zero
                            dead rules, fuel + heap p50/p99, and FIX/HOOK quiescence
                            by reachable trigger graph + counterfactual fuel. Exits:
                            0 clean / 1 a mismatch, dead rule, budget finding, or
                            failed quiescence / 2 malformed spec or unreadable corpus
-  mrd test --history WORKSPACE --convention SLUG
+  mrd test --history WORKSPACE --rule PAGE
                            the history tier: JOIN the receipt journal's rows
                            against git (the commit that appended each ^r-NNNNNN
                            row gives the write's before/after bytes), rebuild the
-                           docs, and compare conventions/SLUG's CHECK refusals with
-                           its pinned GOLDEN.md (HOOK-only conventions refuse zero
+                           docs, and compare PAGE's CHECK refusals with its pinned
+                           `.golden.md` sibling (a HOOK-only page refuses zero
                            changes). The report always names the exact journal span;
                            a would-refuse item absent from GOLDEN.md fails, a declared
                            item passes with its reason rendered, and unreconstructable
@@ -291,16 +284,14 @@ usage:
                            grey(no-baseline) afterwards, not green. Exits: 0
                            done (or dry) / 1 the plane refused (nothing to
                            archive, archive exists) / 2 bad invocation
-  mrd realise <PAGE> [--dry] [--truth index|file]
+  mrd realise <PAGE> [--dry]
                            the reconciliation loop (U3.5b): observe -> check ->
                            apply (only on drift, once) -> re-check over the page's
                            declared claim (realise.field/realise.expected +
                            realise.apply). Apply rides mrd run. Reports one terminal
                            state: converged / drifted-fixed / non-convergent /
-                           pending-agent. --truth index|file resolves a file<->index
-                           convention divergence (realise-as-deploy). Exits: 0
-                           converged/drifted-fixed (or dry) / 1 non-convergent or
-                           pending-agent / 2 bad invocation
+                           pending-agent. Exits: 0 converged/drifted-fixed (or dry)
+                           / 1 non-convergent or pending-agent / 2 bad invocation
 
 options:
   --json                   emit JSON instead of a human table
@@ -310,7 +301,7 @@ options:
                            + resolved caps, refuse to exec
   --list                   (run) list the page's tasks with contracts and caps
   --history                (test) the history tier over WORKSPACE (a git repo)
-  --convention SLUG        (test --history) the conventions/SLUG folder to run
+  --rule PAGE              (test --history) the workspace-relative rule PAGE to run
   -h, --help               print this help
 ";
 

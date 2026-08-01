@@ -1,6 +1,6 @@
 //! Gates for `mrd test --history` (U1.6), driving the REAL binary
 //! (`CARGO_BIN_EXE_mrd`) over a REAL git repo built in a tempdir, with the
-//! embedded seed convention (`reviewer-not-owner`) as the law.
+//! `reviewer-not-owner` fixture rule PAGE as the law.
 //!
 //! The seeded history exercises all three fidelity classes and both golden-list
 //! outcomes:
@@ -14,16 +14,25 @@
 //!   **C grey**; counted, never run.
 //!
 //! The invariants:
-//! - an UNDECLARED would-refuse item (r-000002 absent from GOLDEN.md) FAILS the
-//!   run (exit 1);
-//! - once declared in GOLDEN.md the run passes (exit 0) with the reason rendered;
+//! - an UNDECLARED would-refuse item (r-000002 absent from the rule page's
+//!   `.golden.md` sibling) FAILS the run (exit 1);
+//! - once declared there the run passes (exit 0) with the reason rendered;
 //! - the class-C grey count is asserted;
 //! - `mrd rules replay` no longer parses (the retired verb, decision #8).
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-use policy::{ConventionFiles, seed_convention_files};
+/// The workspace-relative CHECK rule page the history gates calibrate.
+const CHECK_RULE_PAGE: &str = "rules/reviewer-not-owner.md";
+
+/// Its golden list — the `.golden.md` SIBLING, which is where a page-shaped law
+/// keeps its declared exceptions now that it has no folder to keep them in.
+const CHECK_GOLDEN_PAGE: &str = "rules/reviewer-not-owner.golden.md";
+
+/// The workspace-relative HOOK rule page: a reaction refuses zero writes, so the
+/// history tier over it must report zero would-refuse items.
+const HOOK_RULE_PAGE: &str = "rules/task-status-notify.md";
 
 fn mrd_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mrd")
@@ -122,7 +131,7 @@ Reviewed by agent:bob.
 ";
 
 /// Build the seeded git workspace: four commits, a journal of four rows, and the
-/// embedded seed convention written into `conventions/reviewer-not-owner/`.
+/// fixture rule page written into `rules/reviewer-not-owner.md`.
 /// Returns the tempdir (kept alive by the caller).
 fn seeded_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tmpdir");
@@ -132,10 +141,12 @@ fn seeded_workspace() -> tempfile::TempDir {
     git(ws, &["config", "user.email", "test@meridian.local"]);
     git(ws, &["config", "user.name", "mrd-test"]);
 
-    // The seed convention on disk (its exact shipped CHECK bytes).
-    let seed = seed_convention_files();
-    let check_md = seed.read("CHECK.md").expect("seed CHECK.md");
-    write(ws, "conventions/reviewer-not-owner/CHECK.md", &check_md);
+    // The fixture rule PAGE on disk (its exact committed bytes).
+    write(
+        ws,
+        CHECK_RULE_PAGE,
+        include_str!("corpus/rules/reviewer-not-owner.md"),
+    );
 
     // C0 — create fix-parser (by bob) + journal row r-000001 (create).
     write(ws, "tasks/fix-parser.md", FIX_OPEN);
@@ -218,13 +229,7 @@ fn undeclared_would_refuse_fails_the_run() {
     let dir = seeded_workspace();
     let ws = dir.path().to_str().unwrap();
 
-    let out = mrd(&[
-        "test",
-        "--history",
-        ws,
-        "--convention",
-        "reviewer-not-owner",
-    ]);
+    let out = mrd(&["test", "--history", ws, "--rule", CHECK_RULE_PAGE]);
     let so = stdout(&out);
 
     assert_eq!(
@@ -266,8 +271,8 @@ fn undeclared_would_refuse_fails_the_run() {
     );
 }
 
-/// Declaring the item in GOLDEN.md (through the ordinary write door) turns the
-/// finding into a pass, with the declared reason rendered.
+/// Declaring the item in the golden list (through the ordinary write door) turns
+/// the finding into a pass, with the declared reason rendered.
 #[test]
 fn declared_item_passes_with_reason_rendered() {
     let dir = seeded_workspace();
@@ -277,22 +282,16 @@ fn declared_item_passes_with_reason_rendered() {
     // Triage: add the exception row to the golden page (an ordinary in-tree edit).
     let golden = "\
 ---
-convention: reviewer-not-owner
+rule: rules/reviewer-not-owner.md
 ---
 
 # Golden list — reviewer-not-owner
 
 - item=r-000002 reason=\"legacy self-close predates the reviewer-not-owner rule\"
 ";
-    write(ws, "conventions/reviewer-not-owner/GOLDEN.md", golden);
+    write(ws, CHECK_GOLDEN_PAGE, golden);
 
-    let out = mrd(&[
-        "test",
-        "--history",
-        wss,
-        "--convention",
-        "reviewer-not-owner",
-    ]);
+    let out = mrd(&["test", "--history", wss, "--rule", CHECK_RULE_PAGE]);
     let so = stdout(&out);
 
     assert_eq!(
@@ -331,14 +330,7 @@ fn json_surface_carries_fidelity_and_verdicts() {
     let dir = seeded_workspace();
     let ws = dir.path().to_str().unwrap();
 
-    let out = mrd(&[
-        "test",
-        "--history",
-        ws,
-        "--convention",
-        "reviewer-not-owner",
-        "--json",
-    ]);
+    let out = mrd(&["test", "--history", ws, "--rule", CHECK_RULE_PAGE, "--json"]);
     let so = stdout(&out);
     let v: serde_json::Value = serde_json::from_str(&so).expect("json parses");
 
@@ -358,16 +350,16 @@ fn hook_history_reports_zero_undeclared_over_an_exact_span() {
     let ws = dir.path();
     write(
         ws,
-        "conventions/task-status-notify/HOOK.md",
-        include_str!("hook-tier/conventions/task-status-notify/HOOK.md"),
+        HOOK_RULE_PAGE,
+        include_str!("hook-tier/rules/task-status-notify.md"),
     );
 
     let out = mrd(&[
         "test",
         "--history",
         ws.to_str().unwrap(),
-        "--convention",
-        "task-status-notify",
+        "--rule",
+        HOOK_RULE_PAGE,
         "--json",
     ]);
     let report: serde_json::Value =
@@ -381,14 +373,15 @@ fn hook_history_reports_zero_undeclared_over_an_exact_span() {
     assert_eq!(report["summary"]["undeclared"], 0);
     assert_eq!(report["journal_span"]["first"], "r-000001");
     assert_eq!(report["journal_span"]["last"], "r-000004");
-    assert_eq!(report["convention"], "task-status-notify");
+    assert_eq!(report["rule"], "task-status-notify");
+    assert_eq!(report["rule_page"], HOOK_RULE_PAGE);
 
     let human = mrd(&[
         "test",
         "--history",
         ws.to_str().unwrap(),
-        "--convention",
-        "task-status-notify",
+        "--rule",
+        HOOK_RULE_PAGE,
     ]);
     let human_stdout = stdout(&human);
     assert_eq!(code(&human), 0, "HOOK history human report passes");
@@ -407,19 +400,9 @@ fn golden_exception_without_a_reason_is_refused() {
     let dir = seeded_workspace();
     let ws = dir.path();
     let wss = ws.to_str().unwrap();
-    write(
-        ws,
-        "conventions/reviewer-not-owner/GOLDEN.md",
-        "- item=r-000002 no reason here\n",
-    );
+    write(ws, CHECK_GOLDEN_PAGE, "- item=r-000002 no reason here\n");
 
-    let out = mrd(&[
-        "test",
-        "--history",
-        wss,
-        "--convention",
-        "reviewer-not-owner",
-    ]);
+    let out = mrd(&["test", "--history", wss, "--rule", CHECK_RULE_PAGE]);
     assert_eq!(code(&out), 2, "a reasonless exception is a tool failure");
     assert!(
         stderr(&out).contains("reason"),

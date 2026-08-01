@@ -61,33 +61,60 @@ fn workspace(sb: &Sandbox, name: &str) -> PathBuf {
     ws
 }
 
-/// Write an attested INDEX row pinning the convention's REAL `page_rev`, plus
-/// its `CHECK.md` — the row is FRESH, so `status` does the full O(armed) re-hash.
-fn arm_convention(ws: &Path, slug: &str, severity: &str, check: &str) -> String {
-    let dir = ws.join("conventions").join(slug);
-    std::fs::create_dir_all(&dir).expect("conv dir");
-    std::fs::write(dir.join("CHECK.md"), check).expect("check");
-    let pinned_rev = policy::page_rev(check);
+/// A minimal loadable CHECK rule page for one id — the O(armed) re-hash subject.
+fn rule_page(id: &str) -> String {
     format!(
-        "- [x] **{slug}** · {severity} · `{pinned_rev}` · [[conventions/{slug}/CHECK.md]] · `{slug}/**`"
+        "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - {id}/**\n---\n\n\
+         # {id}\n\n```starlark\ndef check_change(change):\n    pass\n```\n"
     )
 }
 
-/// Assemble a valid INDEX page (title + preamble + rows) that `parse_index_strict`
-/// accepts. Verified to parse by the caller's `status` read.
-fn write_index(ws: &Path, rows: &[String]) {
-    let dir = ws.join("conventions");
-    std::fs::create_dir_all(&dir).expect("conventions dir");
-    let page = format!(
-        "# Attested conventions INDEX\n\nSwept from `conventions/`.\n\n{}\n",
-        rows.join("\n")
-    );
-    std::fs::write(dir.join("INDEX.md"), page).expect("index");
+/// Arm `ids` into `meridian/armed-rules.md` at each page's live rev and plant the
+/// once-armed marker. Every row is FRESH, so `status` does the full O(armed)
+/// re-hash — which is the work this budget is measured over. The artifact is
+/// MINTED by `policy::armed::arm`, never hand-typed: a fixture artifact the
+/// arming act never approved would measure a read production cannot perform.
+fn arm_rules(ws: &Path, ids: &[String]) {
+    let pages: Vec<(String, String)> = ids
+        .iter()
+        .map(|id| (format!("rules/{id}.md"), rule_page(id)))
+        .collect();
+    for (page, bytes) in &pages {
+        let full = ws.join(page);
+        std::fs::create_dir_all(full.parent().expect("rules dir")).expect("rules dir");
+        std::fs::write(full, bytes).expect("rule page");
+    }
+    let index = policy::RuleIndex::discover(pages.iter().map(|(page, bytes)| policy::PageRef {
+        layer: policy::ScopeLayer::Workspace,
+        page,
+        bytes,
+    }));
+    let artifact = policy::armed::arm(
+        &index,
+        &policy::armed::ArmRoot::workspace(),
+        pages.iter().map(|(_, bytes)| policy::armed::ArmRequest {
+            id: policy::RuleId::parse(
+                bytes
+                    .lines()
+                    .find_map(|l| l.strip_prefix("id: "))
+                    .expect("the fixture page declares an id"),
+            )
+            .expect("a legal id"),
+            mode: policy::armed::Mode::Block,
+            attested_rev: policy::page_rev(bytes),
+        }),
+    )
+    .expect("the fixture arms at each page's live rev");
+    let artifact_path = ws.join(fs::domain::ARMED_RULES_PATH);
+    std::fs::create_dir_all(artifact_path.parent().expect("meridian dir")).expect("meridian dir");
+    std::fs::write(artifact_path, artifact.render()).expect("artifact");
+    std::fs::write(ws.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("once-armed marker");
 }
 
 /// **The <1s wall-time gate (the merge budget, U3.6).** A 3k-doc corpus with a
-/// handful of armed conventions: `status` reads ONE index file + O(armed)
-/// `CHECK.md` re-hashes + the journal + the git refs — NEVER the 3k docs. So its
+/// handful of armed rules: `status` reads ONE artifact file + the once-armed
+/// marker + O(armed) rule-page re-hashes + the journal + the git refs — NEVER the
+/// 3k docs. So its
 /// wall-time is independent of corpus size and stays well under the 1s hard
 /// budget. The measured milliseconds are printed for the card record.
 #[test]
@@ -105,11 +132,9 @@ fn status_wall_time_under_1s_on_3k_corpus() {
         )
         .expect("write doc");
     }
-    // A handful of armed conventions (the O(armed) work).
-    let rows: Vec<String> = (0..5u32)
-        .map(|i| arm_convention(&ws, &format!("conv-{i}"), "block", &format!("law {i} v1\n")))
-        .collect();
-    write_index(&ws, &rows);
+    // A handful of armed rules (the O(armed) work).
+    let ids: Vec<String> = (0..5u32).map(|i| format!("conv-{i}")).collect();
+    arm_rules(&ws, &ids);
 
     // Warm the process/page cache with one throwaway run, then measure.
     let _ = run(&sb, &ws, &["status"]);

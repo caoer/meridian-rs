@@ -117,14 +117,14 @@ pub enum AdapterError {
     /// intents never pass through the Markdown adapter, so the production slice-1
     /// allowlist is untouched by this seam.
     NonMdAction {
-        /// The emitting convention.
+        /// The rule whose hook emitted the intent.
         rule_id: String,
         /// The action the intent declared.
         action: String,
     },
     /// The action requires a key the intent did not carry.
     MissingKey {
-        /// The emitting convention.
+        /// The rule whose hook emitted the intent.
         rule_id: String,
         /// The action whose shape is incomplete.
         action: String,
@@ -133,7 +133,7 @@ pub enum AdapterError {
     },
     /// The intent carried a key the action does not use.
     UnusedKey {
-        /// The emitting convention.
+        /// The rule whose hook emitted the intent.
         rule_id: String,
         /// The action that has no use for the key.
         action: String,
@@ -358,7 +358,8 @@ pub enum ExecError {
     /// attested law blocked the change the run plane produced, before any byte
     /// landed. The run plane lands bytes through `fs::apply_batch` (not the wire
     /// choke-point), so it mounts the SAME gate — byte-landing parity. `detail`
-    /// names the convention/INDEX and cites the legal path.
+    /// names the rule and cites the legal path, or renders the armed-law fault in
+    /// `policy::ArmedFault`'s own words.
     ArmedRefusal { detail: String },
     /// The apply would put an `@fp` decoration token in a claim-link position
     /// (advisor R32 (3)): a fingerprint claim nobody minted. Tokens the batch's
@@ -680,10 +681,11 @@ pub fn apply_under(
 
     // 6c. THE ARMED-PLANE GATE (U4.2) — byte-landing parity. The run plane lands
     // bytes through `fs::apply_batch` below (not the wire choke-point), so it
-    // mounts the SAME `policy::gate` over the change it produces: read the
-    // workspace's OWN attested INDEX + once-armed marker, and REFUSE before the
-    // commit if the armed law blocks. A never-armed workspace is a bit-for-bit
-    // no-op (nothing was applied in that case either — the gate adds no write).
+    // mounts the SAME `policy::gate` over the change it produces: resolve the
+    // workspace's OWN attested armed-rules artifact + once-armed marker AT THIS
+    // WRITE'S PATH, and REFUSE before the commit if the armed law blocks. A
+    // never-armed workspace is a bit-for-bit no-op (nothing was applied in that
+    // case either — the gate adds no write).
     if let Some(detail) = crate::gate::refuse_reason(
         root,
         &doc,

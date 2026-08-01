@@ -1,6 +1,6 @@
 ---
 corpus_test: verdict-reviewer-bind-floor
-convention: ../../conventions/verdict-reviewer-bind
+rule: ../../rules/verdict-reviewer-bind.md
 corpus: ../tree
 ---
 
@@ -11,11 +11,11 @@ a Verdict whose reviewer equals the closing actor passes. The one declared rule
 fires: exit 0.
 
 ```rules
-scenarios/bound-verdict.md
+bound-verdict
 ```
 
 ```case
-{ "name": "unbound-verdict", "doc": "verdicts/close-1.md", "actor": "dave", "set": {"outcome": "approve"}, "expect": "scenarios/bound-verdict.md" }
+{ "name": "unbound-verdict", "doc": "verdicts/close-1.md", "actor": "dave", "set": {"outcome": "approve"}, "expect": "bound-verdict" }
 ```
 
 ```case

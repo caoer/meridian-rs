@@ -1,6 +1,6 @@
 ---
 corpus_test: duplicate-identical-cases-are-not-a-cycle
-convention: ../../conventions/cycle-alpha
+rule: ../../rules/cycle-alpha.md
 corpus: ../tree
 counterfactual: true
 ---

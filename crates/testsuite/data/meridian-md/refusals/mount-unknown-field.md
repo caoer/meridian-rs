@@ -7,8 +7,8 @@ version: 1
 
 `paths:` is not a legal field. Every declared field is READ — the human's bytes
 are the only source here, so a silently-ignored field is a silently-ignored
-intent. That is the one place this schema deliberately differs from
-`conventions/INDEX.md`, whose scope column is rendered and never read back.
+intent. An engine-written page like `meridian/armed-rules.md` can be laxer — it
+is regenerated from state that still exists. Your bytes are the only copy.
 
 ```meridian-mount
 name: field-notes

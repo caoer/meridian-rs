@@ -3,61 +3,114 @@
 //! The run plane lands page bytes through `fs::apply_batch` (`executor::apply`),
 //! NOT the wire-serve write choke-point. The byte-landing enumeration (plan §4
 //! Block 4) still lists it as gated "through the same evaluator on the change
-//! surface it produces", so this module mounts the SAME gate: it reads the
-//! workspace's attested INDEX (U1.4) + once-armed marker (U2.5 read-contract) and
-//! evaluates the change the executor produces through [`policy::gate`], refusing
-//! BEFORE the commit.
+//! surface it produces", so this module mounts the SAME gate: it resolves the
+//! workspace's own attested armed law AT THE WRITE'S PATH and evaluates the change
+//! the executor produces through [`policy::gate`], refusing BEFORE the commit.
 //!
-//! The load-bearing security decision lives ENTIRELY in `policy`
-//! ([`policy::resolve_armed_set`] / [`policy::gate`], single copy, unit-tested).
-//! This module is only the disk glue — byte-identical in intent to
-//! `wire_serve::gate`; the two copies of the trivial I/O plumbing cannot harbour
-//! a security bug because they carry no decision, only bytes.
+//! # The law is resolved per WRITE PATH
+//! An arm is rooted, so "what governs this write" is a question about the write's
+//! own path, never a workspace-wide set resolved once and filtered after. The
+//! executor knows the target page, so the mount asks at exactly that path and
+//! hands the answer to the pure decision.
+//!
+//! # The disk edge is copied here, and the copy owes exactness
+//! The load-bearing DECISION is single-copy in `policy`
+//! ([`policy::resolve_armed_law`] and [`policy::gate`], unit-tested there). The
+//! three reads that feed it — the once-armed marker probe, the artifact read, and
+//! the pinned-page source — are shared by both armed-law hosts and live once, in
+//! `wire_serve::armed_disk`. This crate cannot reach them: it does not depend on
+//! `wire-serve` and must not, because `run` is consumer-plane by charter (see the
+//! crate docs — *never touch the wire or the daemon*), and naming the write door
+//! in order to read three files would invert that.
+//!
+//! What the copy owes is exact agreement on the three dispositions that are
+//! DECISIONS rather than plumbing: an ambiguous marker stat reads ARMED, an
+//! artifact that exists and will not read reads CORRUPT rather than absent, and a
+//! pinned page is read ONCE so verification and loading cannot see different
+//! bytes. Each fails closed in the same direction `wire_serve::armed_disk` does —
+//! a workspace that disagreed with itself about whether it is armed, depending on
+//! which door was knocked on, is the defect that module was extracted to end. The
+//! day `run` may name that module, this seam collapses into it.
+
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 
 use model::{Document, Edit, NodeKind};
 
-/// A disk-backed [`policy::ConventionSource`]: `conventions/<slug>/` under root.
-struct DiskConventions<'a> {
-    root: &'a fs::WorkspaceRoot,
-}
-
-impl policy::ConventionSource for DiskConventions<'_> {
-    fn files_for<'a>(&'a self, slug: &str) -> Box<dyn policy::ConventionFiles + 'a> {
-        Box::new(DiskConventionFolder {
-            base: self.root.0.join("conventions").join(slug),
-        })
-    }
-}
-
-struct DiskConventionFolder {
-    base: std::path::PathBuf,
-}
-
-impl policy::ConventionFiles for DiskConventionFolder {
-    fn read(&self, rel: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.base.join(rel))
-    }
-    fn exists(&self, rel: &str) -> bool {
-        self.base.join(rel).exists()
-    }
-}
-
-/// Load + verify the workspace's armed law from disk (mirrors
-/// `wire_serve::gate::load_armed_set`). Absent INDEX maps to `None` (safe:
-/// fail-closed on once-armed, no-op on never-armed); the marker probe fails
-/// CLOSED on an ambiguous stat.
-fn load_armed_set(root: &fs::WorkspaceRoot) -> policy::ArmedSet {
-    let index = std::fs::read_to_string(root.0.join(fs::domain::RESERVED_INDEX_PATH)).ok();
-    let ever_armed = root
-        .0
+/// Whether this workspace has EVER been armed — the once-armed pivot, read from
+/// the MARKER's presence and nothing else.
+///
+/// Pivoting on the artifact instead would make deleting the artifact read as
+/// "never armed", which is the silent-disarm attack the marker exists to defeat;
+/// an absent artifact on an armed workspace is a FAULT, not a disarm. An ambiguous
+/// stat fails CLOSED (assume armed), so a doubtful workspace is never silently
+/// ungated.
+#[must_use]
+pub fn once_armed(root: &fs::WorkspaceRoot) -> bool {
+    root.0
         .join(fs::domain::ATTESTED_MARKER_PATH)
         .try_exists()
-        .unwrap_or(true);
-    let source = DiskConventions { root };
-    policy::resolve_armed_set(
-        index.as_deref(),
-        ever_armed,
-        &source,
+        .unwrap_or(true)
+}
+
+/// Read the attested armed-rules artifact, or `None` when it is absent.
+///
+/// An artifact that exists and cannot be read is NOT `None`: it reads as an empty
+/// page, which the resolver refuses as corrupt. Both paths fail closed, so the
+/// distinction is not the gate's — it is the OPERATOR's, who is told the artifact
+/// is unreadable rather than that it was never created, and told it in the same
+/// words the write door would use.
+#[must_use]
+pub fn read_artifact(root: &fs::WorkspaceRoot) -> Option<String> {
+    match std::fs::read_to_string(root.0.join(fs::domain::ARMED_RULES_PATH)) {
+        Ok(page) => Some(page),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(String::new()),
+    }
+}
+
+/// The pinned pages on disk, read once each.
+///
+/// The cache matters for more than speed: the drift check and the rule load must
+/// see the SAME bytes, or a page edited between the two calls would load a
+/// declaration the rev check never approved.
+struct DiskPages<'a> {
+    root: &'a fs::WorkspaceRoot,
+    seen: RefCell<BTreeMap<String, String>>,
+}
+
+impl policy::armed::PageSource for DiskPages<'_> {
+    /// Page paths reach here only from a parsed artifact row, which validated them
+    /// as relative, non-escaping workspace paths at intake.
+    fn read(&self, page: &str) -> std::io::Result<String> {
+        if let Some(held) = self.seen.borrow().get(page) {
+            return Ok(held.clone());
+        }
+        let bytes = std::fs::read_to_string(self.root.0.join(page))?;
+        self.seen
+            .borrow_mut()
+            .insert(page.to_string(), bytes.clone());
+        Ok(bytes)
+    }
+}
+
+/// Resolve the armed law governing a write at `at_path`, reading the marker, the
+/// artifact, and the pinned pages from disk.
+///
+/// Handing the [`policy::ArmedLaw`] back whole — rather than its parts — is what
+/// keeps the once-armed pivot from being re-assembled, differently, at the call
+/// site.
+#[must_use]
+pub fn resolve_at(root: &fs::WorkspaceRoot, at_path: &str) -> policy::ArmedLaw {
+    let pages = DiskPages {
+        root,
+        seen: RefCell::new(BTreeMap::new()),
+    };
+    policy::resolve_armed_law(
+        read_artifact(root).as_deref(),
+        once_armed(root),
+        at_path,
+        &pages,
         policy::CheckLimits::default(),
     )
 }
@@ -67,9 +120,10 @@ fn load_armed_set(root: &fs::WorkspaceRoot) -> policy::ArmedSet {
 /// [`crate::executor::ExecError::ArmedRefusal`]), or `None` on a no-op/pass.
 ///
 /// `before`/`after` are the pre/post-apply page states; `page` is the
-/// workspace-relative path (stamped onto the change so the convention scope can
-/// match it — `fs::load`/`model::build` leave the path empty); `edits` are the
-/// planned model edits; `actor` is `run:<task>`.
+/// workspace-relative path (stamped onto the change so a rule's declared scope can
+/// match it — `fs::load`/`model::build` leave the path empty, and it is also the
+/// path the law is resolved AT); `edits` are the planned model edits; `actor` is
+/// `run:<task>`.
 #[must_use]
 pub(crate) fn refuse_reason(
     root: &fs::WorkspaceRoot,
@@ -93,14 +147,21 @@ pub(crate) fn refuse_reason(
         &[],
         &|_reference| None,
     );
-    match policy::gate(&change, &load_armed_set(root)) {
+    match policy::gate(&change, &resolve_at(root, page)) {
         policy::GateOutcome::Ok(_) => None,
         policy::GateOutcome::Refusal(refusal) => Some(describe(refusal)),
     }
 }
 
 /// A one-line refusal detail for [`crate::executor::ExecError::ArmedRefusal`],
-/// naming the convention/INDEX and citing the legal path.
+/// naming the rule and citing the legal path.
+///
+/// The run plane reports on ONE channel — a single `detail` string — so it picks
+/// the channel and never the words: an armed-law fault renders through
+/// [`policy::ArmedFault`]'s own `Display`, the one renderer, so an operator reads
+/// the same teaching here as at the write door. Every refusing fault renders, not
+/// the first: they are ONE condition (the law at this path is not enforceable) and
+/// reporting one would send the operator round the loop once per fault.
 fn describe(refusal: policy::GateRefusal) -> String {
     match refusal {
         policy::GateRefusal::Blocked { violations } => {
@@ -109,25 +170,22 @@ fn describe(refusal: policy::GateRefusal) -> String {
                 .map(|v| {
                     format!(
                         "`{}`: {} (legal path: {})",
-                        v.slug, v.message, v.passing_scenario
+                        v.rule, v.message, v.passing_scenario
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
-            format!("armed convention(s) refused the run-plane change: {body}")
+            format!("armed rule(s) refused the run-plane change: {body}")
         }
-        policy::GateRefusal::ConventionFault { detail } => detail,
-        policy::GateRefusal::ArmedDrift {
-            slug,
-            armed_rev,
-            report_rev,
-        } => format!(
-            "armed convention `{slug}` drifted: approved rev `{armed_rev}` but the convention \
-             now reads `{report_rev}` — re-arm at the live rev, or revert the law"
-        ),
-        // U4.3 binding law / INDEX-integrity floor — the run plane lands bytes
-        // through the same gate, so a run-plane write that edits the INDEX / an
-        // armed CHECK.md, or removes the INDEX / marker, is refused here too.
+        policy::GateRefusal::ArmedLawFault { faults } => faults
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "),
+        // U4.3 binding law / integrity floor — the run plane lands bytes through
+        // the same gate, so a run-plane write that edits the armed-rules artifact
+        // or an armed rule page, or removes the artifact / the marker, is refused
+        // here too.
         policy::GateRefusal::BindingBreak { side, teaching, .. } => {
             format!("binding-break[side={}]: {teaching}", side.as_str())
         }
@@ -136,7 +194,7 @@ fn describe(refusal: policy::GateRefusal) -> String {
 }
 
 /// Clone `doc` with its document path stamped to `page` — `fs::load` /
-/// `model::build` leave the path empty, but the convention scope reads it.
+/// `model::build` leave the path empty, but a rule's declared scope reads it.
 fn path_stamped(doc: &Document, page: &str) -> Document {
     let mut out = doc.clone();
     if let NodeKind::Document { path, .. } = &mut out.root.kind {
@@ -149,8 +207,8 @@ fn path_stamped(doc: &Document, page: &str) -> Document {
 #[cfg(test)]
 mod scenario {
     //! Scenario 7 (leader ruling): the run plane lands bytes through
-    //! `fs::apply_batch`, so an armed convention refuses a run-plane apply
-    //! through the SAME evaluator — byte-landing parity with the wire seam.
+    //! `fs::apply_batch`, so an armed rule refuses a run-plane apply through the
+    //! SAME evaluator — byte-landing parity with the wire seam.
 
     use std::collections::BTreeMap;
 
@@ -159,13 +217,27 @@ mod scenario {
     use crate::caps::CapSet;
     use crate::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 
-    /// A task page under `tasks/**` (the convention scope), owned by `run:closer`.
+    /// A task page under `tasks/**` (the rule's declared scope), owned by
+    /// `run:closer`.
     const PAGE: &str = "---\nowner: run:closer\nstatus: todo\n---\n\n# Board\n\n- item\n";
 
-    const CHECK_MD: &str = "---\npaths:\n  - tasks/**\n---\n\n# reviewer-not-owner\n\n\
+    /// The rule's id — the name the artifact keys on and every refusal labels
+    /// with. It is deliberately NOT a substring of the page path or the passing
+    /// case below, so `detail.contains(RULE_ID)` can only pass when the refusal
+    /// actually rendered the rule's name.
+    const RULE_ID: &str = "reviewer-not-owner";
+
+    /// Where the rule page lives. An ordinary workspace page — registration is by
+    /// TAG plus `id:`, so no folder, filename, or `kind:` key carries identity.
+    const RULE_PAGE_PATH: &str = "rules/reviewer.md";
+
+    /// The rule page: a CHECK that refuses when the actor closing the task is its
+    /// own owner.
+    const RULE_PAGE: &str = "---\ntags: [type/rule, rules/check]\nid: reviewer-not-owner\n\
+        paths:\n  - tasks/**\n---\n\n# reviewer-not-owner\n\n\
         ```starlark\ndef check_change(change):\n    owner = change.doc.frontmatter.get(\"owner\")\n    \
         actor = change.actor\n    if actor != None and owner != None and actor == owner:\n        \
-        refuse(message = \"reviewer must not be the owner\", passing = \"scenarios/reviewer-close.md\")\n```\n";
+        refuse(message = \"reviewer must not be the owner\", passing = \"rules/reviewer.md#reviewer-close\")\n```\n";
 
     fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
         let tmp = tempfile::tempdir().unwrap();
@@ -175,31 +247,50 @@ mod scenario {
         (tmp, root)
     }
 
-    fn write_convention(root: &fs::WorkspaceRoot) {
-        let dir = root.0.join("conventions/reviewer-not-owner");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("CHECK.md"), CHECK_MD).unwrap();
-    }
+    /// Land the rule page and the attested artifact that arms it in `block`.
+    ///
+    /// The production ARM disk-edge writer is out of scope by ruling, so the
+    /// fixture performs the act itself: discover the page, run the ONE `arm` act
+    /// over it, and write what it rendered.
+    fn write_rule_and_artifact(root: &fs::WorkspaceRoot) {
+        let page_path = root.0.join(RULE_PAGE_PATH);
+        std::fs::create_dir_all(page_path.parent().unwrap()).unwrap();
+        std::fs::write(&page_path, RULE_PAGE).unwrap();
 
-    fn arm_block(root: &fs::WorkspaceRoot) {
-        let files = super::DiskConventionFolder {
-            base: root.0.join("conventions/reviewer-not-owner"),
-        };
-        let swept =
-            policy::sweep(&files, "reviewer-not-owner", policy::CheckLimits::default()).unwrap();
-        let rev = swept.rev().to_string();
-        let armed = policy::arm(swept, &rev, policy::Enforcement::Block).unwrap();
-        std::fs::write(
-            root.0.join(fs::domain::RESERVED_INDEX_PATH),
-            policy::generate_index(&[armed]),
+        let index = policy::RuleIndex::discover([policy::PageRef {
+            layer: policy::ScopeLayer::Workspace,
+            page: RULE_PAGE_PATH,
+            bytes: RULE_PAGE,
+        }]);
+        let artifact = policy::armed::arm(
+            &index,
+            &policy::armed::ArmRoot::workspace(),
+            [policy::armed::ArmRequest {
+                id: policy::RuleId::parse(RULE_ID).expect("a legal id"),
+                mode: policy::armed::Mode::Block,
+                attested_rev: policy::page_rev(RULE_PAGE),
+            }],
         )
-        .unwrap();
+        .expect("the fixture arms");
+
+        let artifact_path = root.0.join(fs::domain::ARMED_RULES_PATH);
+        std::fs::create_dir_all(artifact_path.parent().unwrap()).unwrap();
+        std::fs::write(artifact_path, artifact.render()).unwrap();
     }
 
+    /// The once-armed marker: this workspace HAS been armed.
     fn set_marker(root: &fs::WorkspaceRoot) {
         let p = root.0.join(fs::domain::ATTESTED_MARKER_PATH);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, "").unwrap();
+    }
+
+    /// Arm the workspace — BOTH files, which is what arming IS. The artifact alone
+    /// leaves a workspace the marker says was never armed, and the marker alone is
+    /// an `ArmedFault::Missing`.
+    fn arm_ws(root: &fs::WorkspaceRoot) {
+        write_rule_and_artifact(root);
+        set_marker(root);
     }
 
     fn set_status_done() -> Effect {
@@ -246,19 +337,21 @@ mod scenario {
         )
     }
 
-    // ── Scenario 7 — run-plane apply violating an armed convention REFUSES ──────
+    // ── Scenario 7 — run-plane apply violating an armed rule REFUSES ────────────
     #[test]
     fn s7_run_plane_apply_refuses_through_the_same_gate() {
         let (tmp, root) = workspace();
-        write_convention(&root);
-        arm_block(&root);
-        set_marker(&root);
+        arm_ws(&root);
 
         let before = std::fs::read_to_string(tmp.path().join("tasks/board.md")).unwrap();
         let err = apply_as_closer(&root).expect_err("armed run-plane apply must refuse");
+        // The rule's OWN teaching is asserted beside its id: an armed-law FAULT
+        // (a drifted or unloadable row) also renders the id, so the id alone
+        // cannot tell "the rule fired" from "the fixture broke".
         assert!(
-            matches!(err, ExecError::ArmedRefusal { ref detail } if detail.contains("reviewer-not-owner")),
-            "the run plane refuses through the armed gate, naming the convention: {err:?}"
+            matches!(err, ExecError::ArmedRefusal { ref detail }
+                if detail.contains(RULE_ID) && detail.contains("reviewer must not be the owner")),
+            "the run plane refuses through the armed gate, naming the rule: {err:?}"
         );
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("tasks/board.md")).unwrap(),
@@ -273,11 +366,15 @@ mod scenario {
 
     /// Control: a never-armed workspace runs the same apply to completion — the
     /// run-plane gate is a no-op without the marker.
+    ///
+    /// This is the ONE fixture that deliberately writes the artifact WITHOUT the
+    /// marker: the artifact-without-marker state is the control's whole subject.
+    /// A workspace can only be armed by an attested arm, which sets the marker, so
+    /// a stray artifact beside no marker is a stray file — never a law.
     #[test]
     fn s7_never_armed_run_plane_apply_lands() {
         let (tmp, root) = workspace();
-        write_convention(&root);
-        arm_block(&root); // INDEX present…
+        write_rule_and_artifact(&root); // the artifact is present…
         // …but NO marker → never-armed → the run-plane gate is off.
         apply_as_closer(&root).expect("never-armed: the run-plane apply lands");
         assert!(

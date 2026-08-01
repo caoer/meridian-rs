@@ -9,9 +9,9 @@ The positive half of the R13 pair: a canonical `md.append_section` intent crosse
 executor's OWN synthesized event — which it can only do if the append really landed
 against the isolated proof corpus with production section semantics.
 
-```conventions
-../../conventions/canonical-writer
-../../conventions/log-watcher
+```rule-pages
+../../rules/canonical-writer.md
+../../rules/log-watcher.md
 ```
 
 ```case

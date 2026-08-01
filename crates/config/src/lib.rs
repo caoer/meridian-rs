@@ -24,7 +24,7 @@
 //! two axes cannot come to disagree about what "stated" means.
 //!
 //! # The precedent this EXTENDS
-//! `conventions/INDEX.md` is markdown-as-config shipping today
+//! `meridian/armed-rules.md` is markdown-as-config shipping today
 //! (`crates/policy/src/index.rs`): strictness scoped to a machine surface,
 //! malformed fails closed, and the pinned rev is `blake3(bytes)[:16]`. Schema
 //! §1 walks the parallel row by row and names the five places this schema

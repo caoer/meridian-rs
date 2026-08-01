@@ -1,4 +1,4 @@
-//! Layer 0 — the convention-free core of `check` (d2 §3 check: "Layer 0 (`check
+//! Layer 0 — the rule-free core of `check` (d2 §3 check: "Layer 0 (`check
 //! --core`): chain integrity by full recompute, claims realised, and the
 //! mechanical journal TRACE … pack-free").
 //!
@@ -25,7 +25,7 @@ use receipt::anchor::{ObjectAnchor, ObjectAnchorFacts};
 use receipt::journal::{ChainReport, ParsedRow, check_chain, parse_rows};
 
 /// The journal TRACE over a workspace: what the reserved receipt journal can
-/// still prove about the live tree. Mechanical, source-3, no convention, no cap.
+/// still prove about the live tree. Mechanical, source-3, no rule, no cap.
 ///
 /// **A verdict requires a CURRENT baseline** (S3-R8). Both journal detectors rest
 /// on one assumption — that the last receipt's recorded `root_after` still

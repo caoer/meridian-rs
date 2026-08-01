@@ -9,10 +9,10 @@ branches converge on a byte-identical downstream work item on two different
 lineages. No lineage returns to one of its own ancestors, so the verdict is acyclic —
 the false-positive class the per-lineage recurrence rule closes.
 
-```conventions
-../../conventions/fan-a
-../../conventions/fan-b
-../../conventions/converge-sink
+```rule-pages
+../../rules/fan-a.md
+../../rules/fan-b.md
+../../rules/converge-sink.md
 ```
 
 ```case

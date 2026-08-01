@@ -255,33 +255,107 @@ fn a_governed_splice_re_dates_the_tree_an_out_of_band_edit_does_not() {
     );
 }
 
+/// The `reviewer.not-owner` CHECK page: it refuses when the actor closing a task is
+/// that task's declared owner, scoped `tasks/**`. It registers by TAG — the page IS
+/// the rule, and no `kind:` key restates it.
+const REVIEWER_PAGE: &str = r#"---
+tags: [type/rule, rules/check]
+id: reviewer.not-owner
+paths:
+  - tasks/**
+---
+
+# reviewer.not-owner
+
+```starlark
+def check_change(change):
+    owner = change.doc.frontmatter.get("owner")
+    actor = change.actor
+    if actor != None and owner != None and actor == owner:
+        refuse(message = "reviewer must not be the owner", passing = "reviewer-close")
+```
+"#;
+
+/// ARM `pages` — `(workspace path, bytes, id, mode)` — at the workspace root, on
+/// DISK: the pages themselves, the attested artifact, and the once-armed marker.
+///
+/// **Both engine files, always.** The artifact alone leaves a workspace the marker
+/// says was never armed (a bit-for-bit no-op gate), and the marker alone is
+/// `ArmedFault::Missing`. The production ARM disk-edge writer is out of scope by
+/// ruling, so a fixture that wants an armed workspace writes them itself.
+fn arm_ws(root: &WorkspaceRoot, pages: &[(&str, &str, &str, policy::armed::Mode)]) {
+    for (path, bytes, ..) in pages {
+        let at = root.0.join(path);
+        std::fs::create_dir_all(at.parent().expect("a page has a parent")).expect("mkdir");
+        std::fs::write(at, bytes).expect("write rule page");
+    }
+    let index =
+        policy::RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| policy::PageRef {
+            layer: policy::ScopeLayer::Workspace,
+            page: path,
+            bytes,
+        }));
+    let artifact = policy::armed::arm(
+        &index,
+        &policy::armed::ArmRoot::workspace(),
+        pages
+            .iter()
+            .map(|(_, bytes, id, mode)| policy::armed::ArmRequest {
+                id: policy::RuleId::parse(id).expect("a legal id"),
+                mode: *mode,
+                attested_rev: policy::page_rev(bytes),
+            }),
+    )
+    .expect("the fixture arms");
+
+    let artifact_path = root.0.join(fs::domain::ARMED_RULES_PATH);
+    std::fs::create_dir_all(artifact_path.parent().expect("under meridian/")).expect("mkdir");
+    std::fs::write(artifact_path, artifact.render()).expect("write the attested artifact");
+    std::fs::write(root.0.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("write the marker");
+}
+
 /// **read-only** (task gate). A layer-1 armed run over the tree mutates nothing:
-/// load a page from disk, derive a change, evaluate the armed seed convention, and
+/// load a page from disk, derive a change, evaluate the workspace's armed law, and
 /// confirm every workspace byte (including the journal) and the tree root are
 /// byte-identical before and after — no rev, no journal row, no projection write.
+///
+/// The law is resolved through the PRODUCTION disk edge
+/// (`wire_serve::armed_disk::resolve_at` — the one call both armed-law hosts make),
+/// so the read under test is the read the door performs, marker probe and all.
 #[test]
 fn layer1_run_is_read_only() {
-    use policy::{ChangeOp, CheckLimits, Invocation, derive_change, load_seed_convention};
+    use policy::armed::Mode;
+    use policy::{ChangeOp, Invocation, derive_change};
 
     let dir = tempfile::tempdir().expect("tmpdir");
     let root = WorkspaceRoot(dir.path().to_path_buf());
 
-    // A real task in the seed's `tasks/**` scope, born through the write path.
+    // A real task in the rule's `tasks/**` scope, born through the write path —
+    // before the arm, so the governed create is the no-op an unarmed gate is.
     produce(
         &root,
         "tasks/t.md",
         "---\nowner: agent:alice\nstatus: open\n---\n# T\n\nx\n",
+    );
+    arm_ws(
+        &root,
+        &[(
+            "rules/reviewer.md",
+            REVIEWER_PAGE,
+            "reviewer.not-owner",
+            Mode::Block,
+        )],
     );
 
     let before_bytes = snapshot_tree(dir.path());
     let before_root = live_root(&root);
 
     // The layer-1 run over the tree: load the doc, frame it as a change, evaluate
-    // the armed convention. Owner == actor, so the convention FIRES — a firing
-    // convention still writes nothing.
+    // the armed law. Owner == actor, so the rule FIRES — a firing rule still writes
+    // nothing.
     let mut doc = fs::load(&root, Path::new("tasks/t.md")).expect("load doc");
     // The disk edge stamps the path model::build leaves empty (change.rs law) —
-    // the convention's `tasks/**` scope matches on it.
+    // the rule's `tasks/**` scope matches on it.
     if let model::NodeKind::Document { path, .. } = &mut doc.root.kind {
         *path = "tasks/t.md".to_string();
     }
@@ -298,16 +372,14 @@ fn layer1_run_is_read_only() {
         &[],
         &no_edges,
     );
-    let armed = check::ArmedConvention {
-        slug: "reviewer-not-owner".to_string(),
-        enforcement: policy::Enforcement::Block,
-        convention: load_seed_convention(CheckLimits::default()).expect("seed loads"),
-    };
-    let report = check::evaluate(std::slice::from_ref(&armed), &change);
+    let law = wire_serve::armed_disk::resolve_at(&root, "tasks/t.md");
     assert!(
-        report.is_red(),
-        "the armed convention fired (owner self-close)"
+        law.faults().is_empty(),
+        "the armed law reads clean off disk: {:?}",
+        law.faults()
     );
+    let report = check::evaluate(law.rules(), &change);
+    assert!(report.is_red(), "the armed rule fired (owner self-close)");
 
     let after_bytes = snapshot_tree(dir.path());
     let after_root = live_root(&root);

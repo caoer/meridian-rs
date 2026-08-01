@@ -1,15 +1,22 @@
 //! `mrd test --corpus` — the tier-2 pre-arming runner (U1.5): drive CHECK and
-//! HOOK conventions over SYNTHETIC changes derived from a governed corpus.
+//! HOOK rule pages over SYNTHETIC changes derived from a governed corpus.
 //!
 //! # What a corpus-test spec is
-//! A spec is a markdown file with `corpus:` plus one `convention:` or a
-//! ` ```conventions ` list. `counterfactual: true` admits `md.*` descriptors in
+//! A spec is a markdown file with `corpus:` plus one `rule:` or a
+//! ` ```rule-pages ` list. `counterfactual: true` admits `md.*` descriptors in
 //! this tier only so quiescence can be falsified without widening runtime caps.
 //!
-//! - ` ```rules ` — the DECLARED CHECK citations. Every loaded HOOK slug joins the
+//! - ` ```rules ` — the DECLARED CHECK citations. Every loaded HOOK's id joins the
 //!   liveness universe automatically; omitting it from this fence cannot hide a dead HOOK.
 //! - ` ```case ` — one synthetic change as JSON: `{doc, actor?, force?, set?,
 //!   remove?, expect}`. `expect` is one rule id, a list of ids, or `"pass"`.
+//!
+//! # A rule is a PAGE, and a spec names pages
+//! The folder loader is gone, so there is no `conventions/<slug>/` to address and
+//! no embedded seed to spell `seed`. A spec names one markdown PAGE per rule,
+//! resolved against the spec's own directory (ruling D1), and the page's
+//! frontmatter `id:` is its identity in every row of the report from there on —
+//! the slug was a filename, and filenames stopped being identity.
 //!
 //! # The four signals (rulings § test tiers — `test --corpus`)
 //! For each case the tier derives the shared [`Change`] from before/after states,
@@ -17,7 +24,7 @@
 //!
 //! - **fire-where-expected** — the set of rules a case fired must EQUAL its
 //!   `expect` (a single rule id, or `"pass"` for no fire). A doc outside the
-//!   convention's `paths:` scope is never run — it can only pass (scope gating is
+//!   rule's `paths:` scope is never run — it can only pass (scope gating is
 //!   observable here). A mismatch is a finding.
 //! - **zero dead rules** — every CHECK citation in `rules` and every loaded HOOK
 //!   must fire at least once over the corpus. A non-firing member is DEAD; a CHECK
@@ -27,6 +34,14 @@
 //! - **FIX/HOOK quiescence** — follow reachable `md.*` descriptors through a
 //!   trigger graph. A repeated `(state, pending descriptor)` is a cycle that can
 //!   keep firing. The proof has its own fuel and disables runtime depth suppression.
+//!
+//! # A citation names a CASE, never a page (ruling D)
+//! A CHECK refusal cites the legal path that would have passed. Those citations
+//! used to be `scenarios/<name>.md` paths into the tier that retired with the
+//! folder loader; a refusal whose legal path points at a deleted file teaches
+//! nothing, so the citation is now the surviving corpus CASE id. That is also
+//! what makes the citation the tier's rule-liveness key: the `rules` fence, a
+//! case's `expect`, and the dead/surprise sets all speak the same names.
 //!
 //! # Output + exit codes (§4 preamble law, `docs/status.md`)
 //! JSON under `--json`, a human report otherwise. Exit 0 when all four signals are
@@ -40,12 +55,11 @@ use std::path::{Path, PathBuf};
 use effects::{ChangeEvent, Domain, Provenance, action_kind};
 use fs::WorkspaceRoot;
 use model::{Document, MerkleRoot, NodeKind};
-use policy::ConventionFiles;
 use policy::{
-    Change, ChangeOp, CheckError, CheckLimits, Convention, CounterfactualConvention, HookEvalError,
-    HookFinding, Intent, Invocation, derive_change, derive_event,
-    evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks_for_test_metered,
-    load_convention, load_convention_for_corpus, load_seed_convention, seed_convention_files,
+    Change, ChangeOp, CheckError, CheckLimits, CounterfactualRule, HookEvalError, HookFinding,
+    Intent, Invocation, PageRef, Rule, ScopeLayer, derive_change, derive_event,
+    evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks_for_test_metered, load_rule,
+    load_rule_for_corpus, register_page,
 };
 use run::caps::CapSet;
 use run::executor::{ApplyRequest, IntentApply, ReceiptAddr};
@@ -57,13 +71,13 @@ use wire_serve::write::{SpliceArgs, splice};
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
 use crate::{Fail, Format};
 
-/// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its convention,
+/// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its rule pages,
 /// run every case over the corpus, and render the report.
 ///
 /// # Errors
-/// [`Fail`] — exit 2 (a malformed spec, an unreadable corpus/convention, or a
+/// [`Fail`] — exit 2 (a malformed spec, an unreadable corpus/rule page, or a
 /// per-case authoring fault) or exit 1 (a fire mismatch, a dead/surprise rule,
-/// or a convention eval fault).
+/// or a rule eval fault).
 pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
     let spec_file = Path::new(spec_path);
     let text = std::fs::read_to_string(spec_file)
@@ -71,8 +85,8 @@ pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
     let spec_dir = spec_file.parent().unwrap_or_else(|| Path::new("."));
     let spec = Spec::parse(&text, spec_dir)?;
 
-    let conventions = load_spec_conventions(&spec)?;
-    let report = run_corpus(&conventions, &spec)?;
+    let rules = load_spec_rules(&spec)?;
+    let report = run_corpus(&rules, &spec)?;
 
     match format {
         Format::Json => println!("{}", report.to_json()),
@@ -90,26 +104,37 @@ pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
 /// One parsed corpus-test spec.
 struct Spec {
     name: String,
-    /// One or more conventions. Existing specs use the singular frontmatter key;
-    /// a `conventions` fence adds peers for trigger-graph proofs.
-    conventions: Vec<ConventionRef>,
+    /// One or more rule pages. A single-rule spec uses the singular frontmatter
+    /// key; a `rule-pages` fence adds peers for trigger-graph proofs.
+    rules: Vec<RulePageRef>,
     /// Whether `md.*` capabilities are admitted only for counterfactual chaining.
     counterfactual: bool,
     /// The corpus root (the 18-02 corpus / governed tree), resolved absolute.
     corpus_root: PathBuf,
     /// Declared CHECK citation ids (in declaration order, deduplicated). Loaded
-    /// HOOK slugs enter liveness from the convention set, never from this fence.
+    /// HOOK ids enter liveness from the rule set, never from this fence.
     declared_rules: Vec<String>,
     /// The synthetic-change cases, in file order.
     cases: Vec<CaseSpec>,
 }
 
-/// Where a spec's convention comes from.
-enum ConventionRef {
-    /// The embedded throwaway seed convention (`reviewer-not-owner`).
-    Seed,
-    /// A `conventions/<slug>/` folder on disk, resolved from the spec dir.
-    Folder { slug: String, dir: PathBuf },
+/// Where a spec's rule comes from: ONE markdown page, resolved from the spec dir.
+///
+/// There is no `Seed` arm any more and no folder arm: `policy::seed` died with the
+/// loader, and a rule that is a page cannot be addressed by a directory name. A
+/// fixture rule now lives in the fixture tree as a page like any other, which is
+/// also why the tier stopped needing an injected file accessor — it reads ONE file.
+struct RulePageRef {
+    /// The path exactly as the spec spelled it, relative to the spec dir.
+    ///
+    /// This is both the provenance the report prints and the page path handed to
+    /// registration. A corpus spec loads a page directly, outside any workspace,
+    /// so there is no mount ladder to site it on and no workspace-relative
+    /// spelling to derive — inventing one would put a fact in the report that the
+    /// spec never stated.
+    spelled: String,
+    /// The resolved on-disk path the bytes are read from.
+    path: PathBuf,
 }
 
 /// One synthetic-change case: a mutation applied to a corpus doc, plus the
@@ -164,9 +189,9 @@ impl Expected {
 }
 
 impl Spec {
-    /// Parse a spec's frontmatter + fenced blocks. A missing `convention` /
-    /// `corpus`, an unparseable `case` JSON, or a case that declares no `expect`
-    /// is a malformed spec (exit 2).
+    /// Parse a spec's frontmatter + fenced blocks. A missing `rule` / `corpus`,
+    /// an unparseable `case` JSON, or a case that declares no `expect` is a
+    /// malformed spec (exit 2).
     fn parse(text: &str, spec_dir: &Path) -> Result<Self, Fail> {
         let fm = parse_frontmatter(text);
         let name = fm
@@ -174,9 +199,9 @@ impl Spec {
             .cloned()
             .unwrap_or_else(|| "corpus-test".to_owned());
 
-        let mut conventions = Vec::new();
-        if let Some(path) = fm.get("convention").filter(|path| !path.is_empty()) {
-            conventions.push(parse_convention_ref(spec_dir, path)?);
+        let mut rules = Vec::new();
+        if let Some(path) = fm.get("rule").filter(|path| !path.is_empty()) {
+            rules.push(rule_page_ref(spec_dir, path));
         }
         let counterfactual = fm
             .get("counterfactual")
@@ -197,13 +222,13 @@ impl Spec {
         let mut cases = Vec::new();
         for (info, body) in scan_blocks(text) {
             match info.split_whitespace().next() {
-                Some("conventions") => {
+                Some("rule-pages") => {
                     for line in body.lines() {
                         let path = line.trim();
                         if path.is_empty() || path.starts_with('#') {
                             continue;
                         }
-                        conventions.push(parse_convention_ref(spec_dir, path)?);
+                        rules.push(rule_page_ref(spec_dir, path));
                     }
                 }
                 Some("rules") => {
@@ -225,9 +250,9 @@ impl Spec {
                 _ => {}
             }
         }
-        if conventions.is_empty() {
+        if rules.is_empty() {
             return Err(Fail::tool(
-                "corpus spec needs `convention:` or a ```conventions block".to_owned(),
+                "corpus spec needs `rule:` or a ```rule-pages block".to_owned(),
             ));
         }
         if cases.is_empty() {
@@ -237,7 +262,7 @@ impl Spec {
         }
         Ok(Spec {
             name,
-            conventions,
+            rules,
             counterfactual,
             corpus_root,
             declared_rules,
@@ -246,17 +271,14 @@ impl Spec {
     }
 }
 
-fn parse_convention_ref(base: &Path, value: &str) -> Result<ConventionRef, Fail> {
-    if value == "seed" {
-        return Ok(ConventionRef::Seed);
+/// One spec-relative rule page reference. Nothing is validated here: identity is
+/// the page's own `id:`, which only registration can read, and a missing file is
+/// reported by the loader with the path the author wrote.
+fn rule_page_ref(base: &Path, value: &str) -> RulePageRef {
+    RulePageRef {
+        spelled: value.to_owned(),
+        path: resolve_rel(base, value),
     }
-    let dir = resolve_rel(base, value);
-    let slug = dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| Fail::tool(format!("convention folder {value} has no slug component")))?
-        .to_owned();
-    Ok(ConventionRef::Folder { slug, dir })
 }
 
 /// Resolve `rel` against `base` (absolute `rel` is taken as-is).
@@ -269,82 +291,75 @@ fn resolve_rel(base: &Path, rel: &str) -> PathBuf {
     }
 }
 
-/// A convention folder on disk — the [`ConventionFiles`] the loader reads through
-/// for a `convention: <folder>` spec (the seed uses its own embedded accessor).
-struct DirConventionFiles {
-    dir: PathBuf,
-}
-
-impl ConventionFiles for DirConventionFiles {
-    fn read(&self, rel_path: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.dir.join(rel_path))
-    }
-
-    fn exists(&self, rel_path: &str) -> bool {
-        self.dir.join(rel_path).exists()
-    }
-}
-
-enum LoadedConventions {
-    Production(Vec<Convention>),
-    Counterfactual(Vec<CounterfactualConvention>),
+/// A spec's loaded rules, in the ONE mode the spec declared.
+///
+/// The two arms are the two LOADERS, not two evaluators: `counterfactual: true`
+/// widens which caps a HOOK declaration may carry so quiescence can be falsified,
+/// and [`CounterfactualRule`] is the type seal that keeps a widened declaration
+/// out of ordinary policy evaluation. Everything below projects the two
+/// identically — a widened proof that reported differently would be proving
+/// something production never runs (R12).
+enum LoadedRules {
+    Production(Vec<Rule>),
+    Counterfactual(Vec<CounterfactualRule>),
 }
 
 #[derive(Clone, Copy)]
-enum ConventionView<'a> {
-    Production(&'a Convention),
-    Counterfactual(&'a CounterfactualConvention),
+enum RuleView<'a> {
+    Production(&'a Rule),
+    Counterfactual(&'a CounterfactualRule),
 }
 
-impl<'a> ConventionView<'a> {
-    fn slug(self) -> &'a str {
+impl<'a> RuleView<'a> {
+    /// The rule's identity — its frontmatter `id:`. This is the name every report
+    /// row, liveness set and quiescence node is keyed on; the folder slug it
+    /// replaced was a filename, and a filename is not an identity.
+    fn id(self) -> &'a str {
         match self {
-            Self::Production(convention) => convention.slug(),
-            Self::Counterfactual(convention) => convention.slug(),
+            Self::Production(rule) => rule.id().as_str(),
+            Self::Counterfactual(rule) => rule.id(),
         }
     }
 
     fn scope(self) -> &'a [String] {
         match self {
-            Self::Production(convention) => convention.scope(),
-            Self::Counterfactual(convention) => convention.scope(),
+            Self::Production(rule) => rule.scope(),
+            Self::Counterfactual(rule) => rule.scope(),
         }
     }
 
     fn has_check(self) -> bool {
         match self {
-            Self::Production(convention) => convention.check_source().is_some(),
-            Self::Counterfactual(convention) => convention.has_check(),
+            Self::Production(rule) => rule.check_source().is_some(),
+            Self::Counterfactual(rule) => rule.has_check(),
         }
     }
 
     fn matches_path(self, path: &str) -> bool {
         match self {
-            Self::Production(convention) => convention.matches_path(path),
-            Self::Counterfactual(convention) => convention.matches_path(path),
+            Self::Production(rule) => rule.matches_path(path),
+            Self::Counterfactual(rule) => rule.matches_path(path),
         }
     }
 
     fn check_change_metered(self, change: &Change) -> Result<policy::CheckTelemetry, CheckError> {
         match self {
-            Self::Production(convention) => convention.check_change_metered(change),
-            Self::Counterfactual(convention) => convention.check_change_metered(change),
+            Self::Production(rule) => rule.check_change_metered(change),
+            Self::Counterfactual(rule) => rule.check_change_metered(change),
         }
     }
 
     fn has_hook(self) -> bool {
         match self {
-            Self::Production(convention) => convention.hook().is_some(),
-            Self::Counterfactual(convention) => convention.has_hook(),
+            Self::Production(rule) => rule.hook().is_some(),
+            Self::Counterfactual(rule) => rule.has_hook(),
         }
     }
 
     fn hook_matches_path(self, path: &str) -> bool {
         match self {
-            Self::Production(convention) => convention
-                .hook()
-                .is_some_and(|hook| hook.matches_path(path)),
-            Self::Counterfactual(convention) => convention.hook_matches_path(path),
+            Self::Production(rule) => rule.hook().is_some_and(|hook| hook.matches_path(path)),
+            Self::Counterfactual(rule) => rule.hook_matches_path(path),
         }
     }
 }
@@ -381,93 +396,115 @@ fn hook_run(row: policy::HookTestTelemetry) -> HookRun {
     }
 }
 
-impl LoadedConventions {
-    fn views(&self) -> Vec<ConventionView<'_>> {
+impl LoadedRules {
+    fn views(&self) -> Vec<RuleView<'_>> {
         match self {
-            Self::Production(conventions) => {
-                conventions.iter().map(ConventionView::Production).collect()
-            }
-            Self::Counterfactual(conventions) => conventions
-                .iter()
-                .map(ConventionView::Counterfactual)
-                .collect(),
+            Self::Production(rules) => rules.iter().map(RuleView::Production).collect(),
+            Self::Counterfactual(rules) => rules.iter().map(RuleView::Counterfactual).collect(),
         }
     }
 
     fn evaluate_hooks(&self, event: &ChangeEvent) -> Result<Vec<HookRun>, HookEvalError> {
         let rows = match self {
-            Self::Production(conventions) => evaluate_hooks_for_test_metered(conventions, event)?,
-            Self::Counterfactual(conventions) => {
-                evaluate_counterfactual_hooks_for_corpus_metered(conventions, event)?
+            Self::Production(rules) => evaluate_hooks_for_test_metered(rules, event)?,
+            Self::Counterfactual(rules) => {
+                evaluate_counterfactual_hooks_for_corpus_metered(rules, event)?
             }
         };
         Ok(rows.into_iter().map(hook_run).collect())
     }
 }
 
-/// Load a spec's conventions through either the production loader or the opaque
-/// counterfactual proof loader. A widened declaration never becomes `Convention`.
+/// Read one rule page's bytes, naming the path the spec author wrote.
+fn read_rule_page(reference: &RulePageRef) -> Result<String, Fail> {
+    std::fs::read_to_string(&reference.path).map_err(|error| {
+        Fail::tool(format!(
+            "cannot read rule page `{}` ({}): {error}",
+            reference.spelled,
+            reference.path.display()
+        ))
+    })
+}
+
+/// Register one rule page: does it carry a `rules/*` tag and a legal `id:`.
+///
+/// Registration and loadability are different questions and this is the first —
+/// a page that does not offer itself to registration was named by a spec that
+/// believes it is a rule, so the refusal has to say so rather than read as a
+/// missing file.
+fn register_rule_page(reference: &RulePageRef, bytes: &str) -> Result<policy::Registration, Fail> {
+    register_page(PageRef {
+        layer: ScopeLayer::Workspace,
+        page: &reference.spelled,
+        bytes,
+    })
+    .map_err(|error| {
+        Fail::tool(format!(
+            "rule page `{}` is refused: {error}",
+            reference.spelled
+        ))
+    })?
+    .ok_or_else(|| {
+        Fail::tool(format!(
+            "`{}` carries no `rules/*` registration tag — a corpus spec names rule PAGES, \
+             and a page registers by tag",
+            reference.spelled
+        ))
+    })
+}
+
+/// Load a spec's rule pages through either the production loader or the opaque
+/// counterfactual proof loader. A widened declaration never becomes a [`Rule`].
 ///
 /// # Errors
-/// [`Fail::tool`] — a convention folder that will not load (a `LoadError`), or a
-/// seed convention that no longer satisfies the loader.
-fn load_spec_conventions(spec: &Spec) -> Result<LoadedConventions, Fail> {
+/// [`Fail::tool`] — an unreadable page, a page that does not register, or a
+/// registered page whose declaration does not load.
+fn load_spec_rules(spec: &Spec) -> Result<LoadedRules, Fail> {
     let limits = CheckLimits::default();
-    if spec.counterfactual {
-        let mut loaded = Vec::with_capacity(spec.conventions.len());
-        for convention in &spec.conventions {
-            let convention = match convention {
-                ConventionRef::Seed => load_convention_for_corpus(
-                    policy::SEED_CONVENTION_SLUG,
-                    &seed_convention_files(),
-                    limits,
-                )
-                .map_err(|error| Fail::tool(format!("seed convention failed to load: {error}")))?,
-                ConventionRef::Folder { slug, dir } => {
-                    let files = DirConventionFiles { dir: dir.clone() };
-                    load_convention_for_corpus(slug, &files, limits).map_err(|error| {
-                        Fail::tool(format!("convention `{slug}` failed to load: {error}"))
-                    })?
-                }
-            };
-            if loaded
-                .iter()
-                .any(|existing: &CounterfactualConvention| existing.slug() == convention.slug())
-            {
-                return Err(Fail::tool(format!(
-                    "corpus spec declares convention `{}` more than once",
-                    convention.slug()
-                )));
-            }
-            loaded.push(convention);
-        }
-        return Ok(LoadedConventions::Counterfactual(loaded));
-    }
-
-    let mut loaded = Vec::with_capacity(spec.conventions.len());
-    for convention in &spec.conventions {
-        let convention = match convention {
-            ConventionRef::Seed => load_seed_convention(limits)
-                .map_err(|error| Fail::tool(format!("seed convention failed to load: {error}")))?,
-            ConventionRef::Folder { slug, dir } => {
-                let files = DirConventionFiles { dir: dir.clone() };
-                load_convention(slug, &files, limits).map_err(|error| {
-                    Fail::tool(format!("convention `{slug}` failed to load: {error}"))
-                })?
-            }
-        };
-        if loaded
-            .iter()
-            .any(|existing: &Convention| existing.slug() == convention.slug())
-        {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    // The duplicate check is on the resolved `id:`, not on the path: two spellings
+    // of one page, and two pages sharing an id, are the same authoring fault — the
+    // tier would otherwise run one law twice and report its fuel twice.
+    let mut guard = |id: &str, spelled: &str| -> Result<(), Fail> {
+        if !seen.insert(id.to_owned()) {
             return Err(Fail::tool(format!(
-                "corpus spec declares convention `{}` more than once",
-                convention.slug()
+                "corpus spec declares rule `{id}` more than once (`{spelled}`)"
             )));
         }
-        loaded.push(convention);
+        Ok(())
+    };
+
+    if spec.counterfactual {
+        let mut loaded = Vec::with_capacity(spec.rules.len());
+        for reference in &spec.rules {
+            let bytes = read_rule_page(reference)?;
+            let registration = register_rule_page(reference, &bytes)?;
+            let rule = load_rule_for_corpus(&registration, &bytes, limits).map_err(|error| {
+                Fail::tool(format!(
+                    "rule page `{}` failed to load: {error}",
+                    reference.spelled
+                ))
+            })?;
+            guard(rule.id(), &reference.spelled)?;
+            loaded.push(rule);
+        }
+        return Ok(LoadedRules::Counterfactual(loaded));
     }
-    Ok(LoadedConventions::Production(loaded))
+
+    let mut loaded = Vec::with_capacity(spec.rules.len());
+    for reference in &spec.rules {
+        let bytes = read_rule_page(reference)?;
+        let registration = register_rule_page(reference, &bytes)?;
+        let rule = load_rule(&registration, &bytes, limits).map_err(|error| {
+            Fail::tool(format!(
+                "rule page `{}` failed to load: {error}",
+                reference.spelled
+            ))
+        })?;
+        guard(rule.id().as_str(), &reference.spelled)?;
+        loaded.push(rule);
+    }
+    Ok(LoadedRules::Production(loaded))
 }
 
 // ── running the corpus ────────────────────────────────────────────────────────
@@ -478,7 +515,7 @@ enum Observed {
     Pass { in_scope: bool },
     /// The change fired: the set of rule ids (`passing` citations) it emitted.
     Fired { rules: BTreeSet<String> },
-    /// The convention faulted at eval (budget / runtime / parse) — a finding.
+    /// The rule faulted at eval (budget / runtime / parse) — a finding.
     Error { detail: String },
 }
 
@@ -503,9 +540,9 @@ struct CaseResult {
     fuel: Vec<u64>,
     mem: Vec<u64>,
     /// CHECK citation ids this case fired. Kept in its OWN namespace: a citation id
-    /// that happens to equal a HOOK slug must never make that HOOK look live (R14).
+    /// that happens to equal a HOOK's id must never make that HOOK look live (R14).
     fired_checks: BTreeSet<String>,
-    /// HOOK slugs this case fired.
+    /// HOOK ids this case fired.
     fired_hooks: BTreeSet<String>,
     /// The `md.*` generations the initial synthetic change armed, per emitter.
     emissions: Vec<Emission>,
@@ -536,18 +573,18 @@ impl CaseResult {
 /// # Errors
 /// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, or a path
 /// that escapes the corpus mount.
-fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fail> {
-    let views = conventions.views();
+fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
+    let views = rules.views();
     let mut results = Vec::with_capacity(spec.cases.len());
     for (index, case) in spec.cases.iter().enumerate() {
-        results.push(run_case(conventions, spec, index, case)?);
+        results.push(run_case(rules, spec, index, case)?);
     }
 
-    let quiescence = prove_quiescence(conventions, &results);
+    let quiescence = prove_quiescence(rules, &results);
 
-    // TWO namespaces, never one set (R14). A CHECK cites a passing scenario; a HOOK
-    // is named by its slug. Merging them lets a CHECK citation that happens to equal
-    // a silent HOOK's slug vouch for that HOOK's liveness.
+    // TWO namespaces, never one set (R14). A CHECK cites a passing CASE; a HOOK is
+    // named by its rule id. Merging them lets a CHECK citation that happens to equal
+    // a silent HOOK's id vouch for that HOOK's liveness.
     let mut fired_checks: BTreeSet<String> = BTreeSet::new();
     let mut fired_hooks: BTreeSet<String> = quiescence.fired_hooks.clone();
     for result in &results {
@@ -556,28 +593,28 @@ fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fa
     }
 
     // The `rules` fence declares CHECK citation ids only. Every loaded HOOK is a
-    // liveness subject whether or not an author remembered to repeat its slug there.
-    let hook_slugs: Vec<String> = views
+    // liveness subject whether or not an author remembered to repeat its id there.
+    let hook_ids: Vec<String> = views
         .iter()
         .copied()
-        .filter(|convention| convention.has_hook())
-        .map(|convention| convention.slug().to_owned())
+        .filter(|rule| rule.has_hook())
+        .map(|rule| rule.id().to_owned())
         .collect();
     let mut declared_rules = spec.declared_rules.clone();
-    for hook_slug in &hook_slugs {
-        if !declared_rules.iter().any(|rule| rule == hook_slug) {
-            declared_rules.push(hook_slug.clone());
+    for hook_id in &hook_ids {
+        if !declared_rules.iter().any(|rule| rule == hook_id) {
+            declared_rules.push(hook_id.clone());
         }
     }
     // Each declared name is a liveness subject in exactly ONE namespace: a loaded
-    // HOOK slug is answered only by that HOOK firing, every other declared name only
+    // HOOK id is answered only by that HOOK firing, every other declared name only
     // by a CHECK citation. A shared string can no longer let one leg vouch for the
-    // other. Surprise is a CHECK-only signal — a HOOK slug is declared by being loaded.
+    // other. Surprise is a CHECK-only signal — a HOOK id is declared by being loaded.
     let declared: BTreeSet<String> = declared_rules.iter().cloned().collect();
     let dead_rules: Vec<String> = declared_rules
         .iter()
         .filter(|rule| {
-            if hook_slugs.contains(rule) {
+            if hook_ids.contains(rule) {
                 !fired_hooks.contains(*rule)
             } else {
                 !fired_checks.contains(*rule)
@@ -602,21 +639,21 @@ fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fa
 
     Ok(Report {
         name: spec.name.clone(),
-        convention_slugs: views
+        rule_ids: views
             .iter()
             .copied()
-            .map(|convention| convention.slug().to_owned())
+            .map(|rule| rule.id().to_owned())
             .collect(),
-        convention_sources: spec
-            .conventions
+        rule_sources: spec
+            .rules
             .iter()
-            .map(convention_source_label)
+            .map(|reference| reference.spelled.clone())
             .collect(),
         corpus_root: spec.corpus_root.display().to_string(),
         scopes: views
             .iter()
             .copied()
-            .map(|convention| convention.scope().to_vec())
+            .map(|rule| rule.scope().to_vec())
             .collect(),
         declared_rules,
         results,
@@ -630,7 +667,7 @@ fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fa
 
 /// Run one initial synthetic change through every declared CHECK and HOOK.
 fn run_case(
-    conventions: &LoadedConventions,
+    rules: &LoadedRules,
     spec: &Spec,
     index: usize,
     case: &CaseSpec,
@@ -652,9 +689,9 @@ fn run_case(
     let event = derive_event(&change, &before.root.node_rev.0, &after.root.node_rev.0, 0);
 
     let mut fold = CaseFold::default();
-    fold.run_checks(conventions, &doc_path, &change);
+    fold.run_checks(rules, &doc_path, &change);
     fold.run_hooks(
-        conventions
+        rules
             .evaluate_hooks(&event)
             .map_err(|error| Fail::tool(format!("HOOK evaluation failed: {error}")))?,
     );
@@ -698,11 +735,11 @@ struct CaseFold {
 
 impl CaseFold {
     /// The law leg: every in-scope CHECK over this change, metered.
-    fn run_checks(&mut self, conventions: &LoadedConventions, doc_path: &str, change: &Change) {
-        for convention in conventions.views() {
-            if convention.has_check() && convention.matches_path(doc_path) {
+    fn run_checks(&mut self, rules: &LoadedRules, doc_path: &str, change: &Change) {
+        for rule in rules.views() {
+            if rule.has_check() && rule.matches_path(doc_path) {
                 self.in_scope = true;
-                match convention.check_change_metered(change) {
+                match rule.check_change_metered(change) {
                     Ok(telemetry) => {
                         self.fuel.push(telemetry.fuel_used);
                         self.mem.push(telemetry.mem_used);
@@ -716,7 +753,7 @@ impl CaseFold {
                     Err(error) => self.errors.push(check_error_label(&error)),
                 }
             }
-            if convention.has_hook() && convention.hook_matches_path(doc_path) {
+            if rule.has_hook() && rule.hook_matches_path(doc_path) {
                 self.in_scope = true;
             }
         }
@@ -863,12 +900,12 @@ struct PendingGeneration {
 /// explicit graph fuel, which are the two signals the report already names.
 /// Terminal `proto.*` intents add no graph edge, which keeps slice 1 explicitly
 /// acyclic.
-fn prove_quiescence(conventions: &LoadedConventions, results: &[CaseResult]) -> Quiescence {
-    let nodes = conventions
+fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Quiescence {
+    let nodes = rules
         .views()
         .into_iter()
-        .filter(|convention| convention.has_hook())
-        .map(|convention| convention.slug().to_owned())
+        .filter(|rule| rule.has_hook())
+        .map(|rule| rule.id().to_owned())
         .collect();
     let mut proof = Quiescence {
         nodes,
@@ -896,7 +933,7 @@ fn prove_quiescence(conventions: &LoadedConventions, results: &[CaseResult]) -> 
         }
         pending.ancestors.insert(signature);
         proof.steps += 1;
-        advance_generation(&pending, conventions, &mut queue, &mut proof);
+        advance_generation(&pending, rules, &mut queue, &mut proof);
         if proof.fault.is_some() {
             break;
         }
@@ -934,7 +971,7 @@ fn pending_signature(pending: &PendingGeneration) -> String {
 
 fn advance_generation(
     pending: &PendingGeneration,
-    conventions: &LoadedConventions,
+    rules: &LoadedRules,
     queue: &mut VecDeque<PendingGeneration>,
     proof: &mut Quiescence,
 ) {
@@ -953,7 +990,7 @@ fn advance_generation(
         return;
     };
 
-    let rows = match conventions.evaluate_hooks(&event) {
+    let rows = match rules.evaluate_hooks(&event) {
         Ok(rows) => rows,
         Err(error) => {
             proof.fault = Some(format!("HOOK evaluation failed: {error}"));
@@ -1265,14 +1302,6 @@ fn check_error_label(e: &CheckError) -> String {
     e.to_string()
 }
 
-/// A label for where the convention came from.
-fn convention_source_label(c: &ConventionRef) -> String {
-    match c {
-        ConventionRef::Seed => "seed".to_owned(),
-        ConventionRef::Folder { dir, .. } => dir.display().to_string(),
-    }
-}
-
 // ── budgets ───────────────────────────────────────────────────────────────────
 
 /// A p50/p99/max budget summary over a metered quantity (fuel ticks or heap
@@ -1299,7 +1328,7 @@ impl Budget {
 
 /// Nearest-rank percentile of a SORTED (ascending) sample: `rank = ceil(p * n /
 /// 100)` (1-based), clamped into range. Integer arithmetic — no float rounding —
-/// so the corpus profile is a deterministic, pure function of `(convention,
+/// so the corpus profile is a deterministic, pure function of `(rule pages,
 /// corpus, spec)`.
 fn percentile(sorted: &[u64], p: usize) -> u64 {
     let n = sorted.len();
@@ -1313,12 +1342,16 @@ fn percentile(sorted: &[u64], p: usize) -> u64 {
 
 // ── report ────────────────────────────────────────────────────────────────────
 
-/// The finished corpus-run report — a pure function of `(convention, corpus,
+/// The finished corpus-run report — a pure function of `(rule pages, corpus,
 /// spec)`, so re-running is byte-identical (no wall-clock stamp).
 struct Report {
     name: String,
-    convention_slugs: Vec<String>,
-    convention_sources: Vec<String>,
+    /// Each loaded rule's `id:`, in spec order.
+    rule_ids: Vec<String>,
+    /// Each rule page as the spec spelled it — the provenance column. Kept
+    /// spec-relative rather than absolute so the report stays a pure function of
+    /// its inputs on any machine.
+    rule_sources: Vec<String>,
     corpus_root: String,
     scopes: Vec<Vec<String>>,
     declared_rules: Vec<String>,
@@ -1336,7 +1369,7 @@ impl Report {
         self.results.iter().filter(|r| !r.matched()).count()
     }
 
-    /// Cases whose convention faulted at eval.
+    /// Cases whose rule faulted at eval.
     fn errored(&self) -> usize {
         self.results
             .iter()
@@ -1408,15 +1441,15 @@ impl Report {
 
     fn write_overview(&self, out: &mut String) {
         let _ = writeln!(out, "# mrd test --corpus — {}\n", self.name);
-        for ((slug, source), scope) in self
-            .convention_slugs
+        for ((id, source), scope) in self
+            .rule_ids
             .iter()
-            .zip(&self.convention_sources)
+            .zip(&self.rule_sources)
             .zip(&self.scopes)
         {
             let _ = writeln!(
                 out,
-                "convention: `{slug}` ({source}) · scope `{}`",
+                "rule: `{id}` ({source}) · scope `{}`",
                 scope.join("`, `")
             );
         }
@@ -1565,10 +1598,10 @@ impl Report {
             .collect();
         let value = json!({
             "corpus_test": self.name,
-            "convention": self.convention_slugs.first(),
-            "conventions": self.convention_slugs,
-            "convention_source": self.convention_sources.first(),
-            "convention_sources": self.convention_sources,
+            "rule": self.rule_ids.first(),
+            "rules": self.rule_ids,
+            "rule_source": self.rule_sources.first(),
+            "rule_sources": self.rule_sources,
             "corpus_root": self.corpus_root,
             "scope": self.scopes.first(),
             "scopes": self.scopes,
@@ -1770,6 +1803,47 @@ mod tests {
         assert!(
             event.changes.is_empty(),
             "the synthesized event carries no value deltas — fail-closed by construction"
+        );
+    }
+
+    /// **The byte half of the retired `bounce-approve-lands` scenario.**
+    ///
+    /// A Verdict is recorded create-OR-REPLACE: `put at:upsert` on the `verdict`
+    /// key. A bounce — reject, rework, re-approve — must LAND its second decision
+    /// through that same upsert, so the page reads `approve` afterwards and is
+    /// never stuck at `reject`. The scenario tier asserted this on landed bytes;
+    /// the corpus tier's fire/pass signal cannot (it records which rule fired, not
+    /// what the page says), so the byte claim lives here, over the SAME production
+    /// splice writer the tier mutates through. Its LAW half — that the re-decision
+    /// is admitted rather than refused as a duplicate — is the `bounce-reject` /
+    /// `bounce-approve-lands` case pair on the `close-verdict` corpus spec.
+    #[test]
+    fn a_bounce_re_upsert_replaces_the_earlier_verdict() {
+        let before =
+            "---\ntype: task\nstatus: open\nowner: worker-a\nverdict: reject\n---\n\n# Ship it\n";
+        let case = CaseSpec {
+            name: None,
+            doc: CARD.to_owned(),
+            actor: Some("reviewer-b".to_owned()),
+            force: false,
+            set: BTreeMap::from([("verdict".to_owned(), "approve".to_owned())]),
+            remove: Vec::new(),
+            expect: Expected::One("pass".to_owned()),
+        };
+        let after = apply_case_mutation(CARD, before, &case).expect("the bounce lands");
+        println!("POPULATION bounced -> {after:?}");
+        assert!(
+            after.contains("verdict: approve"),
+            "the second decision landed through the same upsert: {after:?}"
+        );
+        assert!(
+            !after.contains("reject"),
+            "the earlier reject was REPLACED, not appended beside it: {after:?}"
+        );
+        assert_eq!(
+            after.matches("verdict:").count(),
+            1,
+            "create-OR-replace leaves exactly one Verdict key: {after:?}"
         );
     }
 

@@ -56,7 +56,7 @@ use starlark::syntax::{AstModule, Dialect};
 
 use crate::EvalBudget;
 use crate::check_eval::CheckLimits;
-use crate::convention::LoadError;
+use crate::declaration::LoadError;
 
 /// The caps slice 1 admits — `proto.send` and nothing else. Every other descriptor
 /// kind is a NAMED deferral at load ([`LoadError::HookCapDeferred`]), never a silent
@@ -77,7 +77,7 @@ const CORPUS_COUNTERFACTUAL_CAPS: [EffectKind; 3] = [
 /// verbatim `how:` block, and the parse- and ceiling-validated predicate.
 /// Public construction is sealed to [`load_hook`], so a publicly reachable `Hook`
 /// has passed the slice-1 cap gate. The corpus-only widened constructor remains
-/// private and its value is sealed inside [`crate::CounterfactualConvention`]; no
+/// private and its value is sealed inside [`crate::CounterfactualRule`]; no
 /// widened `Hook` crosses this crate's ordinary policy surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
@@ -104,10 +104,10 @@ impl Hook {
     }
 
     /// Whether `path` is in the HOOK's declared scope. Same glob grammar as
-    /// [`crate::Convention::matches_path`] — the one matcher, reused.
+    /// [`crate::Rule::matches_path`] — the one matcher, reused.
     #[must_use]
     pub fn matches_path(&self, path: &str) -> bool {
-        crate::convention::path_in_scope(&self.scope, path)
+        crate::declaration::path_in_scope(&self.scope, path)
     }
 
     /// The declared effect caps, resolved to the closed descriptor surface.
@@ -233,7 +233,7 @@ impl From<EvalError> for HookEvalError {
 
 /// Evaluate every armed, in-scope HOOK over one landed change.
 ///
-/// The input is [`crate::ArmedConvention`], not a bare [`Hook`], so an unarmed
+/// The input is [`crate::ArmedRule`], not a bare [`Hook`], so an unarmed
 /// declaration cannot enter by accident. Each predicate runs through
 /// [`effects::eval_with_limits`] under its declared [`EvalBudget`]. The declared
 /// caps then partition the result through [`CapabilitySet::route`]; denied intents
@@ -252,13 +252,13 @@ impl From<EvalError> for HookEvalError {
 /// does not carry the canonical receipt for the landed change returns
 /// [`HookEvalError::MalformedIntent`]; it is never silently discarded.
 pub fn evaluate_hooks(
-    armed: &[crate::ArmedConvention],
+    armed: &[crate::ArmedRule],
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
     evaluate_loaded_hooks(
         armed
             .iter()
-            .filter_map(|armed| armed.convention().hook().map(|hook| (armed.slug(), hook))),
+            .filter_map(|armed| armed.rule().hook().map(|hook| (armed.id().as_str(), hook))),
         event,
     )
 }
@@ -266,7 +266,7 @@ pub fn evaluate_hooks(
 /// One production-shaped pre-arming HOOK outcome with its exact evaluator meter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookTestTelemetry {
-    /// The convention evaluated for this row, even when it emitted nothing.
+    /// The rule evaluated for this row, even when it emitted nothing.
     pub rule_id: String,
     /// The canonical intent projection, including `narrowed` and typed findings.
     pub outcome: HookOutcome,
@@ -279,18 +279,18 @@ pub struct HookTestTelemetry {
 /// Evaluate loaded conventions before arming for the tier-1 scenario proof.
 ///
 /// This is the same policy-owned descriptor evaluator and intent projection as
-/// [`evaluate_hooks`], but its input is a loaded [`crate::Convention`] rather than an
-/// attested INDEX row. It grants no arming state and applies no effect. The scenario
+/// [`evaluate_hooks`], but its input is a loaded [`crate::Rule`] rather than an
+/// attested artifact row. It grants no arming state and applies no effect. The scenario
 /// runner uses it only after routing the declared `^put` through the production write
 /// path, so `t.result.effects` observes what that landed change would arm.
 ///
 /// # Errors
 /// The same [`HookEvalError`] surface as [`evaluate_hooks`].
 pub fn evaluate_hooks_for_test(
-    conventions: &[crate::Convention],
+    rules: &[crate::Rule],
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
-    evaluate_hooks_for_test_metered(conventions, event)
+    evaluate_hooks_for_test_metered(rules, event)
         .map(|rows| rows.into_iter().map(|row| row.outcome).collect())
 }
 
@@ -299,13 +299,13 @@ pub fn evaluate_hooks_for_test(
 /// # Errors
 /// The same [`HookEvalError`] surface as [`evaluate_hooks`].
 pub fn evaluate_hooks_for_test_metered(
-    conventions: &[crate::Convention],
+    rules: &[crate::Rule],
     event: &ChangeEvent,
 ) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
     evaluate_loaded_hooks_metered(
-        conventions
+        rules
             .iter()
-            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+            .filter_map(|rule| rule.hook().map(|hook| (rule.id().as_str(), hook))),
         event,
         EvalLimits::default().max_depth,
     )?
@@ -316,7 +316,7 @@ pub fn evaluate_hooks_for_test_metered(
 
 /// Evaluate widened declarations only inside the corpus proof.
 ///
-/// This API accepts only [`crate::CounterfactualConvention`], so widened caps cannot
+/// This API accepts only [`crate::CounterfactualRule`], so widened caps cannot
 /// cross into ordinary policy code. Everything else is the production evaluator:
 /// metering, capability routing, global sequencing, typed findings, and — since the
 /// R13 adapter ruling — the SAME canonical [`intent_from_effect`] projection for
@@ -330,13 +330,13 @@ pub fn evaluate_hooks_for_test_metered(
 /// production evaluator, and a descriptor outside the canonical intent shape the same
 /// [`HookEvalError::MalformedIntent`].
 pub fn evaluate_counterfactual_hooks_for_corpus_metered(
-    conventions: &[crate::CounterfactualConvention],
+    rules: &[crate::CounterfactualRule],
     event: &ChangeEvent,
 ) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
     evaluate_loaded_hooks_metered(
-        conventions
+        rules
             .iter()
-            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+            .filter_map(|rule| rule.hook().map(|hook| (rule.id(), hook))),
         event,
         u32::MAX,
     )?
@@ -359,11 +359,11 @@ struct RawHookTelemetry {
 /// Evaluate already-loaded HOOKs against one landed change — the ARM-artifact
 /// consumer's evaluator.
 ///
-/// [`evaluate_hooks`] reads the dying convention-folder shape, where the armed set
-/// carries whole conventions. An ARM-artifact row carries a PAGE, so its consumer
-/// loads the page itself ([`load_hook`], which is the capability gate) and hands the
-/// pairs here. Same evaluator, same sequencing, same budget metering — the only
-/// difference is who resolved the armed set.
+/// [`evaluate_hooks`] takes an already-resolved armed set, whose rules the law
+/// resolver loaded. A caller holding bare pages loads them itself ([`load_hook`],
+/// which is the capability gate) and hands the pairs here. Same evaluator, same
+/// sequencing, same budget metering — the only difference is who resolved the
+/// armed set.
 ///
 /// Each hook still answers scope through its own `paths:` declaration, so an armed
 /// row whose page does not match the changed file emits nothing.
@@ -553,64 +553,41 @@ fn take_required(
     })
 }
 
-/// Parse and validate a `HOOK.md` page under `limits`.
+/// Parse and validate a rule page's HOOK leg under `limits`.
 ///
-/// Pipeline: frontmatter grammar (`kind`/`severity`/`paths`/`caps`/`budget`/`how`) →
+/// Pipeline: frontmatter grammar (`severity`/`paths`/`caps`/`budget`/`how`) →
 /// `how:` shape → caps against the slice-1 allowlist → the fenced predicate →
 /// `effects::validate` under the full limits → the capability ceiling.
+///
+/// # Crate-private ON PURPOSE — the kind seam is ONE enforcement point
+/// A leg loader reachable from outside `policy` is a second way to turn a page
+/// into a rule, and the second way skips the kind seam. That is not hypothetical:
+/// the feeder defect this cutover fixed was exactly a caller reaching a leg loader
+/// directly, so a ruled-shape hook page armed cleanly and could never fire. The
+/// ONLY callers are [`crate::load_rule`] and its corpus twin, which share one
+/// pipeline; `pub(crate)` makes that structural rather than a convention a future
+/// caller can breach.
+///
+/// # The `kind:` assertion is gone, and nothing replaced it
+/// The folder generation asserted `kind: hook` here because the FILENAME claimed
+/// the kind, and a `HOOK.md` whose frontmatter said otherwise was a genuine
+/// contradiction. A page has no filename claim to contradict: the tag
+/// `rules/hook` IS the kind (ruling § 1), and the one place a `kind:` key may
+/// still be checked against it is [`crate::load_rule`]'s kind seam — the single
+/// enforcement point.
 ///
 /// # Errors
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
 /// [`LoadError::HookPredicateInvalid`], [`LoadError::HookCeiling`].
-pub fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
-    declared_kind_is_hook(hook_md)?;
+pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
     load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
 }
 
-/// Load a HOOK for `mrd test --corpus` counterfactual chaining. The ordinary
+/// Load a HOOK leg for `mrd test --corpus` counterfactual chaining. The ordinary
 /// loader never reaches this allowlist, so admitting `md.*` here cannot widen the
 /// armed runtime's [`SLICE1_CAPS`].
 pub(crate) fn load_hook_for_corpus(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
-    declared_kind_is_hook(hook_md)?;
     load_hook_with_caps(hook_md, limits, &CORPUS_COUNTERFACTUAL_CAPS)
-}
-
-/// Load a HOOK **page** — the same declaration, named by its registration tag
-/// instead of by a filename.
-///
-/// The one difference from [`load_hook`] is the absent `kind: hook` assertion.
-/// Under tag registration the tag `rules/hook` IS the kind (ruling § 1), so
-/// requiring a `kind:` key beside it would be the two-names-for-one-thing defect
-/// the ruling removes. The filename path keeps the assertion because there the
-/// FILENAME claims the kind, and a `HOOK.md` whose frontmatter says otherwise is a
-/// genuine contradiction — a page has no filename claim to contradict.
-///
-/// Caps are [`SLICE1_CAPS`]: a registration tag admits the armed runtime's
-/// vocabulary, never the corpus harness's wider one.
-pub(crate) fn load_hook_page(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
-    load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
-}
-
-/// The filename path's kind assertion: a `HOOK.md` must declare `kind: hook`.
-///
-/// Dies with the folder loader — under tags the assertion has nothing to assert.
-fn declared_kind_is_hook(hook_md: &str) -> Result<(), LoadError> {
-    let malformed = |reason: String| LoadError::HookMalformed { reason };
-
-    let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
-        .ok_or_else(|| malformed("no `---` frontmatter".to_string()))?;
-    let parsed: HookFrontmatter = serde_yaml::from_str(frontmatter)
-        .map_err(|e| malformed(format!("frontmatter parse: {e}")))?;
-
-    let kind = parsed
-        .kind
-        .ok_or_else(|| malformed("frontmatter must declare `kind: hook`".to_string()))?;
-    if kind != "hook" {
-        return Err(malformed(format!(
-            "`kind:` is {kind:?}, but this file is HOOK.md — the declared kind must be `hook`"
-        )));
-    }
-    Ok(())
 }
 
 fn load_hook_with_caps(
@@ -688,9 +665,15 @@ fn load_hook_with_caps(
 /// Only the HOOK frontmatter keys the loader reads. Other keys are permitted (a
 /// declaration may carry descriptive frontmatter — the founding pages carry `type:`,
 /// `rule:`, `pack:`, `tags:`) and ignored.
+///
+/// `kind:` is one of the ignored ones, and deliberately so. It was read here while a
+/// `HOOK.md` filename claimed the leg and the key had to agree with it; under tag
+/// registration the tag IS the kind, so the key may restate it, may be absent, and
+/// is checked against the tag at exactly ONE place — [`crate::load_rule`]'s kind
+/// seam. A field here would be a second reader of the same key, which is how two
+/// enforcement points are built.
 #[derive(serde::Deserialize)]
 struct HookFrontmatter {
-    kind: Option<String>,
     severity: Option<String>,
     paths: Option<Vec<String>>,
     caps: Option<Vec<String>>,
@@ -951,17 +934,13 @@ how:
     #[test]
     fn each_conjunct_is_load_bearing_and_names_its_field() {
         // Owned strings so each mutation is exactly one edit off the SAME baseline.
+        // `kind:` is NOT among the conjuncts. It was, while the FILENAME claimed the
+        // leg and `HOOK.md` saying `kind: check` was a contradiction. Under tag
+        // registration the tag IS the kind (ruling § 1): absent DERIVES, and a
+        // contradicting key is refused ONCE, at `load_rule`'s kind seam, against the
+        // tag rather than against a filename. Asserting it a second time here would
+        // rebuild the second enforcement point the seam exists to remove.
         let mutations: Vec<(&str, String, &str)> = vec![
-            (
-                "kind absent",
-                FOUNDING_HOOK.replace("kind: hook\n", ""),
-                "kind",
-            ),
-            (
-                "kind is not hook",
-                FOUNDING_HOOK.replace("kind: hook", "kind: check"),
-                "kind",
-            ),
             (
                 "severity absent",
                 FOUNDING_HOOK.replace("severity: info\n", ""),

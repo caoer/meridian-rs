@@ -53,7 +53,7 @@ use starlark::values::none::NoneType;
 use starlark::values::structs::AllocStruct;
 
 use crate::change::{Change, DocFacts, Edge, EditFact, NodeFact, TargetFact};
-use crate::convention::Refusal;
+use crate::declaration::Refusal;
 
 /// Deterministic bounds on one `check_change` evaluation — the FULL limit set
 /// (plan §4 preamble): tick + heap + call-depth + source-size, plus the parser

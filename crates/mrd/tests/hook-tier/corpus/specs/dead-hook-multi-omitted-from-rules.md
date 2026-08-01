@@ -6,11 +6,11 @@ counterfactual: false
 
 Two loaded HOOKs, an EMPTY `rules` fence, and a case that fires only the first. The
 later, silent HOOK must still be reported dead — liveness comes from the loaded
-convention set, never from what an author remembered to repeat in the fence.
+rule set, never from what an author remembered to repeat in the fence.
 
-```conventions
-../../conventions/task-status-notify
-../../conventions/never-fires
+```rule-pages
+../../rules/task-status-notify.md
+../../rules/never-fires.md
 ```
 
 ```rules

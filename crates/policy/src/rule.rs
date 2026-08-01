@@ -25,7 +25,7 @@
 //! # The filename is gone, and nothing replaced it
 //! Nothing here reads a folder name, a `CHECK.md`/`HOOK.md` spelling, or a `kind:`
 //! frontmatter key. The parsers are the SAME ones the folder loader uses
-//! ([`crate::convention::parse_check`], [`crate::hook::load_hook_page`]) — they were
+//! ([`crate::declaration::parse_check`], [`crate::hook::load_hook`]) — they were
 //! always page-shaped, taking bytes rather than filenames. What dies with the folder
 //! loader is the addressing above them, not the parsing.
 //!
@@ -36,7 +36,7 @@
 //! page's identity — silently, and only sometimes.
 
 use crate::check_eval::CheckLimits;
-use crate::convention::{CheckOutcome, LoadError};
+use crate::declaration::{CheckOutcome, LoadError};
 use crate::hook::Hook;
 use crate::registration::{Registration, RuleId, RuleKind, page_rev};
 
@@ -86,7 +86,7 @@ impl Rule {
     /// Whether `path` is inside the rule's declared scope.
     #[must_use]
     pub fn matches_path(&self, path: &str) -> bool {
-        crate::convention::path_in_scope(&self.scope, path)
+        crate::declaration::path_in_scope(&self.scope, path)
     }
 
     /// The reaction leg, when the page carries `rules/hook`.
@@ -120,6 +120,35 @@ impl Rule {
         };
         let refusals = crate::check_eval::run_check_change(source, change, self.limits)?;
         Ok(CheckOutcome { refusals })
+    }
+
+    /// Run the law leg and return the [`crate::CheckTelemetry`] — the refusals AND
+    /// the exact fuel/heap the evaluation spent.
+    ///
+    /// Same metered core as [`Rule::check_change`]; this variant keeps the reading
+    /// the `test --corpus` tier's p50/p99 budget signal is computed from. The twin
+    /// on [`CounterfactualRule`] exists for the same reason and shares this body's
+    /// evaluator: the two corpus loader modes differ in which caps a HOOK
+    /// declaration may CARRY, never in how a law is metered, so a profile taken
+    /// through one must be the profile taken through the other.
+    ///
+    /// # Errors
+    /// [`crate::CheckError`] — a budget/parse/runtime fault, or
+    /// [`crate::CheckError::MissingEntry`] when the page declares no CHECK leg. A
+    /// page with no law reports the ABSENCE rather than a zero reading, because an
+    /// unmetered pass and a law that spent nothing are different facts — averaging
+    /// the former into a budget profile would understate every law beside it. That
+    /// is also why this is not [`Rule::check_change`]'s silence: there, silence is
+    /// the honest verdict; here, there is no measurement to report.
+    pub fn check_change_metered(
+        &self,
+        change: &crate::Change,
+    ) -> Result<crate::CheckTelemetry, crate::CheckError> {
+        let source = self
+            .check_source
+            .as_ref()
+            .ok_or(crate::CheckError::MissingEntry)?;
+        crate::check_eval::run_check_change_metered(source, change, self.limits)
     }
 }
 
@@ -315,6 +344,20 @@ pub fn load_rule(
     bytes: &str,
     limits: CheckLimits,
 ) -> Result<Rule, RuleLoadError> {
+    load_rule_with_hook_loader(registration, bytes, limits, crate::hook::load_hook)
+}
+
+/// The one load pipeline, parameterized by which HOOK capability allowlist admits
+/// the reaction leg. Production and the corpus proof share every other gate — the
+/// rev check, the kind seam, both legs' parse, the entry points, and the scope
+/// rule — so a second copy is how the two would drift into disagreeing about what
+/// a rule page IS.
+fn load_rule_with_hook_loader(
+    registration: &Registration,
+    bytes: &str,
+    limits: CheckLimits,
+    hook_loader: fn(&str, CheckLimits) -> Result<Hook, LoadError>,
+) -> Result<Rule, RuleLoadError> {
     let supplied = page_rev(bytes);
     if supplied != registration.rev() {
         return Err(RuleLoadError::RevMismatch {
@@ -357,12 +400,12 @@ pub fn load_rule(
     let check = registration
         .kinds()
         .contains(&RuleKind::Check)
-        .then(|| crate::convention::parse_check(bytes, limits).map_err(leg(RuleKind::Check)))
+        .then(|| crate::declaration::parse_check(bytes, limits).map_err(leg(RuleKind::Check)))
         .transpose()?;
     let hook = registration
         .kinds()
         .contains(&RuleKind::Hook)
-        .then(|| crate::hook::load_hook_page(bytes, limits).map_err(leg(RuleKind::Hook)))
+        .then(|| hook_loader(bytes, limits).map_err(leg(RuleKind::Hook)))
         .transpose()?;
 
     // Each declared leg must define its own entry point. One page, one fenced block,
@@ -400,6 +443,162 @@ pub fn load_rule(
         hook,
         limits,
     })
+}
+
+/// A rule page loaded only for the `test --corpus` counterfactual proof.
+///
+/// This wrapper is deliberately not [`Rule`]. Its widened HOOK cannot enter
+/// ordinary policy evaluation, arming, or the production loader BY TYPE. The
+/// public surface exposes only the facts the proof needs; the widened [`Hook`]
+/// stays behind the policy-owned corpus evaluator.
+///
+/// ```compile_fail
+/// use policy::{CounterfactualRule, Rule};
+///
+/// fn cannot_enter_ordinary_policy(proof: CounterfactualRule) {
+///     let _ordinary: Rule = proof;
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CounterfactualRule {
+    inner: Rule,
+}
+
+impl CounterfactualRule {
+    /// The rule's id — the name every corpus report row is labelled with.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        self.inner.id().as_str()
+    }
+
+    /// The page the rule was loaded from.
+    #[must_use]
+    pub fn page(&self) -> &str {
+        self.inner.page()
+    }
+
+    /// The rule's declared default scope.
+    #[must_use]
+    pub fn scope(&self) -> &[String] {
+        self.inner.scope()
+    }
+
+    /// Whether the CHECK leg matches `path`.
+    #[must_use]
+    pub fn matches_path(&self, path: &str) -> bool {
+        self.inner.matches_path(path)
+    }
+
+    /// Whether the page carries a CHECK leg.
+    #[must_use]
+    pub fn has_check(&self) -> bool {
+        self.inner.check_source().is_some()
+    }
+
+    /// Run the CHECK leg through the ordinary metered evaluator.
+    ///
+    /// # Errors
+    /// [`crate::CheckError`] — a budget/parse/runtime fault, or
+    /// [`crate::CheckError::MissingEntry`] when the page declares no CHECK leg
+    /// (the metered path reports the absence rather than inventing a zero
+    /// reading).
+    pub fn check_change_metered(
+        &self,
+        change: &crate::Change,
+    ) -> Result<crate::CheckTelemetry, crate::CheckError> {
+        // Delegates rather than re-runs the evaluator: the widening this wrapper
+        // carries is a HOOK-cap widening, and a second metered body here is how the
+        // two corpus modes would come to profile the same law differently.
+        self.inner.check_change_metered(change)
+    }
+
+    /// Whether the page carries a counterfactual HOOK leg.
+    #[must_use]
+    pub fn has_hook(&self) -> bool {
+        self.inner.hook().is_some()
+    }
+
+    /// Whether the counterfactual HOOK leg matches `path`.
+    #[must_use]
+    pub fn hook_matches_path(&self, path: &str) -> bool {
+        self.inner
+            .hook()
+            .is_some_and(|hook| hook.matches_path(path))
+    }
+
+    pub(crate) fn hook(&self) -> Option<&Hook> {
+        self.inner.hook()
+    }
+}
+
+/// Load a registered page for the `test --corpus` pre-arming proof.
+///
+/// This differs from [`load_rule`] only in HOOK capability admission:
+/// counterfactual `md.*` descriptors may load so the tier can prove whether their
+/// trigger graph is quiescent. The widened declaration is returned as the opaque
+/// [`CounterfactualRule`], so it cannot enter [`crate::evaluate_hooks`], an armed
+/// set, or any API accepting an ordinary [`Rule`]. The production loader stays
+/// pinned to [`crate::SLICE1_CAPS`].
+///
+/// # The loader-to-evaluator boundary
+/// The doc pair below is a mutation control over ONE edit — which loader minted
+/// the value. The positive twin compiles, so the negative twin's failure is the
+/// widened type being refused at an ordinary evaluator API, not some unrelated
+/// breakage.
+///
+/// The ordinary loader's value is accepted:
+///
+/// ```
+/// use policy::{CheckLimits, PageRef, Rule, ScopeLayer, evaluate_hooks_for_test,
+///              load_rule, register_page};
+///
+/// fn ordinary_reaches_the_evaluator(page: &str, event: &effects::ChangeEvent) {
+///     let registration = register_page(PageRef {
+///         layer: ScopeLayer::Workspace,
+///         page: "rules/notify.md",
+///         bytes: page,
+///     })
+///     .expect("registers")
+///     .expect("is a rule page");
+///     let rule: Rule = load_rule(&registration, page, CheckLimits::default()).expect("loads");
+///     let _ = evaluate_hooks_for_test(&[rule], event);
+/// }
+/// ```
+///
+/// The widened loader's value is not:
+///
+/// ```compile_fail
+/// use policy::{CheckLimits, PageRef, ScopeLayer, evaluate_hooks_for_test,
+///              load_rule_for_corpus, register_page};
+///
+/// fn widened_cannot_reach_the_evaluator(page: &str, event: &effects::ChangeEvent) {
+///     let registration = register_page(PageRef {
+///         layer: ScopeLayer::Workspace,
+///         page: "rules/notify.md",
+///         bytes: page,
+///     })
+///     .expect("registers")
+///     .expect("is a rule page");
+///     let proof = load_rule_for_corpus(&registration, page, CheckLimits::default())
+///         .expect("loads");
+///     let _ = evaluate_hooks_for_test(&[proof], event);
+/// }
+/// ```
+///
+/// # Errors
+/// The same [`RuleLoadError`] surface as [`load_rule`].
+pub fn load_rule_for_corpus(
+    registration: &Registration,
+    bytes: &str,
+    limits: CheckLimits,
+) -> Result<CounterfactualRule, RuleLoadError> {
+    load_rule_with_hook_loader(
+        registration,
+        bytes,
+        limits,
+        crate::hook::load_hook_for_corpus,
+    )
+    .map(|inner| CounterfactualRule { inner })
 }
 
 #[cfg(test)]

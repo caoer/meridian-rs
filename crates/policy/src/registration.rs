@@ -52,7 +52,7 @@
 //! # Where the walk lives
 //! `policy` is the WHEN plane and is I/O-free (docs/laws.md), so this module never
 //! enumerates a directory. The caller's walk offers [`PageRef`]s exactly as the
-//! convention loader takes an injected [`crate::ConventionFiles`]; siting the disk
+//! rule loader takes caller-supplied page BYTES; siting the disk
 //! edge is the cutover card's job.
 
 use std::borrow::Borrow;

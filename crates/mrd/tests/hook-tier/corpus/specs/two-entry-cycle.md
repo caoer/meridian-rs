@@ -9,9 +9,9 @@ pair. A global work cache would retire one lineage's item before the other linea
 descendant reached it, and the run would exit 0 claiming `acyclic` with both edges
 present. Recurrence is per lineage, so both edges AND the cycle must be reported.
 
-```conventions
-../../conventions/cycle-alpha
-../../conventions/cycle-beta
+```rule-pages
+../../rules/cycle-alpha.md
+../../rules/cycle-beta.md
 ```
 
 ```rules

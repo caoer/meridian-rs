@@ -1,6 +1,6 @@
 ---
 corpus_test: raw-md-cannot-bypass-canonical-validation
-convention: ../../conventions/raw-md
+rule: ../../rules/raw-md.md
 corpus: ../tree
 counterfactual: true
 ---

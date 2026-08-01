@@ -1,6 +1,6 @@
 ---
 corpus_test: dead-hook
-convention: ../../conventions/task-status-notify
+rule: ../../rules/task-status-notify.md
 corpus: ../tree
 ---
 

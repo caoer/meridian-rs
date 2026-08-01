@@ -4,10 +4,11 @@
 //! # What check is
 //! `status = freshness, check = validity` (d2 §3). `check` reads a workspace and
 //! answers whether it LIES: is the receipt chain intact, are the claims realised,
-//! and (armed) do the conventions hold — all without writing a byte, minting a
-//! receipt, or spending a cap. Two layers, split by whether a rules pack is armed:
+//! and (armed) do the workspace's own rules hold — all without writing a byte,
+//! minting a receipt, or spending a cap. Two layers, split by whether the
+//! workspace has armed anything:
 //!
-//! - **Layer 0 — convention-free core** ([`layer0`]). Three pack-free reads:
+//! - **Layer 0 — rule-free core** ([`layer0`]). Three pack-free reads:
 //!   1. **the baseline check** — last-receipt-vs-live: the live tree root must
 //!      equal the last receipt's recorded `root_after`. When there is no row, or
 //!      the roots differ, the journal cannot date the tree and the TRACE is grey
@@ -25,10 +26,13 @@
 //!   the tree root and writes no journal row, so it leaves evidence identical to
 //!   the edit that finding was accusing. The interim reports what it can prove.
 //!
-//! - **Layer 1 — armed conventions read-only** ([`layer1`]). Each armed
-//!   convention's `check_change` runs over the change through the U1.3 loader —
-//!   the SAME surface the door mounts (U4.2), so a refusal here is byte-for-byte
-//!   the refusal the door would mint. This layer performs no I/O.
+//! - **Layer 1 — armed rules read-only** ([`layer1`]). Each armed rule's
+//!   `check_change` runs over the change through the page loader — the SAME
+//!   surface the door mounts (U4.2), so a refusal here is byte-for-byte the
+//!   refusal the door would mint. Its input is the law
+//!   [`policy::resolve_armed_law`] already resolved at the write's own path, so
+//!   this layer performs no I/O and cannot be handed an armed set the door would
+//!   not have honoured.
 //!
 //! Session-property integrity is exactly this verb run over a session tree as a
 //! workspace (d2 §3).
@@ -52,9 +56,13 @@ pub use layer0::{
     NO_BASELINE_DETAIL, NO_RECORD_DETAIL, OrphanedBlob, PinPlane, PinRow, claims_realised,
     interval_accounted, journal_page, journal_trace, journal_trace_of, pin_plane, staged_trace,
 };
-pub use layer1::{ArmedConvention, ArmedFault, ArmedFinding, ArmedReport, evaluate};
+// Layer 1 exports no armed-input type and no fault type of its own: the input is
+// `policy::ArmedRule` (sealed to `policy::resolve_armed_law`) and an evaluation
+// fault is `policy::ArmedFault::Unevaluable`, the one armed-law fault vocabulary.
+// See `layer1`'s module doc for why both belong to `policy` and not here.
+pub use layer1::{ArmedFinding, ArmedReport, evaluate};
 
-/// The layer-0 (convention-free core) verdict over a workspace: the journal
+/// The layer-0 (rule-free core) verdict over a workspace: the journal
 /// TRACE (the baseline check, then chain continuity), the claims-realised
 /// findings, and the PIN PLANE. Green ⇔ the journal dated the tree, the chain is
 /// continuous, every claim converged, every pin holds and every pinned blob is
@@ -183,7 +191,7 @@ fn render_pin(pin: &PinRow) -> String {
     }
 }
 
-/// Run the convention-free core (layer 0) over a workspace: recompute the journal
+/// Run the rule-free core (layer 0) over a workspace: recompute the journal
 /// TRACE (the baseline check, then the chain), check every claim realised, and
 /// read the PIN PLANE. Reads the reserved journal page, folds the live tree
 /// merkle, and asks git about the pinned blobs — no write, no cap.
