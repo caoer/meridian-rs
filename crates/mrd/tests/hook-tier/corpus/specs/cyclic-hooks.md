@@ -4,6 +4,11 @@ corpus: ../tree
 counterfactual: true
 ---
 
+Two HOOKs write the same field with opposite constants, so the page's state returns
+to one it already held. This is a counterfactual proof fixture, not a capability
+grant: `md.*` loads here only through the corpus loader, and `SLICE1_CAPS` is
+untouched.
+
 ```conventions
 ../../conventions/cycle-alpha
 ../../conventions/cycle-beta
@@ -15,5 +20,5 @@ cycle-beta
 ```
 
 ```case
-{"name":"enter-alpha","doc":"tasks/card.md","set":{"status":"alpha"},"expect":"cycle-alpha"}
+{"name":"enter-status","doc":"tasks/card.md","set":{"status":"seed"},"expect":["cycle-alpha","cycle-beta"]}
 ```

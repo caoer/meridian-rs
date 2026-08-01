@@ -7,9 +7,19 @@ budget: { steps: 10000, mem: 4194304 }
 how: {}
 ---
 
+# cycle-beta
+
+The other half of the cyclic pair: same trigger, the opposite constant. Between
+them the page's `status` returns to a state it already held, which is what makes the
+recurrence a real cycle rather than an ever-growing chain.
+
 ```starlark
 def on_change(event):
-    for delta in event.changes:
-        if delta.kind == "frontmatter" and delta.key == "status" and delta.new == "beta":
-            set_field(field = "status", value = "alpha")
+    if "status" in event.fields_changed:
+        intent(
+            action = "md.set_field",
+            target = "status",
+            payload = "beta",
+            receipt = receipt_addr(event.file, event.fingerprint_after),
+        )
 ```

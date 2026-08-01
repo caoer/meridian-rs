@@ -66,6 +66,11 @@ pre-arming gate:
   governed tree, **zero dead rules**, fuel/heap p50/p99, and FIX/HOOK quiescence
   by a reachable trigger graph plus bounded counterfactual chaining. This tier
   alone may admit `md.*` counterfactuals; it does not widen the armed caps.
+  A counterfactual descriptor passes the SAME canonical intent validation an armed
+  HOOK's does, and is executed through the production intent→executor adapter and
+  the production atomic batch executor. **The isolation is the corpus, not the
+  code:** every counterfactual generation lands in a throwaway proof workspace, so
+  the governed tree is read-only and the triggering write is never touched.
 - **`--history`** (`mrd test --history <ws> --convention <slug>`, U1.6) —
   reconstruct the workspace's own past, report the exact journal span examined,
   and require zero UNDECLARED refusals against the pinned
