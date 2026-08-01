@@ -587,11 +587,17 @@ fn render_card(selector: &str, detail: &str, now: Option<&str>) -> String {
     )
 }
 
-/// Resolve one apply binding's declared caps through the run plane's own caps
-/// resolution (explicit frontmatter > the root's own `MERIDIAN.md`
+/// Resolve one apply binding's declared caps through the run plane's own
+/// authority resolution (explicit frontmatter > the root's own `MERIDIAN.md`
 /// `run.caps.<pattern>` convention > deny) — the same resolution `runner::run`
 /// applies, read here for the union and the dry-run blast radius without
 /// running the block.
+///
+/// A BASH binding contributes [`CapSet::none()`]: it declares no capability,
+/// because capabilities do not apply to it (`docs/laws.md` § Amendment). That
+/// is the honest fold for a union OF DECLARED CAPS — and it is not a claim
+/// that the binding is bounded. `caps_union` under-describes a bash claim by
+/// construction; naming a shell's reach is a question this fold cannot answer.
 fn resolve_binding_caps(
     root: &fs::WorkspaceRoot,
     declaring_root: Option<&Path>,
@@ -606,17 +612,14 @@ fn resolve_binding_caps(
         run::address::load_page(root, Path::new(&binding.page)).map_err(|e| err(e.to_string()))?;
     let task =
         run::address::resolve_task(&doc, Some(&binding.task)).map_err(|e| err(e.to_string()))?;
-    let explicit = run::caps::explicit_caps(&doc, &binding.task).map_err(|e| err(e.to_string()))?;
     let (conventions, _source) =
         run::caps::load_conventions(declaring_root).map_err(|e| err(e.to_string()))?;
-    let resolution = run::caps::resolve_caps(
-        &binding.task,
-        task.block.lang,
-        explicit.as_ref(),
-        &conventions,
-    )
-    .map_err(|e| err(e.to_string()))?;
-    Ok(resolution.effective)
+    let authority =
+        run::caps::resolve_authority(&doc, &binding.task, task.block.lang, &conventions)
+            .map_err(|e| err(e.to_string()))?;
+    Ok(authority
+        .capabilities()
+        .map_or_else(CapSet::none, |resolution| resolution.effective.clone()))
 }
 
 /// The union of two cap sets — the widening the realise verb performs over its

@@ -205,26 +205,31 @@ fn the_depth_cap_suppresses_md_and_names_the_stop() {
     assert_eq!(gen2.unexecuted.len(), 1);
 }
 
+/// **Rewritten from `a_bash_block_runs_end_to_end_and_labels_detected_off_the_verdict`**,
+/// which asserted the OLD contract: `GuaranteeClass::Detected` as a bash
+/// block's class, evidence-derived off the bracket verdict. Under
+/// `docs/laws.md` § Amendment a bash task has no guarantee to derive — the
+/// window closes and anything outliving it writes unobserved — so the label is
+/// `unsandboxed` and the bracket verdict is asserted below as what it is: an
+/// observation about the window, still rendered, no longer a class.
 #[test]
-fn a_bash_block_runs_end_to_end_and_labels_detected_off_the_verdict() {
-    // #23 ACTIVE: both gate conditions are landed (U6b bracket wired through
-    // dispatch_bash; U9 renders narrowed[]) — a bash block now runs through
-    // the runner and its `detected` label is evidence-derived off the
-    // rendered bracket verdict.
+fn a_bash_block_runs_end_to_end_and_labels_unsandboxed() {
     let (_tmp, root) = workspace(BASH_PAGE);
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     let report = runner::run(&root, &spec_for(&scratch, vec![]), &[], &mut live).unwrap();
 
-    assert_eq!(report.guarantee, GuaranteeClass::Detected);
+    assert_eq!(report.guarantee, GuaranteeClass::Unsandboxed);
+    // The law is scoped, not a deletion: the bash path names no capability.
+    assert_eq!(report.authority, run::caps::Authority::Unsandboxed);
     let TaskOutcome::Bash(out) = &report.outcome else {
         panic!("bash outcome expected");
     };
     assert!(out.status.success());
     assert!(
         out.detection.is_clean(),
-        "the verdict behind the label: {:?}",
+        "the bracket still renders its verdict: {:?}",
         out.detection
     );
     let Phase2::Applied { effects, applied } = &out.phase2 else {
@@ -279,6 +284,10 @@ fn the_caps_resolution_reaches_the_report() {
     )
     .unwrap();
 
-    assert!(report.caps.effective.admits("md.set_field", Some("status")));
-    assert!(report.caps.narrowed.is_empty());
+    let caps = report
+        .authority
+        .capabilities()
+        .expect("starlark resolves a real capability grant");
+    assert!(caps.effective.admits("md.set_field", Some("status")));
+    assert!(caps.narrowed.is_empty());
 }

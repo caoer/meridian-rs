@@ -1,7 +1,7 @@
 //! Fence-language detection — the dispatch axis (verdict ruling 1, plan
 //! decision #13). A task block is a fenced code block whose info string names
 //! one of exactly two languages: `starlark` (hermetic kernel eval) or `bash`
-//! (exec, detected class). Anything else refuses loudly at load — there is no
+//! (exec, unsandboxed). Anything else refuses loudly at load — there is no
 //! third language and no silent fallback.
 
 use model::{ByteSpan, Document, NodeKind};
@@ -33,7 +33,7 @@ impl TaskLanguage {
     pub fn guarantee_class(self) -> GuaranteeClass {
         match self {
             TaskLanguage::Starlark => GuaranteeClass::Hermetic,
-            TaskLanguage::Bash => GuaranteeClass::Detected,
+            TaskLanguage::Bash => GuaranteeClass::Unsandboxed,
         }
     }
 }
@@ -44,10 +44,16 @@ pub enum GuaranteeClass {
     /// Proof by construction: the sealed Starlark kernel — zero I/O, closed
     /// builtins, metered.
     Hermetic,
-    /// Detection, not prevention: bash under root-snapshot enforcement —
-    /// ungoverned writes are DETECTED and named, not blocked (until the
-    /// OS-sandbox unit U11 upgrades this class).
+    /// Detection, not prevention: what the exec-window bracket ITSELF provides
+    /// — an ungoverned write inside the window is named, never blocked. The
+    /// subject is the bracket ([`crate::snapshot::ExecBracket`]), not a task:
+    /// the window closes and a `nohup`, launchd plist or cron line writes with
+    /// no observer, so this is never a task's class.
     Detected,
+    /// No guarantee: a bash task is an unsandboxed shell with undeclared
+    /// effects (`docs/laws.md` § Amendment — capabilities do not apply to
+    /// bash). The engine states what it observed, never what the block may do.
+    Unsandboxed,
 }
 
 impl GuaranteeClass {
@@ -57,6 +63,7 @@ impl GuaranteeClass {
         match self {
             GuaranteeClass::Hermetic => "hermetic",
             GuaranteeClass::Detected => "detected",
+            GuaranteeClass::Unsandboxed => "unsandboxed",
         }
     }
 }

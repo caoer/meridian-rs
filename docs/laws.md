@@ -84,7 +84,7 @@ which laws it carries. In one line each:
 | `render` | The compiled-in render plane: `Renderer` trait + node-grain walker producing the `readText` text projection, with the block-elision and claim-link decoration hooks. Decorations arrive as DATA — a `decorations` map on the render header, keyed by the link addresses the body literally contains — so the caller resolves and this crate never grows a `render → lock → fingerprint` edge; an empty map is byte-identity with the undecorated render |
 | `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` block-language namespace predicate |
 | `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |
-| `run` | The mrd-local run plane: plan/execute under the workspace run lock |
+| `run` | The mrd-local run plane: plan/execute under the workspace run lock. Owns `Authority`, the two-variant type the executor's choke point validates against — capabilities are real for starlark and do not exist for bash, structurally, see § Amendment |
 | `realise` | The realise engine: observe → check → apply per claim, on the run plane |
 | `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file. Also the lock-aware read face — it reads `meridian-lock` `pins:` as a third pin form beside the legacy `^inputs` forms, and renders each pin's color through `model::selector`'s ONE computer, so the walk listing and the SQL board cannot answer the same question two ways. It renders the color; it never computes a second one |
 | `check` | The check engine: the pure READ verb of the reconciliation loop |
@@ -130,3 +130,64 @@ writes) renders grey, never green. The gate governs only the armed change plane:
 out-of-band mutation (an offline pre-push git rewrite, a root-preserving forged
 journal row) is caught by the git witness plus the receipt-engine-only write
 restriction, or it is a named residual — it is never rendered green by refusal.
+
+## Amendment — capabilities do not apply to bash
+
+Law: ZT ruling, made verbally, re-litigated in code, and ruled again live
+2026-08-01. **Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`** — that file is
+what makes this hold, and this section is what it enforces. A reader who
+proposes "just a small cap check on bash" must answer both.
+
+> **Capabilities do not apply to `bash` tasks. Not now, not later, not in a
+> weaker form.**
+>
+> 1. A bash task carries **no `caps:` line**, no cap resolution, no cap source,
+>    and no `deny-default`.
+> 2. The engine **never prints a claim about what a bash task may do** — most of
+>    all not `(read-only)`.
+> 3. Bash is **unsandboxed by definition.** The only honest description on any
+>    surface is: *unsandboxed shell, undeclared effects.*
+> 4. Capabilities remain a real, enforceable contract for **starlark**, and only
+>    starlark.
+
+**The guarantee is impossible, not merely difficult.** A capability claim is a
+promise about what a process CANNOT do, and for bash the engine holds no
+mechanism that makes one:
+
+| layer | what exists | why it does not bound the process |
+|---|---|---|
+| in-window writes | the `out-of-band delta` detector | **detects, never prevents** — `docs/run-plane.md` scopes it so, and the offending file persists |
+| after the window | nothing | the detector's own wording is *"during exec window"*; a `nohup`, launchd plist, cron line or daemon writes with no observer |
+| outside the corpus | nothing | cwd isolation and env scrubbing do not restrict network, credentials, SSH, or `rm -rf` — none of it is an "effect" |
+
+A guard escapable by `nohup` is not a guard, so **no honest value exists for a
+bash `caps:` field — including `none`, including `(read-only)`.** What the
+resolution ladder bought on that path was complexity with no guarantee behind
+it, plus misleading-by-adjacency: `caps:` is TRUE on the starlark row above and
+importing its enforcement model onto the row below asserted, in the engine's own
+voice, a conclusion the engine cannot support.
+
+**Structural, not cosmetic.** `run::caps::Authority` has two variants —
+`Capabilities(CapResolution)` and `Unsandboxed` — and it is what the executor's
+choke point validates against. The bash dispatcher holds no capability field at
+all (`dispatch_bash::BASH_AUTHORITY`), so it cannot name, narrow, or
+half-enforce one; `resolve_authority` is the only language-aware entry and does
+not even READ a bash task's `task.<name>.caps` declaration, because validating a
+value that governs nothing teaches that it might. Deleting the printing while
+leaving resolution running underneath fails the gate's second half by
+construction.
+
+**What this does NOT weaken.** Starlark keeps the whole contract: hermetic
+evaluator, closed builtin surface, no `exec`/`os`/`subprocess`, every effect a
+descriptor the applier gates. Both refusal shapes are asserted in the same gate
+file, so the bash half cannot be bought by weakening the starlark half:
+`md.*` without its cap → `capability denied`, exit 1; `proto.*` without its cap
+→ `state: unexecuted-no-capability`, exit 0. The `check-*` / `verify-*` bash
+fence refusal also survives — that is a NAME law, not a capability.
+
+**Behaviour changed, not just wording.** Bash reaches the tree through the
+effect-shim fd and those descriptors were gated at the choke point, so an
+undeclared bash block used to exit 1 with `capability denied` and now applies.
+That gate never bounded the block: a denied block writes with `sed -i` instead,
+where the bracket at most detects the change and never rolls it back. It only
+pushed the write off the attested path.

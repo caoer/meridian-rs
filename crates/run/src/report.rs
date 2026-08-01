@@ -14,25 +14,31 @@
 //!   depth cap the kernel drops the capped md.* WHOLESALE; the report states
 //!   the fact once (`cap_reached`), never a per-descriptor suppression list.
 //! - **`narrowed[]` is rendered (#23 sharpened gate, condition b):** the caps
-//!   a ceiling tightened away are surfaced so a `detected` guarantee can be
-//!   stated — a run's effective authority is always visible next to what a
-//!   convention removed.
+//!   a ceiling tightened away are surfaced — a run's effective authority is
+//!   always visible next to what a convention removed.
+//! - **No capability claim on a bash surface** (`docs/laws.md` § Amendment —
+//!   capabilities do not apply to bash; gate
+//!   `crates/mrd/tests/law_no_caps_on_bash.rs`). An unsandboxed run renders no
+//!   `caps` key at all — not `null`, not `[]`, which would still be answers —
+//!   and says `effects: undeclared` instead. The [`Report`] cannot carry a
+//!   half-answer: its `caps` is `Option<CapsReport>` sourced from
+//!   [`Authority::capabilities`], which is `None` for a shell.
 //! - **`--json` is ONE object** (the whole report), and the human text is the
 //!   same facts — the two never diverge in content.
 //!
-//! The guarantee class is evidence-derived: `hermetic` for starlark by
-//! construction, `detected` for a bash block whose exec-window bracket verified
-//! (a bash block refused before the run never reaches here). The renderer
-//! handles every [`TaskOutcome`] and report-state shape — including the bash
-//! `partial`/`interrupted` matrix and the [`crate::snapshot::Detection`]
-//! out-of-band-delta line — so activating the `detected` label is a change
-//! confined to the labeler, never the report.
+//! The guarantee class is `hermetic` for starlark by construction and
+//! `unsandboxed` for bash — the engine claims nothing it cannot keep. What the
+//! exec-window bracket DID observe still renders, on its own
+//! [`crate::snapshot::Detection`] out-of-band-delta line, where it is an
+//! observation rather than a class. The renderer handles every
+//! [`TaskOutcome`] and report-state shape, including the bash
+//! `partial`/`interrupted` matrix.
 
 use serde::Serialize;
 
 use effects::{Domain, Effect};
 
-use crate::caps::{CapResolution, CapSource};
+use crate::caps::{Authority, CapResolution, CapSource};
 use crate::dispatch_bash::Phase2;
 use crate::exec::ExecStatus;
 use crate::record::StdoutRecord;
@@ -148,8 +154,15 @@ pub struct Report {
     /// `daemon.*`/`proto.*` effects with no local executor — surfaced,
     /// never run (`unexecuted-no-capability`).
     pub unexecuted: Vec<EffectLine>,
-    /// The capability partition (effective + source + narrowed).
-    pub caps: CapsReport,
+    /// The capability partition (effective + source + narrowed) — ABSENT for
+    /// an unsandboxed bash run, where `null` or `[]` would still be an answer
+    /// to a question the engine cannot answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caps: Option<CapsReport>,
+    /// Bash only: `undeclared`. The block's effects are whatever the shell
+    /// did, and the engine describes rather than claims.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effects: Option<String>,
     /// The cascade reached the depth cap (the generic cap-reached fact).
     pub cap_reached: bool,
     /// The exec-window out-of-band delta line (S1 hermetic: no exec window).
@@ -224,7 +237,11 @@ pub fn render(report: &RunReport) -> Report {
         state: classify(report, &applied, &unexecuted),
         applied,
         unexecuted,
-        caps: CapsReport::of(&report.caps),
+        caps: report.authority.capabilities().map(CapsReport::of),
+        effects: match report.authority {
+            Authority::Capabilities(_) => None,
+            Authority::Unsandboxed => Some(crate::caps::UNDECLARED_EFFECTS.to_owned()),
+        },
         cap_reached: report.cap_reached,
         out_of_band_delta: out_of_band_delta(report),
         exec: ExecReport::of(&report.outcome),
@@ -263,18 +280,23 @@ impl Report {
                 let _ = writeln!(s, "  - {} [{}]", e.kind, e.domain);
             }
         }
-        let _ = writeln!(
-            s,
-            "caps: {} (source: {})",
-            if self.caps.effective.is_empty() {
-                "none (read-only)".to_owned()
-            } else {
-                self.caps.effective.join(", ")
-            },
-            self.caps.source
-        );
-        if !self.caps.narrowed.is_empty() {
-            let _ = writeln!(s, "narrowed by ceiling: {}", self.caps.narrowed.join(", "));
+        if let Some(caps) = &self.caps {
+            let _ = writeln!(
+                s,
+                "caps: {} (source: {})",
+                if caps.effective.is_empty() {
+                    "none (read-only)".to_owned()
+                } else {
+                    caps.effective.join(", ")
+                },
+                caps.source
+            );
+            if !caps.narrowed.is_empty() {
+                let _ = writeln!(s, "narrowed by ceiling: {}", caps.narrowed.join(", "));
+            }
+        }
+        if let Some(effects) = &self.effects {
+            let _ = writeln!(s, "effects: {effects} (unsandboxed shell)");
         }
         if self.cap_reached {
             let _ = writeln!(

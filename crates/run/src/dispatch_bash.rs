@@ -41,9 +41,10 @@
 //! # Detection (U6b) and what stays elsewhere
 //! The exec-window bracket IS wired here: [`crate::snapshot::ExecBracket`]
 //! opens against the computed `root_after_phase1` and closes after the
-//! group kill; phase 2 gates on [`Detection::is_clean`]. The guarantee-class
-//! LABEL stays the U7 labeler's (#23 — it consumes
-//! [`BashOutcome::detection`] as the type-level evidence).
+//! group kill; phase 2 gates on [`Detection::is_clean`]. The verdict rides
+//! [`BashOutcome::detection`] to the report's out-of-band-delta line — an
+//! observation about the window, never a claim about the block: the window
+//! closes, and a `nohup` or launchd plist writes after it with no observer.
 //!
 //! The verdict is rendered on every OUTCOME path, not every error path: a
 //! [`BashError`] (spawn failure included) aborts before phase 2 with the
@@ -58,12 +59,22 @@ use std::time::Duration;
 use effects::Effect;
 use model::MerkleRoot;
 
-use crate::caps::CapSet;
+use crate::caps::Authority;
 use crate::exec::{self, ExecSpec, ExecStatus};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr, WorkspaceLock};
 use crate::record::{self, RecordError, RunLog, StdoutRecord};
 use crate::shim::{self, ShimError, ShimStream};
 use crate::snapshot::{Detection, ExecBracket, OpenRefusal};
+
+/// The authority every apply on this path rides: bash is an unsandboxed shell
+/// with undeclared effects (`docs/laws.md` § Amendment — capabilities do not
+/// apply to bash; gate `crates/mrd/tests/law_no_caps_on_bash.rs`).
+///
+/// It lives here, as one constant, rather than on [`BashDispatch`] as a field.
+/// That is the law made structural: the bash dispatcher holds no capability
+/// input, so no caller can hand it one and no future edit can narrow it
+/// without deleting this line and answering for it.
+const BASH_AUTHORITY: Authority = Authority::Unsandboxed;
 
 /// One bash block dispatch: the addressed block's facts plus the
 /// caller-supplied identity (§9 — nothing here mints or reads a clock).
@@ -87,8 +98,6 @@ pub struct BashDispatch<'a> {
     pub invocation_id: &'a str,
     /// Caller-supplied time fact.
     pub now: Option<&'a str>,
-    /// The block's resolved effective caps (the executor's choke input).
-    pub caps: &'a CapSet,
     /// Phase-1 pre-exec receipt address (S2: the orphan-lint anchor —
     /// records the invocation and the root phase 1 committed against).
     pub pre_receipt: Option<ReceiptAddr>,
@@ -285,7 +294,7 @@ pub fn run(
                         invocation_id: d.invocation_id,
                         now: d.now,
                         effects: &[],
-                        caps: d.caps,
+                        authority: &BASH_AUTHORITY,
                         pin_root: &root0,
                         live_root: &root0,
                         receipt: Some(addr.clone()),
@@ -469,7 +478,7 @@ fn completion_receipt(
             invocation_id: d.invocation_id,
             now: d.now,
             effects: &[],
-            caps: d.caps,
+            authority: &BASH_AUTHORITY,
             pin_root: root_after_phase1,
             live_root: root_after_phase1,
             receipt: d.receipt.clone(),
@@ -506,7 +515,7 @@ fn apply_phase2(
             invocation_id: d.invocation_id,
             now: d.now,
             effects: &effects,
-            caps: d.caps,
+            authority: &BASH_AUTHORITY,
             pin_root: root_after_phase1,
             live_root: root_after_phase1,
             receipt: d.receipt.clone(),
