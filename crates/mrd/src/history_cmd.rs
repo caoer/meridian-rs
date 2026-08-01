@@ -28,16 +28,26 @@
 //!   RENDERED but NEVER run — the tier refuses to guess a change it cannot
 //!   reconstruct.
 //!
-//! # The golden list (rulings § test --history — the golden-list mechanism)
-//! The golden list is a pinned page BESIDE the rule it excepts: the rule page's
-//! `.golden.md` sibling (`rules/close-verdict.md` → `rules/close-verdict.golden.md`).
-//! The folder that used to hold it died with the convention loader, and the
-//! exceptions to a law belong next to the law rather than in a directory named
-//! after a filename that is no longer an identity. Each row declares one
-//! would-refuse item by its journal anchor plus a reason. Triage = editing that page through the
-//! ordinary write door; exceptions are declared, never erased. `test --history`
-//! FAILS (exit 1) on any would-refuse item ABSENT from the pinned list; a declared
-//! item passes with its reason rendered.
+//! # The golden list (D2a — a fenced block of a spec page that names the rule)
+//! The golden list lives in a fenced `golden` block of a SPEC page, which is the
+//! corpus tier's D2 fixture shape. That page is NAMED with `--spec`; it is never
+//! derived from the rule's own path. The spec declares which rule it excepts
+//! through a `rule:` frontmatter reference resolved relative to the spec's own
+//! directory — the corpus tier's structural confinement, preserved — and a
+//! reference that does not resolve to the calibrated page is a malformed spec
+//! (exit 2). The join is checked, never assumed.
+//!
+//! There is no filename axis. A `<page>.golden.md` sibling would carry a
+//! semantic relationship in a filename suffix and make reading it a heuristic
+//! search near the page, which the corpus-tier ruling forbids verbatim. A spec
+//! page carries no registration tag, so it registers nothing by construction
+//! (§1 is tag-opt-in) and no exclusion rule is owed for it.
+//!
+//! Each row declares one would-refuse item by its journal anchor plus a reason.
+//! Triage = editing that page through the ordinary write door; exceptions are
+//! declared, never erased. `test --history` FAILS (exit 1) on any would-refuse
+//! item ABSENT from the list; a declared item passes with its reason rendered.
+//! No `--spec` at all means nothing is declared yet — the empty list.
 //!
 //! # Output + exit codes (§4 preamble law, `docs/status.md`)
 //! JSON under `--json`, a human table otherwise. Exit 0 (every would-refuse item
@@ -57,21 +67,22 @@ use policy::{
 };
 use serde_json::{Value, json};
 
-use crate::test_cmd::confine;
+use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
 use crate::{Fail, Format, current_dir};
 
-/// The suffix the golden list is named with, replacing the rule page's own `.md`.
-/// One rule, one list, sitting where the rule sits.
-const GOLDEN_SUFFIX: &str = ".golden.md";
+/// The fence a spec page keeps its golden list in (D2a).
+const GOLDEN_FENCE: &str = "golden";
 
-/// Run `mrd test --history WORKSPACE --rule PAGE [--json]`.
+/// Run `mrd test --history WORKSPACE --rule PAGE [--spec PAGE] [--json]`.
 ///
 /// # Errors
-/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / journal, a
-/// git failure, or a faulting CHECK) or exit 1 (an undeclared would-refuse item).
+/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / journal /
+/// spec page, a spec whose `rule:` names another page, a git failure, or a
+/// faulting CHECK) or exit 1 (an undeclared would-refuse item).
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut workspace: Option<String> = None;
     let mut rule: Option<String> = None;
+    let mut spec: Option<String> = None;
     let mut json = false;
     let mut i = 0;
     while i < args.len() {
@@ -84,6 +95,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
                     args.get(i)
                         .cloned()
                         .ok_or_else(|| Fail::tool("--rule needs a PAGE path".to_owned()))?,
+                );
+            }
+            "--spec" => {
+                i += 1;
+                spec = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| Fail::tool("--spec needs a PAGE path".to_owned()))?,
                 );
             }
             flag if flag.starts_with('-') => {
@@ -99,7 +118,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let rule = rule.ok_or_else(|| Fail::tool("test --history needs --rule PAGE".to_owned()))?;
     let format = if json { Format::Json } else { Format::Human };
 
-    let report = run_history(Path::new(&workspace), &rule)?;
+    let report = run_history(Path::new(&workspace), &rule, spec.as_deref())?;
     match format {
         Format::Json => println!("{}", report.to_json()),
         Format::Human => print!("{}", report.to_human()),
@@ -113,16 +132,22 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     if report.undeclared > 0 {
         return Err(Fail::findings(format!(
-            "{} would-refuse item(s) undeclared in the `{GOLDEN_SUFFIX}` list",
-            report.undeclared
+            "{} would-refuse item(s) undeclared in the `{GOLDEN_FENCE}` list of {}",
+            report.undeclared,
+            report.golden_source(),
         )));
     }
     Ok(())
 }
 
-/// Load the rule page, read the golden list, parse the journal, JOIN each row
-/// against git, run the CHECK, and fold the outcomes into a report.
-fn run_history(workspace_arg: &Path, page: &str) -> Result<HistoryReport, Fail> {
+/// Load the rule page, read the golden list from the named spec, parse the
+/// journal, JOIN each row against git, run the CHECK, and fold the outcomes into
+/// a report.
+fn run_history(
+    workspace_arg: &Path,
+    page: &str,
+    spec: Option<&str>,
+) -> Result<HistoryReport, Fail> {
     let workspace = resolve_workspace(workspace_arg)?;
 
     // 1. Load the rule from its in-tree PAGE, through the registration + load pair
@@ -153,8 +178,9 @@ fn run_history(workspace_arg: &Path, page: &str) -> Result<HistoryReport, Fail> 
     let rule = load_rule(&registration, &bytes, CheckLimits::default())
         .map_err(|e| Fail::tool(format!("cannot load rule page `{page}`: {e}")))?;
 
-    // 2. The golden list of declared exceptions (absent ⇒ nothing declared yet).
-    let golden = load_golden(&workspace, page)?;
+    // 2. The golden list of declared exceptions, from the spec page that names
+    //    this rule (no `--spec` ⇒ nothing declared yet).
+    let golden = load_golden(&workspace, spec, page)?;
 
     // 3. The receipt journal — the append-only ledger of guarded writes.
     let journal_rel = fs::domain::RESERVED_JOURNAL_PATH;
@@ -178,6 +204,7 @@ fn run_history(workspace_arg: &Path, page: &str) -> Result<HistoryReport, Fail> 
 
     let mut report = HistoryReport::assemble(&id, page, &rows, results);
     report.archived = archived_boundary(&workspace, &rows);
+    report.golden_spec = spec.map(str::to_owned);
     Ok(report)
 }
 
@@ -449,43 +476,115 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<std::process::Output, Fail
 
 // ── the golden list ──────────────────────────────────────────────────────────
 
-/// The golden list's path for a rule page: its `.golden.md` sibling.
+/// Resolve a spec's `rule:` reference against the spec's own directory, the way
+/// a corpus spec resolves its rule page (D1 — the structural confinement is a
+/// feature, so a spec can only name what its own directory can reach).
 ///
-/// A page path is required to end in `.md` only by convention, so a page that
-/// does not simply gets the suffix appended — that still lands one list beside
-/// one rule, which is the whole law here.
-fn golden_path_for(page: &str) -> String {
-    match page.strip_suffix(".md") {
-        Some(stem) => format!("{stem}{GOLDEN_SUFFIX}"),
-        None => format!("{page}{GOLDEN_SUFFIX}"),
-    }
-}
-
-/// Read + parse the rule page's `.golden.md` sibling into an `anchor → reason`
-/// map. An absent file is the empty map (nothing declared yet).
+/// The result is workspace-relative and lexically normalized: `.` segments drop,
+/// `..` pops. A reference that pops past the workspace root escapes the mount and
+/// is refused rather than clamped — a spec that reaches outside the workspace is
+/// naming a page this tier cannot calibrate.
 ///
 /// # Errors
-/// The file exists but a declared exception row carries no reason — every
-/// exception must carry a declared reason (rulings § the golden-list mechanism).
-fn load_golden(workspace: &Path, page: &str) -> Result<BTreeMap<String, String>, Fail> {
-    let rel = golden_path_for(page);
-    let text = match std::fs::read_to_string(workspace.join(&rel)) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(e) => {
-            return Err(Fail::tool(format!("cannot read {rel}: {e}")));
+/// The reference escapes the workspace root, or resolves to nothing.
+fn resolve_page_ref(spec_rel: &str, spelled: &str) -> Result<String, String> {
+    let mut segs: Vec<&str> = spec_rel.split('/').collect();
+    segs.pop(); // the spec's own filename — references resolve from its DIRECTORY
+    for seg in spelled.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                if segs.pop().is_none() {
+                    return Err(format!(
+                        "`rule: {spelled}` escapes the workspace root from spec `{spec_rel}`"
+                    ));
+                }
+            }
+            other => segs.push(other),
         }
+    }
+    if segs.is_empty() {
+        return Err(format!(
+            "`rule: {spelled}` from spec `{spec_rel}` resolves to no page"
+        ));
+    }
+    Ok(segs.join("/"))
+}
+
+/// Read the spec page named by `--spec` and parse its `golden` fence into an
+/// `anchor → reason` map. No spec at all is the empty map (nothing declared yet).
+///
+/// The spec must name the calibrated rule through its `rule:` frontmatter
+/// reference. That check is the whole point of the D2a shape: the relationship is
+/// DECLARED in the page, not inferred from where the page sits, so a spec pointed
+/// at the wrong rule fails loudly instead of silently excusing another law's
+/// findings.
+///
+/// # Errors
+/// The spec path escapes the mount, is unreadable, declares no `rule:`, names a
+/// page other than the one under calibration, or carries an exception row with no
+/// declared reason.
+fn load_golden(
+    workspace: &Path,
+    spec: Option<&str>,
+    page: &str,
+) -> Result<BTreeMap<String, String>, Fail> {
+    let Some(spec) = spec else {
+        return Ok(BTreeMap::new());
     };
+    let rel = confine(spec)
+        .map_err(|message| Fail::tool(format!("--spec {spec:?}: {message}")))?
+        .to_string_lossy()
+        .into_owned();
+    let text = std::fs::read_to_string(workspace.join(&rel)).map_err(|e| {
+        Fail::tool(format!(
+            "no readable golden spec at {rel} under {}: {e}",
+            workspace.display()
+        ))
+    })?;
+
+    // The declared join: the spec says which rule it excepts, and it must be this
+    // one. An absent `rule:` is as malformed as a wrong one — an unattributed
+    // golden list excuses findings for a law it never named.
+    let spelled = parse_frontmatter(&text)
+        .get("rule")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .ok_or_else(|| {
+            Fail::tool(format!(
+                "golden spec `{rel}` declares no `rule:` — a golden list names the rule it \
+                 excepts"
+            ))
+        })?;
+    let referenced = resolve_page_ref(&rel, &spelled)
+        .map_err(|message| Fail::tool(format!("golden spec `{rel}`: {message}")))?;
+    if referenced != page {
+        return Err(Fail::tool(format!(
+            "golden spec `{rel}` declares `rule: {spelled}` (→ `{referenced}`), but this run \
+             calibrates `{page}` — a golden list excepts the rule it names"
+        )));
+    }
+
     parse_golden(&text).map_err(Fail::tool)
 }
 
-/// Parse a golden page into `anchor → reason`. An exception row is a list item
-/// (`- `) carrying an `item=<anchor>` token; every other line (prose, headings,
-/// frontmatter) is skipped. A row with an `item=` but no `reason="…"` is a
-/// malformed golden list — a declared exception must state why.
+/// Parse a spec page's `golden` fence into `anchor → reason`. An exception row is
+/// a list item (`- `) carrying an `item=<anchor>` token; every other line (prose,
+/// headings) is skipped. A row with an `item=` but no `reason="…"` is a malformed
+/// golden list — a declared exception must state why.
+///
+/// Only the fence is read. A row in the page body outside it is prose, not a
+/// declaration: the ruled home is the fenced block, so an operator who writes an
+/// exception in the wrong place gets an undeclared finding, never a silent excuse.
 fn parse_golden(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut map = BTreeMap::new();
-    for raw in text.lines() {
+    let fenced = scan_blocks(text)
+        .into_iter()
+        .filter(|(info, _)| info.split_whitespace().next() == Some(GOLDEN_FENCE))
+        .map(|(_, body)| body)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for raw in fenced.lines() {
         let line = raw.trim();
         let Some(body) = line.strip_prefix("- ") else {
             continue;
@@ -542,9 +641,24 @@ struct HistoryReport {
     /// journal opens with a genesis row. `None` means no reset has happened —
     /// never "the archive is empty".
     archived: Option<(String, usize)>,
+    /// The spec page the golden list was read from, or `None` when the run
+    /// declared no `--spec`. Reported rather than derived: a reader who has to go
+    /// declare an exception needs the page the run actually read.
+    golden_spec: Option<String>,
 }
 
 impl HistoryReport {
+    /// How the report names where an exception would be declared. Without a
+    /// `--spec` there is no page to name, and saying so is the honest report: the
+    /// operator's next move is to write the spec, not to edit a file we invented
+    /// a path for.
+    fn golden_source(&self) -> String {
+        match &self.golden_spec {
+            Some(spec) => format!("golden spec `{spec}`"),
+            None => "no golden spec (`--spec` was not given)".to_owned(),
+        }
+    }
+
     fn assemble(
         id: &str,
         page: &str,
@@ -572,6 +686,8 @@ impl HistoryReport {
             // Filled by the caller, which holds the workspace path the archive
             // is read from (this fold is path-free by construction).
             archived: None,
+            // Filled by the caller, which holds the invocation's `--spec`.
+            golden_spec: None,
         };
         for r in &report.rows {
             // The verdict drives the pass/declared/undeclared/error tallies; grey is
@@ -670,10 +786,11 @@ impl HistoryReport {
                     let _ = writeln!(
                         s,
                         "- **UNDECLARED would-refuse** `{anchor}` ({path}): {message} — absent \
-                         from {golden}; declare it with a reason, or fix the history",
+                         from the `{GOLDEN_FENCE}` fence of {golden}; declare it with a reason, \
+                         or fix the history",
                         anchor = r.anchor,
                         path = r.path,
-                        golden = golden_path_for(&self.page),
+                        golden = self.golden_source(),
                     );
                 }
                 Verdict::Error { detail } => {
@@ -733,6 +850,10 @@ impl HistoryReport {
         let value = json!({
             "rule": self.id,
             "rule_page": self.page,
+            // The spec the golden list came from — `null` when the run declared
+            // no `--spec`, so a consumer reads "nothing declared" as the absence
+            // of a list rather than as an empty one.
+            "golden_spec": self.golden_spec,
             "journal_span": span,
             // The genesis boundary (G2) — absent when no reset has happened,
             // never an empty object, so a consumer cannot read "no archive" as
@@ -778,7 +899,7 @@ mod tests {
     fn parse_golden_reads_item_and_reason() {
         let page = "\
 ---
-rule: rules/reviewer-not-owner.md
+rule: ../rules/reviewer-not-owner.md
 ---
 
 # Golden list
@@ -786,8 +907,10 @@ rule: rules/reviewer-not-owner.md
 Prose bullets without item= are skipped:
 - just a note, not an exception
 
+```golden
 - item=r-000002 reason=\"legacy self-close predates the rule\"
 - item=r-000007 reason=\"migration batch, reviewer signed off out of band\"
+```
 ";
         let map = parse_golden(page).unwrap();
         assert_eq!(map.len(), 2);
@@ -803,28 +926,67 @@ Prose bullets without item= are skipped:
 
     #[test]
     fn parse_golden_rejects_an_exception_with_no_reason() {
-        let page = "- item=r-000002 no reason here\n";
+        let page = "```golden\n- item=r-000002 no reason here\n```\n";
         let err = parse_golden(page).unwrap_err();
         assert!(err.contains("r-000002"), "names the item: {err}");
         assert!(err.contains("reason"), "names the missing reason: {err}");
     }
 
-    /// The golden list sits BESIDE its rule page — one list, one law, no folder.
+    /// The fence is the home (D2a). A row written in the page BODY is prose, and
+    /// prose does not excuse a finding — otherwise the ruled home would be
+    /// decorative and an exception could be declared anywhere on the page.
     #[test]
-    fn the_golden_list_is_the_rule_pages_sibling() {
+    fn a_row_outside_the_golden_fence_declares_nothing() {
+        let page = "\
+---
+rule: ../rules/reviewer-not-owner.md
+---
+
+- item=r-000002 reason=\"written in the body, not the fence\"
+
+```golden
+- item=r-000007 reason=\"the declared one\"
+```
+";
+        let map = parse_golden(page).unwrap();
+        assert_eq!(map.len(), 1, "only the fenced row declares: {map:?}");
+        assert!(map.contains_key("r-000007"));
+        assert!(
+            !map.contains_key("r-000002"),
+            "a body row is prose, not a declaration"
+        );
+    }
+
+    /// A spec's `rule:` resolves from the SPEC's directory, never the workspace
+    /// root — the corpus tier's structural confinement (D1), preserved.
+    #[test]
+    fn a_spec_reference_resolves_from_the_spec_directory() {
         assert_eq!(
-            golden_path_for("rules/reviewer-not-owner.md"),
-            "rules/reviewer-not-owner.golden.md"
+            resolve_page_ref(
+                "specs/reviewer-not-owner.md",
+                "../rules/reviewer-not-owner.md"
+            )
+            .unwrap(),
+            "rules/reviewer-not-owner.md"
         );
         assert_eq!(
-            golden_path_for("teams/a/rules/close.md"),
-            "teams/a/rules/close.golden.md"
+            resolve_page_ref("teams/a/specs/close.md", "../rules/close.md").unwrap(),
+            "teams/a/rules/close.md",
+            "the reference stays inside the team's own subtree"
         );
         assert_eq!(
-            golden_path_for("rules/no-extension"),
-            "rules/no-extension.golden.md",
-            "a page that does not end in .md still gets exactly one list beside it"
+            resolve_page_ref("specs/x.md", "./sibling.md").unwrap(),
+            "specs/sibling.md",
+            "a `.` segment drops"
         );
+    }
+
+    /// Popping past the workspace root is refused, not clamped: a spec that
+    /// reaches outside the workspace names a page this tier cannot calibrate.
+    #[test]
+    fn a_spec_reference_cannot_escape_the_workspace_root() {
+        let err = resolve_page_ref("specs/x.md", "../../elsewhere/rules/r.md").unwrap_err();
+        assert!(err.contains("escapes"), "names the escape: {err}");
     }
 
     #[test]

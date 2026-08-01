@@ -375,6 +375,10 @@ fn no_floor_refusal_cites_a_page_that_is_not_in_the_tree() {
 /// The workspace-relative page the history tier calibrates.
 const HISTORY_RULE_PAGE: &str = "rules/reviewer-not-owner.md";
 
+/// The spec page carrying that rule's golden fence (D2a). A spec page registers
+/// nothing — registration is tag-opt-in, and this page carries no tag.
+const HISTORY_GOLDEN_SPEC: &str = "specs/reviewer-not-owner.md";
+
 /// Run a git command in `dir`, asserting success.
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -540,12 +544,15 @@ fn history_owner_self_close_is_a_would_refuse_then_declared() {
         "C0 create is structural"
     );
 
-    // Declare it in the GOLDEN list — the rule page's `.golden.md` SIBLING, which
-    // is where a page-shaped law keeps its exceptions now that it has no folder.
-    let golden = "---\nrule: rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
-        - item=r-000002 reason=\"legacy owner self-close predates the reviewer-not-owner floor\"\n";
-    write(ws, "rules/reviewer-not-owner.golden.md", golden);
-    let (code, report) = run_history(ws, &[]);
+    // Declare it in the GOLDEN list — a `golden` fence in a SPEC page that names
+    // the rule it excepts (D2a). The spec is passed with `--spec`; nothing about
+    // where it sits binds it to the rule, the `rule:` reference does.
+    let golden = "---\nrule: ../rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
+        ```golden\n\
+        - item=r-000002 reason=\"legacy owner self-close predates the reviewer-not-owner floor\"\n\
+        ```\n";
+    write(ws, HISTORY_GOLDEN_SPEC, golden);
+    let (code, report) = run_history(ws, &["--spec", HISTORY_GOLDEN_SPEC]);
     assert_eq!(
         code, 0,
         "a declared would-refuse is exit 0 (report={report})"
