@@ -41,32 +41,16 @@ use fs::WorkspaceRoot;
 use fs::domain::Domain;
 use policy::{PageRef, RuleIndex, ScopeLayer};
 
-/// The directory the user-space layer's rule pages live in, beside the resolved
-/// `MERIDIAN.md` (`MERIDIAN_CONFIG`, else `$HOME/MERIDIAN.md`).
+/// The `MERIDIAN.md` the user rung is anchored on, resolved through the bootstrap
+/// chain (`MERIDIAN_CONFIG`, else `$HOME/MERIDIAN.md`).
 ///
-/// The rung is bounded to `rules/` because "rules under the user scope, sibling of
-/// `~/MERIDIAN.md`" (ruling § 3) names a SCOPE, not a walk instruction: read as the
-/// config file's whole directory it would enumerate `$HOME`, which is neither a
-/// corpus nor bounded.
-pub const USER_RULES_DIR: &str = "rules";
-
-/// Where the user-space layer is rooted, or `None` when it has no root.
-///
-/// **`MERIDIAN.md` is the ANCHOR, and an absent anchor is an EMPTY user layer** —
-/// fail-closed, never a `$HOME` guess and never a walk. A machine with no config
-/// has no user scope, so there is nothing for user rules to be a sibling OF;
-/// enumerating `$HOME/rules` anyway would invent the scope the anchor was supposed
-/// to declare.
-///
-/// The `rules/` directory itself need not exist — that is an empty layer too, and
-/// [`walk_rules`] treats it as one.
+/// This resolves the ANCHOR only. Whether it exists, what lives beside it, and what
+/// counts as a user rule page are all [`fs::user_rule_pages`]'s law — one function
+/// for the whole rung, called by this walk and by `mrd rules`, never forked into
+/// two enumerations that could disagree about a user's rules.
 #[must_use]
-pub fn user_rules_root(env: &config::Env) -> Option<PathBuf> {
-    let anchor = config::resolve_path(env).ok()?;
-    if !anchor.is_file() {
-        return None;
-    }
-    Some(anchor.parent()?.join(USER_RULES_DIR))
+pub fn user_anchor(env: &config::Env) -> Option<PathBuf> {
+    config::resolve_path(env).ok()
 }
 
 /// One page the walk could not offer. Reading a vault touches files that are
@@ -124,9 +108,12 @@ impl RulesWalk {
 /// Walk the ladder and offer every markdown page in the hash domain of each root to
 /// tag registration.
 ///
-/// `user_rules_root` is the user-space rung ([`user_rules_root`]); pass `None` to
-/// walk the workspace alone. A root that does not exist is an empty layer, not a
-/// failure — a machine with no user rules is the common case, not a broken one.
+/// `user_anchor` is the user rung's `MERIDIAN.md` ([`user_anchor`]); pass `None` to
+/// walk the workspace alone. The rung's whole law — an absent anchor is an EMPTY
+/// layer, `<user-scope>/rules/**.md` only, never a `$HOME` walk — belongs to
+/// [`fs::user_rule_pages`], which this walk CALLS rather than reimplements. Two
+/// enumerations of one user's rules could disagree, and the disagreement would be
+/// invisible until a rule silently stopped applying.
 ///
 /// A user rung nested inside the workspace root is SKIPPED rather than walked
 /// twice: those pages are already workspace pages, and offering them under both
@@ -135,18 +122,38 @@ impl RulesWalk {
 /// # Errors
 /// I/O failure enumerating a root that exists, or a workspace carrying two domain
 /// configs ([`fs::domain::Domain::load`] refuses to guess which is in force).
-pub fn walk_rules(workspace_root: &Path, user_rules_root: Option<&Path>) -> io::Result<RulesWalk> {
+pub fn walk_rules(workspace_root: &Path, user_anchor: Option<&Path>) -> io::Result<RulesWalk> {
     let mut walk = RulesWalk {
         index: RuleIndex::default(),
         roots: Vec::new(),
         unreadable: Vec::new(),
     };
 
-    if let Some(user_root) = user_rules_root
-        && user_root.exists()
-        && !user_root.starts_with(workspace_root)
+    if let Some(anchor) = user_anchor
+        && let Some(user_scope) = anchor.parent()
+        && !user_scope
+            .join(fs::USER_RULES_DIR)
+            .starts_with(workspace_root)
     {
-        offer_root(&mut walk, ScopeLayer::User, user_root, &Domain::new())?;
+        let pages = fs::user_rule_pages(anchor)?;
+        if !pages.is_empty() {
+            walk.roots
+                .push((ScopeLayer::User, user_scope.to_path_buf()));
+        }
+        for (page, bytes) in pages {
+            match String::from_utf8(bytes) {
+                Ok(bytes) => walk.index.offer(PageRef {
+                    layer: ScopeLayer::User,
+                    page: &page,
+                    bytes: &bytes,
+                }),
+                Err(e) => walk.unreadable.push(UnreadablePage {
+                    page,
+                    layer: ScopeLayer::User,
+                    error: io::Error::new(io::ErrorKind::InvalidData, e),
+                }),
+            }
+        }
     }
 
     if workspace_root.exists() {
@@ -225,16 +232,24 @@ mod tests {
         assert!(walk.unreadable().is_empty());
     }
 
+    /// A user scope: the `MERIDIAN.md` anchor plus its `rules/` folder.
+    fn user_scope(at: &Path, pages: &[(&str, &str)]) -> PathBuf {
+        put(at, "MERIDIAN.md", "---\ntype: meridian-root\n---\n");
+        for (rel, id) in pages {
+            put(at, &format!("rules/{rel}"), &page(id));
+        }
+        at.join("MERIDIAN.md")
+    }
+
     #[test]
     fn all_three_ladder_layers_are_offered_unnarrowed() {
         let tmp = tempfile::tempdir().expect("tmp");
-        let user = tmp.path().join("user-scope/rules");
+        let anchor = user_scope(&tmp.path().join("user-scope"), &[("notify.md", "shared")]);
         let ws = tmp.path().join("workspace");
-        put(&user, "notify.md", &page("shared"));
         put(&ws, "rules.md", &page("shared"));
         put(&ws, "sessions/s1/rules.md", &page("shared"));
 
-        let walk = walk_rules(&ws, Some(&user)).expect("walks");
+        let walk = walk_rules(&ws, Some(&anchor)).expect("walks");
         assert_eq!(
             walk.index().registered().len(),
             3,
@@ -255,7 +270,9 @@ mod tests {
             vec![
                 ("sessions/s1/rules.md", ScopeLayer::Workspace),
                 ("rules.md", ScopeLayer::Workspace),
-                ("notify.md", ScopeLayer::User),
+                // Spelled relative to the USER SCOPE, which is what
+                // `fs::user_rule_pages` returns and what the mount law then lifts.
+                ("rules/notify.md", ScopeLayer::User),
             ]
         );
     }
@@ -264,10 +281,9 @@ mod tests {
     fn a_user_rung_inside_the_workspace_is_not_walked_twice() {
         let tmp = tempfile::tempdir().expect("tmp");
         let ws = tmp.path();
-        let user = ws.join("rules");
-        put(ws, "rules/notify.md", &page("shared"));
+        let anchor = user_scope(ws, &[("notify.md", "shared")]);
 
-        let walk = walk_rules(ws, Some(&user)).expect("walks");
+        let walk = walk_rules(ws, Some(&anchor)).expect("walks");
         assert_eq!(
             walk.index().registered().len(),
             1,
@@ -279,31 +295,45 @@ mod tests {
         );
     }
 
-    /// **The anchor law.** `MERIDIAN.md` declares the user scope; without it there
-    /// is no scope for user rules to be a sibling of. A missing anchor yields NO
-    /// user root — never a `$HOME` guess, and never a walk of a home directory.
+    /// **The anchor law, at this walk's surface.** `MERIDIAN.md` declares the user
+    /// scope; without it there is no scope for user rules to be a sibling of. The
+    /// rule itself is [`fs::user_rule_pages`]'s (it returns empty), and what is
+    /// tested HERE is that the walk does not invent a layer around that emptiness:
+    /// no user root is reported, and a `rules/` folder sitting beside the absent
+    /// anchor registers nothing.
     #[test]
     fn an_absent_meridian_md_anchor_is_an_empty_user_layer() {
         let tmp = tempfile::tempdir().expect("tmp");
         let home = tmp.path().join("home");
-        create_dir_all(&home).expect("mkdir");
+        let ws = tmp.path().join("workspace");
+        put(&home, "rules/notify.md", &page("user.rule"));
+        put(&ws, "rules.md", &page("workspace.rule"));
 
-        let absent = config::Env {
-            meridian_config: None,
-            home: Some(home.to_string_lossy().into_owned()),
-        };
+        let walk = walk_rules(&ws, Some(&home.join("MERIDIAN.md"))).expect("walks");
         assert_eq!(
-            user_rules_root(&absent),
-            None,
-            "no anchor ⇒ no user layer, even though $HOME resolves"
+            walk.roots().len(),
+            1,
+            "no anchor ⇒ no user layer, even with rules sitting right there"
+        );
+        assert_eq!(walk.roots()[0].0, ScopeLayer::Workspace);
+        assert!(
+            walk.index().resolve().get("user.rule").is_none(),
+            "an unanchored rules/ folder is not a user scope"
         );
 
-        // …and the same $HOME WITH the anchor present names the rung.
+        // …and the same directory WITH the anchor present is one.
         write(home.join("MERIDIAN.md"), "---\ntype: meridian-root\n---\n").expect("write");
+        let walk = walk_rules(&ws, Some(&home.join("MERIDIAN.md"))).expect("walks");
+        assert_eq!(walk.roots().len(), 2);
         assert_eq!(
-            user_rules_root(&absent),
-            Some(home.join(USER_RULES_DIR)),
-            "the anchor declares the scope its rules sit beside"
+            walk.index()
+                .resolve()
+                .get("user.rule")
+                .expect("the anchor declares the scope its rules sit beside")
+                .winner()
+                .scope()
+                .layer(),
+            ScopeLayer::User
         );
     }
 
@@ -313,7 +343,7 @@ mod tests {
         let ws = tmp.path();
         put(ws, "rules/notify.md", &page("x"));
 
-        let walk = walk_rules(ws, Some(&tmp.path().join("nowhere/rules"))).expect("walks");
+        let walk = walk_rules(ws, Some(&tmp.path().join("nowhere/MERIDIAN.md"))).expect("walks");
         assert_eq!(walk.roots().len(), 1);
         assert_eq!(walk.roots()[0].0, ScopeLayer::Workspace);
     }
