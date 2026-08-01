@@ -49,6 +49,10 @@ mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
 mod rules_cmd;
+/// The rules walk (registration rework): the disk edge that enumerates the scope
+/// ladder's roots and offers every page in their hash domain to tag-indexed
+/// registration. `policy` stays I/O-free; this is the caller that feeds it.
+pub mod rules_walk;
 mod run_cmd;
 mod skill_cmd;
 mod sql;

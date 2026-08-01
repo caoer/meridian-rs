@@ -161,24 +161,34 @@ impl std::fmt::Display for LoadError {
                  needs it (rulings § v1 ships CHECK only)",
                 cap = capability.as_str()
             ),
-            LoadError::Malformed { reason } => write!(f, "CHECK.md is malformed: {reason}"),
-            LoadError::CheckInvalid { source } => {
-                write!(f, "CHECK.md predicate failed the load gate: {source}")
+            // The four DECLARATION faults below are reachable from both load paths —
+            // the folder loader's file and a tag-registered page — so they name the
+            // LEG, never a filename. A page-shaped refusal that says `CHECK.md` sends
+            // its reader looking for a file that does not exist; the caller
+            // ([`crate::rule::RuleLoadError`] / the folder loader) supplies which
+            // page or folder it was reading.
+            LoadError::Malformed { reason } => {
+                write!(f, "the check declaration is malformed: {reason}")
             }
-            LoadError::HookMalformed { reason } => write!(f, "HOOK.md is malformed: {reason}"),
+            LoadError::CheckInvalid { source } => {
+                write!(f, "the check predicate failed the load gate: {source}")
+            }
+            LoadError::HookMalformed { reason } => {
+                write!(f, "the hook declaration is malformed: {reason}")
+            }
             LoadError::HookCapDeferred { cap } => write!(
                 f,
-                "HOOK.md declares the cap `{cap}`, which slice 1 does not carry — slice 1 \
+                "the hook declares the cap `{cap}`, which slice 1 does not carry — slice 1 \
                  admits `proto.send` only. The cap is a named power ceiling deferred until a \
                  real subject needs it, never silently ignored"
             ),
             LoadError::HookPredicateInvalid { reason } => {
-                write!(f, "HOOK.md predicate failed the load gate: {reason}")
+                write!(f, "the hook predicate failed the load gate: {reason}")
             }
             LoadError::HookCeiling { reason } => {
                 write!(
                     f,
-                    "HOOK.md predicate is outside its capability ceiling: {reason}"
+                    "the hook predicate is outside its capability ceiling: {reason}"
                 )
             }
         }
@@ -512,10 +522,17 @@ fn load_convention_with_hook_loader(
     })
 }
 
-/// Parse `CHECK.md`: the `paths:` scope frontmatter and the fenced predicate,
+/// Parse the CHECK leg: the `paths:` scope frontmatter and the fenced predicate,
 /// parse-gated under the FULL limits (source-size + nesting + parse) so authoring
 /// faults surface here, once, at load.
-fn parse_check(check_md: &str, limits: CheckLimits) -> Result<(Vec<String>, String), LoadError> {
+///
+/// Page-shaped already — it reads BYTES, never a filename — so [`crate::rule`]
+/// loads a tag-registered check page through this same parser rather than a
+/// second one.
+pub(crate) fn parse_check(
+    check_md: &str,
+    limits: CheckLimits,
+) -> Result<(Vec<String>, String), LoadError> {
     let scope = parse_scope(check_md)?;
     let source =
         crate::pack::extract_fenced_starlark(check_md).ok_or_else(|| LoadError::Malformed {
