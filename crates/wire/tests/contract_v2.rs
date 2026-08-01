@@ -505,6 +505,7 @@ fn worked_splice_frames_match_contract() {
                         node_rev_after: wire::NodeRev("41f643f034e5681f".into()),
                         span_after: wire::Span(49, 75),
                     }],
+                    effects: vec![],
                 },
                 receipt: Some(wire::ReceiptFact {
                     path: wire::Path("receipts/2026-07-18.md".into()),
@@ -597,6 +598,7 @@ fn worked_dry_splice_frame_matches_contract() {
                         node_rev_after: wire::NodeRev("fb49e9df2257fab8".into()),
                         span_after: wire::Span(4, 18),
                     }],
+                    effects: vec![],
                 },
                 receipt: None,
                 root_before: wire::Root(

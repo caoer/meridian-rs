@@ -61,6 +61,8 @@ policy = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+# canonical reaction receipt assertion
+effects = { workspace = true }
 # fixture addresses for the lock gate tests
 addr = { workspace = true }
 # test-only: create/remove birth/death gates need a real on-disk workspace

@@ -410,6 +410,7 @@ pub fn splice(
                     // report (mirrors `root_after: None` at file grain).
                     file_rev_after: None,
                     edits: armed_edits,
+                    effects: Vec::new(),
                 },
                 receipt: None,
                 root_before,
@@ -569,6 +570,7 @@ pub fn splice(
                 // drift. Latency only; correctness stays `root_after`.
                 file_rev_after: Some(NodeRev(after_doc.document().root.node_rev.0.clone())),
                 edits: armed_edits,
+                effects: Vec::new(),
             },
             receipt: receipt_fact,
             root_before: frame.delta.root_before.clone(),
