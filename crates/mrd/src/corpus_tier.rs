@@ -9,7 +9,25 @@
 //! - ` ```rules ` — the DECLARED CHECK citations. Every loaded HOOK's id joins the
 //!   liveness universe automatically; omitting it from this fence cannot hide a dead HOOK.
 //! - ` ```case ` — one synthetic change as JSON: `{doc, actor?, force?, set?,
-//!   remove?, expect}`. `expect` is one rule id, a list of ids, or `"pass"`.
+//!   remove?, edits?, expect}`. `expect` is one rule id, a list of ids, or `"pass"`.
+//!   An unknown key is a malformed spec (exit 2), never a dropped clause.
+//!
+//! # The case's change half is the PRODUCTION op format
+//! `edits` is a `wire::Edit` array — byte-for-byte the shape a real `splice`
+//! carries — applied as ONE batch through the real writer, exactly as the retired
+//! tier-1 scenario's ` ```json ^put ` block was (ZT, 23-07: "`^put` is JSON — the
+//! exact op format in production use"). `set` / `remove` are the frontmatter
+//! shorthand and stay, but they are shorthand: only a target the production
+//! grammar can spell — an `hpath`, an `anchor` — moves document CONTENT.
+//!
+//! That is not a convenience. `rulepack-api@2` hands a CHECK the whole change,
+//! CONTENT included (`sections_changed`, `doc.nodes[].text`), while a case whose
+//! only reach was `fm_key` could never move any of it. Such a CHECK was not merely
+//! untested — it was **unreachable**, reported dead over every case form the
+//! grammar had, which is the one failure this tier exists to catch. The HOOK leg
+//! never had that hole: an emitted `md.append_section` crosses the production batch
+//! executor and a downstream HOOK reads the section it wrote. The hole was the
+//! CHECK/case surface alone, and `edits` closes it.
 //!
 //! # A rule is a PAGE, and a spec names pages
 //! The folder loader is gone, so there is no `conventions/<slug>/` to address and
@@ -142,7 +160,15 @@ struct RulePageRef {
 
 /// One synthetic-change case: a mutation applied to a corpus doc, plus the
 /// outcome the run must observe.
+///
+/// # Unknown keys are the author's fault, never a dropped clause
+/// `deny_unknown_fields` is load-bearing, not hygiene. Without it a case reaching
+/// for a verb the grammar does not carry (`append_section`, `body`) ran as if the
+/// author had written nothing — a green-looking row over a case that mutated
+/// nothing. That silence is how the tier's missing CONTENT half went unnoticed
+/// long enough to be mistaken for a lost design.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CaseSpec {
     /// A label for the report row (defaults to `doc`).
     #[serde(default)]
@@ -155,12 +181,21 @@ struct CaseSpec {
     /// Whether the write was forced past the checks.
     #[serde(default)]
     force: bool,
-    /// Frontmatter keys to set in the AFTER state (scalar values).
+    /// Frontmatter keys to set in the AFTER state (scalar values) — shorthand for
+    /// an `fm_key` upsert in [`CaseSpec::edits`].
     #[serde(default)]
     set: BTreeMap<String, String>,
     /// Frontmatter keys to remove in the AFTER state.
     #[serde(default)]
     remove: Vec<String>,
+    /// The write's edits in the PRODUCTION op format — the same `wire::Edit`
+    /// array a real `splice` carries, applied as ONE batch through the real
+    /// writer. This is the half of the change surface `set`/`remove` cannot
+    /// reach: an `hpath` or `anchor` target moves document CONTENT, so a CHECK
+    /// reading `change.sections_changed` or `change.doc.nodes` is testable here
+    /// rather than dead by construction.
+    #[serde(default)]
+    edits: Vec<Edit>,
     /// The rule id(s) the change must fire, or `"pass"` for no fire.
     expect: Expected,
 }
@@ -1367,9 +1402,15 @@ fn proof_receipt_addr(intents: &[Intent]) -> Result<ReceiptAddr, String> {
     })
 }
 
-/// Build a synthetic before/after pair through production semantics. Sets use the
-/// live splice writer. Removals use the production model's exact fm-key grain because
-/// the wire has no delete-property verb; no Markdown or YAML parser lives here.
+/// Build a synthetic before/after pair through production semantics, in the ONE
+/// order a case is read in: `remove`, then `set`, then `edits`.
+///
+/// Sets use the live splice writer, one key at a time — the shorthand predates the
+/// production grammar and stays byte-for-byte what the specs written against it
+/// expect. Removals use the production model's exact fm-key grain because the wire
+/// has no delete-property verb; no Markdown or YAML parser lives here. `edits` is
+/// the production op format and travels as production does: ONE batch, every target
+/// resolved against the pre-batch state.
 fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<String, Fail> {
     let mut after = before.to_owned();
     for field in &case.remove {
@@ -1395,7 +1436,7 @@ fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<Stri
             &after,
             case.actor.as_deref(),
             case.force,
-            Edit {
+            vec![Edit {
                 target: SecRef::FmKey {
                     fm_key: field.clone(),
                 },
@@ -1404,7 +1445,16 @@ fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<Stri
                     text: value.clone(),
                 },
                 if_node_rev: None,
-            },
+            }],
+        )?;
+    }
+    if !case.edits.is_empty() {
+        after = apply_production_edit(
+            path,
+            &after,
+            case.actor.as_deref(),
+            case.force,
+            case.edits.clone(),
         )?;
     }
     Ok(after)
@@ -1415,7 +1465,7 @@ fn apply_production_edit(
     before: &str,
     actor: Option<&str>,
     force: bool,
-    edit: Edit,
+    edits: Vec<Edit>,
 ) -> Result<String, Fail> {
     let dir = tempfile::tempdir()
         .map_err(|error| Fail::tool(format!("cannot create corpus proof tmpdir: {error}")))?;
@@ -1446,7 +1496,7 @@ fn apply_production_edit(
         if_root: None,
         dry: false,
         force,
-        edits: vec![edit],
+        edits,
         plan_edits: Vec::new(),
         pin: None,
     };
@@ -2043,6 +2093,7 @@ mod tests {
             force: false,
             set: BTreeMap::from([("verdict".to_owned(), "approve".to_owned())]),
             remove: Vec::new(),
+            edits: Vec::new(),
             expect: Expected::One("pass".to_owned()),
         };
         let after = apply_case_mutation(CARD, before, &case).expect("the bounce lands");
@@ -2074,6 +2125,7 @@ mod tests {
             force: false,
             set: BTreeMap::new(),
             remove: vec!["labels".to_owned()],
+            edits: Vec::new(),
             expect: Expected::One("pass".to_owned()),
         };
         let after = apply_case_mutation(CARD, before, &case).expect("the removal applies");
