@@ -1,6 +1,6 @@
 ---
 corpus_test: malformed-case-json
-convention: seed
+rule: ../rules/reviewer-not-owner.md
 corpus: ../tree
 ---
 

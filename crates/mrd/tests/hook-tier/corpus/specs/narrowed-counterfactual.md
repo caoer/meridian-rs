@@ -1,6 +1,6 @@
 ---
 corpus_test: narrowed-report-counterfactual-mode
-convention: ../../conventions/narrowed-md
+rule: ../../rules/narrowed-md.md
 corpus: ../tree
 counterfactual: true
 ---

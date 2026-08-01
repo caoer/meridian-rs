@@ -7,9 +7,9 @@ A CHECK refusal cites `task-status-notify`, which is also the sibling HOOK's slu
 The CHECK expectation must still match, and the same-named silent HOOK must still be
 reported dead.
 
-```conventions
-../../conventions/citation-collision
-../../conventions/task-status-notify
+```rule-pages
+../../rules/citation-collision.md
+../../rules/task-status-notify.md
 ```
 
 ```rules

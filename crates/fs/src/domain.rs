@@ -37,8 +37,8 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 /// maintains is a page they can read: the ignore list rides the FRONTMATTER
 /// (frontmatter filters, body reads) and the body carries the rationale for
 /// each entry, which a bare YAML file has nowhere to put. It joins the reserved
-/// path family already here — [`RESERVED_JOURNAL_PATH`],
-/// [`RESERVED_INDEX_PATH`], [`ATTESTED_MARKER_PATH`].
+/// path family already here — [`RESERVED_JOURNAL_PATH`], [`ARMED_RULES_PATH`],
+/// [`ATTESTED_MARKER_PATH`].
 ///
 /// # This file is inside its own hash domain, deliberately
 /// Unlike [`CONFIG_FILE_NAME`] (non-md, structurally outside), a `.md` config
@@ -97,38 +97,28 @@ pub const DOMAIN_CONFIG_PATH: &str = "meridian/domain.md";
 ///    every lock it carries. Carded as an s4 rider rather than left here.
 pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
 
-/// The attested INDEX page (U1.4) — the ONE living checklist the door reads to
-/// learn a workspace's armed set. `gate()` (U4.2) loads and verifies it from
-/// this workspace-relative path inside the trusted write path. It is ordinary
-/// in-tree `conventions/` markdown and STAYS in the hash domain (attested
-/// content whose rev matters); this constant is the single shared spelling so
-/// the gate, arming (U4.4), and the binding law (U4.3) cannot drift on where it
-/// lives.
-pub const RESERVED_INDEX_PATH: &str = "conventions/INDEX.md";
-
-/// The attested armed-set artifact — the INDEX's successor under tag-indexed
-/// registration (registration ruling § 4), one row per armed id. It is ordinary
-/// in-tree markdown and STAYS in the hash domain, exactly as the INDEX does: the
-/// attestation IS the page, so its rev matters.
+/// The attested armed-set artifact (registration ruling § 4) — the ONE page the
+/// door reads to learn a workspace's armed set, one row per armed id. It is
+/// ordinary in-tree markdown and STAYS in the hash domain: the attestation IS the
+/// page, so its rev matters.
 ///
-/// Mirrors `policy::armed::ARMED_RULES_PATH`, the same way
-/// [`RESERVED_INDEX_PATH`] mirrors `policy::binding`'s — `policy` is I/O-free and
-/// `fs` knows nothing of rules, so neither crate can name the other's constant.
+/// Mirrors `policy::armed::ARMED_RULES_PATH` — `policy` is I/O-free and `fs`
+/// knows nothing of rules, so neither crate can name the other's constant.
 /// `crates/testsuite/tests/reserved_paths.rs` holds the two spellings together.
 pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
 
 /// The once-armed sentinel (U4.2 read contract). Its PRESENCE — not its bytes —
 /// records that a workspace has EVER been armed. The gate needs this to tell a
-/// never-armed workspace (no INDEX, no marker ⇒ a bit-for-bit no-op) from a
-/// once-armed one whose INDEX went missing (⇒ fail CLOSED, `convention-fault`):
-/// the INDEX alone cannot make that distinction, because deleting it is exactly
-/// the attack the marker defeats.
+/// never-armed workspace (no artifact, no marker ⇒ a bit-for-bit no-op) from a
+/// once-armed one whose artifact went missing (⇒ fail CLOSED): the artifact alone
+/// cannot make that distinction, because deleting it is exactly the attack the
+/// marker defeats.
 ///
 /// A NON-markdown path on purpose: the md-only hash-domain floor keeps it out
 /// of the merkle root by construction (no carve-out needed, unlike the
 /// journal), so writing the marker never perturbs the very root a write
 /// guards. Arming (U4.4) creates it on the first arm and never removes it;
-/// U4.3's index-integrity law refuses its deletion/rename at the door.
+/// U4.3's integrity floor refuses its deletion/rename at the door.
 pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 
 /// The §12 hash-domain filter: the md-only floor + dot-segment default ignore
@@ -304,7 +294,7 @@ impl Domain {
             return false;
         }
         // Never prune a directory on the way to a reserved path.
-        if RESERVED_DIR_PREFIXES
+        if RESERVED_PATHS
             .iter()
             .any(|reserved| is_prefix_of_reserved(&segments, reserved))
         {
@@ -326,11 +316,16 @@ impl Domain {
     }
 }
 
-/// Reserved paths whose parent directories must stay walkable whatever the
-/// ignore list says. Kept as segment lists so the check is spelling-proof.
-const RESERVED_DIR_PREFIXES: &[&str] = &[
+/// The reserved-path family: every page that is engine SUBSTRATE rather than
+/// content, and whose parent directories must therefore stay walkable whatever the
+/// ignore list says.
+///
+/// Public so a cross-crate test can assert the family's MEMBERSHIP, not just each
+/// member's spelling. A path that outlives its subject is the "renamed remnant"
+/// failure — it would keep the door refusing writes to what is now an ordinary
+/// file, and keep the walk carving a hole in the hash domain for nothing.
+pub const RESERVED_PATHS: &[&str] = &[
     RESERVED_JOURNAL_PATH,
-    RESERVED_INDEX_PATH,
     ARMED_RULES_PATH,
     ATTESTED_MARKER_PATH,
 ];
@@ -385,14 +380,6 @@ fn frontmatter(md: &str) -> Option<&str> {
 #[must_use]
 pub fn is_reserved_journal(rel: &Path) -> bool {
     normalized(rel) == RESERVED_JOURNAL_PATH
-}
-
-/// Is `rel` the attested INDEX page ([`RESERVED_INDEX_PATH`])? Normalized like
-/// [`is_reserved_journal`] so a non-canonical spelling (`./conventions/INDEX.md`)
-/// cannot dodge the U4.3 binding law / INDEX-integrity floor at the write door.
-#[must_use]
-pub fn is_reserved_index(rel: &Path) -> bool {
-    normalized(rel) == RESERVED_INDEX_PATH
 }
 
 /// Is `rel` the attested armed-rules artifact ([`ARMED_RULES_PATH`])? Normalized

@@ -9,9 +9,9 @@ to one it already held. This is a counterfactual proof fixture, not a capability
 grant: `md.*` loads here only through the corpus loader, and `SLICE1_CAPS` is
 untouched.
 
-```conventions
-../../conventions/cycle-alpha
-../../conventions/cycle-beta
+```rule-pages
+../../rules/cycle-alpha.md
+../../rules/cycle-beta.md
 ```
 
 ```rules

@@ -1,6 +1,6 @@
 ---
 corpus_test: hook-fuel-breach
-convention: ../../conventions/tiny-budget
+rule: ../../rules/tiny-budget.md
 corpus: ../tree
 ---
 

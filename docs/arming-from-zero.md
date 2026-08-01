@@ -11,11 +11,12 @@ recorded through the ordinary write door. This page is the ladder a maintainer
 climbs to take a workspace from **never-armed** (the gate is a bit-for-bit
 no-op) to **steady state** (the door enforces the armed floor).
 
-The floor conventions this ladder arms are the U4.4 suite:
-`reviewer-not-owner`, `claim-cas`, `close-verdict`, `decoy-close`,
-`verdict-reviewer-bind`, and the `meta-convention` (which guards arming itself).
-Each is a real convention folder under `conventions/<slug>/` (`CHECK.md` +
-`base/` + `scenarios/`).
+The floor rules this ladder arms are the U4.4 suite: `reviewer-not-owner`,
+`claim-cas`, `close-verdict`, `decoy-close`, `verdict-reviewer-bind`, and the
+`meta-convention` (which guards arming itself). Each is a real rule PAGE that
+registers by carrying `rules/check` in its `tags:` and an `id:` — it lives
+wherever its author put it, and no folder name or filename is load-bearing
+(registration ruling § 1; the `conventions/<slug>/` folder loader is retired).
 
 ## The two states the marker separates
 
@@ -24,14 +25,16 @@ The once-armed marker (`meridian/attested`, defined U4.2) is the pivot. Its
 (`crates/fs/src/domain.rs`, `ATTESTED_MARKER_PATH`). The gate reads it to tell
 two worlds apart:
 
-- **never-armed** — no marker, no INDEX. `policy::resolve_armed_set` returns
-  `ArmedSet::NeverArmed`; `gate()` is a no-op and every write lands bit-for-bit
-  as with no gate at all. The reserved INDEX path (`conventions/INDEX.md`,
-  `RESERVED_INDEX_PATH`) is not even read — a stray INDEX cannot arm a
-  never-armed workspace.
-- **once-armed** — the marker is present. Now the attested INDEX MUST be present
-  and valid, or the gate fails CLOSED (`convention_fault`). The marker is created
-  on the first arm and never removed.
+- **never-armed** — no marker. `policy::resolve_armed_law` answers
+  `never_armed()`; `gate()` is a no-op and every write lands bit-for-bit as with
+  no gate at all. The artifact (`meridian/armed-rules.md`, `ARMED_RULES_PATH`) is
+  not even read — a stray artifact cannot arm a never-armed workspace, because
+  only an attested arm sets the marker.
+- **once-armed** — the marker is present. Now the artifact MUST be present,
+  parseable, and attest at least one row, or the gate fails CLOSED. Zero rows is
+  the ABSENCE of attestation, not an attestation of absence: a rule deliberately
+  not enforced is a row spelled `off`. The marker is created on the first arm and
+  never removed.
 
 ## The ladder (five rungs)
 
@@ -40,11 +43,14 @@ transition; rung 5 is steady state.
 
 ### 1. Fill the slot
 
-Author the convention folder `conventions/<slug>/`: `CHECK.md` for a law and/or
-`HOOK.md` for a reaction, `base/` for the before-world fixtures, and `scenarios/`
-for the firing + passing teaching pages. CHECK keeps its fixed refusal ceiling.
-HOOK may emit only its declared caps, with slice 1 pinned to `proto.send`.
-`FIX.md` and `VIEW.md` remain named deferrals (U1.3).
+Author the rule PAGE. It registers by carrying `rules/check` (a law) and/or
+`rules/hook` (a reaction) in its `tags:`, plus an `id:` per the § 2 grammar; one
+page may carry both legs, sharing one fenced block distinguished by entry point
+(`check_change` / `on_change`). A `kind:` key may restate the tag and may be
+absent — absent DERIVES from the tag — but it may never contradict it. The check
+leg keeps its fixed refusal ceiling; the hook leg may emit only its declared
+caps, with slice 1 pinned to `proto.send`. FIX and VIEW remain named
+deferrals.
 
 ### 2. Author the floor
 
@@ -59,9 +65,6 @@ them.
 Before arming, prove the convention against all three `mrd test` tiers — the
 pre-arming gate:
 
-- **scenarios** (`mrd test <dir>`, U1.2) — every named Given/When/Then scenario
-  runs through the production write path. A HOOK asserts its emitted effect set
-  as `t.result.effects` through the same `^expect` Starlark surface.
 - **`--corpus`** (`mrd test --corpus <spec>`, U1.5) — fire-where-expected over a
   governed tree, **zero dead rules**, fuel/heap p50/p99, and FIX/HOOK quiescence
   by a reachable trigger graph plus bounded counterfactual chaining. This tier
@@ -71,22 +74,27 @@ pre-arming gate:
   the production atomic batch executor. **The isolation is the corpus, not the
   code:** every counterfactual generation lands in a throwaway proof workspace, so
   the governed tree is read-only and the triggering write is never touched.
-- **`--history`** (`mrd test --history <ws> --convention <slug>`, U1.6) —
-  reconstruct the workspace's own past, report the exact journal span examined,
-  and require zero UNDECLARED refusals against the pinned
-  `conventions/<slug>/GOLDEN.md` list.
+- **`--history`** (`mrd test --history <ws> --rule <page>`, U1.6) — reconstruct
+  the workspace's own past, report the exact journal span examined, and require
+  zero UNDECLARED refusals against the page's `.golden.md` sibling.
 
-Passing all three tiers is **pre-arm qualification**, not armability. C6a proves
+> The **scenario** tier retired with the folder loader. Its atomic unit was a
+> convention FOLDER's `scenarios/` directory, and a rule page has no folder to
+> hold one. Its coverage was not dropped: each scenario either ports to a
+> corpus-tier spec case or is named redundant against a specific surviving test,
+> in the accounting delivered at the cutover's gate.
+
+Passing both tiers is **pre-arm qualification**, not armability. C6a proves
 the reaction; it does not invent the attestation contract.
 
-That contract is now settled, and rung 4 states it: attestation pins the PAGE
-rev, so a hook page is attestable on exactly the same terms as a check page, and
-the activation field is `off|armed`. What remains open is not the contract but
-the WIRING — no armed row of either kind reaches the write door yet. The legacy
-`conventions/<slug>/` surface still pins `blake3(CHECK.md)`, so a HOOK-only
-FOLDER convention remains fail-closed there until that surface is retired.
+That contract is settled and wired: attestation pins the PAGE rev, so a hook page
+is attestable on exactly the same terms as a check page, the activation field is
+`off|armed`, and armed rows of both kinds now reach their surface — check rows the
+write door, hook rows the reaction feeder. The legacy surface that pinned
+`blake3(CHECK.md)` and left a HOOK-only convention permanently fail-closed is
+retired.
 
-A convention that has not passed the tiers is not qualified for arming review.
+A rule that has not passed the tiers is not qualified for arming review.
 
 ### 4. First arming write — ungated-but-journaled, permanent, genesis-grey
 
@@ -98,13 +106,13 @@ approval is refused, never silently armed.
 
 **The attested rev is the PAGE rev, uniformly.** `armed-rev = page_rev(page
 bytes) = blake3(bytes)[:16]` (`crates/policy/src/registration.rs`,
-`docs/node-rev-merkle-spec.md`). There is no `blake3(CHECK.md)` special case and
-no per-kind fingerprint: check pages and hook pages are attested by the same
-function. This is the grain that closed the original attestation blocker — a
-HOOK page had no `CHECK.md` to hash, so under the old special-casing it could
+`docs/node-rev-merkle-spec.md`). There is no per-kind fingerprint: check pages and
+hook pages are attested by the same function. This is the grain that closed the
+original attestation blocker — under the retired special-casing the pinned rev was
+a specific FILE's hash, so a reaction-only convention had nothing to hash and could
 not be attested at all.
 
-#### What the ARM act attests (the INDEX successor)
+#### What the ARM act attests
 
 The tag-indexed artifact (`crates/policy/src/armed.rs`, written to
 `meridian/armed-rules.md`) is the INDEX's successor. One artifact per workspace,
@@ -139,13 +147,18 @@ Three properties the runbook depends on:
 
 #### What is NOT yet wired (read before trusting this rung)
 
-The artifact and its ARM act are landed and tested as a pure policy surface. The
-write door has NOT been re-keyed onto them: `policy::resolve_armed_set` still
-reads `conventions/INDEX.md` through the folder loader, and no walk yet feeds
-discovery from disk. So today, **arming through this artifact enforces nothing at
-the door for either kind** — HOOK arming in particular is attestable but not yet
-firing. Re-keying the door and retiring the folder surface is the loader-cutover
-card's; feeding the guarded write path is C3's.
+The door and the reaction feeder are BOTH re-keyed onto the artifact, and the
+folder loader is gone — that was the loader-cutover card. Both armed-law surfaces
+now pivot on the `meridian/attested` marker through one shared reader, so the
+workspace cannot disagree with itself about whether it is armed.
+
+What is still unwired is the ARM act's DISK EDGE: nothing in production writes
+`meridian/attested` and `meridian/armed-rules.md`, and it must write **both
+atomically** — an artifact without the marker arms nothing, and a marker without
+the artifact fails every write closed. Until that lands, the rungs below are
+literally manual: a maintainer writes both files. Deferred by ruling and re-owed
+in `[[arm-disk-edge]]`, together with the redesigned `mrd realise --truth`
+convergence over the artifact+marker pair.
 
 The **first** arming write is special, and its specialness is permanent:
 
@@ -153,7 +166,7 @@ The **first** arming write is special, and its specialness is permanent:
   marker does not yet exist), so `gate()` is a no-op. The first-arming write
   therefore lands UNGATED — it cannot be gated by the law it is installing.
 - **journaled** — it is still a guarded write, so it appends its row to the
-  receipt journal (`op=create path=conventions/INDEX.md … ^r-NNNNNN`). The
+  receipt journal (`op=create path=meridian/armed-rules.md … ^r-NNNNNN`). The
   genesis act is present and permanent in the ledger.
 - **grey on the enforcement axis, never green** — a never-armed write carries NO
   enforcement verdict (`t.result.verdicts` is empty). Grey is the ABSENCE of a

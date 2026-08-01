@@ -1,6 +1,6 @@
 ---
 corpus_test: narrowed-report-production-mode
-convention: ../../conventions/narrowed-md
+rule: ../../rules/narrowed-md.md
 corpus: ../tree
 ---
 

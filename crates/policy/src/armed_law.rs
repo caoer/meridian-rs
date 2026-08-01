@@ -90,6 +90,20 @@ pub enum ArmedFault {
         /// The loader's own refusal.
         error: RuleLoadError,
     },
+    /// A row loaded, but its law could not be EVALUATED over the change in hand —
+    /// a budget, parse, or runtime fault in the predicate.
+    ///
+    /// It joins this vocabulary rather than the consumer's because it is the same
+    /// fact as the others: a rule the workspace attested is not governing the
+    /// write. It is the only fault a consumer can raise, which is why the row it
+    /// carries is [`resolve_armed_law`]'s and the fault is not constructible from
+    /// a bare id.
+    Unevaluable {
+        /// The attested row whose law faulted.
+        row: ArmedRow,
+        /// The evaluator's own message.
+        detail: String,
+    },
 }
 
 impl ArmedFault {
@@ -102,7 +116,9 @@ impl ArmedFault {
             | ArmedFault::Corrupt { .. }
             | ArmedFault::Disarmed { .. } => true,
             ArmedFault::Red(red) => red.row().mode().enforces(),
-            ArmedFault::Unloadable { row, .. } => row.mode().enforces(),
+            ArmedFault::Unloadable { row, .. } | ArmedFault::Unevaluable { row, .. } => {
+                row.mode().enforces()
+            }
         }
     }
 
@@ -115,7 +131,9 @@ impl ArmedFault {
             | ArmedFault::Corrupt { .. }
             | ArmedFault::Disarmed { .. } => None,
             ArmedFault::Red(red) => Some(red.row().id()),
-            ArmedFault::Unloadable { row, .. } => Some(row.id()),
+            ArmedFault::Unloadable { row, .. } | ArmedFault::Unevaluable { row, .. } => {
+                Some(row.id())
+            }
         }
     }
 }
@@ -149,6 +167,14 @@ impl std::fmt::Display for ArmedFault {
                 f,
                 "`{id}` is armed against `{page}`, whose bytes are the attested bytes but do not \
                  load as the rule they register: {error}",
+                id = row.id(),
+                page = row.page(),
+            ),
+            ArmedFault::Unevaluable { row, detail } => write!(
+                f,
+                "`{id}` is armed against `{page}` and loaded, but its law could not be evaluated \
+                 over this change: {detail}. A law that cannot complete never reads as a pass — \
+                 repair the rule, or disarm it",
                 id = row.id(),
                 page = row.page(),
             ),
@@ -228,6 +254,28 @@ impl ArmedLaw {
     /// row's fault is reported and survived, never refused.
     pub fn refusing(&self) -> impl Iterator<Item = &ArmedFault> {
         self.faults.iter().filter(|fault| fault.refuses())
+    }
+
+    /// Every page this workspace ATTESTED at this path, whether or not its row
+    /// still stands — the binding law's question.
+    ///
+    /// Red and unloadable rows are included deliberately: a row is bound by the
+    /// ARM act that attested it, not by whether it loaded a moment ago. Excluding
+    /// them would make a drifted page freely editable, which is the one state
+    /// where the binding most needs to teach.
+    pub fn armed_pages(&self) -> impl Iterator<Item = &str> {
+        self.rules
+            .iter()
+            .map(|rule| rule.row.page())
+            .chain(self.faults.iter().filter_map(|fault| match fault {
+                ArmedFault::Red(red) => Some(red.row().page()),
+                ArmedFault::Unloadable { row, .. } | ArmedFault::Unevaluable { row, .. } => {
+                    Some(row.page())
+                }
+                ArmedFault::Missing { .. }
+                | ArmedFault::Corrupt { .. }
+                | ArmedFault::Disarmed { .. } => None,
+            }))
     }
 }
 

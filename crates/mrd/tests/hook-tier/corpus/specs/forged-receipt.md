@@ -1,6 +1,6 @@
 ---
 corpus_test: forged-receipt-is-rejected
-convention: ../../conventions/forged-receipt
+rule: ../../rules/forged-receipt.md
 corpus: ../tree
 ---
 

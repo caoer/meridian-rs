@@ -40,25 +40,32 @@ exactly two rungs and has no third.
 
 Two boundaries are flagged rather than assumed, in §12.
 
-## 1. The precedent this EXTENDS — `conventions/INDEX.md`
+## 1. The precedent this EXTENDS — `meridian/armed-rules.md`
 
-`conventions/INDEX.md` is markdown-as-config **shipping today**: engine-managed, inside the hash
-domain, drift-tracked by a pinned rev. The MERIDIAN.md ruling's self-hosting model therefore already
-ships once; this schema extends a proven pattern rather than introducing one.
+The attested armed-rules artifact is markdown-as-config **shipping today**: engine-managed, inside the
+hash domain, drift-tracked by a pinned rev. The MERIDIAN.md ruling's self-hosting model therefore
+already ships once; this schema extends a proven pattern rather than introducing one.
+
+> The precedent was originally `conventions/INDEX.md`, a checkbox list keyed by convention folder
+> slug. The registration cutover retired the folder loader and the INDEX with it; the artifact is its
+> successor and carries the same properties on a different grain — a table keyed by `(rule id, arm
+> root)` rather than a checklist keyed by slug. Every row of the table below was re-verified against
+> the successor, because a precedent cited at a deleted `file:line` teaches nothing.
 
 ### 1.1 The existing mechanism, stated
 
-| Aspect | `conventions/INDEX.md`, as shipped | file:line |
+| Aspect | `meridian/armed-rules.md`, as shipped | file:line |
 |---|---|---|
-| In-file shape | fixed H1 title + free prose preamble + a markdown task-list; **no frontmatter, no fenced blocks** | `crates/policy/src/index.rs:9-18, 253-295` |
-| Row grammar | ` · `-separated (U+00B7) fields inside a `- [x] ` / `- [ ] ` checkbox item: slug · severity · pinned rev · evidence wikilink · scope | `crates/policy/src/index.rs:128-142` |
-| Two readers, on purpose | `armed_from_index` is **tolerant** (skips any non-row line, so prose never mis-parses); `parse_index_strict` is the **door's** reader and fail-closed | `crates/policy/src/index.rs:302, 358` |
-| Strictness scope | the **title** must match exactly; every checklist **row** must parse; the **preamble is not byte-checked** | `crates/policy/src/index.rs:361-387`; hand-assembled valid page at `crates/mrd/tests/status_e2e.rs:93-102` |
-| Pinned rev | `armed_rev` = `blake3(CHECK.md bytes)[:16]`, 16 lowercase hex — *"the same rev law the world model mints (contract §1)"* | `crates/policy/src/index.rs:191-198` |
-| Drift | at the door, `page_rev(live CHECK.md) != row.armed_rev` → `GateFault::ArmedDrift` → **every write refuses** | `crates/policy/src/gate.rs:264-278` |
-| Malformed posture | `IndexCorrupt { detail: String }` → `ConventionFault`, **fail closed** — *"a corrupt INDEX must never silently read as 'nothing armed'"* | `crates/policy/src/index.rs:340-344` |
-| Absent posture | pivots on a **separate marker** (`meridian/attested`): never-armed → the file is not even read; once-armed → absent is a fault | `crates/policy/src/gate.rs:213-251` |
-| Writer | the **engine** is the sole writer; a hand edit is a `BindingBreak` teaching refusal | `crates/policy/src/binding.rs:148-156` |
+| In-file shape | fixed H1 title + free prose preamble + a markdown TABLE; **no frontmatter, no fenced blocks** | `crates/policy/src/armed.rs` (`ARTIFACT_TITLE` / `ARTIFACT_HEADER`, `ArmedArtifact::render`) |
+| Row grammar | five `|`-separated columns — id · page · pinned rev · arm root (scope) · mode. Backtick-quoted cells, and `|`/backtick/control characters are **unrepresentable** rather than escaped | `crates/policy/src/armed.rs` (`ArmedRow::render`, `validate_workspace_path`) |
+| One reader, on purpose | `parse_artifact` is the **only** reader and is fail-closed. The INDEX shipped two (a tolerant `armed_from_index` and a strict `parse_index_strict`); two readers of one attestation is two answers to one question, so the successor keeps the strict one | `crates/policy/src/armed.rs` (`parse_artifact`) |
+| Strictness scope | the **title** and the **column header** must match exactly; every data row must parse; the **preamble is not byte-checked** | `crates/policy/src/armed.rs` (`parse_artifact`) |
+| Pinned rev | `rev` = `page_rev(page bytes)` = `blake3(bytes)[:16]`, 16 lowercase hex — the same rev law the world model mints (contract §1), now applied to the RULE PAGE rather than to one file inside a folder | `crates/policy/src/registration.rs` (`page_rev`) |
+| Drift | at the door, `page_rev(live page) != row.rev` → `ArmedFault::Red(Redness::Drifted)` → the write refuses (check) or the fault is reported (hook) | `crates/policy/src/armed.rs` (`verify_rows`), `crates/policy/src/armed_law.rs` |
+| Malformed posture | `ArtifactCorrupt { detail: String }` → `ArmedFault::Corrupt`, **fail closed** — a corrupt artifact must never silently read as "nothing armed" | `crates/policy/src/armed.rs`, `crates/policy/src/armed_law.rs` |
+| Emptied posture | a well-formed artifact attesting ZERO rows on a once-armed workspace is `ArmedFault::Disarmed`, not a disarm. An attestation of absence is a row spelled `off`; zero rows is the ABSENCE of attestation, which is what deleting every row leaves behind | `crates/policy/src/armed_law.rs` |
+| Absent posture | pivots on a **separate marker** (`meridian/attested`): never-armed → the file is not even read; once-armed → absent is a fault | `crates/policy/src/armed_law.rs` (`resolve_armed_law`) |
+| Writer | the **engine** is the sole writer; a hand edit is a `BindingBreak` teaching refusal | `crates/policy/src/binding.rs` (`classify_door_law`) |
 
 ### 1.2 Where this schema FOLLOWS it
 
@@ -133,8 +140,8 @@ Distinguishing them further is not this schema's business — the operator's nex
 
 `MERIDIAN.md` (the filename) and `MERIDIAN_CONFIG` (the env var) are reserved names. Wherever they are
 spelled in more than one crate, the shipped precedent applies: a cross-crate test asserts the constants
-agree, as `policy_and_fs_agree_on_reserved_paths` does for `conventions/INDEX.md`
-(`crates/wire-serve/src/gate.rs:776-782`). U6 owns placing the constants; this spec fixes the spellings.
+agree, as `the_armed_rules_artifact_has_one_spelling` does for `meridian/armed-rules.md`
+(`crates/wire-serve/tests/reserved_paths.rs`). U6 owns placing the constants; this spec fixes the spellings.
 
 ## 3. The document shape — the machine surface, and the prose around it
 
@@ -398,8 +405,9 @@ new mechanism**:
 Verified in the tree, not asserted: the root node's span is `0..raw.len()`
 (`crates/model/src/lib.rs:238`) and its rev is `node_rev(raw.as_bytes(), &root_span)`
 (`crates/model/src/lib.rs:243`), where `node_rev` is `blake3(span bytes)[:16]`
-(`crates/model/src/lib.rs:348-352`). This is byte-identically the law `armed_rev` already uses for
-`CHECK.md` (`crates/policy/src/index.rs:191-198`) — §1.2 rule 3.
+(`crates/model/src/lib.rs:348-352`). This is byte-identically the law the armed
+artifact's pinned `rev` already uses for a rule page (`crates/policy/src/registration.rs`,
+`page_rev`) — §1.2 rule 3.
 
 `config_rev` is spelled `file_rev` wherever the wire already spells a whole-page rev
 (`crates/wire/src/lib.rs:895`). **One name per thing: no new rev noun is minted for the config.**
@@ -428,8 +436,8 @@ renders as ordinary drift."* The precise, satisfiable reading:
 
 **Drift that IS a verdict is the mount pins' (§5.3), not the config's own rev's.** A mount entry's
 `pin` names a root's entry page — which lives *inside* an attestable root — so `pin` vs the live
-fingerprint is an ordinary comparison on ordinary machinery, exactly as `armed_rev` vs
-`page_rev(live CHECK.md)` is (`crates/policy/src/gate.rs:264-278`). That is the ratified mitigation
+fingerprint is an ordinary comparison on ordinary machinery, exactly as an armed row's pinned `rev` vs
+`page_rev(live page)` is (`crates/policy/src/armed.rs`, `verify_rows`). That is the ratified mitigation
 working, and it is the only place in this plane where "drift" is a checkable claim rather than a
 reported number.
 

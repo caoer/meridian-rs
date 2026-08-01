@@ -107,7 +107,9 @@ mrd status [--cwd PATH]  the bare drift + freshness summary (pure-local,
                          O(armed), fetch-less)
 mrd sql <QUERY>          client-side SQL over the daemon-published DuckDB view
 mrd view status          per-workspace view freshness + refresh telemetry
-mrd test <PATH>          the scenario runner (also --corpus / --history tiers)
+mrd test --corpus <SPEC> the pre-arming corpus runner over synthetic changes
+mrd test --history <WS> --rule <PAGE>
+                         the same law replayed against the workspace's own past
 mrd run <PAGE> [TASK]    run a task block declared in the page's frontmatter
 mrd new <KIND> <ID>      file birth: fill the def's template, validate, birth
                          the first rev through the guarded create

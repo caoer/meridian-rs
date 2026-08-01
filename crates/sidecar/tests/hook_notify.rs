@@ -96,6 +96,15 @@ fn arm_hook(root: &std::path::Path, mode: Mode) {
     std::fs::create_dir_all(artifact_path.parent().expect("artifact parent"))
         .expect("artifact parent");
     std::fs::write(artifact_path, artifact.render()).expect("armed-rules artifact");
+
+    // The once-armed MARKER, beside the artifact. Arming is ONE act over TWO files:
+    // the marker is the pivot BOTH armed-law surfaces read, so an artifact without
+    // it describes a workspace the engine considers never armed — the notification
+    // this test waits for would never be produced, and the wait would hang rather
+    // than fail.
+    let marker_path = root.join(fs::domain::ATTESTED_MARKER_PATH);
+    std::fs::create_dir_all(marker_path.parent().expect("marker parent")).expect("marker parent");
+    std::fs::write(marker_path, "").expect("once-armed marker");
 }
 
 fn splice(id: u64, path: &str, status: &str) -> String {

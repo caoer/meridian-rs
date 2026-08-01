@@ -265,10 +265,26 @@ fn reserved_paths_are_never_pruned_away() {
         Domain::from_config("version: 1\nignore:\n  - \"meridian/**\"\n  - \"conventions/**\"\n");
     assert!(
         !domain.prunes_dir(Path::new("meridian")),
-        "meridian/ holds the reserved journal and attested marker"
+        "meridian/ holds the reserved journal, the armed-rules artifact, and the \
+         once-armed marker"
     );
+}
+
+/// **The other half of the law: a directory stops being unprunable when it stops
+/// holding substrate.**
+///
+/// `conventions/` was unprunable because it held the attested INDEX. The
+/// registration cutover retired the folder loader and the INDEX with it, so the
+/// directory is now ordinary content and an ignore list that names it must be
+/// obeyed. Asserted positively rather than by deleting the old leg: a carve-out
+/// that outlives its subject is a hole in the hash domain kept open for nothing,
+/// and only a test that says so keeps it closed.
+#[test]
+fn a_directory_that_no_longer_holds_substrate_is_prunable_again() {
+    let domain = Domain::from_config("version: 1\nignore:\n  - \"conventions/**\"\n");
     assert!(
-        !domain.prunes_dir(Path::new("conventions")),
-        "conventions/ holds the reserved index"
+        domain.prunes_dir(Path::new("conventions")),
+        "`conventions/` holds no reserved path since the folder loader retired, so \
+         an ignore list naming it must be honoured like any other"
     );
 }

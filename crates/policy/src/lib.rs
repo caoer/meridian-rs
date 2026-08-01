@@ -6,7 +6,7 @@
 //! verify), the 14-assertion vocabulary with declared `Budget { class, p99_us }`,
 //! and the `policy` / `policy_compile` / `policy_vocab` evaluation entry points.
 //! Since U4.2 it ALSO owns the **blocking gate** at the armed change plane (see
-//! [`gate`] / [`resolve_armed_set`]; laws.md § the policy gate): the pure
+//! [`gate`] / [`resolve_armed_law`]; laws.md § the policy gate): the pure
 //! decision that refuses a write when the workspace's own attested law says so.
 //! The complete contract — schema, semantics, error taxonomy, versioning —
 //! is implemented here; this crate is that contract's implementation.
@@ -51,19 +51,17 @@ pub mod armed_law;
 mod binding;
 mod change;
 mod check_eval;
-mod convention;
+mod declaration;
 /// I4 def-conformance (U8c): the engine-side port of meridian-go's write-time
 /// def validator — the pure verdict over (prev, candidate) documents the put
 /// path consults before any splice. Byte-exact against the U0 defs goldens.
 pub mod defs;
 mod gate;
 mod hook;
-mod index;
 mod pack;
 mod reaction;
 mod registration;
 mod rule;
-mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
 /// `check_change(change)` predicate reads, its derivation from before/after
@@ -87,14 +85,12 @@ pub use pack::{FactDoc, facts_from_document};
 /// [`CheckError`] is its typed failure surface.
 pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 
-/// The convention loader (U1.3): `conventions/<slug>/` folder grammar, the CHECK
-/// and HOOK capability ceilings (FIX/VIEW deferred), and `paths:` scope. A loaded
-/// [`Convention`] runs its `check_change` over a [`Change`], returning the
-/// [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its passing scenario.
-pub use convention::{
-    Capability, CheckOutcome, Convention, ConventionFiles, CounterfactualConvention, LoadError,
-    Refusal, load_convention, load_convention_for_corpus,
-};
+/// The DECLARATION layer: what a rule page's legs say. [`LoadError`] is its typed
+/// failure surface — it names the LEG, never a file, because a page has no
+/// filename to name. A loaded [`Rule`] runs its check leg over a [`Change`],
+/// returning the [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its
+/// passing case.
+pub use declaration::{CheckOutcome, LoadError, Refusal};
 
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
 /// declared severity, scope, effect caps, per-eval budget, the VERBATIM `how:` block
@@ -104,7 +100,7 @@ pub use convention::{
 pub use hook::{
     Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry, Intent, SLICE1_CAPS,
     evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks, evaluate_hooks_for_test,
-    evaluate_hooks_for_test_metered, evaluate_loaded_hooks, intent_from_effect, load_hook,
+    evaluate_hooks_for_test_metered, evaluate_loaded_hooks, intent_from_effect,
 };
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]
@@ -112,20 +108,6 @@ pub use hook::{
 /// values behind `fields_changed` and the changed document's frontmatter, and it
 /// drops `actor` — the engine must not observe the observer.
 pub use reaction::derive_event;
-
-/// The throwaway seed convention (U1.3): a real `reviewer-not-owner` `check_change`
-/// the harness (U1.2) and the door (U4.2) pre-test against before U4.4's floor lands.
-pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_convention_files};
-
-/// The attested INDEX generator (U1.4): sweep `conventions/` into a living
-/// checklist page (row = checkbox · slug · severity · pinned rev · evidence link ·
-/// scope; sorted severity desc, then slug), the O(armed) single-file read
-/// ([`armed_from_index`]), and the arming gate ([`arm`]) that refuses on evidence
-/// drift ([`ArmError::Drift`], `report-rev == armed-rev`).
-pub use index::{
-    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index,
-    generate_index, parse_index_strict, render_rows, sweep,
-};
 
 /// Tag-indexed rule registration — the registration rework's discovery layer.
 /// A page registers by carrying `rules/hook` / `rules/check` in its frontmatter
@@ -150,27 +132,26 @@ pub use registration::{
 /// [`Registration`] rather than re-deriving one, so a page becomes a rule in exactly
 /// one place, and it verifies the supplied bytes against the registered rev rather
 /// than trusting the caller not to have re-read a moved page.
-pub use rule::{Rule, RuleLoadError, load_rule};
+pub use rule::{CounterfactualRule, Rule, RuleLoadError, load_rule, load_rule_for_corpus};
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision
-/// ([`gate`]) plus the load-and-verify half ([`resolve_armed_set`]) that reads a
-/// workspace's attested INDEX (U1.4) + once-armed marker (U2.5) through an
-/// injected [`ConventionSource`], failing CLOSED on missing-once-armed, corrupt,
-/// un-loadable, or DRIFTED armed law. Fills the retired `authorize` seam.
-pub use gate::{
-    ArmedConvention, ArmedSet, ConventionSource, GateFault, GateFinding, GateOutcome, GateRefusal,
-    GateViolation, gate, resolve_armed_set,
-};
+/// ([`gate`]), whose input is the [`ArmedLaw`] that
+/// [`resolve_armed_law`] resolved at the write's own path. Fills the retired
+/// `authorize` seam.
+pub use gate::{GateFinding, GateOutcome, GateRefusal, GateViolation, gate};
 
-/// The binding law + `--truth` convergence (U4.3): the door law that refuses a
-/// one-sided file↔index change ([`classify_door_law`], taxonomy row 9) and the
-/// INDEX-integrity floor that refuses deletion/rename of the INDEX or the
-/// once-armed marker (row 10, not force-escapable). [`converge`] deploys a
-/// divergence in an explicit direction ([`Truth`]).
-pub use binding::{
-    ATTESTED_MARKER_PATH, BindingSide, ConvergeError, Convergence, DoorLaw, FileAction,
-    RESERVED_INDEX_PATH, Truth, classify_door_law, converge,
-};
+/// A workspace's attested armed law at ONE path, and the ONE surface reporting
+/// every way it could not be honored ([`ArmedFault`] — absent, corrupt, attesting
+/// zero rows, a red row, a row that will not load, a law that will not evaluate).
+/// [`resolve_armed_law`] pivots on the once-armed marker, so a workspace that has
+/// ever been armed fails CLOSED rather than reading as "nothing armed".
+pub use armed_law::{ArmedFault, ArmedLaw, ArmedRule, resolve_armed_law};
+
+/// The binding law (U4.3): the door law that refuses a one-sided artifact↔page
+/// change ([`classify_door_law`], taxonomy row 9) and the integrity floor that
+/// refuses deletion/rename of the armed-rules artifact or the once-armed marker
+/// (row 10, not force-escapable).
+pub use binding::{ATTESTED_MARKER_PATH, BindingSide, DoorLaw, classify_door_law};
 
 /// The rule-language / injected-fact-API pin this engine implements (§11.4,
 /// ruling 008). A manifest whose `api` differs is a loud `PinMismatch` — an

@@ -1,4 +1,4 @@
-//! **U35 — a governed write through EITHER byte-landing door now leaves a
+//! **U35 — a governed write through the run-plane byte-landing door now leaves a
 //! journal row, so the installed fence accepts the commit.** This file IS U34's
 //! harness with its expectations INVERTED: U34 measured the refusal, U35 removes
 //! it, and the inversion is this unit's proof (S3-R12(b)).
@@ -6,20 +6,25 @@
 //! # What U34 measured, and what changed
 //! Two byte-landing doors survived U31/U32 without a journal row:
 //!
-//! 1. **`mrd realise --truth file`** — deploys `conventions/INDEX.md` through
-//!    `fs::replace_file`. U31 sealed it behind the candidate; *sealing and
-//!    journaling are different properties* (S3-R12(a)), and it journaled nothing.
+//! 1. **`mrd realise --truth file`** — deployed `conventions/INDEX.md` through
+//!    `fs::replace_file`. **That door is GONE**: the registration cutover deleted
+//!    the INDEX and `policy::binding::converge` with it, so the verb it hung on
+//!    no longer exists. Its U35 leg went with it — a journal-row gate over a door
+//!    that cannot be opened proves nothing, and keeping the leg would have meant
+//!    keeping the door. The convergence law is re-owed at the ARM disk edge, and
+//!    its journaling is owed there with it.
 //! 2. **the run-plane `apply_batch`** — `executor::apply` lands page bytes
 //!    through `fs::apply_batch`, never through the wire splice choke-point where
-//!    U32's `render_row` call lives.
+//!    U32's `render_row` call lives. This is the door this file still gates.
 //!
 //! U34 drove both over the shipped binary with the ratified fence installed and
 //! measured, for each: `mrd check` `grey(cannot-assess)` EXIT 1, `git commit`
 //! REFUSED, `git commit --no-verify` the operator's only route forward. U35 gives
-//! each door its row through the SAME row writer (`receipt::journal::render_row`,
-//! U32's), so the last row's `root_after` IS the live tree again and the fence
-//! accepts. **Every `assert_ne!(commit_code, 0)` below was an `assert_eq!` in the
-//! other direction before this unit** — that flip is the deliverable.
+//! the surviving door its row through the SAME row writer
+//! (`receipt::journal::render_row`, U32's), so the last row's `root_after` IS the
+//! live tree again and the fence accepts. **Every `assert_ne!(commit_code, 0)`
+//! below was an `assert_eq!` in the other direction before this unit** — that
+//! flip is the deliverable.
 //!
 //! # What "the installed fence" is here
 //! U15 has not landed, so this harness installs the RATIFIED fence verbatim: a
@@ -29,9 +34,9 @@
 //!
 //! # BOTH arms, per door (S3-R8(c), gate 1)
 //! A fence proven only by what it accepts is as uninformative as one proven only
-//! by what it blocks. Each door leg therefore drives the governed write (green,
+//! by what it blocks. The door leg therefore drives the governed write (green,
 //! commit ACCEPTED) **and then** an out-of-band shell rewrite on the same corpus
-//! (grey, commit REFUSED). Four assertions, two doors, plus
+//! (grey, commit REFUSED). Two assertions, one door, plus
 //! [`the_installed_fence_accepts_governed_work_and_refuses_an_out_of_band_edit`]
 //! as the instrument's own control.
 //!
@@ -47,7 +52,6 @@ use std::process::{Command, Output, Stdio};
 
 use fs::WorkspaceRoot;
 use fs::domain::RESERVED_JOURNAL_PATH;
-use policy::{CheckLimits, ConventionFiles, Enforcement, arm, generate_index, sweep};
 use receipt::journal::{ParsedRow, parse_rows};
 
 /// The binary every drive goes through — the shipped CLI, never a library call.
@@ -355,12 +359,6 @@ fn rows(root: &WorkspaceRoot) -> Vec<ParsedRow> {
     parse_rows(&journal_page(root))
 }
 
-#[cfg(unix)]
-fn inode(path: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt as _;
-    std::fs::metadata(path).expect("stat").ino()
-}
-
 /// Drive the corpus to the GREEN baseline every door leg starts from: one
 /// governed `mrd pin` (which journals under U32), `mrd check` exit 0, and a
 /// commit the fence lets through. Returns the quoted baseline render.
@@ -455,149 +453,7 @@ fn the_installed_fence_accepts_governed_work_and_refuses_an_out_of_band_edit() {
     );
 }
 
-// ── DOOR 1 — `mrd realise --truth file` ──────────────────────────────────────
-
-/// The convention slug the door's corpus arms.
-const SLUG: &str = "reviewer-not-owner";
-
-/// A loadable `CHECK.md` body, varied by `marker` so two versions hash
-/// differently. `paths: tasks/**` keeps the armed law off every page this
-/// corpus writes — the measurement is about the INDEX deploy, not about a gate.
-fn check_md(marker: &str) -> String {
-    format!(
-        "---\npaths:\n  - tasks/**\n---\n\n# {SLUG} {marker}\n\n\
-         ```starlark\ndef check_change(change):\n    pass\n```\n"
-    )
-}
-
-/// A one-file convention accessor (`CHECK.md` → body) for `policy::sweep`.
-struct MemConv(String);
-impl ConventionFiles for MemConv {
-    fn read(&self, rel: &str) -> std::io::Result<String> {
-        if rel == "CHECK.md" {
-            Ok(self.0.clone())
-        } else {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, rel))
-        }
-    }
-    fn exists(&self, rel: &str) -> bool {
-        rel == "CHECK.md"
-    }
-}
-
-/// The attested INDEX arming `SLUG` at Block, pinned to `check`'s live rev.
-/// **There is no `mrd` verb that arms a convention** — this is the corpus
-/// builder the card names, driven through the policy API the door reads.
-fn armed_index(check: &str) -> String {
-    let swept = sweep(&MemConv(check.to_owned()), SLUG, CheckLimits::default()).expect("sweeps");
-    let rev = swept.rev().to_owned();
-    let armed = arm(swept, &rev, Enforcement::Block).expect("arms at live rev");
-    generate_index(&[armed])
-}
-
-/// **DOOR 1.** A governed `mrd realise --truth file` deploys the armed policy
-/// INDEX through `fs::replace_file` — sealed by U31, and journaled by THIS unit.
-/// The installed fence is then asked for the next commit, and it accepts.
-#[test]
-fn door_1_realise_truth_file_then_the_installed_fence() {
-    let sb = sandbox();
-    // The divergence the door resolves: the INDEX pins v1, the live law is v2.
-    let ws = sb.corpus(
-        "door1-realise-truth-file",
-        &[
-            ("conventions/INDEX.md", &armed_index(&check_md("v1"))),
-            (
-                &format!("conventions/{SLUG}/CHECK.md"),
-                &check_md("v2-edited"),
-            ),
-        ],
-    );
-    let root = root_of(&ws);
-    green_baseline(&sb, &ws);
-
-    // ── the pre-door state, so the state change is measured and not asserted.
-    let index_path = ws.join("conventions/INDEX.md");
-    let before_bytes = read(&ws, "conventions/INDEX.md");
-    let before_ino = inode(&index_path);
-    let before_root = live_root(&root);
-    let before_rows = rows(&root);
-
-    // ── THE DOOR, through its own verb.
-    let door = sb.run(&ws, &["realise", "--truth", "file"]);
-    assert_eq!(code(&door), 0, "the governed deploy runs: {}", said(&door));
-
-    // ── R40: the STATE CHANGE, four disk facts.
-    let after_bytes = read(&ws, "conventions/INDEX.md");
-    let after_ino = inode(&index_path);
-    let after_root = live_root(&root);
-    let after_rows = rows(&root);
-    assert_ne!(
-        before_bytes, after_bytes,
-        "(1) BYTES LANDED — the door rewrote the armed INDEX"
-    );
-    assert_ne!(
-        before_ino, after_ino,
-        "(1b) through the atomic candidate write (U31): a new inode"
-    );
-    assert_ne!(
-        before_root, after_root,
-        "(2) THE TREE ROOT MOVED — {before_root} -> {after_root}"
-    );
-    // (3) THE JOURNAL ROW — U34 asserted this door added none.
-    assert_the_row_dates_the_write(
-        &root,
-        (&before_rows, &after_rows),
-        ("realise", "conventions/INDEX.md", "mrd:realise"),
-        (&before_root, &after_root),
-    );
-    // (4) The whole-file transition the row records (the `op=lock` row shape:
-    // both sides present, no node-grain edits).
-    let line = journal_page(&root)
-        .lines()
-        .last()
-        .expect("the door's row")
-        .to_owned();
-    assert!(
-        line.contains(" before=") && line.contains(" after=") && line.contains(" edits=0"),
-        "the row records a whole-file rev transition, not node edits: {line}"
-    );
-
-    // ── the consequence: `mrd check` is green and the fence accepts.
-    let check = sb.run(&ws, &["check"]);
-    eprintln!(
-        "── DOOR 1 · mrd realise --truth file ────\n\
-         tree root {before_root} -> {after_root}\n\
-         journal rows {} -> {} (+1: {line})\n\
-         --- mrd check ---\n{}\
-         mrd check EXIT {}\n",
-        before_rows.len(),
-        after_rows.len(),
-        said(&check),
-        code(&check),
-    );
-    assert_eq!(
-        code(&check),
-        0,
-        "MEASURED (inverted from U34): check is GREEN after the governed deploy: {}",
-        said(&check)
-    );
-    assert!(
-        stdout(&check).contains("chain: green") && stdout(&check).contains("foreign_edit: none"),
-        "and it renders the honest green, not a grey it cannot support: {}",
-        stdout(&check)
-    );
-    assert_the_fence_accepts_without_the_bypass(
-        &sb,
-        &ws,
-        "door 1",
-        "governed: mrd realise --truth file",
-    );
-
-    // ── the other arm: the fence has NOT become one that accepts everything.
-    assert_an_out_of_band_edit_still_refuses(&sb, &ws, "door 1");
-}
-
-// ── DOOR 2 — the run-plane `apply_batch` ─────────────────────────────────────
+// ── the surviving door — the run-plane `apply_batch` ─────────────────────────
 
 /// A page carrying one starlark task whose `md.set_field` effect lands page bytes
 /// through `executor::apply` → `fs::apply_batch` — the production run-plane path,
@@ -618,7 +474,7 @@ def run(ctx):
 ^note-1
 ";
 
-/// **DOOR 2.** A governed `mrd run` lands page bytes through the run plane's
+/// **THE DOOR.** A governed `mrd run` lands page bytes through the run plane's
 /// `fs::apply_batch` — never through the wire splice choke-point where U32's
 /// journal row is written — and journals its own row through the SAME row writer.
 /// The installed fence is then asked for the next commit, and it accepts.
@@ -627,9 +483,9 @@ def run(ctx):
 /// `s4-realise-apply-invocation-id`), so the door is reached by `mrd run` — the
 /// same `executor::apply` entry point, one caller over.
 #[test]
-fn door_2_run_plane_apply_batch_then_the_installed_fence() {
+fn run_plane_apply_batch_then_the_installed_fence() {
     let sb = sandbox();
-    let ws = sb.corpus("door2-run-plane", &[("tasks.md", RUN_PAGE)]);
+    let ws = sb.corpus("run-plane", &[("tasks.md", RUN_PAGE)]);
     let root = root_of(&ws);
     green_baseline(&sb, &ws);
 
@@ -671,7 +527,7 @@ fn door_2_run_plane_apply_batch_then_the_installed_fence() {
     // ── the consequence: `mrd check` is green and the fence accepts.
     let check = sb.run(&ws, &["check"]);
     eprintln!(
-        "── DOOR 2 · run-plane apply_batch ───────\n\
+        "── the run-plane door · apply_batch ────\n\
          tree root {before_root} -> {after_root}\n\
          journal rows {} -> {} (+1: {line})\n\
          --- mrd check ---\n{}\
@@ -695,10 +551,10 @@ fn door_2_run_plane_apply_batch_then_the_installed_fence() {
     assert_the_fence_accepts_without_the_bypass(
         &sb,
         &ws,
-        "door 2",
+        "the run-plane door",
         "governed: mrd run apply_batch",
     );
 
     // ── the other arm: the fence has NOT become one that accepts everything.
-    assert_an_out_of_band_edit_still_refuses(&sb, &ws, "door 2");
+    assert_an_out_of_band_edit_still_refuses(&sb, &ws, "the run-plane door");
 }

@@ -210,26 +210,14 @@ const DOORS: &[DoorPin] = &[
         class: Door::Guarded,
     },
     // ---- outside U12's named files ----
-    DoorPin {
-        file: "crates/mrd/src/realise_cmd.rs",
-        door_fn: "truth_deploy",
-        mint_fn: "truth_deploy",
-        guard_fn: None,
-        label: "realise --truth file: the armed policy INDEX",
-        class: Door::OutsideThisUnit,
-    },
-    DoorPin {
-        file: "crates/mrd/src/realise_cmd.rs",
-        door_fn: "body_rev",
-        mint_fn: "body_rev",
-        guard_fn: None,
-        // The shipped label read "realise: the convergence body"; the function it
-        // names mints to take the whole-file rev of the INDEX pre-image the
-        // convergence is decided against. Both spellings are kept so the older
-        // one stays greppable (S3-R65(d): no silent re-wording of a shipped name).
-        label: "realise: the convergence body — body_rev's whole-file rev of the INDEX pre-image",
-        class: Door::OutsideThisUnit,
-    },
+    // ---- retired with the registration cutover ----
+    // `realise --truth index|file` and `policy::binding::converge` are DELETED by
+    // ruling, so their two door pins go with them: a byte-landing door that no
+    // longer exists cannot be enumerated, and a pin naming a deleted function is
+    // the enumeration failing open — it would read as "still audited". The
+    // redesigned `--truth` (convergence over artifact + marker, atomic with the
+    // marker) is re-owed in `[[arm-disk-edge]]`, and it owes its own door pins
+    // when it lands with the writer it needs.
     DoorPin {
         file: "crates/run/src/fp.rs",
         door_fn: "candidate",
@@ -624,8 +612,10 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         "lock_write, the promotion and commit_batch land engine-composed bytes",
     );
     assert_eq!(
-        outside, 5,
-        "two realise doors, the run plane, and G2's two genesis mints — stated, not absorbed",
+        outside, 3,
+        "the run plane and G2's two genesis mints — stated, not absorbed. The two \
+         `realise --truth` doors left this count with the flag itself (registration \
+         cutover); the redesigned convergence owes its own pins when it lands",
     );
     assert_eq!(
         read_only, 1,

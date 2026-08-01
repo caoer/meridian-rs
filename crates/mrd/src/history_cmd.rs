@@ -1,6 +1,6 @@
-//! `mrd test --history` — the tier-1 HISTORY runner (U1.6): calibrate a
-//! convention against a workspace's own past, with a golden list of declared
-//! exceptions as the gate.
+//! `mrd test --history` — the HISTORY runner (U1.6): calibrate a rule PAGE
+//! against a workspace's own past, with a golden list of declared exceptions as
+//! the gate.
 //!
 //! # What the tier does (rulings § test --history)
 //! The receipt journal ([`fs::domain::RESERVED_JOURNAL_PATH`]) is the append-only
@@ -10,9 +10,10 @@
 //! written path at that commit (the AFTER bytes) and at its parent (the BEFORE
 //! bytes), rebuilds both `Document`s through the fixture doc-building path
 //! (`syntax::parse` → `model::build`), derives the [`rulepack-api@2`](policy)
-//! change, and runs the convention's `check_change` over it — the SAME loader and
-//! full-`EvalLimits` evaluator the door uses ([`policy::load_convention`],
-//! [`policy::Convention::check_change`]).
+//! change, and runs the rule's `check_change` over it — the SAME registration,
+//! loader and full-`EvalLimits` evaluator the door uses
+//! ([`policy::register_page`], [`policy::load_rule`],
+//! [`policy::Rule::check_change`]).
 //!
 //! # Fidelity is counted, rendered, never guessed
 //! A row reconstructs at one of three fidelities:
@@ -28,9 +29,12 @@
 //!   reconstruct.
 //!
 //! # The golden list (rulings § test --history — the golden-list mechanism)
-//! The golden list is a pinned page inside the convention folder
-//! (`conventions/<slug>/GOLDEN.md`). Each row declares one would-refuse item by
-//! its journal anchor plus a reason. Triage = editing that page through the
+//! The golden list is a pinned page BESIDE the rule it excepts: the rule page's
+//! `.golden.md` sibling (`rules/close-verdict.md` → `rules/close-verdict.golden.md`).
+//! The folder that used to hold it died with the convention loader, and the
+//! exceptions to a law belong next to the law rather than in a directory named
+//! after a filename that is no longer an identity. Each row declares one
+//! would-refuse item by its journal anchor plus a reason. Triage = editing that page through the
 //! ordinary write door; exceptions are declared, never erased. `test --history`
 //! FAILS (exit 1) on any would-refuse item ABSENT from the pinned list; a declared
 //! item passes with its reason rendered.
@@ -38,7 +42,7 @@
 //! # Output + exit codes (§4 preamble law, `docs/status.md`)
 //! JSON under `--json`, a human table otherwise. Exit 0 (every would-refuse item
 //! is declared), 1 (an undeclared would-refuse item — a finding), 2 (a tool
-//! failure: bad usage, an unreadable workspace / convention / journal, a git
+//! failure: bad usage, an unreadable workspace / rule page / journal, a git
 //! failure, or a CHECK that faulted on real history).
 
 use std::collections::BTreeMap;
@@ -48,36 +52,38 @@ use std::process::Command;
 
 use model::{Document, Edit, NodeKind};
 use policy::{
-    ChangeOp, CheckLimits, Convention, ConventionFiles, EdgeDecl, Invocation, derive_change,
-    load_convention,
+    ChangeOp, CheckLimits, EdgeDecl, Invocation, PageRef, Rule, ScopeLayer, derive_change,
+    load_rule, register_page,
 };
 use serde_json::{Value, json};
 
+use crate::test_cmd::confine;
 use crate::{Fail, Format, current_dir};
 
-/// The golden-list page inside a convention folder.
-const GOLDEN_FILE: &str = "GOLDEN.md";
+/// The suffix the golden list is named with, replacing the rule page's own `.md`.
+/// One rule, one list, sitting where the rule sits.
+const GOLDEN_SUFFIX: &str = ".golden.md";
 
-/// Run `mrd test --history WORKSPACE --convention SLUG [--json]`.
+/// Run `mrd test --history WORKSPACE --rule PAGE [--json]`.
 ///
 /// # Errors
-/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / convention / journal, a
+/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / journal, a
 /// git failure, or a faulting CHECK) or exit 1 (an undeclared would-refuse item).
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut workspace: Option<String> = None;
-    let mut convention: Option<String> = None;
+    let mut rule: Option<String> = None;
     let mut json = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--history" => {}
             "--json" => json = true,
-            "--convention" => {
+            "--rule" => {
                 i += 1;
-                convention = Some(
+                rule = Some(
                     args.get(i)
                         .cloned()
-                        .ok_or_else(|| Fail::tool("--convention needs a SLUG".to_owned()))?,
+                        .ok_or_else(|| Fail::tool("--rule needs a PAGE path".to_owned()))?,
                 );
             }
             flag if flag.starts_with('-') => {
@@ -90,11 +96,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     let workspace =
         workspace.ok_or_else(|| Fail::tool("test --history needs a WORKSPACE path".to_owned()))?;
-    let convention = convention
-        .ok_or_else(|| Fail::tool("test --history needs --convention SLUG".to_owned()))?;
+    let rule = rule.ok_or_else(|| Fail::tool("test --history needs --rule PAGE".to_owned()))?;
     let format = if json { Format::Json } else { Format::Human };
 
-    let report = run_history(Path::new(&workspace), &convention)?;
+    let report = run_history(Path::new(&workspace), &rule)?;
     match format {
         Format::Json => println!("{}", report.to_json()),
         Format::Human => print!("{}", report.to_human()),
@@ -108,34 +113,48 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     }
     if report.undeclared > 0 {
         return Err(Fail::findings(format!(
-            "{} would-refuse item(s) undeclared in {GOLDEN_FILE}",
+            "{} would-refuse item(s) undeclared in the `{GOLDEN_SUFFIX}` list",
             report.undeclared
         )));
     }
     Ok(())
 }
 
-/// Load the convention, read the golden list, parse the journal, JOIN each row
+/// Load the rule page, read the golden list, parse the journal, JOIN each row
 /// against git, run the CHECK, and fold the outcomes into a report.
-fn run_history(workspace_arg: &Path, slug: &str) -> Result<HistoryReport, Fail> {
+fn run_history(workspace_arg: &Path, page: &str) -> Result<HistoryReport, Fail> {
     let workspace = resolve_workspace(workspace_arg)?;
 
-    // 1. Load the convention from its in-tree folder (the same loader the door uses).
-    let conv_root = workspace.join("conventions").join(slug);
-    if !conv_root.is_dir() {
-        return Err(Fail::tool(format!(
-            "no convention folder at conventions/{slug} under {}",
+    // 1. Load the rule from its in-tree PAGE, through the registration + load pair
+    //    the door uses. The page path is workspace-relative and mount-confined:
+    //    `--rule` names a page inside the workspace being calibrated, never one
+    //    outside it.
+    let rel = confine(page).map_err(|message| Fail::tool(format!("--rule {page:?}: {message}")))?;
+    let page_abs = workspace.join(&rel);
+    let bytes = std::fs::read_to_string(&page_abs).map_err(|e| {
+        Fail::tool(format!(
+            "no readable rule page at {page} under {}: {e}",
             workspace.display()
-        )));
-    }
-    let files = DiskConventionFiles {
-        root: conv_root.clone(),
-    };
-    let convention = load_convention(slug, &files, CheckLimits::default())
-        .map_err(|e| Fail::tool(format!("cannot load convention '{slug}': {e}")))?;
+        ))
+    })?;
+    let registration = register_page(PageRef {
+        layer: ScopeLayer::Workspace,
+        page,
+        bytes: &bytes,
+    })
+    .map_err(|e| Fail::tool(format!("rule page `{page}` is refused: {e}")))?
+    .ok_or_else(|| {
+        Fail::tool(format!(
+            "`{page}` carries no `rules/*` registration tag — the history tier calibrates a \
+             rule PAGE, and a page registers by tag"
+        ))
+    })?;
+    let id = registration.id().to_string();
+    let rule = load_rule(&registration, &bytes, CheckLimits::default())
+        .map_err(|e| Fail::tool(format!("cannot load rule page `{page}`: {e}")))?;
 
     // 2. The golden list of declared exceptions (absent ⇒ nothing declared yet).
-    let golden = load_golden(&conv_root)?;
+    let golden = load_golden(&workspace, page)?;
 
     // 3. The receipt journal — the append-only ledger of guarded writes.
     let journal_rel = fs::domain::RESERVED_JOURNAL_PATH;
@@ -154,16 +173,10 @@ fn run_history(workspace_arg: &Path, slug: &str) -> Result<HistoryReport, Fail> 
     // 5. Reconstruct + check each row.
     let mut results = Vec::with_capacity(rows.len());
     for row in &rows {
-        results.push(process_row(
-            &workspace,
-            &convention,
-            &golden,
-            &anchor_commit,
-            row,
-        ));
+        results.push(process_row(&workspace, &rule, &golden, &anchor_commit, row));
     }
 
-    let mut report = HistoryReport::assemble(slug, &rows, results);
+    let mut report = HistoryReport::assemble(&id, page, &rows, results);
     report.archived = archived_boundary(&workspace, &rows);
     Ok(report)
 }
@@ -236,7 +249,7 @@ impl Fidelity {
 
 /// One row's verdict after the CHECK (or its absence).
 enum Verdict {
-    /// Out of the convention's `paths:` scope — not its concern, never run.
+    /// Out of the rule's `paths:` scope — not its concern, never run.
     OutOfScope,
     /// Grey (class C) — could not be reconstructed, so never run.
     Grey,
@@ -259,10 +272,10 @@ struct RowResult {
     verdict: Verdict,
 }
 
-/// Reconstruct one journal row and run the convention over it.
+/// Reconstruct one journal row and run the rule over it.
 fn process_row(
     workspace: &Path,
-    convention: &Convention,
+    rule: &Rule,
     golden: &BTreeMap<String, String>,
     anchor_commit: &BTreeMap<String, String>,
     row: &receipt::journal::ParsedRow,
@@ -275,9 +288,9 @@ fn process_row(
         verdict,
     };
 
-    // A row outside the convention's scope is not its concern (the CHECK is never
-    // run against it) — the scoping law the door obeys, held here too.
-    if !convention.matches_path(&row.path) {
+    // A row outside the rule's scope is not its concern (the CHECK is never run
+    // against it) — the scoping law the door obeys, held here too.
+    if !rule.matches_path(&row.path) {
         return base(Fidelity::Grey, Verdict::OutOfScope);
     }
 
@@ -317,7 +330,7 @@ fn process_row(
         &no_edges,
     );
 
-    match convention.check_change(&change) {
+    match rule.check_change(&change) {
         Err(e) => base(
             fidelity,
             Verdict::Error {
@@ -434,37 +447,33 @@ fn run_git(workspace: &Path, args: &[&str]) -> Result<std::process::Output, Fail
         .map_err(|e| Fail::tool(format!("cannot run git: {e}")))
 }
 
-// ── the convention folder + the golden list ──────────────────────────────────
+// ── the golden list ──────────────────────────────────────────────────────────
 
-/// A disk-backed [`ConventionFiles`] rooted at `conventions/<slug>/` — the loader
-/// stays I/O-free, so the CLI injects the file access here at the disk edge.
-struct DiskConventionFiles {
-    root: PathBuf,
-}
-
-impl ConventionFiles for DiskConventionFiles {
-    fn read(&self, rel_path: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.root.join(rel_path))
-    }
-
-    fn exists(&self, rel_path: &str) -> bool {
-        self.root.join(rel_path).exists()
+/// The golden list's path for a rule page: its `.golden.md` sibling.
+///
+/// A page path is required to end in `.md` only by convention, so a page that
+/// does not simply gets the suffix appended — that still lands one list beside
+/// one rule, which is the whole law here.
+fn golden_path_for(page: &str) -> String {
+    match page.strip_suffix(".md") {
+        Some(stem) => format!("{stem}{GOLDEN_SUFFIX}"),
+        None => format!("{page}{GOLDEN_SUFFIX}"),
     }
 }
 
-/// Read + parse `conventions/<slug>/GOLDEN.md` into an `anchor → reason` map. An
-/// absent file is the empty map (nothing declared yet).
+/// Read + parse the rule page's `.golden.md` sibling into an `anchor → reason`
+/// map. An absent file is the empty map (nothing declared yet).
 ///
 /// # Errors
 /// The file exists but a declared exception row carries no reason — every
 /// exception must carry a declared reason (rulings § the golden-list mechanism).
-fn load_golden(conv_root: &Path) -> Result<BTreeMap<String, String>, Fail> {
-    let path = conv_root.join(GOLDEN_FILE);
-    let text = match std::fs::read_to_string(&path) {
+fn load_golden(workspace: &Path, page: &str) -> Result<BTreeMap<String, String>, Fail> {
+    let rel = golden_path_for(page);
+    let text = match std::fs::read_to_string(workspace.join(&rel)) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(e) => {
-            return Err(Fail::tool(format!("cannot read {GOLDEN_FILE}: {e}")));
+            return Err(Fail::tool(format!("cannot read {rel}: {e}")));
         }
     };
     parse_golden(&text).map_err(Fail::tool)
@@ -510,7 +519,11 @@ fn extract_reason(body: &str) -> Option<String> {
 
 /// The finished history report.
 struct HistoryReport {
-    slug: String,
+    /// The rule's `id:` — its identity, and what every report header names.
+    id: String,
+    /// The page the rule was loaded from — its provenance, kept beside the id
+    /// because a reader who has to go fix the law needs the file, not the name.
+    page: String,
     /// The journal span the run covered (first .. last row anchor), or `None` for
     /// an empty journal.
     span: Option<(String, String)>,
@@ -532,13 +545,19 @@ struct HistoryReport {
 }
 
 impl HistoryReport {
-    fn assemble(slug: &str, rows: &[receipt::journal::ParsedRow], results: Vec<RowResult>) -> Self {
+    fn assemble(
+        id: &str,
+        page: &str,
+        rows: &[receipt::journal::ParsedRow],
+        results: Vec<RowResult>,
+    ) -> Self {
         let span = match (rows.first(), rows.last()) {
             (Some(f), Some(l)) => Some((f.anchor.clone(), l.anchor.clone())),
             _ => None,
         };
         let mut report = HistoryReport {
-            slug: slug.to_owned(),
+            id: id.to_owned(),
+            page: page.to_owned(),
             span,
             total_rows: rows.len(),
             out_of_scope: 0,
@@ -571,8 +590,8 @@ impl HistoryReport {
                 report.out_of_scope += 1;
                 continue;
             }
-            // Fidelity counts cover only rows the convention owns (in scope). An
-            // out-of-scope row is not this convention's history.
+            // Fidelity counts cover only rows the rule owns (in scope). An
+            // out-of-scope row is not this rule's history.
             match r.fidelity {
                 Fidelity::FullBytes => report.full_bytes += 1,
                 Fidelity::Structural => report.structural += 1,
@@ -584,7 +603,7 @@ impl HistoryReport {
 
     fn to_human(&self) -> String {
         let mut s = String::new();
-        let _ = writeln!(s, "# mrd test --history — {}\n", self.slug);
+        let _ = writeln!(s, "# mrd test --history — {} ({})\n", self.id, self.page);
 
         let span = match &self.span {
             Some((f, l)) => format!("^{f}..^{l}"),
@@ -650,9 +669,11 @@ impl HistoryReport {
                 Verdict::Undeclared { message } => {
                     let _ = writeln!(
                         s,
-                        "- **UNDECLARED would-refuse** `{}` ({}): {message} — absent from \
-                         {GOLDEN_FILE}; declare it with a reason, or fix the history",
-                        r.anchor, r.path
+                        "- **UNDECLARED would-refuse** `{anchor}` ({path}): {message} — absent \
+                         from {golden}; declare it with a reason, or fix the history",
+                        anchor = r.anchor,
+                        path = r.path,
+                        golden = golden_path_for(&self.page),
                     );
                 }
                 Verdict::Error { detail } => {
@@ -710,7 +731,8 @@ impl HistoryReport {
             .as_ref()
             .map(|(f, l)| json!({ "first": f, "last": l }));
         let value = json!({
-            "convention": self.slug,
+            "rule": self.id,
+            "rule_page": self.page,
             "journal_span": span,
             // The genesis boundary (G2) — absent when no reset has happened,
             // never an empty object, so a consumer cannot read "no archive" as
@@ -756,7 +778,7 @@ mod tests {
     fn parse_golden_reads_item_and_reason() {
         let page = "\
 ---
-convention: reviewer-not-owner
+rule: rules/reviewer-not-owner.md
 ---
 
 # Golden list
@@ -785,6 +807,24 @@ Prose bullets without item= are skipped:
         let err = parse_golden(page).unwrap_err();
         assert!(err.contains("r-000002"), "names the item: {err}");
         assert!(err.contains("reason"), "names the missing reason: {err}");
+    }
+
+    /// The golden list sits BESIDE its rule page — one list, one law, no folder.
+    #[test]
+    fn the_golden_list_is_the_rule_pages_sibling() {
+        assert_eq!(
+            golden_path_for("rules/reviewer-not-owner.md"),
+            "rules/reviewer-not-owner.golden.md"
+        );
+        assert_eq!(
+            golden_path_for("teams/a/rules/close.md"),
+            "teams/a/rules/close.golden.md"
+        );
+        assert_eq!(
+            golden_path_for("rules/no-extension"),
+            "rules/no-extension.golden.md",
+            "a page that does not end in .md still gets exactly one list beside it"
+        );
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! `mrd realise <page> [--dry] [--truth index|file] [--json]` (U3.5b): the
+//! `mrd realise <page> [--dry] [--json]` (U3.5b): the
 //! reconciliation-loop verb — **observe → check → apply (only on drift) →
 //! re-check** over one page's declared claim, wiring the U3.5a engine
 //! ([`realise::realise`]). The md→mrd cutover of the legacy `md realise`; the
@@ -26,15 +26,21 @@
 //! grammar differ from `md realise`'s (OUT of the parity gate's scope); the
 //! terminal STATE is field-equivalent.
 //!
-//! # `--truth index|file` — realise-as-deploy (U4.3)
-//! Resolve a file↔index convention divergence in an explicit direction through
-//! [`policy::converge`]: `file` re-pins the attested INDEX at the live evidence rev
-//! (deploy the edited law) and writes it; `index` keeps the attested rev and
-//! reports the file-side restore the live tree needs (writes nothing).
+//! # `--truth index|file` is GONE (registration cutover)
+//! This verb used to carry a second job: realise-as-deploy, resolving a
+//! file↔INDEX convention divergence in an explicit direction through
+//! `policy::converge`. Its whole subject was `conventions/INDEX.md`, which stopped
+//! being engine substrate — there is no INDEX to re-pin and no folder to restore,
+//! and `policy::binding::converge` was deleted rather than re-keyed. The
+//! convergence law is re-owed at the ARM disk edge, where the artifact is written.
 //!
-//! Exit triad (§4 preamble): 0 = converged / drifted-fixed / preview (or a clean
-//! `--truth` deploy), 1 = non-convergent / pending-agent, 2 = a tool failure (bad
-//! usage, unreadable workspace, missing page, faulting run).
+//! The flag is REMOVED, not kept as a refusal: a flag whose only behaviour is to
+//! explain itself is a compat door in sentiment, and it would keep the deploy
+//! shape alive in every reader's head long after the thing it deployed was gone.
+//!
+//! Exit triad (§4 preamble): 0 = converged / drifted-fixed / preview, 1 =
+//! non-convergent / pending-agent, 2 = a tool failure (bad usage, unreadable
+//! workspace, missing page, faulting run).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -53,6 +59,9 @@ const EXIT_FINDING: u8 = 1;
 /// `mrd attest`'s realised-gate default).
 const DEFAULT_BOARD_DIR: &str = "board";
 
+/// The actor this verb records on every write it drives through the run plane.
+const REALISE_ACTOR: &str = "mrd:realise";
+
 /// Run `mrd realise <tail>`.
 ///
 /// # Errors
@@ -60,10 +69,6 @@ const DEFAULT_BOARD_DIR: &str = "board";
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;
-
-    if let Some(truth) = parsed.truth {
-        return truth_deploy(&root, truth, &parsed);
-    }
 
     let page = parsed
         .page
@@ -123,7 +128,7 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     let spec = RealiseSpec {
         invocation_id,
         now: Some(now),
-        actor: DEPLOY_ACTOR.to_owned(),
+        actor: REALISE_ACTOR.to_owned(),
         board_dir: DEFAULT_BOARD_DIR.to_owned(),
         scratch: scratch.clone(),
         dry_run: parsed.dry,
@@ -233,242 +238,6 @@ fn render(format: Format, page: &str, state: State, applies: u32, receipts: &[St
     }
 }
 
-// ── `--truth index|file` — realise-as-deploy (U4.3) ──────────────────────────
-
-/// Deploy a file↔index convention divergence in the stated direction through
-/// [`policy::converge`]. `file` re-pins + writes the INDEX at the live rev; `index`
-/// keeps the attested rev and reports the file-side restores (writes nothing).
-fn truth_deploy(
-    root: &fs::WorkspaceRoot,
-    truth: policy::Truth,
-    parsed: &Parsed,
-) -> Result<(), Fail> {
-    let index_path = root.0.join(policy::RESERVED_INDEX_PATH);
-    let current = std::fs::read_to_string(&index_path).map_err(|e| {
-        Fail::tool(format!(
-            "cannot read the attested INDEX {}: {e}",
-            policy::RESERVED_INDEX_PATH
-        ))
-    })?;
-    let source = DiskConventions { root };
-    let convergence = policy::converge(&current, &source, policy::CheckLimits::default(), truth)
-        .map_err(|e| Fail::tool(e.to_string()))?;
-
-    // file-truth deploys the edited law: write the re-pinned INDEX (realise-as
-    // -deploy). index-truth keeps the attested INDEX and only reports the restores.
-    //
-    // U31: the INDEX is the ARMED POLICY the whole check plane reads its rules
-    // from, and it used to land through a bare `std::fs::write` — no candidate,
-    // and not even the crate's atomic tmp+fsync+rename discipline, so a crash
-    // mid-write left a torn policy file. It now rides `fs::replace_file` like
-    // every other whole-file write, which DEMANDS the sealed candidate: the
-    // document this deploy is about to land is built and parsed before a byte
-    // moves. (The flock and the rev-CAS this door still lacks are reported as
-    // findings, not fixed here — the seal was U31's bound.)
-    //
-    // U35: and it JOURNALS. Sealing and journaling are different properties
-    // (S3-R12(a)): U31 made this door unable to land bytes off-path, which is not
-    // the same as leaving a receipt. Unjournaled, the deploy advanced the tree
-    // root while the journal's last row still described the tree before it — so
-    // `check`'s baseline went stale, both detectors refused `grey(cannot-assess)`,
-    // and the installed fence refused the operator's next commit even though the
-    // ONLY write in it was governed (U34 measured exactly that, both doors).
-    let wrote = matches!(truth, policy::Truth::File) && !parsed.dry;
-    if wrote {
-        let candidate =
-            model::candidate_of_body(policy::RESERVED_INDEX_PATH, convergence.index_after.clone());
-        // The row's facts are read AROUND the write itself — the tree before, the
-        // tree after, and the INDEX's own rev transition. `current` is the exact
-        // pre-image `converge` decided against, so the recorded `before` rev is
-        // the law that was deployed FROM, never a re-read that may have drifted.
-        let rev_before = body_rev(&current);
-        let root_before = tree_root(root)?;
-        fs::replace_file(root, Path::new(policy::RESERVED_INDEX_PATH), &candidate)
-            .map_err(|e| Fail::tool(format!("cannot write the converged INDEX: {e}")))?;
-        let root_after = tree_root(root)?;
-        // The §9 time fact the realise plane already mints; this door mints no
-        // invocation id, so the identity's other half is deliberately dropped.
-        let (_, now) = mint_identity()?;
-        journal_deploy(
-            root,
-            &Deployed {
-                now: &now,
-                root_before: &root_before,
-                root_after: &root_after,
-                rev_before: &rev_before,
-                rev_after: &candidate.document().root.node_rev.0,
-            },
-        )?;
-    }
-
-    render_truth(parsed.format, truth, &convergence, wrote);
-    Ok(())
-}
-
-/// What one INDEX deploy did, as the journal records it: the §9 time fact, the
-/// tree roots read around the write, and the INDEX's own rev transition. A struct
-/// rather than six positional `&str`s — six same-typed parameters at one call
-/// site is a transposition waiting to be written into the ledger.
-struct Deployed<'a> {
-    now: &'a str,
-    root_before: &'a str,
-    root_after: &'a str,
-    rev_before: &'a str,
-    rev_after: &'a str,
-}
-
-/// The actor this door records — the same name `realise_page` gives the engine,
-/// spelled once so the ledger and the realise plane cannot drift apart.
-const DEPLOY_ACTOR: &str = "mrd:realise";
-
-/// **U35 — journal one `mrd realise --truth file` deploy.** The row rides U32's
-/// row writer (`receipt::journal::render_row`); this door adds FACTS, never a
-/// second renderer and never a second counter.
-///
-/// `op=realise` with a whole-file rev transition and `edits=0` is the `op=lock`
-/// row shape (`wire-serve::lock_write`), for the same reason: the deploy replaces
-/// a whole file, so its transition is file-grain and there are no node-grain edits
-/// to list. The row is appended AFTER the bytes land, so a crash between the two
-/// leaves a stale baseline — grey, the honest unknown — rather than a row claiming
-/// a write that never happened.
-///
-/// # Errors
-/// [`Fail`] (exit 2) when the journal page cannot be read or appended.
-fn journal_deploy(root: &fs::WorkspaceRoot, deployed: &Deployed<'_>) -> Result<(), Fail> {
-    let page = fs::read_journal_page(root)
-        .map_err(|e| Fail::tool(format!("cannot read the receipt journal: {e}")))?;
-    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
-        seq: receipt::journal::next_seq(&page),
-        op: "realise",
-        path: policy::RESERVED_INDEX_PATH,
-        actor: Some(DEPLOY_ACTOR),
-        now: Some(deployed.now),
-        root_before: deployed.root_before,
-        root_after: deployed.root_after,
-        file: Some(receipt::journal::FileTransition {
-            before: Some(deployed.rev_before),
-            after: Some(deployed.rev_after),
-        }),
-        edits: Vec::new(),
-    });
-    fs::append_line(root, Path::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
-        .map_err(|e| Fail::tool(format!("cannot append the deploy's journal row: {e}")))
-}
-
-/// The live workspace tree root — the SAME `fs::domain_snapshot` fold `check`'s
-/// baseline detector reads (`check::layer0::journal_trace`). A row written against
-/// any other fold would date the tree in a unit its reader does not use.
-///
-/// # Errors
-/// [`Fail`] (exit 2) when the domain snapshot cannot be read or folded.
-fn tree_root(root: &fs::WorkspaceRoot) -> Result<String, Fail> {
-    Ok(fs::domain_snapshot(root)
-        .map_err(|e| Fail::tool(format!("cannot fold the workspace tree: {e}")))?
-        .1
-        .0)
-}
-
-/// The whole-file rev of a page's bytes, through the document build every other
-/// rev in the system comes from — never a second hash of the same bytes.
-fn body_rev(body: &str) -> String {
-    model::candidate_of_body(policy::RESERVED_INDEX_PATH, body.to_owned())
-        .document()
-        .root
-        .node_rev
-        .0
-        .clone()
-}
-
-/// Render a `--truth` convergence: the direction, whether the INDEX was written,
-/// and the file-side actions the live tree still needs.
-fn render_truth(
-    format: Format,
-    truth: policy::Truth,
-    convergence: &policy::Convergence,
-    wrote: bool,
-) {
-    let dir = match truth {
-        policy::Truth::File => "file",
-        policy::Truth::Index => "index",
-    };
-    match format {
-        Format::Json => {
-            let actions: Vec<_> = convergence
-                .file_actions
-                .iter()
-                .map(|a| match a {
-                    policy::FileAction::RestoreFile { slug, to_rev } => {
-                        json!({ "action": "restore_file", "slug": slug, "to_rev": to_rev })
-                    }
-                    policy::FileAction::MissingFile { slug, to_rev } => {
-                        json!({ "action": "missing_file", "slug": slug, "to_rev": to_rev })
-                    }
-                })
-                .collect();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&json!({
-                    "realise_truth": {
-                        "truth": dir,
-                        "index_written": wrote,
-                        "file_actions": actions,
-                    }
-                }))
-                .expect("json")
-            );
-        }
-        Format::Human => {
-            let verb = if wrote {
-                "INDEX re-pinned + written (deploy)"
-            } else {
-                "INDEX unchanged"
-            };
-            println!("realise --truth {dir} — {verb}");
-            for action in &convergence.file_actions {
-                match action {
-                    policy::FileAction::RestoreFile { slug, to_rev } => {
-                        println!("  restore {slug} → attested rev {to_rev}");
-                    }
-                    policy::FileAction::MissingFile { slug, to_rev } => {
-                        println!(
-                            "  missing {slug} — recreate at attested rev {to_rev} (or disarm)"
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A disk-backed [`policy::ConventionSource`]: reads `conventions/<slug>/` under
-/// the workspace root (the same seam `wire-serve`'s gate injects — policy does no
-/// I/O). The convergence decision all lives in `policy`; this hands over bytes.
-struct DiskConventions<'a> {
-    root: &'a fs::WorkspaceRoot,
-}
-
-impl policy::ConventionSource for DiskConventions<'_> {
-    fn files_for<'a>(&'a self, slug: &str) -> Box<dyn policy::ConventionFiles + 'a> {
-        Box::new(DiskConventionFolder {
-            base: self.root.0.join("conventions").join(slug),
-        })
-    }
-}
-
-/// One convention folder on disk (`conventions/<slug>/`).
-struct DiskConventionFolder {
-    base: std::path::PathBuf,
-}
-
-impl policy::ConventionFiles for DiskConventionFolder {
-    fn read(&self, rel: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.base.join(rel))
-    }
-    fn exists(&self, rel: &str) -> bool {
-        self.base.join(rel).exists()
-    }
-}
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 /// Read a scalar frontmatter value off a parsed document (the public
@@ -505,7 +274,6 @@ fn mint_identity() -> Result<(String, String), Fail> {
 struct Parsed {
     page: Option<String>,
     dry: bool,
-    truth: Option<policy::Truth>,
     format: Format,
 }
 
@@ -513,27 +281,11 @@ impl Parsed {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut page: Option<String> = None;
         let mut dry = false;
-        let mut truth = None;
         let mut json = false;
-        let mut it = args.iter();
-        while let Some(arg) = it.next() {
+        for arg in args {
             match arg.as_str() {
                 "--dry" | "--dry-run" => dry = true,
                 "--json" => json = true,
-                "--truth" => {
-                    let val = it
-                        .next()
-                        .ok_or_else(|| Fail::tool("--truth needs `index` or `file`".to_owned()))?;
-                    truth = Some(match val.as_str() {
-                        "index" => policy::Truth::Index,
-                        "file" => policy::Truth::File,
-                        other => {
-                            return Err(Fail::tool(format!(
-                                "--truth must be `index` or `file`, got `{other}`"
-                            )));
-                        }
-                    });
-                }
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -544,7 +296,6 @@ impl Parsed {
         Ok(Parsed {
             page,
             dry,
-            truth,
             format: if json { Format::Json } else { Format::Human },
         })
     }

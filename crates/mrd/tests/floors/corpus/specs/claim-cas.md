@@ -1,6 +1,6 @@
 ---
 corpus_test: claim-cas-floor
-convention: ../../conventions/claim-cas
+rule: ../../rules/claim-cas.md
 corpus: ../tree
 ---
 
@@ -10,11 +10,11 @@ A contested claim (stealing an already-owned slot) fires `claim_cas`; claiming
 an unclaimed slot passes. The one declared rule fires: exit 0.
 
 ```rules
-scenarios/uncontested-claim.md
+uncontested-claim
 ```
 
 ```case
-{ "name": "contested-claim", "doc": "tasks/claimed.md", "actor": "worker-b", "set": {"owner": "worker-b"}, "expect": "scenarios/uncontested-claim.md" }
+{ "name": "contested-claim", "doc": "tasks/claimed.md", "actor": "worker-b", "set": {"owner": "worker-b"}, "expect": "uncontested-claim" }
 ```
 
 ```case

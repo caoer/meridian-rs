@@ -5,23 +5,33 @@
 //! blocking `gate()` seam: after CAS and before bytes land, the write door
 //! evaluates a [`Change`](crate::Change) through a workspace's OWN armed law and
 //! either lets the write stand ([`GateOutcome::Ok`]) or REFUSES it
-//! ([`GateOutcome::Refusal`]) — the bytes never land. It replaces the deferred
-//! `authorize` stub (the Go-era caller-supplies shape dies with Go).
+//! ([`GateOutcome::Refusal`]) — the bytes never land.
 //!
 //! # Two halves, one seam
 //! The seam splits along the I/O line the crate's charter draws (policy stays
 //! I/O-free, as `model` is):
-//! - [`resolve_armed_set`] — the LOAD + VERIFY half. Given the attested INDEX
-//!   bytes (U1.4), the once-armed marker (U2.5 read-contract), and an injected
-//!   [`ConventionSource`] to read convention folders, it resolves the workspace's
-//!   armed law into an [`ArmedSet`], failing CLOSED on a missing-once-armed,
-//!   corrupt, un-loadable, or DRIFTED law. All I/O is injected — the caller (the
-//!   trusted write path in `wire-serve`/`run`) does the disk reads.
-//! - [`gate`] — the DECISION half. `gate(change, armed_set)`: never-armed is a
-//!   no-op; a fault refuses fail-closed; otherwise every in-scope armed
-//!   convention runs over the change and its refusals STACK (conjunction), a
-//!   `block`-severity firing refusing the write, a `warn` firing rendering as an
-//!   advisory finding.
+//! - [`resolve_armed_law`](crate::armed_law::resolve_armed_law) — the LOAD +
+//!   VERIFY half, and the ONE surface that reports every way a workspace's armed
+//!   law could not be honored. Given the attested artifact's bytes, the
+//!   once-armed marker, an injected [`PageSource`](crate::armed::PageSource), and
+//!   the write's path, it resolves an [`ArmedLaw`]. All I/O is injected — the
+//!   caller (the trusted write path in `wire-serve`/`run`) does the disk reads.
+//! - [`gate`] — the DECISION half. `gate(change, law)`: never-armed is a no-op; a
+//!   REFUSING fault refuses fail-closed; otherwise every in-scope armed rule runs
+//!   over the change and its refusals STACK (conjunction), a `block`-mode firing
+//!   refusing the write, a `warn` firing rendering as an advisory finding.
+//!
+//! # The law is resolved PER WRITE PATH
+//! An arm is rooted (`armed::ArmRoot`), so what governs a write is a question
+//! about that write's path — not a workspace-wide set resolved once. The caller
+//! resolves at the target path and hands the result here; selection order and its
+//! two wrong hand-compositions are `ArmedArtifact::verify_at`'s own doc.
+//!
+//! # A fault is never silently survived
+//! [`ArmedLaw::refusing`] is the refusal set; the faults it does NOT carry (a
+//! hook row's, which never vetoes) still reach the operator, as advisory findings
+//! rendered in the same words. The gate chooses the CHANNEL, never the vocabulary
+//! — [`crate::armed_law::ArmedFault`]'s `Display` is the one renderer.
 //!
 //! # ATTACK-034 scoping (laws.md)
 //! Refusal makes violations "unrepresentable through an armed change plane" —
@@ -30,84 +40,9 @@
 //! the git witness plus the receipt-engine-only write restriction, never by this
 //! gate.
 
+use crate::armed::Mode;
+use crate::armed_law::{ArmedFault, ArmedLaw, ArmedRule};
 use crate::change::Change;
-use crate::check_eval::CheckLimits;
-use crate::convention::{Convention, ConventionFiles, load_convention};
-use crate::index::{ArmedRef, Enforcement, parse_index_strict};
-use crate::registration::page_rev;
-
-/// A per-slug accessor for a convention folder, injected so [`resolve_armed_set`]
-/// stays I/O-free: given a slug, hand back a [`ConventionFiles`] reading that
-/// convention's `conventions/<slug>/` folder from wherever the caller keeps it
-/// (disk in production, an in-memory map in tests).
-pub trait ConventionSource {
-    /// A files accessor for the convention folder named `slug`.
-    fn files_for<'a>(&'a self, slug: &str) -> Box<dyn ConventionFiles + 'a>;
-}
-
-/// One armed convention resolved from an INDEX `[x]` row and drift-verified: its
-/// live evidence rev equalled the pinned armed rev at load. Construction is
-/// sealed to [`resolve_armed_set`] — a `Convention` reaches `block`/`warn`
-/// enforcement only through the drift gate.
-#[derive(Debug, Clone)]
-pub struct ArmedConvention {
-    slug: String,
-    enforcement: Enforcement,
-    convention: Convention,
-}
-
-impl ArmedConvention {
-    /// The convention's slug.
-    #[must_use]
-    pub fn slug(&self) -> &str {
-        &self.slug
-    }
-
-    /// The armed enforcement level (`warn` or `block`).
-    #[must_use]
-    pub fn enforcement(&self) -> Enforcement {
-        self.enforcement
-    }
-
-    pub(crate) fn convention(&self) -> &Convention {
-        &self.convention
-    }
-}
-
-/// The verified armed law of a workspace, resolved inside the trusted write path
-/// from its attested INDEX (U1.4) and once-armed marker (U2.5). The gate's input.
-#[derive(Debug, Clone)]
-pub enum ArmedSet {
-    /// The workspace has NEVER been armed (no once-armed marker). The gate is a
-    /// no-op — writes land bit-for-bit as with no gate at all.
-    NeverArmed,
-    /// A resolved, drift-verified armed set — zero or more in-scope conventions.
-    Armed(Vec<ArmedConvention>),
-    /// Fail-CLOSED: the armed law itself is broken and cannot be honored. The
-    /// gate refuses every write until the law is repaired.
-    Faulted(GateFault),
-}
-
-/// Why the armed law could not be resolved — the fail-closed causes. Bound to
-/// the closed §8 taxonomy at the wire seam (`convention_fault` env /
-/// `armed_drift` refresh).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GateFault {
-    /// The armed INDEX is absent on a once-armed workspace, is corrupt, or an
-    /// armed convention cannot load. Refusal-amendment row 6 (`convention_fault`,
-    /// env). `detail` names the fault (the INDEX/convention).
-    ConventionFault { detail: String },
-    /// An armed convention's live evidence rev no longer equals its pinned armed
-    /// rev. Refusal-amendment row 7 (`armed_drift`, refresh).
-    ArmedDrift {
-        /// The armed convention's slug.
-        slug: String,
-        /// The reviewer-approved rev the INDEX pins (`armed-rev`).
-        armed_rev: String,
-        /// The rev the convention's evidence reads NOW (`report-rev`).
-        report_rev: String,
-    },
-}
 
 /// The outcome of gating one change through a workspace's armed law:
 /// `Ok(verdicts) | Refusal(violations)` (laws.md § the policy gate).
@@ -122,58 +57,54 @@ pub enum GateOutcome {
     Refusal(GateRefusal),
 }
 
-/// One advisory finding a `warn`-armed convention emitted, OR a `--force`-escaped
-/// refusal (U4.3) — both render on the write response but never refuse (§11.1
-/// advisory shape). A `forced` finding is the loud record of a skip: it renders,
-/// and the mount journals it (the sanctioned bypass, decision #6).
+/// One advisory finding a `warn`-armed rule emitted, a surviving armed-law fault,
+/// OR a `--force`-escaped refusal (U4.3) — all render on the write response and
+/// none refuse (§11.1 advisory shape). A `forced` finding is the loud record of a
+/// skip: it renders, and the mount journals it (the sanctioned bypass, decision
+/// #6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateFinding {
-    /// The convention (or `binding-break:<side>`) that emitted it.
-    pub slug: String,
+    /// The rule id (or `binding-break:<side>`) that emitted it.
+    pub rule: String,
     /// The teaching message.
     pub message: String,
-    /// The legal path the refusal cites (the passing scenario).
+    /// The legal path the refusal cites (the passing case).
     pub passing_scenario: String,
     /// `true` when this finding is a `--force`-escaped refusal — a skip the
     /// mount must journal (never a plain `warn` advisory).
     pub forced: bool,
 }
 
-/// One blocking violation a `block`-armed convention emitted — the change
-/// violates armed law and the write refuses.
+/// One blocking violation a `block`-armed rule emitted — the change violates
+/// armed law and the write refuses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateViolation {
-    /// The convention that refused.
-    pub slug: String,
+    /// The rule id that refused.
+    pub rule: String,
     /// The teaching message.
     pub message: String,
-    /// The legal path the refusal cites (the passing scenario).
+    /// The legal path the refusal cites (the passing case).
     pub passing_scenario: String,
 }
 
 /// Why the gate refused a write — each arm carries the facts the wire refusal
-/// names. `Blocked` and `ConventionFault` both mint the `convention_fault` wire
-/// code in U4.2 (U4.4's floor conventions add per-rule codes); `ArmedDrift`
-/// mints `armed_drift`.
+/// names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateRefusal {
-    /// One or more `block`-armed conventions fired over the change (conjunction
-    /// stacking). Every violation names its convention and cites the passing
-    /// scenario — the refusal teaches the legal path.
+    /// One or more `block`-armed rules fired over the change (conjunction
+    /// stacking). Every violation names its rule and cites the passing case —
+    /// the refusal teaches the legal path.
     Blocked { violations: Vec<GateViolation> },
-    /// The armed law is broken (missing-once-armed / corrupt / un-loadable / a
-    /// convention that cannot evaluate). Fail-closed `convention_fault`.
-    ConventionFault { detail: String },
-    /// An armed convention drifted off its attested rev. `armed_drift`.
-    ArmedDrift {
-        slug: String,
-        armed_rev: String,
-        report_rev: String,
-    },
-    /// U4.3 taxonomy row 9: a one-sided file↔index change stopped at the door (a
-    /// checkbox flip on the INDEX, or a direct edit of an armed convention's
-    /// `CHECK.md`). Force-escapable — a `--force` write converts this to a
-    /// journaled + rendered finding instead. Mints `binding_break`.
+    /// The workspace's armed law could not be honored. Carries EVERY refusing
+    /// fault rather than the first, because they are one condition — the law at
+    /// this path is not enforceable — and reporting one would hide the rest.
+    /// The wire seam picks the envelope from the faults; the words are
+    /// [`ArmedFault`]'s.
+    ArmedLawFault { faults: Vec<ArmedFault> },
+    /// U4.3 taxonomy row 9: a one-sided artifact↔page change stopped at the door
+    /// (a hand-edited row in the artifact, or a direct edit of an armed page).
+    /// Force-escapable — a `--force` write converts this to a journaled +
+    /// rendered finding instead. Mints `binding_break`.
     BindingBreak {
         /// Which side the one-sided change touched (`index` / `file`).
         side: crate::binding::BindingSide,
@@ -184,154 +115,53 @@ pub enum GateRefusal {
         /// The legal path the refusal cites (the ONE-act proper path).
         legal_path: String,
     },
-    /// U4.3 taxonomy row 10: deletion/rename of the INDEX or the once-armed
-    /// marker, refused by the INDEX-integrity floor convention. NOT
-    /// force-escapable (security F2). Mints `index_integrity`.
+    /// U4.3 taxonomy row 10: deletion/rename of the armed-rules artifact or the
+    /// once-armed marker, refused by the integrity floor. NOT force-escapable
+    /// (security F2). Mints `index_integrity`.
     IndexIntegrity {
-        /// The protected file (the INDEX or the marker).
+        /// The protected file (the artifact or the marker).
         target: String,
-        /// The teaching message citing the floor convention.
+        /// The teaching message citing the floor.
         teaching: String,
     },
 }
 
-/// Resolve a workspace's armed law — the LOAD + VERIFY half of the gate seam.
-///
-/// `index` is the attested INDEX page bytes (`None` when the INDEX file is
-/// absent); `ever_armed` is the once-armed marker's presence; `source` reads
-/// convention folders (injected — policy does no I/O); `limits` bound each
-/// convention's load gate.
-///
-/// The fail-closed ladder (refusal-amendment rows 6/7; laws.md § the policy
-/// gate):
-/// - **never-armed** (`!ever_armed`) — [`ArmedSet::NeverArmed`], a bit-for-bit
-///   no-op. A stray INDEX cannot arm a workspace (arming is drift-gated and sets
-///   the marker), so the INDEX is not even read.
-/// - **missing INDEX on a once-armed workspace** — `Faulted(ConventionFault)`.
-/// - **corrupt INDEX** — `Faulted(ConventionFault)`, naming the corruption. A
-///   corrupt page never reads as an empty (gate-disabling) armed set.
-/// - **an armed convention cannot load** — `Faulted(ConventionFault)`.
-/// - **an armed convention drifted** (report-rev ≠ armed-rev) —
-///   `Faulted(ArmedDrift)`.
-/// - otherwise — `Armed(convs)`, every convention drift-verified.
-#[must_use]
-pub fn resolve_armed_set(
-    index: Option<&str>,
-    ever_armed: bool,
-    source: &dyn ConventionSource,
-    limits: CheckLimits,
-) -> ArmedSet {
-    // Never armed: the gate is OFF. The INDEX is not consulted — a workspace can
-    // only be armed by an attested arm (which sets the marker), so any INDEX on
-    // a never-armed workspace is a stray file, ignored for a bit-for-bit no-op.
-    if !ever_armed {
-        return ArmedSet::NeverArmed;
-    }
-
-    // Once armed: an attested INDEX MUST be present and valid, or fail CLOSED.
-    let Some(index_src) = index else {
-        return ArmedSet::Faulted(GateFault::ConventionFault {
-            detail: "attested INDEX is missing on a workspace that has been armed \
-                     (once-armed marker present) — failing closed"
-                .to_string(),
-        });
-    };
-    let rows = match parse_index_strict(index_src) {
-        Ok(rows) => rows,
-        Err(corrupt) => {
-            return ArmedSet::Faulted(GateFault::ConventionFault {
-                detail: format!("attested INDEX is corrupt: {}", corrupt.detail),
-            });
-        }
-    };
-
-    let mut convs = Vec::with_capacity(rows.len());
-    for row in rows {
-        match resolve_one(&row, source, limits) {
-            Ok(ac) => convs.push(ac),
-            Err(fault) => return ArmedSet::Faulted(fault),
-        }
-    }
-    ArmedSet::Armed(convs)
-}
-
-/// Load one armed row's convention and drift-verify it, or fail closed.
-fn resolve_one(
-    row: &ArmedRef,
-    source: &dyn ConventionSource,
-    limits: CheckLimits,
-) -> Result<ArmedConvention, GateFault> {
-    let files = source.files_for(&row.slug);
-    let convention =
-        load_convention(&row.slug, &*files, limits).map_err(|e| GateFault::ConventionFault {
-            detail: format!("armed convention `{}` cannot load: {e}", row.slug),
-        })?;
-    // The drift gate: the live evidence rev must still equal the pinned armed
-    // rev, or the attested law changed out from under its approval.
-    let check_md = files
-        .read("CHECK.md")
-        .map_err(|e| GateFault::ConventionFault {
-            detail: format!("armed convention `{}` CHECK.md unreadable: {e}", row.slug),
-        })?;
-    let report_rev = page_rev(&check_md);
-    if report_rev != row.armed_rev {
-        return Err(GateFault::ArmedDrift {
-            slug: row.slug.clone(),
-            armed_rev: row.armed_rev.clone(),
-            report_rev,
-        });
-    }
-    Ok(ArmedConvention {
-        slug: row.slug.clone(),
-        enforcement: row.enforcement,
-        convention,
-    })
-}
-
 /// Gate one change through a resolved armed law — the DECISION half.
-/// `gate(change, armed_set) → Ok(verdicts) | Refusal(violations)` (laws.md).
+/// `gate(change, law) → Ok(verdicts) | Refusal(violations)` (laws.md).
 ///
-/// - [`ArmedSet::NeverArmed`] — `Ok([])`, the no-op.
-/// - [`ArmedSet::Faulted`] — `Refusal` (fail-closed): the armed law is broken.
-/// - [`ArmedSet::Armed`] — every in-scope armed convention runs over the change
-///   and its refusals STACK (conjunction). A `block` firing refuses the write; a
-///   `warn` firing renders as an advisory finding. A convention that cannot
-///   EVALUATE the change fails closed (`convention_fault`) — never a silent pass.
+/// - never-armed — `Ok([])`, the no-op.
+/// - a REFUSING fault — `Refusal(ArmedLawFault)` (fail-closed): the law itself
+///   cannot be honored at this path.
+/// - otherwise — the door law first, then every in-scope armed rule runs over
+///   the change and its refusals STACK (conjunction). A `block` firing refuses
+///   the write; a `warn` firing renders as an advisory finding. A rule that
+///   cannot EVALUATE the change fails closed — never a silent pass. Surviving
+///   (non-refusing) faults ride along as advisory findings.
 ///
 /// `--force` (amendment pt 3): a forced change escapes a `block` refusal — the
-/// skip is the mount's to journal + render. The wire `force` field plumbing is
-/// carried on U4.3; here the pure escape honours `change.force`.
+/// skip is the mount's to journal + render. It never escapes an armed-law fault:
+/// a law that cannot be read is not a check to skip.
 #[must_use]
-pub fn gate(change: &Change, armed_set: &ArmedSet) -> GateOutcome {
-    match armed_set {
-        ArmedSet::NeverArmed => GateOutcome::Ok(Vec::new()),
-        ArmedSet::Faulted(GateFault::ConventionFault { detail }) => {
-            GateOutcome::Refusal(GateRefusal::ConventionFault {
-                detail: detail.clone(),
-            })
-        }
-        ArmedSet::Faulted(GateFault::ArmedDrift {
-            slug,
-            armed_rev,
-            report_rev,
-        }) => GateOutcome::Refusal(GateRefusal::ArmedDrift {
-            slug: slug.clone(),
-            armed_rev: armed_rev.clone(),
-            report_rev: report_rev.clone(),
-        }),
-        ArmedSet::Armed(convs) => gate_armed(change, convs),
+pub fn gate(change: &Change, law: &ArmedLaw) -> GateOutcome {
+    if law.never_armed() {
+        return GateOutcome::Ok(Vec::new());
     }
+    let refusing: Vec<ArmedFault> = law.refusing().cloned().collect();
+    if !refusing.is_empty() {
+        return GateOutcome::Refusal(GateRefusal::ArmedLawFault { faults: refusing });
+    }
+    gate_armed(change, law)
 }
 
-/// The armed-workspace decision: the U4.3 door law FIRST (INDEX-integrity floor,
-/// then the binding law), then the armed conventions. The door law runs before
-/// conventions because a write to the engine-managed INDEX / an armed `CHECK.md`
-/// is structurally wrong regardless of what a user convention would say.
-fn gate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
+/// The armed-workspace decision: the U4.3 door law FIRST (integrity floor, then
+/// the binding law), then the armed rules. The door law runs before the rules
+/// because a write to the engine-managed artifact / an armed page is structurally
+/// wrong regardless of what a user rule would say.
+fn gate_armed(change: &Change, law: &ArmedLaw) -> GateOutcome {
     let path = target_path(change);
-    let is_armed_slug = |slug: &str| convs.iter().any(|c| c.slug() == slug);
-    match crate::binding::classify_door_law(change.op, path, &is_armed_slug) {
-        // The INDEX-integrity floor is structural — `--force` does NOT escape it
+    let is_armed_page = |page: &str| law.armed_pages().any(|armed| armed == page);
+    match crate::binding::classify_door_law(change.op, path, &is_armed_page) {
+        // The integrity floor is structural — `--force` does NOT escape it
         // (security F2: deleting the marker is the silent-disarm attack).
         crate::binding::DoorLaw::IndexIntegrity { target, teaching } => {
             return GateOutcome::Refusal(GateRefusal::IndexIntegrity { target, teaching });
@@ -346,7 +176,7 @@ fn gate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
         } => {
             if change.force {
                 return GateOutcome::Ok(vec![GateFinding {
-                    slug: format!("binding-break:{}", side.as_str()),
+                    rule: format!("binding-break:{}", side.as_str()),
                     message: format!("FORCED past the binding law: {teaching}"),
                     passing_scenario: legal_path,
                     forced: true,
@@ -361,7 +191,7 @@ fn gate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
         }
         crate::binding::DoorLaw::Clear => {}
     }
-    evaluate_armed(change, convs)
+    evaluate_armed(change, law)
 }
 
 /// The write's target file path — `change.doc.path` (the after state; stamped on
@@ -374,44 +204,63 @@ fn target_path(change: &Change) -> &str {
     }
 }
 
-/// Run every in-scope armed convention over the change, stacking outcomes.
-fn evaluate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
+/// The advisory findings the surviving (non-refusing) faults render as — a hook
+/// row's fault never vetoes, and this is the channel that keeps it from being
+/// silently survived instead.
+fn surviving_faults(law: &ArmedLaw) -> Vec<GateFinding> {
+    law.faults()
+        .iter()
+        .filter(|fault| !fault.refuses())
+        .map(|fault| GateFinding {
+            rule: fault
+                .id()
+                .map_or_else(|| "armed-law".to_string(), |id| id.as_str().to_string()),
+            message: fault.to_string(),
+            passing_scenario: crate::armed::ARMED_RULES_PATH.to_string(),
+            forced: false,
+        })
+        .collect()
+}
+
+/// Run every in-scope armed rule over the change, stacking outcomes.
+fn evaluate_armed(change: &Change, law: &ArmedLaw) -> GateOutcome {
     let path = change.doc.path.as_str();
-    let mut findings = Vec::new();
+    let mut findings = surviving_faults(law);
     let mut violations = Vec::new();
-    for ac in convs {
-        // Scoping: a convention only judges documents its `paths:` scope covers.
-        if !ac.convention.matches_path(path) {
+    for armed in law.rules() {
+        // Scoping: a rule only judges documents its `paths:` scope covers.
+        if !armed.rule().matches_path(path) {
             continue;
         }
-        let outcome = match ac.convention.check_change(change) {
+        let outcome = match armed.rule().check_change(change) {
             Ok(outcome) => outcome,
-            // A convention that cannot COMPLETE its evaluation over the change
-            // fails CLOSED — a budget/parse/runtime fault never reads as a pass.
+            // A rule that cannot COMPLETE its evaluation over the change fails
+            // CLOSED — a budget/parse/runtime fault never reads as a pass.
             Err(e) => {
-                return GateOutcome::Refusal(GateRefusal::ConventionFault {
-                    detail: format!(
-                        "armed convention `{}` cannot evaluate the change: {e}",
-                        ac.slug
-                    ),
+                return GateOutcome::Refusal(GateRefusal::ArmedLawFault {
+                    faults: vec![ArmedFault::Unevaluable {
+                        row: armed.row().clone(),
+                        detail: e.to_string(),
+                    }],
                 });
             }
         };
         for refusal in outcome.refusals {
-            match ac.enforcement {
-                Enforcement::Block => violations.push(GateViolation {
-                    slug: ac.slug.clone(),
+            match armed.mode() {
+                Mode::Block => violations.push(GateViolation {
+                    rule: rule_name(armed),
                     message: refusal.message,
                     passing_scenario: refusal.passing_scenario,
                 }),
-                Enforcement::Warn => findings.push(GateFinding {
-                    slug: ac.slug.clone(),
+                Mode::Warn => findings.push(GateFinding {
+                    rule: rule_name(armed),
                     message: refusal.message,
                     passing_scenario: refusal.passing_scenario,
                     forced: false,
                 }),
-                // `off` is never armed — it does not appear in a resolved set.
-                Enforcement::Off => {}
+                // `off` never fires (it is filtered before resolution), and
+                // `armed` is a hook's mode — a reaction never vetoes a write.
+                Mode::Off | Mode::Armed => {}
             }
         }
     }
@@ -423,7 +272,7 @@ fn evaluate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
             // so the render still names what was bypassed.
             let mut all = findings;
             all.extend(violations.into_iter().map(|v| GateFinding {
-                slug: v.slug,
+                rule: v.rule,
                 message: format!("FORCED past armed refusal: {}", v.message),
                 passing_scenario: v.passing_scenario,
                 forced: true,
@@ -435,77 +284,96 @@ fn evaluate_armed(change: &Change, convs: &[ArmedConvention]) -> GateOutcome {
     GateOutcome::Ok(findings)
 }
 
+/// The name a report labels an armed rule with — its id (ruling D1: the id is
+/// the name everywhere the slug was one).
+fn rule_name(armed: &ArmedRule) -> String {
+    armed.id().as_str().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::armed::{ArmRequest, ArmRoot, Mode, PageSource, arm};
+    use crate::armed_law::resolve_armed_law;
     use crate::change::{ChangeOp, Invocation, derive_change};
-    use crate::index::{Enforcement, arm, generate_index, sweep};
+    use crate::check_eval::CheckLimits;
+    use crate::registration::{PageRef, RuleId, RuleIndex, ScopeLayer, page_rev};
     use model::{Document, NodeKind};
     use std::collections::BTreeMap;
 
-    // ── an in-memory convention source ───────────────────────────────────────
+    // ── an in-memory page source ─────────────────────────────────────────────
 
-    /// A convention folder as an in-memory `rel_path → body` map.
-    #[derive(Clone)]
-    struct MemConv(BTreeMap<String, String>);
+    /// The workspace's pages, as a `path → bytes` map.
+    struct MemPages(BTreeMap<String, String>);
 
-    impl ConventionFiles for MemConv {
-        fn read(&self, rel: &str) -> std::io::Result<String> {
-            self.0.get(rel).cloned().ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {rel}"))
+    impl PageSource for MemPages {
+        fn read(&self, page: &str) -> std::io::Result<String> {
+            self.0.get(page).cloned().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {page}"))
             })
         }
-        fn exists(&self, rel: &str) -> bool {
-            self.0.contains_key(rel)
-        }
     }
 
-    /// A whole `conventions/` tree: `slug → folder`.
-    struct MemConventions(BTreeMap<String, MemConv>);
-
-    impl ConventionSource for MemConventions {
-        fn files_for<'a>(&'a self, slug: &str) -> Box<dyn ConventionFiles + 'a> {
-            Box::new(
-                self.0
-                    .get(slug)
-                    .cloned()
-                    .unwrap_or_else(|| MemConv(BTreeMap::new())),
-            )
-        }
-    }
-
-    /// A CHECK.md that refuses iff `change.actor == change.doc.frontmatter.owner`
-    /// (the seed shape), scoped to `tasks/**`.
-    fn reviewer_check() -> String {
-        "---\npaths:\n  - tasks/**\n---\n\n# reviewer-not-owner\n\n```starlark\n\
-         def check_change(change):\n    owner = change.doc.frontmatter.get(\"owner\")\n    \
-         actor = change.actor\n    if actor != None and owner != None and actor == owner:\n        \
-         refuse(message = \"reviewer must not be the owner\", passing = \"scenarios/reviewer-close.md\")\n```\n"
-            .to_string()
-    }
-
-    fn conv_folder(check_md: &str) -> MemConv {
-        let mut m = BTreeMap::new();
-        m.insert("CHECK.md".to_string(), check_md.to_string());
-        MemConv(m)
-    }
-
-    fn conventions(pairs: &[(&str, &str)]) -> MemConventions {
-        MemConventions(
-            pairs
-                .iter()
-                .map(|(slug, check)| ((*slug).to_string(), conv_folder(check)))
-                .collect(),
+    /// A `reviewer-not-owner` CHECK page: refuses iff `change.actor ==
+    /// change.doc.frontmatter.owner`, scoped to `tasks/**`. Registers by TAG —
+    /// the page is the rule, and no `kind:` key restates it.
+    fn reviewer_check(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - tasks/**\n---\n\n\
+             # {id}\n\n```starlark\ndef check_change(change):\n    \
+             owner = change.doc.frontmatter.get(\"owner\")\n    actor = change.actor\n    \
+             if actor != None and owner != None and actor == owner:\n        \
+             refuse(message = \"reviewer must not be the owner\", \
+             passing = \"reviewer-not-owner.md#reviewer-close\")\n```\n"
         )
     }
 
-    /// An INDEX arming `slug` at `level`, pinned to the live CHECK.md rev.
-    fn armed_index(slug: &str, check_md: &str, level: Enforcement) -> String {
-        let files = conv_folder(check_md);
-        let swept = sweep(&files, slug, CheckLimits::default()).expect("sweeps");
-        let rev = swept.rev().to_string();
-        let armed = arm(swept, &rev, level).expect("arms at the live rev");
-        generate_index(&[armed])
+    /// A HOOK page in the ruled shape — it declares no law, so it never refuses.
+    fn hook_page(id: &str) -> String {
+        format!(
+            "---\ntags: [type/rule, rules/hook]\nid: {id}\nseverity: info\n\
+             paths: [\"tasks/*.md\"]\ncaps:  [proto.send]\n\
+             budget: {{ steps: 10000, mem: 4194304 }}\nhow:\n  route: {{ info: channel-review }}\n\
+             ---\n\n```starlark\ndef on_change(event):\n    pass\n```\n"
+        )
+    }
+
+    /// Arm every `(page path, bytes, id, mode)` at the workspace root, and hand
+    /// back the rendered artifact plus a page source over the same bytes.
+    fn armed(pages: &[(&str, String, &str, Mode)]) -> (String, MemPages) {
+        let index = RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| PageRef {
+            layer: ScopeLayer::Workspace,
+            page: path,
+            bytes,
+        }));
+        let artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            pages.iter().map(|(_, bytes, id, mode)| ArmRequest {
+                id: RuleId::parse(id).expect("a legal id"),
+                mode: *mode,
+                attested_rev: page_rev(bytes),
+            }),
+        )
+        .expect("the fixture arms");
+        let source = MemPages(
+            pages
+                .iter()
+                .map(|(path, bytes, ..)| ((*path).to_string(), bytes.clone()))
+                .collect(),
+        );
+        (artifact.render(), source)
+    }
+
+    /// The armed law governing a write at `tasks/fix-parser.md`.
+    fn law_at(artifact: Option<&str>, ever_armed: bool, pages: &MemPages) -> ArmedLaw {
+        resolve_armed_law(
+            artifact,
+            ever_armed,
+            "tasks/fix-parser.md",
+            pages,
+            CheckLimits::default(),
+        )
     }
 
     fn doc_of(path: &str, md: &str) -> Document {
@@ -545,33 +413,41 @@ mod tests {
 
     #[test]
     fn never_armed_is_a_no_op() {
-        let src = conventions(&[]);
-        // No marker → NeverArmed, even with an INDEX present.
-        let index = armed_index("reviewer-not-owner", &reviewer_check(), Enforcement::Block);
-        let set = resolve_armed_set(Some(&index), false, &src, CheckLimits::default());
-        assert!(matches!(set, ArmedSet::NeverArmed));
-        // Even an owner self-close (would fire the convention) lands: no-op.
-        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &set);
+        // An artifact on disk but NO marker → never armed, even though the row
+        // would fire.
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        let law = law_at(Some(&artifact), false, &pages);
+        assert!(law.never_armed());
+        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &law);
         assert_eq!(outcome, GateOutcome::Ok(Vec::new()));
     }
 
-    // ── armed block: refuses, cites the passing scenario ─────────────────────
+    // ── armed block: refuses, names the ID, cites the passing case ───────────
 
     #[test]
-    fn armed_block_refuses_owner_self_close_naming_convention() {
-        let check = reviewer_check();
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        assert!(matches!(set, ArmedSet::Armed(_)));
+    fn armed_block_refuses_owner_self_close_naming_the_rule_id() {
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        let law = law_at(Some(&artifact), true, &pages);
 
-        // owner self-close fires the block convention → refuses.
-        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &set);
+        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &law);
         let GateOutcome::Refusal(GateRefusal::Blocked { violations }) = outcome else {
             panic!("owner self-close must refuse: {outcome:?}");
         };
         assert_eq!(violations.len(), 1);
-        assert_eq!(violations[0].slug, "reviewer-not-owner");
+        assert_eq!(
+            violations[0].rule, "reviewer.not-owner",
+            "the id is the name the refusal carries, not a folder slug"
+        );
         assert!(
             violations[0]
                 .message
@@ -579,28 +455,40 @@ mod tests {
         );
         assert_eq!(
             violations[0].passing_scenario,
-            "scenarios/reviewer-close.md"
+            "reviewer-not-owner.md#reviewer-close"
         );
     }
 
     #[test]
     fn armed_block_lands_reviewer_close() {
-        let check = reviewer_check();
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        // A reviewer distinct from the owner → the convention passes → lands.
-        let outcome = gate(&close_change("agent:bob", "agent:alice", false), &set);
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        let law = law_at(Some(&artifact), true, &pages);
+        // A reviewer distinct from the owner → the rule passes → the write lands.
+        let outcome = gate(&close_change("agent:bob", "agent:alice", false), &law);
         assert_eq!(outcome, GateOutcome::Ok(Vec::new()));
     }
 
     #[test]
     fn out_of_scope_change_is_never_judged() {
-        let check = reviewer_check(); // scope tasks/**
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        // A note outside tasks/** — even an owner self-close shape lands.
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"), // scope tasks/**
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        // A note outside `tasks/**` — even an owner self-close shape lands.
+        let law = resolve_armed_law(
+            Some(&artifact),
+            true,
+            "notes/plan.md",
+            &pages,
+            CheckLimits::default(),
+        );
         let before = doc_of("notes/plan.md", "---\nowner: agent:alice\n---\n# P\n\nx\n");
         let after = doc_of(
             "notes/plan.md",
@@ -618,137 +506,181 @@ mod tests {
             &[],
             &|_| None,
         );
-        assert_eq!(gate(&change, &set), GateOutcome::Ok(Vec::new()));
+        assert_eq!(gate(&change, &law), GateOutcome::Ok(Vec::new()));
     }
 
     // ── warn renders, never blocks ───────────────────────────────────────────
 
     #[test]
     fn armed_warn_renders_finding_never_refuses() {
-        let check = reviewer_check();
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Warn);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &set);
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Warn,
+        )]);
+        let law = law_at(Some(&artifact), true, &pages);
+        let outcome = gate(&close_change("agent:alice", "agent:alice", false), &law);
         let GateOutcome::Ok(findings) = outcome else {
             panic!("warn never refuses: {outcome:?}");
         };
         assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].slug, "reviewer-not-owner");
+        assert_eq!(findings[0].rule, "reviewer.not-owner");
     }
 
-    // ── the empty-armed-set attack: gate reads the workspace INDEX ────────────
+    // ── the fail-closed ladder, through the ONE fault surface ────────────────
 
     #[test]
-    fn empty_source_but_armed_index_fails_closed_not_open() {
-        // An armed INDEX names a convention the source cannot provide (an empty
-        // caller-supplied set cannot weaken the decision) → fail closed, never a
-        // silent pass.
-        let check = reviewer_check();
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let empty = conventions(&[]); // the "empty armed_set"
-        let set = resolve_armed_set(Some(&index), true, &empty, CheckLimits::default());
+    fn a_missing_artifact_on_a_once_armed_workspace_refuses() {
+        let law = law_at(None, true, &MemPages(BTreeMap::new()));
+        let GateOutcome::Refusal(GateRefusal::ArmedLawFault { faults }) =
+            gate(&close_change("a", "b", false), &law)
+        else {
+            panic!("a missing artifact on a once-armed workspace must refuse");
+        };
+        assert!(matches!(faults.as_slice(), [ArmedFault::Missing { .. }]));
+    }
+
+    #[test]
+    fn a_corrupt_artifact_fails_closed_naming_it() {
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        let corrupt = artifact.replace("| id | page | rev | scope | mode |", "| id | page |");
+        let law = law_at(Some(&corrupt), true, &pages);
+        let GateOutcome::Refusal(GateRefusal::ArmedLawFault { faults }) =
+            gate(&close_change("agent:bob", "agent:alice", false), &law)
+        else {
+            panic!("a corrupt artifact must fail closed");
+        };
+        let [fault] = faults.as_slice() else {
+            panic!("one whole-artifact fault: {faults:?}");
+        };
         assert!(
-            matches!(set, ArmedSet::Faulted(GateFault::ConventionFault { .. })),
-            "a named-but-absent armed convention fails closed: {set:?}"
+            fault.to_string().contains("corrupt"),
+            "names the corruption: {fault}"
         );
     }
 
-    // ── fail-closed ladder ───────────────────────────────────────────────────
-
+    /// A drifted armed page fails closed at the door. The fault keys on the rule
+    /// ID and its PAGE — the row key — where the slug-era refusal named a folder.
     #[test]
-    fn missing_index_on_once_armed_fails_closed() {
-        let set = resolve_armed_set(None, true, &conventions(&[]), CheckLimits::default());
-        assert!(matches!(
-            set,
-            ArmedSet::Faulted(GateFault::ConventionFault { .. })
-        ));
-        assert!(matches!(
-            gate(&close_change("a", "b", false), &set),
-            GateOutcome::Refusal(GateRefusal::ConventionFault { .. })
-        ));
-    }
-
-    #[test]
-    fn corrupt_index_fails_closed_naming_it() {
-        let check = reviewer_check();
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        // A page that is NOT a well-formed INDEX (no title) — must fail closed,
-        // never read as an empty (gate-disabling) armed set.
-        let corrupt = "garbage that is not an index\n- [x] tampered\n";
-        let set = resolve_armed_set(Some(corrupt), true, &src, CheckLimits::default());
-        let ArmedSet::Faulted(GateFault::ConventionFault { detail }) = &set else {
-            panic!("corrupt INDEX must fail closed: {set:?}");
-        };
-        assert!(detail.contains("corrupt"), "names the corruption: {detail}");
-    }
-
-    #[test]
-    fn drifted_convention_fails_closed_armed_drift() {
-        let check = reviewer_check();
-        // Arm at the current rev, then drift the on-disk CHECK.md.
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let drifted = check.replace("reviewer-not-owner", "reviewer-not-owner (edited law)");
-        let src = conventions(&[("reviewer-not-owner", &drifted)]);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        let ArmedSet::Faulted(GateFault::ArmedDrift {
-            slug,
-            armed_rev,
-            report_rev,
-        }) = &set
+    fn a_drifted_armed_page_fails_closed_naming_the_id_and_the_page() {
+        let check = reviewer_check("reviewer.not-owner");
+        let (artifact, mut pages) = armed(&[(
+            "rules/reviewer.md",
+            check.clone(),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        // Edit the pinned page after arming: the row reddens.
+        pages.0.insert(
+            "rules/reviewer.md".to_string(),
+            format!("{check}\n<!-- v2 -->\n"),
+        );
+        let law = law_at(Some(&artifact), true, &pages);
+        let GateOutcome::Refusal(GateRefusal::ArmedLawFault { faults }) =
+            gate(&close_change("agent:bob", "agent:alice", false), &law)
         else {
-            panic!("a drifted armed law fails closed: {set:?}");
+            panic!("a drifted armed page must fail closed");
         };
-        assert_eq!(slug, "reviewer-not-owner");
-        assert_ne!(armed_rev, report_rev, "report-rev ≠ armed-rev");
+        let [ArmedFault::Red(red)] = faults.as_slice() else {
+            panic!("expected one red row: {faults:?}");
+        };
+        assert_eq!(red.row().id().as_str(), "reviewer.not-owner");
+        assert_eq!(red.row().page(), "rules/reviewer.md");
+    }
+
+    /// The armed-law fault is NOT force-escapable: a law that cannot be read is
+    /// not a check to skip. Only a rule's own refusal is.
+    #[test]
+    fn force_never_escapes_an_armed_law_fault() {
+        let law = law_at(None, true, &MemPages(BTreeMap::new()));
+        assert!(matches!(
+            gate(&close_change("a", "b", true), &law),
+            GateOutcome::Refusal(GateRefusal::ArmedLawFault { .. })
+        ));
+    }
+
+    /// A HOOK row's fault never vetoes — but it is not silently survived either:
+    /// it renders as an advisory finding in the fault surface's own words.
+    #[test]
+    fn a_surviving_hook_fault_renders_as_a_finding_instead_of_vanishing() {
+        let hook = hook_page("notify.review");
+        let (artifact, mut pages) = armed(&[(
+            "rules/notify.md",
+            hook.clone(),
+            "notify.review",
+            Mode::Armed,
+        )]);
+        // Drift the hook page: its row reddens, and a hook fault never refuses.
+        pages.0.insert(
+            "rules/notify.md".to_string(),
+            format!("{hook}\n<!-- v2 -->\n"),
+        );
+        let law = law_at(Some(&artifact), true, &pages);
+
+        let GateOutcome::Ok(findings) =
+            gate(&close_change("agent:bob", "agent:alice", false), &law)
+        else {
+            panic!("a red hook row never refuses a write");
+        };
+        assert_eq!(findings.len(), 1, "the fault still reaches the operator");
+        assert_eq!(findings[0].rule, "notify.review");
+        assert!(
+            findings[0].message.contains("was edited after arming"),
+            "in the fault surface's own words: {}",
+            findings[0].message
+        );
     }
 
     // ── conjunction stacking ─────────────────────────────────────────────────
 
     #[test]
-    fn two_block_conventions_stack() {
-        // Two block conventions over the same scope both fire → both violations
-        // stack (conjunction).
-        let a = reviewer_check();
-        let b = a.replace("scenarios/reviewer-close.md", "scenarios/other.md");
-        let src = conventions(&[("conv-a", &a), ("conv-b", &b)]);
-        let ia = armed_index("conv-a", &a, Enforcement::Block);
-        let ib = armed_index("conv-b", &b, Enforcement::Block);
-        // Merge the two single-row INDEX pages into one two-row page.
-        let mut rows: Vec<String> = Vec::new();
-        for page in [&ia, &ib] {
-            rows.extend(
-                page.lines()
-                    .filter(|l| l.starts_with("- ["))
-                    .map(str::to_string),
-            );
-        }
-        let index = format!(
-            "# Attested conventions INDEX\n\npreamble\n\n{}\n",
-            rows.join("\n")
-        );
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
+    fn two_block_rules_stack() {
+        let (artifact, pages) = armed(&[
+            (
+                "rules/a.md",
+                reviewer_check("reviewer.a"),
+                "reviewer.a",
+                Mode::Block,
+            ),
+            (
+                "rules/b.md",
+                reviewer_check("reviewer.b"),
+                "reviewer.b",
+                Mode::Block,
+            ),
+        ]);
+        let law = law_at(Some(&artifact), true, &pages);
         let GateOutcome::Refusal(GateRefusal::Blocked { violations }) =
-            gate(&close_change("agent:alice", "agent:alice", false), &set)
+            gate(&close_change("agent:alice", "agent:alice", false), &law)
         else {
-            panic!("two block conventions must both fire");
+            panic!("two block rules must both fire");
         };
         assert_eq!(violations.len(), 2, "conjunction stacks both violations");
     }
 
-    // ── --force escape (pure; wire plumbing deferred to U4.3) ────────────────
+    // ── --force escape ───────────────────────────────────────────────────────
 
     #[test]
     fn force_escapes_block_refusal_as_finding() {
-        let check = reviewer_check();
-        let src = conventions(&[("reviewer-not-owner", &check)]);
-        let index = armed_index("reviewer-not-owner", &check, Enforcement::Block);
-        let set = resolve_armed_set(Some(&index), true, &src, CheckLimits::default());
-        let outcome = gate(&close_change("agent:alice", "agent:alice", true), &set);
+        let (artifact, pages) = armed(&[(
+            "rules/reviewer.md",
+            reviewer_check("reviewer.not-owner"),
+            "reviewer.not-owner",
+            Mode::Block,
+        )]);
+        let law = law_at(Some(&artifact), true, &pages);
+        let outcome = gate(&close_change("agent:alice", "agent:alice", true), &law);
         let GateOutcome::Ok(findings) = outcome else {
             panic!("--force escapes the refusal: {outcome:?}");
         };
         assert_eq!(findings.len(), 1);
         assert!(findings[0].message.contains("FORCED"), "the skip is named");
+        assert!(findings[0].forced);
     }
 }

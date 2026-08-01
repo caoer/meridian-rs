@@ -1,6 +1,6 @@
 //! End-to-end gates for `mrd status` (U3.6, the LAST leg), driving the REAL
 //! binary (`CARGO_BIN_EXE_mrd`) over its process boundary against on-disk
-//! workspaces. These are the merge-gate evidence: the armed/drifted INDEX line,
+//! workspaces. These are the merge-gate evidence: the armed/drifted summary line,
 //! the forced-write violation row, the composed three-axis line, and the exit
 //! triad. Every gate here is timing-insensitive by construction.
 //!
@@ -72,40 +72,71 @@ fn code(out: &Output) -> i32 {
     out.status.code().unwrap_or(-1)
 }
 
-/// Write an attested INDEX page pinning `(slug, severity, armed_rev, scope)` rows
-/// and each convention's `CHECK.md`. The pinned `armed_rev` is the REAL
-/// `page_rev` of the on-disk bytes, so a row is FRESH; passing a mismatched
-/// `disk_check` makes it DRIFTED (the on-disk rev ≠ the pinned rev).
-fn arm_convention(
-    ws: &Path,
-    slug: &str,
-    severity: &str,
-    pinned_check: &str,
-    disk_check: &str,
-) -> String {
-    let dir = ws.join("conventions").join(slug);
-    std::fs::create_dir_all(&dir).expect("conv dir");
-    std::fs::write(dir.join("CHECK.md"), disk_check).expect("check");
-    let pinned_rev = policy::page_rev(pinned_check);
+/// A minimal loadable CHECK rule page, varied by `marker` so two versions hash
+/// differently. `paths:` keeps the law off every page these fixtures write — the
+/// measurement is the armed-set READ, never a gate.
+fn rule_page(id: &str, marker: &str) -> String {
     format!(
-        "- [x] **{slug}** · {severity} · `{pinned_rev}` · [[conventions/{slug}/CHECK.md]] · `{slug}/**`"
+        "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - {id}/**\n---\n\n\
+         # {id} {marker}\n\n```starlark\ndef check_change(change):\n    pass\n```\n"
     )
 }
 
-/// Assemble a valid INDEX page (title + preamble + rows) that `parse_index_strict`
-/// accepts. Verified to parse by the caller's `status` read.
-fn write_index(ws: &Path, rows: &[String]) {
-    let dir = ws.join("conventions");
-    std::fs::create_dir_all(&dir).expect("conventions dir");
-    let page = format!(
-        "# Attested conventions INDEX\n\nSwept from `conventions/`.\n\n{}\n",
-        rows.join("\n")
-    );
-    std::fs::write(dir.join("INDEX.md"), page).expect("index");
+/// Arm rules into `meridian/armed-rules.md` and plant the once-armed marker.
+///
+/// Each entry is `(id, pinned bytes, on-disk bytes, mode)`. The artifact is MINTED
+/// by `policy::armed::arm` through the landed resolver — never hand-typed, because
+/// an artifact a fixture wrote by hand is an artifact the arming act never
+/// approved, and `status` would then be reading a page production could not
+/// produce. Arming pins `page_rev(pinned)`; writing DIFFERENT bytes to disk
+/// afterwards is exactly what evidence drift is.
+///
+/// BOTH files, always: the artifact alone leaves a workspace the marker says is
+/// unarmed, and the marker alone is a missing-artifact fault.
+fn arm_rules(ws: &Path, rules: &[(&str, String, String, policy::armed::Mode)]) {
+    let pages: Vec<(String, &String)> = rules
+        .iter()
+        .map(|(id, pinned, _, _)| (format!("rules/{id}.md"), pinned))
+        .collect();
+    for ((page, pinned), (_, _, on_disk, _)) in pages.iter().zip(rules) {
+        let full = ws.join(page);
+        std::fs::create_dir_all(full.parent().expect("rules dir")).expect("rules dir");
+        // Pinned bytes first so the rev the ARM act reads is the attested one …
+        std::fs::write(&full, pinned.as_str()).expect("rule page");
+        let _ = on_disk;
+    }
+    let index = policy::RuleIndex::discover(pages.iter().map(|(page, bytes)| policy::PageRef {
+        layer: policy::ScopeLayer::Workspace,
+        page,
+        bytes,
+    }));
+    let artifact = policy::armed::arm(
+        &index,
+        &policy::armed::ArmRoot::workspace(),
+        rules
+            .iter()
+            .map(|(id, pinned, _, mode)| policy::armed::ArmRequest {
+                id: policy::RuleId::parse(id).expect("a legal id"),
+                mode: *mode,
+                attested_rev: policy::page_rev(pinned),
+            }),
+    )
+    .expect("the fixture arms at each page's live rev");
+    let artifact_path = ws.join(fs::domain::ARMED_RULES_PATH);
+    std::fs::create_dir_all(artifact_path.parent().expect("meridian dir")).expect("meridian dir");
+    std::fs::write(artifact_path, artifact.render()).expect("artifact");
+    std::fs::write(ws.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("once-armed marker");
+    // … then the live bytes, which may differ. A row whose page moved under its
+    // pin is DRIFTED, and that is the only way to build one honestly.
+    for ((page, _), (_, _, on_disk, _)) in pages.iter().zip(rules) {
+        std::fs::write(ws.join(page), on_disk.as_str()).expect("rule page on disk");
+    }
 }
 
-/// Genesis: a bare workspace with no INDEX and no git — 0 armed, genesis boundary,
-/// the anchor renders unverified (never a bare `at-tip`), exit 0.
+/// Genesis: a bare workspace with NEITHER the armed-rules artifact NOR the
+/// once-armed marker, and no git — 0 armed, genesis boundary, the anchor renders
+/// unverified (never a bare `at-tip`), exit 0. The absent artifact is genesis and
+/// NOT a fault precisely because the marker is absent too.
 #[test]
 fn status_genesis_is_clean_and_unverified() {
     let sb = sandbox();
@@ -115,14 +146,14 @@ fn status_genesis_is_clean_and_unverified() {
     assert_eq!(code(&out), 0, "clean genesis exits 0: {}", stderr(&out));
     assert!(
         so.contains("0 armed · 0 drifted · 0 forced-since-realise"),
-        "genesis INDEX line: {so}"
+        "genesis armed-rules line: {so}"
     );
     assert!(
         so.contains("(receipts boundary: genesis)"),
         "genesis boundary: {so}"
     );
     assert!(so.contains("pin green"), "clean pin: {so}");
-    assert!(so.contains("convention off"), "no armed severity: {so}");
+    assert!(so.contains("armed off"), "no armed mode: {so}");
     // W-C1: fetch-less status never renders a bare `at-tip`.
     assert!(
         so.contains("anchor unverified") || so.contains("anchor as-known"),
@@ -178,21 +209,29 @@ fn status_names_the_tier_that_resolved_the_workspace() {
     assert_eq!(v["workspace"], canon_anchored.to_string_lossy().as_ref());
 }
 
-/// Armed + drifted: two armed conventions, one fresh (block), one drifted (warn) —
-/// armed=2, drifted=1, the pin axis reds, the severity rolls up to block, exit 1.
+/// Armed + drifted: two armed rules, one fresh (block), one drifted (warn) —
+/// armed=2, drifted=1, the pin axis reds, the mode rolls up to block, exit 1.
 #[test]
 fn status_armed_and_drifted_reds_and_exits_1() {
     let sb = sandbox();
     let ws = sb.workspace("armed");
-    let fresh = arm_convention(&ws, "alpha", "block", "alpha law v1\n", "alpha law v1\n");
-    let drifted = arm_convention(
+    arm_rules(
         &ws,
-        "beta",
-        "warn",
-        "beta law v1\n",
-        "beta law v2 DRIFTED\n",
+        &[
+            (
+                "alpha",
+                rule_page("alpha", "v1"),
+                rule_page("alpha", "v1"),
+                policy::armed::Mode::Block,
+            ),
+            (
+                "beta",
+                rule_page("beta", "v1"),
+                rule_page("beta", "v2-DRIFTED"),
+                policy::armed::Mode::Warn,
+            ),
+        ],
     );
-    write_index(&ws, &[fresh, drifted]);
 
     let out = sb.run(&ws, &["status"]);
     let so = stdout(&out);
@@ -211,8 +250,8 @@ fn status_armed_and_drifted_reds_and_exits_1() {
         "the pin axis reds: {so}"
     );
     assert!(
-        so.contains("convention block"),
-        "severity rolls up worst-of to block: {so}"
+        so.contains("armed block"),
+        "the mode rolls up worst-of to block: {so}"
     );
 }
 
@@ -294,24 +333,31 @@ fn status_forced_since_realise_respects_the_receipts_boundary() {
     );
 }
 
-/// The `--json` shape carries the three composed axes, the INDEX counts, the
-/// boundary, and the violation rows.
+/// The `--json` shape carries the three composed axes, the armed-rules counts,
+/// the boundary, and the violation rows.
 #[test]
 fn status_json_shape() {
     let sb = sandbox();
     let ws = sb.workspace("json");
-    let fresh = arm_convention(&ws, "gamma", "block", "gamma v1\n", "gamma v1\n");
-    write_index(&ws, &[fresh]);
+    arm_rules(
+        &ws,
+        &[(
+            "gamma",
+            rule_page("gamma", "v1"),
+            rule_page("gamma", "v1"),
+            policy::armed::Mode::Block,
+        )],
+    );
 
     let out = sb.run(&ws, &["status", "--json"]);
     let so = stdout(&out);
     let v: serde_json::Value = serde_json::from_str(&so).expect("valid json");
-    assert_eq!(v["index"]["armed"], 1);
-    assert_eq!(v["index"]["drifted"], 0);
-    assert_eq!(v["index"]["forced_since_realise"], 0);
-    assert_eq!(v["index"]["boundary"]["kind"], "genesis");
+    assert_eq!(v["armed_rules"]["armed"], 1);
+    assert_eq!(v["armed_rules"]["drifted"], 0);
+    assert_eq!(v["armed_rules"]["forced_since_realise"], 0);
+    assert_eq!(v["armed_rules"]["boundary"]["kind"], "genesis");
     assert_eq!(v["composed"]["pin_color"], "green");
-    assert_eq!(v["composed"]["convention_severity"], "block");
+    assert_eq!(v["composed"]["armed_mode"], "block");
     assert!(
         v["composed"]["anchor"].is_string(),
         "anchor axis is rendered"

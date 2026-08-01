@@ -2,6 +2,7 @@
 //! modules per concern. Rung 1 adds `gt_parse` (syntax/model vs the GT pack)
 //! and `wire_golden` (contract example exchanges verbatim) as modules here.
 
+mod armed_disk_agreement;
 mod charset_guard;
 mod delta_e3e4;
 mod gt_pack_smoke;

@@ -34,8 +34,8 @@
 //! `status` renders the orthogonal axes side by side, never merged, each rolled
 //! up worst-of INDEPENDENTLY (colors amendment § composed legend):
 //!
-//! - **pin color** — the armed set's evidence drift: `green` (every armed
-//!   convention's live `CHECK.md` rev still equals its pinned `armed_rev`) or
+//! - **pin color** — the armed set's evidence drift: `green` (every armed row's
+//!   live rule PAGE rev still equals the rev the artifact pinned) or
 //!   `red content-drifted` (some armed evidence drifted). The four named greys of
 //!   the full color law are the render's capability (fixtures pin each), and are
 //!   reached only by pinned `^inputs` edges, not the armed set.
@@ -47,17 +47,18 @@
 //!   `unverified`, NEVER `verified` (status cannot fetch). This is where origin
 //!   tip-compare CURRENCY lives, for every axis on the line — see [`LockAxis`]
 //!   for why a repo-level currency fact never enters a per-pin color.
-//! - **convention severity** — the worst armed severity (`off` / `warn` /
-//!   `block`), and one violation row per `--force`-escaped skip.
+//! - **armed mode** — the worst armed mode (`off` / `warn` / `block` / `armed`),
+//!   and one violation row per `--force`-escaped skip.
 //! - **vibe debt** — the quantity axis ([`VibeDebt`]): how many lock-referenced
 //!   blobs git holds that no commit reaches, and how many bytes they are. A
 //!   METER, never a gate: it never enters the exit triad.
 //!
-//! # The INDEX summary line
+//! # The armed summary line
 //! `<A> armed · <D> drifted · <F> forced-since-realise (receipts boundary)`:
-//! - `armed` — the count of `[x]` rows in the attested INDEX (U1.4);
-//! - `drifted` — armed conventions whose live `CHECK.md` rev ≠ the pinned
-//!   `armed_rev` (the arming drift gate, read-only);
+//! - `armed` — the row count of the attested armed-rules artifact
+//!   ([`fs::domain::ARMED_RULES_PATH`]);
+//! - `drifted` — armed rows whose live PAGE rev ≠ the rev the artifact pinned
+//!   (the arming drift gate, read-only);
 //! - `forced-since-realise` — the count of `op=force` journal rows (U4.3) newer
 //!   than the last realise APPLY. The boundary is the last `now` in
 //!   `receipts/realise.md` (the realise receipt ledger — realise applies leave NO
@@ -68,8 +69,8 @@
 //!
 //! # Exit triad (§4 preamble)
 //! - **0** — clean: nothing armed drifted and nothing was forced.
-//! - **1** — a finding: an armed convention drifted, a forced write is live, or
-//!   the INDEX is a convention-fault. Field-equivalent to `md status`'s red
+//! - **1** — a finding: an armed rule drifted, a forced write is live, or the
+//!   armed-rules artifact faulted. Field-equivalent to `md status`'s red
 //!   (drifted) exit at the semantic class.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
@@ -79,7 +80,8 @@ use std::process::Command;
 
 use model::Document;
 use model::selector::{Color, RedReason};
-use policy::{Enforcement, page_rev, parse_index_strict};
+use policy::armed::{Mode, parse_artifact};
+use policy::page_rev;
 use receipt::anchor::{
     AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, Observed, TipPosition,
 };
@@ -90,12 +92,8 @@ use view::walk::{color_detail, color_label, color_reason, color_tone};
 use crate::{Fail, Format, current_dir};
 
 /// The finding leg of the triad: the invocation was well-formed, but the summary
-/// carries a live drift, a forced write, or a faulted INDEX.
+/// carries a live drift, a forced write, or a faulted armed-rules artifact.
 const EXIT_FINDING: u8 = 1;
-
-/// The attested INDEX page — the ONE file the armed-set read opens (byte-equal to
-/// `policy::binding::RESERVED_INDEX_PATH` / `fs::domain`).
-const CONVENTIONS_INDEX: &str = "conventions/INDEX.md";
 
 /// The realise receipt ledger — the `forced-since-realise` boundary source. NOT
 /// the reserved journal: realise applies append `- run {json} ^r-NNNNNN` lines
@@ -351,16 +349,19 @@ struct StatusReport {
     forced: usize,
     /// Where the forced count is anchored.
     boundary: Boundary,
-    /// The INDEX convention-fault detail, when the page is present but corrupt.
-    index_fault: Option<String>,
+    /// The armed-rules artifact's fault detail, when the workspace's armed law
+    /// cannot be trusted: a corrupt artifact, or an artifact missing on a
+    /// workspace the once-armed marker says HAS been armed. Absent artifact AND
+    /// absent marker is genesis — unarmed, and not a fault.
+    artifact_fault: Option<String>,
     /// The pin-color axis roll-up — `Green` all-fresh, `Red(Drifted)` any-drift.
     pin_rollup: Color,
     /// The meridian-lock axis — the corpus's lock pins, rolled up worst-of.
     lock: LockAxis,
     /// The vibe-debt gauge — lock-referenced blobs no commit reaches.
     vibe_debt: VibeDebt,
-    /// The convention-severity axis roll-up — the worst armed severity.
-    severity_rollup: Enforcement,
+    /// The armed-mode axis roll-up — the worst armed mode.
+    mode_rollup: Mode,
     /// The rendered anchor-qualified tip axis (U2.7) — never a bare `at-tip`.
     anchor_axis: String,
     /// The as-known-ageless nudge hint, when present.
@@ -371,15 +372,15 @@ struct StatusReport {
 
 impl StatusReport {
     /// A finding is live when armed evidence drifted, a forced write is unresolved,
-    /// or the INDEX faulted — the exit-1 predicate.
+    /// or the armed-rules artifact faulted — the exit-1 predicate.
     fn has_findings(&self) -> bool {
-        self.drifted > 0 || self.forced > 0 || self.index_fault.is_some()
+        self.drifted > 0 || self.forced > 0 || self.artifact_fault.is_some()
     }
 
     /// The one-line stderr summary that rides the exit-1 `Fail`.
     fn finding_summary(&self) -> String {
-        if let Some(detail) = &self.index_fault {
-            return format!("INDEX convention-fault: {detail}");
+        if let Some(detail) = &self.artifact_fault {
+            return format!("armed-rules fault: {detail}");
         }
         format!(
             "{} drifted, {} forced-since-realise",
@@ -388,18 +389,18 @@ impl StatusReport {
     }
 
     /// The composed multi-axis line — armed-pin color · meridian-lock color ·
-    /// anchor state · convention severity · vibe debt, side by side, never
+    /// anchor state · armed mode · vibe debt, side by side, never
     /// merged (U6.2 composed legend). `lock` sits beside `anchor` on purpose:
     /// the pin verdict and the currency qualifier that reads it are one glance
     /// apart. `vibe-debt` is the fifth question — not a color and not a verdict,
     /// but a quantity — so it rides the tail rather than splitting that pair.
     fn composed_line(&self) -> String {
         format!(
-            "pin {} · lock {} · anchor {} · convention {} · vibe-debt {}",
+            "pin {} · lock {} · anchor {} · armed {} · vibe-debt {}",
             color_label(&self.pin_rollup),
             self.lock.render(),
             self.anchor_axis,
-            self.severity_rollup.as_str(),
+            self.mode_rollup.as_str(),
             self.vibe_debt.render(),
         )
     }
@@ -415,15 +416,15 @@ impl StatusReport {
         };
         let _ = writeln!(
             out,
-            "  INDEX: {} armed · {} drifted · {} forced-since-realise (receipts boundary: {boundary})",
+            "  armed-rules: {} armed · {} drifted · {} forced-since-realise (receipts boundary: {boundary})",
             self.armed, self.drifted, self.forced,
         );
         let _ = writeln!(out, "  {}", self.composed_line());
         if let Some(nudge) = self.nudge {
             let _ = writeln!(out, "  hint: {nudge}");
         }
-        if let Some(detail) = &self.index_fault {
-            let _ = writeln!(out, "  INDEX fault: {detail}");
+        if let Some(detail) = &self.artifact_fault {
+            let _ = writeln!(out, "  armed-rules fault: {detail}");
         }
         for v in &self.violations {
             let _ = writeln!(out, "  {}", render_violation_row(v));
@@ -452,12 +453,12 @@ impl StatusReport {
         let doc = json!({
             "workspace": self.workspace,
             "source": self.source,
-            "index": {
+            "armed_rules": {
                 "armed": self.armed,
                 "drifted": self.drifted,
                 "forced_since_realise": self.forced,
                 "boundary": boundary,
-                "fault": self.index_fault,
+                "fault": self.artifact_fault,
             },
             "composed": {
                 "pin_color": color_tone(&self.pin_rollup),
@@ -474,7 +475,7 @@ impl StatusReport {
                     "unreadable": self.lock.unreadable,
                 },
                 "anchor": self.anchor_axis,
-                "convention_severity": self.severity_rollup.as_str(),
+                "armed_mode": self.mode_rollup.as_str(),
                 // The vibe-debt gauge, ALWAYS emitted (no conditional omit): a
                 // corpus with nothing owed reports 0 blobs and 0 bytes, because
                 // a gauge that hides at zero is not a gauge — an absent field
@@ -505,8 +506,9 @@ fn render_violation_row(v: &Violation) -> String {
 }
 
 /// Gather the status summary over a canonical workspace path. The impure edge: it
-/// reads the INDEX, the armed `CHECK.md` files, the journal, the realise receipts,
-/// and the git refs — every read frozen, none re-evaluated. It never fails: every
+/// reads the armed-rules artifact, the once-armed marker, the armed rule PAGES,
+/// the journal, the realise receipts, and the git refs — every read frozen, none
+/// re-evaluated. It never fails: every
 /// absent / unreadable frozen fact degrades to its honest empty case (genesis,
 /// unverified), so status always renders a summary.
 ///
@@ -515,13 +517,13 @@ fn render_violation_row(v: &Violation) -> String {
 /// the caller's fact. It is a parameter, not a settable field, so no render can
 /// reach a report whose provenance was never filled in.
 fn gather(workspace: &Path, source: &str) -> StatusReport {
-    // 1. The armed set — ONE index-file read (O(armed)).
-    let (armed, index_fault) = read_armed(workspace);
+    // 1. The armed set — ONE artifact read plus the marker probe (O(armed)).
+    let (armed, artifact_fault) = read_armed(workspace);
 
-    // 2. Per-armed drift — re-hash each CHECK.md (O(armed) small reads).
+    // 2. Per-armed drift — re-hash each armed PAGE (O(armed) small reads).
     let mut drifted = 0usize;
     for a in &armed {
-        if convention_drifted(workspace, &a.slug, &a.armed_rev) {
+        if page_drifted(workspace, &a.page, &a.attested_rev) {
             drifted += 1;
         }
     }
@@ -530,11 +532,7 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
     } else {
         Color::Green
     };
-    let severity_rollup = armed
-        .iter()
-        .map(|a| a.enforcement)
-        .max()
-        .unwrap_or(Enforcement::Off);
+    let mode_rollup = armed.iter().map(|a| a.mode).max().unwrap_or(Mode::Off);
 
     // 3. The journal + the realise boundary — the forced-since-realise count.
     let journal_text = read_optional(workspace, receipt_journal_rel());
@@ -556,11 +554,11 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
         drifted,
         forced,
         boundary,
-        index_fault,
+        artifact_fault,
         pin_rollup,
         lock,
         vibe_debt,
-        severity_rollup,
+        mode_rollup,
         anchor_axis,
         nudge,
         violations,
@@ -828,30 +826,53 @@ fn cannot_ask_detail(offenders: &[String], because: &str) -> Option<String> {
     Some(format!("{n} `objects:` {unit} {because} (first: {first})"))
 }
 
-/// One armed convention read from the INDEX: the pinned `armed_rev` per slug, plus
-/// its severity.
-struct ArmedConv {
-    slug: String,
-    enforcement: Enforcement,
-    armed_rev: String,
+/// One armed row read from the artifact: which PAGE was attested, at which rev,
+/// and in which mode. Flattened out of [`policy::armed::ArmedRow`] because status
+/// keeps no policy value alive past the read — it renders counts, not law.
+struct ArmedPage {
+    page: String,
+    mode: Mode,
+    attested_rev: String,
 }
 
-/// Read the attested INDEX into the armed set. An absent page is a genesis
-/// workspace (nothing armed, no fault); a present-but-corrupt page fails CLOSED to
-/// a named fault (never read as an empty, gate-disabling armed set).
-fn read_armed(workspace: &Path) -> (Vec<ArmedConv>, Option<String>) {
-    let text = read_optional(workspace, CONVENTIONS_INDEX);
-    if text.is_empty() {
+/// Read the attested armed-rules artifact into the armed set.
+///
+/// The GENESIS reading is the whole subtlety, and it pivots on the MARKER, never
+/// on the artifact: absent artifact AND absent marker is a never-armed workspace —
+/// nothing armed, no fault, clean. An absent artifact on a workspace that HAS been
+/// armed is the silent-disarm attack, so it fails CLOSED to a named fault; and a
+/// present-but-corrupt artifact does too, because a page that will not parse must
+/// never read as an empty, gate-disabling armed set.
+///
+/// Both reads come from [`wire_serve::armed_disk`], which is the same pair the
+/// write door and the reaction feeder use — a workspace that disagreed with
+/// itself about whether it is armed is exactly what one reader prevents.
+fn read_armed(workspace: &Path) -> (Vec<ArmedPage>, Option<String>) {
+    let root = fs::WorkspaceRoot(workspace.to_path_buf());
+    let ever_armed = wire_serve::armed_disk::once_armed(&root);
+    let Some(text) = wire_serve::armed_disk::read_artifact(&root) else {
+        if ever_armed {
+            return (
+                Vec::new(),
+                Some(format!(
+                    "{} is absent on a workspace that has been armed ({} is present) — \
+                     the armed law cannot be read",
+                    fs::domain::ARMED_RULES_PATH,
+                    fs::domain::ATTESTED_MARKER_PATH,
+                )),
+            );
+        }
         return (Vec::new(), None);
-    }
-    match parse_index_strict(&text) {
-        Ok(refs) => {
-            let armed = refs
-                .into_iter()
-                .map(|r| ArmedConv {
-                    slug: r.slug,
-                    enforcement: r.enforcement,
-                    armed_rev: r.armed_rev,
+    };
+    match parse_artifact(&text) {
+        Ok(artifact) => {
+            let armed = artifact
+                .rows()
+                .iter()
+                .map(|row| ArmedPage {
+                    page: row.page().to_owned(),
+                    mode: row.mode(),
+                    attested_rev: row.rev().to_owned(),
                 })
                 .collect();
             (armed, None)
@@ -860,14 +881,13 @@ fn read_armed(workspace: &Path) -> (Vec<ArmedConv>, Option<String>) {
     }
 }
 
-/// Whether an armed convention's live `CHECK.md` rev differs from its pinned
-/// `armed_rev` (the arming drift gate, read-only). A missing `CHECK.md` — the
-/// pinned evidence vanished — counts as drift (fail-closed: the armed law can no
-/// longer be verified at its rev).
-fn convention_drifted(workspace: &Path, slug: &str, armed_rev: &str) -> bool {
-    let rel = format!("conventions/{slug}/CHECK.md");
-    match std::fs::read_to_string(workspace.join(&rel)) {
-        Ok(text) => page_rev(&text) != armed_rev,
+/// Whether an armed row's live PAGE rev differs from the rev the artifact pinned
+/// (the arming drift gate, read-only). A missing page — the pinned evidence
+/// vanished — counts as drift (fail-closed: the armed law can no longer be
+/// verified at its rev).
+fn page_drifted(workspace: &Path, page: &str, attested_rev: &str) -> bool {
+    match std::fs::read_to_string(workspace.join(page)) {
+        Ok(text) => page_rev(&text) != attested_rev,
         Err(_) => true,
     }
 }
@@ -1123,7 +1143,7 @@ mod tests {
             let line = compose(
                 Color::Grey(reason),
                 "at-tip (anchor unverified)",
-                Enforcement::Block,
+                Mode::Block,
             );
             assert!(
                 line.contains(expected),
@@ -1133,45 +1153,40 @@ mod tests {
     }
 
     /// The composed multi-axis line renders every axis side by side, never
-    /// merged — armed-pin color, meridian-lock color, anchor state, convention
-    /// severity (U6.2).
+    /// merged — armed-pin color, meridian-lock color, anchor state, armed
+    /// mode (U6.2).
     #[test]
     fn composed_line_shows_every_axis_side_by_side() {
         let line = compose(
             Color::Red(RedReason::Drifted),
             "behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d)",
-            Enforcement::Warn,
+            Mode::Warn,
         );
         assert_eq!(
             line,
-            "pin red content-drifted · lock none · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · convention warn · vibe-debt 0 blobs (0 bytes)"
+            "pin red content-drifted · lock none · anchor behind (anchor as-known, observed 2026-07-20T00:00:00Z, ~2d) · armed warn · vibe-debt 0 blobs (0 bytes)"
         );
     }
 
     /// The green, off, at-tip clean composition.
     #[test]
     fn composed_line_green_clean() {
-        let line = compose(Color::Green, "at-tip (anchor as-known)", Enforcement::Off);
+        let line = compose(Color::Green, "at-tip (anchor as-known)", Mode::Off);
         assert_eq!(
             line,
-            "pin green · lock none · anchor at-tip (anchor as-known) · convention off · vibe-debt 0 blobs (0 bytes)"
+            "pin green · lock none · anchor at-tip (anchor as-known) · armed off · vibe-debt 0 blobs (0 bytes)"
         );
     }
 
     /// Compose the axes without an IO edge — the pure render under test by the
     /// fixtures.
-    fn compose(pin: Color, anchor_axis: &str, severity: Enforcement) -> String {
-        report(pin, LockAxis::roll_up(&[]), anchor_axis, severity).composed_line()
+    fn compose(pin: Color, anchor_axis: &str, mode: Mode) -> String {
+        report(pin, LockAxis::roll_up(&[]), anchor_axis, mode).composed_line()
     }
 
     /// A pure [`StatusReport`] with no IO edge — the render fixtures' subject.
-    fn report(
-        pin: Color,
-        lock: LockAxis,
-        anchor_axis: &str,
-        severity: Enforcement,
-    ) -> StatusReport {
-        report_with_debt(pin, lock, anchor_axis, severity, VibeDebt::clear())
+    fn report(pin: Color, lock: LockAxis, anchor_axis: &str, mode: Mode) -> StatusReport {
+        report_with_debt(pin, lock, anchor_axis, mode, VibeDebt::clear())
     }
 
     /// The same pure report with a chosen vibe-debt reading.
@@ -1179,7 +1194,7 @@ mod tests {
         pin: Color,
         lock: LockAxis,
         anchor_axis: &str,
-        severity: Enforcement,
+        mode: Mode,
         vibe_debt: VibeDebt,
     ) -> StatusReport {
         StatusReport {
@@ -1189,11 +1204,11 @@ mod tests {
             drifted: 0,
             forced: 0,
             boundary: Boundary::Genesis,
-            index_fault: None,
+            artifact_fault: None,
             pin_rollup: pin,
             lock,
             vibe_debt,
-            severity_rollup: severity,
+            mode_rollup: mode,
             anchor_axis: anchor_axis.to_owned(),
             nudge: None,
             violations: Vec::new(),
@@ -1273,7 +1288,7 @@ mod tests {
                 Color::Green,
                 LockAxis::roll_up(&[]),
                 "at-tip (anchor as-known)",
-                Enforcement::Off,
+                Mode::Off,
             )
             .json(),
         )
@@ -1294,7 +1309,7 @@ mod tests {
                     unknown: vec!["version"],
                 })]),
                 "at-tip (anchor as-known)",
-                Enforcement::Off,
+                Mode::Off,
             )
             .json(),
         )
@@ -1322,7 +1337,7 @@ mod tests {
             Color::Green,
             LockAxis::roll_up(&[]),
             "at-tip (anchor as-known)",
-            Enforcement::Off,
+            Mode::Off,
         );
         assert!(
             clean
@@ -1368,7 +1383,7 @@ mod tests {
             Color::Green,
             LockAxis::roll_up(&[Color::Green]),
             "at-tip (anchor as-known)",
-            Enforcement::Off,
+            Mode::Off,
             one,
         );
         assert!(
@@ -1397,7 +1412,7 @@ mod tests {
                 Color::Green,
                 LockAxis::roll_up(&[]),
                 "at-tip (anchor as-known)",
-                Enforcement::Off,
+                Mode::Off,
                 unknown,
             )
             .json(),
@@ -1414,7 +1429,7 @@ mod tests {
     }
 
     /// METER, NOT A GATE — debt never becomes a finding: the exit triad is
-    /// unchanged by any reading, and `findings` stays false. Enforcement is not
+    /// unchanged by any reading, and `findings` stays false. The armed mode is not
     /// in this stage at all.
     #[test]
     fn vibe_debt_is_never_a_finding() {
@@ -1422,7 +1437,7 @@ mod tests {
             Color::Green,
             LockAxis::roll_up(&[]),
             "at-tip (anchor as-known)",
-            Enforcement::Block,
+            Mode::Block,
             VibeDebt {
                 blobs: 9,
                 bytes: 1_048_576,

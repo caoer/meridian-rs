@@ -29,16 +29,30 @@ fn the_armed_rules_artifact_has_one_spelling() {
     );
 }
 
+/// The once-armed marker. Its spelling is the load-bearing half of the pivot BOTH
+/// armed-law surfaces now turn on — the write door and the reaction feeder. A drift
+/// here would let one host read a workspace as armed while the other read it as
+/// never-armed, which is the disagreement the shared disk edge exists to prevent.
 #[test]
-fn the_index_and_the_marker_have_one_spelling_each() {
-    assert_eq!(
-        policy::RESERVED_INDEX_PATH,
-        fs::domain::RESERVED_INDEX_PATH,
-        "the attested INDEX's path is mirrored in `policy::binding` and `fs::domain`"
-    );
+fn the_once_armed_marker_has_one_spelling() {
     assert_eq!(
         policy::ATTESTED_MARKER_PATH,
         fs::domain::ATTESTED_MARKER_PATH,
         "the once-armed marker's path is mirrored in `policy::binding` and `fs::domain`"
+    );
+}
+
+/// The artifact and the marker are the WHOLE protected substrate — the attested
+/// INDEX left the family with the folder loader, and this asserts it did not come
+/// back under another name. A reserved path that survives its subject is the
+/// "renamed remnant" the cutover forbids: it would keep the door refusing writes to
+/// an ordinary file and keep `fs` carving a hole in the hash domain for nothing.
+#[test]
+fn the_retired_index_is_not_still_reserved() {
+    let reserved: Vec<&str> = fs::domain::RESERVED_PATHS.to_vec();
+    assert!(
+        !reserved.iter().any(|p| p.contains("INDEX")),
+        "`conventions/INDEX.md` is no longer engine substrate, but a reserved path \
+         still names it: {reserved:?}"
     );
 }

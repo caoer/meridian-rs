@@ -1,21 +1,21 @@
 ---
 corpus_test: reviewer-not-owner-dead-rule
-convention: seed
+rule: ../rules/reviewer-not-owner.md
 corpus: ../tree
 ---
 
-# dead-rule (seed convention, exit 1)
+# dead-rule (fixture rule page, exit 1)
 
-The seed convention's one rule, `scenarios/reviewer-close.md`, is DECLARED but
+The `reviewer-not-owner` fixture page's one citation, `reviewer-close`, is DECLARED but
 this corpus never fires it: every synthetic change closes as a distinct
 reviewer, as an external (actor-less) edit, or over a doc outside the `tasks/**`
 scope. Every case still matches its `expect` (all pass), so fire-where-expected
 holds — yet the declared rule spent the whole corpus without firing, so the tier
 reports it under "Dead rules (declared, never fired)" and exits 1. This is the
-literal "corpus run over the seed convention — a dead rule is reported."
+literal "corpus run over a one-rule law — a dead rule is reported."
 
 ```rules
-scenarios/reviewer-close.md
+reviewer-close
 ```
 
 ```case

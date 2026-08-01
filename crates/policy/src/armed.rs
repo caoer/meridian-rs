@@ -322,7 +322,7 @@ impl std::error::Error for PathFault {}
 
 /// Validate a workspace path bound for a rendered cell.
 ///
-/// The charset guard follows `convention::validate_slug`'s doctrine — sit at INTAKE
+/// The charset guard follows the retired slug validator's doctrine — sit at INTAKE
 /// so every renderer inherits it, and make the hostile bytes UNREPRESENTABLE rather
 /// than removable. It is narrower than that slug charset because a path legitimately
 /// carries `/`, `.`, `_`, digits and case; it refuses exactly what breaks a

@@ -1,6 +1,6 @@
 ---
 corpus_test: loaded-hook-is-always-a-liveness-subject
-convention: ../../conventions/task-status-notify
+rule: ../../rules/task-status-notify.md
 corpus: ../tree
 ---
 
