@@ -44,23 +44,29 @@ use policy::{PageRef, RuleIndex, ScopeLayer};
 /// The directory the user-space layer's rule pages live in, beside the resolved
 /// `MERIDIAN.md` (`MERIDIAN_CONFIG`, else `$HOME/MERIDIAN.md`).
 ///
-/// The rung is bounded to `rules/` DELIBERATELY. "Rules under the user scope,
-/// sibling of `~/MERIDIAN.md`" (ruling § 3) names a scope, not a walk instruction:
-/// read as the config file's whole directory it would enumerate `$HOME`, which is
-/// neither a corpus nor bounded. One conventional directory, named for the
-/// registration namespace itself, keeps the rung real without walking a home
-/// directory to find three pages.
+/// The rung is bounded to `rules/` because "rules under the user scope, sibling of
+/// `~/MERIDIAN.md`" (ruling § 3) names a SCOPE, not a walk instruction: read as the
+/// config file's whole directory it would enumerate `$HOME`, which is neither a
+/// corpus nor bounded.
 pub const USER_RULES_DIR: &str = "rules";
 
-/// Where the user-space layer is rooted, or `None` when the bootstrap chain names
-/// no config (so there is no user scope to be a sibling of).
+/// Where the user-space layer is rooted, or `None` when it has no root.
 ///
-/// The directory need not exist — an absent `rules/` folder is an empty layer, and
+/// **`MERIDIAN.md` is the ANCHOR, and an absent anchor is an EMPTY user layer** —
+/// fail-closed, never a `$HOME` guess and never a walk. A machine with no config
+/// has no user scope, so there is nothing for user rules to be a sibling OF;
+/// enumerating `$HOME/rules` anyway would invent the scope the anchor was supposed
+/// to declare.
+///
+/// The `rules/` directory itself need not exist — that is an empty layer too, and
 /// [`walk_rules`] treats it as one.
 #[must_use]
 pub fn user_rules_root(env: &config::Env) -> Option<PathBuf> {
-    let config_path = config::resolve_path(env).ok()?;
-    Some(config_path.parent()?.join(USER_RULES_DIR))
+    let anchor = config::resolve_path(env).ok()?;
+    if !anchor.is_file() {
+        return None;
+    }
+    Some(anchor.parent()?.join(USER_RULES_DIR))
 }
 
 /// One page the walk could not offer. Reading a vault touches files that are
@@ -270,6 +276,34 @@ mod tests {
         assert!(
             walk.index().resolve().collisions().is_empty(),
             "and it still resolves"
+        );
+    }
+
+    /// **The anchor law.** `MERIDIAN.md` declares the user scope; without it there
+    /// is no scope for user rules to be a sibling of. A missing anchor yields NO
+    /// user root — never a `$HOME` guess, and never a walk of a home directory.
+    #[test]
+    fn an_absent_meridian_md_anchor_is_an_empty_user_layer() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let home = tmp.path().join("home");
+        create_dir_all(&home).expect("mkdir");
+
+        let absent = config::Env {
+            meridian_config: None,
+            home: Some(home.to_string_lossy().into_owned()),
+        };
+        assert_eq!(
+            user_rules_root(&absent),
+            None,
+            "no anchor ⇒ no user layer, even though $HOME resolves"
+        );
+
+        // …and the same $HOME WITH the anchor present names the rung.
+        write(home.join("MERIDIAN.md"), "---\ntype: meridian-root\n---\n").expect("write");
+        assert_eq!(
+            user_rules_root(&absent),
+            Some(home.join(USER_RULES_DIR)),
+            "the anchor declares the scope its rules sit beside"
         );
     }
 
