@@ -91,6 +91,91 @@ fn walk_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Resul
     Ok(())
 }
 
+/// The directory user-scope rule pages live under, relative to the user scope.
+pub const USER_RULES_DIR: &str = "rules";
+
+/// The USER rung of the registration scope ladder: every rule-page candidate
+/// under the user scope, as `(page path relative to the user scope, raw bytes)`.
+///
+/// `anchor` is the resolved `MERIDIAN.md` path — the config plane's answer
+/// (`config::resolve_path`), never a guess made here. **The user scope is the
+/// directory containing that file**, and an anchor that is not an existing file
+/// yields an EMPTY user layer.
+///
+/// # Why the anchor, and why `rules/` alone (ruled 2026-08-01)
+/// A workspace bounds its own rule candidates with a declared hash domain; the
+/// user scope has no such declaration, and on a real machine it is `$HOME` —
+/// where a recursive markdown walk would read the operator's whole home
+/// directory to answer a read-only question. So the user rung is bounded two
+/// ways, and both are laws rather than optimisations:
+///
+/// 1. **The anchor must exist.** No `MERIDIAN.md` ⇒ no user scope ⇒ no user-layer
+///    rules. The absent anchor is never widened into "walk `$HOME` and see" — a
+///    machine that never declared a user scope has not implicitly declared all
+///    of it.
+/// 2. **Only [`USER_RULES_DIR`].** `<user-scope>/rules/**.md` is the layout
+///    folder the mount law already names for this scope (a page directly inside
+///    a directory named `rules` mounts at that directory's PARENT, so
+///    `~/rules/x.md` governs the user scope at depth 0). Registration is still
+///    by TAG — this bounds where the engine LOOKS in a directory that is not a
+///    corpus, and decides nothing about what registers.
+///
+/// The md-only + dot-segment floor of the hash domain (§12.1) applies:
+/// non-markdown files never register, and a dot-prefixed segment is outside the
+/// domain at any depth. Symlinks are not followed. Paths are returned
+/// `rules/…`-prefixed and sorted, so tagging them as the `policy` registration
+/// layer `ScopeLayer::User` is the only thing the caller adds.
+///
+/// # Errors
+/// I/O failure reading the `rules/` tree once the anchor and the directory are
+/// both present. An absent anchor and an absent `rules/` directory are answers,
+/// not failures.
+pub fn user_rule_pages(anchor: &Path) -> io::Result<DomainFiles> {
+    if !anchor.is_file() {
+        return Ok(Vec::new());
+    }
+    let Some(user_scope) = anchor.parent() else {
+        return Ok(Vec::new());
+    };
+    let rules_dir = user_scope.join(USER_RULES_DIR);
+    if !rules_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut rels = Vec::new();
+    walk_user_rules_dir(&rules_dir, Path::new(USER_RULES_DIR), &mut rels)?;
+    rels.sort();
+    let mut pages = Vec::with_capacity(rels.len());
+    for rel in rels {
+        let bytes = fs::read(user_scope.join(&rel))?;
+        pages.push((rel.to_string_lossy().replace('\\', "/"), bytes));
+    }
+    Ok(pages)
+}
+
+/// The user rung's traversal: markdown files under `rules/`, dot-segments
+/// declined at any depth, symlinks not followed.
+fn walk_user_rules_dir(abs_dir: &Path, rel_dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let rel = rel_dir.join(&name);
+        if file_type.is_dir() {
+            walk_user_rules_dir(&entry.path(), &rel, out)?;
+        } else if file_type.is_file()
+            && Path::new(&name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
 /// The §12 hash domain: the files whose bytes enter the merkle root — md-only,
 /// dot-segment-ignored, and custom-ignored removed. The filter gates HASHING,
 /// never `load` — an ignored md file is absent here yet still addressable by
@@ -991,7 +1076,8 @@ impl Watcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        TEMP_SEQ, WorkspaceRoot, apply_batch, is_write_conflict, stage_batch, temp_path_for, walk,
+        TEMP_SEQ, USER_RULES_DIR, WorkspaceRoot, apply_batch, is_write_conflict, stage_batch,
+        temp_path_for, user_rule_pages, walk,
     };
     use std::fs;
     use std::io;
@@ -1708,5 +1794,106 @@ mod tests {
                 "staging temp must be outside the .md walk"
             );
         }
+    }
+
+    // ── the USER rung of the scope ladder ─────────────────────────────────────
+
+    /// A user scope: `MERIDIAN.md` at its root, `rules/` beneath it. Returns the
+    /// tempdir (kept alive by the caller) and the anchor path.
+    fn user_scope() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let anchor = dir.path().join("MERIDIAN.md");
+        fs::write(&anchor, "---\ntype: meridian-config\n---\n").unwrap();
+        fs::create_dir_all(dir.path().join(USER_RULES_DIR)).unwrap();
+        (dir, anchor)
+    }
+
+    fn spellings(pages: &super::DomainFiles) -> Vec<&str> {
+        pages.iter().map(|(page, _)| page.as_str()).collect()
+    }
+
+    /// **The anchor-absent arm, tested rather than assumed** (ruled 2026-08-01).
+    /// No `MERIDIAN.md` ⇒ the user layer is EMPTY. Note what the fixture holds:
+    /// a `rules/` tree full of candidates, and a `$HOME`-shaped sibling tree that
+    /// a widened walk would have to read. Neither is reached, because the scope
+    /// was never declared.
+    #[test]
+    fn an_absent_anchor_yields_an_empty_user_layer_and_walks_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("rules")).unwrap();
+        fs::write(dir.path().join("rules/notify.md"), "---\nid: x\n---\n").unwrap();
+        fs::create_dir_all(dir.path().join("Documents/deep")).unwrap();
+        fs::write(dir.path().join("Documents/deep/notes.md"), "# notes\n").unwrap();
+
+        let pages = user_rule_pages(&dir.path().join("MERIDIAN.md")).expect("an answer");
+        assert!(
+            pages.is_empty(),
+            "no anchor ⇒ no user scope ⇒ no user-layer rules, never a home-directory walk"
+        );
+    }
+
+    /// An anchor that is a DIRECTORY, not a file, is equally not an anchor.
+    #[test]
+    fn a_directory_where_the_anchor_should_be_is_not_an_anchor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("MERIDIAN.md")).unwrap();
+        assert!(
+            user_rule_pages(&dir.path().join("MERIDIAN.md"))
+                .expect("an answer")
+                .is_empty()
+        );
+    }
+
+    /// A declared user scope with no `rules/` directory is an empty layer, not an
+    /// I/O failure — a machine may declare a user scope and register nothing.
+    #[test]
+    fn a_declared_scope_without_a_rules_directory_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let anchor = dir.path().join("MERIDIAN.md");
+        fs::write(&anchor, "---\ntype: meridian-config\n---\n").unwrap();
+        assert!(user_rule_pages(&anchor).expect("an answer").is_empty());
+    }
+
+    /// The layer is `rules/**.md`, spelled relative to the user scope, sorted,
+    /// with the bytes verbatim — and nothing outside `rules/` is offered, however
+    /// rule-shaped it looks.
+    #[test]
+    fn the_user_layer_is_the_rules_tree_spelled_from_the_user_scope() {
+        let (dir, anchor) = user_scope();
+        fs::create_dir_all(dir.path().join("rules/nested")).unwrap();
+        fs::write(dir.path().join("rules/notify.md"), "notify bytes\n").unwrap();
+        fs::write(dir.path().join("rules/audit.md"), "audit bytes\n").unwrap();
+        fs::write(dir.path().join("rules/nested/deep.md"), "deep bytes\n").unwrap();
+        // Outside `rules/`: a page at the user scope root, and one in a sibling
+        // directory. Neither is a user-layer candidate.
+        fs::write(dir.path().join("loose.md"), "---\nid: loose\n---\n").unwrap();
+        fs::create_dir_all(dir.path().join("notes")).unwrap();
+        fs::write(dir.path().join("notes/other.md"), "---\nid: other\n---\n").unwrap();
+
+        let pages = user_rule_pages(&anchor).expect("the layer");
+        assert_eq!(
+            spellings(&pages),
+            vec!["rules/audit.md", "rules/nested/deep.md", "rules/notify.md"],
+            "`rules/**.md` only, sorted, spelled from the user scope"
+        );
+        assert_eq!(pages[2].1, b"notify bytes\n", "bytes verbatim");
+    }
+
+    /// The md-only + dot-segment floor (§12.1) holds on this rung too: a
+    /// non-markdown file never registers, and a dot-prefixed file or directory is
+    /// outside the domain at any depth.
+    #[test]
+    fn the_md_only_and_dot_segment_floor_holds_on_the_user_rung() {
+        let (dir, anchor) = user_scope();
+        fs::write(dir.path().join("rules/real.md"), "real\n").unwrap();
+        fs::write(dir.path().join("rules/notes.txt"), "not markdown\n").unwrap();
+        fs::write(dir.path().join("rules/.hidden.md"), "dot file\n").unwrap();
+        fs::create_dir_all(dir.path().join("rules/.obsidian")).unwrap();
+        fs::write(dir.path().join("rules/.obsidian/x.md"), "dot dir\n").unwrap();
+
+        assert_eq!(
+            spellings(&user_rule_pages(&anchor).expect("the layer")),
+            vec!["rules/real.md"]
+        );
     }
 }

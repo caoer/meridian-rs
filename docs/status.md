@@ -94,6 +94,11 @@ mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
 mrd walk <PAGE> [--down] [--depth N]
                          the context-assembly listing over the pin graph;
                          every answer cites the revs it read
+mrd rules [PATH] [--workspace | --user]
+                         the effective-rules print verb: what governs at PATH
+                         after id-based override resolution — winner first, the
+                         pages it shadows beneath it, plus a separate armed
+                         column read from the attested armed set (read-only)
 mrd check [--core]       the pure READ validity verb: receipt-chain continuity
                          + the foreign_edit trace; writes nothing. Refuses
                          grey(cannot-assess) when the journal cannot date the
@@ -152,6 +157,80 @@ every other write uses: one flock, one rename (`docs/wire-contract-v3-amendment.
 A pin written through the resident daemon or MCP is gated: the actor must have
 read that exact selector in this session, in mode `sections`. "You cannot attest
 content that was never in your context."
+
+### `mrd rules` — the effective law, shown
+
+`mrd rules [PATH] [--workspace | --user] [--json]`. Registration by tag plus
+id-based override makes the effective rule set a **computed quantity**, and a
+computed quantity the engine cannot show is one nobody can trust. This verb shows
+it (registration ruling § 7).
+
+```text
+rules at sessions/s1
+  workspace  /var/…/ws
+  user-scope /Users/zt  (anchor /Users/zt/MERIDIAN.md)
+  armed-set  none  (meridian/armed-rules.md absent)
+  task.review-notify  armed=-
+      winner    sessions/s1/notify.md  rev=018b942787febb31  scope=workspace:2  kinds=hook
+      shadowed  notify.md  rev=e0dc53f2203c5969  scope=workspace:0  kinds=hook
+  collide.here  REFUSED collision at scope=workspace:2 — this id resolves to nothing
+      tied      sessions/s1/a.md  rev=936e2eddf8bdf331  scope=workspace:2  kinds=hook
+      tied      sessions/s1/b.md  rev=cefb207bdf220b88  scope=workspace:2  kinds=hook
+```
+
+- **The chain is never collapsed.** Per id, the winning page then every page it
+  shadows, in ladder order (`git config --show-origin`). A collided id renders
+  `REFUSED` naming every tied page: it resolves to nothing, so printing an
+  arbitrary winner would be a coin-flip dressed as law.
+- **Scope ladder**, outermost to innermost: user space (rules under the
+  `MERIDIAN.md` anchor's scope) → workspace root → folder/session tree.
+  Resolution is **narrowed** to PATH's own chain, so a same-id page on a sibling
+  chain is no conflict — the normal case once sessions copy rule templates.
+  `--workspace` prints the workspace-root layer alone, `--user` the user layer
+  alone.
+- **The user layer is bounded by an anchor, deliberately.** Its candidates are
+  `<user-scope>/rules/**.md` where the user scope is the directory containing the
+  resolved `MERIDIAN.md`. No anchor ⇒ an empty user layer that says so — never a
+  `$HOME` walk, because a machine that never declared a user scope has not
+  implicitly declared all of it.
+- **`armed=` is a separate column**, read from the attested armed set
+  (`meridian/armed-rules.md`) and joined on `(id, arm root)` narrowed to PATH —
+  never on id alone, never recomputed. `-` registered but unarmed · `<mode>`
+  armed on the page that governs · `<mode>@<page>` armed on a DIFFERENT page,
+  which is the freeze in visible form (arming pins resolution; later discovery
+  never moves it) · `(drifted)`/`(missing)` when the pinned page no longer
+  stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
+- **One resolver, two consumers.** The verb calls `policy`'s own
+  `RuleIndex::discover` → `narrowed_to` → `resolve` and
+  `ArmedArtifact::select_at`; the CLI layer holds no override law, and a test
+  asserts that structurally. A second resolver here could report a law the write
+  door does not enforce — the exact failure the verb exists to prevent.
+- **Read-only:** arms nothing, mints no receipt, spends no cap. A gate drives
+  every view and asserts the workspace's merkle root *and* its whole file tree
+  are unchanged afterwards.
+- **Exit triad:** 0 clean / 1 a finding (a collision, a refused rule page, a red
+  armed row, an unreadable armed set) / 2 bad invocation, or a PATH outside the
+  workspace or not on disk — refused rather than quietly answered at the root.
+  The not-on-disk refusal forecloses nothing: a folder that does not exist yet
+  can mount no rules of its own, so `mrd rules <nearest-existing-ancestor>`
+  answers the hypothetical exactly. The refusal only declines to dress a typo
+  as an answer.
+
+**Refusal scoping is ruled; this build predates the split.** The registration
+ruling's § 3 "Refusal scoping" amendment (2026-08-01) rules that refusals are
+narrowed exactly like rules: a scoped query reddens only for **on-chain**
+refusals — the exact subtree the refused page would have governed — while every
+corpus-wide walk (discovery sweep, ARM act, cutover sweep) reports ALL refusals
+it encounters, always. The mount of a refused page is path-derived (`mount_dir`
+needs no frontmatter), so "cannot be answered" applies to the tag, never the
+mount. The split lands when `RegisterError` gains its mount scope in `policy`
+(with the loader cutover); until then this verb is deliberately PRE-SPLIT
+fail-loud — a refusal anywhere in the workspace exits 1 from any path, which is
+why `mrd rules` in meridian-rs itself currently reports the testsuite's
+deliberately-malformed fixture
+(`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`) from
+everywhere. Fail-closed on the refusal itself is unchanged by the split: a page
+whose frontmatter does not parse never registers.
 
 ### `mrd check` — grey when it cannot date the tree
 

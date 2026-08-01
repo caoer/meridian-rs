@@ -430,13 +430,37 @@ fn golden_exception_without_a_reason_is_refused() {
 
 /// Decision #8: `mrd rules replay` is retired the SAME release — no alias, no
 /// shim. The verb no longer parses; the CLI refuses it loudly (exit 2).
+///
+/// # The instrument changed with the namespace; the proposition did not
+/// The `rules` namespace has since been REASSIGNED by the registration ruling
+/// § 7 to the effective-rules print verb (`mrd rules [PATH]`), which ZT's
+/// originating requirement named as reuse of exactly this precedent. So
+/// `unknown subcommand: rules` is no longer the refusal — and asserting that
+/// string would now be asserting that the new verb does not exist.
+///
+/// What must stay true is the SHIM-LESS part, and it is stronger than one
+/// message: **no spelling of the retired form may succeed.** Both of its shapes
+/// are measured, because they fail through different arms — the flags are
+/// unknown flags, and the bare form's `replay` is a path that is not on disk.
+/// The full form was the only one the original gate covered, and it would have
+/// kept passing while `mrd rules replay` quietly printed an empty rule set.
 #[test]
 fn mrd_rules_replay_no_longer_parses() {
-    let out = mrd(&["rules", "replay", "--rules", "x", "--snapshots", "y"]);
-    assert_eq!(code(&out), 2, "the retired verb is a tool failure");
-    assert!(
-        stderr(&out).contains("unknown subcommand: rules"),
-        "the CLI refuses the retired verb: {}",
-        stderr(&out)
-    );
+    for retired in [
+        vec!["rules", "replay", "--rules", "x", "--snapshots", "y"],
+        vec!["rules", "replay"],
+    ] {
+        let out = mrd(&retired);
+        assert_eq!(
+            code(&out),
+            2,
+            "the retired verb is a tool failure: {retired:?}"
+        );
+        assert!(!stderr(&out).is_empty(), "the refusal is loud: {retired:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).is_empty(),
+            "a retired form prints no rule set: {retired:?} gave {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
 }
