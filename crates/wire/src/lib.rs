@@ -776,6 +776,25 @@ pub struct ReadRow {
     pub depth: u32,
     pub title: String,
     pub hpath: String,
+    /// v3-ADDITIVE (fix-08): the RAW segment array — the §2.1 grammar `put`
+    /// takes in `target.hpath`, so the address this row publishes is one the
+    /// write plane accepts, unmodified.
+    ///
+    /// `hpath` above is the SANITIZED joined string and stays put (renaming it
+    /// would move Go-parity golden bytes). But `sanitize_heading` is
+    /// many-to-one — `Scratch notes`, `Scratch-notes` and `Scratch/notes` all
+    /// collapse to `Scratch-notes` — so it is a projection nothing can invert:
+    /// before this field, an agent that read a section could not address it to
+    /// write, and retyping could not recover a pre-image the row never carried.
+    /// `hpath` addresses the HUMAN plane (display, `--section`); `hpath_raw`
+    /// addresses the MACHINE plane, and only it round-trips.
+    ///
+    /// Per-segment `n` rides ONLY where the raw text is ambiguous among its
+    /// same-parent siblings — the same occurrence `resolve_hpath_node` counts.
+    /// An unconditional `n` would keep silently resolving after a duplicate
+    /// appeared; a minimal address refuses loud instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hpath_raw: Vec<HpathSeg>,
     pub words: u64,
     pub sec_rev: NodeRev,
     /// Full node span, heading-inclusive AND subtree-inclusive — the
@@ -814,6 +833,13 @@ pub struct ReadAnchor {
 pub struct ReadSectionOut {
     pub sel: String,
     pub hpath: String,
+    /// v3-ADDITIVE (fix-08): the RAW put-grammar address of the section served
+    /// — so the read-a-section-then-write-it loop closes off THIS response,
+    /// with no second read and no address reconstruction. Absent on `^id`
+    /// sections, whose put grammar is `{"anchor":id}` and whose id is already
+    /// carried un-sanitized. Semantics: [`ReadRow::hpath_raw`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hpath_raw: Vec<HpathSeg>,
     pub sec_rev: NodeRev,
     pub words: u64,
     pub content: String,

@@ -32,6 +32,19 @@ pub struct ReadFact {
     /// The sanitized joined address ("Notes/Slash-Title-Here"); `"^id"` for
     /// anchor rows.
     pub hpath: String,
+    /// The RAW segment array — the same grammar `put` takes in `target.hpath`,
+    /// carried verbatim so the address this face publishes is one the write
+    /// plane accepts. Empty on anchor rows (their put grammar is
+    /// `{"anchor":id}`, and `^id` is charset-restricted, so nothing is lost).
+    ///
+    /// [`sanitize_heading`] is MANY-TO-ONE — `Scratch notes`, `Scratch-notes`
+    /// and `Scratch/notes` all collapse to `Scratch-notes` — so [`Self::hpath`]
+    /// is a lossy projection no consumer can invert. This field is the
+    /// pre-image, and it is the only round-trippable address on the row.
+    ///
+    /// Per-segment `n` rides ONLY where the raw text is ambiguous among its
+    /// same-parent siblings ([`raw_addresses`]).
+    pub hpath_raw: Vec<wire::HpathSeg>,
     /// `strings.Fields` word count over the content-span bytes (0 for anchor
     /// rows and content-less headings).
     pub words: u64,
@@ -53,7 +66,8 @@ pub struct ReadFact {
 pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
     let mut out = Vec::new();
     let mut dewey = DeweyCounter::new();
-    for row in rows {
+    let raw_addrs = raw_addresses(rows);
+    for (i, row) in rows.iter().enumerate() {
         match row.kind.as_str() {
             "heading" => {
                 let level = row.level.unwrap_or(0);
@@ -73,6 +87,7 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     depth: level,
                     title,
                     hpath,
+                    hpath_raw: raw_addrs[i].clone(),
                     words,
                     sec_rev: row.node_rev.0.clone(),
                     span: row.span,
@@ -89,6 +104,10 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
                     depth: 0,
                     title: anchor.to_string(),
                     hpath: format!("^{anchor}"),
+                    // The anchor plane's put grammar is `{"anchor":id}`, and
+                    // the id rides `hpath` un-sanitized (charset `[A-Za-z0-9-]`
+                    // §2.4), so there is no pre-image to recover here.
+                    hpath_raw: Vec::new(),
                     words: 0,
                     sec_rev: row.node_rev.0.clone(),
                     span: row.span,
@@ -101,6 +120,86 @@ pub fn read_facts(rows: &[wire::TocNode], raw: &[u8]) -> Vec<ReadFact> {
             // are NOT addressable on this face).
             _ => {}
         }
+    }
+    out
+}
+
+/// The RAW put-grammar address for every row, indexed BY ROW (non-heading rows
+/// get an empty address). This is the seam that closes the read→put loop: the
+/// sanitized `hpath` string is many-to-one and cannot be inverted, so the read
+/// face carries the pre-image instead of asking the caller to reconstruct it.
+///
+/// `n` rides a segment ONLY where the raw text is ambiguous among its
+/// same-parent siblings. `n: None` *demands* uniqueness in
+/// `model::resolve_hpath_node`, so an unconditional `n` would publish an
+/// address that keeps silently resolving after a duplicate appears — a
+/// prepended `# Notes` would silently retarget a held `n:1` onto the
+/// interloper. Minimal addresses instead start REFUSING when the world changes,
+/// which is the write plane's never-silently-picks law holding across time.
+///
+/// The occurrence counted is the one `resolve_hpath_node` counts: position
+/// among siblings sharing the RAW TEXT under the same parent — never position
+/// among all sibling sections, and never document order. A different basis
+/// would still be well-formed and would land on the wrong section silently.
+///
+/// Two passes, because ambiguity is a whole-document fact: a first occurrence
+/// cannot know a later duplicate exists. Pass 1 assigns each heading row its
+/// containment parent, raw text, and occurrence; pass 2 turns the totals into
+/// `n` and clones each parent's finished address (parents precede children in
+/// document order, so the prefix is always ready).
+fn raw_addresses(rows: &[wire::TocNode]) -> Vec<Vec<wire::HpathSeg>> {
+    struct Seg {
+        /// Row index of the containment parent; `None` at the top level.
+        parent: Option<usize>,
+        text: String,
+        /// 1-based occurrence among same-parent siblings sharing `text`.
+        occ: u32,
+    }
+
+    let mut segs: Vec<Option<Seg>> = (0..rows.len()).map(|_| None).collect();
+    let mut counts: std::collections::HashMap<(Option<usize>, String), u32> =
+        std::collections::HashMap::new();
+    // Ancestor row indices by containment depth: `stack[d - 1]` is the row of
+    // the depth-`d` ancestor. `hpath.len()` IS the containment depth (a section
+    // carries the chain of governing headings including its own), and
+    // `project_toc` emits rows in span order, so a row's ancestors are exactly
+    // the most recent rows at the shallower depths — heading level skips
+    // (`#` then `###`) do not disturb this.
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if row.kind != "heading" {
+            continue;
+        }
+        let Some(text) = row.hpath.as_deref().and_then(<[_]>::last) else {
+            continue; // a heading row with no chain addresses nothing
+        };
+        let depth = row.hpath.as_deref().map_or(0, <[_]>::len);
+        stack.truncate(depth.saturating_sub(1));
+        let parent = stack.last().copied();
+        let occ = counts
+            .entry((parent, text.h.clone()))
+            .and_modify(|c| *c += 1)
+            .or_insert(1);
+        segs[i] = Some(Seg {
+            parent,
+            text: text.h.clone(),
+            occ: *occ,
+        });
+        stack.push(i);
+    }
+
+    let mut out: Vec<Vec<wire::HpathSeg>> = (0..rows.len()).map(|_| Vec::new()).collect();
+    for i in 0..rows.len() {
+        let Some(seg) = &segs[i] else { continue };
+        let mut addr = seg.parent.map(|p| out[p].clone()).unwrap_or_default();
+        let ambiguous = counts
+            .get(&(seg.parent, seg.text.clone()))
+            .is_some_and(|&c| c > 1);
+        addr.push(wire::HpathSeg {
+            h: seg.text.clone(),
+            n: ambiguous.then_some(seg.occ),
+        });
+        out[i] = addr;
     }
     out
 }
@@ -382,6 +481,78 @@ mod tests {
             vec!["Tasks"],
             "and the heading plane is unaffected by it"
         );
+    }
+
+    /// Render one fact's raw address compactly: `A#2/B` — `#n` only where an
+    /// occurrence index rides.
+    fn addr(f: &ReadFact) -> String {
+        f.hpath_raw
+            .iter()
+            .map(|s| match s.n {
+                Some(n) => format!("{}#{n}", s.h),
+                None => s.h.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+
+    /// The raw address is the PRE-IMAGE the sanitized one destroys: three
+    /// headings collapsing to one `hpath` keep three distinct `hpath_raw`
+    /// addresses, and none carries `n` (each raw text is unique among its
+    /// siblings — the collision exists only in the sanitized projection).
+    #[test]
+    fn colliding_headings_share_one_sanitized_address_and_keep_distinct_raw_ones() {
+        let got = facts("# Scratch notes\n\na\n\n# Scratch-notes\n\nb\n\n# Scratch/notes\n\nc\n");
+        assert_eq!(
+            got.iter().map(|f| f.hpath.as_str()).collect::<Vec<_>>(),
+            vec!["Scratch-notes", "Scratch-notes", "Scratch-notes"],
+            "sanitize_heading is many-to-one"
+        );
+        assert_eq!(
+            got.iter().map(addr).collect::<Vec<_>>(),
+            vec!["Scratch notes", "Scratch-notes", "Scratch/notes"],
+            "and the raw address distinguishes them byte-exactly, with no n invented"
+        );
+    }
+
+    /// `n` counts occurrences among SAME-TEXT siblings under the SAME parent —
+    /// the occurrence `model::resolve_hpath_node` counts. Two duplicate `# A`
+    /// sections each hold a `## B`: the A segments are numbered, and neither B
+    /// is, because each B is unique under its own parent. An implementation
+    /// counting identical FULL PATHS instead would number both Bs and send
+    /// `A#2/B#2` to a parent holding one B — a well-formed address resolving
+    /// to nothing.
+    #[test]
+    fn occurrence_index_counts_same_text_siblings_never_identical_full_paths() {
+        let got = facts("# A\n\nx\n\n## B\n\ny\n\n# A\n\nz\n\n## B\n\nw\n");
+        assert_eq!(
+            got.iter().map(addr).collect::<Vec<_>>(),
+            vec!["A#1", "A#1/B", "A#2", "A#2/B"],
+            "the ambiguous ancestor is numbered; the unique child never is"
+        );
+    }
+
+    /// A unique section publishes NO occurrence index, so the address starts
+    /// refusing if a duplicate ever appears — rather than silently retargeting.
+    /// A non-duplicate sibling sitting BEFORE the duplicates proves `n` is not
+    /// position among all sibling sections (which would be 2 and 3 here).
+    #[test]
+    fn occurrence_index_rides_only_where_ambiguous_and_ignores_sibling_position() {
+        let got = facts("# P\n\n## Alpha\n\na\n\n## N\n\nb\n\n## N\n\nc\n");
+        assert_eq!(
+            got.iter().map(addr).collect::<Vec<_>>(),
+            vec!["P", "P/Alpha", "P/N#1", "P/N#2"]
+        );
+    }
+
+    /// Anchor rows carry no raw hpath: their put grammar is `{"anchor":id}`,
+    /// and the id already rides `hpath` un-sanitized.
+    #[test]
+    fn anchor_rows_carry_no_raw_hpath() {
+        let got = facts("# H\n\n- plain item ^p1\n");
+        let anchor = resolve_selector(&got, "^p1").expect("anchor row");
+        assert!(anchor.hpath_raw.is_empty());
+        assert_eq!(addr(resolve_selector(&got, "H").expect("heading")), "H");
     }
 
     /// Frag scoping: the section itself + descendants by hpath prefix;
