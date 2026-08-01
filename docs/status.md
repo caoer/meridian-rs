@@ -202,9 +202,11 @@ rules at sessions/s1
   stands. A corrupt artifact reads `UNREADABLE`, never "nothing armed".
 - **One resolver, two consumers.** The verb calls `policy`'s own
   `RuleIndex::discover` → `narrowed_to` → `resolve` and
-  `ArmedArtifact::select_at`; the CLI layer holds no override law, and a test
-  asserts that structurally. A second resolver here could report a law the write
-  door does not enforce — the exact failure the verb exists to prevent.
+  `ArmedArtifact::verify_at` — the ONE composition of select-then-verify, not
+  `select_at` + `verify` assembled at the call site (C3 gate finding F-4). The
+  CLI layer holds no override law, and a test asserts that structurally. A second
+  resolver here could report a law the write door does not enforce — the exact
+  failure the verb exists to prevent.
 - **Read-only:** arms nothing, mints no receipt, spends no cap. A gate drives
   every view and asserts the workspace's merkle root *and* its whole file tree
   are unchanged afterwards.
@@ -216,21 +218,37 @@ rules at sessions/s1
   answers the hypothetical exactly. The refusal only declines to dress a typo
   as an answer.
 
-**Refusal scoping is ruled; this build predates the split.** The registration
-ruling's § 3 "Refusal scoping" amendment (2026-08-01) rules that refusals are
-narrowed exactly like rules: a scoped query reddens only for **on-chain**
-refusals — the exact subtree the refused page would have governed — while every
-corpus-wide walk (discovery sweep, ARM act, cutover sweep) reports ALL refusals
-it encounters, always. The mount of a refused page is path-derived (`mount_dir`
-needs no frontmatter), so "cannot be answered" applies to the tag, never the
-mount. The split lands when `RegisterError` gains its mount scope in `policy`
-(with the loader cutover); until then this verb is deliberately PRE-SPLIT
-fail-loud — a refusal anywhere in the workspace exits 1 from any path, which is
-why `mrd rules` in meridian-rs itself currently reports the testsuite's
-deliberately-malformed fixture
-(`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`) from
-everywhere. Fail-closed on the refusal itself is unchanged by the split: a page
-whose frontmatter does not parse never registers.
+**Refusal scoping — LANDED.** The registration ruling's § 3 "Refusal scoping"
+amendment (2026-08-01) rules that refusals are narrowed exactly like rules, and
+they now are: a scoped query reddens only for **on-chain** refusals — the exact
+subtree the refused page would have governed — while every corpus-wide walk
+(discovery sweep, ARM act, cutover sweep) reports ALL refusals it encounters,
+always. Off-chain reddening re-couples siblings through diagnostics, the denial
+shape the narrowing amendment already rejected for rules; fail-loud survives
+where enforcement lives.
+
+- **`RegisterError` carries its own mount scope**, path-derived: `mount_dir`
+  needs no frontmatter, so "cannot be answered" applies to the page's
+  registration TAG and never to its mount. A refused page therefore answers the
+  same mount question a registered one does — through the same `mount_dir_of`,
+  `rules/`-parent lift included. **One mount law, not two.**
+- **`narrowed_to` filters refusals through the same predicate it filters rules
+  through.** The CLI gained no split of its own — § 7's no-mount-arithmetic-in-
+  the-CLI rule is intact, and the verb prints what `policy` handed it.
+- **Fail-CLOSED on the refusal itself is unchanged:** a page whose frontmatter
+  does not parse never registers, from any path. Scoping decides who HEARS about
+  a broken rule page, never whether it is enforced.
+- **`mrd rules` on meridian-rs itself now exits 0**, and a named e2e gate
+  (`meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree`)
+  measures that on the real repo alongside the other half — a refusal still
+  reddening its own subtree, and the corpus-wide walk still naming it. Narrowing
+  alone could not have delivered the repo half: walks report every refusal
+  always, so the testsuite's deliberately-malformed schema fixture
+  (`crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md`) had
+  to leave the **hash domain**, which it did through a declared, documented
+  ignore in `meridian/domain.md`. The fixture is still on disk and still tested
+  by the schema pack; it is simply no longer attested content that every
+  discovery consumer sweeps.
 
 ### `mrd check` — grey when it cannot date the tree
 

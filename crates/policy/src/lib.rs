@@ -138,8 +138,8 @@ pub use index::{
 /// known, only the explicit attested ARM act activates it.
 pub use registration::{
     Collision, Effective, EffectiveSet, ID_KEY, IdFault, MAX_ID_LEN, PageRef,
-    REGISTRATION_NAMESPACE, RegisterError, Registration, RuleId, RuleIndex, RuleKind, Scope,
-    ScopeLayer, page_rev, register_page,
+    REGISTRATION_NAMESPACE, RegisterError, RegisterFault, Registration, RuleId, RuleIndex,
+    RuleKind, Scope, ScopeLayer, page_rev, register_page,
 };
 
 /// The page-shaped rule load — what a registered page becomes when it is

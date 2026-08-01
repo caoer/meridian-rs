@@ -406,125 +406,114 @@ fn mount_dir_of(page: &str) -> &str {
     }
 }
 
-/// Why a page that offered itself to registration was refused. Every variant
-/// names the page: a rule that silently failed to register is a rule that
-/// silently stopped being enforced.
+/// **The narrowing predicate** (ruling § 3): may a page mounted at `mount_dir` on
+/// `layer` be seen from `path`?
+///
+/// True exactly when the mount is AT-OR-ABOVE `path`: the whole user rung (the
+/// outermost, which the ladder already ranks below every workspace page at any
+/// depth), a workspace page at the layer root, or a workspace page whose mount
+/// directory is `path` itself or one of its ancestors. The separator is explicit
+/// so `a/bc.md` never reads as living under `a/b`.
+///
+/// ONE predicate, applied to registrations and to refusals alike. A second copy is
+/// how a scoped query would come to show a rule it does not obey, or hide a broken
+/// page from the subtree that page governs.
+fn governs(layer: ScopeLayer, mount_dir: &str, path: &str) -> bool {
+    match layer {
+        ScopeLayer::User => true,
+        ScopeLayer::Workspace => {
+            mount_dir.is_empty() || path == mount_dir || path.starts_with(&format!("{mount_dir}/"))
+        }
+    }
+}
+
+/// A page that offered itself to registration and was refused: WHICH page, WHERE
+/// it would have governed, and WHY it was refused. A rule that silently failed to
+/// register is a rule that silently stopped being enforced, so every refusal
+/// names its page.
+///
+/// # The mount scope is path-derived, and that is what makes scoping possible
+/// (§ 3 "Refusal scoping", 2026-08-01)
+/// A refused page has no [`Registration`] to carry a [`Scope`], but it does not
+/// need one: [`mount_dir_of`] reads the PATH alone, and a path is exactly what a
+/// refusal always has. "Cannot be answered" applies to the page's registration
+/// TAG, never to its mount. So a refusal carries the same mount law a
+/// registration does — ONE law, computed by the same function — and
+/// [`RuleIndex::narrowed_to`] can narrow refusals exactly like rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RegisterError {
-    /// The page has a frontmatter block that is not parseable YAML, so whether it
-    /// carries a registration tag cannot be answered. Fail-closed and per-page:
-    /// every other page in the same run is unaffected.
-    FrontmatterUnparsed {
-        /// The offending page.
-        page: String,
-        /// The YAML parser's own message.
-        detail: String,
-    },
-    /// The page carries a `rules/*` tag this slice does not carry. A named
-    /// deferral, never a silent drop.
-    KindDeferred {
-        /// The offending page.
-        page: String,
-        /// The tag as written.
-        tag: String,
-    },
-    /// The page carries a registration tag but declares no `id:`.
-    IdAbsent {
-        /// The offending page.
-        page: String,
-    },
-    /// The page's `id:` is outside the § 2 grammar.
-    IdInvalid {
-        /// The offending page.
-        page: String,
-        /// The id as written (empty when it was not even a string).
-        id: String,
-        /// Which rule broke.
-        fault: IdFault,
-    },
-    /// The fenced Starlark block restates the id, and disagrees with frontmatter.
-    IdDisagrees {
-        /// The offending page.
-        page: String,
-        /// What the frontmatter says.
-        frontmatter: String,
-        /// What the block says.
-        block: String,
-    },
-    /// The block assigns `id` to something that is not a string literal, so the
-    /// agreement question is unanswerable without evaluating it — which the
-    /// layering forbids.
-    BlockIdNotLiteral {
-        /// The offending page.
-        page: String,
-    },
-    /// The page's fenced Starlark block does not parse, so a block-declared id
-    /// cannot be read. Fail-closed: a page whose block might contradict its
-    /// frontmatter never registers on the assumption that it does not.
-    BlockUnparsed {
-        /// The offending page.
-        page: String,
-        /// The Starlark parser's own message.
-        detail: String,
-    },
+pub struct RegisterError {
+    page: String,
+    scope: Scope,
+    fault: RegisterFault,
 }
 
 impl RegisterError {
     /// The page the refusal is about.
     #[must_use]
     pub fn page(&self) -> &str {
-        match self {
-            RegisterError::FrontmatterUnparsed { page, .. }
-            | RegisterError::KindDeferred { page, .. }
-            | RegisterError::IdAbsent { page }
-            | RegisterError::IdInvalid { page, .. }
-            | RegisterError::IdDisagrees { page, .. }
-            | RegisterError::BlockIdNotLiteral { page }
-            | RegisterError::BlockUnparsed { page, .. } => page,
-        }
+        &self.page
+    }
+
+    /// Why the page was refused.
+    #[must_use]
+    pub fn fault(&self) -> &RegisterFault {
+        &self.fault
+    }
+
+    /// Where the refused page WOULD have been mounted, had it registered — its
+    /// layer and mount depth, computed by [`Scope::of`] exactly as a
+    /// [`Registration`]'s is.
+    #[must_use]
+    pub fn scope(&self) -> Scope {
+        self.scope
+    }
+
+    /// The directory the refused page would have governed ([`mount_dir_of`], the
+    /// `rules/`-parent lift included) — the subtree a scoped query must redden
+    /// for, and the only one.
+    #[must_use]
+    pub fn mount_dir(&self) -> &str {
+        mount_dir_of(&self.page)
     }
 }
 
 impl std::fmt::Display for RegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            RegisterError::FrontmatterUnparsed { page, detail } => write!(
+        let page = &self.page;
+        match &self.fault {
+            RegisterFault::FrontmatterUnparsed { detail } => write!(
                 f,
                 "`{page}` has frontmatter that does not parse, so its registration tags cannot \
                  be read: {detail}"
             ),
-            RegisterError::KindDeferred { page, tag } => write!(
+            RegisterFault::KindDeferred { tag } => write!(
                 f,
                 "`{page}` carries `{tag}`, but `{REGISTRATION_NAMESPACE}` carries \
                  `{check}` and `{hook}` only — the tag is reserved, not ignored",
                 check = RuleKind::Check.tag(),
                 hook = RuleKind::Hook.tag(),
             ),
-            RegisterError::IdAbsent { page } => write!(
+            RegisterFault::IdAbsent => write!(
                 f,
                 "`{page}` carries a `{REGISTRATION_NAMESPACE}*` registration tag but declares no \
                  `{ID_KEY}:` — a rule page is identified by its frontmatter id, not by its filename"
             ),
-            RegisterError::IdInvalid { page, id, fault } => {
+            RegisterFault::IdInvalid { id, fault } => {
                 write!(f, "`{page}` declares `{ID_KEY}: {id}` — {fault}")
             }
-            RegisterError::IdDisagrees {
-                page,
-                frontmatter,
-                block,
-            } => write!(
+            RegisterFault::IdDisagrees { frontmatter, block } => write!(
                 f,
                 "`{page}` declares `{ID_KEY}: {frontmatter}` in frontmatter but `{ID_KEY} = \
                  {block:?}` in its Starlark block — the block binds to the page's frontmatter id, \
                  it does not name a second one"
             ),
-            RegisterError::BlockIdNotLiteral { page } => write!(
+            RegisterFault::BlockIdNotLiteral => write!(
                 f,
                 "`{page}` assigns `{ID_KEY}` in its Starlark block to something other than a \
                  string literal — identity is a frontmatter query, so a block may only restate \
                  the id verbatim"
             ),
-            RegisterError::BlockUnparsed { page, detail } => write!(
+            RegisterFault::BlockUnparsed { detail } => write!(
                 f,
                 "`{page}` has a fenced starlark block that does not parse, so a block-declared \
                  `{ID_KEY}` cannot be read: {detail}"
@@ -534,6 +523,54 @@ impl std::fmt::Display for RegisterError {
 }
 
 impl std::error::Error for RegisterError {}
+
+/// Why a page that offered itself to registration was refused — the fault
+/// vocabulary alone. The page and its mount scope ride [`RegisterError`], so a
+/// fault is stated once and cannot disagree with itself about which page it is
+/// about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterFault {
+    /// The page has a frontmatter block that is not parseable YAML, so whether it
+    /// carries a registration tag cannot be answered. Fail-closed and per-page:
+    /// every other page in the same run is unaffected.
+    FrontmatterUnparsed {
+        /// The YAML parser's own message.
+        detail: String,
+    },
+    /// The page carries a `rules/*` tag this slice does not carry. A named
+    /// deferral, never a silent drop.
+    KindDeferred {
+        /// The tag as written.
+        tag: String,
+    },
+    /// The page carries a registration tag but declares no `id:`.
+    IdAbsent,
+    /// The page's `id:` is outside the § 2 grammar.
+    IdInvalid {
+        /// The id as written (empty when it was not even a string).
+        id: String,
+        /// Which rule broke.
+        fault: IdFault,
+    },
+    /// The fenced Starlark block restates the id, and disagrees with frontmatter.
+    IdDisagrees {
+        /// What the frontmatter says.
+        frontmatter: String,
+        /// What the block says.
+        block: String,
+    },
+    /// The block assigns `id` to something that is not a string literal, so the
+    /// agreement question is unanswerable without evaluating it — which the
+    /// layering forbids.
+    BlockIdNotLiteral,
+    /// The page's fenced Starlark block does not parse, so a block-declared id
+    /// cannot be read. Fail-closed: a page whose block might contradict its
+    /// frontmatter never registers on the assumption that it does not.
+    BlockUnparsed {
+        /// The Starlark parser's own message.
+        detail: String,
+    },
+}
 
 // ── The page fingerprint ──────────────────────────────────────────────────────
 
@@ -605,31 +642,39 @@ pub struct PageRef<'a> {
 /// [`RegisterError`] — the page offered itself to registration and was refused.
 pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, RegisterError> {
     let PageRef { layer, page, bytes } = offered;
+    // Every refusal below is a bare fault; the page and its mount scope are
+    // attached HERE, once, by the same `Scope::of` a registration uses. That is
+    // what "one mount law, not two" buys: a refusal cannot be minted with a
+    // scope computed some other way, because no other site mints one.
+    let refuse = |fault: RegisterFault| RegisterError {
+        page: page.to_string(),
+        scope: Scope::of(layer, page),
+        fault,
+    };
 
     let Some((frontmatter, _body)) = crate::pack::split_frontmatter(bytes) else {
         return Ok(None); // no frontmatter block ⇒ no tags ⇒ not a rule page
     };
-    let parsed: RegistrationFrontmatter =
-        serde_yaml::from_str(frontmatter).map_err(|e| RegisterError::FrontmatterUnparsed {
-            page: page.to_string(),
+    let parsed: RegistrationFrontmatter = serde_yaml::from_str(frontmatter).map_err(|e| {
+        refuse(RegisterFault::FrontmatterUnparsed {
             detail: e.to_string(),
-        })?;
+        })
+    })?;
 
-    let kinds = registration_kinds(page, parsed.tags.as_ref())?;
+    let kinds = registration_kinds(parsed.tags.as_ref()).map_err(&refuse)?;
     if kinds.is_empty() {
         return Ok(None); // tagged, but not in the registration namespace
     }
 
-    let id = frontmatter_id(page, parsed.id.as_ref())?;
+    let id = frontmatter_id(parsed.id.as_ref()).map_err(&refuse)?;
 
-    if let Some(declared) = block_declared_id(page, bytes)?
+    if let Some(declared) = block_declared_id(page, bytes).map_err(&refuse)?
         && declared != id.as_str()
     {
-        return Err(RegisterError::IdDisagrees {
-            page: page.to_string(),
+        return Err(refuse(RegisterFault::IdDisagrees {
             frontmatter: id.as_str().to_string(),
             block: declared,
-        });
+        }));
     }
 
     Ok(Some(Registration {
@@ -643,7 +688,7 @@ pub fn register_page(offered: PageRef<'_>) -> Result<Option<Registration>, Regis
 
 /// The registration kinds `tags:` declares, sorted and deduplicated. A `rules/*`
 /// tag outside this slice's vocabulary is refused by name.
-fn registration_kinds(page: &str, tags: Option<&Tags>) -> Result<Vec<RuleKind>, RegisterError> {
+fn registration_kinds(tags: Option<&Tags>) -> Result<Vec<RuleKind>, RegisterFault> {
     let Some(tags) = tags else {
         return Ok(Vec::new());
     };
@@ -652,10 +697,8 @@ fn registration_kinds(page: &str, tags: Option<&Tags>) -> Result<Vec<RuleKind>, 
         let Some(suffix) = tag.strip_prefix(REGISTRATION_NAMESPACE) else {
             continue;
         };
-        let kind = RuleKind::from_suffix(suffix).ok_or_else(|| RegisterError::KindDeferred {
-            page: page.to_string(),
-            tag: tag.clone(),
-        })?;
+        let kind = RuleKind::from_suffix(suffix)
+            .ok_or_else(|| RegisterFault::KindDeferred { tag: tag.clone() })?;
         kinds.push(kind);
     }
     kinds.sort_unstable();
@@ -664,20 +707,15 @@ fn registration_kinds(page: &str, tags: Option<&Tags>) -> Result<Vec<RuleKind>, 
 }
 
 /// The page's frontmatter `id:`, validated to the § 2 grammar.
-fn frontmatter_id(page: &str, id: Option<&serde_yaml::Value>) -> Result<RuleId, RegisterError> {
-    let absent = || RegisterError::IdAbsent {
-        page: page.to_string(),
-    };
-    let value = id.filter(|v| !v.is_null()).ok_or_else(absent)?;
+fn frontmatter_id(id: Option<&serde_yaml::Value>) -> Result<RuleId, RegisterFault> {
+    let value = id.filter(|v| !v.is_null()).ok_or(RegisterFault::IdAbsent)?;
     let Some(text) = value.as_str() else {
-        return Err(RegisterError::IdInvalid {
-            page: page.to_string(),
+        return Err(RegisterFault::IdInvalid {
             id: String::new(),
             fault: IdFault::NotAString,
         });
     };
-    RuleId::parse(text).map_err(|fault| RegisterError::IdInvalid {
-        page: page.to_string(),
+    RuleId::parse(text).map_err(|fault| RegisterFault::IdInvalid {
         id: text.to_string(),
         fault,
     })
@@ -686,21 +724,20 @@ fn frontmatter_id(page: &str, id: Option<&serde_yaml::Value>) -> Result<RuleId, 
 /// The id a page's fenced Starlark block restates, read STATICALLY from the
 /// parsed AST. `Ok(None)` when the page carries no block, or a block that binds no
 /// top-level `id`.
-fn block_declared_id(page: &str, bytes: &str) -> Result<Option<String>, RegisterError> {
+fn block_declared_id(page: &str, bytes: &str) -> Result<Option<String>, RegisterFault> {
     let Some(source) = crate::pack::extract_fenced_starlark(bytes) else {
         return Ok(None);
     };
+    // `page` names the module in the parser's own diagnostics — it is the only
+    // thing this function still needs the path for.
     let ast = AstModule::parse(page, source, &Dialect::Standard).map_err(|e| {
-        RegisterError::BlockUnparsed {
-            page: page.to_string(),
+        RegisterFault::BlockUnparsed {
             detail: e.to_string(),
         }
     })?;
     match top_level_id(ast.statement()) {
         Some(BlockId::Text(id)) => Ok(Some(id)),
-        Some(BlockId::NotALiteral) => Err(RegisterError::BlockIdNotLiteral {
-            page: page.to_string(),
-        }),
+        Some(BlockId::NotALiteral) => Err(RegisterFault::BlockIdNotLiteral),
         None => Ok(None),
     }
 }
@@ -805,25 +842,40 @@ impl RuleIndex {
     /// scopes through the id namespace, letting any writer refuse an id
     /// workspace-wide.
     ///
-    /// Refusals are carried through UNNARROWED: a rule page that failed to register
-    /// is a fact about the workspace, and hiding it from a narrowed consumer would
-    /// make a broken page invisible exactly where someone is looking.
+    /// # Refusals narrow EXACTLY like rules (§ 3 "Refusal scoping", 2026-08-01)
+    /// A refused page's mount is path-derived ([`RegisterError::mount_dir`]), so a
+    /// refusal answers the same at-or-above question a registration does and rides
+    /// the same predicate here — one narrowing law, applied twice, never two.
+    ///
+    /// The consequence is the point: a scoped query sees a broken rule page over
+    /// EXACTLY the subtree that page would have governed, and nowhere else. The
+    /// rejected alternative — carrying refusals through unnarrowed — re-couples
+    /// independent scopes through diagnostics, which is the denial shape the
+    /// narrowing ruling already rejected for rules: any writer dropping one
+    /// malformed page anywhere would redden every scoped query in the workspace,
+    /// permanently, from paths that page could never have governed.
+    ///
+    /// **Fail-loud survives where enforcement lives.** This is the SCOPED
+    /// consumer's step; a corpus-wide walk reads [`RuleIndex::refused`] on the
+    /// un-narrowed index and therefore still reports ALL refusals, always. A broken
+    /// rule page stays loud at every arming and at every query under its own scope.
     #[must_use]
     pub fn narrowed_to(&self, path: &str) -> RuleIndex {
         RuleIndex {
             registered: self
                 .registered
                 .iter()
-                .filter(|registration| match registration.scope.layer {
-                    ScopeLayer::User => true,
-                    ScopeLayer::Workspace => {
-                        let dir = registration.mount_dir();
-                        dir.is_empty() || path == dir || path.starts_with(&format!("{dir}/"))
-                    }
+                .filter(|registration| {
+                    governs(registration.scope.layer, registration.mount_dir(), path)
                 })
                 .cloned()
                 .collect(),
-            refused: self.refused.clone(),
+            refused: self
+                .refused
+                .iter()
+                .filter(|refusal| governs(refusal.scope.layer, refusal.mount_dir(), path))
+                .cloned()
+                .collect(),
         }
     }
 
@@ -1089,7 +1141,10 @@ mod tests {
     fn an_unknown_rules_tag_is_a_named_deferral() {
         let body = "---\ntags: [rules/fix]\nid: someday\n---\n";
         let err = register("f.md", body).expect_err("the namespace is reserved");
-        assert!(matches!(err, RegisterError::KindDeferred { .. }), "{err:?}");
+        assert!(
+            matches!(err.fault(), RegisterFault::KindDeferred { .. }),
+            "{err:?}"
+        );
         assert_eq!(err.page(), "f.md");
         assert!(err.to_string().contains("rules/fix"), "{err}");
     }
@@ -1100,12 +1155,8 @@ mod tests {
     fn a_tagged_page_without_an_id_fails_loudly() {
         let body = "---\ntags: [rules/hook]\n---\n\n# no id\n";
         let err = register("rules/anon.md", body).expect_err("no id is loud");
-        assert_eq!(
-            err,
-            RegisterError::IdAbsent {
-                page: "rules/anon.md".into()
-            }
-        );
+        assert_eq!(err.page(), "rules/anon.md");
+        assert_eq!(err.fault(), &RegisterFault::IdAbsent);
         let rendered = err.to_string();
         assert!(
             rendered.contains("rules/anon.md"),
@@ -1117,10 +1168,8 @@ mod tests {
     #[test]
     fn a_null_id_reads_as_absent() {
         let body = "---\ntags: [rules/hook]\nid:\n---\n";
-        assert!(matches!(
-            register("n.md", body),
-            Err(RegisterError::IdAbsent { .. })
-        ));
+        let err = register("n.md", body).expect_err("a null id is absent");
+        assert_eq!(err.fault(), &RegisterFault::IdAbsent);
     }
 
     #[test]
@@ -1160,15 +1209,10 @@ mod tests {
         ] {
             let body = format!("---\ntags: [rules/hook]\nid: \"{id}\"\n---\n");
             let err = register("rules/bad.md", &body).expect_err("malformed id is loud");
-            let RegisterError::IdInvalid {
-                page,
-                id: got,
-                fault,
-            } = err.clone()
-            else {
+            let RegisterFault::IdInvalid { id: got, fault } = err.fault().clone() else {
                 panic!("expected IdInvalid for {id:?}, got {err:?}");
             };
-            assert_eq!(page, "rules/bad.md");
+            assert_eq!(err.page(), "rules/bad.md");
             assert_eq!(got, id);
             assert_eq!(fault, expect, "id {id:?}");
             assert!(err.to_string().contains("rules/bad.md"), "{err}");
@@ -1206,8 +1250,8 @@ mod tests {
         let err = register("num.md", body).expect_err("a number is not an id");
         assert!(
             matches!(
-                err,
-                RegisterError::IdInvalid {
+                err.fault(),
+                RegisterFault::IdInvalid {
                     fault: IdFault::NotAString,
                     ..
                 }
@@ -1236,10 +1280,10 @@ mod tests {
     fn a_block_id_that_disagrees_fails_loudly() {
         let body = page_with_block("task.review", "id = \"other.rule\"");
         let err = register("r.md", &body).expect_err("disagreement is loud");
+        assert_eq!(err.page(), "r.md");
         assert_eq!(
-            err,
-            RegisterError::IdDisagrees {
-                page: "r.md".into(),
+            err.fault(),
+            &RegisterFault::IdDisagrees {
                 frontmatter: "task.review".into(),
                 block: "other.rule".into(),
             }
@@ -1272,10 +1316,8 @@ mod tests {
     #[test]
     fn a_non_literal_block_id_is_refused_rather_than_evaluated() {
         let body = page_with_block("task.review", "id = 1 + 1");
-        assert!(matches!(
-            register("r.md", &body),
-            Err(RegisterError::BlockIdNotLiteral { .. })
-        ));
+        let err = register("r.md", &body).expect_err("a non-literal id is refused");
+        assert_eq!(err.fault(), &RegisterFault::BlockIdNotLiteral);
     }
 
     #[test]
@@ -1283,7 +1325,7 @@ mod tests {
         let body = page_with_block("task.review", "def (((");
         let err = register("r.md", &body).expect_err("an unreadable block is loud");
         assert!(
-            matches!(err, RegisterError::BlockUnparsed { .. }),
+            matches!(err.fault(), RegisterFault::BlockUnparsed { .. }),
             "{err:?}"
         );
     }
@@ -1293,7 +1335,7 @@ mod tests {
         let body = "---\ntags: [rules/hook\nid: broken\n---\n";
         let err = register("b.md", body).expect_err("unreadable frontmatter is loud");
         assert!(
-            matches!(err, RegisterError::FrontmatterUnparsed { .. }),
+            matches!(err.fault(), RegisterFault::FrontmatterUnparsed { .. }),
             "{err:?}"
         );
     }
@@ -1303,10 +1345,8 @@ mod tests {
         // Both wrong: no id AND an unparseable block. Identity is a frontmatter
         // query, so the frontmatter fault is the one reported.
         let body = "---\ntags: [rules/hook]\n---\n\n```starlark\ndef (((\n```\n";
-        assert!(matches!(
-            register("r.md", body),
-            Err(RegisterError::IdAbsent { .. })
-        ));
+        let err = register("r.md", body).expect_err("the frontmatter fault is first");
+        assert_eq!(err.fault(), &RegisterFault::IdAbsent);
     }
 
     // ── override resolution ───────────────────────────────────────────────────
@@ -1544,17 +1584,144 @@ mod tests {
         );
     }
 
+    // ── refusal scoping (§ 3, 2026-08-01) ─────────────────────────────────────
+
+    /// A page that offers itself to registration and is refused. Its bytes carry a
+    /// registration tag and no `id:`, so the refusal is about the page rather than
+    /// about the sweep.
+    const REFUSED_PAGE: &str = "---\ntags: [rules/hook]\n---\n\n# no id\n";
+
+    /// **P1 — a refusal carries the mount it WOULD have governed at.** The mount is
+    /// path-derived, so a refused page answers the same mount question a registered
+    /// one does — which is the whole mechanism that makes scoping possible.
     #[test]
-    fn narrowing_carries_refusals_through_unnarrowed() {
-        let bad = "---\ntags: [rules/hook]\n---\n";
-        let index = RuleIndex::discover([offer(ScopeLayer::Workspace, "far/away/bad.md", bad)]);
-        assert_eq!(index.refused().len(), 1);
+    fn a_refusal_carries_its_path_derived_mount_scope() {
+        for (path, mount, depth) in [
+            ("x.md", "", 0),
+            ("sessions/s1/x.md", "sessions/s1", 2),
+            // The mount law's `rules/`-parent lift applies to refusals too: ONE
+            // mount law, computed by one function, for rules and refusals alike.
+            ("demo/rules/x.md", "demo", 1),
+            ("rules/x.md", "", 0),
+            ("rules/sub/x.md", "rules/sub", 2),
+        ] {
+            let err = register(path, REFUSED_PAGE).expect_err("a tagged page with no id");
+            assert_eq!(err.mount_dir(), mount, "mount of {path}");
+            assert_eq!(err.scope().depth(), depth, "depth of {path}");
+            assert_eq!(
+                err.scope().layer(),
+                ScopeLayer::Workspace,
+                "layer of {path}"
+            );
+        }
+    }
+
+    /// **P2 + P3 — a refusal is seen from its own chain and from nowhere else.**
+    /// A refusal at the workspace root reddens the root and every path beneath it;
+    /// a refusal in `sessions/s1` reddens s1 but not its parent and not its
+    /// SIBLING s2. This is the same at-or-above predicate the rules take, which is
+    /// what "refusals narrow exactly like rules" means.
+    #[test]
+    fn a_refusal_is_visible_on_its_own_chain_and_nowhere_else() {
+        use ScopeLayer::Workspace;
+        let index = RuleIndex::discover([
+            offer(Workspace, "x.md", REFUSED_PAGE),
+            offer(Workspace, "sessions/s1/x.md", REFUSED_PAGE),
+        ]);
+        let seen = |at: &str| -> Vec<String> {
+            index
+                .narrowed_to(at)
+                .refused()
+                .iter()
+                .map(|r| r.page().to_owned())
+                .collect()
+        };
+        assert_eq!(seen(""), ["x.md"], "the root sees the root refusal only");
         assert_eq!(
-            index.narrowed_to("elsewhere/x.md").refused().len(),
-            1,
-            "a broken rule page stays visible to a narrowed consumer — hiding it would \
-             make it invisible exactly where someone is looking"
+            seen("sessions/s1"),
+            ["x.md", "sessions/s1/x.md"],
+            "s1 sees the refusal it holds AND the root refusal above it"
         );
+        assert_eq!(
+            seen("sessions/s2"),
+            ["x.md"],
+            "the sibling s2 sees the root refusal and NOT s1's — neither is on the \
+             other's chain, so a broken page in s1 cannot redden s2"
+        );
+    }
+
+    /// **P4 — the `rules/`-dir refusal reaches what the lift gives it.** A refused
+    /// page in `<scope>/rules/` is off `<scope>`'s chain under the literal mount
+    /// reading and ON it under the ruled one; a sibling scope still never sees it.
+    #[test]
+    fn a_refusal_in_a_rules_folder_narrows_from_the_lifted_parent() {
+        use ScopeLayer::Workspace;
+        let index = RuleIndex::discover([offer(Workspace, "demo/rules/x.md", REFUSED_PAGE)]);
+        for at in ["demo", "demo/rules", "demo/tasks/card.md"] {
+            assert_eq!(
+                index.narrowed_to(at).refused().len(),
+                1,
+                "the lifted mount governs {at}"
+            );
+        }
+        for at in ["", "other"] {
+            assert!(
+                index.narrowed_to(at).refused().is_empty(),
+                "the lift is one level: {at} is not under `demo`"
+            );
+        }
+    }
+
+    /// **P5 — the corpus-wide walk reports ALL refusals, always.** Narrowing is the
+    /// SCOPED consumer's step and takes nothing away from the index it narrows: the
+    /// refusal a sibling query cannot see is still in the walk's own report, which
+    /// is what keeps a broken rule page loud at every arming and every sweep.
+    #[test]
+    fn the_corpus_wide_walk_still_reports_a_refusal_no_scoped_sibling_can_see() {
+        use ScopeLayer::Workspace;
+        let index = RuleIndex::discover([offer(Workspace, "sessions/s1/x.md", REFUSED_PAGE)]);
+        assert!(
+            index.narrowed_to("sessions/s2").refused().is_empty(),
+            "the sibling scoped query does not see it"
+        );
+        assert_eq!(
+            index.refused().len(),
+            1,
+            "and the un-narrowed index — what every corpus-wide walk reads — still does"
+        );
+        assert_eq!(index.refused()[0].page(), "sessions/s1/x.md");
+    }
+
+    /// **P6 — a user-space refusal is on every chain**, exactly as a user-space
+    /// rule is: the outermost rung governs everywhere, so a broken page there is a
+    /// finding wherever you stand.
+    #[test]
+    fn a_user_space_refusal_narrows_to_every_path() {
+        let index = RuleIndex::discover([offer(ScopeLayer::User, "rules/x.md", REFUSED_PAGE)]);
+        for at in ["", "sessions/s1", "anything/at/all"] {
+            assert_eq!(
+                index.narrowed_to(at).refused().len(),
+                1,
+                "the user rung reaches {at}"
+            );
+        }
+    }
+
+    /// Fail-CLOSED on the refusal itself is untouched by the scoping: the page
+    /// never registers, wherever it is looked at from. Scoping decides who HEARS
+    /// about it, never whether it is enforced.
+    #[test]
+    fn scoping_never_registers_a_refused_page() {
+        use ScopeLayer::Workspace;
+        let index = RuleIndex::discover([offer(Workspace, "sessions/s1/x.md", REFUSED_PAGE)]);
+        assert!(index.registered().is_empty());
+        for at in ["", "sessions/s1", "sessions/s2"] {
+            assert!(
+                index.narrowed_to(at).registered().is_empty(),
+                "nothing registered at {at}"
+            );
+            assert!(index.narrowed_to(at).resolve().resolved().is_empty());
+        }
     }
 
     #[test]

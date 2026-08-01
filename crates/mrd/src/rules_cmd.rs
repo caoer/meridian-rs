@@ -14,13 +14,21 @@
 //! Every judgement rendered here comes from `policy`: [`policy::RuleIndex`]
 //! discovers, [`policy::RuleIndex::narrowed_to`] applies the § 3 narrowing,
 //! [`policy::RuleIndex::resolve`] decides, and
-//! [`policy::armed::ArmedArtifact::select_at`] answers what is armed. **This
-//! module contains no override law**: it compares no scopes, groups no ids, and
-//! does no depth arithmetic. That is not politeness toward another crate — a
-//! second resolver in the CLI would let the tool report a law the door does not
-//! enforce, which is exactly the failure the verb exists to prevent. The mount
-//! law (2026-08-01) therefore lands here with no edit: the scope column renders
-//! whatever `policy` computed.
+//! [`policy::armed::ArmedArtifact::verify_at`] answers what is armed AND whether
+//! it still stands, in one composed call. **This module contains no override
+//! law**: it compares no scopes, groups no ids, and does no depth arithmetic.
+//! That is not politeness toward another crate — a second resolver in the CLI
+//! would let the tool report a law the door does not enforce, which is exactly
+//! the failure the verb exists to prevent. The mount law (2026-08-01) therefore
+//! lands here with no edit: the scope column renders whatever `policy` computed.
+//!
+//! # Refusal scoping arrives the same way (§ 3, 2026-08-01)
+//! A scoped query reddens for the refusals ON ITS CHAIN — the exact subtree each
+//! refused page would have governed — and not for a stranger's. That narrowing is
+//! `policy`'s: `RegisterError` carries its own path-derived mount scope and
+//! `narrowed_to` filters refusals through the same predicate it filters rules
+//! through, so this file gained no split of its own. Every corpus-wide walk still
+//! reports ALL refusals, always, because a walk reads the UN-narrowed index.
 //!
 //! # Read-only, and structurally so
 //! The verb walks the workspace hash domain and the user rung, and calls pure
@@ -325,9 +333,12 @@ struct RulesReport {
     user_scope: UserScope,
     armed: ArmedSource,
     rows: Vec<RuleRow>,
-    /// Pages that offered themselves to registration and were refused. Carried
-    /// UNNARROWED by `policy`, so a broken rule page stays visible exactly where
-    /// someone is looking for it.
+    /// Pages that offered themselves to registration and were refused, NARROWED to
+    /// this query's path by `policy` exactly as the rules are (§ 3 "Refusal
+    /// scoping", 2026-08-01): a scoped query carries the refusals whose mount scope
+    /// is on its chain — the subtree each broken page would have governed — and no
+    /// others. The verb applies no mount arithmetic of its own to reach that; it
+    /// reads what `narrowed_to` handed it.
     refused: Vec<String>,
     /// Files whose bytes are not UTF-8, so their tags cannot be read.
     unreadable: Vec<String>,
@@ -513,9 +524,16 @@ fn rows(
     let selected: Vec<&ArmedRow> = artifact.map(|a| a.select_at(at)).unwrap_or_default();
     // The redness of each armed row, keyed by the row key (id, arm root) — the
     // artifact's own fail-closed rev check, never a second hash law here.
+    //
+    // `verify_at` is the COMPOSED call, not `select_at` + `verify` assembled here:
+    // selection-then-verification is a law with two wrong orders (see
+    // `ArmedArtifact::verify_at`), so exactly one composition of it exists
+    // tree-wide and this is a call to it. Verifying the whole artifact and then
+    // reading only the selected keys out of the result gave the same cells, but by
+    // a second route — and a second route is what a later edit gets to diverge on.
     let mut reddened: BTreeMap<(String, String), &'static str> = BTreeMap::new();
     if let Some(artifact) = artifact {
-        let verdict = artifact.verify(pages);
+        let verdict = artifact.verify_at(at, pages);
         for red in verdict.red() {
             let why = match red.why() {
                 Redness::Drifted { .. } => "drifted",
