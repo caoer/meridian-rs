@@ -5,6 +5,15 @@
 //! sites mint a `model::CandidateDocument`"* — a set the compiler maintains.
 //! This test pins that set and states, per door, what U12 does at it.
 //!
+//! **Amended by C3 (2026-08-01): that equivalence is now ONE-directional.** Every
+//! byte landing still mints a candidate, but a mint is no longer proof of one —
+//! `candidate_of_body` is also the only production mint that gives a document its
+//! own PATH, and the reaction feeder needs that to match a HOOK's `paths:` scope
+//! without landing anything. Such a site is pinned like every other, in the
+//! [`Door::ReadOnly`] class, which owes the reader why its value cannot land. The
+//! census still measures the same set from the tree; what changed is that
+//! membership no longer classifies a site on its own.
+//!
 //! **Why a test and not the compiler.** U31's own rung is compiler-enumerated
 //! and this unit inherits its result; what the compiler cannot say is whether a
 //! door that HOLDS a candidate also GUARDS it, because a guard is a call, not a
@@ -115,6 +124,23 @@ enum Door {
     /// closing it would mean a SECOND transform, which this unit's card
     /// forbids. Reported to the leader as a gap with its population.
     OutsideThisUnit,
+    /// **Not a door: the mint lands no bytes.** The site mints a candidate to
+    /// give a document its own PATH, reads it, and drops it — the value never
+    /// reaches an `fs` byte-landing primitive.
+    ///
+    /// This class exists because it falsifies the equivalence this census was
+    /// built on (module header: *"which doors land bytes … became which sites
+    /// mint a `model::CandidateDocument`"*). That was true while the candidate
+    /// type had exactly one use. C3's reaction feeder needs a document's path to
+    /// match a HOOK's `paths:` scope, and `candidate_of_body` is the production
+    /// mint that carries one, so a read-only caller now mints too.
+    ///
+    /// **The equivalence is one-directional from here on:** every byte landing
+    /// still mints, but a mint is no longer proof of a byte landing. A site
+    /// entering this class owes the reader the reason its value cannot land —
+    /// for the one member, `feed_landed_change` takes `&Document` and returns
+    /// effects, so there is no path from the mint to a write.
+    ReadOnly,
 }
 
 /// One pinned byte-landing door.
@@ -232,6 +258,19 @@ const DOORS: &[DoorPin] = &[
         guard_fn: None,
         label: "journal genesis: emptying the live journal after the archive is durable",
         class: Door::OutsideThisUnit,
+    },
+    // ---- sidecar/watch.rs — C3's reaction feeder, the first mint that is NOT
+    // a door. `external_effects` needs each externally-changed document to carry
+    // its own path, because a HOOK matches `paths:` against it; the watcher's
+    // other mint (`doc_of`) leaves the path empty. The candidate is read by
+    // `feed_landed_change` and dropped — no `fs` primitive ever sees it.
+    DoorPin {
+        file: "crates/sidecar/src/watch.rs",
+        door_fn: "external_effects",
+        mint_fn: "doc_at",
+        guard_fn: None,
+        label: "the reaction feeder's path-carrying read (lands no bytes)",
+        class: Door::ReadOnly,
     },
 ];
 
@@ -577,6 +616,7 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         .iter()
         .filter(|d| d.class == Door::OutsideThisUnit)
         .count();
+    let read_only = DOORS.iter().filter(|d| d.class == Door::ReadOnly).count();
 
     assert_eq!(translated, 2, "splice and create carry user-supplied bytes");
     assert_eq!(
@@ -588,7 +628,11 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         "two realise doors, the run plane, and G2's two genesis mints — stated, not absorbed",
     );
     assert_eq!(
-        translated + guarded + outside,
+        read_only, 1,
+        "the reaction feeder's path-carrying read — it mints, and it lands nothing",
+    );
+    assert_eq!(
+        translated + guarded + outside + read_only,
         DOORS.len(),
         "every door falls in exactly one class",
     );
@@ -797,32 +841,46 @@ fn after_an_unrecognised_shape() {
     );
 }
 
-/// **A door outside this unit is pinned as such, and claims no guard.**
+/// **Each class claims exactly the guard its position entitles it to.**
 ///
 /// *Fails on:* an `OutsideThisUnit` door quietly given a discharge site (which
 /// would make the gap read as closed) · a door in U12's own file classed as
-/// outside it.
+/// outside it · a guarded door outside U12's named file · a `ReadOnly` site
+/// claiming a guard, which would assert a byte landing it does not perform.
+///
+/// Matched exhaustively on the CLASS rather than tested with an `if`/`else`: the
+/// arms then cannot silently absorb a class added later — which is exactly how
+/// C3's `ReadOnly` site first arrived here, classified by an `else` written when
+/// every mint was a door.
 #[test]
-fn a_door_outside_this_unit_claims_no_guard() {
+fn each_class_claims_exactly_the_guard_its_position_entitles_it_to() {
     for door in DOORS {
-        if door.class == Door::OutsideThisUnit {
-            assert_ne!(
-                door.file, WRITE_RS,
-                "{}: a door in U12's own file cannot be classed OutsideThisUnit",
-                door.label,
-            );
-            assert!(
-                door.guard_fn.is_none(),
-                "{}: a door outside this unit names a guard discharge site — U12 closes no \
-                 door there, and a pin saying otherwise reads as a closed gap",
-                door.label,
-            );
-        } else {
-            assert_eq!(
+        match door.class {
+            Door::TranslatedAndGuarded | Door::Guarded => assert_eq!(
                 door.file, WRITE_RS,
                 "{}: a guarded door lives in U12's named file",
                 door.label,
-            );
+            ),
+            Door::OutsideThisUnit => {
+                assert_ne!(
+                    door.file, WRITE_RS,
+                    "{}: a door in U12's own file cannot be classed OutsideThisUnit",
+                    door.label,
+                );
+                assert!(
+                    door.guard_fn.is_none(),
+                    "{}: a door outside this unit names a guard discharge site — U12 closes no \
+                     door there, and a pin saying otherwise reads as a closed gap",
+                    door.label,
+                );
+            }
+            Door::ReadOnly => assert!(
+                door.guard_fn.is_none(),
+                "{}: a site that lands no bytes names a stored-form guard — the guard exists \
+                 to translate addresses a WRITE introduces, so claiming one here asserts a \
+                 byte landing that does not happen",
+                door.label,
+            ),
         }
     }
 }

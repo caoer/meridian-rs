@@ -163,7 +163,7 @@ pub(crate) fn reconcile(
             // The ONE production DeltaFrame constructor (§7.3), shared with the
             // commit path in `wire-serve` — `seq` is this epoch ring's current
             // counter, so the frame carries `seq + 1`; the caller advances.
-            let frame = wire_serve::write::assemble_delta(
+            let mut frame = wire_serve::write::assemble_delta(
                 ring.seq(),
                 watch_root.clone(),
                 disk_root.clone(),
@@ -171,12 +171,53 @@ pub(crate) fn reconcile(
                 None, // §7.1: now ABSENT — never invented
                 delta_files,
             );
+            frame.effects = external_effects(ws_root, &changes)?;
             ring.advance(frame.clone());
             watch.watcher.rebase(&files);
             watch.root = Some(disk_root);
             Ok(Some(frame))
         }
     }
+}
+
+/// C3 — the reaction feeder on the EXTERNAL arm, through the same `wire-serve`
+/// leaf the guarded write uses (`docs/laws.md` Law 3: one implementation, two
+/// hosts). The before/after documents this needs are already in hand here, so the
+/// feeder reads nothing back from disk.
+///
+/// **No actor.** An edit made behind the engine's back has no acting caller, so
+/// `actor` stays absent rather than invented (§7.1) — and by the same fact there
+/// is no response to carry `armed` feedback: the reaction exists only on the frame.
+///
+/// Only MODIFIED files feed. A birth or a death is a `Create`/`Remove` change whose
+/// absent side has no document to derive from, and inventing an empty one to fill
+/// the seam is a contract question this card does not own.
+fn external_effects(
+    ws_root: &fs::WorkspaceRoot,
+    changes: &fs::WatchChanges,
+) -> Result<Vec<wire::EffectEnvelope>, Box<ErrorBody>> {
+    let mut effects = Vec::new();
+    for (path, before, after) in &changes.modified {
+        // Minted through `candidate_of_body`, not `doc_of`: a HOOK answers scope
+        // against the changed file's PATH, and only this mint carries it. `doc_of`
+        // leaves the document path empty, which every `paths:` glob then misses.
+        let (b, a) = (doc_at(path, before)?, doc_at(path, after)?);
+        effects.extend(
+            wire_serve::reaction::feed_landed_change(
+                ws_root,
+                b.document(),
+                a.document(),
+                &[],
+                policy::ChangeOp::Splice,
+                None, // §7.1: no caller made this write — never invent one
+            )
+            // A reaction never fails the world: the edit already landed on disk and
+            // the Delta describing it must still be emitted. Same posture as the
+            // guarded write's call site.
+            .unwrap_or_default(),
+        );
+    }
+    Ok(effects)
 }
 
 /// Byte-level classification → wire Delta file entries, path-deterministic
@@ -235,15 +276,33 @@ fn modified_entries(changes: &fs::WatchChanges) -> Result<Vec<DeltaFile>, Box<Er
     Ok(out)
 }
 
+/// The §12 domain is md/UTF-8 by law — non-UTF-8 bytes refuse loud
+/// (`invalid_utf8`), matching `fs::load`'s posture everywhere else.
+fn utf8_of<'a>(path: &str, bytes: &'a [u8]) -> Result<&'a str, Box<ErrorBody>> {
+    std::str::from_utf8(bytes).map_err(|_| {
+        let mut e = ErrorBody::new(wire::ErrorCode::InvalidUtf8);
+        e.path = Some(Path(path.to_string()));
+        Box::new(e)
+    })
+}
+
+/// Parse one domain file's bytes AT its path, through the production mint.
+///
+/// The twin of [`doc_of`] for consumers that need the document's own path — a
+/// HOOK's `paths:` scope is matched against it, so a path-less document silently
+/// matches no rule at all.
+fn doc_at(path: &str, bytes: &[u8]) -> Result<model::CandidateDocument, Box<ErrorBody>> {
+    Ok(model::candidate_of_body(
+        path,
+        utf8_of(path, bytes)?.to_string(),
+    ))
+}
+
 /// Parse one domain file's bytes. The §12 domain is md/UTF-8 by law —
 /// non-UTF-8 bytes refuse loud (`invalid_utf8`), matching `fs::load`'s
 /// posture everywhere else.
 fn doc_of(path: &str, bytes: &[u8]) -> Result<model::Document, Box<ErrorBody>> {
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        let mut e = ErrorBody::new(wire::ErrorCode::InvalidUtf8);
-        e.path = Some(Path(path.to_string()));
-        Box::new(e)
-    })?;
+    let text = utf8_of(path, bytes)?;
     let tree = syntax::parse(text);
     Ok(model::build(text.to_string(), tree))
 }
