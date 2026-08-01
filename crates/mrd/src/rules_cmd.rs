@@ -538,6 +538,11 @@ fn rows(
             let why = match red.why() {
                 Redness::Drifted { .. } => "drifted",
                 Redness::Missing { .. } => "missing",
+                // A row whose mode is outside its page's kind vocabulary — the
+                // hand-edited-row shape. It reads as a MISMATCH rather than as
+                // drift: the page is untouched and its rev still matches, so
+                // "drifted" would send a reader to diff a page that never moved.
+                Redness::ModeOutsideKind { .. } => "kind-mismatch",
             };
             reddened.insert(
                 (
