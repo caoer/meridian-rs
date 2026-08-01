@@ -287,13 +287,19 @@ pub struct Scope {
 
 impl Scope {
     /// The scope of a page mounted at `page` (a path relative to `layer`'s root).
-    /// Depth counts the directory segments above the file, so a root-level page is
-    /// depth 0 and `sessions/s1/rules.md` is depth 2.
+    /// Depth counts the segments of the directory the page MOUNTS at
+    /// ([`mount_dir_of`]), so a root-level page is depth 0 and
+    /// `sessions/s1/rules.md` is depth 2.
     #[must_use]
     pub fn of(layer: ScopeLayer, page: &str) -> Self {
+        let dir = mount_dir_of(page);
         Scope {
             layer,
-            depth: page.split('/').count() - 1,
+            depth: if dir.is_empty() {
+                0
+            } else {
+                dir.split('/').count()
+            },
         }
     }
 
@@ -362,14 +368,41 @@ impl Registration {
         self.scope
     }
 
-    /// The directory the page is mounted in (`""` at a layer root). Consumers that
+    /// The directory the page MOUNTS at (`""` at a layer root) — the ruled mount law
+    /// ([`mount_dir_of`]), not merely the directory the file sits in. Consumers that
     /// narrow to an evaluation path read this; the resolver itself never does.
     #[must_use]
     pub fn mount_dir(&self) -> &str {
-        match self.page.rfind('/') {
-            Some(cut) => &self.page[..cut],
-            None => "",
-        }
+        mount_dir_of(&self.page)
+    }
+}
+
+/// The directory a page mounts at — the mount law (ruling § 3, amended 2026-08-01).
+///
+/// A page mounts at its containing directory, with ONE exception: when that
+/// directory is named `rules`, the page mounts at the directory's PARENT. A folder
+/// named `rules/` is where rules are KEPT, not a scope they govern — without the
+/// lift, collecting a workspace's rules into `rules/` would silently shrink every
+/// one of them to governing that folder, and authors would have to choose between
+/// tidiness and reach.
+///
+/// The lift is exactly one level and never recursive: only the IMMEDIATE container
+/// counts, so `rules/sub/x.md` mounts at `rules/sub`. A rule filed deeper has been
+/// deliberately filed deeper, and a recursive lift would let a nested layout folder
+/// escape upward through directories its author never named.
+#[must_use]
+fn mount_dir_of(page: &str) -> &str {
+    /// The layout folder the mount law lifts out of.
+    const LAYOUT_DIR: &str = "rules";
+
+    let dir = match page.rfind('/') {
+        Some(cut) => &page[..cut],
+        None => return "",
+    };
+    match dir.rsplit_once('/') {
+        Some((parent, LAYOUT_DIR)) => parent,
+        None if dir == LAYOUT_DIR => "",
+        _ => dir,
     }
 }
 
@@ -993,7 +1026,7 @@ mod tests {
             got.scope(),
             Scope::of(ScopeLayer::Workspace, "rules/notify.md")
         );
-        assert_eq!(got.mount_dir(), "rules");
+        assert_eq!(got.mount_dir(), "", "the layout folder lifts (see mount law)");
     }
 
     #[test]
@@ -1569,6 +1602,50 @@ mod tests {
         assert_eq!(Scope::of(ScopeLayer::Workspace, "a.md").depth(), 0);
         assert_eq!(Scope::of(ScopeLayer::Workspace, "a/b.md").depth(), 1);
         assert_eq!(Scope::of(ScopeLayer::Workspace, "a/b/c.md").depth(), 2);
+    }
+
+    /// **The mount law** (ruling § 3, amended 2026-08-01). A `rules/` folder is
+    /// where rules are KEPT, so a page whose immediate container is named `rules`
+    /// mounts at that folder's parent — otherwise tidying a workspace's rules into
+    /// one folder would silently shrink every one of them to governing that folder.
+    /// The lift is one level and never recursive: a page filed deeper was filed
+    /// deeper deliberately.
+    #[test]
+    fn an_immediate_rules_folder_lifts_the_mount_to_its_parent() {
+        for (path, mount, depth) in [
+            // the lift
+            ("rules/notify.md", "", 0),
+            ("demo/rules/notify.md", "demo", 1),
+            ("a/b/rules/notify.md", "a/b", 2),
+            // no lift: `rules` is not the IMMEDIATE container
+            ("rules/sub/notify.md", "rules/sub", 2),
+            ("rules-of-thumb/notify.md", "rules-of-thumb", 1),
+            ("myrules/notify.md", "myrules", 1),
+            // no container at all
+            ("notify.md", "", 0),
+            ("rules.md", "", 0),
+        ] {
+            let body = page("x");
+            let got = register(path, &body).unwrap().unwrap();
+            assert_eq!(got.mount_dir(), mount, "mount of {path}");
+            assert_eq!(got.scope().depth(), depth, "depth of {path}");
+        }
+    }
+
+    /// The lift is a real precedence fact, not a cosmetic one: a workspace-root
+    /// `rules/` page and a root-level page mount at the SAME scope, so two rules
+    /// with one id collide instead of one silently outranking the other.
+    #[test]
+    fn a_lifted_page_ties_with_a_root_level_page() {
+        use ScopeLayer::Workspace;
+        let index = index_of(&[
+            (Workspace, "rules/a.md", "shared"),
+            (Workspace, "b.md", "shared"),
+        ]);
+        let set = index.resolve();
+        assert!(set.get("shared").is_none(), "same scope ⇒ no winner");
+        assert_eq!(set.collisions().len(), 1);
+        assert_eq!(set.collisions()[0].scope().depth(), 0);
     }
 
     #[test]
