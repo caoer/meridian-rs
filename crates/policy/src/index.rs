@@ -192,9 +192,14 @@ impl std::error::Error for ArmError {}
 /// same rev law the world model mints (contract §1). Two byte-identical CHECK files
 /// share a rev; any edit (predicate, scope, or prose) moves it, so the arming gate
 /// catches every drift of the attested law.
+///
+/// This is the PAGE rev law with a `CHECK.md`-shaped name, so it delegates to
+/// [`crate::page_rev`] rather than computing a second one — the registration
+/// ruling's "one fingerprint law for check pages and hook pages alike". The alias
+/// dies with the filename loader; the law it names does not.
 #[must_use]
 pub fn evidence_rev(check_md: &str) -> String {
-    blake3::hash(check_md.as_bytes()).to_hex().as_str()[..16].to_string()
+    crate::registration::page_rev(check_md)
 }
 
 /// Sweep one convention folder into an unarmed (`Off`) INDEX row: validate it
