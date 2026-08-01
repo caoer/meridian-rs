@@ -46,6 +46,32 @@ pub const RESERVED_INDEX_PATH: &str = "conventions/INDEX.md";
 /// deletion/rename.
 pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 
+/// The pages the INDEX-integrity floor protects: the enforcement substrate
+/// itself, whatever generation it belongs to.
+///
+/// The attested artifact ([`crate::armed::ARMED_RULES_PATH`]) is here for the same
+/// reason the INDEX is, and the reason is not symmetry — it is that **deleting the
+/// substrate must never read as disarming**. The marker fail-closes the door on a
+/// once-armed workspace, so a floor that guarded only the older page would leave
+/// the newer one deletable by an ordinary write while the marker still claimed the
+/// workspace was armed.
+const PROTECTED_SUBSTRATE: &[(&str, &str)] = &[
+    (RESERVED_INDEX_PATH, "attested INDEX"),
+    (
+        crate::armed::ARMED_RULES_PATH,
+        "attested armed-rules artifact",
+    ),
+    (ATTESTED_MARKER_PATH, "once-armed marker"),
+];
+
+/// The substrate page `joined` names, or `None` when it names none.
+fn protected_substrate(joined: &str) -> Option<&'static str> {
+    PROTECTED_SUBSTRATE
+        .iter()
+        .find(|(path, _)| *path == joined)
+        .map(|(_, which)| *which)
+}
+
 /// The convention folder root, and the attested-law filename inside it — the
 /// `conventions/<slug>/CHECK.md` shape whose rev the INDEX pins.
 const CONVENTIONS_DIR: &str = "conventions";
@@ -123,12 +149,9 @@ pub fn classify_door_law(
     // 1. INDEX-integrity floor — the structural guard on the enforcement
     //    substrate. A remove (deletion; the remove-half of a rename) of the
     //    INDEX or the marker is refused, never force-escaped.
-    if op == ChangeOp::Remove && (joined == RESERVED_INDEX_PATH || joined == ATTESTED_MARKER_PATH) {
-        let which = if joined == RESERVED_INDEX_PATH {
-            "attested INDEX"
-        } else {
-            "once-armed marker"
-        };
+    if op == ChangeOp::Remove
+        && let Some(which) = protected_substrate(&joined)
+    {
         return DoorLaw::IndexIntegrity {
             teaching: format!(
                 "refused: the {which} `{joined}` may not be deleted or renamed at the door \
@@ -142,11 +165,14 @@ pub fn classify_door_law(
     // 2. Binding break, index side — a direct write to the attested INDEX (a
     //    checkbox flip). Arming/disarming is an attestation, never an ordinary
     //    door write.
-    if joined == RESERVED_INDEX_PATH && matches!(op, ChangeOp::Splice | ChangeOp::Create) {
+    if (joined == RESERVED_INDEX_PATH || joined == crate::armed::ARMED_RULES_PATH)
+        && matches!(op, ChangeOp::Splice | ChangeOp::Create)
+    {
+        let which = protected_substrate(&joined).unwrap_or("attested INDEX");
         return DoorLaw::BindingBreak {
             side: BindingSide::Index,
             teaching: format!(
-                "refused: the attested INDEX `{joined}` is engine-managed — a direct edit (a \
+                "refused: the {which} `{joined}` is engine-managed — a direct edit (a \
                  checkbox flip) breaks the file↔index binding; arm or disarm through the \
                  attest/arm path, converge with `--truth index|file`, or `--force` to override \
                  (the skip is journaled and rendered)"
@@ -415,6 +441,51 @@ mod tests {
             matches!(d, DoorLaw::IndexIntegrity { .. }),
             "removing the once-armed marker hits the integrity floor: {d:?}"
         );
+    }
+
+    /// **The armed-rules artifact is enforcement substrate, and deleting substrate
+    /// must never read as disarming.** The artifact succeeds the INDEX under tag
+    /// registration, so it inherits the INDEX's structural floor rather than
+    /// waiting to earn one: on a once-armed workspace the marker keeps the door
+    /// fail-closed, so an artifact deletable by an ordinary write would be the
+    /// silent-disarm attack wearing the new page's name. `--force` does not escape
+    /// it, exactly as it does not escape the INDEX's.
+    #[test]
+    fn armed_rules_artifact_removal_is_index_integrity() {
+        let is_armed = armed(&[]);
+        let d = classify_door_law(ChangeOp::Remove, crate::armed::ARMED_RULES_PATH, &is_armed);
+        let DoorLaw::IndexIntegrity { target, teaching } = d else {
+            panic!("removing the armed-rules artifact hits the integrity floor: {d:?}");
+        };
+        assert_eq!(target, crate::armed::ARMED_RULES_PATH);
+        assert!(
+            teaching.contains("armed-rules") && teaching.contains("silent disarm"),
+            "the refusal names the page and the attack: {teaching}"
+        );
+
+        // A non-canonical spelling does not dodge the floor.
+        let dotted = format!("./{}", crate::armed::ARMED_RULES_PATH);
+        assert!(
+            matches!(
+                classify_door_law(ChangeOp::Remove, &dotted, &is_armed),
+                DoorLaw::IndexIntegrity { .. }
+            ),
+            "a `./` spelling is the same page"
+        );
+    }
+
+    /// A direct EDIT of the artifact is the index-side binding break, not the
+    /// floor: arming is an attestation, and hand-editing a row is the same act as
+    /// flipping an INDEX checkbox. Force-escapable, and the skip is journaled.
+    #[test]
+    fn a_direct_edit_of_the_armed_rules_artifact_is_a_binding_break() {
+        let is_armed = armed(&[]);
+        let d = classify_door_law(ChangeOp::Splice, crate::armed::ARMED_RULES_PATH, &is_armed);
+        let DoorLaw::BindingBreak { side, path, .. } = d else {
+            panic!("a direct edit is the index-side binding break: {d:?}");
+        };
+        assert_eq!(side, BindingSide::Index);
+        assert_eq!(path, crate::armed::ARMED_RULES_PATH);
     }
 
     #[test]

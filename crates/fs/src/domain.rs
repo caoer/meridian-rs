@@ -106,6 +106,17 @@ pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
 /// lives.
 pub const RESERVED_INDEX_PATH: &str = "conventions/INDEX.md";
 
+/// The attested armed-set artifact — the INDEX's successor under tag-indexed
+/// registration (registration ruling § 4), one row per armed id. It is ordinary
+/// in-tree markdown and STAYS in the hash domain, exactly as the INDEX does: the
+/// attestation IS the page, so its rev matters.
+///
+/// Mirrors `policy::armed::ARMED_RULES_PATH`, the same way
+/// [`RESERVED_INDEX_PATH`] mirrors `policy::binding`'s — `policy` is I/O-free and
+/// `fs` knows nothing of rules, so neither crate can name the other's constant.
+/// `crates/testsuite/tests/reserved_paths.rs` holds the two spellings together.
+pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
+
 /// The once-armed sentinel (U4.2 read contract). Its PRESENCE — not its bytes —
 /// records that a workspace has EVER been armed. The gate needs this to tell a
 /// never-armed workspace (no INDEX, no marker ⇒ a bit-for-bit no-op) from a
@@ -320,6 +331,7 @@ impl Domain {
 const RESERVED_DIR_PREFIXES: &[&str] = &[
     RESERVED_JOURNAL_PATH,
     RESERVED_INDEX_PATH,
+    ARMED_RULES_PATH,
     ATTESTED_MARKER_PATH,
 ];
 
@@ -381,6 +393,15 @@ pub fn is_reserved_journal(rel: &Path) -> bool {
 #[must_use]
 pub fn is_reserved_index(rel: &Path) -> bool {
     normalized(rel) == RESERVED_INDEX_PATH
+}
+
+/// Is `rel` the attested armed-rules artifact ([`ARMED_RULES_PATH`])? Normalized
+/// like [`is_reserved_journal`], so a non-canonical spelling
+/// (`./meridian/armed-rules.md`) cannot dodge the INDEX-integrity floor at the
+/// write door — deleting the artifact must never read as disarming.
+#[must_use]
+pub fn is_armed_rules(rel: &Path) -> bool {
+    normalized(rel) == ARMED_RULES_PATH
 }
 
 /// Is `rel` the once-armed marker ([`ATTESTED_MARKER_PATH`])? Normalized like
