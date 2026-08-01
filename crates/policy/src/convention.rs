@@ -410,6 +410,41 @@ pub fn load_convention(
 /// armed set, or any API accepting an ordinary [`Convention`]. The production loader
 /// remains pinned to [`crate::SLICE1_CAPS`].
 ///
+/// # The loader-to-evaluator boundary
+/// The pair below is a mutation control over ONE edit — which loader minted the
+/// value. The positive twin compiles, so the negative twin's failure is the widened
+/// type being refused at an ordinary evaluator API, not some unrelated breakage.
+///
+/// The ordinary loader's value is accepted:
+///
+/// ```
+/// use policy::{CheckLimits, evaluate_hooks_for_test, load_seed_convention};
+///
+/// fn ordinary_reaches_the_evaluator(event: &effects::ChangeEvent) {
+///     let convention = load_seed_convention(CheckLimits::default()).expect("seed loads");
+///     let _ = evaluate_hooks_for_test(&[convention], event);
+/// }
+/// ```
+///
+/// The widened loader's value is not:
+///
+/// ```compile_fail
+/// use policy::{
+///     CheckLimits, SEED_CONVENTION_SLUG, evaluate_hooks_for_test, load_convention_for_corpus,
+///     seed_convention_files,
+/// };
+///
+/// fn widened_cannot_reach_the_evaluator(event: &effects::ChangeEvent) {
+///     let proof = load_convention_for_corpus(
+///         SEED_CONVENTION_SLUG,
+///         &seed_convention_files(),
+///         CheckLimits::default(),
+///     )
+///     .expect("seed loads");
+///     let _ = evaluate_hooks_for_test(&[proof], event);
+/// }
+/// ```
+///
 /// # Errors
 /// The same [`LoadError`] surface as [`load_convention`].
 pub fn load_convention_for_corpus(
@@ -1133,5 +1168,91 @@ def on_change(event):
         );
         assert!(glob_match("**/verdict.md", "a/b/verdict.md"));
         assert!(glob_match("**/verdict.md", "verdict.md"));
+    }
+
+    // ── the R13 pair: one canonical projection, both loader modes ─────────────
+
+    /// A counterfactual HOOK page carrying `body` as its predicate.
+    fn md_hook_page(body: &str) -> String {
+        format!(
+            "---\nkind: hook\nseverity: info\npaths: [\"tasks/*.md\"]\ncaps: [md.set_field]\n\
+             budget: {{ steps: 10000, mem: 4194304 }}\nhow: {{}}\n---\n\n```starlark\n{body}```\n"
+        )
+    }
+
+    fn counterfactual(slug: &str, body: &str) -> CounterfactualConvention {
+        let files = MemFiles::new().with("HOOK.md", &md_hook_page(body));
+        load_convention_for_corpus(slug, &files, CheckLimits::default())
+            .expect("the corpus loader admits an md.* declaration")
+    }
+
+    fn status_event() -> effects::ChangeEvent {
+        effects::ChangeEvent {
+            file: "tasks/card.md".to_string(),
+            sections_changed: Vec::new(),
+            fields_changed: vec!["status".to_string()],
+            changes: Vec::new(),
+            facts: effects::EventFacts::default(),
+            fingerprint_before: "rev-before".to_string(),
+            fingerprint_after: "rev-after".to_string(),
+            depth: 0,
+        }
+    }
+
+    /// A RAW `md.*` descriptor carries no canonical action and no receipt.
+    /// Production HOOK projection rejects it; the counterfactual branch must reject
+    /// it identically, or the proof would validate a shape no armed hook can emit.
+    #[test]
+    fn a_raw_md_descriptor_cannot_bypass_canonical_intent_validation() {
+        let convention = counterfactual(
+            "raw-md",
+            "def on_change(event):\n    set_field(field = \"status\", value = \"raw\")\n",
+        );
+        let error =
+            crate::evaluate_counterfactual_hooks_for_corpus_metered(&[convention], &status_event())
+                .expect_err("a raw md.* descriptor is not a canonical intent");
+        let text = error.to_string();
+        println!("POPULATION raw md.* -> {text}");
+        assert!(
+            matches!(error, crate::HookEvalError::MalformedIntent { .. }),
+            "{error:?}"
+        );
+        assert!(
+            text.contains("action"),
+            "the fault names the missing canonical key: {text}"
+        );
+    }
+
+    /// The other half: a CANONICAL `md.*` intent is accepted — the rejection arm is
+    /// dead — and it projects through the SAME production seam, so the target/payload
+    /// the `run` adapter reads are the ones the predicate wrote.
+    #[test]
+    fn a_canonical_md_intent_projects_through_the_production_seam() {
+        let convention = counterfactual(
+            "canonical-md",
+            "def on_change(event):
+    intent(
+        action = \"md.set_field\",
+        target = \"status\",
+        payload = \"beta\",
+        receipt = receipt_addr(event.file, event.fingerprint_after),
+    )
+",
+        );
+        let rows =
+            crate::evaluate_counterfactual_hooks_for_corpus_metered(&[convention], &status_event())
+                .expect("a canonical md.* intent is admitted, not rejected");
+        assert_eq!(rows.len(), 1);
+        let intents = &rows[0].outcome.intents;
+        assert_eq!(intents.len(), 1, "one admitted intent: {intents:?}");
+        println!("POPULATION canonical md.* -> {:?}", intents[0]);
+        assert_eq!(intents[0].action, "md.set_field");
+        assert_eq!(intents[0].target.as_deref(), Some("status"));
+        assert_eq!(intents[0].payload.as_deref(), Some("beta"));
+        assert_eq!(
+            intents[0].receipt,
+            effects::receipt_address("tasks/card.md", "rev-after"),
+            "the canonical receipt survives the same validation production applies"
+        );
     }
 }

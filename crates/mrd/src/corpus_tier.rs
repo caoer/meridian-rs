@@ -37,19 +37,21 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use effects::{ArgValue, Domain, Effect, EffectKind};
+use effects::{ChangeEvent, Domain, Provenance, action_kind};
 use fs::WorkspaceRoot;
-use model::{Document, NodeKind};
+use model::{Document, MerkleRoot, NodeKind};
 use policy::ConventionFiles;
 use policy::{
     Change, ChangeOp, CheckError, CheckLimits, Convention, CounterfactualConvention, HookEvalError,
-    HookFinding, Invocation, derive_change, derive_event,
+    HookFinding, Intent, Invocation, derive_change, derive_event,
     evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks_for_test_metered,
     load_convention, load_convention_for_corpus, load_seed_convention, seed_convention_files,
 };
+use run::caps::CapSet;
+use run::executor::{ApplyRequest, IntentApply, ReceiptAddr};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use wire::{Edit, EditShape, HpathSeg, Path as WirePath, PutAt, SecRef};
+use wire::{Edit, EditShape, Path as WirePath, PutAt, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
@@ -347,14 +349,36 @@ impl<'a> ConventionView<'a> {
     }
 }
 
+/// One HOOK's evaluation over one event, in the SAME canonical projection for both
+/// loader modes: admitted intents, narrowed intents rendered `rule:action`, typed
+/// findings, exact meters. Production and counterfactual differ in which caps a
+/// declaration may carry — never in how the result is projected or reported (R12).
 struct HookRun {
     rule_id: String,
     fired: bool,
-    effects: Vec<Effect>,
+    intents: Vec<Intent>,
     narrowed: Vec<String>,
     findings: Vec<HookFinding>,
     fuel: u64,
     mem: u64,
+}
+
+/// The one narrowed-descriptor spelling, shared by both corpus modes.
+fn narrowed_label(intent: &Intent) -> String {
+    format!("{}:{}", intent.rule_id, intent.action)
+}
+
+/// Project one policy telemetry row into the tier's row shape.
+fn hook_run(row: policy::HookTestTelemetry) -> HookRun {
+    HookRun {
+        rule_id: row.rule_id,
+        fired: !row.outcome.intents.is_empty(),
+        intents: row.outcome.intents,
+        narrowed: row.outcome.narrowed.iter().map(narrowed_label).collect(),
+        findings: row.outcome.findings,
+        fuel: row.fuel_used,
+        mem: row.mem_used,
+    }
 }
 
 impl LoadedConventions {
@@ -370,51 +394,14 @@ impl LoadedConventions {
         }
     }
 
-    fn evaluate_hooks(&self, event: &effects::ChangeEvent) -> Result<Vec<HookRun>, HookEvalError> {
-        match self {
-            Self::Production(conventions) => {
-                Ok(evaluate_hooks_for_test_metered(conventions, event)?
-                    .into_iter()
-                    .map(|row| HookRun {
-                        rule_id: row.rule_id,
-                        fired: !row.outcome.intents.is_empty(),
-                        effects: Vec::new(),
-                        narrowed: row
-                            .outcome
-                            .narrowed
-                            .iter()
-                            .map(|intent| format!("{}:{}", intent.rule_id, intent.action))
-                            .collect(),
-                        findings: row.outcome.findings,
-                        fuel: row.fuel_used,
-                        mem: row.mem_used,
-                    })
-                    .collect())
-            }
-            Self::Counterfactual(conventions) => Ok(
+    fn evaluate_hooks(&self, event: &ChangeEvent) -> Result<Vec<HookRun>, HookEvalError> {
+        let rows = match self {
+            Self::Production(conventions) => evaluate_hooks_for_test_metered(conventions, event)?,
+            Self::Counterfactual(conventions) => {
                 evaluate_counterfactual_hooks_for_corpus_metered(conventions, event)?
-                    .into_iter()
-                    .map(|row| {
-                        let fired = !row.effects.is_empty();
-                        HookRun {
-                            rule_id: row.rule_id,
-                            fired,
-                            effects: row.effects,
-                            narrowed: row
-                                .narrowed
-                                .iter()
-                                .map(|effect| {
-                                    format!("{}:{}", effect.rule_id, effect.kind.as_str())
-                                })
-                                .collect(),
-                            findings: row.findings,
-                            fuel: row.fuel_used,
-                            mem: row.mem_used,
-                        }
-                    })
-                    .collect(),
-            ),
-        }
+            }
+        };
+        Ok(rows.into_iter().map(hook_run).collect())
     }
 }
 
@@ -495,6 +482,15 @@ enum Observed {
     Error { detail: String },
 }
 
+/// One HOOK's `md.*` emission over one event — the generation the production
+/// executor applies as ONE atomic batch, synthesizing exactly one follow-on event
+/// (R9). Splitting a generation into independent writes would let the proof observe
+/// change identities production never emits.
+struct Emission {
+    emitter: String,
+    intents: Vec<Intent>,
+}
+
 /// One case's finished result.
 struct CaseResult {
     name: String,
@@ -506,10 +502,18 @@ struct CaseResult {
     /// One exact metering sample per in-scope capability evaluation.
     fuel: Vec<u64>,
     mem: Vec<u64>,
-    /// Admitted HOOK descriptors emitted by the initial synthetic change.
-    effects: Vec<Effect>,
+    /// CHECK citation ids this case fired. Kept in its OWN namespace: a citation id
+    /// that happens to equal a HOOK slug must never make that HOOK look live (R14).
+    fired_checks: BTreeSet<String>,
+    /// HOOK slugs this case fired.
+    fired_hooks: BTreeSet<String>,
+    /// The `md.*` generations the initial synthetic change armed, per emitter.
+    emissions: Vec<Emission>,
     /// The initial case's post-mutation bytes, used only by counterfactual chaining.
     after_md: String,
+    /// The landed change's plane facts, carried through to the adapted descriptors —
+    /// a `policy::Intent` records no provenance, and the proof invents none.
+    provenance: Provenance,
     /// Complete descriptors denied by the declared capability ceiling.
     narrowed_effects: Vec<String>,
     /// Named budget findings, kept distinct from structural evaluation faults.
@@ -539,35 +543,49 @@ fn run_corpus(conventions: &LoadedConventions, spec: &Spec) -> Result<Report, Fa
         results.push(run_case(conventions, spec, index, case)?);
     }
 
-    let quiescence = prove_quiescence(conventions, &results)?;
+    let quiescence = prove_quiescence(conventions, &results);
 
-    let mut fired: BTreeSet<String> = quiescence.fired_rules.clone();
+    // TWO namespaces, never one set (R14). A CHECK cites a passing scenario; a HOOK
+    // is named by its slug. Merging them lets a CHECK citation that happens to equal
+    // a silent HOOK's slug vouch for that HOOK's liveness.
+    let mut fired_checks: BTreeSet<String> = BTreeSet::new();
+    let mut fired_hooks: BTreeSet<String> = quiescence.fired_hooks.clone();
     for result in &results {
-        if let Observed::Fired { rules } = &result.observed {
-            fired.extend(rules.iter().cloned());
-        }
+        fired_checks.extend(result.fired_checks.iter().cloned());
+        fired_hooks.extend(result.fired_hooks.iter().cloned());
     }
 
     // The `rules` fence declares CHECK citation ids only. Every loaded HOOK is a
     // liveness subject whether or not an author remembered to repeat its slug there.
-    let mut declared_rules = spec.declared_rules.clone();
-    for hook_slug in views
+    let hook_slugs: Vec<String> = views
         .iter()
         .copied()
         .filter(|convention| convention.has_hook())
-        .map(ConventionView::slug)
-    {
+        .map(|convention| convention.slug().to_owned())
+        .collect();
+    let mut declared_rules = spec.declared_rules.clone();
+    for hook_slug in &hook_slugs {
         if !declared_rules.iter().any(|rule| rule == hook_slug) {
-            declared_rules.push(hook_slug.to_owned());
+            declared_rules.push(hook_slug.clone());
         }
     }
+    // Each declared name is a liveness subject in exactly ONE namespace: a loaded
+    // HOOK slug is answered only by that HOOK firing, every other declared name only
+    // by a CHECK citation. A shared string can no longer let one leg vouch for the
+    // other. Surprise is a CHECK-only signal — a HOOK slug is declared by being loaded.
     let declared: BTreeSet<String> = declared_rules.iter().cloned().collect();
     let dead_rules: Vec<String> = declared_rules
         .iter()
-        .filter(|rule| !fired.contains(*rule))
+        .filter(|rule| {
+            if hook_slugs.contains(rule) {
+                !fired_hooks.contains(*rule)
+            } else {
+                !fired_checks.contains(*rule)
+            }
+        })
         .cloned()
         .collect();
-    let surprise_rules: Vec<String> = fired.difference(&declared).cloned().collect();
+    let surprise_rules: Vec<String> = fired_checks.difference(&declared).cloned().collect();
 
     let mut fuel: Vec<u64> = results
         .iter()
@@ -633,90 +651,154 @@ fn run_case(
     let change = synth_change(&before, &after, case);
     let event = derive_event(&change, &before.root.node_rev.0, &after.root.node_rev.0, 0);
 
-    let mut in_scope = false;
-    let mut fired = BTreeSet::new();
-    let mut effects = Vec::new();
-    let mut fuel = Vec::new();
-    let mut mem = Vec::new();
-    let mut errors = Vec::new();
-    let mut narrowed_effects = Vec::new();
-    let mut budget_findings = Vec::new();
-
-    for convention in conventions.views() {
-        if convention.has_check() && convention.matches_path(&doc_path) {
-            in_scope = true;
-            match convention.check_change_metered(&change) {
-                Ok(telemetry) => {
-                    fuel.push(telemetry.fuel_used);
-                    mem.push(telemetry.mem_used);
-                    fired.extend(
-                        telemetry
-                            .refusals
-                            .into_iter()
-                            .map(|refusal| refusal.passing_scenario),
-                    );
-                }
-                Err(error) => errors.push(check_error_label(&error)),
-            }
-        }
-        if convention.has_hook() && convention.hook_matches_path(&doc_path) {
-            in_scope = true;
-        }
-    }
-
-    let hook_rows = conventions
-        .evaluate_hooks(&event)
-        .map_err(|error| Fail::tool(format!("HOOK evaluation failed: {error}")))?;
-    for row in hook_rows {
-        fuel.push(row.fuel);
-        mem.push(row.mem);
-        if row.fired {
-            fired.insert(row.rule_id.clone());
-        }
-        effects.extend(row.effects);
-        narrowed_effects.extend(row.narrowed);
-        for finding in row.findings {
-            match finding {
-                HookFinding::BudgetExceeded {
-                    rule_id,
-                    steps,
-                    mem,
-                } => {
-                    let finding = format!("{rule_id}: budget_exceeded steps={steps} mem={mem}");
-                    budget_findings.push(finding.clone());
-                    errors.push(finding);
-                }
-            }
-        }
-    }
-
-    let observed = if !errors.is_empty() {
-        Observed::Error {
-            detail: errors.join("; "),
-        }
-    } else if fired.is_empty() {
-        Observed::Pass { in_scope }
-    } else {
-        Observed::Fired { rules: fired }
-    };
+    let mut fold = CaseFold::default();
+    fold.run_checks(conventions, &doc_path, &change);
+    fold.run_hooks(
+        conventions
+            .evaluate_hooks(&event)
+            .map_err(|error| Fail::tool(format!("HOOK evaluation failed: {error}")))?,
+    );
 
     Ok(CaseResult {
         name: case.name.clone().unwrap_or_else(|| doc_path.clone()),
         doc: doc_path,
         actor: case.actor.clone(),
-        in_scope,
+        in_scope: fold.in_scope,
         expect: case.expect.clone(),
-        observed,
-        fuel,
-        mem,
-        effects,
+        observed: fold.observed(),
+        fuel: fold.fuel,
+        mem: fold.mem,
+        fired_checks: fold.fired_checks,
+        fired_hooks: fold.fired_hooks,
+        emissions: fold.emissions,
         after_md,
-        narrowed_effects,
-        budget_findings,
+        provenance: Provenance::Change {
+            fingerprint_before: event.fingerprint_before.clone(),
+            fingerprint_after: event.fingerprint_after.clone(),
+        },
+        narrowed_effects: fold.narrowed_effects,
+        budget_findings: fold.budget_findings,
     })
 }
 
+/// What one case accumulates across its two legs. The two fired sets stay separate
+/// for liveness (R14); only the observed-outcome signal reads their union.
+#[derive(Default)]
+struct CaseFold {
+    in_scope: bool,
+    fired_checks: BTreeSet<String>,
+    fired_hooks: BTreeSet<String>,
+    emissions: Vec<Emission>,
+    fuel: Vec<u64>,
+    mem: Vec<u64>,
+    errors: Vec<String>,
+    narrowed_effects: Vec<String>,
+    budget_findings: Vec<String>,
+}
+
+impl CaseFold {
+    /// The law leg: every in-scope CHECK over this change, metered.
+    fn run_checks(&mut self, conventions: &LoadedConventions, doc_path: &str, change: &Change) {
+        for convention in conventions.views() {
+            if convention.has_check() && convention.matches_path(doc_path) {
+                self.in_scope = true;
+                match convention.check_change_metered(change) {
+                    Ok(telemetry) => {
+                        self.fuel.push(telemetry.fuel_used);
+                        self.mem.push(telemetry.mem_used);
+                        self.fired_checks.extend(
+                            telemetry
+                                .refusals
+                                .into_iter()
+                                .map(|refusal| refusal.passing_scenario),
+                        );
+                    }
+                    Err(error) => self.errors.push(check_error_label(&error)),
+                }
+            }
+            if convention.has_hook() && convention.hook_matches_path(doc_path) {
+                self.in_scope = true;
+            }
+        }
+    }
+
+    /// The emit leg: one row per in-scope HOOK, each row's `md.*` intents kept whole
+    /// as ONE generation.
+    fn run_hooks(&mut self, rows: Vec<HookRun>) {
+        for row in rows {
+            self.fuel.push(row.fuel);
+            self.mem.push(row.mem);
+            if row.fired {
+                self.fired_hooks.insert(row.rule_id.clone());
+            }
+            let generation = md_intents(row.intents);
+            if !generation.is_empty() {
+                self.emissions.push(Emission {
+                    emitter: row.rule_id.clone(),
+                    intents: generation,
+                });
+            }
+            self.narrowed_effects.extend(row.narrowed);
+            for finding in row.findings {
+                let HookFinding::BudgetExceeded {
+                    rule_id,
+                    steps,
+                    mem,
+                } = finding;
+                let finding = format!("{rule_id}: budget_exceeded steps={steps} mem={mem}");
+                self.budget_findings.push(finding.clone());
+                self.errors.push(finding);
+            }
+        }
+    }
+
+    /// `expect` names a rule by id, whichever leg raised it — the fire signal reads
+    /// the union. Liveness does not: the two namespaces stay separate above.
+    fn observed(&self) -> Observed {
+        if !self.errors.is_empty() {
+            return Observed::Error {
+                detail: self.errors.join("; "),
+            };
+        }
+        let fired: BTreeSet<String> = self
+            .fired_checks
+            .union(&self.fired_hooks)
+            .cloned()
+            .collect();
+        if fired.is_empty() {
+            Observed::Pass {
+                in_scope: self.in_scope,
+            }
+        } else {
+            Observed::Fired { rules: fired }
+        }
+    }
+}
+
+/// The `md.*` half of one emission — the only intents the Markdown adapter carries.
+/// `proto.*` intents are terminal: they mutate no corpus state, so they add no
+/// trigger-graph edge, which is what keeps slice 1 explicitly acyclic.
+fn md_intents(intents: Vec<Intent>) -> Vec<Intent> {
+    intents
+        .into_iter()
+        .filter(|intent| action_kind(&intent.action).is_some_and(|k| k.domain() == Domain::Md))
+        .collect()
+}
+
 const QUIESCENCE_FUEL: usize = 256;
+
+/// Where the isolated proof corpus lands its executor receipts. A real production
+/// receipt in a throwaway workspace: never the live tree, and never the triggering
+/// write's own page — the proof may not target the page it is reacting to.
+const PROOF_RECEIPT_PATH: &str = "receipts/corpus-proof.md";
+
+/// The task name the proof's receipts are actored by (`run:<task>`).
+const PROOF_TASK: &str = "corpus-proof";
+
+/// The procedure-hash the proof's receipts attest. Fixed and inert: the receipt
+/// lands only in the throwaway proof workspace, and a wall-clock or random value
+/// would break the report's byte-identical re-run law.
+const PROOF_TASK_REV: &str = "b3:corpus-proof";
 
 struct Quiescence {
     nodes: Vec<String>,
@@ -726,7 +808,7 @@ struct Quiescence {
     fuel_exhausted: bool,
     cycle: Option<Vec<String>>,
     fault: Option<String>,
-    fired_rules: BTreeSet<String>,
+    fired_hooks: BTreeSet<String>,
     fuel_samples: Vec<u64>,
     mem_samples: Vec<u64>,
 }
@@ -749,25 +831,39 @@ impl Quiescence {
     }
 }
 
-struct PendingEffect {
+/// One `md.*` generation waiting to be executed against the state it reacts to.
+///
+/// The unit is the GENERATION, never a single descriptor: production applies one
+/// emission as one atomic batch and synthesizes exactly one follow-on event, so a
+/// per-descriptor queue would invent change identities production never emits (R9).
+struct PendingGeneration {
     emitter: String,
     path: String,
     markdown: String,
-    effect: Effect,
+    /// The emission's `md.*` intents, in emission order.
+    intents: Vec<Intent>,
+    /// The emitting event's plane facts, carried through to the descriptors.
+    provenance: Provenance,
+    /// The applied generation's cascade depth.
+    depth: u32,
     chain: Vec<String>,
-    /// Signatures on this causal lineage only. A global duplicate is not a cycle.
+    /// Signatures on THIS causal lineage only. A global duplicate is not a cycle,
+    /// and — since R10 — a global duplicate never suppresses another lineage either.
     ancestors: BTreeSet<String>,
 }
 
-/// Follow only reachable `md.*` descriptors from the declared synthetic cases.
-/// A signature recurring in its own causal ancestry proves a deterministic cycle.
-/// Identical work from another case or a converging branch may be deduplicated after
-/// this ancestry check, but it never manufactures a cycle. Terminal `proto.*`
-/// descriptors add no graph edge, which keeps slice 1 explicitly acyclic.
-fn prove_quiescence(
-    conventions: &LoadedConventions,
-    results: &[CaseResult],
-) -> Result<Quiescence, Fail> {
+/// Follow only reachable `md.*` generations from the declared synthetic cases.
+///
+/// Each generation is executed through the PRODUCTION batch executor against an
+/// isolated proof corpus, and the executor's own single synthesized event is what
+/// the next round of HOOKs reads. A signature recurring in its own causal ancestry
+/// proves a deterministic cycle. There is no global work cache: deduplicating across
+/// lineages can retire a work item before a DIFFERENT lineage's descendant reaches
+/// it, hiding a real cycle (R10). Termination rests on the ancestry check and the
+/// explicit graph fuel, which are the two signals the report already names.
+/// Terminal `proto.*` intents add no graph edge, which keeps slice 1 explicitly
+/// acyclic.
+fn prove_quiescence(conventions: &LoadedConventions, results: &[CaseResult]) -> Quiescence {
     let nodes = conventions
         .views()
         .into_iter()
@@ -782,12 +878,11 @@ fn prove_quiescence(
         fuel_exhausted: false,
         cycle: None,
         fault: None,
-        fired_rules: BTreeSet::new(),
+        fired_hooks: BTreeSet::new(),
         fuel_samples: Vec::new(),
         mem_samples: Vec::new(),
     };
-    let mut queue = initial_counterfactuals(results);
-    let mut completed = BTreeSet::new();
+    let mut queue = initial_generations(results);
 
     while let Some(mut pending) = queue.pop_front() {
         let signature = pending_signature(&pending);
@@ -795,89 +890,74 @@ fn prove_quiescence(
             proof.cycle = Some(repeated_cycle(&pending.chain));
             break;
         }
-        if !completed.insert(signature.clone()) {
-            continue;
-        }
         if proof.steps >= proof.fuel_limit {
             proof.fuel_exhausted = true;
             break;
         }
         pending.ancestors.insert(signature);
         proof.steps += 1;
-        advance_counterfactual(&pending, conventions, &mut queue, &mut proof)?;
+        advance_generation(&pending, conventions, &mut queue, &mut proof);
         if proof.fault.is_some() {
             break;
         }
     }
-    Ok(proof)
+    proof
 }
 
-fn initial_counterfactuals(results: &[CaseResult]) -> VecDeque<PendingEffect> {
+fn initial_generations(results: &[CaseResult]) -> VecDeque<PendingGeneration> {
     results
         .iter()
         .flat_map(|result| {
-            result
-                .effects
-                .iter()
-                .filter(|effect| effect.kind.domain() == Domain::Md)
-                .map(|effect| PendingEffect {
-                    emitter: effect.rule_id.clone(),
-                    path: result.doc.clone(),
-                    markdown: result.after_md.clone(),
-                    effect: effect.clone(),
-                    chain: vec![effect.rule_id.clone()],
-                    ancestors: BTreeSet::new(),
-                })
+            result.emissions.iter().map(|emission| PendingGeneration {
+                emitter: emission.emitter.clone(),
+                path: result.doc.clone(),
+                markdown: result.after_md.clone(),
+                intents: emission.intents.clone(),
+                provenance: result.provenance.clone(),
+                depth: 0,
+                chain: vec![emission.emitter.clone()],
+                ancestors: BTreeSet::new(),
+            })
         })
         .collect()
 }
 
-fn pending_signature(pending: &PendingEffect) -> String {
+fn pending_signature(pending: &PendingGeneration) -> String {
     serde_json::to_string(&json!({
         "emitter": pending.emitter,
         "path": pending.path,
         "markdown": pending.markdown,
-        "kind": pending.effect.kind.as_str(),
-        "args": pending.effect.args,
+        "intents": pending.intents,
     }))
     .expect("counterfactual signature serializes")
 }
 
-fn advance_counterfactual(
-    pending: &PendingEffect,
+fn advance_generation(
+    pending: &PendingGeneration,
     conventions: &LoadedConventions,
-    queue: &mut VecDeque<PendingEffect>,
+    queue: &mut VecDeque<PendingGeneration>,
     proof: &mut Quiescence,
-) -> Result<(), Fail> {
-    let Some(after_md) =
-        apply_counterfactual_effect(&pending.path, &pending.markdown, &pending.effect)?
-    else {
-        return Ok(());
+) {
+    let applied = match apply_generation(pending) {
+        Ok(applied) => applied,
+        Err(refusal) => {
+            // Production refuses this reaction. That is a fact about the proof's
+            // subject, not a harness crash: report it as the quiescence fault it is.
+            proof.fault = Some(refusal);
+            return;
+        }
     };
-    let before = build_doc(&pending.path, &pending.markdown);
-    let after = build_doc(&pending.path, &after_md);
-    let synthetic = CaseSpec {
-        name: None,
-        doc: pending.path.clone(),
-        actor: Some(format!("rule:{}", pending.emitter)),
-        force: false,
-        set: BTreeMap::new(),
-        remove: Vec::new(),
-        expect: Expected::One("pass".to_owned()),
+    // A generation that changed no bytes synthesizes no event, so it triggers
+    // nothing — the branch is terminal, exactly as it is in production.
+    let Some((after_md, event)) = applied else {
+        return;
     };
-    let change = synth_change(&before, &after, &synthetic);
-    let event = derive_event(
-        &change,
-        &before.root.node_rev.0,
-        &after.root.node_rev.0,
-        u32::try_from(pending.chain.len()).unwrap_or(u32::MAX),
-    );
 
     let rows = match conventions.evaluate_hooks(&event) {
         Ok(rows) => rows,
         Err(error) => {
             proof.fault = Some(format!("HOOK evaluation failed: {error}"));
-            return Ok(());
+            return;
         }
     };
     for row in rows {
@@ -892,19 +972,27 @@ fn advance_counterfactual(
             proof.fault = Some(format!(
                 "{rule_id}: budget_exceeded steps={steps} mem={mem}"
             ));
-            return Ok(());
+            return;
         }
-        enqueue_emitted(pending, &row.rule_id, &after_md, row.effects, queue, proof);
+        enqueue_emitted(
+            pending,
+            &row.rule_id,
+            &after_md,
+            &event,
+            row.intents,
+            queue,
+            proof,
+        );
     }
-    Ok(())
 }
 
 fn enqueue_emitted(
-    pending: &PendingEffect,
+    pending: &PendingGeneration,
     rule_id: &str,
     after_md: &str,
-    emitted: Vec<Effect>,
-    queue: &mut VecDeque<PendingEffect>,
+    event: &ChangeEvent,
+    emitted: Vec<Intent>,
+    queue: &mut VecDeque<PendingGeneration>,
     proof: &mut Quiescence,
 ) {
     if emitted.is_empty() {
@@ -913,21 +1001,26 @@ fn enqueue_emitted(
     proof
         .edges
         .insert((pending.emitter.clone(), rule_id.to_owned()));
-    proof.fired_rules.insert(rule_id.to_owned());
+    proof.fired_hooks.insert(rule_id.to_owned());
+    let intents = md_intents(emitted);
+    if intents.is_empty() {
+        return;
+    }
     let mut chain = pending.chain.clone();
     chain.push(rule_id.to_owned());
-    for effect in emitted {
-        if effect.kind.domain() == Domain::Md {
-            queue.push_back(PendingEffect {
-                emitter: rule_id.to_owned(),
-                path: pending.path.clone(),
-                markdown: after_md.to_owned(),
-                effect,
-                chain: chain.clone(),
-                ancestors: pending.ancestors.clone(),
-            });
-        }
-    }
+    queue.push_back(PendingGeneration {
+        emitter: rule_id.to_owned(),
+        path: pending.path.clone(),
+        markdown: after_md.to_owned(),
+        intents,
+        provenance: Provenance::Change {
+            fingerprint_before: event.fingerprint_before.clone(),
+            fingerprint_after: event.fingerprint_after.clone(),
+        },
+        depth: event.depth,
+        chain,
+        ancestors: pending.ancestors.clone(),
+    });
 }
 
 fn repeated_cycle(chain: &[String]) -> Vec<String> {
@@ -941,66 +1034,103 @@ fn repeated_cycle(chain: &[String]) -> Vec<String> {
     chain[start..].to_vec()
 }
 
-fn apply_counterfactual_effect(
-    path: &str,
-    markdown: &str,
-    effect: &Effect,
-) -> Result<Option<String>, Fail> {
-    let edit = match effect.kind {
-        EffectKind::SetField => Edit {
-            target: SecRef::FmKey {
-                fm_key: effect_arg(effect, "field")?.to_owned(),
-            },
-            edit: EditShape::Put {
-                at: PutAt::Upsert,
-                text: effect_arg(effect, "value")?.to_owned(),
-            },
-            if_node_rev: None,
-        },
-        EffectKind::AppendSection => {
-            let section = effect_arg(effect, "section")?;
-            let hpath = section
-                .split('/')
-                .map(|heading| {
-                    if heading.is_empty() {
-                        return Err(Fail::tool(format!(
-                            "counterfactual section path {section:?} contains an empty segment"
-                        )));
-                    }
-                    Ok(HpathSeg {
-                        h: heading.to_owned(),
-                        n: None,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Edit {
-                target: SecRef::Hpath { hpath },
-                edit: EditShape::Put {
-                    at: PutAt::End,
-                    text: effect_arg(effect, "content")?.to_owned(),
-                },
-                if_node_rev: None,
-            }
-        }
-        _ => return Ok(None),
+/// Execute ONE emitted generation against an isolated proof corpus through the
+/// production path: `policy::Intent` → the `run` executor adapter → the atomic batch
+/// executor (R13 ruling §3).
+///
+/// The workspace is a throwaway tmpdir carrying only the reacted-to page, so the
+/// governed corpus tree is read-only and the landed triggering write is never
+/// touched. The receipts are REAL executor receipts of production shape; what makes
+/// them proof receipts is where they land — a receipt file inside the isolated
+/// corpus, never the triggering write's own page — and that they claim nothing about
+/// delivery, which is out of scope pre-arming.
+///
+/// Returns the post-apply bytes and the executor's ONE synthesized event, or `None`
+/// when the batch changed nothing (a terminal branch).
+///
+/// # Errors
+/// The production refusal text — an adapter fault, a cap denial, or any
+/// [`run::executor::ExecError`]. The caller reports it as a quiescence fault.
+fn apply_generation(pending: &PendingGeneration) -> Result<Option<(String, ChangeEvent)>, String> {
+    let dir = tempfile::tempdir()
+        .map_err(|error| format!("cannot create corpus proof tmpdir: {error}"))?;
+    let root = WorkspaceRoot(dir.path().to_path_buf());
+    let rel = confine(&pending.path)?;
+    let full = dir.path().join(&rel);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create corpus proof parent: {error}"))?;
+    }
+    std::fs::write(&full, &pending.markdown)
+        .map_err(|error| format!("cannot mount corpus proof document: {error}"))?;
+
+    let receipt = proof_receipt_addr(&pending.intents)?;
+    let adapted = IntentApply::from_intents(
+        &pending.intents,
+        receipt,
+        &pending.provenance,
+        pending.depth,
+    )
+    .map_err(|error| error.to_string())?;
+    // Exactly the counterfactual declaration's own ceiling — the proof widens the
+    // executor's choke point no further than the loader widened the declaration.
+    let caps = CapSet::parse("md.set_field md.append_section")
+        .map_err(|error| format!("corpus proof caps: {error}"))?;
+    let live: MerkleRoot = fs::domain_snapshot(&root)
+        .map_err(|error| format!("corpus proof workspace fold: {error}"))?
+        .1;
+    let invocation = format!("corpus-proof-{}", pending.chain.join("-"));
+    let request = adapted.request(&ApplyRequest {
+        page: &pending.path,
+        task: PROOF_TASK,
+        task_rev: PROOF_TASK_REV,
+        invocation_id: &invocation,
+        now: None,
+        effects: &[],
+        caps: &caps,
+        pin_root: &live,
+        live_root: &live,
+        receipt: None,
+        takeover: false,
+        exec: None,
+        depth: pending.depth,
+    });
+    let applied = run::executor::apply(&root, &request).map_err(|error| {
+        format!(
+            "production executor refused the emitted generation from `{}`: {error}",
+            pending.emitter
+        )
+    })?;
+    let Some(event) = applied.event else {
+        return Ok(None);
     };
-    let actor = format!("rule:{}", effect.rule_id);
-    let after = apply_production_edit(path, markdown, Some(&actor), false, edit)?;
-    Ok((after != markdown).then_some(after))
+    let after_md = std::fs::read_to_string(&full)
+        .map_err(|error| format!("cannot read the applied proof corpus: {error}"))?;
+    Ok(Some((after_md, event)))
 }
 
-fn effect_arg<'a>(effect: &'a Effect, name: &str) -> Result<&'a str, Fail> {
-    match effect.args.get(name) {
-        Some(ArgValue::Str(value)) => Ok(value),
-        Some(ArgValue::List(_)) => Err(Fail::tool(format!(
-            "counterfactual `{}` argument {name:?} must be a string",
-            effect.kind.as_str()
-        ))),
-        None => Err(Fail::tool(format!(
-            "counterfactual `{}` descriptor is missing {name:?}",
-            effect.kind.as_str()
-        ))),
-    }
+/// The receipt address the proof's batch rides with: the canonical anchor the
+/// intents already carry, landed in the isolated corpus's own receipt file.
+///
+/// The anchor is the intents' — receipt data maps to the `ReceiptAddr` of the same
+/// request, no separate plumbing. The PATH is the proof's, because the triggering
+/// write's page is not an admissible target of the proof batch.
+fn proof_receipt_addr(intents: &[Intent]) -> Result<ReceiptAddr, String> {
+    let canonical = intents
+        .first()
+        .ok_or_else(|| "an emitted generation carries no intent".to_owned())?
+        .receipt
+        .as_str();
+    let anchor = canonical
+        .rsplit_once("#^")
+        .map(|(_, anchor)| anchor.to_owned())
+        .ok_or_else(|| {
+            format!("intent receipt {canonical:?} is not a canonical `path#^anchor` address")
+        })?;
+    Ok(ReceiptAddr {
+        path: PROOF_RECEIPT_PATH.to_owned(),
+        anchor,
+    })
 }
 
 /// Build a synthetic before/after pair through production semantics. Sets use the
@@ -1490,27 +1620,44 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use super::*;
 
-    use effects::{ArgValue, Effect, EffectKind, Provenance};
+    const CARD: &str = "tasks/card.md";
 
-    use super::{apply_counterfactual_effect, percentile};
+    /// Two sections named `Notes`, one of them inside a fence. The fenced pair is
+    /// not a heading, so the real ambiguity is exactly two.
+    const TWO_NOTES: &str = "# A\n\n## Notes\n\nleft\n\n```text\n# B\n## Notes\nfake\n```\n\n# B\n\n## Notes\n\nright\n";
 
-    fn effect(kind: EffectKind, args: &[(&str, &str)]) -> Effect {
-        Effect {
-            kind,
+    fn control_intent(seq: u32, action: &str, target: &str, payload: &str) -> Intent {
+        Intent {
             rule_id: "proof-control".to_owned(),
-            seq: 0,
-            depth: 0,
+            seq,
+            action: action.to_owned(),
+            target: Some(target.to_owned()),
+            severity: None,
+            payload: Some(payload.to_owned()),
+            receipt: effects::receipt_address(CARD, "rev-after"),
+        }
+    }
+
+    /// Execute one generation exactly as the quiescence proof does.
+    fn apply_control(
+        markdown: &str,
+        intents: Vec<Intent>,
+    ) -> Result<Option<(String, ChangeEvent)>, String> {
+        apply_generation(&PendingGeneration {
+            emitter: "proof-control".to_owned(),
+            path: CARD.to_owned(),
+            markdown: markdown.to_owned(),
+            intents,
             provenance: Provenance::Change {
                 fingerprint_before: "before".to_owned(),
                 fingerprint_after: "after".to_owned(),
             },
-            args: args
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), ArgValue::Str((*value).to_owned())))
-                .collect::<BTreeMap<_, _>>(),
-        }
+            depth: 0,
+            chain: vec!["proof-control".to_owned()],
+            ancestors: BTreeSet::new(),
+        })
     }
 
     #[test]
@@ -1523,42 +1670,136 @@ mod tests {
         assert_eq!(percentile(&[7], 99), 7);
     }
 
+    /// The proof writes through the production model grain: a frontmatter key's node
+    /// is its whole multiline YAML value, continuation lines included.
     #[test]
-    fn counterfactual_set_field_replaces_the_complete_multiline_yaml_node() {
+    fn proof_set_field_replaces_the_complete_multiline_yaml_node() {
         let before = "---\nlabels:\n  - alpha\n  - beta\nstatus: open\n---\n# Card\n";
-        let after = apply_counterfactual_effect(
-            "tasks/card.md",
+        let (after, _event) = apply_control(
             before,
-            &effect(
-                EffectKind::SetField,
-                &[("field", "labels"), ("value", "done")],
-            ),
+            vec![control_intent(0, "md.set_field", "labels", "done")],
         )
-        .expect("production writer accepts the effect")
-        .expect("the effect changes bytes");
+        .expect("the production executor accepts the generation")
+        .expect("the generation changes bytes");
         assert_eq!(
             after, "---\nlabels: done\nstatus: open\n---\n# Card\n",
             "production frontmatter node semantics remove continuation lines"
         );
     }
 
+    /// R8 — `md.append_section` names ONE exact heading text. A section name that
+    /// appears twice is ambiguous, and production refuses rather than silently
+    /// picking; the proof must observe the same refusal.
     #[test]
-    fn counterfactual_append_uses_the_full_hpath_and_ignores_fenced_headings() {
-        let before = "# A\n\n## Notes\n\nleft\n\n```text\n# B\n## Notes\nfake\n```\n\n# B\n\n## Notes\n\nright\n";
-        let after = apply_counterfactual_effect(
-            "tasks/card.md",
-            before,
-            &effect(
-                EffectKind::AppendSection,
-                &[("section", "B/Notes"), ("content", "\nadded\n")],
-            ),
+    fn proof_append_section_refuses_an_ambiguous_heading() {
+        let refusal = apply_control(
+            TWO_NOTES,
+            vec![control_intent(0, "md.append_section", "Notes", "added")],
         )
-        .expect("production writer accepts the effect")
-        .expect("the effect changes bytes");
+        .expect_err("two sections named Notes are ambiguous");
+        println!("POPULATION ambiguous -> {refusal}");
+        assert!(
+            refusal.contains("section 'Notes' appears 2 times (ambiguous)"),
+            "the proof reports the production ambiguity refusal: {refusal}"
+        );
+    }
+
+    /// R8 — the descriptor's `section` is one exact heading TEXT, never a `/`-joined
+    /// heading path. The proof used to invent that grammar and accept `B/Notes`;
+    /// production has no such section, so the proof must now refuse.
+    #[test]
+    fn proof_append_section_refuses_a_slash_spelled_heading_path() {
+        let refusal = apply_control(
+            TWO_NOTES,
+            vec![control_intent(0, "md.append_section", "B/Notes", "added")],
+        )
+        .expect_err("`B/Notes` is not a heading production can resolve");
+        println!("POPULATION slash path -> {refusal}");
+        assert!(
+            refusal.contains("no section 'B/Notes'"),
+            "the proof reports the production not-found refusal: {refusal}"
+        );
+    }
+
+    /// R8 — production normalizes an append to exactly one trailing newline. The
+    /// proof used to preserve the caller's newline bytes verbatim.
+    #[test]
+    fn proof_append_section_normalizes_to_one_trailing_newline() {
+        let before = "# Card\n\n## Log\n\nfirst\n";
+        let (after, _event) = apply_control(
+            before,
+            vec![control_intent(0, "md.append_section", "Log", "added\n\n\n")],
+        )
+        .expect("the production executor accepts the generation")
+        .expect("the generation changes bytes");
         assert_eq!(
-            after,
-            "# A\n\n## Notes\n\nleft\n\n```text\n# B\n## Notes\nfake\n```\n\n# B\n\n## Notes\n\nright\n\nadded\n",
-            "only the real B/Notes section receives the append"
+            after, "# Card\n\n## Log\n\nfirst\nadded\n",
+            "the caller's trailing newlines are normalized to exactly one"
+        );
+    }
+
+    /// R9 — one emitted generation is ONE atomic batch synthesizing ONE event. A
+    /// mixed frontmatter+section batch has no addressable Delta container, so the
+    /// event names no field and no section: a downstream HOOK cannot fire on it, and
+    /// the proof cannot invent a cascade production would never produce.
+    #[test]
+    fn proof_mixed_generation_is_one_batch_with_no_addressable_identities() {
+        let before = "---\nstatus: open\n---\n\n# Card\n\n## Log\n\nfirst\n";
+        let (after, event) = apply_control(
+            before,
+            vec![
+                control_intent(0, "md.set_field", "status", "mixed"),
+                control_intent(1, "md.append_section", "Log", "entry"),
+            ],
+        )
+        .expect("the production executor accepts the mixed generation")
+        .expect("the generation changes bytes");
+        assert!(
+            after.contains("status: mixed") && after.contains("entry"),
+            "both descriptors landed in the SAME batch: {after:?}"
+        );
+        println!(
+            "POPULATION mixed event fields={:?} sections={:?}",
+            event.fields_changed, event.sections_changed
+        );
+        assert!(
+            event.fields_changed.is_empty() && event.sections_changed.is_empty(),
+            "a mixed batch has no addressable identities — the proof observes exactly \
+             what production emits: {event:?}"
+        );
+        assert!(
+            event.changes.is_empty(),
+            "the synthesized event carries no value deltas — fail-closed by construction"
+        );
+    }
+
+    /// R2 — `remove` uses the production model's fm-key grain, so a multiline YAML
+    /// value is removed whole rather than leaving orphaned continuation lines.
+    #[test]
+    fn case_remove_uses_the_production_model_grain_for_multiline_frontmatter() {
+        let before = "---\nlabels:\n  - alpha\n  - beta\nstatus: open\n---\n# Card\n";
+        let case = CaseSpec {
+            name: None,
+            doc: CARD.to_owned(),
+            actor: None,
+            force: false,
+            set: BTreeMap::new(),
+            remove: vec!["labels".to_owned()],
+            expect: Expected::One("pass".to_owned()),
+        };
+        let after = apply_case_mutation(CARD, before, &case).expect("the removal applies");
+        println!("POPULATION removed -> {after:?}");
+        // The node's SPAN is what goes — its whole multiline value, continuation
+        // lines included. The blank line left behind is the §1 span law (a block
+        // leaf's span excludes its final terminator), not a stranded continuation:
+        // measured, not assumed, because a hand-rolled YAML remover would differ here.
+        assert_eq!(
+            after, "---\n\nstatus: open\n---\n# Card\n",
+            "the whole multiline node goes, continuation lines included"
+        );
+        assert!(
+            !after.contains("alpha") && !after.contains("beta") && !after.contains("labels"),
+            "no continuation line survives the removal: {after:?}"
         );
     }
 }

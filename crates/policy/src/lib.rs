@@ -87,9 +87,9 @@ pub use convention::{
 /// ceiling was enforced at load. [`evaluate_hooks`] runs armed, in-scope HOOKs and
 /// returns advisory-only [`HookOutcome`]s; [`SLICE1_CAPS`] is what slice 1 admits.
 pub use hook::{
-    CounterfactualHookTelemetry, Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry,
-    Intent, SLICE1_CAPS, evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks,
-    evaluate_hooks_for_test, evaluate_hooks_for_test_metered,
+    Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry, Intent, SLICE1_CAPS,
+    evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks, evaluate_hooks_for_test,
+    evaluate_hooks_for_test_metered, intent_from_effect,
 };
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]

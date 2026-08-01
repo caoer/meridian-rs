@@ -47,7 +47,7 @@
 use std::collections::HashSet;
 
 use effects::{
-    ArgValue, CapabilitySet, ChangeEvent, Domain, Effect, EffectKind, EvalError, EvalLimits,
+    ArgValue, CapabilitySet, ChangeEvent, Effect, EffectKind, EvalError, EvalLimits,
     REACTION_VOCAB, Rule,
 };
 use starlark::analysis::AstModuleLint;
@@ -276,28 +276,6 @@ pub struct HookTestTelemetry {
     pub mem_used: u64,
 }
 
-/// One widened HOOK outcome owned exclusively by the corpus proof.
-///
-/// Raw typed effects remain necessary here because the proof applies `md.*` through
-/// the production writer. This type cannot enter ordinary HOOK evaluation or arming.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CounterfactualHookTelemetry {
-    /// The emitting convention.
-    pub rule_id: String,
-    /// Effects admitted by the counterfactual declaration's caps.
-    pub effects: Vec<Effect>,
-    /// Complete effects denied by those caps.
-    pub narrowed: Vec<Effect>,
-    /// Typed evaluator findings, such as budget exhaustion.
-    pub findings: Vec<HookFinding>,
-    /// The declaration's opaque HOW bytes.
-    pub how: String,
-    /// Starlark ticks spent by this one HOOK evaluation.
-    pub fuel_used: u64,
-    /// Peak evaluator heap for this one HOOK evaluation.
-    pub mem_used: u64,
-}
-
 /// Evaluate loaded conventions before arming for the tier-1 scenario proof.
 ///
 /// This is the same policy-owned descriptor evaluator and intent projection as
@@ -339,19 +317,22 @@ pub fn evaluate_hooks_for_test_metered(
 /// Evaluate widened declarations only inside the corpus proof.
 ///
 /// This API accepts only [`crate::CounterfactualConvention`], so widened caps cannot
-/// cross into ordinary policy code. It shares metering, capability routing, global
-/// sequencing, and typed findings with production evaluation. Non-Markdown effects
-/// still pass canonical intent validation; `md.*` stays raw so the proof can execute
-/// it through the production writer. Explicit graph fuel replaces runtime depth
-/// suppression.
+/// cross into ordinary policy code. Everything else is the production evaluator:
+/// metering, capability routing, global sequencing, typed findings, and — since the
+/// R13 adapter ruling — the SAME canonical [`intent_from_effect`] projection for
+/// every domain. A raw `md.*` descriptor carrying no canonical action or receipt is
+/// [`HookEvalError::MalformedIntent`] here exactly as it is in production; the proof
+/// executes the projected [`Intent`] through the `run` adapter and the production
+/// batch executor. Explicit graph fuel replaces runtime depth suppression.
 ///
 /// # Errors
 /// A non-budget predicate fault has the same [`HookEvalError::Eval`] surface as the
-/// production evaluator.
+/// production evaluator, and a descriptor outside the canonical intent shape the same
+/// [`HookEvalError::MalformedIntent`].
 pub fn evaluate_counterfactual_hooks_for_corpus_metered(
     conventions: &[crate::CounterfactualConvention],
     event: &ChangeEvent,
-) -> Result<Vec<CounterfactualHookTelemetry>, HookEvalError> {
+) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
     evaluate_loaded_hooks_metered(
         conventions
             .iter()
@@ -360,22 +341,7 @@ pub fn evaluate_counterfactual_hooks_for_corpus_metered(
         u32::MAX,
     )?
     .into_iter()
-    .map(|row| {
-        for effect in row.effects.iter().chain(&row.narrowed) {
-            if effect.kind.domain() != Domain::Md {
-                intent_from_effect(effect.clone(), &row.expected_receipt)?;
-            }
-        }
-        Ok(CounterfactualHookTelemetry {
-            rule_id: row.rule_id,
-            effects: row.effects,
-            narrowed: row.narrowed,
-            findings: row.findings,
-            how: row.how,
-            fuel_used: row.fuel_used,
-            mem_used: row.mem_used,
-        })
-    })
+    .map(project_hook_telemetry)
     .collect()
 }
 
@@ -485,11 +451,26 @@ fn project_hook_telemetry(row: RawHookTelemetry) -> Result<HookTestTelemetry, Ho
     })
 }
 
-fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {
+/// The production Effect→Intent conversion — the ONE canonical projection every
+/// emitted descriptor passes before it can be called armed.
+///
+/// It validates the receipt against the landed change's canonical address, the
+/// declared `action` against the emitted kind, and the argument surface against the
+/// closed intent shape. It is public because the pre-arming corpus proof needs the
+/// PRODUCTION seam rather than a proof-only copy (R13 ruling §3): raw `md.*`
+/// descriptors must fault here exactly as they do in production, and the canonical
+/// `Intent` this returns is what the `run` adapter turns into the executor's
+/// `ApplyRequest`.
+///
+/// # Errors
+/// [`HookEvalError::MalformedIntent`] — a missing/forged receipt, an `action` that
+/// does not name the emitted kind, a non-string argument, or an argument outside the
+/// closed intent surface.
+pub fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {
     let rule_id = effect.rule_id;
     let mut args = effect.args;
-    let action = take_string(&mut args, &rule_id, "action", true)?.expect("required action");
-    let receipt = take_string(&mut args, &rule_id, "receipt", true)?.expect("required receipt");
+    let action = take_required(&mut args, &rule_id, "action")?;
+    let receipt = take_required(&mut args, &rule_id, "receipt")?;
     if receipt != expected_receipt {
         return Err(HookEvalError::MalformedIntent {
             rule_id,
@@ -507,9 +488,9 @@ fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, 
             ),
         });
     }
-    let target = take_string(&mut args, &rule_id, "target", false)?;
-    let severity = take_string(&mut args, &rule_id, "severity", false)?;
-    let payload = take_string(&mut args, &rule_id, "payload", false)?;
+    let target = take_string(&mut args, &rule_id, "target")?;
+    let severity = take_string(&mut args, &rule_id, "severity")?;
+    let payload = take_string(&mut args, &rule_id, "payload")?;
     if let Some((name, _)) = args.into_iter().next() {
         return Err(HookEvalError::MalformedIntent {
             rule_id,
@@ -528,11 +509,11 @@ fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, 
     })
 }
 
+/// An OPTIONAL scalar string argument: absent stays absent, a list is a fault.
 fn take_string(
     args: &mut std::collections::BTreeMap<String, ArgValue>,
     rule_id: &str,
     name: &str,
-    required: bool,
 ) -> Result<Option<String>, HookEvalError> {
     match args.remove(name) {
         Some(ArgValue::Str(value)) => Ok(Some(value)),
@@ -540,12 +521,22 @@ fn take_string(
             rule_id: rule_id.to_string(),
             reason: format!("argument {name:?} must be a string"),
         }),
-        None if required => Err(HookEvalError::MalformedIntent {
-            rule_id: rule_id.to_string(),
-            reason: format!("missing required argument {name:?}"),
-        }),
         None => Ok(None),
     }
+}
+
+/// A REQUIRED scalar string argument. Typed as `String` rather than an unwrapped
+/// `Option`, so "this one is required" is the signature rather than a flag whose
+/// contract a caller has to re-establish with an `expect`.
+fn take_required(
+    args: &mut std::collections::BTreeMap<String, ArgValue>,
+    rule_id: &str,
+    name: &str,
+) -> Result<String, HookEvalError> {
+    take_string(args, rule_id, name)?.ok_or_else(|| HookEvalError::MalformedIntent {
+        rule_id: rule_id.to_string(),
+        reason: format!("missing required argument {name:?}"),
+    })
 }
 
 /// Parse and validate a `HOOK.md` page under `limits`.

@@ -277,6 +277,22 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
     let mut expect = None;
     for (info, body) in scan_blocks(text) {
         let tokens: Vec<&str> = info.split_whitespace().collect();
+        let anchored_put = tokens.contains(&"^put");
+        let anchored_expect = tokens.contains(&"^expect");
+        // An info string spelling BOTH grammars names two different operations, and
+        // the harness will not pick one for the author (review R11). Left unguarded,
+        // ` ```put ^put ` read as the LEGACY translation and let a flattened
+        // lookalike qualify past the strict wire decoder.
+        if (anchored_put || anchored_expect)
+            && matches!(tokens.first().copied(), Some("put" | "expect"))
+        {
+            return Err(format!(
+                "fence ```{info} spells both the legacy (`{}`) and the anchored (`{}`) \
+                 grammar — write the anchored form alone (```json ^put / ```starlark ^expect)",
+                tokens[0],
+                if anchored_put { "^put" } else { "^expect" },
+            ));
+        }
         match tokens.first().copied() {
             Some("base") => {
                 let path = tokens
@@ -284,16 +300,14 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
                     .ok_or_else(|| "```base needs a path (```base notes/todo.md)".to_owned())?;
                 base.push(((*path).to_owned(), body));
             }
+            _ if anchored_put => puts.push(parse_wire_put(&body)?),
+            _ if anchored_expect => expect = Some(body),
             Some("put") => {
                 let pj: PutJson = serde_json::from_str(&body)
                     .map_err(|e| format!("```put JSON did not parse: {e}"))?;
                 puts.push(ScenarioWrite::Legacy(pj));
             }
             Some("expect") => expect = Some(body),
-            _ if tokens.contains(&"^put") => {
-                puts.push(parse_wire_put(&body)?);
-            }
-            _ if tokens.contains(&"^expect") => expect = Some(body),
             _ => {}
         }
     }
@@ -393,6 +407,23 @@ fn hydrate_sibling_convention(file: &Path, scenario: &mut Scenario) -> Result<()
     };
     let convention = load_convention(slug, &files, CheckLimits::default())
         .map_err(|error| format!("convention `{slug}` failed to load: {error}"))?;
+    // Doc 1 requires the EXACT production operation, and a HOOK qualifies on what the
+    // landed write armed. The legacy fence is a translated lookalike — it cannot
+    // represent a real `edits[]` batch and it never meets the strict wire decoder — so
+    // a HOOK must never qualify through it (review R11). Legacy translation survives
+    // only where no reaction reads the result: the non-HOOK surface.
+    if convention.hook().is_some()
+        && scenario
+            .puts
+            .iter()
+            .any(|write| matches!(write, ScenarioWrite::Legacy(_)))
+    {
+        return Err(format!(
+            "convention `{slug}` carries a HOOK, so every scenario write must be the exact \
+             production request: use an anchored ```json ^put fence, never the legacy \
+             ```put translation"
+        ));
+    }
     scenario.conventions.push(convention);
     Ok(())
 }
@@ -591,14 +622,15 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
         }
     }
 
-    // Apply the puts in order; the FIRST refusal is `t.result` and stops the run.
+    // Apply the puts in order. `t.result` is the FIRST refusal, or — when every
+    // write commits — the FINAL write's outcome, whole: its code, its message AND
+    // its effects. Accumulating earlier writes' effects onto it would make
+    // `t.result` the result of no exact production operation (review R15).
     let mut result = PutOutcome::committed();
-    let mut effects = Vec::new();
     for pj in &sc.puts {
         match apply_put(&root, sc.cas, pj, &sc.conventions) {
-            Ok(mut outcome) => {
+            Ok(outcome) => {
                 let refused = !outcome.ok;
-                effects.append(&mut outcome.effects);
                 result = outcome;
                 if refused {
                     break;
@@ -607,7 +639,6 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
             Err(m) => return base_result(ResultKind::Malformed(format!("```put: {m}"))),
         }
     }
-    result.effects = effects;
 
     let journal = std::fs::read_to_string(dir.path().join(fs::domain::RESERVED_JOURNAL_PATH))
         .unwrap_or_default();
