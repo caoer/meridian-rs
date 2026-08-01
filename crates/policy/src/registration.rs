@@ -721,13 +721,26 @@ impl RuleIndex {
     pub fn discover<'a>(pages: impl IntoIterator<Item = PageRef<'a>>) -> Self {
         let mut index = RuleIndex::default();
         for offered in pages {
-            match register_page(offered) {
-                Ok(Some(registration)) => index.registered.push(registration),
-                Ok(None) => {}
-                Err(refusal) => index.refused.push(refusal),
-            }
+            index.offer(offered);
         }
         index
+    }
+
+    /// Offer ONE page to the index.
+    ///
+    /// The streaming half of [`RuleIndex::discover`]: a disk walk reads a page,
+    /// offers it, and drops the bytes, so registering a vault costs one page of
+    /// memory rather than the whole corpus. `discover` is this method in a loop —
+    /// there is no second registration path for the two to disagree about.
+    ///
+    /// Like `discover`, a refusal is recorded and never propagated: one malformed
+    /// rule page must not un-register the rest of the workspace.
+    pub fn offer(&mut self, page: PageRef<'_>) {
+        match register_page(page) {
+            Ok(Some(registration)) => self.registered.push(registration),
+            Ok(None) => {}
+            Err(refusal) => self.refused.push(refusal),
+        }
     }
 
     /// Every page that registered, in discovery order.

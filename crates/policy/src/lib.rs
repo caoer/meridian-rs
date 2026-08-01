@@ -61,6 +61,7 @@ mod index;
 mod pack;
 mod reaction;
 mod registration;
+mod rule;
 mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
@@ -140,6 +141,15 @@ pub use registration::{
     REGISTRATION_NAMESPACE, RegisterError, Registration, RuleId, RuleIndex, RuleKind, Scope,
     ScopeLayer, page_rev, register_page,
 };
+
+/// The page-shaped rule load — what a registered page becomes when it is
+/// evaluated. [`register_page`] answers identity (the tag and the `id:`);
+/// [`load_rule`] answers evaluability, parsing the legs the registration tags
+/// declare through the SAME parsers the convention folder loader uses. It takes the
+/// [`Registration`] rather than re-deriving one, so a page becomes a rule in exactly
+/// one place, and it verifies the supplied bytes against the registered rev rather
+/// than trusting the caller not to have re-read a moved page.
+pub use rule::{Rule, RuleLoadError, load_rule};
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision
 /// ([`gate`]) plus the load-and-verify half ([`resolve_armed_set`]) that reads a

@@ -563,6 +563,7 @@ fn take_required(
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
 /// [`LoadError::HookPredicateInvalid`], [`LoadError::HookCeiling`].
 pub fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    declared_kind_is_hook(hook_md)?;
     load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
 }
 
@@ -570,14 +571,30 @@ pub fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> 
 /// loader never reaches this allowlist, so admitting `md.*` here cannot widen the
 /// armed runtime's [`SLICE1_CAPS`].
 pub(crate) fn load_hook_for_corpus(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    declared_kind_is_hook(hook_md)?;
     load_hook_with_caps(hook_md, limits, &CORPUS_COUNTERFACTUAL_CAPS)
 }
 
-fn load_hook_with_caps(
-    hook_md: &str,
-    limits: CheckLimits,
-    allowed_caps: &[EffectKind],
-) -> Result<Hook, LoadError> {
+/// Load a HOOK **page** — the same declaration, named by its registration tag
+/// instead of by a filename.
+///
+/// The one difference from [`load_hook`] is the absent `kind: hook` assertion.
+/// Under tag registration the tag `rules/hook` IS the kind (ruling § 1), so
+/// requiring a `kind:` key beside it would be the two-names-for-one-thing defect
+/// the ruling removes. The filename path keeps the assertion because there the
+/// FILENAME claims the kind, and a `HOOK.md` whose frontmatter says otherwise is a
+/// genuine contradiction — a page has no filename claim to contradict.
+///
+/// Caps are [`SLICE1_CAPS`]: a registration tag admits the armed runtime's
+/// vocabulary, never the corpus harness's wider one.
+pub(crate) fn load_hook_page(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
+}
+
+/// The filename path's kind assertion: a `HOOK.md` must declare `kind: hook`.
+///
+/// Dies with the folder loader — under tags the assertion has nothing to assert.
+fn declared_kind_is_hook(hook_md: &str) -> Result<(), LoadError> {
     let malformed = |reason: String| LoadError::HookMalformed { reason };
 
     let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
@@ -593,6 +610,20 @@ fn load_hook_with_caps(
             "`kind:` is {kind:?}, but this file is HOOK.md — the declared kind must be `hook`"
         )));
     }
+    Ok(())
+}
+
+fn load_hook_with_caps(
+    hook_md: &str,
+    limits: CheckLimits,
+    allowed_caps: &[EffectKind],
+) -> Result<Hook, LoadError> {
+    let malformed = |reason: String| LoadError::HookMalformed { reason };
+
+    let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
+        .ok_or_else(|| malformed("no `---` frontmatter".to_string()))?;
+    let parsed: HookFrontmatter = serde_yaml::from_str(frontmatter)
+        .map_err(|e| malformed(format!("frontmatter parse: {e}")))?;
 
     let severity = parsed
         .severity
