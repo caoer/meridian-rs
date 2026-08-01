@@ -1,5 +1,6 @@
-//! **The executable gate for `docs/laws.md` § "Capabilities do not apply to
-//! bash".** The law is prose; this file is what makes it hold. A reader who
+//! **The executable gate for `docs/laws.md` § "Amendment — capabilities do not
+//! apply to bash".** The law is prose; this file is what makes it hold. That
+//! section names this file and this file names that section, so a reader who
 //! proposes "just a small cap check on bash" meets both.
 //!
 //! The law was ruled, re-litigated in code, and ruled again. Point 4 of the

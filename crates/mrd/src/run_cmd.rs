@@ -20,10 +20,13 @@
 //!   lists them and exits 2 — the CLI never guesses.
 //!
 //! # The three legs
-//! `--list` surfaces every declared task with contracts and caps. `--dry`
+//! `--list` surfaces every declared task with its contract, and its caps where
+//! capabilities apply — a bash row states `effects: undeclared` and claims no
+//! authority at all (`docs/laws.md` § Amendment — capabilities do not apply to
+//! bash; gate `crates/mrd/tests/law_no_caps_on_bash.rs`). `--dry`
 //! on starlark is END-TO-END truth: the hermetic kernel evaluates the block
 //! through the U5 `evaluate` seam and the FULL effect set prints — nothing
-//! applies. `--dry` on bash shows the block + resolved caps and REFUSES to
+//! applies. `--dry` on bash shows the block and REFUSES to
 //! exec (no descriptor fiction, decision #18). The execute leg composes the
 //! run through the U7 runner — with the EMPTY S1 ruleset ([`S1_RULES`]) —
 //! and renders the U9 report (text and `--json` off one struct, exec facts
@@ -34,7 +37,7 @@ use std::path::Path;
 
 use effects::EvalLimits;
 use run::address::{self, AddressError, ResolvedTask};
-use run::caps::{self, CapResolution, CapSource, CapsError, Conventions};
+use run::caps::{self, Authority, CapResolution, CapSource, CapsError, Conventions};
 use run::contracts::{self, Contract};
 use run::dispatch_bash::{BashError, Phase2};
 use run::dispatch_starlark::DispatchError;
@@ -264,14 +267,13 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    // Capability resolution (U2, deny-by-default; bash under check-*/verify-*
-    // refuses on the run leg).
-    let explicit = caps::explicit_caps(&doc, task).map_err(|e| fail_caps(&e))?;
-    let caps = caps::resolve_caps(task, resolved.block.lang, explicit.as_ref(), &conventions)
+    // Authority resolution (U2, deny-by-default on starlark; bash is
+    // unsandboxed, and under check-*/verify-* refuses on the run leg).
+    let authority = caps::resolve_authority(&doc, task, resolved.block.lang, &conventions)
         .map_err(|e| fail_caps(&e))?;
 
     if parsed.dry {
-        return dry(&root, &parsed, &resolved, &caps);
+        return dry(&root, &parsed, &resolved, &authority);
     }
 
     execute(&root, declaring_root, &parsed, task)
@@ -397,13 +399,12 @@ fn task_row(
     doc: &model::Document,
     conventions: &Conventions,
     name: &str,
-) -> Result<(ResolvedTask, Contract, CapResolution), String> {
+) -> Result<(ResolvedTask, Contract, Authority), String> {
     let resolved = address::resolve_task(doc, Some(name)).map_err(|e| e.to_string())?;
     let contract = contracts::contract_for(doc, name).map_err(|e| e.to_string())?;
-    let explicit = caps::explicit_caps(doc, name).map_err(|e| e.to_string())?;
-    let caps = caps::resolve_caps(name, resolved.block.lang, explicit.as_ref(), conventions)
+    let authority = caps::resolve_authority(doc, name, resolved.block.lang, conventions)
         .map_err(|e| e.to_string())?;
-    Ok((resolved, contract, caps))
+    Ok((resolved, contract, authority))
 }
 
 /// Render a cap source for humans.
@@ -441,18 +442,26 @@ fn list_tasks(
             let rows: Vec<serde_json::Value> = bindings
                 .iter()
                 .map(|b| match task_row(doc, conventions, &b.name) {
-                    Ok((resolved, contract, caps)) => json!({
-                        "task": b.name,
-                        "lang": resolved.block.lang.as_str(),
-                        "guarantee": resolved.block.lang.guarantee_class().as_str(),
-                        "args": contract.args,
-                        "env": contract.env,
-                        "caps": {
-                            "effective": cap_strings(&caps),
-                            "source": source_label(&caps.source),
-                            "narrowed": caps.narrowed.iter().map(caps::Cap::as_string).collect::<Vec<_>>(),
-                        },
-                    }),
+                    Ok((resolved, contract, authority)) => {
+                        let mut row = json!({
+                            "task": b.name,
+                            "lang": resolved.block.lang.as_str(),
+                            "guarantee": resolved.block.lang.guarantee_class().as_str(),
+                            "args": contract.args,
+                            "env": contract.env,
+                        });
+                        // The `caps` key exists only where capabilities do —
+                        // an unsandboxed row states its effects instead.
+                        match authority.capabilities() {
+                            Some(caps) => row["caps"] = json!({
+                                "effective": cap_strings(caps),
+                                "source": source_label(&caps.source),
+                                "narrowed": caps.narrowed.iter().map(caps::Cap::as_string).collect::<Vec<_>>(),
+                            }),
+                            None => row["effects"] = json!(caps::UNDECLARED_EFFECTS),
+                        }
+                        row
+                    }
                     Err(error) => json!({ "task": b.name, "error": error }),
                 })
                 .collect();
@@ -471,30 +480,40 @@ fn list_tasks(
             for b in &bindings {
                 use std::fmt::Write as _;
                 match task_row(doc, conventions, &b.name) {
-                    Ok((resolved, contract, caps)) => {
+                    Ok((resolved, contract, authority)) => {
                         let lang = resolved.block.lang.as_str();
                         let class = resolved.block.lang.guarantee_class().as_str();
-                        let cap_list = cap_strings(&caps);
-                        let mut line = format!(
-                            "  {}  {lang}  {class}  caps: {} [{}]",
-                            b.name,
-                            if cap_list.is_empty() {
-                                "(read-only)".to_owned()
-                            } else {
-                                cap_list.join(", ")
-                            },
-                            source_label(&caps.source),
-                        );
-                        if !caps.narrowed.is_empty() {
-                            let _ = write!(
-                                line,
-                                "  narrowed: {}",
-                                caps.narrowed
-                                    .iter()
-                                    .map(caps::Cap::as_string)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
+                        let mut line = format!("  {}  {lang}  {class}", b.name);
+                        // An unsandboxed row describes its effects; a
+                        // capability row states its grant and what narrowed it.
+                        match authority.capabilities() {
+                            None => {
+                                let _ = write!(line, "  effects: {}", caps::UNDECLARED_EFFECTS);
+                            }
+                            Some(caps) => {
+                                let cap_list = cap_strings(caps);
+                                let _ = write!(
+                                    line,
+                                    "  caps: {} [{}]",
+                                    if cap_list.is_empty() {
+                                        "(read-only)".to_owned()
+                                    } else {
+                                        cap_list.join(", ")
+                                    },
+                                    source_label(&caps.source),
+                                );
+                                if !caps.narrowed.is_empty() {
+                                    let _ = write!(
+                                        line,
+                                        "  narrowed: {}",
+                                        caps.narrowed
+                                            .iter()
+                                            .map(caps::Cap::as_string)
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    );
+                                }
+                            }
                         }
                         if !contract.args.is_empty() {
                             let _ = write!(line, "  args: {}", contract.args.join(", "));
@@ -517,12 +536,12 @@ fn dry(
     root: &fs::WorkspaceRoot,
     parsed: &RunArgs,
     resolved: &ResolvedTask,
-    caps: &CapResolution,
+    authority: &Authority,
 ) -> Result<(), Fail> {
     match resolved.block.lang {
-        TaskLanguage::Starlark => dry_starlark(root, parsed, resolved, caps),
+        TaskLanguage::Starlark => dry_starlark(root, parsed, resolved, authority),
         TaskLanguage::Bash => {
-            dry_bash(parsed, resolved, caps);
+            dry_bash(parsed, resolved);
             Ok(())
         }
     }
@@ -536,7 +555,7 @@ fn dry_starlark(
     root: &fs::WorkspaceRoot,
     parsed: &RunArgs,
     resolved: &ResolvedTask,
-    caps: &CapResolution,
+    authority: &Authority,
 ) -> Result<(), Fail> {
     let task = &resolved.binding.name;
     let (_, root_at_eval) = fs::domain_snapshot(root)
@@ -551,7 +570,7 @@ fn dry_starlark(
         invocation_id: DRY_INVOCATION,
         now: None,
         root_at_eval: &root_at_eval,
-        caps: &caps.effective,
+        authority,
         receipt: None,
         takeover: false,
         limits: EvalLimits::default(),
@@ -593,13 +612,17 @@ fn dry_starlark(
     Ok(())
 }
 
-/// Bash `--dry`: show the block + the resolved caps and REFUSE to exec — bash
-/// under `--dry` produces NO descriptors (running it would; inventing them
-/// would be fiction, decision #18). Exit 0: the dry inspection succeeded, and
-/// the refusal to exec is its content, not a failure.
-fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask, caps: &CapResolution) {
+/// Bash `--dry`: show the block and REFUSE to exec — bash under `--dry`
+/// produces NO descriptors (running it would; inventing them would be fiction,
+/// decision #18). Exit 0: the dry inspection succeeded, and the refusal to exec
+/// is its content, not a failure.
+///
+/// It takes no authority, and there is nothing to pass it: a bash block is an
+/// unsandboxed shell with undeclared effects (`docs/laws.md` § Amendment), so
+/// the two facts below are the whole honest description.
+fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask) {
     let task = &resolved.binding.name;
-    let cap_list = cap_strings(caps);
+    let class = TaskLanguage::Bash.guarantee_class().as_str();
     match parsed.format() {
         Format::Json => {
             println!(
@@ -608,29 +631,18 @@ fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask, caps: &CapResolution) {
                     "page": parsed.page,
                     "task": task,
                     "lang": "bash",
-                    "guarantee": "detected",
+                    "guarantee": class,
                     "dry": true,
                     "executed": false,
-                    "caps": {
-                        "effective": cap_list,
-                        "source": source_label(&caps.source),
-                    },
+                    "effects": caps::UNDECLARED_EFFECTS,
                     "source": resolved.block.source,
                 }))
                 .expect("json render")
             );
         }
         Format::Human => {
-            println!("dry run: task '{task}' (bash, detected) — NOT executed");
-            println!(
-                "declared caps: {} [{}]",
-                if cap_list.is_empty() {
-                    "(read-only)".to_owned()
-                } else {
-                    cap_list.join(", ")
-                },
-                source_label(&caps.source),
-            );
+            println!("dry run: task '{task}' (bash, {class}) — NOT executed");
+            println!("effects: {} (unsandboxed shell)", caps::UNDECLARED_EFFECTS);
             println!("--- block ---");
             for line in resolved.block.source.lines() {
                 println!("  {line}");

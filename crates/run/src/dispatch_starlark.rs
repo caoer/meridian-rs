@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use effects::{Domain, Effect, EvalError, EvalLimits, Rule, RunCtx, eval_run};
 use model::MerkleRoot;
 
-use crate::caps::CapSet;
+use crate::caps::Authority;
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};
 use crate::fence::GuaranteeClass;
 
@@ -37,8 +37,9 @@ pub struct StarlarkDispatch<'a> {
     /// The corpus root the caller computed at eval time — stamped as Run
     /// provenance AND pinned as the batch's `if_root`.
     pub root_at_eval: &'a MerkleRoot,
-    /// The block's resolved effective caps (the executor's choke input).
-    pub caps: &'a CapSet,
+    /// The block's resolved authority (the executor's choke input) — always a
+    /// real capability grant on this path.
+    pub authority: &'a Authority,
     /// Receipt address for the commit.
     pub receipt: Option<ReceiptAddr>,
     /// Decision-#26 explicit foreign-edit takeover.
@@ -141,7 +142,7 @@ pub fn dispatch(
                     invocation_id: d.invocation_id,
                     now: d.now,
                     effects: &md,
-                    caps: d.caps,
+                    authority: d.authority,
                     pin_root: d.root_at_eval,
                     live_root: &live,
                     receipt: d.receipt.clone(),

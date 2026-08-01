@@ -4,7 +4,9 @@
 //! test drives the REAL binary over its process boundary.
 //!
 //! Coverage map (plan §4 U12): starlark + bash apply via ONE splice batch;
-//! deny-by-default caps at the choke; the snapshot bracket catching an
+//! deny-by-default caps at the choke, WHERE CAPABILITIES APPLY — starlark only
+//! (`docs/laws.md` § Amendment; the whole law is gated in
+//! `law_no_caps_on_bash.rs`); the snapshot bracket catching an
 //! ungoverned md write (named, never rolled back — #14); the
 //! config-widening attack REFUSED (#20, a U12 MUST); guarantee-class labels
 //! (#16/#23); receipt + run-record linkage (ruling 7, S8).
@@ -153,25 +155,42 @@ fn bash_task_applies_via_shim_with_run_record() {
     let receipts = receipts_text(&ws);
     assert!(receipts.contains(".meridian/runs/"), "{receipts}");
     assert!(receipts.contains("sha256"), "{receipts}");
-    // Detected class labeled — and only because U6b's detection landed (#23).
-    assert!(stdout(&out).contains("detected"), "{}", stdout(&out));
+    // The class label: `unsandboxed`, not `detected` — bash has no guarantee
+    // to derive (`docs/laws.md` § Amendment). The bracket's verdict still
+    // renders, on the out-of-band-delta line below.
+    assert!(stdout(&out).contains("unsandboxed"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("out-of-band delta: none"),
+        "{}",
+        stdout(&out)
+    );
 }
 
-/// Deny-by-default at the choke: an undeclared block's descriptor refuses
-/// (exit 1), and NOTHING applies — the batch is atomic.
+/// **Rewritten from `deny_by_default_refuses_undeclared_descriptor`**, which
+/// asserted the OLD contract head-on: an undeclared BASH block's descriptor
+/// refusing at the choke point with `capability denied`, exit 1, nothing
+/// applied. Capabilities do not apply to bash (`docs/laws.md` § Amendment), so
+/// `fix-uncapped` now applies.
+///
+/// This is a REAL behaviour change, not a print-statement deletion: bash
+/// reaches the tree through the effect-shim fd and that refusal was a live
+/// gate. It never bounded the block — a denied block writes with `sed -i`
+/// instead, where the U6b bracket at most detects the change and never rolls
+/// it back. The gate only pushed the write off the attested path.
+///
+/// Deny-by-default itself is UNTOUCHED where it is real: the starlark half is
+/// asserted above, and `law_no_caps_on_bash.rs` holds both sides at once so
+/// the bash half cannot be bought by weakening the starlark one.
 #[test]
-fn deny_by_default_refuses_undeclared_descriptor() {
+fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let ws = Ws::new();
-    let before = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
     let out = ws.run(&["tasks.md", "fix-uncapped"]);
-    assert_eq!(code(&out), 1, "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("capability denied"),
-        "{}",
-        stderr(&out)
-    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
     let after = std::fs::read_to_string(ws.file("tasks.md")).expect("page");
-    assert_eq!(before, after, "refusal must apply nothing");
+    assert!(
+        after.contains("status: denied"),
+        "the undeclared descriptor was governed:\n{after}"
+    );
 }
 
 /// The zero-descriptor cheat: bash writes an md file directly. The snapshot
@@ -212,10 +231,17 @@ fn config_widening_attack_is_refused() {
     );
 }
 
-/// S14: the caps `--dry` displays are byte-identical to the caps the real
-/// run enforces at the choke point — compare the two renderings.
+/// **Rewritten from `dry_caps_are_byte_identical_to_choke_caps`**, which
+/// compared `caps.effective` across `--dry` and the real run for a BASH task.
+/// Neither surface carries a `caps` key now (`docs/laws.md` § Amendment), so
+/// the old assertion compares `null` to `null` and passes while proving
+/// nothing — a vacuous gate is worse than a deleted one.
+///
+/// S14's intent is kept, restated in the vocabulary that has a subject: what
+/// `--dry` says about a bash task's authority is exactly what the run says.
+/// Both name no capability, and both name the same effects fact.
 #[test]
-fn dry_caps_are_byte_identical_to_choke_caps() {
+fn dry_and_run_agree_that_bash_has_no_capability() {
     let ws = Ws::new();
     let dry = ws.run(&["tasks.md", "fix-shim", "--dry", "--json"]);
     assert_eq!(code(&dry), 0, "{}", stderr(&dry));
@@ -223,8 +249,14 @@ fn dry_caps_are_byte_identical_to_choke_caps() {
     let run = ws.run(&["tasks.md", "fix-shim", "--json"]);
     assert_eq!(code(&run), 0, "{}", stderr(&run));
     let run_json: serde_json::Value = serde_json::from_str(&stdout(&run)).expect("run json");
+
+    // Absent on both, and asserted as ABSENT rather than as equal — two nulls
+    // are equal for the wrong reason.
+    assert!(dry_json.get("caps").is_none(), "{dry_json}");
+    assert!(run_json.get("caps").is_none(), "{run_json}");
+    assert_eq!(dry_json["effects"], "undeclared", "{dry_json}");
     assert_eq!(
-        dry_json["caps"]["effective"], run_json["caps"]["effective"],
-        "S14: dry caps must equal choke caps byte-for-byte"
+        dry_json["effects"], run_json["effects"],
+        "S14: --dry must state exactly what the run states"
     );
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use effects::{ArgValue, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
-use run::caps::CapSet;
+use run::caps::{Authority, CapSet};
 use run::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 
 const PAGE: &str = "\
@@ -91,7 +91,7 @@ fn apply(root: &fs::WorkspaceRoot, r: &Req<'_>) -> Result<executor::Applied, Exe
             invocation_id: "inv-1",
             now: Some("2026-07-22T01:00:00Z"),
             effects: r.effects,
-            caps: &r.caps,
+            authority: &Authority::granted(r.caps.clone()),
             pin_root: &r.pin,
             live_root: &r.live,
             receipt: r.receipt.clone(),
@@ -623,7 +623,7 @@ fn receipt_commits_the_threaded_exec_facts() {
             invocation_id: "inv-exec",
             now: Some("2026-07-22T03:00:00Z"),
             effects: &[set_field("status", "done", 0)],
-            caps: &write_caps(),
+            authority: &Authority::granted(write_caps()),
             pin_root: &now,
             live_root: &now,
             receipt: Some(receipt_addr(9)),
@@ -789,7 +789,7 @@ fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
             invocation_id: "inv-1",
             now: None,
             effects: &[],
-            caps: &write_caps(),
+            authority: &Authority::granted(write_caps()),
             pin_root: &now,
             live_root: &now,
             receipt: None,

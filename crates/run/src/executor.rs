@@ -46,7 +46,7 @@ use model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::caps::CapSet;
+use crate::caps::Authority;
 use crate::record::{ExecRecord, ExecRecordSink};
 
 /// Where the run receipt lands: a workspace-relative file (appended) and the
@@ -60,8 +60,9 @@ pub struct ReceiptAddr {
     pub anchor: String,
 }
 
-/// One apply request: the md.* descriptors of one generation, their governing
-/// caps, and the root pins. See the module docs for the laws each field serves.
+/// One apply request: the md.* descriptors of one generation, the authority
+/// governing them, and the root pins. See the module docs for the laws each
+/// field serves.
 #[derive(Debug)]
 pub struct ApplyRequest<'a> {
     /// The page the effects apply to (workspace-relative).
@@ -78,9 +79,10 @@ pub struct ApplyRequest<'a> {
     pub now: Option<&'a str>,
     /// The md.* effect descriptors to apply, in emission order.
     pub effects: &'a [Effect],
-    /// The block's resolved capability set — the choke point validates
-    /// against exactly this.
-    pub caps: &'a CapSet,
+    /// The block's resolved authority — the choke point validates against
+    /// exactly this. An unsandboxed shell admits every descriptor, because
+    /// there is no gate to apply, not because everything was granted.
+    pub authority: &'a Authority,
     /// The root the effects were produced against — pinned as the batch's
     /// `if_root` (root-at-eval, or `root_after_phase1` on the bash path).
     pub pin_root: &'a MerkleRoot,
@@ -245,7 +247,7 @@ impl IntentApply {
             invocation_id: base.invocation_id,
             now: base.now,
             effects: &self.effects,
-            caps: base.caps,
+            authority: base.authority,
             pin_root: base.pin_root,
             live_root: base.live_root,
             receipt: Some(self.receipt.clone()),
@@ -636,10 +638,12 @@ pub fn apply_under(
     req: &ApplyRequest<'_>,
 ) -> Result<Applied, ExecError> {
     // 1. THE CHOKE POINT — before any I/O: md.* only, each admitted by the
-    // block's caps (kind + target, so target-scoped caps bind for real).
+    // block's authority (kind + target, so target-scoped caps bind for real).
+    // An unsandboxed shell passes every descriptor: gating it would only move
+    // the same write to `sed -i`, off the attested path.
     for effect in req.effects {
         let (kind, target) = descriptor_surface(effect)?;
-        if !req.caps.admits(kind, Some(&target)) {
+        if !req.authority.admits(kind, Some(&target)) {
             return Err(ExecError::CapDenied {
                 kind: kind.to_owned(),
                 target,
