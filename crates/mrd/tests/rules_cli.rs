@@ -179,19 +179,19 @@ fn populated() -> Sandbox {
     s
 }
 
-/// [`populated`] plus a page that offers itself to registration and is REFUSED.
+/// The bytes of a page that offers itself to registration and is refused: a
+/// registration tag with no `id:`.
+const REFUSED_PAGE: &str = "---\ntags: [rules/hook]\n---\n\n# no id\n";
+
+/// [`populated`] plus a refused rule page at `policy/broken.md`.
 ///
-/// It is a separate fixture because a refusal is a finding wherever it sits: the
-/// index carries refusals UNNARROWED (a broken rule page must stay visible
-/// exactly where someone is looking), so this page makes every view of this
-/// workspace exit 1. Keeping it out of [`populated`] is what lets the other gates
-/// measure their own subject instead of this one.
+/// It is a separate fixture because a refusal is a finding on its OWN CHAIN: this
+/// page mounts at `policy`, so it reddens `policy` and everything beneath it (§ 3
+/// "Refusal scoping", 2026-08-01). Keeping it out of [`populated`] is what lets
+/// the other gates measure their own subject instead of this one.
 fn populated_with_a_refusal() -> Sandbox {
     let s = populated();
-    s.write(
-        "policy/broken.md",
-        "---\ntags: [rules/hook]\n---\n\n# no id\n",
-    );
+    s.write("policy/broken.md", REFUSED_PAGE);
     s
 }
 
@@ -363,22 +363,241 @@ fn a_refused_rule_page_is_reported_with_its_reason() {
     );
 }
 
-/// **P13** — a rule page that failed to register is visible even from a folder
-/// that is NOT on its chain: `policy` carries refusals through unnarrowed, and
-/// the verb prints them.
+/// **P13, scoped (§ 3 "Refusal scoping", 2026-08-01)** — a refused rule page
+/// reddens its OWN chain and no other. Four paths, one fixture:
+///
+/// | queried path | on `policy/broken.md`'s chain? | exit |
+/// |---|---|---|
+/// | `policy` (its mount) | yes | 1 |
+/// | `policy/deeper` (beneath it) | yes | 1 |
+/// | `sessions/s2` (a sibling scope) | no | 0 |
+/// | `.` (the workspace root, ABOVE it) | no | 0 |
+///
+/// The two clean arms are the ones carrying the weight. Before the amendment both
+/// exited 1: one malformed page anywhere reddened every scoped query in the
+/// workspace forever, which re-couples independent scopes through diagnostics —
+/// the denial shape § 3's narrowing already rejected for rules.
 #[test]
-fn a_refused_rule_page_is_visible_off_its_own_chain() {
+fn a_refused_rule_page_reddens_its_own_chain_and_no_other() {
     let s = populated_with_a_refusal();
+    s.write("policy/deeper/note.md", "# under the refusal's mount\n");
+
+    for at in ["policy", "policy/deeper"] {
+        let out = s.run(&["rules", at]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{at} is on the refusal's chain: {stdout}"
+        );
+        assert!(
+            stdout.contains("policy/broken.md"),
+            "and it is NAMED at {at}: {stdout}"
+        );
+    }
+
+    for at in ["sessions/s2", "."] {
+        let out = s.run(&["rules", at]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{at} is off the refusal's chain, so a broken page in `policy/` is not \
+             its finding: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !stdout.contains("broken.md"),
+            "and it is not even printed at {at}: {stdout}"
+        );
+    }
+}
+
+/// **The all-refusals-always invariant, held against the scoping.** A refusal a
+/// sibling scoped query cannot see is STILL in the corpus-wide walk's report —
+/// the same feed the ARM act and the cutover sweep read. Narrowing decides who
+/// hears about a broken page; it never takes one out of the index.
+///
+/// Both halves are measured over ONE sandbox so they cannot drift: the CLI's
+/// exit 0 at the sibling, and `RuleIndex::discover` over that same workspace's
+/// hash domain naming the page.
+#[test]
+fn the_corpus_wide_walk_reports_a_refusal_the_sibling_query_does_not() {
+    let s = populated();
+    s.write("sessions/s1/broken.md", REFUSED_PAGE);
+
     let out = s.run(&["rules", "sessions/s2"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "a broken rule page is a finding"
+        Some(0),
+        "the sibling scoped query is clean: {stdout}"
+    );
+    assert!(!stdout.contains("broken.md"), "{stdout}");
+
+    let refused = walk_refusals(&s);
+    assert_eq!(
+        refused,
+        vec!["sessions/s1/broken.md".to_owned()],
+        "and the walk over the very same workspace still reports it, always"
+    );
+}
+
+/// Every refusal a corpus-wide walk over `s` encounters, page-ascending — the
+/// UN-narrowed index, which is what the ARM act and any sweep read.
+fn walk_refusals(s: &Sandbox) -> Vec<String> {
+    let root = fs::WorkspaceRoot(s.ws.clone());
+    let (files, _) = fs::domain_snapshot(&root).expect("snapshot");
+    let text: Vec<(String, String)> = files
+        .into_iter()
+        .filter_map(|(page, bytes)| String::from_utf8(bytes).ok().map(|b| (page, b)))
+        .collect();
+    let index = policy::RuleIndex::discover(text.iter().map(|(page, bytes)| policy::PageRef {
+        layer: policy::ScopeLayer::Workspace,
+        page,
+        bytes,
+    }));
+    let mut pages: Vec<String> = index
+        .refused()
+        .iter()
+        .map(|r| r.page().to_owned())
+        .collect();
+    pages.sort();
+    pages
+}
+
+/// **The mount law reaches refusals too.** A refused page in a `<scope>/rules/`
+/// layout folder is lifted to `<scope>` exactly as a registered one is, so it
+/// reddens the scope its author filed it to govern — not merely the folder it is
+/// kept in. Measured at the CLI, where the lift has to have survived `policy`'s
+/// `RegisterError` and the verb's narrowing.
+#[test]
+fn a_refusal_in_a_layout_folder_reddens_its_lifted_scope() {
+    let s = sandbox();
+    s.write("demo/rules/broken.md", REFUSED_PAGE);
+    s.write("demo/tasks/card.md", "---\ntype: task\n---\n\n# a card\n");
+    s.write("other/note.md", "# elsewhere\n");
+
+    for at in ["demo", "demo/tasks"] {
+        let out = s.run(&["rules", at]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "the lifted mount governs {at}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("demo/rules/broken.md"),
+            "named at {at}"
+        );
+    }
+    for at in [".", "other"] {
+        let out = s.run(&["rules", at]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the lift is ONE level, so {at} is not under `demo`: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+/// **The meridian-rs self-test — the measurement that started this card.**
+///
+/// Before the § 3 "Refusal scoping" amendment, `mrd rules` on meridian-rs itself
+/// exited 1 from *every* path, naming
+/// `crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md` — a
+/// deliberately malformed `MERIDIAN.md` schema fixture. Two independent things
+/// were wrong and both are fixed here, so both halves are measured:
+///
+/// 1. **The repo is clean, measured on the REAL repo.** The fixture pack left the
+///    hash domain by a declared, documented ignore (`meridian/domain.md`), so no
+///    corpus-wide walk in this repo encounters it any more — that is the half the
+///    narrowing could not deliver, because walks report ALL refusals, always.
+/// 2. **A refusal still reddens its own subtree**, measured against a sandbox
+///    reproducing the same shape, plus the walk over that sandbox still naming it.
+///    A deliberately-mounted refusal belongs in a controlled corpus, and this is
+///    the half that carries the law's proof weight: the scoping must narrow, not
+///    silence.
+///
+/// The repo half runs with its own `HOME`, so it asserts a fact about meridian-rs
+/// rather than about whoever is running the suite.
+#[test]
+fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
+    // ── half 1: the real repo ────────────────────────────────────────────────
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/mrd is two levels under the repo root")
+        .to_path_buf();
+    assert!(
+        repo.join("crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md")
+            .is_file(),
+        "the malformed fixture is still ON DISK and still tested by the schema pack — \
+         it left the hash domain, it was not deleted"
+    );
+
+    let neutral = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(mrd_bin())
+        .args(["rules"])
+        .current_dir(&repo)
+        .env("HOME", neutral.path())
+        .env("XDG_CACHE_HOME", neutral.path())
+        .env_remove("MERIDIAN_CONFIG")
+        .env_remove("MERIDIAN_WORKSPACE")
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
+        .output()
+        .expect("spawn mrd");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "meridian-rs itself carries no finding: {stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("policy/broken.md"),
-        "a broken rule page stays visible where someone is looking: {stdout}"
+        !stdout.contains("frontmatter-unparseable"),
+        "and the fixture is not even printed — it is outside the hash domain, so no \
+         walk of this repo encounters it: {stdout}"
+    );
+
+    // ── half 2: the same shape, deliberately mounted in a sandbox ────────────
+    let s = sandbox();
+    s.write("data/refusals/frontmatter-unparseable.md", REFUSED_PAGE);
+    s.write(
+        "data/corpus/well-formed.md",
+        "---\ntype: note\n---\n\n# ok\n",
+    );
+
+    let at_refusals = s.run(&["rules", "data/refusals"]);
+    let printed = String::from_utf8_lossy(&at_refusals.stdout).to_string();
+    assert_eq!(
+        at_refusals.status.code(),
+        Some(1),
+        "a query AT the refusals subtree still reddens — narrowing scopes the \
+         refusal, it does not silence it: {printed}"
+    );
+    assert!(
+        printed.contains("data/refusals/frontmatter-unparseable.md"),
+        "and it names the page: {printed}"
+    );
+
+    for at in [".", "data/corpus"] {
+        let out = s.run(&["rules", at]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{at} is off the refusal's chain: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+
+    assert_eq!(
+        walk_refusals(&s),
+        vec!["data/refusals/frontmatter-unparseable.md".to_owned()],
+        "and the corpus-wide walk over that sandbox reports it ALWAYS — which is \
+         exactly why the repo half had to be solved by leaving the domain, not by \
+         narrowing"
     );
 }
 
@@ -711,16 +930,27 @@ fn the_cli_layer_holds_no_second_resolver() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
+    // `.verify_at(` replaced a hand-composed `.select_at(` + `.verify(` here (C3
+    // gate finding F-4): selection-then-verification has two wrong orders, so the
+    // composition is `policy`'s single one and the CLI calls it. `.select_at(`
+    // survives in the list because the armed CELL still needs the selected rows
+    // themselves to render mode and pinned page — reading rows is not composing
+    // the law.
     for called in [
         "RuleIndex::discover",
         ".narrowed_to(",
         ".resolve()",
         ".select_at(",
+        ".verify_at(",
         ".chain()",
     ] {
         assert!(body.contains(called), "the verb must call {called}");
     }
     for forbidden in [
+        // The whole-artifact health report applies NO selection, so composing it
+        // with `select_at` by hand is the second composition F-4 removed.
+        ".verify(pages)",
+        ".verify(&",
         "sort_by",
         "sort_unstable",
         "max_by",
