@@ -228,16 +228,19 @@ usage:
                            by reachable trigger graph + counterfactual fuel. Exits:
                            0 clean / 1 a mismatch, dead rule, budget finding, or
                            failed quiescence / 2 malformed spec or unreadable corpus
-  mrd test --history WORKSPACE --rule PAGE
+  mrd test --history WORKSPACE --rule PAGE [--spec PAGE]
                            the history tier: JOIN the receipt journal's rows
                            against git (the commit that appended each ^r-NNNNNN
                            row gives the write's before/after bytes), rebuild the
-                           docs, and compare PAGE's CHECK refusals with its pinned
-                           `.golden.md` sibling (a HOOK-only page refuses zero
-                           changes). The report always names the exact journal span;
-                           a would-refuse item absent from GOLDEN.md fails, a declared
-                           item passes with its reason rendered, and unreconstructable
-                           rows are counted grey, never guessed. Exits: 0 clean /
+                           docs, and compare PAGE's CHECK refusals with the golden
+                           list declared in --spec's ```golden fence (a HOOK-only
+                           page refuses zero changes). --spec names a spec page
+                           whose `rule:` reference must resolve to PAGE; omitting
+                           it declares nothing. The report always names the exact
+                           journal span; a would-refuse item absent from that fence
+                           fails, a declared item passes with its reason rendered,
+                           and unreconstructable rows are counted grey, never
+                           guessed. Exits: 0 clean /
                            1 an undeclared would-refuse item / 2 tool failure
   mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block addressed by the page's frontmatter
@@ -302,6 +305,10 @@ options:
   --list                   (run) list the page's tasks with contracts and caps
   --history                (test) the history tier over WORKSPACE (a git repo)
   --rule PAGE              (test --history) the workspace-relative rule PAGE to run
+  --spec PAGE              (test --history) the workspace-relative SPEC page whose
+                           ```golden fence declares the exceptions; its `rule:`
+                           reference must resolve to --rule's PAGE. Omitted:
+                           nothing is declared
   -h, --help               print this help
 ";
 

@@ -14,8 +14,8 @@
 //!   **C grey**; counted, never run.
 //!
 //! The invariants:
-//! - an UNDECLARED would-refuse item (r-000002 absent from the rule page's
-//!   `.golden.md` sibling) FAILS the run (exit 1);
+//! - an UNDECLARED would-refuse item (r-000002 absent from the spec page's
+//!   `golden` fence) FAILS the run (exit 1);
 //! - once declared there the run passes (exit 0) with the reason rendered;
 //! - the class-C grey count is asserted;
 //! - `mrd rules replay` no longer parses (the retired verb, decision #8).
@@ -26,9 +26,14 @@ use std::process::{Command, Output};
 /// The workspace-relative CHECK rule page the history gates calibrate.
 const CHECK_RULE_PAGE: &str = "rules/reviewer-not-owner.md";
 
-/// Its golden list — the `.golden.md` SIBLING, which is where a page-shaped law
-/// keeps its declared exceptions now that it has no folder to keep them in.
-const CHECK_GOLDEN_PAGE: &str = "rules/reviewer-not-owner.golden.md";
+/// Its golden list — a SPEC page in the corpus tier's D2 shape, naming the rule
+/// it excepts through a `rule:` reference. It is passed with `--spec`, never
+/// derived from the rule's path: the relationship is declared, not positional.
+const CHECK_GOLDEN_SPEC: &str = "specs/reviewer-not-owner.md";
+
+/// What that spec's `rule:` reference spells, resolved from the spec's own
+/// directory (`specs/`) back to the rule page.
+const CHECK_SPEC_RULE_REF: &str = "../rules/reviewer-not-owner.md";
 
 /// The workspace-relative HOOK rule page: a reaction refuses zero writes, so the
 /// history tier over it must report zero would-refuse items.
@@ -279,19 +284,32 @@ fn declared_item_passes_with_reason_rendered() {
     let ws = dir.path();
     let wss = ws.to_str().unwrap();
 
-    // Triage: add the exception row to the golden page (an ordinary in-tree edit).
-    let golden = "\
+    // Triage: add the exception row to the spec's golden fence (an ordinary
+    // in-tree edit through the write door).
+    let golden = format!(
+        "\
 ---
-rule: rules/reviewer-not-owner.md
+rule: {CHECK_SPEC_RULE_REF}
 ---
 
 # Golden list — reviewer-not-owner
 
+```golden
 - item=r-000002 reason=\"legacy self-close predates the reviewer-not-owner rule\"
-";
-    write(ws, CHECK_GOLDEN_PAGE, golden);
+```
+"
+    );
+    write(ws, CHECK_GOLDEN_SPEC, &golden);
 
-    let out = mrd(&["test", "--history", wss, "--rule", CHECK_RULE_PAGE]);
+    let out = mrd(&[
+        "test",
+        "--history",
+        wss,
+        "--rule",
+        CHECK_RULE_PAGE,
+        "--spec",
+        CHECK_GOLDEN_SPEC,
+    ]);
     let so = stdout(&out);
 
     assert_eq!(
@@ -400,9 +418,23 @@ fn golden_exception_without_a_reason_is_refused() {
     let dir = seeded_workspace();
     let ws = dir.path();
     let wss = ws.to_str().unwrap();
-    write(ws, CHECK_GOLDEN_PAGE, "- item=r-000002 no reason here\n");
+    write(
+        ws,
+        CHECK_GOLDEN_SPEC,
+        &format!(
+            "---\nrule: {CHECK_SPEC_RULE_REF}\n---\n\n```golden\n- item=r-000002 no reason here\n```\n"
+        ),
+    );
 
-    let out = mrd(&["test", "--history", wss, "--rule", CHECK_RULE_PAGE]);
+    let out = mrd(&[
+        "test",
+        "--history",
+        wss,
+        "--rule",
+        CHECK_RULE_PAGE,
+        "--spec",
+        CHECK_GOLDEN_SPEC,
+    ]);
     assert_eq!(code(&out), 2, "a reasonless exception is a tool failure");
     assert!(
         stderr(&out).contains("reason"),
@@ -446,4 +478,119 @@ fn mrd_rules_replay_no_longer_parses() {
             String::from_utf8_lossy(&out.stdout)
         );
     }
+}
+
+/// D2a's load-bearing check: the spec DECLARES which rule it excepts, and the
+/// runner verifies that declaration instead of trusting the caller to pair them.
+///
+/// This is what the filename shape could not do. A `<page>.golden.md` sibling was
+/// bound to its rule by POSITION, so the binding could never be wrong — and could
+/// never be checked either. Naming the spec makes a mispairing possible, so the
+/// mispairing must be refused: a golden list that excuses findings for a law it
+/// never named is exactly the silent-excuse shape this tier exists to prevent.
+#[test]
+fn a_spec_naming_another_rule_is_refused() {
+    let dir = seeded_workspace();
+    let ws = dir.path();
+    let wss = ws.to_str().unwrap();
+
+    // A well-formed spec, with a real exception row — but it names the HOOK page
+    // while the run calibrates the CHECK page.
+    write(
+        ws,
+        CHECK_GOLDEN_SPEC,
+        "---\nrule: ../rules/task-status-notify.md\n---\n\n\
+         ```golden\n- item=r-000002 reason=\"declared against the wrong law\"\n```\n",
+    );
+
+    let out = mrd(&[
+        "test",
+        "--history",
+        wss,
+        "--rule",
+        CHECK_RULE_PAGE,
+        "--spec",
+        CHECK_GOLDEN_SPEC,
+    ]);
+    let se = stderr(&out);
+    assert_eq!(
+        code(&out),
+        2,
+        "a spec that names another rule is a tool failure, not a silent empty list:\n{se}"
+    );
+    assert!(
+        se.contains("rules/task-status-notify.md"),
+        "the refusal names what the spec declared: {se}"
+    );
+    assert!(
+        se.contains(CHECK_RULE_PAGE),
+        "the refusal names what is actually being calibrated: {se}"
+    );
+}
+
+/// A spec whose frontmatter declares no `rule:` is malformed, not empty. An
+/// unattributed golden list would excuse findings for a law it never named.
+#[test]
+fn a_spec_with_no_rule_reference_is_refused() {
+    let dir = seeded_workspace();
+    let ws = dir.path();
+    let wss = ws.to_str().unwrap();
+
+    write(
+        ws,
+        CHECK_GOLDEN_SPEC,
+        "# Golden list\n\n```golden\n- item=r-000002 reason=\"unattributed\"\n```\n",
+    );
+
+    let out = mrd(&[
+        "test",
+        "--history",
+        wss,
+        "--rule",
+        CHECK_RULE_PAGE,
+        "--spec",
+        CHECK_GOLDEN_SPEC,
+    ]);
+    let se = stderr(&out);
+    assert_eq!(
+        code(&out),
+        2,
+        "an unattributed golden list is refused:\n{se}"
+    );
+    assert!(
+        se.contains("rule:"),
+        "the refusal names the missing reference: {se}"
+    );
+}
+
+/// No `--spec` is the empty list — nothing declared yet, so the would-refuse item
+/// stands as a finding. This is the pre-triage state, and it must stay reachable:
+/// the tier is usable before anyone writes a spec page.
+#[test]
+fn without_a_spec_nothing_is_declared() {
+    let dir = seeded_workspace();
+    let ws = dir.path();
+    let wss = ws.to_str().unwrap();
+
+    let out = mrd(&[
+        "test",
+        "--history",
+        wss,
+        "--rule",
+        CHECK_RULE_PAGE,
+        "--json",
+    ]);
+    let report: serde_json::Value =
+        serde_json::from_str(&stdout(&out)).expect("history JSON parses");
+    assert_eq!(
+        code(&out),
+        1,
+        "the undeclared would-refuse item is a finding"
+    );
+    assert_eq!(report["summary"]["undeclared"], 1);
+    assert_eq!(report["summary"]["declared"], 0);
+    assert!(
+        report["golden_spec"].is_null(),
+        "no spec is null, never an empty path: {report}"
+    );
 }

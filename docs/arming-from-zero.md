@@ -74,9 +74,10 @@ pre-arming gate:
   the production atomic batch executor. **The isolation is the corpus, not the
   code:** every counterfactual generation lands in a throwaway proof workspace, so
   the governed tree is read-only and the triggering write is never touched.
-- **`--history`** (`mrd test --history <ws> --rule <page>`, U1.6) — reconstruct
+- **`--history`** (`mrd test --history <ws> --rule <page> [--spec <page>]`, U1.6) — reconstruct
   the workspace's own past, report the exact journal span examined, and require
-  zero UNDECLARED refusals against the page's `.golden.md` sibling.
+  zero UNDECLARED refusals against the `golden` fence of the spec page named by
+  `--spec`.
 
 > The **scenario** tier retired with the folder loader. Its atomic unit was a
 > convention FOLDER's `scenarios/` directory, and a rule page has no folder to
