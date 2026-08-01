@@ -1026,7 +1026,11 @@ mod tests {
             got.scope(),
             Scope::of(ScopeLayer::Workspace, "rules/notify.md")
         );
-        assert_eq!(got.mount_dir(), "", "the layout folder lifts (see mount law)");
+        assert_eq!(
+            got.mount_dir(),
+            "",
+            "the layout folder lifts (see mount law)"
+        );
     }
 
     #[test]
@@ -1629,6 +1633,31 @@ mod tests {
             let got = register(path, &body).unwrap().unwrap();
             assert_eq!(got.mount_dir(), mount, "mount of {path}");
             assert_eq!(got.scope().depth(), depth, "depth of {path}");
+        }
+    }
+
+    /// **The case the lift exists for**, measured as a narrowing outcome rather
+    /// than as a mount string. A workspace's rules kept in `<root>/rules/` were
+    /// mounted at `rules`, so `narrowed_to("tasks/x.md")` excluded them and an
+    /// armed id resolved to nothing at the very paths it was written to govern —
+    /// C3 hit this as a live fixture failure. Lifted, the same page is in play at
+    /// every path in the workspace.
+    #[test]
+    fn a_workspace_rules_folder_governs_the_whole_workspace() {
+        use ScopeLayer::Workspace;
+        let index = index_of(&[(Workspace, "rules/notify.md", "task.review-notify")]);
+
+        for path in ["tasks/x.md", "agents/a.md", "x.md", "a/deep/b/c.md"] {
+            let at = index.narrowed_to(path);
+            assert_eq!(
+                at.registered().len(),
+                1,
+                "a workspace-root rules page is in play at {path}"
+            );
+            assert!(
+                at.resolve().get("task.review-notify").is_some(),
+                "and it resolves at {path}"
+            );
         }
     }
 
