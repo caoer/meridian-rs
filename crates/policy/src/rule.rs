@@ -46,6 +46,7 @@ use crate::registration::{Registration, RuleId, RuleKind, page_rev};
 #[derive(Debug, Clone)]
 pub struct Rule {
     id: RuleId,
+    kinds: Vec<RuleKind>,
     page: String,
     scope: Vec<String>,
     check_source: Option<String>,
@@ -58,6 +59,14 @@ impl Rule {
     #[must_use]
     pub fn id(&self) -> &RuleId {
         &self.id
+    }
+
+    /// The legs the page registers as, sorted and deduplicated — derived from the
+    /// registration TAGS, never from a `kind:` key. The armed-set artifact reads
+    /// this to know which mode vocabulary a row may carry.
+    #[must_use]
+    pub fn kinds(&self) -> &[RuleKind] {
+        &self.kinds
     }
 
     /// The page this rule was loaded from, relative to its layer's root.
@@ -128,6 +137,21 @@ pub enum RuleLoadError {
         /// The rev the supplied bytes hash to.
         supplied: String,
     },
+    /// The page carries a `kind:` key that contradicts its registration tags.
+    ///
+    /// `kind:` is legacy vocabulary the engine no longer reads for registration
+    /// (ruling § 1), so it may RESTATE what the tag says and may be absent, but it
+    /// may never say something else — the same law the block-declared id lives
+    /// under. A page that arms as a hook while calling itself a check has two
+    /// answers to one question, and the write path would find out first.
+    KindDisagrees {
+        /// The offending page.
+        page: String,
+        /// The `kind:` as written (empty when it was not even a string).
+        declared: String,
+        /// The kinds the page's tags register.
+        tags: Vec<RuleKind>,
+    },
     /// The page declares a leg whose entry point its block never defines.
     ///
     /// The folder loader could not meet this case: two legs meant two files, so a
@@ -160,6 +184,7 @@ impl RuleLoadError {
     pub fn page(&self) -> &str {
         match self {
             RuleLoadError::RevMismatch { page, .. }
+            | RuleLoadError::KindDisagrees { page, .. }
             | RuleLoadError::EntryMissing { page, .. }
             | RuleLoadError::Leg { page, .. } => page,
         }
@@ -178,6 +203,21 @@ impl std::fmt::Display for RuleLoadError {
                 "`{page}` registered at rev `{registered}` but the bytes supplied to the loader \
                  hash to `{supplied}` — the page moved between discovery and load; re-discover \
                  before evaluating it"
+            ),
+            RuleLoadError::KindDisagrees {
+                page,
+                declared,
+                tags,
+            } => write!(
+                f,
+                "`{page}` declares `kind: {declared}` but registers as {tags} — the tag names the \
+                 leg, so a `kind:` key may restate it or be absent, never contradict it. Remove \
+                 `kind:` or make it agree",
+                tags = tags
+                    .iter()
+                    .map(|k| format!("`{}`", k.tag()))
+                    .collect::<Vec<_>>()
+                    .join(" + "),
             ),
             RuleLoadError::EntryMissing { page, kind, entry } => write!(
                 f,
@@ -199,9 +239,35 @@ impl std::error::Error for RuleLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RuleLoadError::Leg { source, .. } => Some(source),
-            RuleLoadError::RevMismatch { .. } | RuleLoadError::EntryMissing { .. } => None,
+            RuleLoadError::RevMismatch { .. }
+            | RuleLoadError::KindDisagrees { .. }
+            | RuleLoadError::EntryMissing { .. } => None,
         }
     }
+}
+
+/// The one frontmatter key this module reads for itself: the legacy `kind:`, kept
+/// honest rather than kept. Everything else a rule page declares is read by the leg
+/// parsers or by registration.
+#[derive(serde::Deserialize, Default)]
+struct KindFrontmatter {
+    kind: Option<serde_yaml::Value>,
+}
+
+/// The `kind:` a page declares, or `None` when it declares none (the form the
+/// ruling prefers — the tag already said it).
+///
+/// A non-string `kind:` reads as the empty declaration `""`, which agrees with
+/// nothing and so refuses: identity keys are frontmatter QUERIES, and a value that
+/// is not text cannot be compared to a tag without evaluating something.
+///
+/// Unparseable frontmatter cannot arrive here — [`register_page`] refused it before
+/// a `Registration` existed, and [`load_rule`] verified these bytes ARE those bytes.
+fn declared_kind(bytes: &str) -> Option<String> {
+    let (frontmatter, _body) = crate::pack::split_frontmatter(bytes)?;
+    let parsed: KindFrontmatter = serde_yaml::from_str(frontmatter).unwrap_or_default();
+    let value = parsed.kind.filter(|v| !v.is_null())?;
+    Some(value.as_str().unwrap_or_default().to_string())
 }
 
 /// The entry point a leg is evaluated through — `rulepack-api@2`'s
@@ -258,6 +324,25 @@ pub fn load_rule(
         });
     }
 
+    // The kind seam (ruled 2026-08-01). `kind:` may restate the tag or be absent —
+    // absent DERIVES from the tag, which is why nothing below reads it again. It may
+    // not contradict, and this is the one place that is enforced: a page that armed
+    // as one leg while calling itself another would otherwise fault on every write.
+    // Checked before the legs, because a page that cannot say what it is has no
+    // declaration worth parsing.
+    if let Some(declared) = declared_kind(bytes)
+        && !registration
+            .kinds()
+            .iter()
+            .any(|kind| kind.as_str() == declared)
+    {
+        return Err(RuleLoadError::KindDisagrees {
+            page: registration.page().to_string(),
+            declared,
+            tags: registration.kinds().to_vec(),
+        });
+    }
+
     let leg = |kind: RuleKind| {
         move |source: LoadError| RuleLoadError::Leg {
             page: registration.page().to_string(),
@@ -308,6 +393,7 @@ pub fn load_rule(
 
     Ok(Rule {
         id: registration.id().clone(),
+        kinds: registration.kinds().to_vec(),
         page: registration.page().to_string(),
         scope,
         check_source: check.map(|(_, source)| source),
@@ -482,6 +568,97 @@ def check_change(change):
         };
         assert_eq!(*kind, RuleKind::Check);
         assert!(err.to_string().contains("rules/check"), "{err}");
+    }
+
+    // ── the kind seam (ruled 2026-08-01) ──────────────────────────────────────
+
+    /// Arm 1: a `kind:` that RESTATES the tag is legal — the corpus is full of
+    /// pages carrying it, and a migration that refused them would make the tag law
+    /// a rewrite order rather than a registration change.
+    #[test]
+    fn a_kind_that_agrees_with_the_tag_loads() {
+        let with_kind = HOOK_PAGE.replace("severity: info", "kind: hook\nseverity: info");
+        let rule = load("rules/notify.md", &with_kind).expect("an agreeing kind is legal");
+        assert_eq!(rule.kinds(), &[RuleKind::Hook]);
+        assert!(rule.hook().is_some());
+    }
+
+    /// Arm 2: an ABSENT `kind:` derives from the tag — the preferred form, and the
+    /// only one that keeps one name for one thing.
+    #[test]
+    fn an_absent_kind_derives_from_the_tag() {
+        assert!(
+            !HOOK_PAGE.contains("kind:"),
+            "the fixture must carry no kind: for this to mean anything"
+        );
+        let rule = load("rules/notify.md", HOOK_PAGE).expect("the tag alone is enough");
+        assert_eq!(
+            rule.kinds(),
+            &[RuleKind::Hook],
+            "the leg is derived from the tag, not from a key"
+        );
+        assert!(rule.hook().is_some(), "and the derived leg is what loaded");
+    }
+
+    /// Arm 3: a CONTRADICTING `kind:` fails load loudly. Without this the page arms
+    /// as a hook, calls itself a check, and the disagreement surfaces on the first
+    /// write instead of at load.
+    #[test]
+    fn a_kind_that_contradicts_the_tag_fails_load_loudly() {
+        for declared in ["check", "schedule", "hook-ish"] {
+            let conflicting = HOOK_PAGE.replace(
+                "severity: info",
+                &format!("kind: {declared}\nseverity: info"),
+            );
+            let err = load("rules/notify.md", &conflicting).expect_err("a contradiction is loud");
+            assert_eq!(
+                err,
+                RuleLoadError::KindDisagrees {
+                    page: "rules/notify.md".into(),
+                    declared: declared.to_string(),
+                    tags: vec![RuleKind::Hook],
+                },
+                "kind: {declared}"
+            );
+            let rendered = err.to_string();
+            assert!(rendered.contains("rules/notify.md"), "{rendered}");
+            assert!(rendered.contains("rules/hook"), "{rendered}");
+            assert!(rendered.contains(declared), "{rendered}");
+        }
+    }
+
+    /// A `kind:` that is not text cannot agree with a tag, and deciding what it
+    /// equals would mean evaluating it — the layering forbids that here exactly as
+    /// it does for a block-declared id.
+    #[test]
+    fn a_non_string_kind_cannot_agree() {
+        let listed = HOOK_PAGE.replace("severity: info", "kind: [hook]\nseverity: info");
+        let err = load("rules/notify.md", &listed).expect_err("a list is not a kind");
+        assert!(
+            matches!(err, RuleLoadError::KindDisagrees { ref declared, .. } if declared.is_empty()),
+            "{err:?}"
+        );
+    }
+
+    /// A dual-leg page's `kind:` may name EITHER registered leg: it is not lying
+    /// about the leg it names, and it cannot name both. The tags remain the whole
+    /// truth — which is why they, not the key, decide what loads.
+    #[test]
+    fn a_dual_leg_page_admits_a_kind_naming_either_leg() {
+        let dual = HOOK_PAGE
+            .replace("rules/hook]", "rules/hook, rules/check]")
+            .replace(
+                "def on_change(event):\n    return []",
+                "def on_change(event):\n    return []\n\ndef check_change(change):\n    return []",
+            );
+        for declared in ["hook", "check"] {
+            let body = dual.replace(
+                "severity: info",
+                &format!("kind: {declared}\nseverity: info"),
+            );
+            let rule = load("rules/dual.md", &body).expect("either registered leg may be named");
+            assert_eq!(rule.kinds(), &[RuleKind::Check, RuleKind::Hook]);
+        }
     }
 
     #[test]
