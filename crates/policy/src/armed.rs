@@ -766,40 +766,46 @@ impl ArmedArtifact {
         nearest.into_values().collect()
     }
 
+    /// **What governs a write at `path` — the ONE call a door or a feeder makes.**
+    ///
+    /// Selection and verification are BOTH required and their order is not a
+    /// preference: each of the two obvious compositions is wrong, in opposite
+    /// directions, so neither may be assembled at a call site.
+    ///
+    /// - **Verify-then-select FAILS OPEN.** Filtering to the firing rows first
+    ///   deletes a red INNER row before selection runs, so the stale OUTER row it
+    ///   was shadowing wins the id and fires on the inner path. Editing a pinned
+    ///   inner page would then hand governance back to an outer rule — a cap escape
+    ///   performed with an ordinary page edit.
+    /// - **Verify-everything refuses TOO WIDE.** [`ArmedVerdict::refusing`] over the
+    ///   whole artifact lets a drifted check armed at `sessions/a` refuse a write at
+    ///   `sessions/b`, coupling subtrees that § 3's narrowing amendment rules
+    ///   independent.
+    ///
+    /// So: SELECT first, over every attested row — a red row still shadows, which is
+    /// exactly what makes it fail closed — and then verify EXACTLY the selected
+    /// rows. A red selected row refuses (check) or falls silent (hook) for that id
+    /// AT THIS PATH, and no sibling scope is touched either way.
+    #[must_use]
+    pub fn verify_at(&self, path: &str, pages: &dyn PageSource) -> ArmedVerdict {
+        verify_rows(self.select_at(path).into_iter(), pages)
+    }
+
     /// Re-hash every pinned page through the injected source and split the rows into
     /// those that still stand and those that reddened.
     ///
     /// A row reddens when its page's bytes no longer hash to the pinned rev, or when
     /// the page is gone. A red row NEVER fires on its new bytes — that is the freeze
     /// and the fail-closed gate in one act.
+    ///
+    /// **This is a whole-artifact HEALTH report, not a gate.** It applies no
+    /// selection, so neither its `firing()` nor its `refusing()` answers "what
+    /// governs this write" — see [`ArmedArtifact::verify_at`] for why both ways of
+    /// composing it by hand are wrong. Use it to render the artifact's state; use
+    /// `verify_at` to decide anything.
     #[must_use]
     pub fn verify(&self, pages: &dyn PageSource) -> ArmedVerdict {
-        let mut firing = Vec::new();
-        let mut red = Vec::new();
-        for row in &self.rows {
-            match pages.read(&row.page) {
-                Err(e) => red.push(RedRow {
-                    row: row.clone(),
-                    why: Redness::Missing {
-                        detail: e.to_string(),
-                    },
-                }),
-                Ok(bytes) => {
-                    let report_rev = page_rev(&bytes);
-                    if report_rev == row.rev {
-                        if row.mode.fires() {
-                            firing.push(row.clone());
-                        }
-                    } else {
-                        red.push(RedRow {
-                            row: row.clone(),
-                            why: Redness::Drifted { report_rev },
-                        });
-                    }
-                }
-            }
-        }
-        ArmedVerdict { firing, red }
+        verify_rows(self.rows.iter(), pages)
     }
 
     /// Render the full artifact page: title, preamble, and the § 4 table, terminated
@@ -819,6 +825,42 @@ impl ArmedArtifact {
         }
         page
     }
+}
+
+/// Re-hash the given rows and split them into those that still stand and those that
+/// reddened. The one implementation behind both [`ArmedArtifact::verify`] and
+/// [`ArmedArtifact::verify_at`] — they differ only in WHICH rows they hand it, and a
+/// second copy is how the two would drift into disagreeing about what "red" means.
+fn verify_rows<'a>(
+    rows: impl Iterator<Item = &'a ArmedRow>,
+    pages: &dyn PageSource,
+) -> ArmedVerdict {
+    let mut firing = Vec::new();
+    let mut red = Vec::new();
+    for row in rows {
+        match pages.read(&row.page) {
+            Err(e) => red.push(RedRow {
+                row: row.clone(),
+                why: Redness::Missing {
+                    detail: e.to_string(),
+                },
+            }),
+            Ok(bytes) => {
+                let report_rev = page_rev(&bytes);
+                if report_rev == row.rev {
+                    if row.mode.fires() {
+                        firing.push(row.clone());
+                    }
+                } else {
+                    red.push(RedRow {
+                        row: row.clone(),
+                        why: Redness::Drifted { report_rev },
+                    });
+                }
+            }
+        }
+    }
+    ArmedVerdict { firing, red }
 }
 
 /// The live bytes of a pinned page, injected — `policy` performs no I/O.
@@ -1396,6 +1438,127 @@ mod tests {
         assert!(
             artifact.verify(&ws).firing().is_empty(),
             "and it never fires"
+        );
+    }
+
+    // ── the composed law: select at P, then verify exactly those rows ─────────
+
+    /// **Verify-then-select would FAIL OPEN, and this pins it.**
+    ///
+    /// One id armed at two roots on one chain. The INNER page drifts. Whole-artifact
+    /// verification therefore reports the OUTER row as firing — and if selection ran
+    /// over that firing set, the outer row would win the id at the inner path and
+    /// fire there. A page edit would have moved governance from the inner rule to an
+    /// outer one, which is a cap escape performed without any arming act.
+    ///
+    /// The composed call selects FIRST, so the red inner row still shadows the outer
+    /// row and then fails closed on its own drift: nothing fires at that path.
+    #[test]
+    fn a_drifted_inner_row_fails_closed_instead_of_handing_its_path_to_the_outer_row() {
+        let mut ws = Workspace::default()
+            .hook("notify.md", "shared")
+            .hook("sessions/s1/notify.md", "shared");
+        let index = ws.index();
+        let mut artifact = arm(
+            &index,
+            &ArmRoot::workspace(),
+            [request("shared", Mode::Armed, &ws.rev("notify.md"))],
+        )
+        .expect("the outer arm");
+        artifact
+            .merge(
+                arm(
+                    &index,
+                    &ArmRoot::parse("sessions/s1").unwrap(),
+                    [request(
+                        "shared",
+                        Mode::Armed,
+                        &ws.rev("sessions/s1/notify.md"),
+                    )],
+                )
+                .expect("the inner arm"),
+            )
+            .expect("two roots, one id — a legal artifact");
+
+        // Only the INNER page drifts.
+        ws.edit(
+            "sessions/s1/notify.md",
+            &format!("{}\n<!-- edited -->\n", hook_page("shared")),
+        );
+
+        // The bait: whole-artifact verification says the outer row is firing.
+        let whole = artifact.verify(&ws);
+        assert_eq!(
+            whole
+                .firing()
+                .iter()
+                .map(ArmedRow::page)
+                .collect::<Vec<_>>(),
+            vec!["notify.md"],
+            "the outer row is green — selecting over THIS set is the failure"
+        );
+
+        // The law: at the inner path, the red inner row shadows and fails closed.
+        let at = artifact.verify_at("sessions/s1/task.md", &ws);
+        assert!(
+            at.firing().is_empty(),
+            "the outer row must NOT govern the inner path just because the inner row \
+             reddened — that would be a cap escape by page edit"
+        );
+        assert_eq!(at.red().len(), 1);
+        assert_eq!(at.red()[0].row().page(), "sessions/s1/notify.md");
+
+        // And the outer row still governs its OWN paths, undisturbed.
+        let outside = artifact.verify_at("task.md", &ws);
+        assert_eq!(outside.firing().len(), 1);
+        assert_eq!(outside.firing()[0].page(), "notify.md");
+    }
+
+    /// **Un-narrowed `refusing()` would refuse TOO WIDE, and this pins it.**
+    ///
+    /// A drifted CHECK armed at `sessions/a` must not refuse a write under the
+    /// sibling `sessions/b`: § 3's narrowing amendment rules sibling subtrees
+    /// independent, and coupling them would let any writer refuse writes outside its
+    /// own authority by editing a page in its own scope.
+    #[test]
+    fn a_sibling_scopes_drift_does_not_refuse_this_write() {
+        let mut ws = Workspace::default().check("sessions/a/law.md", "law");
+        let index = ws.index();
+        let artifact = arm(
+            &index,
+            &ArmRoot::parse("sessions/a").unwrap(),
+            [request("law", Mode::Block, &ws.rev("sessions/a/law.md"))],
+        )
+        .expect("arms");
+
+        ws.edit(
+            "sessions/a/law.md",
+            &format!("{}\n<!-- edited -->\n", check_page("law")),
+        );
+
+        // The bait: whole-artifact verification refuses.
+        assert_eq!(
+            artifact.verify(&ws).refusing().count(),
+            1,
+            "un-narrowed, the drift refuses — this is the set that must NOT gate a write"
+        );
+
+        // The law: it refuses inside its own scope, and nowhere else.
+        assert_eq!(
+            artifact
+                .verify_at("sessions/a/task.md", &ws)
+                .refusing()
+                .count(),
+            1,
+            "inside the arm root, a drifted CHECK still refuses"
+        );
+        assert_eq!(
+            artifact
+                .verify_at("sessions/b/task.md", &ws)
+                .refusing()
+                .count(),
+            0,
+            "a sibling subtree is not coupled to this drift"
         );
     }
 

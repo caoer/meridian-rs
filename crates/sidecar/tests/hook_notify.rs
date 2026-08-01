@@ -3,11 +3,27 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use policy::{CheckLimits, ConventionFiles, Enforcement};
+use policy::armed::{ArmRequest, ArmRoot, Mode};
+use policy::{PageRef, RuleId, RuleIndex, ScopeLayer, page_rev};
 use serde_json::{Value, json};
 
-const CHECK: &str = "---\npaths:\n  - tasks/*.md\n---\n\n# task-status-notify\n\n```starlark\ndef check_change(change):\n    pass\n```\n";
-const HOOK: &str = r#"---
+/// The armed rule's id — the § 2 grammar, not a folder slug.
+const HOOK_ID: &str = "task.review-notify";
+
+/// The tag-registered HOOK page. It carries BOTH key sets: `tags:` + `id:` are the
+/// REGISTRATION layer the ARM act reads (ruling § 1/§ 2), and
+/// `kind:`/`severity:`/`paths:`/`caps:`/`budget:`/`how:` are C1's declaration layer,
+/// which ruling § 5 leaves untouched.
+///
+/// The page sits DIRECTLY in the folder it governs (§ 3 "gitignore-style"), so it
+/// mounts at the workspace root. The ruled layout-folder style (`rules/*.md` mounting
+/// at the parent) is not used: that mount rule is ruled but not yet implemented, and
+/// this card consumes armed rows rather than minting mount rules.
+const HOOK_PAGE_PATH: &str = "task-review-notify.md";
+
+const HOOK_PAGE: &str = r#"---
+tags: [type/rule, rules/hook]
+id: task.review-notify
 kind: hook
 severity: info
 paths: ["tasks/*.md"]
@@ -37,52 +53,49 @@ def on_change(event):
 const TASK_IN_PROGRESS: &str =
     "---\ntype: task\nstatus: in-progress\nreviewer: e4201e72\n---\n\n# Task\n";
 
-struct Folder(std::path::PathBuf);
-
-impl ConventionFiles for Folder {
-    fn read(&self, rel: &str) -> std::io::Result<String> {
-        std::fs::read_to_string(self.0.join(rel))
-    }
-
-    fn exists(&self, rel: &str) -> bool {
-        self.0.join(rel).exists()
-    }
+fn workspace(armed: bool) -> tempfile::TempDir {
+    armed_workspace(if armed { Some(Mode::Armed) } else { None })
 }
 
-fn workspace(armed: bool) -> tempfile::TempDir {
+/// A live workspace whose rule page is armed at `mode` through the REAL ARM act.
+/// `None` never arms it at all — no artifact is written, which is the never-armed
+/// state the bit-for-bit gate depends on.
+fn armed_workspace(mode: Option<Mode>) -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("temp workspace");
     for path in ["tasks/x.md", "notes/x.md"] {
         let absolute = temp.path().join(path);
         std::fs::create_dir_all(absolute.parent().expect("file parent")).expect("file parent");
         std::fs::write(absolute, TASK_IN_PROGRESS).expect("task fixture");
     }
-    if armed {
-        arm_hook(temp.path());
+    if let Some(mode) = mode {
+        arm_hook(temp.path(), mode);
     }
     temp
 }
 
-fn arm_hook(root: &std::path::Path) {
-    let folder = root.join("conventions/task-status-notify");
-    std::fs::create_dir_all(&folder).expect("convention folder");
-    std::fs::write(folder.join("CHECK.md"), CHECK).expect("CHECK.md");
-    std::fs::write(folder.join("HOOK.md"), HOOK).expect("HOOK.md");
-    let swept = policy::sweep(
-        &Folder(folder),
-        "task-status-notify",
-        CheckLimits::default(),
+fn arm_hook(root: &std::path::Path, mode: Mode) {
+    std::fs::write(root.join(HOOK_PAGE_PATH), HOOK_PAGE).expect("rule page");
+
+    let index = RuleIndex::discover([PageRef {
+        layer: ScopeLayer::Workspace,
+        page: HOOK_PAGE_PATH,
+        bytes: HOOK_PAGE,
+    }]);
+    let artifact = policy::armed::arm(
+        &index,
+        &ArmRoot::workspace(),
+        [ArmRequest {
+            id: RuleId::parse(HOOK_ID).expect("a legal id"),
+            mode,
+            attested_rev: page_rev(HOOK_PAGE),
+        }],
     )
-    .expect("convention sweeps");
-    let rev = policy::evidence_rev(CHECK);
-    let armed = policy::arm(swept, &rev, Enforcement::Warn).expect("convention arms");
-    std::fs::write(
-        root.join("conventions/INDEX.md"),
-        policy::generate_index(&[armed]),
-    )
-    .expect("INDEX.md");
-    let marker = root.join(fs::domain::ATTESTED_MARKER_PATH);
-    std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("marker parent");
-    std::fs::write(marker, "attested\n").expect("attested marker");
+    .expect("the fixture arms");
+
+    let artifact_path = root.join(policy::armed::ARMED_RULES_PATH);
+    std::fs::create_dir_all(artifact_path.parent().expect("artifact parent"))
+        .expect("artifact parent");
+    std::fs::write(artifact_path, artifact.render()).expect("armed-rules artifact");
 }
 
 fn splice(id: u64, path: &str, status: &str) -> String {
@@ -181,7 +194,7 @@ fn assert_armed_intent(effects: &Value) {
     let intents = envelopes[0]["intents"].as_array().expect("intents");
     assert_eq!(intents.len(), 1, "one armed intent: {effects}");
     let intent = &intents[0];
-    assert_eq!(intent["rule_id"], "task-status-notify");
+    assert_eq!(intent["rule_id"], HOOK_ID);
     assert_eq!(intent["action"], "notify");
     assert_eq!(intent["target"], "e4201e72");
     let receipt = intent["receipt"].as_str().expect("canonical receipt");
@@ -319,6 +332,33 @@ fn never_armed_process_output_omits_reaction_fields() {
     assert!(
         !raw.contains("\"effects\""),
         "never-armed Delta bytes: {raw}"
+    );
+    sidecar.finish();
+}
+
+#[test]
+fn a_row_armed_off_fires_nothing_through_the_live_loop() {
+    // The page is present, in scope, and pinned at its live rev — only the ATTESTED
+    // MODE differs. Hook activation is binary by law, so `off` emits nothing while
+    // the write itself lands exactly as it would unarmed.
+    let workspace = armed_workspace(Some(Mode::Off));
+    let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.send(r#"{"id":50,"op":"sub","from_seq":0}"#);
+    assert_eq!(sidecar.receive().1["id"], 50);
+
+    sidecar.send(&splice(51, "tasks/x.md", "review"));
+    let (raw, response) = sidecar.receive();
+    assert_eq!(response["id"], 51, "the write still lands");
+    assert!(
+        response["body"]["armed"].get("effects").is_none(),
+        "an attested-off row arms nothing: {raw}"
+    );
+
+    let (notification_raw, notification) = sidecar.receive();
+    assert!(notification.get("id").is_none(), "the Delta still flows");
+    assert!(
+        notification.get("effects").is_none(),
+        "an attested-off row puts nothing on the Delta: {notification_raw}"
     );
     sidecar.finish();
 }

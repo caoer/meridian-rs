@@ -481,7 +481,11 @@ pub fn splice(
         )?),
         None => None,
     };
-    let frame = commit_batch(
+    // The batch moves into the commit seam, so the edits the reaction reports on
+    // are captured while they are still here. They describe what LANDED — the
+    // feeder below runs only if `commit_batch` succeeds.
+    let landed_edits = batch.edits.clone();
+    let mut frame = commit_batch(
         root,
         seq,
         &CommitRequest {
@@ -497,6 +501,28 @@ pub fn splice(
         CommitError::Env(err) => err,
         CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;
+
+    // C3 — REACTION MODE. Evaluated only after the batch landed, from the state
+    // pair this path already holds, and it can neither refuse nor mutate what
+    // landed (design §4.4: the notify path attaches at reaction mode, never at the
+    // gate). The outcome rides two carriers: this seq's frame, which the host
+    // flushes to subscribers, and the caller's own `armed` feedback below.
+    //
+    // A fault means "emit no reaction", never "fail the write" — the write is
+    // already on disk, and letting a reaction turn it into an error would hand a
+    // hook exactly the veto the ruling denies it. The fault is typed and tested at
+    // the leaf (`reaction::FeedError`); giving it a REPORTING channel belongs to
+    // the door card that owns artifact-fault surfacing, and is a named gap here.
+    let armed_effects = crate::reaction::feed_landed_change(
+        root,
+        &doc,
+        after_doc.document(),
+        &landed_edits,
+        policy::ChangeOp::Splice,
+        args.actor.as_deref(),
+    )
+    .unwrap_or_default();
+    frame.effects.clone_from(&armed_effects);
 
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
@@ -570,7 +596,13 @@ pub fn splice(
                 // drift. Latency only; correctness stays `root_after`.
                 file_rev_after: Some(NodeRev(after_doc.document().root.node_rev.0.clone())),
                 edits: armed_edits,
-                effects: Vec::new(),
+                // Constraint 8's feedback law: what this write ARMED, stated
+                // synchronously to the caller that wrote it. It names matched
+                // rules, their intents and each canonical receipt address — never
+                // who gets notified, and never that anything was delivered. This
+                // response is complete before the host flushes the frame above to
+                // any subscriber, so no delivery can have happened yet.
+                effects: armed_effects,
             },
             receipt: receipt_fact,
             root_before: frame.delta.root_before.clone(),

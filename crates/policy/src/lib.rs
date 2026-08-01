@@ -102,7 +102,7 @@ pub use convention::{
 pub use hook::{
     Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry, Intent, SLICE1_CAPS,
     evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks, evaluate_hooks_for_test,
-    evaluate_hooks_for_test_metered, intent_from_effect,
+    evaluate_hooks_for_test_metered, evaluate_loaded_hooks, intent_from_effect, load_hook,
 };
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]

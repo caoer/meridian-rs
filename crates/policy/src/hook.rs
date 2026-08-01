@@ -356,7 +356,21 @@ struct RawHookTelemetry {
     mem_used: u64,
 }
 
-fn evaluate_loaded_hooks<'a>(
+/// Evaluate already-loaded HOOKs against one landed change — the ARM-artifact
+/// consumer's evaluator.
+///
+/// [`evaluate_hooks`] reads the dying convention-folder shape, where the armed set
+/// carries whole conventions. An ARM-artifact row carries a PAGE, so its consumer
+/// loads the page itself ([`load_hook`], which is the capability gate) and hands the
+/// pairs here. Same evaluator, same sequencing, same budget metering — the only
+/// difference is who resolved the armed set.
+///
+/// Each hook still answers scope through its own `paths:` declaration, so an armed
+/// row whose page does not match the changed file emits nothing.
+///
+/// # Errors
+/// [`HookEvalError`] when an already-loaded predicate faults at evaluation.
+pub fn evaluate_loaded_hooks<'a>(
     hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
@@ -548,7 +562,7 @@ fn take_required(
 /// # Errors
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
 /// [`LoadError::HookPredicateInvalid`], [`LoadError::HookCeiling`].
-pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+pub fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
     load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
 }
 
