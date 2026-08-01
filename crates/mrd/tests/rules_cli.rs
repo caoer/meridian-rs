@@ -436,6 +436,48 @@ fn the_user_flag_prints_one_layer() {
     );
 }
 
+/// **P15** — the mount law, proven at the CLI surface rather than in the resolver.
+///
+/// A page whose immediate container is named `rules` mounts at that folder's
+/// PARENT, so a workspace's rules kept in `<root>/rules/` govern the whole
+/// workspace instead of only that folder. The verb computes no mount arithmetic of
+/// its own — it renders `policy`'s scope verbatim — so this test is what proves the
+/// lift reaches a reader.
+///
+/// Both halves matter: the lifted page is IN PLAY at a path outside its folder
+/// (which is the bug the lift fixes), and the non-lifted sibling one level deeper
+/// is NOT (which is what stops the lift being recursive).
+#[test]
+fn a_layout_folder_page_renders_its_lifted_mount_scope() {
+    let s = sandbox();
+    s.write(
+        "rules/kept-here.md",
+        &rule_page("check", "kept.here", "kept in the layout folder"),
+    );
+    s.write(
+        "rules/deeper/filed-deeper.md",
+        &rule_page("check", "filed.deeper", "filed deliberately deeper"),
+    );
+    // The verb answers about a real place, so the queried folder must exist.
+    s.write("tasks/card.md", "---\ntype: task\n---\n\n# a card\n");
+
+    let stdout = s.stdout(&["rules", "tasks"]);
+    assert_eq!(
+        block_for(&stdout, "kept.here"),
+        vec![
+            "  kept.here  armed=-",
+            // `workspace:0`, NOT `workspace:1` — the `rules/` container lifted.
+            "      winner    rules/kept-here.md  rev=REV  scope=workspace:0  kinds=check"
+        ],
+        "a layout-folder page governs the workspace, and says so: {stdout}"
+    );
+    assert!(
+        !stdout.contains("filed.deeper"),
+        "the lift is one level and never recursive, so a page under rules/deeper/ \
+         is out of play at tasks/: {stdout}"
+    );
+}
+
 /// **P8, the anchor arm** — with no `MERIDIAN.md` there is no user scope, so the
 /// user layer is EMPTY and the output NAMES the absent anchor. The fixture holds
 /// a `rules/` tree that a widened walk would have found.
