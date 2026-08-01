@@ -13,7 +13,7 @@
 //!
 //! - **checkbox** — `[x]` armed (the door enforces it), `[ ]` off;
 //! - **severity** — `off` / `warn` / `block`, the enforcement level;
-//! - **pinned rev** — the evidence rev the row is pinned at (`blake3(CHECK.md)[:16]`);
+//! - **pinned rev** — the PAGE rev the row is pinned at ([`crate::page_rev`]);
 //! - **evidence link** — a wikilink to the convention's `CHECK.md` (the attested law);
 //! - **scope** — the convention's `paths:` globs.
 //!
@@ -36,6 +36,7 @@
 
 use crate::check_eval::CheckLimits;
 use crate::convention::{ConventionFiles, LoadError, load_convention};
+use crate::registration::page_rev;
 
 /// The `CHECK.md` filename inside a convention folder — the attested law file whose
 /// bytes the pinned rev hashes and whose path the evidence link points at.
@@ -111,8 +112,9 @@ impl IndexEntry {
         &self.scope
     }
 
-    /// The evidence rev the row is pinned at (`blake3(CHECK.md)[:16]`). For an armed
-    /// row this equals the approved `armed-rev` by the [`arm`] gate.
+    /// The PAGE rev the row is pinned at ([`crate::page_rev`]) — ONE fingerprint law
+    /// for check pages and hook pages alike, never a `CHECK.md`-shaped special case.
+    /// For an armed row this equals the approved `armed-rev` by the [`arm`] gate.
     #[must_use]
     pub fn rev(&self) -> &str {
         &self.rev
@@ -188,15 +190,6 @@ impl std::fmt::Display for ArmError {
 
 impl std::error::Error for ArmError {}
 
-/// The evidence rev of a `CHECK.md`: `blake3(bytes)[:16]`, 16 lowercase hex — the
-/// same rev law the world model mints (contract §1). Two byte-identical CHECK files
-/// share a rev; any edit (predicate, scope, or prose) moves it, so the arming gate
-/// catches every drift of the attested law.
-#[must_use]
-pub fn evidence_rev(check_md: &str) -> String {
-    blake3::hash(check_md.as_bytes()).to_hex().as_str()[..16].to_string()
-}
-
 /// Sweep one convention folder into an unarmed (`Off`) INDEX row: validate it
 /// through the loader (U1.3 folder grammar + capability ceiling), then pin its
 /// evidence rev. Policy stays I/O-free — `files` is the caller-injected accessor;
@@ -220,7 +213,7 @@ pub fn sweep(
     Ok(IndexEntry {
         slug: convention.slug().to_string(),
         scope: convention.scope().to_vec(),
-        rev: evidence_rev(&check_md),
+        rev: page_rev(&check_md),
         enforcement: Enforcement::Off,
     })
 }
@@ -430,12 +423,11 @@ mod tests {
     /// HOOK-only folder has no `CHECK.md` to hash.
     ///
     /// This is fail-closed and therefore safe: an unswept convention is never a row,
-    /// never armed, never enforced. It is NOT decided here what a HOOK-only
-    /// convention should pin — that is an attestation question for the arming act
-    /// (what rev does a reviewer attest when the evidence is a reaction?), and
-    /// answering it inside the loader would be minting law. The test exists so the
-    /// gap is visible and dated rather than discovered later by someone whose
-    /// convention silently never armed.
+    /// never armed, never enforced. The attestation question it named — what rev does
+    /// a reviewer attest when the evidence is a reaction? — is now ANSWERED, by the
+    /// uniform page rev: the tag-indexed artifact (`crate::armed`) pins
+    /// `page_rev(page bytes)` for check pages and hook pages alike. The gap survives
+    /// here only as long as the folder loader does.
     #[test]
     fn a_hook_only_convention_loads_but_does_not_yet_sweep() {
         let hook_md = "\
@@ -472,19 +464,15 @@ def on_change(event):
     }
 
     #[test]
-    fn evidence_rev_is_blake3_16() {
-        let rev = evidence_rev("hello");
+    fn the_pinned_rev_is_the_one_page_rev_law() {
+        let rev = page_rev("hello");
         assert_eq!(rev.len(), 16, "16 hex chars");
         assert!(rev.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(
-            evidence_rev("a"),
-            evidence_rev("b"),
-            "distinct bytes differ"
-        );
+        assert_ne!(page_rev("a"), page_rev("b"), "distinct bytes differ");
     }
 
     #[test]
-    fn sweep_pins_the_evidence_rev_and_starts_off() {
+    fn sweep_pins_the_page_rev_and_starts_off() {
         let scope = "tasks/**";
         let entry = sweep_conv("reviewer-not-owner", scope);
         assert_eq!(entry.slug(), "reviewer-not-owner");
@@ -496,8 +484,8 @@ def on_change(event):
         );
         assert_eq!(
             entry.rev(),
-            evidence_rev(&check_md(scope)),
-            "pinned rev is blake3(CHECK.md)[:16]"
+            page_rev(&check_md(scope)),
+            "pinned rev is the page rev — one law for every rule page"
         );
     }
 

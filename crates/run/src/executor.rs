@@ -39,7 +39,7 @@ use std::io;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts};
+use effects::{ArgValue, ChangeEvent, Domain, Effect, EffectKind, EventFacts, Provenance};
 use model::{
     Document, Edit, EditKind, HpathSeg, MerkleRoot, NodeKind, NodeRev, PutAt, ReceiptAppend, Ref,
     SpliceRequest, SpliceVerdict, delta,
@@ -103,6 +103,205 @@ pub struct ApplyRequest<'a> {
     /// The cascade generation of the effects being applied (`0` for the run
     /// itself); the synthesized event carries `depth + 1`.
     pub depth: u32,
+}
+
+/// Why the canonical intent → executor adapter refused (R13 ruling § normative
+/// mapping).
+///
+/// Every variant is LOUD by law: a payload missing a required key for its action, or
+/// carrying a key the action does not use, refuses the whole generation — never a
+/// defaulted or partial write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterError {
+    /// The intent's `action` is not an `md.*` executor descriptor kind. `proto.*`
+    /// intents never pass through the Markdown adapter, so the production slice-1
+    /// allowlist is untouched by this seam.
+    NonMdAction {
+        /// The emitting convention.
+        rule_id: String,
+        /// The action the intent declared.
+        action: String,
+    },
+    /// The action requires a key the intent did not carry.
+    MissingKey {
+        /// The emitting convention.
+        rule_id: String,
+        /// The action whose shape is incomplete.
+        action: String,
+        /// The `Intent` field that must be present for this action.
+        key: &'static str,
+    },
+    /// The intent carried a key the action does not use.
+    UnusedKey {
+        /// The emitting convention.
+        rule_id: String,
+        /// The action that has no use for the key.
+        action: String,
+        /// The `Intent` field that must be absent for this action.
+        key: &'static str,
+    },
+}
+
+impl std::fmt::Display for AdapterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterError::NonMdAction { rule_id, action } => write!(
+                f,
+                "intent from `{rule_id}` names action '{action}', which is not an md.* descriptor — the Markdown adapter carries md.set_field and md.append_section only"
+            ),
+            AdapterError::MissingKey {
+                rule_id,
+                action,
+                key,
+            } => write!(
+                f,
+                "intent from `{rule_id}` for action '{action}' is missing `{key}` — the adapter defaults nothing"
+            ),
+            AdapterError::UnusedKey {
+                rule_id,
+                action,
+                key,
+            } => write!(
+                f,
+                "intent from `{rule_id}` for action '{action}' carries `{key}`, which that action does not use"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AdapterError {}
+
+/// One generation of validated [`policy::Intent`]s, adapted to the exact
+/// [`ApplyRequest`] production executes (R13 ruling §1–§2).
+///
+/// This is the ONE seam between the WHEN plane's canonical intent and the HOW
+/// plane's descriptor batch. `policy` is the WHEN plane and stays I/O-free; `run`
+/// owns HOW and already depends on `policy`, so the edge runs this way and only this
+/// way — the reverse would break policy's charter.
+///
+/// The mapping is mechanical and 1:1:
+///
+/// | [`policy::Intent`] | executor descriptor |
+/// |---|---|
+/// | `action` | the descriptor kind — `md.set_field` / `md.append_section` |
+/// | `target` | the addressed node — planner `field` / `section` |
+/// | `payload` | what lands there — planner `value` / `content` |
+/// | receipt address | this request's [`ReceiptAddr`] — one call site, no second plumbing |
+///
+/// The adapter **re-validates nothing**. Canonical action, receipt and argument
+/// surface were already checked by `policy::intent_from_effect`; what happens here
+/// is shape-completeness only.
+///
+/// [`Provenance`] and the cascade depth are carried THROUGH from the emitting event:
+/// a [`policy::Intent`] is a reaction-plane descriptor and deliberately records no
+/// plane facts, so the caller — which holds the event — supplies them rather than
+/// this adapter inventing them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntentApply {
+    effects: Vec<Effect>,
+    receipt: ReceiptAddr,
+}
+
+impl IntentApply {
+    /// Adapt one generation of validated intents plus the receipt address the same
+    /// [`ApplyRequest`] will carry.
+    ///
+    /// # Errors
+    /// [`AdapterError`] — an action outside the `md.*` descriptor surface, or an
+    /// intent whose key shape does not complete its action. Nothing is adapted in
+    /// either case: one generation is one batch, so one bad intent refuses all of it.
+    pub fn from_intents(
+        intents: &[policy::Intent],
+        receipt: ReceiptAddr,
+        provenance: &Provenance,
+        depth: u32,
+    ) -> Result<Self, AdapterError> {
+        let effects = intents
+            .iter()
+            .map(|intent| effect_from_intent(intent, provenance, depth))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { effects, receipt })
+    }
+
+    /// The adapted descriptors, in emission order.
+    #[must_use]
+    pub fn effects(&self) -> &[Effect] {
+        &self.effects
+    }
+
+    /// The [`ApplyRequest`] production executes for this generation: `base` supplies
+    /// the run facts and this generation supplies exactly TWO of them — the
+    /// descriptors and the receipt address they ride with.
+    ///
+    /// Every other field is threaded explicitly rather than through `..base`, so a
+    /// new [`ApplyRequest`] field is a compile error here: a fact the adapter must
+    /// consciously route, never one it silently defaults.
+    #[must_use]
+    pub fn request<'a>(&'a self, base: &ApplyRequest<'a>) -> ApplyRequest<'a> {
+        ApplyRequest {
+            page: base.page,
+            task: base.task,
+            task_rev: base.task_rev,
+            invocation_id: base.invocation_id,
+            now: base.now,
+            effects: &self.effects,
+            caps: base.caps,
+            pin_root: base.pin_root,
+            live_root: base.live_root,
+            receipt: Some(self.receipt.clone()),
+            takeover: base.takeover,
+            exec: base.exec,
+            depth: base.depth,
+        }
+    }
+}
+
+/// The mechanical [`policy::Intent`] → [`Effect`] mapping (R13 ruling §2).
+fn effect_from_intent(
+    intent: &policy::Intent,
+    provenance: &Provenance,
+    depth: u32,
+) -> Result<Effect, AdapterError> {
+    let kind = effects::action_kind(&intent.action)
+        .filter(|kind| kind.domain() == Domain::Md)
+        .ok_or_else(|| AdapterError::NonMdAction {
+            rule_id: intent.rule_id.clone(),
+            action: intent.action.clone(),
+        })?;
+    // `Intent.action` selects the descriptor kind 1:1, and the kind selects which
+    // planner keys `target` and `payload` become.
+    let (node_key, content_key) = match kind {
+        EffectKind::SetField => ("field", "value"),
+        EffectKind::AppendSection => ("section", "content"),
+        _ => unreachable!("md.* kinds are SetField | AppendSection"),
+    };
+    let missing = |key| AdapterError::MissingKey {
+        rule_id: intent.rule_id.clone(),
+        action: intent.action.clone(),
+        key,
+    };
+    let node = intent.target.clone().ok_or_else(|| missing("target"))?;
+    let content = intent.payload.clone().ok_or_else(|| missing("payload"))?;
+    // `severity` is a proto-plane classification. An md.* descriptor has nowhere to
+    // put it, and silently dropping it would be the defaulted write the ruling forbids.
+    if intent.severity.is_some() {
+        return Err(AdapterError::UnusedKey {
+            rule_id: intent.rule_id.clone(),
+            action: intent.action.clone(),
+            key: "severity",
+        });
+    }
+    let mut args = BTreeMap::new();
+    args.insert(node_key.to_owned(), ArgValue::Str(node));
+    args.insert(content_key.to_owned(), ArgValue::Str(content));
+    Ok(Effect {
+        kind,
+        rule_id: intent.rule_id.clone(),
+        seq: intent.seq,
+        depth,
+        provenance: provenance.clone(),
+        args,
+    })
 }
 
 /// A committed apply: what landed and the facts the runner reports.

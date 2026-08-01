@@ -11,10 +11,14 @@ evidence pinned at the reviewed rev. The legal path is [[attested-arming]].
 
 ```json ^put
 {
+  "op": "splice",
   "path": "conventions/candidate/CHECK.md",
-  "edits": [],
-  "properties": { "arm": "block" },
-  "remove": ["armed_rev"]
+  "actor": "reviewer-r",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "arm"}, "edit": {"put": {"at": "upsert", "text": "block"}}},
+    {"target": {"fm_key": "armed_rev"}, "edit": {"put": {"at": "all", "text": ""}}}
+  ]
 }
 ```
 

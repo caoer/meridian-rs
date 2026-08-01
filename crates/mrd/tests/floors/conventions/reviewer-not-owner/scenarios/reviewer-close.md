@@ -11,9 +11,13 @@ This is the legal path the firing scenario cites.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/fix-parser.md",
-  "edits": [],
-  "properties": { "status": "closed" }
+  "actor": "reviewer-b",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "status"}, "edit": {"put": {"at": "upsert", "text": "closed"}}}
+  ]
 }
 ```
 

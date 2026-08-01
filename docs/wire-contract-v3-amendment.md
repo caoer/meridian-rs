@@ -831,6 +831,70 @@ no doc.
   the promotion is rev-neutral. The hook fence and the authz tightening are
   stage-3.
 
+## The Delta node population (2026-07-31) — a no-container range is the file fact alone
+
+### 13. `nodes: []` is a complete emission, not an unspecified absence
+
+Contract v2 §7.1 rules that node entries name the **deepest section containing
+each changed byte range** (`docs/wire-contract-v2.md` §7.1, frozen at contract
+birth). It defines the selected node and excludes ancestor duplication; it says
+nothing about a range that NO addressable node contains. This entry supplies
+that arm:
+
+> A changed byte range contained by no addressable node is represented by the
+> file-level fact alone; the node population may legitimately be empty.
+
+For a modified file the `path` + `change` + `file_rev_before`/`file_rev_after`
+fact is therefore the COMPLETE and sufficient representation of such a range,
+and `nodes: []` is a fully-specified emission rather than an unspecified
+absence. Where a container does exist the deepest-container rule is unchanged.
+
+The shape this describes is measured, not hypothetical: one splice touching
+frontmatter AND a body section produces a single range running from
+mid-frontmatter through mid-section, and `model::delta::file_delta` returns the
+modified file fact with an empty `nodes` array (commit `31c9063c`, four tests in
+`crates/model/src/delta.rs`). Controls touching one plane still name one
+`fm_key` or one `hpath`, so the empty population is specific to the joint range.
+
+**This entry is an interpretation, not a v3-only surface.** Every other item in
+this file adds something a v2 session does not have. This one adds no field, no
+op, and no cap — it states what frozen §7.1 already requires, so it holds for a
+v2 session and a v3 session alike. It lands here because
+`docs/wire-contract-v2.md` is FROZEN and unedited; no emitted byte differs under
+either rev, so there is no divergence to declare.
+
+**Why the file fact rather than silence.** The two readings are wire-byte-identical
+today. Naming the fallback gives every Delta consumer a promise that silence
+cannot: for a modified file the file fact and its rev transition are ALWAYS
+present, and their absence is a defect. Silence makes absence unknowable — the
+same bytes for the weaker guarantee.
+
+**Why not partitioning the range.** Splitting a joint edit into addressable
+subranges is the only candidate that changes emitted and replayed bytes, and it
+would amend the frozen §7.1/§7.4 — node grain was ruled at contract birth and the
+panel LEDGER marks that grain dispute `needs ZT`. No present consumer needs it:
+the C1a policy payload derives from before/after state, not Wire Delta (measured
+at `6ee6a5bc`), and C0's controls show partitioning is not safely inferable — a
+leading blank line makes an appended section name its parent.
+
+**The run-plane consequence, contractual now rather than accidental.** The legacy
+`fields_changed`/`sections_changed` are built from `fd.nodes`
+(`crates/run/src/executor.rs:1018-1063`), so both stay EMPTY for a no-container
+range. A future reader should file that as behavior, not as a bug. The posture is
+fail-closed by design: a reaction reading an empty change set does not fire,
+rather than firing on a value it guessed.
+
+**What this does not foreclose.** If a future consumer needs node identity for
+joint ranges, that is an ADDITIVE, versioned contract change routed to ZT — §7.4
+names the amendment path at birth for exactly this reason. This entry closes the
+interpretation, not the door.
+
+**Untouched:** D6 unconditional emission at commit (replay returns what would
+have been emitted with zero subscribers) and §7.3 replay ≡ live. Ruling:
+`decisions/2026-07-31-advisor-ruling-wire-7-1.md`, session
+`30-19-subscribe-notify-impl`, answering the contract question carded as
+`wire-7-1-contract-question`.
+
 ## Implementation shape
 
 The frozen `wire` types serialize byte-for-byte as contract v2 and are NOT
@@ -893,6 +957,10 @@ byte-identical guarantee is structural, proven by the untouched frozen goldens.
   composed out of retained bytes refusing, a token landing inside a fence
   surviving, the frontmatter / comment / indented-code exclusions with their
   decorate-side control, and `check_write` agreeing with the committer).
+- §13 (the no-container clarification) ships NO new test: it changes zero
+  emitted bytes, and the behavior it names is already pinned by the four
+  `crates/model/src/delta.rs` tests at `31c9063c`. A test asserting it would be
+  those tests re-spelled.
 - Frozen and unchanged, still green: `crates/wire/tests/contract_v2.rs`,
   `crates/testsuite/tests/wire_vocab.rs`, `crates/sidecar/tests/dispatch_v2.rs`,
   `crates/transport-proto/tests/wire_agreement.rs`.

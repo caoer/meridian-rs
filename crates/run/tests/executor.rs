@@ -716,3 +716,166 @@ fn the_run_plane_still_writes_beside_an_untouched_lock() {
     assert!(text.contains("- a run-plane line"), "{text}");
     assert!(text.contains("```meridian-lock"), "{text}");
 }
+
+// ── the canonical intent → executor adapter (R13 ruling) ─────────────────────
+
+fn intent(action: &str, target: Option<&str>, payload: Option<&str>) -> policy::Intent {
+    policy::Intent {
+        rule_id: "adapter-control".to_owned(),
+        seq: 0,
+        action: action.to_owned(),
+        target: target.map(str::to_owned),
+        severity: None,
+        payload: payload.map(str::to_owned),
+        receipt: "page.md#^r-000001".to_owned(),
+    }
+}
+
+fn change_provenance() -> Provenance {
+    Provenance::Change {
+        fingerprint_before: "before".to_owned(),
+        fingerprint_after: "after".to_owned(),
+    }
+}
+
+fn adapt(intents: &[policy::Intent]) -> Result<executor::IntentApply, executor::AdapterError> {
+    executor::IntentApply::from_intents(intents, receipt_addr(9), &change_provenance(), 0)
+}
+
+/// The mapping is mechanical: `action` selects the kind, `target` addresses the
+/// node, `payload` is what lands there — and the adapted batch is the SAME
+/// `ApplyRequest` production executes, receipt included.
+#[test]
+fn the_adapter_maps_canonical_intents_onto_the_production_batch() {
+    let (_tmp, root) = workspace();
+    let now = current_root(&root);
+    let adapted = adapt(&[
+        intent("md.set_field", Some("status"), Some("done")),
+        intent("md.append_section", Some("Log"), Some("- adapted line")),
+    ])
+    .expect("both canonical intents adapt");
+
+    // `target` becomes the addressed node key, `payload` the content key — exactly
+    // the descriptor args the planner already reads.
+    let shapes: Vec<(EffectKind, BTreeMap<String, ArgValue>)> = adapted
+        .effects()
+        .iter()
+        .map(|effect| (effect.kind, effect.args.clone()))
+        .collect();
+    assert_eq!(
+        shapes,
+        vec![
+            (EffectKind::SetField, set_field("status", "done", 0).args),
+            (
+                EffectKind::AppendSection,
+                append("Log", "- adapted line", 0).args
+            ),
+        ],
+        "the adapted descriptors are the ones the planner already reads"
+    );
+    // The emitting rule and the emitting event's plane facts are carried THROUGH:
+    // the adapter invents no provenance a `policy::Intent` never recorded.
+    for effect in adapted.effects() {
+        assert_eq!(effect.rule_id, "adapter-control");
+        assert_eq!(effect.provenance, change_provenance());
+    }
+
+    let applied = executor::apply(
+        &root,
+        &adapted.request(&ApplyRequest {
+            page: "page.md",
+            task: "adapter",
+            task_rev: "b3:proc-test",
+            invocation_id: "inv-1",
+            now: None,
+            effects: &[],
+            caps: &write_caps(),
+            pin_root: &now,
+            live_root: &now,
+            receipt: None,
+            takeover: false,
+            exec: None,
+            depth: 0,
+        }),
+    )
+    .expect("the production executor applies the adapted batch");
+
+    assert_eq!(applied.applied, 2, "one generation, one atomic batch");
+    assert!(
+        applied.receipt_line.is_some(),
+        "the receipt address rode the same request"
+    );
+    let page = page_text(&root);
+    assert!(page.contains("status: done"), "{page}");
+    assert!(page.contains("- adapted line"), "{page}");
+}
+
+/// `proto.*` never passes through the Markdown adapter, so the production
+/// `[proto.send]` slice-1 allowlist is untouched by this seam.
+#[test]
+fn the_adapter_refuses_an_action_outside_the_md_surface() {
+    for action in ["notify", "proto.send", "daemon.refresh_view"] {
+        let error = adapt(&[intent(action, Some("r"), Some("p"))])
+            .expect_err("a non-md action has no Markdown descriptor");
+        assert_eq!(
+            error,
+            executor::AdapterError::NonMdAction {
+                rule_id: "adapter-control".to_owned(),
+                action: action.to_owned(),
+            },
+            "{action}"
+        );
+        assert!(error.to_string().contains(action), "the refusal names it");
+    }
+}
+
+/// A payload missing a required key, or carrying a key its action does not use, is a
+/// LOUD refusal — never a defaulted or partial write. One bad intent refuses the
+/// whole generation, because one generation is one batch.
+#[test]
+fn the_adapter_refuses_an_incomplete_or_over_specified_intent() {
+    let missing_target = adapt(&[intent("md.set_field", None, Some("done"))])
+        .expect_err("no target means no addressed node");
+    assert!(
+        matches!(
+            missing_target,
+            executor::AdapterError::MissingKey { key: "target", .. }
+        ),
+        "{missing_target:?}"
+    );
+
+    let missing_payload = adapt(&[intent("md.append_section", Some("Log"), None)])
+        .expect_err("no payload means nothing to land");
+    assert!(
+        matches!(
+            missing_payload,
+            executor::AdapterError::MissingKey { key: "payload", .. }
+        ),
+        "{missing_payload:?}"
+    );
+
+    let mut over = intent("md.set_field", Some("status"), Some("done"));
+    over.severity = Some("info".to_owned());
+    let unused = adapt(&[over]).expect_err("severity is a proto-plane classification");
+    assert!(
+        matches!(
+            unused,
+            executor::AdapterError::UnusedKey {
+                key: "severity",
+                ..
+            }
+        ),
+        "{unused:?}"
+    );
+
+    // The control: with the single offending key corrected, the same generation
+    // adapts — the refusals above are that one key's doing.
+    assert!(
+        adapt(&[
+            intent("md.set_field", Some("status"), Some("done")),
+            intent("md.append_section", Some("Log"), Some("line")),
+        ])
+        .is_ok(),
+        "the corrected baseline adapts"
+    );
+}

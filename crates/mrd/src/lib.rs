@@ -193,21 +193,24 @@ usage:
   mrd test <PATH>          run scenario file(s) (a *.md file, or a dir of them):
                            mount base/ into a real tmpdir, route ^put through the
                            production write path, assert ^expect starlark over
-                           t.result / t.doc(path) / t.journal. Exits: 0 clean /
-                           1 an ^expect failed / 2 malformed or pairing hard error
-  mrd test --corpus <SPEC> tier-2 corpus runner: drive a convention's check_change
-                           over SYNTHETIC changes derived from the 18-02 corpus and
-                           report fire-where-expected, dead rules, and fuel + heap
-                           p50/p99 budgets. Exits: 0 clean / 1 a fire mismatch or
-                           dead rule / 2 malformed spec or unreadable corpus
+                           t.result (including HOOK effects) / t.doc(path) /
+                           t.journal. Exits: 0 clean / 1 an ^expect failed / 2
+                           malformed or pairing hard error
+  mrd test --corpus <SPEC> tier-2 corpus runner: drive CHECK/HOOK conventions over
+                           SYNTHETIC changes and report fire-where-expected, zero
+                           dead rules, fuel + heap p50/p99, and FIX/HOOK quiescence
+                           by reachable trigger graph + counterfactual fuel. Exits:
+                           0 clean / 1 a mismatch, dead rule, budget finding, or
+                           failed quiescence / 2 malformed spec or unreadable corpus
   mrd test --history WORKSPACE --convention SLUG
                            the history tier: JOIN the receipt journal's rows
                            against git (the commit that appended each ^r-NNNNNN
                            row gives the write's before/after bytes), rebuild the
-                           docs, and run conventions/SLUG's check_change over each
-                           reconstructed change. A would-refuse item absent from
-                           conventions/SLUG/GOLDEN.md fails the run; a declared
-                           item passes with its reason rendered; unreconstructable
+                           docs, and compare conventions/SLUG's CHECK refusals with
+                           its pinned GOLDEN.md (HOOK-only conventions refuse zero
+                           changes). The report always names the exact journal span;
+                           a would-refuse item absent from GOLDEN.md fails, a declared
+                           item passes with its reason rendered, and unreconstructable
                            rows are counted grey, never guessed. Exits: 0 clean /
                            1 an undeclared would-refuse item / 2 tool failure
   mrd run <PAGE> [TASK] [-- ARGS]

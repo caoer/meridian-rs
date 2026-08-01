@@ -5,14 +5,13 @@
 //! A scenario is a markdown file: YAML frontmatter (`scenario`, `convention_rev`,
 //! `cas`, `pairs`) plus fenced blocks —
 //!
-//! - ` ```base <path> ` — a file mounted at `<path>` in a REAL tmpdir (the
-//!   scenario's world), one block per file;
-//! - ` ```put ` — a JSON write action routed through the PRODUCTION write path
-//!   (`wire_serve::write` splice / create / remove over the real mount — NO
-//!   in-memory double, so the harness exercises exactly what the door does);
-//! - ` ```expect ` — fenced Starlark `def expect(t)` asserting over the post-write
-//!   world (`t.result` / `t.doc(path)` / `t.journal`), run under FULL `EvalLimits`
-//!   ([`crate::expect`]).
+//! - sibling `base/` files, or an inline ` ```base <path> ` block, mount into a
+//!   REAL tmpdir as the scenario's before-world;
+//! - ` ```json ^put ` (legacy ` ```put ` also accepted) routes the exact JSON
+//!   operation through production `wire_serve::write`;
+//! - ` ```starlark ^expect ` (legacy ` ```expect ` also accepted) asserts over
+//!   `t.result` / `t.doc(path)` / `t.journal`. For a sibling HOOK convention,
+//!   `t.result.effects` carries the production-shaped armed intents.
 //!
 //! # Fire / pass, observed — and the pairing lint
 //! A scenario FIRES when its `^put` sequence is refused (the first refusal is
@@ -36,11 +35,19 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use fs::WorkspaceRoot;
+use model::{Document, NodeKind};
+use policy::{
+    ChangeOp, CheckLimits, Convention, ConventionFiles, Invocation, derive_change, derive_event,
+    evaluate_hooks_for_test, load_convention,
+};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use wire::ResponseBody;
-use wire::{Edit, EditShape, ErrorBody, ErrorCode, NodeRev, Path as WirePath, PutAt, Root, SecRef};
+use wire::{
+    Edit, EditShape, ErrorBody, ErrorCode, NodeRev, Op, Path as WirePath, PutAt, Root, SecRef,
+};
 use wire_serve::ambient_root;
+use wire_serve::rev::Rev;
 use wire_serve::write::{CreateArgs, RemoveArgs, SpliceArgs, create, remove, splice};
 
 use crate::expect::run_expect;
@@ -113,7 +120,9 @@ fn run_suite(path: &Path) -> Result<SuiteReport, Fail> {
             .and_then(|s| s.to_str())
             .unwrap_or("scenario")
             .to_owned();
-        match parse_scenario(&stem, &text) {
+        match parse_scenario(&stem, &text).and_then(|mut scenario| {
+            hydrate_sibling_convention(file, &mut scenario).map(|()| scenario)
+        }) {
             Ok(scenario) => results.push(run_scenario(&scenario)),
             Err(msg) => results.push(ScenarioResult {
                 name: stem,
@@ -195,15 +204,26 @@ struct Scenario {
     pairs: Option<String>,
     /// Files mounted into the tmpdir: `(relative path, content)`.
     base: Vec<(String, String)>,
-    /// The write actions, applied in order.
-    puts: Vec<PutJson>,
+    /// The write actions, applied in order. `^put` is a strictly decoded wire
+    /// request; the unanchored legacy `put` fence retains its compatibility shape.
+    puts: Vec<ScenarioWrite>,
     /// The fenced `def expect(t)` starlark, if present.
     expect: Option<String>,
+    /// A sibling convention loaded from `<convention>/scenarios/`, when this page
+    /// uses Doc 1's folder shape. Inline scenarios leave this empty.
+    conventions: Vec<Convention>,
 }
 
-/// One `^put` action, as declared in a ` ```put ` JSON block. Flat + forgiving:
-/// each op reads the fields it needs. `if_root` / `if_node_rev` are honored ONLY
-/// when the scenario declares `cas: true` (CAS omitted by default).
+enum ScenarioWrite {
+    /// The Doc 1 surface: exact production request, strict-decoded once at load.
+    Wire { id: Option<u64>, op: Op },
+    /// Compatibility for the older unanchored ` ```put ` fixture grammar.
+    Legacy(PutJson),
+}
+
+/// One legacy unanchored ` ```put ` action. Flat + forgiving: each op reads the
+/// fields it needs. `if_root` / `if_node_rev` are honored only when the scenario
+/// declares `cas: true`. New `^put` blocks never enter this translation.
 #[derive(Deserialize)]
 struct PutJson {
     /// `splice` | `create` | `remove`.
@@ -256,18 +276,36 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
     let mut puts = Vec::new();
     let mut expect = None;
     for (info, body) in scan_blocks(text) {
-        let mut toks = info.split_whitespace();
-        match toks.next() {
+        let tokens: Vec<&str> = info.split_whitespace().collect();
+        let anchored_put = tokens.contains(&"^put");
+        let anchored_expect = tokens.contains(&"^expect");
+        // An info string spelling BOTH grammars names two different operations, and
+        // the harness will not pick one for the author (review R11). Left unguarded,
+        // ` ```put ^put ` read as the LEGACY translation and let a flattened
+        // lookalike qualify past the strict wire decoder.
+        if (anchored_put || anchored_expect)
+            && matches!(tokens.first().copied(), Some("put" | "expect"))
+        {
+            return Err(format!(
+                "fence ```{info} spells both the legacy (`{}`) and the anchored (`{}`) \
+                 grammar — write the anchored form alone (```json ^put / ```starlark ^expect)",
+                tokens[0],
+                if anchored_put { "^put" } else { "^expect" },
+            ));
+        }
+        match tokens.first().copied() {
             Some("base") => {
-                let path = toks
-                    .next()
+                let path = tokens
+                    .get(1)
                     .ok_or_else(|| "```base needs a path (```base notes/todo.md)".to_owned())?;
-                base.push((path.to_owned(), body));
+                base.push(((*path).to_owned(), body));
             }
+            _ if anchored_put => puts.push(parse_wire_put(&body)?),
+            _ if anchored_expect => expect = Some(body),
             Some("put") => {
                 let pj: PutJson = serde_json::from_str(&body)
                     .map_err(|e| format!("```put JSON did not parse: {e}"))?;
-                puts.push(pj);
+                puts.push(ScenarioWrite::Legacy(pj));
             }
             Some("expect") => expect = Some(body),
             _ => {}
@@ -281,7 +319,140 @@ fn parse_scenario(stem: &str, text: &str) -> Result<Scenario, String> {
         base,
         puts,
         expect,
+        conventions: Vec::new(),
     })
+}
+
+fn parse_wire_put(body: &str) -> Result<ScenarioWrite, String> {
+    let mut object: Map<String, Value> = serde_json::from_str(body)
+        .map_err(|error| format!("^put JSON did not parse as a request object: {error}"))?;
+    let id = match object.get("id") {
+        None => None,
+        Some(value) => {
+            let id = value
+                .as_u64()
+                .ok_or_else(|| "^put `id` must be an integer in [0, 2^53)".to_owned())?;
+            if id >= (1_u64 << 53) {
+                return Err("^put `id` must be an integer in [0, 2^53)".to_owned());
+            }
+            Some(id)
+        }
+    };
+    wire_serve::rev::rename_request(&mut object);
+    let op = wire_serve::decode::decode(&object, Rev::V3).map_err(|error| {
+        format!(
+            "^put wire decode refused `{}`: {}",
+            code_str(error.code),
+            error.message.as_deref().unwrap_or_default()
+        )
+    })?;
+    Ok(ScenarioWrite::Wire { id, op })
+}
+
+struct DirConventionFiles<'a> {
+    dir: &'a Path,
+}
+
+impl ConventionFiles for DirConventionFiles<'_> {
+    fn read(&self, rel_path: &str) -> std::io::Result<String> {
+        std::fs::read_to_string(self.dir.join(rel_path))
+    }
+
+    fn exists(&self, rel_path: &str) -> bool {
+        self.dir.join(rel_path).exists()
+    }
+}
+
+/// Apply Doc 1's convention-folder shape when `file` lives directly under a
+/// `scenarios/` directory: mount every sibling `base/` file at its relative path
+/// and load the convention capability page beside it. Existing inline `base <path>`
+/// blocks remain valid and cannot be silently shadowed by a sibling fixture.
+fn hydrate_sibling_convention(file: &Path, scenario: &mut Scenario) -> Result<(), String> {
+    let Some(scenarios_dir) = file.parent() else {
+        return Ok(());
+    };
+    if scenarios_dir.file_name().and_then(|name| name.to_str()) != Some("scenarios") {
+        return Ok(());
+    }
+    let convention_dir = scenarios_dir
+        .parent()
+        .ok_or_else(|| "scenario directory has no convention parent".to_owned())?;
+
+    let base_dir = convention_dir.join("base");
+    if base_dir.is_dir() {
+        let mut files = Vec::new();
+        collect_base_files(&base_dir, &base_dir, &mut files)?;
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, content) in files {
+            if scenario.base.iter().any(|(existing, _)| existing == &path) {
+                return Err(format!(
+                    "base path {path:?} is declared both in sibling base/ and an inline block"
+                ));
+            }
+            scenario.base.push((path, content));
+        }
+    }
+
+    let declares_capability =
+        convention_dir.join("CHECK.md").is_file() || convention_dir.join("HOOK.md").is_file();
+    if !declares_capability {
+        return Ok(());
+    }
+    let slug = convention_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "convention folder has no UTF-8 slug".to_owned())?;
+    let files = DirConventionFiles {
+        dir: convention_dir,
+    };
+    let convention = load_convention(slug, &files, CheckLimits::default())
+        .map_err(|error| format!("convention `{slug}` failed to load: {error}"))?;
+    // Doc 1 requires the EXACT production operation, and a HOOK qualifies on what the
+    // landed write armed. The legacy fence is a translated lookalike — it cannot
+    // represent a real `edits[]` batch and it never meets the strict wire decoder — so
+    // a HOOK must never qualify through it (review R11). Legacy translation survives
+    // only where no reaction reads the result: the non-HOOK surface.
+    if convention.hook().is_some()
+        && scenario
+            .puts
+            .iter()
+            .any(|write| matches!(write, ScenarioWrite::Legacy(_)))
+    {
+        return Err(format!(
+            "convention `{slug}` carries a HOOK, so every scenario write must be the exact \
+             production request: use an anchored ```json ^put fence, never the legacy \
+             ```put translation"
+        ));
+    }
+    scenario.conventions.push(convention);
+    Ok(())
+}
+
+fn collect_base_files(
+    base: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|error| format!("cannot read sibling base dir {}: {error}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read base entry: {error}"))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_base_files(base, &path, out)?;
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(base)
+                .expect("base descendant")
+                .to_string_lossy()
+                .replace('\\', "/");
+            confine(&rel).map_err(|error| format!("sibling base file {rel:?}: {error}"))?;
+            let content = std::fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read sibling base file {rel:?}: {error}"))?;
+            out.push((rel, content));
+        }
+    }
+    Ok(())
 }
 
 /// Parse the leading `--- … ---` YAML frontmatter as flat `key: value` pairs
@@ -346,6 +517,34 @@ fn unwikilink(v: &str) -> String {
 
 // ── running one scenario ─────────────────────────────────────────────────────
 
+/// One armed-not-delivered reaction on the existing `t.result` data surface.
+/// Delivery state is deliberately absent: the scenario observes only what the
+/// landed write armed.
+#[derive(Debug, Clone, allocative::Allocative)]
+pub(crate) struct ScenarioEffect {
+    pub rule_id: String,
+    pub seq: u32,
+    pub action: String,
+    pub target: Option<String>,
+    pub severity: Option<String>,
+    pub payload: Option<String>,
+    pub receipt: String,
+}
+
+impl From<policy::Intent> for ScenarioEffect {
+    fn from(intent: policy::Intent) -> Self {
+        Self {
+            rule_id: intent.rule_id,
+            seq: intent.seq,
+            action: intent.action,
+            target: intent.target,
+            severity: intent.severity,
+            payload: intent.payload,
+            receipt: intent.receipt,
+        }
+    }
+}
+
 /// The outcome of the `^put` sequence — the `t.result` surface the `^expect`
 /// block asserts over.
 #[derive(Debug, Clone)]
@@ -358,6 +557,8 @@ pub(crate) struct PutOutcome {
     pub message: String,
     /// The verdict rule names the write raised (empty on the bare write path).
     pub verdicts: Vec<String>,
+    /// The HOOK intents the committed write armed, with no delivery claim.
+    pub effects: Vec<ScenarioEffect>,
 }
 
 impl PutOutcome {
@@ -367,6 +568,7 @@ impl PutOutcome {
             code: String::new(),
             message: String::new(),
             verdicts: Vec::new(),
+            effects: Vec::new(),
         }
     }
 
@@ -376,6 +578,7 @@ impl PutOutcome {
             code: code.to_owned(),
             message: message.into(),
             verdicts: Vec::new(),
+            effects: Vec::new(),
         }
     }
 }
@@ -419,10 +622,13 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
         }
     }
 
-    // Apply the puts in order; the FIRST refusal is `t.result` and stops the run.
+    // Apply the puts in order. `t.result` is the FIRST refusal, or — when every
+    // write commits — the FINAL write's outcome, whole: its code, its message AND
+    // its effects. Accumulating earlier writes' effects onto it would make
+    // `t.result` the result of no exact production operation (review R15).
     let mut result = PutOutcome::committed();
     for pj in &sc.puts {
-        match apply_put(&root, sc.cas, pj) {
+        match apply_put(&root, sc.cas, pj, &sc.conventions) {
             Ok(outcome) => {
                 let refused = !outcome.ok;
                 result = outcome;
@@ -451,14 +657,160 @@ fn run_scenario(sc: &Scenario) -> ScenarioResult {
     })
 }
 
-/// Route one `^put` through the production write path. The mount-confinement
-/// refusal (`bad_path`) fires HERE, before the production call — a harness-surface
-/// refusal, exactly as taxonomy row 22 scopes it. `Err` is a malformed put (a
-/// structural authoring fault), never a write refusal (which is a [`PutOutcome`]).
-fn apply_put(root: &WorkspaceRoot, cas: bool, p: &PutJson) -> Result<PutOutcome, String> {
+/// Route one scenario write through the production write path. Anchored `^put`
+/// requests were already strict-decoded into [`Op`] and are forwarded without a
+/// second request grammar. Only the legacy unanchored fence uses `PutJson`.
+fn apply_put(
+    root: &WorkspaceRoot,
+    cas: bool,
+    write: &ScenarioWrite,
+    conventions: &[Convention],
+) -> Result<PutOutcome, String> {
+    match write {
+        ScenarioWrite::Wire { id, op } => dispatch_wire_write(root, *id, op, conventions),
+        ScenarioWrite::Legacy(put) => apply_legacy_put(root, cas, put, conventions),
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive decoded write router; splitting the two typed arms adds indirection"
+)]
+fn dispatch_wire_write(
+    root: &WorkspaceRoot,
+    id: Option<u64>,
+    op: &Op,
+    conventions: &[Convention],
+) -> Result<PutOutcome, String> {
+    match op.clone() {
+        Op::Splice {
+            path,
+            actor,
+            now,
+            receipt,
+            if_root,
+            dry,
+            force,
+            edits,
+            plan_edits,
+            pin,
+        } => {
+            if let Err(message) = confine(&path.0) {
+                return Ok(PutOutcome::refused("bad_path", message));
+            }
+            let rel = PathBuf::from(&path.0);
+            let before_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
+            let dry = dry.unwrap_or(false);
+            let force = force.unwrap_or(false);
+            let args = SpliceArgs {
+                id,
+                path: path.clone(),
+                actor: actor.clone(),
+                now,
+                receipt,
+                if_root,
+                dry,
+                force,
+                edits,
+                plan_edits,
+                pin,
+            };
+            let mut outcome = match splice(root, 0, &args, &[], None) {
+                Ok(out) => {
+                    let verdicts = match &out.body {
+                        ResponseBody::Splice { verdicts, .. } => verdicts
+                            .iter()
+                            .map(|verdict| verdict.rule.clone())
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    PutOutcome {
+                        verdicts,
+                        ..PutOutcome::committed()
+                    }
+                }
+                Err(error) => refusal(&error),
+            };
+            if outcome.ok && !dry && !conventions.is_empty() {
+                let after_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
+                outcome.effects = scenario_effects(
+                    conventions,
+                    &path.0,
+                    &before_md,
+                    &after_md,
+                    ChangeOp::Splice,
+                    actor.as_deref(),
+                    force,
+                )?;
+            }
+            Ok(outcome)
+        }
+        Op::Create {
+            path,
+            body,
+            actor,
+            now,
+            if_root,
+            dry,
+        } => {
+            if let Err(message) = confine(&path.0) {
+                return Ok(PutOutcome::refused("bad_path", message));
+            }
+            let rel = PathBuf::from(&path.0);
+            let dry = dry.unwrap_or(false);
+            let args = CreateArgs {
+                id,
+                path: path.clone(),
+                body,
+                actor: actor.clone(),
+                now,
+                if_root,
+                dry,
+            };
+            let mut outcome = match create(root, 0, &args, &[]) {
+                Ok(out) => PutOutcome {
+                    verdicts: out
+                        .verdicts
+                        .iter()
+                        .map(|verdict| verdict.rule.clone())
+                        .collect(),
+                    ..PutOutcome::committed()
+                },
+                Err(error) => refusal(&error),
+            };
+            if outcome.ok && !dry && !conventions.is_empty() {
+                let after_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
+                outcome.effects = scenario_effects(
+                    conventions,
+                    &path.0,
+                    "",
+                    &after_md,
+                    ChangeOp::Create,
+                    actor.as_deref(),
+                    false,
+                )?;
+            }
+            Ok(outcome)
+        }
+        other => Err(format!(
+            "^put decoded a non-write operation {other:?}; use `splice` or `create`"
+        )),
+    }
+}
+
+/// Route one legacy translated write through the production path. The
+/// mount-confinement refusal (`bad_path`) fires before the production call.
+fn apply_legacy_put(
+    root: &WorkspaceRoot,
+    cas: bool,
+    p: &PutJson,
+    conventions: &[Convention],
+) -> Result<PutOutcome, String> {
     if let Err(msg) = confine(&p.path) {
         return Ok(PutOutcome::refused("bad_path", msg));
     }
+    let rel = PathBuf::from(&p.path);
+    let before_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
     let path = WirePath(p.path.clone());
 
     // CAS is omitted unless the scenario declares it (explicit frontmatter flag):
@@ -475,14 +827,75 @@ fn apply_put(root: &WorkspaceRoot, cas: bool, p: &PutJson) -> Result<PutOutcome,
         None
     };
 
-    match p.op.as_str() {
+    let mut outcome = match p.op.as_str() {
         "splice" => splice_put(root, path, cas, cas_root, p),
         "create" => create_put(root, path, cas_root, p),
         "remove" => remove_put(root, path, cas_root, p),
         other => Err(format!(
             "unknown put op {other:?} (want splice|create|remove)"
         )),
+    }?;
+
+    if outcome.ok && !conventions.is_empty() {
+        let after_md = std::fs::read_to_string(root.0.join(&rel)).unwrap_or_default();
+        let op = match p.op.as_str() {
+            "splice" => ChangeOp::Splice,
+            "create" => ChangeOp::Create,
+            "remove" => ChangeOp::Remove,
+            _ => unreachable!("validated above"),
+        };
+        outcome.effects = scenario_effects(
+            conventions,
+            &p.path,
+            &before_md,
+            &after_md,
+            op,
+            Some("mrd-test"),
+            false,
+        )?;
     }
+    Ok(outcome)
+}
+
+fn scenario_effects(
+    conventions: &[Convention],
+    path: &str,
+    before_md: &str,
+    after_md: &str,
+    op: ChangeOp,
+    actor: Option<&str>,
+    force: bool,
+) -> Result<Vec<ScenarioEffect>, String> {
+    let before = scenario_doc(path, before_md);
+    let after = scenario_doc(path, after_md);
+    let change = derive_change(
+        &before,
+        &after,
+        &[],
+        Invocation { op, actor, force },
+        &[],
+        &|_: &str| None,
+    );
+    let event = derive_event(&change, &before.root.node_rev.0, &after.root.node_rev.0, 0);
+    let outcomes = evaluate_hooks_for_test(conventions, &event)
+        .map_err(|error| format!("HOOK evaluation failed: {error}"))?;
+    let mut effects = Vec::new();
+    for outcome in outcomes {
+        if let Some(finding) = outcome.findings.first() {
+            return Err(format!("HOOK evaluation finding: {finding:?}"));
+        }
+        effects.extend(outcome.intents.into_iter().map(ScenarioEffect::from));
+    }
+    Ok(effects)
+}
+
+fn scenario_doc(path: &str, md: &str) -> Document {
+    let nodes = syntax::parse(md);
+    let mut doc = model::build(md.to_owned(), nodes);
+    if let NodeKind::Document { path: doc_path, .. } = &mut doc.root.kind {
+        path.clone_into(doc_path);
+    }
+    doc
 }
 
 /// The `splice` arm: one edit (a `put` position or a `match`), routed through the
@@ -881,8 +1294,8 @@ impl SuiteReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{confine, parse_at, unwikilink};
-    use wire::PutAt;
+    use super::{ScenarioWrite, confine, parse_at, parse_wire_put, unwikilink};
+    use wire::{Op, PutAt};
 
     #[test]
     fn confine_rejects_absolute_and_dotdot_and_dot_and_empty() {
@@ -909,6 +1322,44 @@ mod tests {
         assert!(matches!(parse_at("end").unwrap(), PutAt::End));
         assert!(matches!(parse_at("upsert").unwrap(), PutAt::Upsert));
         assert!(parse_at("nope").is_err());
+    }
+
+    #[test]
+    fn anchored_put_uses_the_strict_wire_batch_shape() {
+        let request = r#"{
+            "op":"splice",
+            "path":"tasks/card.md",
+            "edits":[
+                {"target":{"fm_key":"status"},"edit":{"put":{"at":"upsert","text":"review"}}},
+                {"target":{"fm_key":"reviewer"},"edit":{"put":{"at":"upsert","text":"r"}}}
+            ]
+        }"#;
+        let ScenarioWrite::Wire {
+            op: Op::Splice { edits, .. },
+            ..
+        } = parse_wire_put(request).expect("the real wire batch decodes")
+        else {
+            panic!("the request must remain a typed splice")
+        };
+        assert_eq!(edits.len(), 2, "both typed edits survive strict decode");
+
+        let flattened = r#"{
+            "op":"splice",
+            "path":"tasks/card.md",
+            "target":{"fm_key":"status"},
+            "at":"upsert",
+            "text":"review"
+        }"#;
+        let Err(error) = parse_wire_put(flattened) else {
+            panic!("the old flattened lookalike must hit the field wall")
+        };
+        assert!(
+            error.contains("unknown request field")
+                && ["target", "at", "text"]
+                    .iter()
+                    .any(|field| error.contains(field)),
+            "the strict decoder names one flattened lookalike field: {error}"
+        );
     }
 
     #[test]

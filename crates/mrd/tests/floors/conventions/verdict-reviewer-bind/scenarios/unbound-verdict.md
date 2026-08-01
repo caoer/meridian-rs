@@ -11,9 +11,13 @@ not attribute its review to another. The legal path is [[bound-verdict]].
 
 ```json ^put
 {
+  "op": "splice",
   "path": "verdicts/close-1.md",
-  "edits": [],
-  "properties": { "outcome": "approve" }
+  "actor": "dave",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "outcome"}, "edit": {"put": {"at": "upsert", "text": "approve"}}}
+  ]
 }
 ```
 

@@ -55,7 +55,7 @@ ships once; this schema extends a proven pattern rather than introducing one.
 | Two readers, on purpose | `armed_from_index` is **tolerant** (skips any non-row line, so prose never mis-parses); `parse_index_strict` is the **door's** reader and fail-closed | `crates/policy/src/index.rs:302, 358` |
 | Strictness scope | the **title** must match exactly; every checklist **row** must parse; the **preamble is not byte-checked** | `crates/policy/src/index.rs:361-387`; hand-assembled valid page at `crates/mrd/tests/status_e2e.rs:93-102` |
 | Pinned rev | `armed_rev` = `blake3(CHECK.md bytes)[:16]`, 16 lowercase hex — *"the same rev law the world model mints (contract §1)"* | `crates/policy/src/index.rs:191-198` |
-| Drift | at the door, `evidence_rev(live CHECK.md) != row.armed_rev` → `GateFault::ArmedDrift` → **every write refuses** | `crates/policy/src/gate.rs:264-278` |
+| Drift | at the door, `page_rev(live CHECK.md) != row.armed_rev` → `GateFault::ArmedDrift` → **every write refuses** | `crates/policy/src/gate.rs:264-278` |
 | Malformed posture | `IndexCorrupt { detail: String }` → `ConventionFault`, **fail closed** — *"a corrupt INDEX must never silently read as 'nothing armed'"* | `crates/policy/src/index.rs:340-344` |
 | Absent posture | pivots on a **separate marker** (`meridian/attested`): never-armed → the file is not even read; once-armed → absent is a fault | `crates/policy/src/gate.rs:213-251` |
 | Writer | the **engine** is the sole writer; a hand edit is a `BindingBreak` teaching refusal | `crates/policy/src/binding.rs:148-156` |
@@ -429,7 +429,7 @@ renders as ordinary drift."* The precise, satisfiable reading:
 **Drift that IS a verdict is the mount pins' (§5.3), not the config's own rev's.** A mount entry's
 `pin` names a root's entry page — which lives *inside* an attestable root — so `pin` vs the live
 fingerprint is an ordinary comparison on ordinary machinery, exactly as `armed_rev` vs
-`evidence_rev(live CHECK.md)` is (`crates/policy/src/gate.rs:264-278`). That is the ratified mitigation
+`page_rev(live CHECK.md)` is (`crates/policy/src/gate.rs:264-278`). That is the ratified mitigation
 working, and it is the only place in this plane where "drift" is a checkable claim rather than a
 reported number.
 
