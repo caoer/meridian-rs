@@ -700,6 +700,67 @@ fn duplicate_identical_cases_are_acyclic_but_the_real_cycle_still_bites() {
 }
 
 #[test]
+fn a_case_can_drive_a_content_reading_check() {
+    // The tier's CONTENT reach, and the reason this gate exists: a CHECK reading
+    // `change.sections_changed` / `change.doc.nodes[].text` is a rule a markdown
+    // engine must be able to test, and until a case could write the BODY it was
+    // unreachable by construction — reported dead over every case form the grammar
+    // had. The case's change half is the PRODUCTION edit grammar (the ratified
+    // tier-1 split: JSON for the change, in the exact op format production uses),
+    // so an `hpath` target and a `put at:end` reach the body the same way a real
+    // write does.
+    let (code, report) = run_json("body-content");
+    assert_eq!(
+        code, 0,
+        "a content case that fires where declared is a clean run: {report}"
+    );
+    assert_eq!(report["rule"], "no-smuggled-heading");
+    assert_eq!(report["summary"]["cases"], 2);
+    assert_eq!(report["summary"]["matched"], 2);
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(
+        report["summary"]["dead_rules"], 0,
+        "the content citation is LIVE — the whole point"
+    );
+
+    let fired = case(&report, "smuggle-a-heading");
+    assert_eq!(fired["outcome"], "fired");
+    assert_eq!(
+        fired["fired"],
+        serde_json::json!(["structural-write"]),
+        "the body write moved the section diff and the node kinds the CHECK compares"
+    );
+    assert_eq!(
+        case(&report, "plain-section-append")["outcome"],
+        "pass",
+        "the same body write without a TODO passes — the rule discriminates on CONTENT"
+    );
+}
+
+#[test]
+fn an_unknown_case_key_is_a_tool_failure() {
+    // The silence that hid the content gap: an author reaching for a verb the
+    // grammar does not carry used to get a green-looking run over a case that
+    // mutated nothing. An unknown key is now the authoring fault it always was.
+    let out = mrd()
+        .arg("test")
+        .arg("--corpus")
+        .arg(spec("unknown-case-key"))
+        .output()
+        .expect("run mrd test --corpus");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown case key is exit 2, never a silently-dropped clause"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("append_section"),
+        "the tool failure names the key the author wrote: {stderr}"
+    );
+}
+
+#[test]
 fn malformed_spec_is_a_tool_failure() {
     // A ```case block whose JSON will not parse is exit 2 (tool failure), not a
     // findings run — it emits no report on stdout.
