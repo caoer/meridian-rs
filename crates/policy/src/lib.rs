@@ -48,6 +48,7 @@ mod hook;
 mod index;
 mod pack;
 mod reaction;
+mod registration;
 mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
@@ -110,6 +111,22 @@ pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_conve
 pub use index::{
     ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index, evidence_rev,
     generate_index, parse_index_strict, render_rows, sweep,
+};
+
+/// Tag-indexed rule registration — the registration rework's discovery layer.
+/// A page registers by carrying `rules/hook` / `rules/check` in its frontmatter
+/// `tags:` ([`RuleKind`]), is identified by its frontmatter `id:` ([`RuleId`],
+/// § 2 grammar), and resolves against same-id pages by mount depth along the
+/// three-rung scope ladder ([`ScopeLayer`] → [`Scope`]). [`RuleIndex::discover`]
+/// reads a caller-supplied page feed ([`PageRef`] — `policy` stays I/O-free);
+/// [`RuleIndex::resolve`] is the ONE pure resolver both the arming path and the
+/// read-only print verb call, and it RETAINS every shadowed candidate so the
+/// override chain stays printable. Nothing here arms: discovery makes a page
+/// known, only the explicit attested ARM act activates it.
+pub use registration::{
+    Collision, Effective, EffectiveSet, ID_KEY, IdFault, MAX_ID_LEN, PageRef,
+    REGISTRATION_NAMESPACE, RegisterError, Registration, RuleId, RuleIndex, RuleKind, Scope,
+    ScopeLayer, page_rev, register_page,
 };
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision
