@@ -510,9 +510,10 @@ pub fn splice(
     //
     // A fault means "emit no reaction", never "fail the write" — the write is
     // already on disk, and letting a reaction turn it into an error would hand a
-    // hook exactly the veto the ruling denies it. The fault is typed and tested at
-    // the leaf (`reaction::FeedError`); giving it a REPORTING channel belongs to
-    // the door card that owns artifact-fault surfacing, and is a named gap here.
+    // hook exactly the veto the ruling denies it. The fault is not DROPPED for that,
+    // though: it rides the frame as a `wire::EffectFinding::ArmedFault`, this host's
+    // channel onto the one artifact-fault surface. A `.unwrap_or_default()` stood
+    // here and read every artifact fault as "nothing to react to".
     let armed_effects = crate::reaction::feed_landed_change(
         root,
         &doc,
@@ -520,8 +521,7 @@ pub fn splice(
         &landed_edits,
         policy::ChangeOp::Splice,
         args.actor.as_deref(),
-    )
-    .unwrap_or_default();
+    );
     frame.effects.clone_from(&armed_effects);
 
     // The receipt FACT from the true post-state (host-block-leaf grain).

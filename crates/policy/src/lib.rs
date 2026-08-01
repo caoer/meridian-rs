@@ -46,6 +46,7 @@ use model::{CorpusIndex, Document};
 /// namespace would be two names for one thing at exactly the seam where the
 /// difference matters. When `index::arm` dies, nothing here has to be renamed.
 pub mod armed;
+pub mod armed_law;
 
 mod binding;
 mod change;
