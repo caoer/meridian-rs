@@ -900,14 +900,7 @@ fn mode_outside_its_kind(row: &ArmedRow, bytes: &str) -> Option<Redness> {
     if kinds.iter().any(|kind| row.mode.admits(*kind)) {
         return None;
     }
-    Some(Redness::ModeOutsideKind {
-        kinds: kinds.clone(),
-        vocabulary: kinds
-            .first()
-            .map_or("the page registers no rule kind", |kind| {
-                Mode::vocabulary(*kind)
-            }),
-    })
+    Some(Redness::mode_outside_kind(kinds))
 }
 
 /// The live bytes of a pinned page, injected — `policy` performs no I/O.
@@ -944,6 +937,20 @@ pub enum Redness {
     },
 }
 
+impl Redness {
+    /// The mode-outside-kind redness for a page registering `kinds` — the one
+    /// place the teaching vocabulary is derived, so verification and the law
+    /// resolver ([`crate::armed_law`]) cannot drift into two spellings of it.
+    pub(crate) fn mode_outside_kind(kinds: Vec<RuleKind>) -> Self {
+        let vocabulary = kinds
+            .first()
+            .map_or("the page registers no rule kind", |kind| {
+                Mode::vocabulary(*kind)
+            });
+        Redness::ModeOutsideKind { kinds, vocabulary }
+    }
+}
+
 /// One red row: the attested row plus why it no longer stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedRow {
@@ -952,6 +959,13 @@ pub struct RedRow {
 }
 
 impl RedRow {
+    /// Mint a red row. Sealed to the crate: reddening is [`verify_rows`]' verdict
+    /// and [`crate::armed_law`]'s when a pinned page moves between verification and
+    /// load — never a caller's assertion.
+    pub(crate) fn new(row: ArmedRow, why: Redness) -> Self {
+        RedRow { row, why }
+    }
+
     /// The row as attested.
     #[must_use]
     pub fn row(&self) -> &ArmedRow {

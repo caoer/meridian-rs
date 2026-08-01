@@ -28,9 +28,19 @@ A `DeltaFrame` may carry an `effects` array beside `delta`:
 
 `effects` is omitted when empty. Therefore every pre-amendment frame with no reaction output keeps its exact JSON bytes. A tolerant v2 client ignores the unknown sibling and reads the same `delta`.
 
-Each array element is one reaction evaluation envelope. `intents` are admitted descriptors. `narrowed` retains complete descriptors rejected by the declared capability ceiling. `findings` carries advisory evaluation findings; slice 1 admits `budget_exceeded { rule_id, steps, mem }`. `how` is opaque data that the engine does not interpret.
+Each array element is one reaction evaluation envelope. `intents` are admitted descriptors. `narrowed` retains complete descriptors rejected by the declared capability ceiling. `findings` carries advisory evaluation findings; slice 1 admits `budget_exceeded { rule_id, steps, mem }` and `armed_fault { rule_id?, detail }`. `how` is opaque data that the engine does not interpret.
 
 An intent states what evaluation armed before delivery. It has exactly `rule_id`, `seq`, `action`, optional `target`, optional `severity`, optional `payload`, and the canonical `receipt` address. It has no `delivered` field and makes no delivery claim.
+
+## Artifact faults are reported, never refused (amendment, 2026-08-01)
+
+`armed_fault` is the reaction plane's channel onto the one artifact-fault surface (`policy::armed_law::ArmedFault`). It says: this workspace's attested armed law could not be honored, so a reaction the artifact attests did not run. `detail` is that surface's own rendering, so the operator reads the same words the write door refuses with; `rule_id` is absent when the fault is about the artifact rather than about one rule.
+
+It is a FINDING and never an error frame, for the same reason the reaction plane exists at all: everything on it runs after the write has landed, and failing a write on a reaction's behalf would hand a hook the veto the ruling denies it. The disposition splits by kind at the surface — a red check row refuses at the door, a red hook row falls silent here — while the vocabulary does not split at all.
+
+A fault envelope carries no intents, no `narrowed`, and an empty `how` (a fault has no declaration behind it). Empty envelopes are still dropped, so a workspace with no fault and no reaction keeps its exact pre-amendment bytes; a fault envelope is never empty and is never dropped. Before this amendment such a fault reached a `.unwrap_or_default()` at both feeder call sites and read as "nothing to react to" — a corrupt or emptied artifact on an armed workspace was indistinguishable from a quiet one.
+
+`transport-proto.EffectFinding.armed_fault = 2` transcribes it.
 
 ## Synchronous write feedback
 

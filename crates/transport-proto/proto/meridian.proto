@@ -618,6 +618,7 @@ message Intent {
 message EffectFinding {
   oneof finding {
     BudgetExceeded budget_exceeded = 1;
+    ArmedFault armed_fault = 2;
   }
 }
 
@@ -625,6 +626,14 @@ message BudgetExceeded {
   string rule_id = 1;
   uint64 steps = 2;
   uint64 mem = 3;
+}
+
+// The workspace's attested armed law could not be honored, so a reaction it
+// attests did not run. A report, never a refusal — the write already landed.
+// `rule_id` is absent when the fault is about the artifact rather than one rule.
+message ArmedFault {
+  optional string rule_id = 1;
+  string detail = 2;
 }
 
 // The fifth wire noun (v2 §7.1, frozen at birth): one Delta = one batch =

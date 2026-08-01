@@ -1383,6 +1383,22 @@ pub enum EffectFinding {
         steps: u64,
         mem: u64,
     },
+    /// The workspace's attested armed law could not be honored, so a reaction the
+    /// artifact attests did not run. REPORTED, never a refusal: everything on the
+    /// reaction plane runs after the write has landed, and failing a write on a
+    /// reaction's behalf would hand a hook the veto the ruling denies it.
+    ///
+    /// This is the reaction host's channel onto the ONE artifact-fault surface
+    /// (`policy::armed_law::ArmedFault`); `detail` is that surface's own rendering,
+    /// so the operator reads the same words the door refuses with.
+    ArmedFault {
+        /// The armed id the fault is about — absent when the fault is about the
+        /// artifact itself rather than any one rule.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rule_id: Option<String>,
+        /// The operator-facing teaching text.
+        detail: String,
+    },
 }
 
 /// The fifth wire noun (v2 §7.1, frozen at contract birth): one Delta = one

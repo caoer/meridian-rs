@@ -202,20 +202,18 @@ fn external_effects(
         // against the changed file's PATH, and only this mint carries it. `doc_of`
         // leaves the document path empty, which every `paths:` glob then misses.
         let (b, a) = (doc_at(path, before)?, doc_at(path, after)?);
-        effects.extend(
-            wire_serve::reaction::feed_landed_change(
-                ws_root,
-                b.document(),
-                a.document(),
-                &[],
-                policy::ChangeOp::Splice,
-                None, // §7.1: no caller made this write — never invent one
-            )
-            // A reaction never fails the world: the edit already landed on disk and
-            // the Delta describing it must still be emitted. Same posture as the
-            // guarded write's call site.
-            .unwrap_or_default(),
-        );
+        // A reaction never fails the world: the edit already landed on disk and the
+        // Delta describing it must still be emitted. Faults are not lost for that —
+        // they ride the frame as `ArmedFault` findings, the same channel and the same
+        // words the guarded write's call site carries.
+        effects.extend(wire_serve::reaction::feed_landed_change(
+            ws_root,
+            b.document(),
+            a.document(),
+            &[],
+            policy::ChangeOp::Splice,
+            None, // §7.1: no caller made this write — never invent one
+        ));
     }
     Ok(effects)
 }

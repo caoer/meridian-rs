@@ -817,6 +817,9 @@ fn effect_finding_to_pb(finding: wire::EffectFinding) -> pb::EffectFinding {
             steps,
             mem,
         }),
+        wire::EffectFinding::ArmedFault { rule_id, detail } => {
+            pb::effect_finding::Finding::ArmedFault(pb::ArmedFault { rule_id, detail })
+        }
     };
     pb::EffectFinding {
         finding: Some(finding),
@@ -1631,6 +1634,9 @@ fn effect_finding_from_pb(finding: pb::EffectFinding) -> wire::EffectFinding {
             steps,
             mem,
         },
+        pb::effect_finding::Finding::ArmedFault(pb::ArmedFault { rule_id, detail }) => {
+            wire::EffectFinding::ArmedFault { rule_id, detail }
+        }
     }
 }
 
