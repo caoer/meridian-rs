@@ -25,6 +25,27 @@ fn scenarios(sub: &str) -> PathBuf {
         .join(sub)
 }
 
+fn hook_scenarios() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/conventions/task-status-notify/scenarios")
+}
+
+fn forged_receipt_scenarios() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/conventions/forged-receipt/scenarios")
+}
+
+fn hook_convention_scenarios(slug: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/conventions")
+        .join(slug)
+        .join("scenarios")
+}
+
+fn forged_receipt_corpus_spec() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/hook-tier/corpus/specs/forged-receipt.md")
+}
+
 /// Run `mrd test <path> --json`, returning `(exit_code, parsed_report)`.
 fn run_json(path: &Path) -> (i32, Value) {
     let out = mrd()
@@ -126,6 +147,110 @@ fn create_scenario_journals_the_birth() {
     assert_eq!(
         s["expect_ok"], true,
         "t.journal carries the create row, t.doc the bytes"
+    );
+}
+
+#[test]
+fn hook_scenarios_assert_the_emitted_effect_set_on_t_result() {
+    let (code, report) = run_json(&hook_scenarios());
+    assert_eq!(code, 0, "all HOOK scenarios must pass: {report}");
+    assert_eq!(report["summary"]["passed"], 3);
+    assert_eq!(report["summary"]["failed"], 0);
+    assert_eq!(
+        scenario(&report, "hook-move-to-review")["expect_ok"],
+        true,
+        "the matching scenario asserts the complete armed effect"
+    );
+    assert_eq!(
+        scenario(&report, "hook-other-status-is-silent")["expect_ok"],
+        true,
+        "the nonmatching scenario asserts an empty effect set"
+    );
+    assert_eq!(
+        scenario(&report, "hook-batch-move-and-reassign")["expect_ok"],
+        true,
+        "the real wire `edits[]` batch lands both typed puts"
+    );
+}
+
+#[test]
+fn forged_receipt_is_rejected_by_the_same_policy_boundary_in_both_tiers() {
+    let (scenario_code, scenario_report) = run_json(&forged_receipt_scenarios());
+    assert_eq!(
+        scenario_code, 2,
+        "the forged descriptor is a hard authoring fault"
+    );
+    let scenario_error = scenario(&scenario_report, "hook-forged-receipt")["error"]
+        .as_str()
+        .expect("scenario error string");
+
+    let corpus = mrd()
+        .arg("test")
+        .arg("--corpus")
+        .arg(forged_receipt_corpus_spec())
+        .output()
+        .expect("run forged-receipt corpus control");
+    assert_eq!(corpus.status.code(), Some(2));
+    let corpus_error = String::from_utf8_lossy(&corpus.stderr);
+    let shared = "HOOK `forged-receipt` emitted a malformed intent: receipt \"forged\" does not name this landed change";
+    assert!(
+        scenario_error.contains(shared),
+        "tier 1 must expose the policy error: {scenario_error}"
+    );
+    assert!(
+        corpus_error.contains(shared),
+        "corpus tier must expose the same policy error: {corpus_error}"
+    );
+}
+
+#[test]
+fn t_result_carries_only_the_final_writes_effects() {
+    // `t.result` is the first refusal or — when every write commits — the FINAL
+    // write's outcome, WHOLE. Accumulating earlier writes' effects onto it produces a
+    // result that combines one write's code with another write's effects, which is
+    // the result of no exact production operation.
+    let (code, report) = run_json(&hook_convention_scenarios("two-write-notify"));
+    assert_eq!(
+        code, 0,
+        "both writes commit and the ^expect holds: {report}"
+    );
+    assert_eq!(report["summary"]["passed"], 1);
+    assert_eq!(
+        scenario(&report, "hook-two-writes")["expect_ok"],
+        true,
+        "exactly one effect on t.result, and it is the second write's"
+    );
+}
+
+#[test]
+fn a_hook_scenario_cannot_qualify_through_the_legacy_request_grammar() {
+    // Doc 1 requires the exact production operation. The legacy fence is a translated
+    // lookalike the strict wire decoder never sees, so a HOOK must not qualify
+    // through it — and a fence spelling BOTH grammars must not silently pick legacy.
+    let (code, report) = run_json(&hook_convention_scenarios("legacy-put-refused"));
+    assert_eq!(
+        code, 2,
+        "both spellings are hard authoring faults: {report}"
+    );
+    assert_eq!(report["summary"]["malformed"], 2);
+
+    // A scenario that never parsed has no frontmatter name — the report keys it by
+    // file stem.
+    let plain = scenario(&report, "plain-legacy-put")["error"]
+        .as_str()
+        .expect("plain legacy error string");
+    assert!(
+        plain.contains("carries a HOOK") && plain.contains("^put"),
+        "the refusal names the HOOK and the required anchored fence: {plain}"
+    );
+
+    let ambiguous = scenario(&report, "put-anchored-put")["error"]
+        .as_str()
+        .expect("ambiguous fence error string");
+    assert!(
+        ambiguous.contains("spells both the legacy") && ambiguous.contains("^put"),
+        "the ambiguous `put ^put` spelling fails loudly instead of taking the \
+         legacy branch: {ambiguous}"
     );
 }
 

@@ -505,7 +505,7 @@ mod tests {
         assert_ne!(after, attested, "file-truth re-pins at the LIVE rev");
         assert_eq!(
             after,
-            crate::index::evidence_rev(&drifted),
+            crate::page_rev(&drifted),
             "file-truth deploys the live law's rev"
         );
         assert!(

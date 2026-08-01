@@ -61,13 +61,13 @@ fn workspace(sb: &Sandbox, name: &str) -> PathBuf {
     ws
 }
 
-/// Write an attested INDEX row pinning the convention's REAL `evidence_rev`, plus
+/// Write an attested INDEX row pinning the convention's REAL `page_rev`, plus
 /// its `CHECK.md` — the row is FRESH, so `status` does the full O(armed) re-hash.
 fn arm_convention(ws: &Path, slug: &str, severity: &str, check: &str) -> String {
     let dir = ws.join("conventions").join(slug);
     std::fs::create_dir_all(&dir).expect("conv dir");
     std::fs::write(dir.join("CHECK.md"), check).expect("check");
-    let pinned_rev = policy::evidence_rev(check);
+    let pinned_rev = policy::page_rev(check);
     format!(
         "- [x] **{slug}** · {severity} · `{pinned_rev}` · [[conventions/{slug}/CHECK.md]] · `{slug}/**`"
     )

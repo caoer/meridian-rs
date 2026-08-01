@@ -64,11 +64,21 @@ use crate::convention::LoadError;
 /// this slice does not carry it.
 pub const SLICE1_CAPS: [EffectKind; 1] = [EffectKind::Send];
 
+/// Extra descriptor kinds the corpus tier may evaluate while proving quiescence.
+/// This is not an arming allowlist: only the explicitly named corpus loader can use
+/// it, and the ordinary loader remains pinned to [`SLICE1_CAPS`].
+const CORPUS_COUNTERFACTUAL_CAPS: [EffectKind; 3] = [
+    EffectKind::SetField,
+    EffectKind::AppendSection,
+    EffectKind::Send,
+];
+
 /// A loaded `HOOK.md`: its declared scope, severity, caps, per-eval budget, the
 /// verbatim `how:` block, and the parse- and ceiling-validated predicate.
-/// Construction is sealed to [`load_hook`] — a `Hook` in hand has passed the
-/// frontmatter grammar, the slice-1 cap allowlist, the full-limits load gate, and the
-/// capability ceiling.
+/// Public construction is sealed to [`load_hook`], so a publicly reachable `Hook`
+/// has passed the slice-1 cap gate. The corpus-only widened constructor remains
+/// private and its value is sealed inside [`crate::CounterfactualConvention`]; no
+/// widened `Hook` crosses this crate's ordinary policy surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hook {
     severity: String,
@@ -253,10 +263,115 @@ pub fn evaluate_hooks(
     )
 }
 
+/// One production-shaped pre-arming HOOK outcome with its exact evaluator meter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookTestTelemetry {
+    /// The convention evaluated for this row, even when it emitted nothing.
+    pub rule_id: String,
+    /// The canonical intent projection, including `narrowed` and typed findings.
+    pub outcome: HookOutcome,
+    /// Starlark ticks spent by this one HOOK evaluation.
+    pub fuel_used: u64,
+    /// Peak evaluator heap for this one HOOK evaluation.
+    pub mem_used: u64,
+}
+
+/// Evaluate loaded conventions before arming for the tier-1 scenario proof.
+///
+/// This is the same policy-owned descriptor evaluator and intent projection as
+/// [`evaluate_hooks`], but its input is a loaded [`crate::Convention`] rather than an
+/// attested INDEX row. It grants no arming state and applies no effect. The scenario
+/// runner uses it only after routing the declared `^put` through the production write
+/// path, so `t.result.effects` observes what that landed change would arm.
+///
+/// # Errors
+/// The same [`HookEvalError`] surface as [`evaluate_hooks`].
+pub fn evaluate_hooks_for_test(
+    conventions: &[crate::Convention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookOutcome>, HookEvalError> {
+    evaluate_hooks_for_test_metered(conventions, event)
+        .map(|rows| rows.into_iter().map(|row| row.outcome).collect())
+}
+
+/// The tier-1 evaluator plus exact meters for `test --corpus`.
+///
+/// # Errors
+/// The same [`HookEvalError`] surface as [`evaluate_hooks`].
+pub fn evaluate_hooks_for_test_metered(
+    conventions: &[crate::Convention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
+    evaluate_loaded_hooks_metered(
+        conventions
+            .iter()
+            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+        event,
+        EvalLimits::default().max_depth,
+    )?
+    .into_iter()
+    .map(project_hook_telemetry)
+    .collect()
+}
+
+/// Evaluate widened declarations only inside the corpus proof.
+///
+/// This API accepts only [`crate::CounterfactualConvention`], so widened caps cannot
+/// cross into ordinary policy code. Everything else is the production evaluator:
+/// metering, capability routing, global sequencing, typed findings, and — since the
+/// R13 adapter ruling — the SAME canonical [`intent_from_effect`] projection for
+/// every domain. A raw `md.*` descriptor carrying no canonical action or receipt is
+/// [`HookEvalError::MalformedIntent`] here exactly as it is in production; the proof
+/// executes the projected [`Intent`] through the `run` adapter and the production
+/// batch executor. Explicit graph fuel replaces runtime depth suppression.
+///
+/// # Errors
+/// A non-budget predicate fault has the same [`HookEvalError::Eval`] surface as the
+/// production evaluator, and a descriptor outside the canonical intent shape the same
+/// [`HookEvalError::MalformedIntent`].
+pub fn evaluate_counterfactual_hooks_for_corpus_metered(
+    conventions: &[crate::CounterfactualConvention],
+    event: &ChangeEvent,
+) -> Result<Vec<HookTestTelemetry>, HookEvalError> {
+    evaluate_loaded_hooks_metered(
+        conventions
+            .iter()
+            .filter_map(|convention| convention.hook().map(|hook| (convention.slug(), hook))),
+        event,
+        u32::MAX,
+    )?
+    .into_iter()
+    .map(project_hook_telemetry)
+    .collect()
+}
+
+struct RawHookTelemetry {
+    rule_id: String,
+    effects: Vec<Effect>,
+    narrowed: Vec<Effect>,
+    findings: Vec<HookFinding>,
+    how: String,
+    expected_receipt: String,
+    fuel_used: u64,
+    mem_used: u64,
+}
+
 fn evaluate_loaded_hooks<'a>(
     hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
     event: &ChangeEvent,
 ) -> Result<Vec<HookOutcome>, HookEvalError> {
+    evaluate_loaded_hooks_metered(hooks, event, EvalLimits::default().max_depth)?
+        .into_iter()
+        .map(project_hook_telemetry)
+        .map(|row| row.map(|row| row.outcome))
+        .collect()
+}
+
+fn evaluate_loaded_hooks_metered<'a>(
+    hooks: impl IntoIterator<Item = (&'a str, &'a Hook)>,
+    event: &ChangeEvent,
+    max_depth: u32,
+) -> Result<Vec<RawHookTelemetry>, HookEvalError> {
     let mut outcomes = Vec::new();
     let mut next_seq = 0_u32;
 
@@ -268,26 +383,25 @@ fn evaluate_loaded_hooks<'a>(
         let limits = EvalLimits {
             fuel: hook.budget.steps,
             mem: hook.budget.mem,
+            max_depth,
             ..EvalLimits::default()
         };
-        let mut effects =
-            match effects::eval_with_limits(&[Rule::new(rule_id, hook.source())], event, limits) {
-                Ok(effects) => effects,
-                Err(EvalError::Budget { fuel, mem }) => {
-                    outcomes.push(HookOutcome {
-                        intents: Vec::new(),
-                        narrowed: Vec::new(),
-                        findings: vec![HookFinding::BudgetExceeded {
-                            rule_id: rule_id.to_string(),
-                            steps: fuel,
-                            mem,
-                        }],
-                        how: hook.how.clone(),
-                    });
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            };
+        let telemetry =
+            effects::eval_telemetry(&[Rule::new(rule_id, hook.source())], event, limits)
+                .pop()
+                .expect("one HOOK produces one telemetry row");
+        let (mut effects, findings) = match telemetry.outcome {
+            Ok(effects) => (effects, Vec::new()),
+            Err(EvalError::Budget { fuel, mem }) => (
+                Vec::new(),
+                vec![HookFinding::BudgetExceeded {
+                    rule_id: rule_id.to_string(),
+                    steps: fuel,
+                    mem,
+                }],
+            ),
+            Err(error) => return Err(error.into()),
+        };
         for effect in &mut effects {
             effect.seq = next_seq;
             next_seq = next_seq
@@ -298,31 +412,65 @@ fn evaluate_loaded_hooks<'a>(
                 })?;
         }
 
-        let expected_receipt = effects::receipt_address(&event.file, &event.fingerprint_after);
         let caps: CapabilitySet = hook.caps.iter().copied().collect();
-        let (admitted, dropped) = caps.route(effects);
-        outcomes.push(HookOutcome {
-            intents: admitted
-                .into_iter()
-                .map(|effect| intent_from_effect(effect, &expected_receipt))
-                .collect::<Result<_, _>>()?,
-            narrowed: dropped
-                .into_iter()
-                .map(|effect| intent_from_effect(effect, &expected_receipt))
-                .collect::<Result<_, _>>()?,
-            findings: Vec::new(),
+        let (effects, narrowed) = caps.route(effects);
+        outcomes.push(RawHookTelemetry {
+            rule_id: rule_id.to_string(),
+            effects,
+            narrowed,
+            findings,
             how: hook.how.clone(),
+            expected_receipt: effects::receipt_address(&event.file, &event.fingerprint_after),
+            fuel_used: telemetry.fuel_used,
+            mem_used: telemetry.mem_used,
         });
     }
 
     Ok(outcomes)
 }
 
-fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {
+fn project_hook_telemetry(row: RawHookTelemetry) -> Result<HookTestTelemetry, HookEvalError> {
+    Ok(HookTestTelemetry {
+        rule_id: row.rule_id,
+        outcome: HookOutcome {
+            intents: row
+                .effects
+                .into_iter()
+                .map(|effect| intent_from_effect(effect, &row.expected_receipt))
+                .collect::<Result<_, _>>()?,
+            narrowed: row
+                .narrowed
+                .into_iter()
+                .map(|effect| intent_from_effect(effect, &row.expected_receipt))
+                .collect::<Result<_, _>>()?,
+            findings: row.findings,
+            how: row.how,
+        },
+        fuel_used: row.fuel_used,
+        mem_used: row.mem_used,
+    })
+}
+
+/// The production Effect→Intent conversion — the ONE canonical projection every
+/// emitted descriptor passes before it can be called armed.
+///
+/// It validates the receipt against the landed change's canonical address, the
+/// declared `action` against the emitted kind, and the argument surface against the
+/// closed intent shape. It is public because the pre-arming corpus proof needs the
+/// PRODUCTION seam rather than a proof-only copy (R13 ruling §3): raw `md.*`
+/// descriptors must fault here exactly as they do in production, and the canonical
+/// `Intent` this returns is what the `run` adapter turns into the executor's
+/// `ApplyRequest`.
+///
+/// # Errors
+/// [`HookEvalError::MalformedIntent`] — a missing/forged receipt, an `action` that
+/// does not name the emitted kind, a non-string argument, or an argument outside the
+/// closed intent surface.
+pub fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, HookEvalError> {
     let rule_id = effect.rule_id;
     let mut args = effect.args;
-    let action = take_string(&mut args, &rule_id, "action", true)?.expect("required action");
-    let receipt = take_string(&mut args, &rule_id, "receipt", true)?.expect("required receipt");
+    let action = take_required(&mut args, &rule_id, "action")?;
+    let receipt = take_required(&mut args, &rule_id, "receipt")?;
     if receipt != expected_receipt {
         return Err(HookEvalError::MalformedIntent {
             rule_id,
@@ -340,9 +488,9 @@ fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, 
             ),
         });
     }
-    let target = take_string(&mut args, &rule_id, "target", false)?;
-    let severity = take_string(&mut args, &rule_id, "severity", false)?;
-    let payload = take_string(&mut args, &rule_id, "payload", false)?;
+    let target = take_string(&mut args, &rule_id, "target")?;
+    let severity = take_string(&mut args, &rule_id, "severity")?;
+    let payload = take_string(&mut args, &rule_id, "payload")?;
     if let Some((name, _)) = args.into_iter().next() {
         return Err(HookEvalError::MalformedIntent {
             rule_id,
@@ -361,11 +509,11 @@ fn intent_from_effect(effect: Effect, expected_receipt: &str) -> Result<Intent, 
     })
 }
 
+/// An OPTIONAL scalar string argument: absent stays absent, a list is a fault.
 fn take_string(
     args: &mut std::collections::BTreeMap<String, ArgValue>,
     rule_id: &str,
     name: &str,
-    required: bool,
 ) -> Result<Option<String>, HookEvalError> {
     match args.remove(name) {
         Some(ArgValue::Str(value)) => Ok(Some(value)),
@@ -373,12 +521,22 @@ fn take_string(
             rule_id: rule_id.to_string(),
             reason: format!("argument {name:?} must be a string"),
         }),
-        None if required => Err(HookEvalError::MalformedIntent {
-            rule_id: rule_id.to_string(),
-            reason: format!("missing required argument {name:?}"),
-        }),
         None => Ok(None),
     }
+}
+
+/// A REQUIRED scalar string argument. Typed as `String` rather than an unwrapped
+/// `Option`, so "this one is required" is the signature rather than a flag whose
+/// contract a caller has to re-establish with an `expect`.
+fn take_required(
+    args: &mut std::collections::BTreeMap<String, ArgValue>,
+    rule_id: &str,
+    name: &str,
+) -> Result<String, HookEvalError> {
+    take_string(args, rule_id, name)?.ok_or_else(|| HookEvalError::MalformedIntent {
+        rule_id: rule_id.to_string(),
+        reason: format!("missing required argument {name:?}"),
+    })
 }
 
 /// Parse and validate a `HOOK.md` page under `limits`.
@@ -391,6 +549,21 @@ fn take_string(
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
 /// [`LoadError::HookPredicateInvalid`], [`LoadError::HookCeiling`].
 pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    load_hook_with_caps(hook_md, limits, &SLICE1_CAPS)
+}
+
+/// Load a HOOK for `mrd test --corpus` counterfactual chaining. The ordinary
+/// loader never reaches this allowlist, so admitting `md.*` here cannot widen the
+/// armed runtime's [`SLICE1_CAPS`].
+pub(crate) fn load_hook_for_corpus(hook_md: &str, limits: CheckLimits) -> Result<Hook, LoadError> {
+    load_hook_with_caps(hook_md, limits, &CORPUS_COUNTERFACTUAL_CAPS)
+}
+
+fn load_hook_with_caps(
+    hook_md: &str,
+    limits: CheckLimits,
+    allowed_caps: &[EffectKind],
+) -> Result<Hook, LoadError> {
     let malformed = |reason: String| LoadError::HookMalformed { reason };
 
     let (frontmatter, _body) = crate::pack::split_frontmatter(hook_md)
@@ -423,7 +596,7 @@ pub(crate) fn load_hook(hook_md: &str, limits: CheckLimits) -> Result<Hook, Load
     let declared_caps = parsed
         .caps
         .ok_or_else(|| malformed("frontmatter must declare `caps:`".to_string()))?;
-    let caps = resolve_caps(&declared_caps)?;
+    let caps = resolve_caps(&declared_caps, allowed_caps)?;
 
     let budget = parsed
         .budget
@@ -484,7 +657,10 @@ struct HookFrontmatter {
 /// the slice-1 allowlist. An unknown name is malformed (the surface is closed, so a
 /// name outside it is a typo or a later vocabulary, never a guess); a known cap
 /// outside slice 1 is a named deferral.
-fn resolve_caps(declared: &[String]) -> Result<Vec<EffectKind>, LoadError> {
+fn resolve_caps(
+    declared: &[String],
+    allowed_caps: &[EffectKind],
+) -> Result<Vec<EffectKind>, LoadError> {
     let mut out = Vec::with_capacity(declared.len());
     for name in declared {
         let kind = EffectKind::from_wire_name(name).ok_or_else(|| LoadError::HookMalformed {
@@ -497,7 +673,7 @@ fn resolve_caps(declared: &[String]) -> Result<Vec<EffectKind>, LoadError> {
                     .join(", ")
             ),
         })?;
-        if !SLICE1_CAPS.contains(&kind) {
+        if !allowed_caps.contains(&kind) {
             return Err(LoadError::HookCapDeferred {
                 cap: kind.as_str().to_string(),
             });
@@ -862,6 +1038,27 @@ how:
         // The control: the one cap slice 1 DOES carry still loads, so the refusals
         // above are about the allowlist, not about `caps:` parsing being broken.
         assert!(load(FOUNDING_HOOK).is_ok(), "proto.send is admitted");
+    }
+
+    #[test]
+    fn corpus_counterfactual_caps_do_not_widen_the_production_loader() {
+        let page = FOUNDING_HOOK
+            .replace("[proto.send]", "[md.set_field]")
+            .replace(
+                "send(to = [\"reviewer\"], message = \"task → review\")",
+                "set_field(field = \"status\", value = \"review\")",
+            );
+        let counterfactual = load_hook_for_corpus(&page, CheckLimits::default())
+            .expect("the corpus tier may evaluate an md.* counterfactual");
+        assert_eq!(counterfactual.caps(), &[EffectKind::SetField]);
+        assert_eq!(SLICE1_CAPS, [EffectKind::Send]);
+        assert!(
+            matches!(
+                load(&page),
+                Err(LoadError::HookCapDeferred { cap }) if cap == "md.set_field"
+            ),
+            "the exact same declaration is still refused by the production loader"
+        );
     }
 
     /// An unknown cap name is malformed — the descriptor surface is closed, so a

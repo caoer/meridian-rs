@@ -12,9 +12,14 @@ lands.
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/ship-cache.md",
-  "edits": [],
-  "properties": { "status": "closed", "verdict": "approve" }
+  "actor": "worker-a",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "status"}, "edit": {"put": {"at": "upsert", "text": "closed"}}},
+    {"target": {"fm_key": "verdict"}, "edit": {"put": {"at": "upsert", "text": "approve"}}}
+  ]
 }
 ```
 

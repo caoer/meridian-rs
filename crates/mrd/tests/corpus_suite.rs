@@ -32,12 +32,26 @@ fn spec(name: &str) -> PathBuf {
         .join(format!("{name}.md"))
 }
 
+fn hook_spec(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/hook-tier/corpus/specs")
+        .join(format!("{name}.md"))
+}
+
 /// Run `mrd test --corpus <spec>` (human report), returning `(exit_code, stdout)`.
 fn run_human(name: &str) -> (i32, String) {
+    run_human_path(spec(name))
+}
+
+fn run_hook_human(name: &str) -> (i32, String) {
+    run_human_path(hook_spec(name))
+}
+
+fn run_human_path(path: PathBuf) -> (i32, String) {
     let out: Output = mrd()
         .arg("test")
         .arg("--corpus")
-        .arg(spec(name))
+        .arg(path)
         .output()
         .expect("run mrd test --corpus");
     (
@@ -49,10 +63,18 @@ fn run_human(name: &str) -> (i32, String) {
 /// Run `mrd test --corpus <spec> --json`, returning `(exit_code, parsed_report)`.
 /// A malformed spec emits no JSON, so this is for the specs that produce a report.
 fn run_json(name: &str) -> (i32, Value) {
+    run_json_path(spec(name))
+}
+
+fn run_hook_json(name: &str) -> (i32, Value) {
+    run_json_path(hook_spec(name))
+}
+
+fn run_json_path(path: PathBuf) -> (i32, Value) {
     let out: Output = mrd()
         .arg("test")
         .arg("--corpus")
-        .arg(spec(name))
+        .arg(path)
         .arg("--json")
         .output()
         .expect("run mrd test --corpus --json");
@@ -231,6 +253,346 @@ fn surprise_rule_fired_but_undeclared_is_reported() {
         report["surprise_rules"],
         serde_json::json!(["scenarios/reviewer-close.md"]),
         "the fired-but-undeclared rule is reported as a surprise"
+    );
+}
+
+#[test]
+fn proto_send_hook_reports_fire_dead_fuel_and_explicit_quiescence() {
+    let (code, report) = run_hook_json("valid-hook");
+    assert_eq!(code, 0, "the valid HOOK corpus must pass: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(report["summary"]["dead_rules"], 0);
+    assert_eq!(report["summary"]["errors"], 0);
+    assert_eq!(report["budgets"]["evals"], 2);
+    assert_eq!(report["quiescence"]["passed"], true);
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(
+        report["quiescence"]["nodes"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["quiescence"]["edges"], serde_json::json!([]));
+    assert_eq!(
+        case(&report, "move-to-review")["fired"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(
+        policy::SLICE1_CAPS,
+        [effects::EffectKind::Send],
+        "the proof did not widen the production cap ceiling"
+    );
+}
+
+#[test]
+fn hook_with_no_matching_case_is_dead() {
+    let (code, report) = run_hook_json("dead-hook");
+    assert_eq!(code, 1, "a dead HOOK is a finding: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+}
+
+#[test]
+fn hook_fuel_breach_is_named_and_fails() {
+    let (code, report) = run_hook_json("fuel-breach");
+    assert_eq!(code, 1, "a HOOK fuel breach is a finding: {report}");
+    let row = case(&report, "matching-change-exhausts-budget");
+    assert_eq!(row["outcome"], "error");
+    let findings = row["budget_findings"].as_array().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert!(
+        findings[0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tiny-budget: budget_exceeded steps=1"),
+        "the finding names the HOOK and its declared step ceiling: {findings:?}"
+    );
+}
+
+/// The trigger graph the cyclic pair really has. Both rules react to the same field
+/// and both write it, so each rule re-triggers itself as well as its peer. The
+/// self-edges are real trigger edges — their work is idempotent and terminates, but
+/// the edge exists and the proof does not hide it.
+fn cyclic_edges() -> Value {
+    serde_json::json!([
+        {"from":"cycle-alpha","to":"cycle-alpha"},
+        {"from":"cycle-alpha","to":"cycle-beta"},
+        {"from":"cycle-beta","to":"cycle-alpha"},
+        {"from":"cycle-beta","to":"cycle-beta"}
+    ])
+}
+
+#[test]
+fn deliberately_cyclic_hooks_fail_only_quiescence() {
+    let (code, report) = run_hook_json("cyclic-hooks");
+    assert_eq!(code, 1, "the cyclic fixture must fail: {report}");
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(report["summary"]["dead_rules"], 0);
+    assert_eq!(report["summary"]["surprise_rules"], 0);
+    assert_eq!(report["summary"]["errors"], 0);
+    assert_eq!(report["summary"]["findings"], 1);
+    assert_eq!(report["quiescence"]["passed"], false);
+    assert_eq!(report["quiescence"]["verdict"], "cycle");
+    assert_eq!(
+        report["quiescence"]["cycle"],
+        serde_json::json!(["cycle-beta", "cycle-alpha", "cycle-beta"])
+    );
+    assert_eq!(report["quiescence"]["edges"], cyclic_edges());
+
+    let (human_code, human) = run_hook_human("cyclic-hooks");
+    assert_eq!(human_code, 1);
+    assert!(
+        human.contains("quiescence assertion failed: cycle-beta → cycle-alpha → cycle-beta"),
+        "the negative receipt fails specifically at quiescence:\n{human}"
+    );
+}
+
+#[test]
+fn two_seeded_lineages_still_prove_the_cycle() {
+    // The gate-2 reproducer: two initial cases seed DISTINCT lineages into the same
+    // cyclic pair. A global work cache retires one lineage's item before the other
+    // lineage's descendant can close its ancestry, and the run exits 0 claiming
+    // `acyclic` with both edges present. Recurrence is per lineage, so it cannot.
+    let (code, report) = run_hook_json("two-entry-cycle");
+    assert_eq!(code, 1, "a reachable cycle must fail quiescence: {report}");
+    assert_eq!(report["summary"]["cases"], 2);
+    assert_eq!(report["summary"]["matched"], 2);
+    assert_eq!(report["quiescence"]["passed"], false);
+    assert_eq!(report["quiescence"]["verdict"], "cycle");
+    assert_eq!(
+        report["quiescence"]["cycle"],
+        serde_json::json!(["cycle-beta", "cycle-alpha", "cycle-beta"])
+    );
+    assert_eq!(
+        report["quiescence"]["edges"],
+        cyclic_edges(),
+        "both cross edges are present AND the cycle is reported"
+    );
+}
+
+#[test]
+fn converging_acyclic_branches_are_not_a_cycle() {
+    // The opposite false-positive class: two peers emit the IDENTICAL generation from
+    // the IDENTICAL state, so their branches converge on a byte-identical downstream
+    // work item carried by two different lineages. No lineage returns to one of its
+    // own ancestors, so the verdict is acyclic.
+    let (code, report) = run_hook_json("acyclic-convergence");
+    assert_eq!(code, 0, "converging branches are not a cycle: {report}");
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(report["quiescence"]["cycle"], Value::Null);
+    assert_eq!(
+        report["quiescence"]["edges"],
+        serde_json::json!([
+            {"from":"fan-a","to":"converge-sink"},
+            {"from":"fan-b","to":"converge-sink"}
+        ]),
+        "both branches really did reach the convergence point"
+    );
+    assert_eq!(report["summary"]["dead_rules"], 0);
+}
+
+#[test]
+fn a_later_silent_hook_is_dead_even_beside_a_live_one() {
+    // Two loaded HOOKs, an EMPTY `rules` fence: the live one fires, and the later,
+    // silent one is still a liveness subject.
+    let (code, report) = run_hook_json("dead-hook-multi-omitted-from-rules");
+    assert_eq!(code, 1, "the silent HOOK is a finding: {report}");
+    assert_eq!(
+        report["declared_rules"],
+        serde_json::json!(["task-status-notify", "never-fires"]),
+        "liveness subjects come from the loaded convention set, not the fence"
+    );
+    assert_eq!(report["dead_rules"], serde_json::json!(["never-fires"]));
+    assert_eq!(report["summary"]["mismatches"], 0);
+    assert_eq!(
+        case(&report, "move-to-review")["fired"],
+        serde_json::json!(["task-status-notify"]),
+        "the live sibling is unaffected"
+    );
+}
+
+#[test]
+fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
+    // The CHECK cites `task-status-notify`, which is also the sibling HOOK's slug.
+    // One merged set makes the silent HOOK look live; two namespaces cannot.
+    let (code, report) = run_hook_json("citation-collision");
+    assert_eq!(code, 1, "the same-named silent HOOK is dead: {report}");
+    let row = case(&report, "collide");
+    assert_eq!(row["outcome"], "fired");
+    assert_eq!(
+        row["fired"],
+        serde_json::json!(["task-status-notify"]),
+        "the CHECK expectation still matches on the citation id"
+    );
+    assert_eq!(row["matched"], true);
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["task-status-notify"]),
+        "and the silent HOOK of the same name is still reported dead"
+    );
+    assert_eq!(
+        report["surprise_rules"],
+        serde_json::json!([]),
+        "a declared name is never also a surprise"
+    );
+}
+
+#[test]
+fn one_generation_is_one_batch_that_names_no_identity() {
+    // Production applies a mixed frontmatter+section emission as ONE atomic batch,
+    // and such a batch has no addressable Delta container — the one synthesized event
+    // names neither the field nor the section. A proof that split the generation into
+    // independent single-edit writes would derive two rich events and fabricate the
+    // downstream fire this watcher is waiting for.
+    let (code, report) = run_hook_json("mixed-generation");
+    assert_eq!(code, 1, "the watcher must go dead: {report}");
+    assert_eq!(
+        case(&report, "pull-the-trigger")["fired"],
+        serde_json::json!(["mixed-emitter"])
+    );
+    assert_eq!(report["dead_rules"], serde_json::json!(["mixed-watcher"]));
+    assert_eq!(
+        report["quiescence"]["edges"],
+        serde_json::json!([]),
+        "one batch, one event, no invented downstream edge"
+    );
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+}
+
+#[test]
+fn narrowed_reporting_is_byte_identical_in_both_corpus_modes() {
+    // `counterfactual: true` widens which caps a DECLARATION may carry. It must not
+    // change how a result is projected or reported by one byte, so the same denied
+    // ordinary descriptor renders identically in both modes.
+    let (production_code, production) = run_hook_json("narrowed-production");
+    let (counterfactual_code, counterfactual) = run_hook_json("narrowed-counterfactual");
+    assert_eq!(production_code, 0, "{production}");
+    assert_eq!(counterfactual_code, 0, "{counterfactual}");
+    let denied = serde_json::json!(["narrowed-md:md.set_field"]);
+    assert_eq!(
+        case(&production, "move-to-review")["narrowed_effects"],
+        denied
+    );
+    assert_eq!(
+        case(&production, "move-to-review"),
+        case(&counterfactual, "move-to-review"),
+        "every reported case fact is identical across the two modes"
+    );
+}
+
+#[test]
+fn a_forged_receipt_is_refused_in_both_corpus_modes() {
+    // The ORDINARY production corpus branch is the one an armed HOOK will travel, so
+    // it is the one that must carry the guard — and the counterfactual twin proves
+    // widening the cap ceiling did not weaken it.
+    for spec in ["forged-receipt", "forged-receipt-counterfactual"] {
+        let out: Output = mrd()
+            .arg("test")
+            .arg("--corpus")
+            .arg(hook_spec(spec))
+            .output()
+            .expect("run the forged-receipt control");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{spec}: a forged receipt is a hard fault"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("emitted a malformed intent")
+                && stderr.contains("does not name this landed change"),
+            "{spec}: the policy boundary names the fault: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn raw_md_descriptors_cannot_bypass_canonical_validation() {
+    // R13's negative half: a direct `set_field` constructor carries no canonical
+    // action and no receipt. Production HOOK projection rejects it, and the
+    // counterfactual branch now rejects it identically — the proof validates the same
+    // production-shaped intent a real armed hook would, or it proves nothing.
+    let out: Output = mrd()
+        .arg("test")
+        .arg("--corpus")
+        .arg(hook_spec("raw-md-descriptor"))
+        .output()
+        .expect("run the raw-md control");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a raw md.* descriptor is a hard fault"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("raw-md") && stderr.contains("malformed intent"),
+        "the fault names the rule and the canonical shape: {stderr}"
+    );
+}
+
+#[test]
+fn a_canonical_md_intent_reaches_the_production_executor() {
+    // R13's positive half: a canonical `md.append_section` intent crosses the `run`
+    // adapter into the production batch executor. The watcher fires on the EXECUTOR's
+    // own synthesized event, which it can only do if the append really landed against
+    // the isolated proof corpus with production section semantics.
+    let (code, report) = run_hook_json("canonical-md-adapter");
+    assert_eq!(
+        code, 0,
+        "the canonical adapter path must be clean: {report}"
+    );
+    assert_eq!(
+        report["quiescence"]["edges"],
+        serde_json::json!([{"from":"canonical-writer","to":"log-watcher"}]),
+        "the executor's synthesized event named the section the adapter wrote"
+    );
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(report["summary"]["dead_rules"], 0);
+    assert_eq!(
+        policy::SLICE1_CAPS,
+        [effects::EffectKind::Send],
+        "the adapter is production code; the runtime cap ceiling is unchanged"
+    );
+}
+
+#[test]
+fn loaded_hook_omitted_from_rules_is_still_dead() {
+    let (code, report) = run_hook_json("dead-hook-omitted-from-rules");
+    assert_eq!(
+        code, 1,
+        "a loaded dead HOOK cannot hide outside `rules`: {report}"
+    );
+    assert_eq!(
+        report["declared_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(report["summary"]["mismatches"], 0);
+}
+
+#[test]
+fn duplicate_identical_cases_are_acyclic_but_the_real_cycle_still_bites() {
+    let (code, report) = run_hook_json("duplicate-identical-cases");
+    assert_eq!(
+        code, 0,
+        "global duplicate work is not a causal cycle: {report}"
+    );
+    assert_eq!(report["summary"]["cases"], 2);
+    assert_eq!(report["summary"]["matched"], 2);
+    assert_eq!(report["quiescence"]["verdict"], "acyclic");
+    assert_eq!(report["quiescence"]["cycle"], Value::Null);
+
+    let (cycle_code, cycle) = run_hook_json("cyclic-hooks");
+    assert_eq!(cycle_code, 1);
+    assert_eq!(cycle["quiescence"]["verdict"], "cycle");
+    assert_eq!(
+        cycle["quiescence"]["cycle"],
+        serde_json::json!(["cycle-beta", "cycle-alpha", "cycle-beta"])
     );
 }
 

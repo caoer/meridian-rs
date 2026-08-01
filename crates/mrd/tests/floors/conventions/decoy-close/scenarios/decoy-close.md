@@ -11,9 +11,13 @@ does not satisfy the real close law. The legal path is [[real-close]].
 
 ```json ^put
 {
+  "op": "splice",
   "path": "tasks/ship-cache.md",
-  "edits": [],
-  "properties": { "resolution": "closed" }
+  "actor": "worker-a",
+  "force": false,
+  "edits": [
+    {"target": {"fm_key": "resolution"}, "edit": {"put": {"at": "upsert", "text": "closed"}}}
+  ]
 }
 ```
 

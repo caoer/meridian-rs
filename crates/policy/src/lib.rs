@@ -35,6 +35,18 @@
 
 use model::{CorpusIndex, Document};
 
+/// The attested armed-set artifact — the INDEX successor (registration ruling § 4,
+/// amended 2026-08-01). [`armed::arm`] is the ONE act that turns a discovered page
+/// into an armed one: it narrows to an [`armed::ArmRoot`], resolves through the
+/// landed resolver, and pins each winner's page + [`page_rev`] into an
+/// [`armed::ArmedArtifact`] row keyed by (id, arm root).
+///
+/// It is a MODULE, not a flat re-export, because the folder loader's `index::arm`
+/// still lives until the loader cutover retires it — two acts named `arm` in one
+/// namespace would be two names for one thing at exactly the seam where the
+/// difference matters. When `index::arm` dies, nothing here has to be renamed.
+pub mod armed;
+
 mod binding;
 mod change;
 mod check_eval;
@@ -48,6 +60,7 @@ mod hook;
 mod index;
 mod pack;
 mod reaction;
+mod registration;
 mod seed;
 
 /// The `rulepack-api@2` change surface (U1.1): the `Change` struct a
@@ -77,7 +90,8 @@ pub use check_eval::{CheckError, CheckLimits, CheckTelemetry};
 /// [`Convention`] runs its `check_change` over a [`Change`], returning the
 /// [`CheckOutcome`]'s [`Refusal`]s; a refusal always cites its passing scenario.
 pub use convention::{
-    Capability, CheckOutcome, Convention, ConventionFiles, LoadError, Refusal, load_convention,
+    Capability, CheckOutcome, Convention, ConventionFiles, CounterfactualConvention, LoadError,
+    Refusal, load_convention, load_convention_for_corpus,
 };
 
 /// The HOOK capability (U1.3): the emit leg's declaration. A [`Hook`] carries the
@@ -86,7 +100,9 @@ pub use convention::{
 /// ceiling was enforced at load. [`evaluate_hooks`] runs armed, in-scope HOOKs and
 /// returns advisory-only [`HookOutcome`]s; [`SLICE1_CAPS`] is what slice 1 admits.
 pub use hook::{
-    Hook, HookEvalError, HookFinding, HookOutcome, Intent, SLICE1_CAPS, evaluate_hooks,
+    Hook, HookEvalError, HookFinding, HookOutcome, HookTestTelemetry, Intent, SLICE1_CAPS,
+    evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks, evaluate_hooks_for_test,
+    evaluate_hooks_for_test_metered, intent_from_effect,
 };
 
 /// The reaction-plane payload (C1a): [`derive_event`] turns a landed [`Change`]
@@ -105,8 +121,24 @@ pub use seed::{SEED_CONVENTION_SLUG, SeedFiles, load_seed_convention, seed_conve
 /// ([`armed_from_index`]), and the arming gate ([`arm`]) that refuses on evidence
 /// drift ([`ArmError::Drift`], `report-rev == armed-rev`).
 pub use index::{
-    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index, evidence_rev,
+    ArmError, ArmedRef, Enforcement, IndexCorrupt, IndexEntry, arm, armed_from_index,
     generate_index, parse_index_strict, render_rows, sweep,
+};
+
+/// Tag-indexed rule registration — the registration rework's discovery layer.
+/// A page registers by carrying `rules/hook` / `rules/check` in its frontmatter
+/// `tags:` ([`RuleKind`]), is identified by its frontmatter `id:` ([`RuleId`],
+/// § 2 grammar), and resolves against same-id pages by mount depth along the
+/// three-rung scope ladder ([`ScopeLayer`] → [`Scope`]). [`RuleIndex::discover`]
+/// reads a caller-supplied page feed ([`PageRef`] — `policy` stays I/O-free);
+/// [`RuleIndex::resolve`] is the ONE pure resolver both the arming path and the
+/// read-only print verb call, and it RETAINS every shadowed candidate so the
+/// override chain stays printable. Nothing here arms: discovery makes a page
+/// known, only the explicit attested ARM act activates it.
+pub use registration::{
+    Collision, Effective, EffectiveSet, ID_KEY, IdFault, MAX_ID_LEN, PageRef,
+    REGISTRATION_NAMESPACE, RegisterError, Registration, RuleId, RuleIndex, RuleKind, Scope,
+    ScopeLayer, page_rev, register_page,
 };
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision

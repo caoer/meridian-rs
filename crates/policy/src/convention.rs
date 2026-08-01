@@ -46,15 +46,15 @@ use crate::check_eval::{self, CheckError, CheckLimits, CheckTelemetry};
 use crate::hook::Hook;
 
 /// The four capability files a convention folder may carry. Each earns a file iff
-/// it needs a distinct power ceiling (rulings § capability grammar); v1 loads
-/// [`Capability::Check`] and defers the rest.
+/// it needs a distinct power ceiling (rulings § capability grammar); this slice loads
+/// [`Capability::Check`] and [`Capability::Hook`] and defers FIX/VIEW.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     /// `CHECK.md` — reads the change + pinned facts, produces findings / refusals.
     Check,
     /// `FIX.md` — mutates the change under caps (deferred).
     Fix,
-    /// `HOOK.md` — reacts outward to the landed change under effect caps (deferred).
+    /// `HOOK.md` — reacts outward to the landed change under declared effect caps.
     Hook,
     /// `VIEW.md` — the capability-locked read face (deferred).
     View,
@@ -304,6 +304,77 @@ impl Convention {
     }
 }
 
+/// A convention loaded only for the `test --corpus` counterfactual proof.
+///
+/// This wrapper is deliberately not [`Convention`]. Its widened HOOK cannot enter
+/// ordinary policy evaluation, arming, or the production loader by type. The public
+/// surface exposes only the facts the proof needs; the widened [`Hook`] stays behind
+/// the policy-owned corpus evaluator.
+///
+/// ```compile_fail
+/// use policy::{Convention, CounterfactualConvention};
+///
+/// fn cannot_enter_ordinary_policy(proof: CounterfactualConvention) {
+///     let _ordinary: Convention = proof;
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct CounterfactualConvention {
+    inner: Convention,
+}
+
+impl CounterfactualConvention {
+    /// The convention's subject slug.
+    #[must_use]
+    pub fn slug(&self) -> &str {
+        self.inner.slug()
+    }
+
+    /// The convention's declared default scope.
+    #[must_use]
+    pub fn scope(&self) -> &[String] {
+        self.inner.scope()
+    }
+
+    /// Whether the CHECK leg matches `path`.
+    #[must_use]
+    pub fn matches_path(&self, path: &str) -> bool {
+        self.inner.matches_path(path)
+    }
+
+    /// Whether the convention carries a CHECK leg.
+    #[must_use]
+    pub fn has_check(&self) -> bool {
+        self.inner.check_source().is_some()
+    }
+
+    /// Run the CHECK leg through the ordinary metered evaluator.
+    ///
+    /// # Errors
+    /// The same [`CheckError`] surface as [`Convention::check_change_metered`].
+    pub fn check_change_metered(&self, change: &Change) -> Result<CheckTelemetry, CheckError> {
+        self.inner.check_change_metered(change)
+    }
+
+    /// Whether the convention carries a counterfactual HOOK leg.
+    #[must_use]
+    pub fn has_hook(&self) -> bool {
+        self.inner.hook().is_some()
+    }
+
+    /// Whether the counterfactual HOOK leg matches `path`.
+    #[must_use]
+    pub fn hook_matches_path(&self, path: &str) -> bool {
+        self.inner
+            .hook()
+            .is_some_and(|hook| hook.matches_path(path))
+    }
+
+    pub(crate) fn hook(&self) -> Option<&Hook> {
+        self.inner.hook()
+    }
+}
+
 /// Load the convention `conventions/<slug>/` through the injected `files` accessor
 /// under the given full limits.
 ///
@@ -327,6 +398,70 @@ pub fn load_convention(
     files: &dyn ConventionFiles,
     limits: CheckLimits,
 ) -> Result<Convention, LoadError> {
+    load_convention_with_hook_loader(slug, files, limits, crate::hook::load_hook)
+}
+
+/// Load a convention for the `test --corpus` pre-arming proof.
+///
+/// This differs from [`load_convention`] only for HOOK capability admission:
+/// counterfactual `md.*` descriptors may load so the tier can prove whether their
+/// trigger graph is quiescent. The widened declaration is returned as the opaque
+/// [`CounterfactualConvention`], so it cannot enter [`crate::evaluate_hooks`], an
+/// armed set, or any API accepting an ordinary [`Convention`]. The production loader
+/// remains pinned to [`crate::SLICE1_CAPS`].
+///
+/// # The loader-to-evaluator boundary
+/// The pair below is a mutation control over ONE edit — which loader minted the
+/// value. The positive twin compiles, so the negative twin's failure is the widened
+/// type being refused at an ordinary evaluator API, not some unrelated breakage.
+///
+/// The ordinary loader's value is accepted:
+///
+/// ```
+/// use policy::{CheckLimits, evaluate_hooks_for_test, load_seed_convention};
+///
+/// fn ordinary_reaches_the_evaluator(event: &effects::ChangeEvent) {
+///     let convention = load_seed_convention(CheckLimits::default()).expect("seed loads");
+///     let _ = evaluate_hooks_for_test(&[convention], event);
+/// }
+/// ```
+///
+/// The widened loader's value is not:
+///
+/// ```compile_fail
+/// use policy::{
+///     CheckLimits, SEED_CONVENTION_SLUG, evaluate_hooks_for_test, load_convention_for_corpus,
+///     seed_convention_files,
+/// };
+///
+/// fn widened_cannot_reach_the_evaluator(event: &effects::ChangeEvent) {
+///     let proof = load_convention_for_corpus(
+///         SEED_CONVENTION_SLUG,
+///         &seed_convention_files(),
+///         CheckLimits::default(),
+///     )
+///     .expect("seed loads");
+///     let _ = evaluate_hooks_for_test(&[proof], event);
+/// }
+/// ```
+///
+/// # Errors
+/// The same [`LoadError`] surface as [`load_convention`].
+pub fn load_convention_for_corpus(
+    slug: &str,
+    files: &dyn ConventionFiles,
+    limits: CheckLimits,
+) -> Result<CounterfactualConvention, LoadError> {
+    load_convention_with_hook_loader(slug, files, limits, crate::hook::load_hook_for_corpus)
+        .map(|inner| CounterfactualConvention { inner })
+}
+
+fn load_convention_with_hook_loader(
+    slug: &str,
+    files: &dyn ConventionFiles,
+    limits: CheckLimits,
+    hook_loader: fn(&str, CheckLimits) -> Result<Hook, LoadError>,
+) -> Result<Convention, LoadError> {
     validate_slug(slug)?;
 
     // 1. Capability ceiling — a declared FIX / VIEW is a named deferral, never a
@@ -343,7 +478,7 @@ pub fn load_convention(
     //    is the law leg, HOOK the emit leg; either alone is a convention, neither is
     //    not. Matching on the pair keeps "one capability is present" a fact of the
     //    control flow rather than an invariant a later arm has to assume.
-    let load_hook = |md: &str| crate::hook::load_hook(md, limits);
+    let load_hook = |md: &str| hook_loader(md, limits);
     let (scope, check_source, hook) = match (
         files.read(Capability::Check.filename()),
         files.read(Capability::Hook.filename()),
@@ -1033,5 +1168,91 @@ def on_change(event):
         );
         assert!(glob_match("**/verdict.md", "a/b/verdict.md"));
         assert!(glob_match("**/verdict.md", "verdict.md"));
+    }
+
+    // ── the R13 pair: one canonical projection, both loader modes ─────────────
+
+    /// A counterfactual HOOK page carrying `body` as its predicate.
+    fn md_hook_page(body: &str) -> String {
+        format!(
+            "---\nkind: hook\nseverity: info\npaths: [\"tasks/*.md\"]\ncaps: [md.set_field]\n\
+             budget: {{ steps: 10000, mem: 4194304 }}\nhow: {{}}\n---\n\n```starlark\n{body}```\n"
+        )
+    }
+
+    fn counterfactual(slug: &str, body: &str) -> CounterfactualConvention {
+        let files = MemFiles::new().with("HOOK.md", &md_hook_page(body));
+        load_convention_for_corpus(slug, &files, CheckLimits::default())
+            .expect("the corpus loader admits an md.* declaration")
+    }
+
+    fn status_event() -> effects::ChangeEvent {
+        effects::ChangeEvent {
+            file: "tasks/card.md".to_string(),
+            sections_changed: Vec::new(),
+            fields_changed: vec!["status".to_string()],
+            changes: Vec::new(),
+            facts: effects::EventFacts::default(),
+            fingerprint_before: "rev-before".to_string(),
+            fingerprint_after: "rev-after".to_string(),
+            depth: 0,
+        }
+    }
+
+    /// A RAW `md.*` descriptor carries no canonical action and no receipt.
+    /// Production HOOK projection rejects it; the counterfactual branch must reject
+    /// it identically, or the proof would validate a shape no armed hook can emit.
+    #[test]
+    fn a_raw_md_descriptor_cannot_bypass_canonical_intent_validation() {
+        let convention = counterfactual(
+            "raw-md",
+            "def on_change(event):\n    set_field(field = \"status\", value = \"raw\")\n",
+        );
+        let error =
+            crate::evaluate_counterfactual_hooks_for_corpus_metered(&[convention], &status_event())
+                .expect_err("a raw md.* descriptor is not a canonical intent");
+        let text = error.to_string();
+        println!("POPULATION raw md.* -> {text}");
+        assert!(
+            matches!(error, crate::HookEvalError::MalformedIntent { .. }),
+            "{error:?}"
+        );
+        assert!(
+            text.contains("action"),
+            "the fault names the missing canonical key: {text}"
+        );
+    }
+
+    /// The other half: a CANONICAL `md.*` intent is accepted — the rejection arm is
+    /// dead — and it projects through the SAME production seam, so the target/payload
+    /// the `run` adapter reads are the ones the predicate wrote.
+    #[test]
+    fn a_canonical_md_intent_projects_through_the_production_seam() {
+        let convention = counterfactual(
+            "canonical-md",
+            "def on_change(event):
+    intent(
+        action = \"md.set_field\",
+        target = \"status\",
+        payload = \"beta\",
+        receipt = receipt_addr(event.file, event.fingerprint_after),
+    )
+",
+        );
+        let rows =
+            crate::evaluate_counterfactual_hooks_for_corpus_metered(&[convention], &status_event())
+                .expect("a canonical md.* intent is admitted, not rejected");
+        assert_eq!(rows.len(), 1);
+        let intents = &rows[0].outcome.intents;
+        assert_eq!(intents.len(), 1, "one admitted intent: {intents:?}");
+        println!("POPULATION canonical md.* -> {:?}", intents[0]);
+        assert_eq!(intents[0].action, "md.set_field");
+        assert_eq!(intents[0].target.as_deref(), Some("status"));
+        assert_eq!(intents[0].payload.as_deref(), Some("beta"));
+        assert_eq!(
+            intents[0].receipt,
+            effects::receipt_address("tasks/card.md", "rev-after"),
+            "the canonical receipt survives the same validation production applies"
+        );
     }
 }

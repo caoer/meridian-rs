@@ -4,8 +4,10 @@
 //!
 //! # Charter
 //! **Owns:** the perf truth. `corpusgen` (profile-driven, seeded, deterministic
-//! markdown generator — corpora are cached under `target/corpora/`, never
-//! committed; a recipe file IS the corpus), the claims registry
+//! markdown generator — corpora are cached under the per-user meridian cache
+//! root (`corpus::corpora_root`), never committed and never in-tree (an
+//! in-tree corpus enters the repo workspace's hash domain and balloons the
+//! resident daemon); a recipe file IS the corpus), the claims registry
 //! ([`claims`] — every perf claim is data in `claims.toml`, joined to
 //! measurements into PASS/FAIL/MEASURED/UNTESTED verdicts), the hdrhistogram
 //! p99 measurement path ([`measure`] — criterion sampling underestimates
