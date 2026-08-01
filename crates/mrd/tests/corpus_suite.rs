@@ -167,15 +167,16 @@ fn dead_citation_over_a_one_citation_page_is_reported() {
     );
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["reviewer-close"]),
-        "the declared citation the corpus never fired is reported dead"
+        serde_json::json!(["check:reviewer-close"]),
+        "the declared citation the corpus never fired is reported dead, in ITS namespace"
     );
 
     // The dead-rule report is SHOWN in the human render (task gate).
     let (hcode, human) = run_human("dead-rule");
     assert_eq!(hcode, 1);
     assert!(
-        human.contains("Dead rules (declared, never fired)") && human.contains("reviewer-close"),
+        human.contains("Dead rules (declared, never fired)")
+            && human.contains("check:reviewer-close"),
         "the human report shows the dead rule:\n{human}"
     );
 }
@@ -208,7 +209,7 @@ fn dead_citation_on_a_two_citation_page_is_reported() {
     );
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["lower-priority"]),
+        serde_json::json!(["check:lower-priority"]),
         "only the never-fired priority citation is dead; the reviewer one is live"
     );
 }
@@ -252,7 +253,7 @@ fn surprise_rule_fired_but_undeclared_is_reported() {
     );
     assert_eq!(
         report["surprise_rules"],
-        serde_json::json!(["reviewer-close"]),
+        serde_json::json!(["check:reviewer-close"]),
         "the fired-but-undeclared citation is reported as a surprise"
     );
 }
@@ -290,7 +291,7 @@ fn hook_with_no_matching_case_is_dead() {
     assert_eq!(report["summary"]["mismatches"], 0);
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["task-status-notify"])
+        serde_json::json!(["hook:task-status-notify"])
     );
     assert_eq!(report["quiescence"]["verdict"], "acyclic");
 }
@@ -395,6 +396,101 @@ fn converging_acyclic_branches_are_not_a_cycle() {
 }
 
 #[test]
+fn a_terminating_convergent_cascade_is_not_a_fuel_exhaustion() {
+    // N1. Two peers per level emit the IDENTICAL generation, so the graph's branches
+    // reconverge at every level: `2^(d+1) − 2` causal PATHS over `d` states. A proof
+    // that enumerates paths pays the first number and reports `fuel_exhausted` on a
+    // convention set with no cycle at all — measured at depth 8, where 510 paths breach
+    // the 256 budget. A pre-arming gate that fails good conventions blocks arming.
+    //
+    // Both depths must certify, and the step counts must stay proportional to the
+    // STATE space (2 per level), never to the path count.
+    for (spec, steps) in [
+        ("convergent-cascade-depth-8", 16),
+        ("convergent-cascade-depth-12", 24),
+    ] {
+        let (code, report) = run_hook_json(spec);
+        assert_eq!(code, 0, "{spec}: a terminating cascade certifies: {report}");
+        assert_eq!(report["quiescence"]["verdict"], "acyclic", "{spec}");
+        assert_eq!(report["quiescence"]["fuel_exhausted"], false, "{spec}");
+        assert_eq!(report["quiescence"]["cycle"], Value::Null, "{spec}");
+        assert_eq!(
+            report["quiescence"]["steps"], steps,
+            "{spec}: the walk costs the state space, not the path count: {report}"
+        );
+        // Not vacuous: the cascade really ran, and every peer edge is in the graph.
+        assert_eq!(
+            report["quiescence"]["edges"],
+            serde_json::json!([
+                {"from":"chain-a","to":"chain-a"},
+                {"from":"chain-a","to":"chain-b"},
+                {"from":"chain-b","to":"chain-a"},
+                {"from":"chain-b","to":"chain-b"}
+            ]),
+            "{spec}: both peers really did re-trigger each other"
+        );
+        assert_eq!(report["summary"]["dead_rules"], 0, "{spec}");
+    }
+}
+
+#[test]
+fn a_divergent_cascade_still_exhausts_fuel() {
+    // The direction-of-failure rail on the N1 repair (advisor requirement). The defect
+    // it repairs false-FAILS good conventions, which is the SAFE direction for a
+    // pre-arming gate; the repair must never buy that back by flipping the gate toward
+    // false-ACCEPT.
+    //
+    // Here the two peers append DIFFERENT lines to one section, so no two causal paths
+    // ever meet: the state space really is exponential and the cascade never settles.
+    // Nothing recurs, so no ancestry check can fire — the graph fuel is the only thing
+    // that stops it, and a completed-work memo must leave it stopping.
+    let (code, report) = run_hook_json("divergent-cascade");
+    assert_eq!(code, 1, "a never-settling cascade must fail: {report}");
+    assert_eq!(report["quiescence"]["verdict"], "fuel_exhausted");
+    assert_eq!(report["quiescence"]["passed"], false);
+    assert_eq!(
+        report["quiescence"]["cycle"],
+        Value::Null,
+        "divergence is not a cycle — there is no recurrence to report"
+    );
+    assert_eq!(
+        report["quiescence"]["steps"], report["quiescence"]["fuel_limit"],
+        "the budget is what stopped the walk: {report}"
+    );
+}
+
+#[test]
+fn a_live_hook_cannot_vouch_for_a_same_named_check_citation() {
+    // The MIRROR of `a_check_citation_cannot_vouch_for_a_same_named_hook`, over the
+    // same two pages and the same collided name, running the other way: here the HOOK
+    // fires and the CHECK citation of that name never does. One merged `declared_rules`
+    // list with a hook-wins rule closes only the named direction; two typed namespaces
+    // close both.
+    let (code, report) = run_hook_json("hook-liveness-mirror");
+    assert_eq!(
+        code, 1,
+        "the same-named dead citation is a finding: {report}"
+    );
+    assert_eq!(
+        report["declared_rules"],
+        serde_json::json!(["check:task-status-notify", "hook:task-status-notify"]),
+        "one collided name is TWO liveness subjects"
+    );
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["check:task-status-notify"]),
+        "the citation is dead in its own namespace, and says which namespace"
+    );
+    // The live HOOK is unaffected — it fired, and it is not reported dead.
+    assert_eq!(
+        case(&report, "mirror")["fired"],
+        serde_json::json!(["task-status-notify"])
+    );
+    assert_eq!(case(&report, "mirror")["matched"], true);
+    assert_eq!(report["surprise_rules"], serde_json::json!([]));
+}
+
+#[test]
 fn a_later_silent_hook_is_dead_even_beside_a_live_one() {
     // Two loaded HOOKs, an EMPTY `rules` fence: the live one fires, and the later,
     // silent one is still a liveness subject.
@@ -402,10 +498,13 @@ fn a_later_silent_hook_is_dead_even_beside_a_live_one() {
     assert_eq!(code, 1, "the silent HOOK is a finding: {report}");
     assert_eq!(
         report["declared_rules"],
-        serde_json::json!(["task-status-notify", "never-fires"]),
+        serde_json::json!(["hook:task-status-notify", "hook:never-fires"]),
         "liveness subjects come from the loaded rule set, not the fence"
     );
-    assert_eq!(report["dead_rules"], serde_json::json!(["never-fires"]));
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["hook:never-fires"])
+    );
     assert_eq!(report["summary"]["mismatches"], 0);
     assert_eq!(
         case(&report, "move-to-review")["fired"],
@@ -430,7 +529,7 @@ fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
     assert_eq!(row["matched"], true);
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["task-status-notify"]),
+        serde_json::json!(["hook:task-status-notify"]),
         "and the silent HOOK of the same name is still reported dead"
     );
     assert_eq!(
@@ -453,7 +552,10 @@ fn one_generation_is_one_batch_that_names_no_identity() {
         case(&report, "pull-the-trigger")["fired"],
         serde_json::json!(["mixed-emitter"])
     );
-    assert_eq!(report["dead_rules"], serde_json::json!(["mixed-watcher"]));
+    assert_eq!(
+        report["dead_rules"],
+        serde_json::json!(["hook:mixed-watcher"])
+    );
     assert_eq!(
         report["quiescence"]["edges"],
         serde_json::json!([]),
@@ -567,11 +669,11 @@ fn loaded_hook_omitted_from_rules_is_still_dead() {
     );
     assert_eq!(
         report["declared_rules"],
-        serde_json::json!(["task-status-notify"])
+        serde_json::json!(["hook:task-status-notify"])
     );
     assert_eq!(
         report["dead_rules"],
-        serde_json::json!(["task-status-notify"])
+        serde_json::json!(["hook:task-status-notify"])
     );
     assert_eq!(report["summary"]["mismatches"], 0);
 }
