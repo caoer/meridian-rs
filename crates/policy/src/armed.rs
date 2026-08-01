@@ -847,20 +847,67 @@ fn verify_rows<'a>(
             }),
             Ok(bytes) => {
                 let report_rev = page_rev(&bytes);
-                if report_rev == row.rev {
-                    if row.mode.fires() {
-                        firing.push(row.clone());
-                    }
-                } else {
+                if report_rev != row.rev {
                     red.push(RedRow {
                         row: row.clone(),
                         why: Redness::Drifted { report_rev },
                     });
+                } else if let Some(why) = mode_outside_its_kind(row, &bytes) {
+                    red.push(RedRow {
+                        row: row.clone(),
+                        why,
+                    });
+                } else if row.mode.fires() {
+                    firing.push(row.clone());
                 }
             }
         }
     }
     ArmedVerdict { firing, red }
+}
+
+/// Whether a row's mode is one its PAGE's kind admits, answered from the pinned
+/// bytes rather than from the row.
+///
+/// **The row cannot attest its own kind.** The § 4 table carries five columns and
+/// `kind` is not one of them; the mode word is all a reader has, and the two
+/// vocabularies are disjoint only by convention (`off|warn|block` for a check,
+/// `off|armed` for a hook). So a hand-edited hook row reading `block` parses
+/// clean — and would hand a hook the veto the ruling denies it, which is the one
+/// power the check/hook split exists to withhold.
+///
+/// Re-deriving the kind from the pinned page closes that without a sixth column:
+/// the page is ALREADY read here to verify the rev, the registration tag is the
+/// one name for the kind (ruling § 1), and the rev check immediately above proves
+/// these bytes are the attested bytes — so the kind is as attested as the rev is.
+/// A column would have been a second place for the kind to be wrong.
+///
+/// A page that no longer registers at all (its tag was removed under a pinned rev
+/// — impossible while the rev holds, but not a state to trust) reddens too: an
+/// armed row whose page is not a rule page is not a row that may fire.
+fn mode_outside_its_kind(row: &ArmedRow, bytes: &str) -> Option<Redness> {
+    let registration = crate::registration::register_page(crate::registration::PageRef {
+        layer: ScopeLayer::Workspace,
+        page: &row.page,
+        bytes,
+    });
+    let kinds = match registration {
+        Ok(Some(registration)) => registration.kinds().to_vec(),
+        // Refused, or no longer a rule page: either way it cannot say which
+        // vocabulary its mode belongs to.
+        _ => Vec::new(),
+    };
+    if kinds.iter().any(|kind| row.mode.admits(*kind)) {
+        return None;
+    }
+    Some(Redness::ModeOutsideKind {
+        kinds: kinds.clone(),
+        vocabulary: kinds
+            .first()
+            .map_or("the page registers no rule kind", |kind| {
+                Mode::vocabulary(*kind)
+            }),
+    })
 }
 
 /// The live bytes of a pinned page, injected — `policy` performs no I/O.
@@ -885,6 +932,15 @@ pub enum Redness {
     Missing {
         /// The reader's own message.
         detail: String,
+    },
+    /// The row's mode is not in the vocabulary its PAGE's kind admits — the shape
+    /// a hand-edited row takes when it reaches for a power its kind does not have
+    /// (a hook row spelled `block`). Fails closed: the row does not fire.
+    ModeOutsideKind {
+        /// The kinds the pinned page registers (empty when it registers none).
+        kinds: Vec<RuleKind>,
+        /// The vocabulary those kinds admit, for the refusal's teaching half.
+        vocabulary: &'static str,
     },
 }
 
@@ -926,6 +982,24 @@ impl std::fmt::Display for RedRow {
                 "`{id}` is attested against `{page}`, which cannot be read: {detail}",
                 id = self.row.id,
                 page = self.row.page,
+            ),
+            Redness::ModeOutsideKind { kinds, vocabulary } => write!(
+                f,
+                "`{id}` is armed `{mode}`, but `{page}` registers as {registers} — that mode is \
+                 not in its vocabulary ({vocabulary}). A row reaching for a power its kind does \
+                 not have does not fire; re-arm the page in a mode its kind admits",
+                id = self.row.id,
+                mode = self.row.mode.as_str(),
+                page = self.row.page,
+                registers = if kinds.is_empty() {
+                    "no rule kind at all".to_string()
+                } else {
+                    kinds
+                        .iter()
+                        .map(|kind| format!("`{}`", kind.tag()))
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                },
             ),
         }
     }
@@ -1207,6 +1281,86 @@ mod tests {
             &ArmRoot::workspace(),
             [request(text, mode, &rev)],
         )
+    }
+
+    // ── the kind↔mode binding (F3) ────────────────────────────────────────────
+
+    /// **A hand-edited hook row may not buy itself a veto.**
+    ///
+    /// The § 4 table carries no `kind` column, and the two mode vocabularies are
+    /// disjoint only by convention, so `parse_artifact` reads the mode word with no
+    /// way to know which vocabulary it belongs to: a hook row edited from `armed` to
+    /// `block` parses perfectly well. Nothing else in the system would object — the
+    /// rev still matches, the page is still there — and the door would hand a HOOK
+    /// the power to refuse a write, which is the single power the check/hook split
+    /// exists to withhold ("a hook may never veto or mutate").
+    ///
+    /// The row is verified against its PAGE's registration tag, so the edit reddens
+    /// instead of arming. Note what the attacker had to do here: nothing but edit
+    /// one word in the artifact — no page edit, so no rev change to catch it.
+    #[test]
+    fn a_hand_edited_hook_row_reaching_for_a_veto_reddens() {
+        let ws = Workspace::default().hook("notify.md", "task.review-notify");
+        let artifact = arm_one(&ws, "task.review-notify", Mode::Armed).expect("arms");
+
+        // The hand edit: one word in the rendered artifact, `armed` → `block`.
+        let tampered = artifact.render().replace("| `armed` |", "| `block` |");
+        let parsed =
+            parse_artifact(&tampered).expect("a tampered row still PARSES — that is the gap");
+        assert_eq!(parsed.rows()[0].mode(), Mode::Block, "the edit took");
+
+        let verdict = parsed.verify(&ws);
+        assert!(
+            verdict.firing().is_empty(),
+            "a hook armed `block` must not fire: {verdict:?}"
+        );
+        let red = &verdict.red()[0];
+        let Redness::ModeOutsideKind { kinds, .. } = red.why() else {
+            panic!("expected a kind/mode refusal, got {:?}", red.why());
+        };
+        assert_eq!(kinds, &[RuleKind::Hook]);
+        let rendered = red.to_string();
+        assert!(
+            rendered.contains("rules/hook") && rendered.contains("block"),
+            "the refusal names the kind and the mode it reached for: {rendered}"
+        );
+        assert!(
+            verdict.refusing().next().is_some(),
+            "and it fails CLOSED rather than falling silent"
+        );
+    }
+
+    /// The mirror case: a CHECK row hand-edited to a hook's vocabulary. Both
+    /// directions redden, because the defect is "mode outside its kind", not "hooks
+    /// are special".
+    #[test]
+    fn a_hand_edited_check_row_in_hook_vocabulary_reddens() {
+        let ws = Workspace::default().check("law.md", "reviewer-not-owner");
+        let artifact = arm_one(&ws, "reviewer-not-owner", Mode::Block).expect("arms");
+        let tampered = artifact.render().replace("| `block` |", "| `armed` |");
+        let verdict = parse_artifact(&tampered).expect("parses").verify(&ws);
+        assert!(verdict.firing().is_empty(), "{verdict:?}");
+        assert!(matches!(
+            verdict.red()[0].why(),
+            Redness::ModeOutsideKind { .. }
+        ));
+    }
+
+    /// An honest row is untouched by the check: the page's tag admits its mode, so
+    /// re-deriving the kind changes nothing about what fires.
+    #[test]
+    fn a_row_whose_mode_matches_its_page_kind_still_fires() {
+        let ws = Workspace::default()
+            .hook("notify.md", "task.review-notify")
+            .check("law.md", "reviewer-not-owner");
+        let mut artifact = arm_one(&ws, "task.review-notify", Mode::Armed).expect("arms");
+        artifact
+            .merge(arm_one(&ws, "reviewer-not-owner", Mode::Block).expect("arms"))
+            .expect("two ids, one root");
+
+        let verdict = artifact.verify(&ws);
+        assert_eq!(verdict.firing().len(), 2, "both stand: {verdict:?}");
+        assert!(verdict.red().is_empty());
     }
 
     // ── the § 4 shape ─────────────────────────────────────────────────────────
