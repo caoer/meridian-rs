@@ -28,7 +28,10 @@
 //!   observable here). A mismatch is a finding.
 //! - **zero dead rules** — every CHECK citation in `rules` and every loaded HOOK
 //!   must fire at least once over the corpus. A non-firing member is DEAD; a CHECK
-//!   citation that fires without declaration is a `surprise` finding.
+//!   citation that fires without declaration is a `surprise` finding. Liveness is
+//!   answered per NAMESPACE and reported as `check:<id>` / `hook:<id>`, so a name
+//!   that is both a citation and a HOOK slug is two subjects and neither can vouch
+//!   for the other's silence.
 //! - **fuel + heap budgets** — exact ticks and peak heap, reduced to
 //!   p50/p99/max over all in-scope evaluations.
 //! - **FIX/HOOK quiescence** — follow reachable `md.*` descriptors through a
@@ -568,11 +571,71 @@ impl CaseResult {
     }
 }
 
+/// One liveness subject: a declared name IN one namespace.
+///
+/// The two namespaces are different questions about different things — a CHECK cites
+/// a passing CASE, a HOOK is named by its rule id — so a name that exists in both is
+/// TWO subjects, each answered only by its own leg firing. One merged list lets
+/// whichever leg is live vouch for the other's silence, in whichever direction the
+/// collision happens to run (R14 and its mirror).
+///
+/// The namespace is part of the reported name, because the two directions are
+/// otherwise indistinguishable in the report: a bare `task-status-notify` under dead
+/// rules cannot tell an author whether the CHECK citation or the HOOK went silent.
+struct Subject<'a> {
+    namespace: Namespace,
+    id: &'a str,
+}
+
+/// The two liveness namespaces. Typed rather than stringly so no third arm can be
+/// added without deciding what answers it.
+#[derive(Clone, Copy)]
+enum Namespace {
+    /// Declared by the ```rules``` fence; answered only by a CHECK refusal citing it.
+    Check,
+    /// Declared by being loaded; answered only by that HOOK emitting.
+    Hook,
+}
+
+impl<'a> Subject<'a> {
+    fn check(id: &'a str) -> Self {
+        Self {
+            namespace: Namespace::Check,
+            id,
+        }
+    }
+
+    fn hook(id: &'a str) -> Self {
+        Self {
+            namespace: Namespace::Hook,
+            id,
+        }
+    }
+
+    /// The one spelling the report uses for a liveness subject, in the tier's
+    /// existing `kind:id` grammar (cf. [`narrowed_label`]'s `rule:action`).
+    fn label(&self) -> String {
+        let namespace = match self.namespace {
+            Namespace::Check => "check",
+            Namespace::Hook => "hook",
+        };
+        format!("{namespace}:{}", self.id)
+    }
+
+    /// Whether this subject was answered — by its OWN namespace's fired set.
+    fn fired(&self, checks: &BTreeSet<String>, hooks: &BTreeSet<String>) -> bool {
+        match self.namespace {
+            Namespace::Check => checks.contains(self.id),
+            Namespace::Hook => hooks.contains(self.id),
+        }
+    }
+}
+
 /// Run every case over the corpus and fold into a [`Report`].
 ///
 /// # Errors
-/// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, or a path
-/// that escapes the corpus mount.
+/// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, a path that
+/// escapes the corpus mount, or a quiescence proof whose own workspace failed.
 fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
     let views = rules.views();
     let mut results = Vec::with_capacity(spec.cases.len());
@@ -580,11 +643,12 @@ fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
         results.push(run_case(rules, spec, index, case)?);
     }
 
-    let quiescence = prove_quiescence(rules, &results);
+    let quiescence = prove_quiescence(rules, &results)?;
 
     // TWO namespaces, never one set (R14). A CHECK cites a passing CASE; a HOOK is
-    // named by its rule id. Merging them lets a CHECK citation that happens to equal
-    // a silent HOOK's id vouch for that HOOK's liveness.
+    // named by its rule id. One merged set lets whichever leg is live vouch for the
+    // other's silence — in EITHER direction, which is why the answer below is per
+    // namespace rather than a disambiguation rule that picks a winner.
     let mut fired_checks: BTreeSet<String> = BTreeSet::new();
     let mut fired_hooks: BTreeSet<String> = quiescence.fired_hooks.clone();
     for result in &results {
@@ -592,37 +656,47 @@ fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
         fired_hooks.extend(result.fired_hooks.iter().cloned());
     }
 
-    // The `rules` fence declares CHECK citation ids only. Every loaded HOOK is a
-    // liveness subject whether or not an author remembered to repeat its id there.
-    let hook_ids: Vec<String> = views
+    // Every loaded HOOK is a liveness subject whether or not an author remembered to
+    // repeat its id in the fence.
+    let declared_hooks: Vec<String> = views
         .iter()
         .copied()
         .filter(|rule| rule.has_hook())
         .map(|rule| rule.id().to_owned())
         .collect();
-    let mut declared_rules = spec.declared_rules.clone();
-    for hook_id in &hook_ids {
-        if !declared_rules.iter().any(|rule| rule == hook_id) {
-            declared_rules.push(hook_id.clone());
-        }
-    }
-    // Each declared name is a liveness subject in exactly ONE namespace: a loaded
-    // HOOK id is answered only by that HOOK firing, every other declared name only
-    // by a CHECK citation. A shared string can no longer let one leg vouch for the
-    // other. Surprise is a CHECK-only signal — a HOOK id is declared by being loaded.
-    let declared: BTreeSet<String> = declared_rules.iter().cloned().collect();
-    let dead_rules: Vec<String> = declared_rules
+    // A fence name is a CHECK citation subject. The one exception is the redundant
+    // HOOK declaration: a spec that loads no CHECK has nothing that could ever cite a
+    // name, so a fence entry naming a loaded HOOK there is that HOOK's declaration
+    // repeated, not a citation the corpus failed to fire. Where a CHECK IS loaded the
+    // name is BOTH subjects, and each namespace answers for itself — which is what
+    // stops a live HOOK vouching for a dead citation, and a live citation vouching for
+    // a dead HOOK (R14 in both directions).
+    let citable = views.iter().copied().any(RuleView::has_check);
+    let declared_checks: Vec<&String> = spec
+        .declared_rules
         .iter()
-        .filter(|rule| {
-            if hook_ids.contains(rule) {
-                !fired_hooks.contains(*rule)
-            } else {
-                !fired_checks.contains(*rule)
-            }
-        })
-        .cloned()
+        .filter(|id| citable || !declared_hooks.iter().any(|hook| hook == *id))
         .collect();
-    let surprise_rules: Vec<String> = fired_checks.difference(&declared).cloned().collect();
+    let subjects: Vec<Subject<'_>> = declared_checks
+        .iter()
+        .map(|id| Subject::check(id))
+        .chain(declared_hooks.iter().map(|id| Subject::hook(id)))
+        .collect();
+    let declared_rules: Vec<String> = subjects.iter().map(Subject::label).collect();
+    let dead_rules: Vec<String> = subjects
+        .iter()
+        .filter(|subject| !subject.fired(&fired_checks, &fired_hooks))
+        .map(Subject::label)
+        .collect();
+    // Surprise is a CHECK-only signal: a HOOK is declared by being loaded, so it can
+    // never fire undeclared. It reads the CHECK fence alone — a `declared` set that
+    // absorbed every HOOK slug would let a loaded HOOK's name excuse an undeclared
+    // citation of the same name.
+    let surprise_rules: Vec<String> = fired_checks
+        .iter()
+        .filter(|id| !declared_checks.contains(id))
+        .map(|id| Subject::check(id).label())
+        .collect();
 
     let mut fuel: Vec<u64> = results
         .iter()
@@ -848,6 +922,11 @@ struct Quiescence {
     fired_hooks: BTreeSet<String>,
     fuel_samples: Vec<u64>,
     mem_samples: Vec<u64>,
+    /// Complete descriptors the declared capability ceiling denied DURING the
+    /// cascade. A case's own denials are its row's; these belong to no case, and
+    /// dropping them left the advertised denial record silent about every generation
+    /// past the first (N5).
+    narrowed_effects: Vec<String>,
 }
 
 impl Quiescence {
@@ -884,23 +963,54 @@ struct PendingGeneration {
     /// The applied generation's cascade depth.
     depth: u32,
     chain: Vec<String>,
-    /// Signatures on THIS causal lineage only. A global duplicate is not a cycle,
-    /// and — since R10 — a global duplicate never suppresses another lineage either.
-    ancestors: BTreeSet<String>,
+}
+
+/// One frame of the proof's depth-first walk: the generation being explored, and the
+/// successors it has not been walked into yet.
+struct Frame {
+    signature: String,
+    successors: VecDeque<PendingGeneration>,
 }
 
 /// Follow only reachable `md.*` generations from the declared synthetic cases.
 ///
 /// Each generation is executed through the PRODUCTION batch executor against an
 /// isolated proof corpus, and the executor's own single synthesized event is what
-/// the next round of HOOKs reads. A signature recurring in its own causal ancestry
-/// proves a deterministic cycle. There is no global work cache: deduplicating across
-/// lineages can retire a work item before a DIFFERENT lineage's descendant reaches
-/// it, hiding a real cycle (R10). Termination rests on the ancestry check and the
-/// explicit graph fuel, which are the two signals the report already names.
+/// the next round of HOOKs reads.
+///
+/// # Why the walk is depth-first over a GRAPH, not a fan-out over paths
+/// A generation's successors are a pure function of its signature — the same emitter,
+/// page, bytes and intents apply and evaluate identically every time — so the thing
+/// being decided is whether the reachable SIGNATURE GRAPH has a cycle. A breadth-first
+/// fan-out that carries an ancestor set per item instead enumerates causal PATHS, and
+/// a graph whose branches reconverge has `O(b^d)` of those over an `O(d)` state space.
+/// That is a false `fuel_exhausted` on a strictly terminating convention set, and a
+/// pre-arming gate that fails good conventions blocks arming (N1, measured at depth 8).
+///
+/// So the walk keeps exactly two sets, which are R10's own two halves:
+///
+/// - **on the path** — the signatures of the frames currently on the stack. This IS
+///   the causal ancestry, and a signature recurring in it is the one proof of a
+///   deterministic cycle. Unchanged.
+/// - **settled** — signatures whose whole reachable subgraph has been walked to
+///   exhaustion and carried no cycle. Only these are skipped.
+///
+/// That distinction is the R10 defect's absence, not its return: the deleted cache
+/// retired work that was still IN FLIGHT, so a second lineage could be waved past an
+/// item whose own descendants had not yet closed the ancestry. Work in flight is on
+/// the path here, and reaching it again is a cycle, never a skip. Skipping settled
+/// work cannot hide a cycle either: a cycle through a settled signature would have
+/// closed while that signature was still on the path.
+///
 /// Terminal `proto.*` intents add no graph edge, which keeps slice 1 explicitly
-/// acyclic.
-fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Quiescence {
+/// acyclic. The graph fuel stays flat and now bounds distinct STATES rather than
+/// paths — a genuinely divergent cascade, whose state space really is exponential,
+/// still exhausts it.
+///
+/// # Errors
+/// [`Fail::tool`] — the proof's own workspace failed (exit 2). A production refusal
+/// is not that: it is a fact about the subject, and lands in `fault` (exit 1).
+fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Result<Quiescence, Fail> {
     let nodes = rules
         .views()
         .into_iter()
@@ -918,27 +1028,79 @@ fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Quiescence {
         fired_hooks: BTreeSet::new(),
         fuel_samples: Vec::new(),
         mem_samples: Vec::new(),
+        narrowed_effects: Vec::new(),
     };
-    let mut queue = initial_generations(results);
+    let mut roots = initial_generations(results);
+    let mut on_path: BTreeSet<String> = BTreeSet::new();
+    let mut settled: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<Frame> = Vec::new();
 
-    while let Some(mut pending) = queue.pop_front() {
-        let signature = pending_signature(&pending);
-        if pending.ancestors.contains(&signature) {
-            proof.cycle = Some(repeated_cycle(&pending.chain));
-            break;
-        }
-        if proof.steps >= proof.fuel_limit {
-            proof.fuel_exhausted = true;
-            break;
-        }
-        pending.ancestors.insert(signature);
-        proof.steps += 1;
-        advance_generation(&pending, rules, &mut queue, &mut proof);
-        if proof.fault.is_some() {
+    loop {
+        let next = match stack.last_mut() {
+            Some(frame) => frame.successors.pop_front(),
+            None => roots.pop_front(),
+        };
+        let Some(pending) = next else {
+            // The top frame is exhausted, so its whole reachable subgraph is: settle
+            // it and leave the path. An empty stack with no roots left ends the walk.
+            let Some(done) = stack.pop() else { break };
+            on_path.remove(&done.signature);
+            settled.insert(done.signature);
+            continue;
+        };
+        if !descend(
+            &pending,
+            rules,
+            &mut stack,
+            &mut on_path,
+            &settled,
+            &mut proof,
+        )? {
             break;
         }
     }
-    proof
+    Ok(proof)
+}
+
+/// Walk into one generation, or decline to.
+///
+/// Returns whether the walk continues: `false` ends it with a cycle, an exhausted
+/// budget, or an evaluation fault already recorded on `proof`.
+///
+/// # Errors
+/// [`Fail::tool`] — the proof workspace failed, which is not a fact about the
+/// conventions under test (N2).
+fn descend(
+    pending: &PendingGeneration,
+    rules: &LoadedRules,
+    stack: &mut Vec<Frame>,
+    on_path: &mut BTreeSet<String>,
+    settled: &BTreeSet<String>,
+    proof: &mut Quiescence,
+) -> Result<bool, Fail> {
+    let signature = pending_signature(pending);
+    if on_path.contains(&signature) {
+        proof.cycle = Some(repeated_cycle(&pending.chain));
+        return Ok(false);
+    }
+    if settled.contains(&signature) {
+        return Ok(true);
+    }
+    if proof.steps >= proof.fuel_limit {
+        proof.fuel_exhausted = true;
+        return Ok(false);
+    }
+    proof.steps += 1;
+    let successors = advance_generation(pending, rules, proof)?;
+    if proof.fault.is_some() {
+        return Ok(false);
+    }
+    on_path.insert(signature.clone());
+    stack.push(Frame {
+        signature,
+        successors,
+    });
+    Ok(true)
 }
 
 fn initial_generations(results: &[CaseResult]) -> VecDeque<PendingGeneration> {
@@ -953,7 +1115,6 @@ fn initial_generations(results: &[CaseResult]) -> VecDeque<PendingGeneration> {
                 provenance: result.provenance.clone(),
                 depth: 0,
                 chain: vec![emission.emitter.clone()],
-                ancestors: BTreeSet::new(),
             })
         })
         .collect()
@@ -969,37 +1130,53 @@ fn pending_signature(pending: &PendingGeneration) -> String {
     .expect("counterfactual signature serializes")
 }
 
+/// Apply one generation and evaluate the reactions to it, returning the successors it
+/// armed. Edges, fired HOOKs and meters are recorded here whether or not the caller
+/// goes on to walk into any of them, so the reported graph is the whole reachable one.
+///
+/// The successor unit is per EMITTER: two HOOKs reacting to one event produce two
+/// generations, because production applies each hook's emission as its own atomic
+/// batch (R9). **The resident cascade of phase 2 does not exist yet, so there is no
+/// production semantics to diverge from — but if it merges all emitters' effects for
+/// one event into a single batch, this assumption must be re-checked against it or
+/// the proof re-acquires R9 one level up** (N3). The convergence and lineage-separation
+/// fixtures both rest on per-emitter batching.
+///
+/// # Errors
+/// [`Fail::tool`] — the proof workspace failed (N2).
 fn advance_generation(
     pending: &PendingGeneration,
     rules: &LoadedRules,
-    queue: &mut VecDeque<PendingGeneration>,
     proof: &mut Quiescence,
-) {
+) -> Result<VecDeque<PendingGeneration>, Fail> {
+    let mut successors = VecDeque::new();
     let applied = match apply_generation(pending) {
         Ok(applied) => applied,
-        Err(refusal) => {
+        Err(ProofFault::Refused(refusal)) => {
             // Production refuses this reaction. That is a fact about the proof's
             // subject, not a harness crash: report it as the quiescence fault it is.
             proof.fault = Some(refusal);
-            return;
+            return Ok(successors);
         }
+        Err(ProofFault::Workspace(fault)) => return Err(Fail::tool(fault)),
     };
     // A generation that changed no bytes synthesizes no event, so it triggers
     // nothing — the branch is terminal, exactly as it is in production.
     let Some((after_md, event)) = applied else {
-        return;
+        return Ok(successors);
     };
 
     let rows = match rules.evaluate_hooks(&event) {
         Ok(rows) => rows,
         Err(error) => {
             proof.fault = Some(format!("HOOK evaluation failed: {error}"));
-            return;
+            return Ok(successors);
         }
     };
     for row in rows {
         proof.fuel_samples.push(row.fuel);
         proof.mem_samples.push(row.mem);
+        proof.narrowed_effects.extend(row.narrowed);
         if let Some(HookFinding::BudgetExceeded {
             rule_id,
             steps,
@@ -1009,31 +1186,29 @@ fn advance_generation(
             proof.fault = Some(format!(
                 "{rule_id}: budget_exceeded steps={steps} mem={mem}"
             ));
-            return;
+            return Ok(successors);
         }
-        enqueue_emitted(
-            pending,
-            &row.rule_id,
-            &after_md,
-            &event,
-            row.intents,
-            queue,
-            proof,
-        );
+        if let Some(next) =
+            emitted_generation(pending, &row.rule_id, &after_md, &event, row.intents, proof)
+        {
+            successors.push_back(next);
+        }
     }
+    Ok(successors)
 }
 
-fn enqueue_emitted(
+/// Record the trigger edge one reaction produced, and return the generation it armed
+/// — `None` when the reaction emitted nothing, or nothing that mutates corpus state.
+fn emitted_generation(
     pending: &PendingGeneration,
     rule_id: &str,
     after_md: &str,
     event: &ChangeEvent,
     emitted: Vec<Intent>,
-    queue: &mut VecDeque<PendingGeneration>,
     proof: &mut Quiescence,
-) {
+) -> Option<PendingGeneration> {
     if emitted.is_empty() {
-        return;
+        return None;
     }
     proof
         .edges
@@ -1041,11 +1216,11 @@ fn enqueue_emitted(
     proof.fired_hooks.insert(rule_id.to_owned());
     let intents = md_intents(emitted);
     if intents.is_empty() {
-        return;
+        return None;
     }
     let mut chain = pending.chain.clone();
     chain.push(rule_id.to_owned());
-    queue.push_back(PendingGeneration {
+    Some(PendingGeneration {
         emitter: rule_id.to_owned(),
         path: pending.path.clone(),
         markdown: after_md.to_owned(),
@@ -1056,8 +1231,7 @@ fn enqueue_emitted(
         },
         depth: event.depth,
         chain,
-        ancestors: pending.ancestors.clone(),
-    });
+    })
 }
 
 fn repeated_cycle(chain: &[String]) -> Vec<String> {
@@ -1069,6 +1243,22 @@ fn repeated_cycle(chain: &[String]) -> Vec<String> {
         .position(|rule| rule == last)
         .unwrap_or(0);
     chain[start..].to_vec()
+}
+
+/// Why one emitted generation did not apply.
+///
+/// The split is the module's own exit law (`§ Output + exit codes`): exit 1 says the
+/// conventions under test have a quiescence defect, exit 2 says the tool could not
+/// read or write its own state. Mapping every failure to the first claimed a defect
+/// in the subject whenever the environment failed (N2).
+#[derive(Debug)]
+enum ProofFault {
+    /// The production executor refused the reaction — an adapter fault, a cap denial,
+    /// or any [`run::executor::ExecError`]. A fact about the SUBJECT: exit 1.
+    Refused(String),
+    /// The proof's own throwaway workspace failed. Not a fact about the subject at
+    /// all: exit 2.
+    Workspace(String),
 }
 
 /// Execute ONE emitted generation against an isolated proof corpus through the
@@ -1086,35 +1276,41 @@ fn repeated_cycle(chain: &[String]) -> Vec<String> {
 /// when the batch changed nothing (a terminal branch).
 ///
 /// # Errors
-/// The production refusal text — an adapter fault, a cap denial, or any
-/// [`run::executor::ExecError`]. The caller reports it as a quiescence fault.
-fn apply_generation(pending: &PendingGeneration) -> Result<Option<(String, ChangeEvent)>, String> {
+/// [`ProofFault`] — a production refusal, or a failure of the proof workspace itself.
+fn apply_generation(
+    pending: &PendingGeneration,
+) -> Result<Option<(String, ChangeEvent)>, ProofFault> {
     let dir = tempfile::tempdir()
-        .map_err(|error| format!("cannot create corpus proof tmpdir: {error}"))?;
+        .map_err(|error| ProofFault::Workspace(format!("cannot create proof tmpdir: {error}")))?;
     let root = WorkspaceRoot(dir.path().to_path_buf());
-    let rel = confine(&pending.path)?;
+    let rel = confine(&pending.path).map_err(ProofFault::Refused)?;
     let full = dir.path().join(&rel);
     if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create corpus proof parent: {error}"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            ProofFault::Workspace(format!("cannot create proof corpus parent: {error}"))
+        })?;
     }
-    std::fs::write(&full, &pending.markdown)
-        .map_err(|error| format!("cannot mount corpus proof document: {error}"))?;
+    std::fs::write(&full, &pending.markdown).map_err(|error| {
+        ProofFault::Workspace(format!("cannot mount proof corpus document: {error}"))
+    })?;
 
-    let receipt = proof_receipt_addr(&pending.intents)?;
+    let receipt = proof_receipt_addr(&pending.intents).map_err(ProofFault::Refused)?;
     let adapted = IntentApply::from_intents(
         &pending.intents,
         receipt,
         &pending.provenance,
         pending.depth,
     )
-    .map_err(|error| error.to_string())?;
-    // Exactly the counterfactual declaration's own ceiling — the proof widens the
-    // executor's choke point no further than the loader widened the declaration.
+    .map_err(|error| ProofFault::Refused(error.to_string()))?;
+    // A fixed allowlist of the two `md.*` actions the adapter carries — WIDER than a
+    // declaration carrying only one of them, and deliberately not derived from it.
+    // Nothing is lost by that: `caps.route` already narrowed the emission on the
+    // policy side before the executor sees it, so this ceiling is the executor's
+    // choke point, not the declaration's.
     let caps = CapSet::parse("md.set_field md.append_section")
-        .map_err(|error| format!("corpus proof caps: {error}"))?;
+        .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?;
     let live: MerkleRoot = fs::domain_snapshot(&root)
-        .map_err(|error| format!("corpus proof workspace fold: {error}"))?
+        .map_err(|error| ProofFault::Workspace(format!("proof workspace fold: {error}")))?
         .1;
     let invocation = format!("corpus-proof-{}", pending.chain.join("-"));
     let request = adapted.request(&ApplyRequest {
@@ -1133,16 +1329,17 @@ fn apply_generation(pending: &PendingGeneration) -> Result<Option<(String, Chang
         depth: pending.depth,
     });
     let applied = run::executor::apply(&root, &request).map_err(|error| {
-        format!(
+        ProofFault::Refused(format!(
             "production executor refused the emitted generation from `{}`: {error}",
             pending.emitter
-        )
+        ))
     })?;
     let Some(event) = applied.event else {
         return Ok(None);
     };
-    let after_md = std::fs::read_to_string(&full)
-        .map_err(|error| format!("cannot read the applied proof corpus: {error}"))?;
+    let after_md = std::fs::read_to_string(&full).map_err(|error| {
+        ProofFault::Workspace(format!("cannot read the applied proof corpus: {error}"))
+    })?;
     Ok(Some((after_md, event)))
 }
 
@@ -1527,10 +1724,13 @@ impl Report {
         {
             let _ = writeln!(out, "- budget finding: `{finding}`");
         }
+        // The denial record is every denial, whichever phase raised it: a case's own,
+        // then the cascade's (which belongs to no case and used to be dropped, N5).
         for narrowed in self
             .results
             .iter()
             .flat_map(|result| &result.narrowed_effects)
+            .chain(&self.quiescence.narrowed_effects)
         {
             let _ = writeln!(out, "- narrowed effect: `{narrowed}`");
         }
@@ -1635,6 +1835,7 @@ impl Report {
                 "fuel_exhausted": self.quiescence.fuel_exhausted,
                 "cycle": self.quiescence.cycle,
                 "fault": self.quiescence.fault,
+                "narrowed_effects": self.quiescence.narrowed_effects,
             },
             "summary": {
                 "cases": self.results.len(),
@@ -1677,7 +1878,7 @@ mod tests {
     fn apply_control(
         markdown: &str,
         intents: Vec<Intent>,
-    ) -> Result<Option<(String, ChangeEvent)>, String> {
+    ) -> Result<Option<(String, ChangeEvent)>, ProofFault> {
         apply_generation(&PendingGeneration {
             emitter: "proof-control".to_owned(),
             path: CARD.to_owned(),
@@ -1689,8 +1890,18 @@ mod tests {
             },
             depth: 0,
             chain: vec!["proof-control".to_owned()],
-            ancestors: BTreeSet::new(),
         })
+    }
+
+    /// A production refusal, asserted to be one — the N2 split means a workspace
+    /// failure reaching this path would be a different fault with a different exit.
+    fn refusal_of(fault: ProofFault) -> String {
+        match fault {
+            ProofFault::Refused(message) => message,
+            ProofFault::Workspace(message) => {
+                panic!("a production refusal, not a proof workspace fault: {message}")
+            }
+        }
     }
 
     #[test]
@@ -1725,11 +1936,13 @@ mod tests {
     /// picking; the proof must observe the same refusal.
     #[test]
     fn proof_append_section_refuses_an_ambiguous_heading() {
-        let refusal = apply_control(
-            TWO_NOTES,
-            vec![control_intent(0, "md.append_section", "Notes", "added")],
-        )
-        .expect_err("two sections named Notes are ambiguous");
+        let refusal = refusal_of(
+            apply_control(
+                TWO_NOTES,
+                vec![control_intent(0, "md.append_section", "Notes", "added")],
+            )
+            .expect_err("two sections named Notes are ambiguous"),
+        );
         println!("POPULATION ambiguous -> {refusal}");
         assert!(
             refusal.contains("section 'Notes' appears 2 times (ambiguous)"),
@@ -1742,11 +1955,13 @@ mod tests {
     /// production has no such section, so the proof must now refuse.
     #[test]
     fn proof_append_section_refuses_a_slash_spelled_heading_path() {
-        let refusal = apply_control(
-            TWO_NOTES,
-            vec![control_intent(0, "md.append_section", "B/Notes", "added")],
-        )
-        .expect_err("`B/Notes` is not a heading production can resolve");
+        let refusal = refusal_of(
+            apply_control(
+                TWO_NOTES,
+                vec![control_intent(0, "md.append_section", "B/Notes", "added")],
+            )
+            .expect_err("`B/Notes` is not a heading production can resolve"),
+        );
         println!("POPULATION slash path -> {refusal}");
         assert!(
             refusal.contains("no section 'B/Notes'"),
