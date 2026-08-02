@@ -22,6 +22,12 @@ over markdown lands HERE, never in meridian-go.
   context, so the record lives once.
 - Full ruling + cutover sequence, and the superseded wording: llm-wiki
   `decisions/2026-07-22-meridian-go-end-state.md` **§ Amendment (2026-07-26)**.
+- **Addendum (2026-08-02, DX-01 ruling):** ZT ruled — typed, session
+  `94485806`, verbatim: *"my yes pls only ratify meridian-go would die after
+  the feature implemnted"* — that his "yes pls" ratified his own typed line
+  only, never the assistant turn it answered. The amendment's outcome stands;
+  its mechanism reads precisely as **scope-of-assent**, not page elaboration
+  alone.
 
 Docs: `docs/laws.md` (crate charters), `docs/wire-contract-v2.md` +
 `docs/wire-contract-v3-amendment.md` (the client seam),
