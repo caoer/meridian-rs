@@ -581,9 +581,11 @@ mod help {
         lines: Vec<String>,
     }
 
-    /// One options entry: the verb named by the `(...)` tag its description
-    /// opens with, and its lines. An untagged entry belongs to no verb.
+    /// One options entry: the flags it defines, the verb named by the `(...)`
+    /// tag its description opens with, and its lines. An untagged entry names no
+    /// owner, and reaches a page only through a synopsis that offers its flag.
     struct Opt {
+        flags: Vec<String>,
         owner: Option<String>,
         lines: Vec<String>,
     }
@@ -597,28 +599,68 @@ mod help {
         matches!(line.get(..2), Some("! " | "  "))
     }
 
-    /// The addressing words of a synopsis: `! mrd cache clean [--all]` gives
-    /// `["cache", "clean"]`. They stop at the first token that is not a bare
-    /// lowercase name, which is where the operands and flags begin.
-    fn words_of(line: &str) -> Vec<String> {
-        // The synopsis ends at the description column — but only when the column
-        // is really there. A synopsis long enough to overflow it (`mrd pin
-        // <PAGE> <TARGET>#<SELECTOR> ...`) carries no description on its own
-        // line and runs to the end of it.
-        let head = if line.as_bytes().get(DESC_COL - 1) == Some(&b' ') {
+    /// The part of a line before its description begins.
+    ///
+    /// The description column is only there when it is really there: a synopsis
+    /// long enough to overflow it (`mrd pin <PAGE> <TARGET>#<SELECTOR> …`)
+    /// carries no description on its own line, and keeps its whole tail.
+    fn head_of(line: &str) -> &str {
+        if line.as_bytes().get(DESC_COL - 1) == Some(&b' ') {
             // Byte 26 is a space, so byte 27 is a char boundary — the fallback
             // is for a caller that changes DESC_COL, not for this listing.
             line.get(..DESC_COL).unwrap_or(line)
         } else {
             line
-        };
-        head.get(2..)
+        }
+    }
+
+    /// Strip the notation a listing wraps its flags in: `[--dry]` is `--dry`.
+    fn bare(token: &str) -> &str {
+        token.trim_matches(|c: char| matches!(c, '[' | ']' | ',' | '|' | '(' | ')'))
+    }
+
+    /// The addressing words of a synopsis: `! mrd cache clean [--all]` gives
+    /// `["cache", "clean"]`. They stop at the first token that is not a bare
+    /// lowercase name, which is where the operands and flags begin.
+    fn words_of(line: &str) -> Vec<String> {
+        head_of(line)
+            .get(2..)
             .and_then(|synopsis| synopsis.strip_prefix("mrd "))
             .unwrap_or_default()
             .split_whitespace()
             .take_while(|word| word.chars().all(|c| c.is_ascii_lowercase()))
             .map(str::to_owned)
             .collect()
+    }
+
+    /// The flags an options entry defines — `-h, --help` defines two.
+    fn flags_of(line: &str) -> Vec<String> {
+        head_of(line)
+            .split_whitespace()
+            .map(bare)
+            .filter(|token| token.starts_with('-') && token.len() > 1)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A block's synopsis: its operands and flags, with the description left
+    /// out. A synopsis can wrap (`mrd put`), and the line it wraps onto is
+    /// exactly the one that does NOT begin at the description column.
+    fn synopsis_of(block: &Block) -> String {
+        let mut synopsis = String::new();
+        for (n, line) in block.lines.iter().enumerate() {
+            let is_description = line.bytes().take(DESC_COL).all(|b| b == b' ');
+            if n == 0 || !is_description {
+                synopsis.push_str(head_of(line));
+                synopsis.push(' ');
+            }
+        }
+        synopsis
+    }
+
+    /// Does a verb's own synopsis offer this flag?
+    fn offers(synopsis: &str, flag: &str) -> bool {
+        synopsis.split_whitespace().map(bare).any(|token| token == flag)
     }
 
     /// The verb an option belongs to: the first word inside the `(...)` its
@@ -667,6 +709,7 @@ mod help {
             } else if line[2..].starts_with('-') {
                 open = Some(opts.len());
                 opts.push(Opt {
+                    flags: flags_of(line),
                     owner: owner_of(line),
                     lines: vec![line.to_owned()],
                 });
@@ -704,20 +747,32 @@ mod help {
     }
 
     /// The page: the header and its legend, the matched block(s) under `usage:`,
-    /// then the options those verbs own.
+    /// then the options those verbs take.
     ///
-    /// The untagged globals are deliberately absent. `--json` under `mrd skill
-    /// hook --help` would promise a face that verb's own description says does
-    /// not exist, and a help page that lies costs more than one that is short.
+    /// An option reaches a page two ways: the `(...)` tag names the verb, OR the
+    /// verb's own synopsis offers the flag. The second is what keeps the page
+    /// honest — `[--dry]` stands in seven synopses whose entry is tagged
+    /// `(run)`, and a page that showed the flag above while hiding its meaning
+    /// below would be a worse answer than no page.
+    ///
+    /// An untagged global no synopsis offers stays absent. `--json` under `mrd
+    /// skill hook --help` would promise a face that verb's own description says
+    /// does not exist, and a help page that lies costs more than a short one.
     fn render(matched: &[Block]) -> String {
         let owners: Vec<&str> = matched
             .iter()
             .filter_map(|block| block.words.first())
             .map(String::as_str)
             .collect();
+        let synopses: Vec<String> = matched.iter().map(synopsis_of).collect();
         let owned: Vec<Opt> = options()
             .into_iter()
-            .filter(|opt| opt.owner.as_deref().is_some_and(|o| owners.contains(&o)))
+            .filter(|opt| {
+                opt.owner.as_deref().is_some_and(|o| owners.contains(&o))
+                    || opt.flags.iter().any(|flag| {
+                        synopses.iter().any(|synopsis| offers(synopsis, flag))
+                    })
+            })
             .collect();
 
         let mut page = String::from(HEADER);
