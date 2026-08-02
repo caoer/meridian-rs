@@ -106,10 +106,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
                 findings.push(format!("{n} grey({word}) edge(s)"));
             }
         }
-        return Err(Fail {
-            code: EXIT_FINDING,
-            message: format!("{} in the walk", findings.join(", ")),
-        });
+        return Err(Fail::with_code(
+            EXIT_FINDING,
+            format!("{} in the walk", findings.join(", ")),
+        ));
     }
     Ok(())
 }

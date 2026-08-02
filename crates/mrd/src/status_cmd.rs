@@ -138,10 +138,7 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     }
 
     if report.has_findings() {
-        return Err(Fail {
-            code: EXIT_FINDING,
-            message: report.finding_summary(),
-        });
+        return Err(Fail::with_code(EXIT_FINDING, report.finding_summary()));
     }
     Ok(())
 }

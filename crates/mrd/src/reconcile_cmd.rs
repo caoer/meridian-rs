@@ -23,7 +23,7 @@ use crate::{Fail, Format};
 /// Exit 1 — a finding (an undeclared content file, or an occupied materialize
 /// path). Distinct from `Fail::tool` (exit 2).
 fn findings(message: String) -> Fail {
-    Fail { code: 1, message }
+    Fail::findings(message)
 }
 
 /// Run `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T] [--json]`.
