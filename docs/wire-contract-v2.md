@@ -1,15 +1,19 @@
 ---
+aliases: [wire-contract-v2, mrd-wire-v2, wire-contract-v2-master]
 type: contract
 status: frozen
 version: 2
 frozen: 2026-07-18
-tags: [type/contract, domain/ccc-mdfs, topic/meridian-rs, topic/wire-contract]
+tags: [type/contract, type/reference, domain/meridian-rs, topic/wire-contract]
+description: The frozen wire contract v2 — the five wire nouns, the two-plane address grammar, the op surface, the CAS law, receipts, the Delta noun, and the deviation ledger. The citation-bearing master is the wiki page; the engine repo's docs copy is a footnote-stripped derivative generated from it.
+created: 2026-07-19
+updated: 2026-08-02
 ---
 
 # Wire contract v2
 
 > [!important] FROZEN
-> This contract is FROZEN as of 2026-07-18. No per-rule freeze labels exist; this banner is the only freeze surface. Changes from here are amendments; each amendment requires a new §18 ledger row.
+> This contract is FROZEN as of 2026-07-18. No per-rule freeze labels exist; this banner is the only freeze surface. **Freeze authority is personal: only ZT flips the FROZEN banner.** Changes from here are amendments.
 
 **Provenance:** this document is the project's frozen wire constitution.
 **Worked values:** every hash, span, root, and count in this document was RECOMPUTED for this document from the fixture bytes printed in §0.3 (blake3 via `uvx --from blake3 python3` — the official blake3 PyPI wheel; byte offsets counted by Python over the raw fixture bytes, never invented).
@@ -149,7 +153,7 @@ The strict grammar is THE fleet grammar; the Obsidian algebra is a syntactically
 
 ### §2.4 The block-id charset — ONE charset, both planes
 
-Block ids match `[A-Za-z0-9-]+` — Obsidian app-exact — on BOTH planes. This is the single normative statement of the charset; every other section references it. No `_` in newly minted block ids anywhere; a `_`-bearing anchor is outside the strict-plane grammar (`bad_request`). No organic live `_` block ids exist in any fleet corpus, so a corpus-wide re-id migration costs ZERO and none ships; what remains is a mint-guard enforcing this charset going forward plus a frozen-fixture exemption, **owned by the phase-2 impl-taskpack, not this document** (§13.8). The `_`-bearing probe stays frozen in the `obsidian-compat@1.12.7` pack so the app's actual treatment of legacy `_` ids is pinned, not assumed.
+Block ids match `[A-Za-z0-9-]+` — Obsidian app-exact — on BOTH planes. This is the single normative statement of the charset; every other section references it. No `_` in newly minted block ids anywhere; a `_`-bearing anchor is outside the strict-plane grammar (`bad_request`). No organic live `_` block ids exist in any fleet corpus — an empirical corpus finding, true as of the survey behind it, never a standing invariant — so a corpus-wide re-id migration costs ZERO and none ships; what remains is a mint-guard enforcing this charset going forward plus a frozen-fixture exemption, **owned by the phase-2 impl-taskpack, not this document** (§13.8). The `_`-bearing probe stays frozen in the `obsidian-compat@1.12.7` pack so the app's actual treatment of legacy `_` ids is pinned, not assumed.
 
 ## §3 Frame layer, correlation, discovery
 
@@ -705,7 +709,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 ## §15 Structural guarantees index I — construct-level guarantees
 
-*Every guarantee below is a standalone structural claim: what the contract guarantees, and the § where it is guaranteed. Which reviewer finding each one answers is recorded in the footnote.*
+*Every guarantee below is a standalone structural claim: what the contract guarantees, and the § where it is guaranteed. Which reviewer finding each one answers is recorded in the citation footnotes of the master.*
 
 - **Every dialect construct is wire-representable, no lossy projection.** The `wire-map` projection seam is superset-by-embedding as law, restated as four wire-observable predicates: every dialect construct is representable (11-kind enum incl. Comment/InlineCode); wikilink information is carried whole; an unterminated fence surfaces as `unterminated` on the wire; frontmatter key order is preserved in `keys` (§4.1). Any divergence is a projection compile error, not a runtime loss (§14).
 - **Ids are validated as raw lexemes before typed decode.** The raw-lexeme id law runs before typed decode, with the full discrimination set worked incl. `3e0` and the 2^53 boundary pair (§3.1).
@@ -721,7 +725,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 ## §16 Structural guarantees index II — usage-pattern coverage
 
-*This index states, for every mined usage pattern, where the contract serves it structurally. **Matched** = this wire serves the pattern as a fact op; **Above-wire** = deliberately served by a consumer built on named wire facts, not by a wire op; **Dead** = removed, with the mined evidence as the justification. The originating usage inventory and its per-row counts are recorded in the footnote.*
+*This index states, for every mined usage pattern, where the contract serves it structurally. **Matched** = this wire serves the pattern as a fact op; **Above-wire** = deliberately served by a consumer built on named wire facts, not by a wire op; **Dead** = removed, with the mined evidence as the justification. The originating usage inventory and its per-row counts are recorded in the citation footnotes of the master.*
 
 | Pattern | Disposition |
 |---|---|
@@ -739,7 +743,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 | `fix` | Above-wire mutation policy over `dry:true` + per-file batches (§4.4); see the mass-mutation friction row below |
 | `debug` | Above-wire (rule dev tooling over §11 verdicts) |
 | `attest` | Above-wire effects layer; dry seam + fm_key handles underneath (§4.4) |
-| `mv` | Loudly alternativized: corpus move+link-rewrite is a composed consumer op — `links` (§4.6) + `fileToLinktext` emission algebra (vendor-cited) + per-file splices; multi-file atomicity honestly absent (§6.5) |
+| `mv` | Loudly alternativized: corpus move+link-rewrite is a composed consumer op — `links` (§4.6) + `fileToLinktext` emission algebra (the app's, not ours) + per-file splices; multi-file atomicity honestly absent (§6.5) |
 | `status` | Dead as op; liveness is the daemon's; the change feed is `sub` (§4.7) |
 | `watch` | Dead CLI; superseded by the Delta noun + `sub` reservation + recovery law (§7) |
 | `resolve` CLI | Matched: `resolve` op (§4.5) |
@@ -769,7 +773,7 @@ The draft implementation plan sequenced against this table is a downstream deliv
 
 ## §17 Structural guarantees index III — top-level requirement coverage
 
-*This index states where each top-level requirement of the contract is answered. The requirement labels are the last-gate checklist item names, recorded in the footnote.*
+*This index states where each top-level requirement of the contract is answered. The requirement labels are the last-gate checklist item names; their sourcing is recorded in the citation footnotes of the master.*
 
 | Requirement | Where answered |
 |---|---|
