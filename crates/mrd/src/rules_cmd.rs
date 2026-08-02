@@ -133,10 +133,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     if findings.is_empty() {
         Ok(())
     } else {
-        Err(Fail {
-            code: EXIT_FINDING,
-            message: format!("{} in the rule set", findings.join(", ")),
-        })
+        Err(Fail::with_code(
+            EXIT_FINDING,
+            format!("{} in the rule set", findings.join(", ")),
+        ))
     }
 }
 

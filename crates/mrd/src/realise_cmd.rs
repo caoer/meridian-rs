@@ -194,17 +194,15 @@ fn classify(dry: bool, state: &ClaimState, applies: u32) -> State {
 fn exit_for(state: State) -> Result<(), Fail> {
     match state {
         State::Converged | State::DriftedFixed | State::Preview => Ok(()),
-        State::NonConvergent => Err(Fail {
-            code: EXIT_FINDING,
-            message: "realise non-convergent — apply ran, drift persists (budget exhausted)"
+        State::NonConvergent => Err(Fail::with_code(
+            EXIT_FINDING,
+            "realise non-convergent — apply ran, drift persists (budget exhausted)".to_owned(),
+        )),
+        State::PendingAgent => Err(Fail::with_code(
+            EXIT_FINDING,
+            "realise pending-agent — drift with no apply-capable claim; a board card was minted"
                 .to_owned(),
-        }),
-        State::PendingAgent => Err(Fail {
-            code: EXIT_FINDING,
-            message:
-                "realise pending-agent — drift with no apply-capable claim; a board card was minted"
-                    .to_owned(),
-        }),
+        )),
     }
 }
 
