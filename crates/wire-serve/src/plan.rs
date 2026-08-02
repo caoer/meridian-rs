@@ -540,9 +540,16 @@ mod tests {
             },
         )
         .expect_err("block replace target refuses");
+        // The anchor arm of the recovery: `toc` does not carry `^` anchors, so
+        // this miss must NOT send the reader to the section listing (issue-05 /
+        // gaps § 3.1).
         assert_eq!(
             err.message.as_deref(),
-            Some(r#"no section addressed by "^task1""#)
+            Some(
+                "no section addressed by \"^task1\". No edit was applied; the batch is \
+                 refused whole. Fix: read the page with --json and use its `anchors[]` — \
+                 the section map does not list `^` anchors."
+            )
         );
     }
 
@@ -569,7 +576,7 @@ mod tests {
     /// The append section-miss arm string (its own remedy tail, distinct from
     /// the replace arms').
     #[test]
-    fn append_miss_names_toc_remedy() {
+    fn append_miss_names_a_runnable_recovery() {
         let err = lower1(
             "# A\n\nx\n",
             PlanEdit::Append {
@@ -578,10 +585,14 @@ mod tests {
             },
         )
         .expect_err("miss refuses");
+        // Names an ACT the caller can perform, never the internal mode name they
+        // never selected (issue-05), and discloses that nothing landed.
         assert_eq!(
             err.message.as_deref(),
             Some(
-                r#"no section addressed by "Ghost" — read with mode toc to list the section paths"#
+                "no section addressed by \"Ghost\". No edit was applied; the batch is \
+                 refused whole. Fix: read the page with no selector to list its section \
+                 paths."
             )
         );
     }
@@ -871,7 +882,11 @@ mod tests {
         .expect_err("raw title misses the sanitized map");
         assert_eq!(
             err.message.as_deref(),
-            Some(r#"no section addressed by "My Section""#)
+            Some(
+                "no section addressed by \"My Section\". No edit was applied; the batch \
+                 is refused whole. Fix: read the page with no selector to list its \
+                 section paths."
+            )
         );
         // The sanitized spelling hits.
         lower1(

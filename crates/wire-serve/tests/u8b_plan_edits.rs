@@ -471,7 +471,11 @@ fn golden_target_class_refusals_fire_engine_side() {
     .expect_err("block replace target refuses");
     assert_eq!(
         err.message.as_deref(),
-        Some(r#"no section addressed by "^task1""#)
+        Some(
+            "no section addressed by \"^task1\". No edit was applied; the batch is \
+             refused whole. Fix: read the page with --json and use its `anchors[]` — the \
+             section map does not list `^` anchors."
+        )
     );
 
     let err = splice(
