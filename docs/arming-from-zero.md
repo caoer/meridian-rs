@@ -93,7 +93,9 @@ is attestable on exactly the same terms as a check page, the activation field is
 `off|armed`, and armed rows of both kinds now reach their surface — check rows the
 write door, hook rows the reaction feeder. The legacy surface that pinned
 `blake3(CHECK.md)` and left a HOOK-only convention permanently fail-closed is
-retired.
+retired. The composed `pin` axis of `mrd status` (`docs/status.md` § The
+composed status line) rolls up exactly this PAGE-rev drift — it ships no
+`CHECK.md`-rev surface.
 
 A rule that has not passed the tiers is not qualified for arming review.
 

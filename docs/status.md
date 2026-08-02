@@ -340,7 +340,7 @@ pin green · lock none · anchor at-tip (anchor as-known) · convention off · v
 
 | axis | answers | values |
 |---|---|---|
-| `pin` | the ARMED SET's evidence drift — each armed convention's live `CHECK.md` rev against its pinned `armed_rev` | `green` · `red content-drifted` |
+| `pin` | the ARMED SET's evidence drift — each armed row's live PAGE rev against the `rev` its armed-rules row attested (PAGE rev uniformly, `arming-from-zero.md` §4; the pinned-`armed_rev` `CHECK.md` surface is retired) | `green` · `red content-drifted` |
 | `lock` | every `meridian-lock` pin's FINGERPRINT verdict, rolled up | `none` · `<color> [N pins]` · `unreadable (<why>)` |
 | `anchor` | how current the working copy is against origin's tip, plus the trust of that knowledge | `at-tip` / `behind`, qualified — see the colors amendment § The anchor axis |
 | `convention` | whether armed law refuses this change | `off` · `warn` · `block` |
