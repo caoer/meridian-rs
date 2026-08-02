@@ -68,6 +68,44 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     Box::new(e)
 }
 
+/// The section-address recovery clause — the ONE place the engine says how a
+/// caller finds a real selector, so no refusal invents its own spelling.
+///
+/// Selector-aware, because the two selector planes are published by DIFFERENT
+/// faces. Heading paths and dewey ordinals ride `toc`, which the human render
+/// prints. `^` anchors ride the separate `anchors[]` array, which
+/// `render::toc_text` does not print at all — so telling a reader to list the
+/// section paths after an anchor miss sends them to a listing their anchor was
+/// never in (the dead end recorded at `results/gaps-and-issues.md` § 3.1).
+///
+/// `display_path` is `None` on the plan-lowering path, which holds a document
+/// but no spelling of its name; the clause then names the act without a command
+/// rather than inventing a path it cannot know.
+#[must_use]
+pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
+    match (selector.starts_with('^'), display_path) {
+        (true, Some(p)) => format!(
+            "Fix: run `mrd read {p} --json` and read its `anchors[]` — the section map \
+             does not list `^` anchors."
+        ),
+        (true, None) => "Fix: read the page with --json and use its `anchors[]` — the \
+             section map does not list `^` anchors."
+            .to_owned(),
+        (false, Some(p)) => format!(
+            "Fix: run `mrd read {p}` with no --section to list this document's section \
+             paths."
+        ),
+        (false, None) => {
+            "Fix: read the page with no selector to list its section paths.".to_owned()
+        }
+    }
+}
+
+/// The write plane's partial-state disclosure. A refused batch lands NOTHING,
+/// so the refusal says so and a reader never has to guess which edits took —
+/// the write-side twin of `config::NO_PARTIAL_LOAD_CLAUSE`.
+pub const NO_PARTIAL_WRITE_CLAUSE: &str = "No edit was applied; the batch is refused whole.";
+
 /// `fs::load` with the §8 error split: `file_not_found` (env — the file is gone,
 /// path echoed), `invalid_utf8` (refused, never lossy-decoded), `io_error{cause}`
 /// otherwise. Shared by both hosts' single-file reads and the write path (which

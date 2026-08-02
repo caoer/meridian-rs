@@ -234,8 +234,9 @@ pub fn composed_read(
             if !frag.is_empty() && rows.is_empty() {
                 let mut e = ErrorBody::new(ErrorCode::RefNotFound);
                 e.message = Some(format!(
-                    "read: no section at \"{frag}\" in {display} — read with mode toc \
-                     (no fragment) to see the section map"
+                    "read: no section at \"{frag}\" in {display}. Nothing was read and no \
+                     rev was minted. {}",
+                    crate::section_recovery(frag, Some(display))
                 ));
                 return Err(Box::new(e));
             }
@@ -503,11 +504,21 @@ fn composed_sections(
     sels: &[String],
     header: render::Header<'_>,
 ) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
+    let display = header.display_path;
     if sels.is_empty() {
-        return Err(bad_request(
-            "read: mode sections needs selectors — pass sections[] \
-             (heading paths or ^block ids) or a '#Fragment' on ref",
-        ));
+        // Says what to PASS, not what the caller "is in": the reader who lands
+        // here selected no mode — `--section` implied one — so naming the mode
+        // back at them describes an internal state they never chose (issue-05).
+        // A `#Fragment` is the WHOLE-call scope, not a member of `sections[]`;
+        // the old wording called it a sections-mode selector, which is exactly
+        // what it is not (gaps § 3.3).
+        return Err(bad_request(format!(
+            "read: a section read needs a selector, and none was given. Nothing was read \
+             and no rev was minted. Fix: pass one or more section selectors (a heading \
+             path, a dewey ordinal, or a ^anchor), or scope the whole read with a \
+             `#Fragment` on the ref — or run `mrd read {display}` with no --section to \
+             list this document's section paths."
+        )));
     }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
@@ -520,9 +531,10 @@ fn composed_sections(
     if rows.is_empty() && !missing.is_empty() {
         let mut e = ErrorBody::new(ErrorCode::RefNotFound);
         e.message = Some(format!(
-            "read: no section addressed by \"{}\" — read with mode toc \
-             to list the document's section paths",
-            missing[0]
+            "read: no section addressed by \"{}\" in {display}. Nothing was read and no \
+             rev was minted. {}",
+            missing[0],
+            crate::section_recovery(missing[0], Some(display))
         ));
         return Err(Box::new(e));
     }
@@ -788,4 +800,98 @@ pub fn ambiguous(sec: &SecRef, doc: &model::Document, candidates: &[model::Targe
     };
     e.message = Some(model::selector::render_ambiguity(&display, &named));
     e
+}
+
+/// `ref_not_found` with a SENTENCE — the sibling of [`ambiguous`] for the miss
+/// case. Both refusals answer "your target did not resolve"; only one of them
+/// used to say anything, so a `put` against a stale address printed the bare
+/// code `ref_not_found` and named no file, no target, and no way forward
+/// (issue-08, the worst message the 08-01 dogfood recorded).
+///
+/// The hpath arm carries the one fact the read face cannot publish. Heading
+/// addresses are SANITIZED on the way out (`sanitize_heading`: `/` and U+0020
+/// both become `-`) and `put` takes the RAW heading text, so the map is
+/// many-to-one and no caller can recover the pre-image from a `read`. When the
+/// requested segments match some heading's sanitized spelling, this names that
+/// heading's RAW spelling — the address the write actually needs.
+#[must_use]
+pub fn ref_not_found(sec: &SecRef, doc: &model::Document, display_path: &str) -> ErrorBody {
+    let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+    let (display, recovery) = match sec {
+        SecRef::Hpath { hpath } => {
+            let asked = join_h(hpath);
+            let recovery = raw_spelling_for(doc, hpath).map_or_else(
+                || crate::section_recovery(&asked, Some(display_path)),
+                |raw| {
+                    format!(
+                        "That IS this file's published address for a section, but `put` \
+                         takes the RAW heading text, which `read` does not publish: \
+                         address it as \"{raw}\"."
+                    )
+                },
+            );
+            (asked, recovery)
+        }
+        SecRef::Anchor { anchor } => {
+            let asked = format!("^{anchor}");
+            let recovery = crate::section_recovery(&asked, Some(display_path));
+            (asked, recovery)
+        }
+        SecRef::FmKey { fm_key } => (
+            fm_key.clone(),
+            // Names ONLY the door that was probed open. An earlier draft sent the
+            // reader to `mrd read --json` for the key list — but the composed
+            // read body carries no frontmatter plane at all
+            // (`anchors`/`file_rev`/`fingerprint`/`path`/`rendered_text`/`toc`/
+            // `words_total`), so that clause was this card's own `takeover`: a
+            // refusal pointing at a door that does not open. `at: upsert` is
+            // verified to create an absent key; the page's own frontmatter block
+            // is where the existing keys are.
+            "Fix: write the key with `at: upsert`, which creates it when absent; the \
+             page's own frontmatter block lists the keys it already has."
+                .to_owned(),
+        ),
+    };
+    e.message = Some(format!(
+        "no node addressed by \"{display}\" in {display_path}. {} {recovery}",
+        crate::NO_PARTIAL_WRITE_CLAUSE
+    ));
+    e
+}
+
+/// The segments a caller asked for, in their own spelling.
+fn join_h(hpath: &[wire::HpathSeg]) -> String {
+    hpath
+        .iter()
+        .map(|s| s.h.as_str())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The heading whose SANITIZED spelling is what the caller asked for, returned
+/// in its RAW spelling — `None` when nothing matches, or when the caller was
+/// already raw-correct (then the address is not the sanitize trap and naming it
+/// back would only restate the request).
+fn raw_spelling_for(doc: &model::Document, hpath: &[wire::HpathSeg]) -> Option<String> {
+    let asked: Vec<String> = hpath
+        .iter()
+        .map(|s| wire_map::gotext::sanitize_heading(&s.h))
+        .collect();
+    for row in wire_map::project_toc(doc) {
+        if row.kind.as_str() != "heading" {
+            continue;
+        }
+        let segs = row.hpath.unwrap_or_default();
+        let sanitized: Vec<String> = segs
+            .iter()
+            .map(|s| wire_map::gotext::sanitize_heading(&s.h))
+            .collect();
+        if sanitized == asked {
+            let raw = join_h(&segs);
+            if raw != join_h(hpath) {
+                return Some(raw);
+            }
+        }
+    }
+    None
 }
