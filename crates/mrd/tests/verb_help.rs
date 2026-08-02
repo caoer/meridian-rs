@@ -43,7 +43,12 @@ fn listing() -> String {
     stdout(&out)
 }
 
-/// Every verb line of the listing, gutter included: `("! ", "mrd put <PATH> …")`.
+/// The description column, less the two-byte gutter these synopses have already
+/// had stripped.
+const SYNOPSIS_WIDTH: usize = 25;
+
+/// Every verb line of the listing, read as `(writes, "mrd put <PATH> …")` — the
+/// gutter becomes the flag, and the rest of the line is carried whole.
 fn verb_lines(listing: &str) -> Vec<(bool, String)> {
     listing
         .lines()
@@ -64,9 +69,17 @@ fn verb_lines(listing: &str) -> Vec<(bool, String)> {
 /// clean`. The test derives them the same way a reader does — read left to
 /// right until a token stops looking like a verb name.
 fn address_of(synopsis: &str) -> Vec<&str> {
-    synopsis
-        .strip_prefix("mrd ")
-        .unwrap_or(synopsis)
+    // The synopsis ends at the description column when the column is there, and
+    // runs to the end of the line when it is not — otherwise a description that
+    // happens to open with lowercase words ("mrd daemon   run the registry
+    // daemon…") reads as five more verb words.
+    let head = if synopsis.as_bytes().get(SYNOPSIS_WIDTH - 1) == Some(&b' ') {
+        synopsis.get(..SYNOPSIS_WIDTH).unwrap_or(synopsis)
+    } else {
+        synopsis
+    };
+    head.strip_prefix("mrd ")
+        .unwrap_or(head)
         .split_whitespace()
         .take_while(|word| word.chars().all(|c| c.is_ascii_lowercase()))
         .collect()
