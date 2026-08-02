@@ -68,16 +68,20 @@ fn verb_lines(listing: &str) -> Vec<(bool, String)> {
 /// The words that address a verb: `mrd cache clean [--all]  reap …` -> `cache
 /// clean`. The test derives them the same way a reader does — read left to
 /// right until a token stops looking like a verb name.
-fn address_of(synopsis: &str) -> Vec<&str> {
-    // The synopsis ends at the description column when the column is there, and
-    // runs to the end of the line when it is not — otherwise a description that
-    // happens to open with lowercase words ("mrd daemon   run the registry
-    // daemon…") reads as five more verb words.
-    let head = if synopsis.as_bytes().get(SYNOPSIS_WIDTH - 1) == Some(&b' ') {
+/// The synopsis half of a verb line: the head when the description column is
+/// there, the whole line when the synopsis overflows it. Same rule the CLI
+/// lexes by — and without it, `mrd daemon   run the registry daemon…` reads as
+/// eight verb words, and `mrd journal genesis --ruling <REF> …` loses its flags.
+fn head_of(synopsis: &str) -> &str {
+    if synopsis.as_bytes().get(SYNOPSIS_WIDTH - 1) == Some(&b' ') {
         synopsis.get(..SYNOPSIS_WIDTH).unwrap_or(synopsis)
     } else {
         synopsis
-    };
+    }
+}
+
+fn address_of(synopsis: &str) -> Vec<&str> {
+    let head = head_of(synopsis);
     head.strip_prefix("mrd ")
         .unwrap_or(head)
         .split_whitespace()
@@ -191,16 +195,101 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
         "--rule belongs to test, not run:\n{run}"
     );
 
+    // The claim is about what the page OFFERS, not about the letters on it: this
+    // verb's own description says "There is no --json face", so the string is in
+    // the prose either way. Only the options block can promise a flag.
     let hook = stdout(&mrd(&["skill", "hook", "--help"]));
     assert!(
-        !hook.contains("--json"),
-        "the verb's own description says there is no --json face:\n{hook}"
+        hook.contains("There is no --json face"),
+        "the description is reprinted verbatim:\n{hook}"
+    );
+    assert!(
+        !hook.contains("options:"),
+        "this verb owns no options and its synopsis offers none, so it must \
+         advertise nothing:\n{hook}"
     );
 
     let test = stdout(&mrd(&["test", "--help"]));
     assert!(test.contains("--history"), "{test}");
     assert!(test.contains("--rule PAGE"), "{test}");
     assert!(test.contains("--spec PAGE"), "{test}");
+}
+
+/// **The invariant the `--dry` finding turned into a rule.** If a verb's
+/// synopsis offers a flag, and the options block has an entry for that flag,
+/// that entry appears on the verb's page. Before this, `--dry` was tagged
+/// `(run)` while standing in SEVEN other synopses, so `mrd put --help` showed
+/// `[--dry]` above and explained it nowhere — the tag was decoration, and the
+/// per-verb surface made it load-bearing without anyone editing it.
+#[test]
+fn a_flag_offered_in_a_synopsis_is_explained_beneath_it() {
+    let listing = listing();
+    // The flags the options block actually defines; a flag it never documents
+    // (`--force`, `--vibe`) is explained in prose and is not this test's claim.
+    let documented: Vec<&str> = listing
+        .lines()
+        .skip_while(|line| !line.starts_with("options:"))
+        .filter(|line| line.starts_with("  -"))
+        .flat_map(|line| line.split_whitespace().take(2))
+        .map(|token| token.trim_matches(','))
+        .filter(|token| token.starts_with('-') && token.len() > 1)
+        .collect();
+    assert!(
+        documented.contains(&"--dry") && documented.contains(&"--json"),
+        "the options block still documents the flags this test is about: {documented:?}"
+    );
+
+    for (_, synopsis) in verb_lines(&listing) {
+        let address = address_of(&synopsis);
+        let mut args = address.clone();
+        args.push("--help");
+        let page = stdout(&mrd(&args));
+
+        // Only the synopsis half of the line offers flags — a description that
+        // MENTIONS `--json` is not the same as a verb that takes it.
+        for offered in head_of(&synopsis)
+            .split_whitespace()
+            .map(|token| token.trim_matches(|c: char| matches!(c, '[' | ']' | '|')))
+            .filter(|token| documented.contains(token))
+        {
+            assert!(
+                page.contains("options:"),
+                "`mrd {} --help` offers {offered} and has no options block:\n{page}",
+                address.join(" ")
+            );
+            let options = page.split("options:").nth(1).unwrap_or_default();
+            assert!(
+                options.contains(offered),
+                "`mrd {} --help` offers {offered} in its synopsis and never explains it:\n{page}",
+                address.join(" ")
+            );
+        }
+    }
+}
+
+/// The `--dry` case by name, so the regression is legible without deriving it.
+#[test]
+fn dry_is_explained_under_every_verb_that_takes_it() {
+    for verb in [
+        vec!["put"],
+        vec!["pin"],
+        vec!["new"],
+        vec!["unfold"],
+        vec!["reconcile"],
+        vec!["journal", "genesis"],
+        vec!["realise"],
+        vec!["run"],
+    ] {
+        let mut args = verb.clone();
+        args.push("--help");
+        let page = stdout(&mrd(&args));
+        let options = page.split("options:").nth(1).unwrap_or_default();
+        assert!(
+            options.contains("--dry"),
+            "`mrd {} --help` takes --dry and does not explain it:\n{page}",
+            verb.join(" ")
+        );
+    }
 }
 
 /// Help is a page, not a fragment: it opens with the title, explains the gutter
