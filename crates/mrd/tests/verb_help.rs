@@ -198,9 +198,12 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
     // The claim is about what the page OFFERS, not about the letters on it: this
     // verb's own description says "There is no --json face", so the string is in
     // the prose either way. Only the options block can promise a flag.
+    // Probe a span that does NOT cross a line break — the listing wraps this
+    // sentence between "There is no" and "--json face", so the phrase a reader
+    // sees is not a substring of the page.
     let hook = stdout(&mrd(&["skill", "hook", "--help"]));
     assert!(
-        hook.contains("There is no --json face"),
+        hook.contains("--json face — the document is markdown"),
         "the description is reprinted verbatim:\n{hook}"
     );
     assert!(
