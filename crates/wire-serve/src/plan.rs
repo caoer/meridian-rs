@@ -189,8 +189,10 @@ fn lower_append(
     }
     let Some(node) = idx.headings.get(hpath) else {
         return Err(bad_request(format!(
-            "no section addressed by {} — read with mode toc to list the section paths",
-            policy::defs::go_quote(hpath)
+            "no section addressed by {}. {} {}",
+            policy::defs::go_quote(hpath),
+            crate::NO_PARTIAL_WRITE_CLAUSE,
+            crate::section_recovery(hpath, None)
         )));
     };
     let at = node.span.1;
@@ -225,8 +227,10 @@ fn lower_match(
 ) -> Result<Edit, Box<ErrorBody>> {
     let Some(node) = idx.headings.get(hpath) else {
         return Err(bad_request(format!(
-            "no section addressed by {}",
-            policy::defs::go_quote(hpath)
+            "no section addressed by {}. {} {}",
+            policy::defs::go_quote(hpath),
+            crate::NO_PARTIAL_WRITE_CLAUSE,
+            crate::section_recovery(hpath, None)
         )));
     };
     // S10's ADDRESS half (advisor R25): `old` is a NEEDLE searched in STORED
@@ -293,8 +297,10 @@ fn lower_replace_section(
 ) -> Result<Edit, Box<ErrorBody>> {
     let Some(node) = idx.headings.get(hpath) else {
         return Err(bad_request(format!(
-            "no section addressed by {}",
-            policy::defs::go_quote(hpath)
+            "no section addressed by {}. {} {}",
+            policy::defs::go_quote(hpath),
+            crate::NO_PARTIAL_WRITE_CLAUSE,
+            crate::section_recovery(hpath, None)
         )));
     };
     let rev = rev.unwrap_or("");

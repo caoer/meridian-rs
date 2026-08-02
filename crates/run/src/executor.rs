@@ -396,7 +396,13 @@ impl std::fmt::Display for ExecError {
                 current,
             } => write!(
                 f,
-                "foreign edit on {target}: last governed rev {last_governed}, current {current} — refusing to overwrite (use takeover to override)"
+                "foreign edit on {target}: last governed rev {last_governed}, current \
+                 {current} — refusing to overwrite. Nothing was written; the run stopped \
+                 at this effect. The value changed outside the run plane, so the engine \
+                 cannot tell an intended edit from a stale overwrite. Fix: restore \
+                 {target} to the bytes the engine last wrote (rev {last_governed}) and \
+                 re-run — the guard compares exactly those two revs. `mrd run` mounts no \
+                 override flag today."
             ),
             ExecError::WorkspaceBusy => write!(
                 f,
