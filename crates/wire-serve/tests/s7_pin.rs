@@ -511,11 +511,13 @@ fn a_missing_target_or_selector_refuses_pin_target_missing() {
     let err = splice(&root, 0, &pin_args("Guide/No-Such-Section"), &[], None)
         .expect_err("no such selector");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
+    // The teaching is unchanged in intent; only its spelling moved off the
+    // internal mode name onto a command the reader can run (issue-05).
     assert!(
         err.message
             .as_deref()
-            .is_some_and(|m| m.contains("mode toc")),
-        "the refusal teaches how to find the real selectors: {:?}",
+            .is_some_and(|m| m.contains("mrd read") && m.contains("Nothing was written")),
+        "the refusal teaches how to find the real selectors, and says nothing landed: {:?}",
         err.message
     );
     assert_eq!(read_page(&root, "plan.md"), PINNER, "nothing written");

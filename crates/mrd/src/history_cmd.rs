@@ -414,6 +414,11 @@ fn build_doc(path: &str, raw: String) -> Document {
 /// # Errors
 /// git is unavailable, or the path is not a repository (`log` fails).
 fn anchor_commits(workspace: &Path, journal_rel: &str) -> Result<BTreeMap<String, String>, Fail> {
+    // The tier's OWN precondition, stated here rather than inside `git_text`:
+    // the helper is generic and cannot know what the caller wanted git for, so a
+    // bubbled-up `git log failed: …` names the mechanism that failed and never
+    // the requirement that was not met (issue-19). Only this caller knows the
+    // history tier needs committed history, so only this caller can say it.
     let list = git_text(
         workspace,
         &[
@@ -424,7 +429,16 @@ fn anchor_commits(workspace: &Path, journal_rel: &str) -> Result<BTreeMap<String
             "--",
             journal_rel,
         ],
-    )?;
+    )
+    .map_err(|e| {
+        Fail::tool(format!(
+            "the history tier replays COMMITTED changes, and this workspace could not \
+             supply them: {}. Nothing was replayed — no rule ran and no golden list was \
+             compared. Fix: commit the tree (the receipt journal `{journal_rel}` must be \
+             in git history), then re-run.",
+            e.message
+        ))
+    })?;
     let mut map = BTreeMap::new();
     for commit in list.lines().filter(|l| !l.is_empty()) {
         let Some(text) = git_show(workspace, commit, journal_rel) else {
