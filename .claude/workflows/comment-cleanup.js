@@ -26,12 +26,13 @@ const mdRel = rel => MD_ROOT + '/' + rel.replace(/\.rs$/, '.md')
 const FILE_RESULT = {
   type: 'object',
   additionalProperties: false,
-  required: ['rel', 'changed', 'mdCreated', 'gate'],
+  required: ['rel', 'changed', 'mdCreated', 'gate', 'diffstat'],
   properties: {
     rel: { type: 'string' },
     changed: { type: 'boolean' },
     mdCreated: { type: 'boolean' },
     gate: { type: 'string', description: 'verbatim PASS/FAIL line from the invariance run; empty if changed=false' },
+    diffstat: { type: 'string', description: "verbatim `git diff --stat HEAD -- <file>` line, run by the WRAPPER itself; 'empty' when no diff" },
   },
 }
 
@@ -51,12 +52,13 @@ const REWRITE_SCHEMA = {
 const FILE_VERDICT = {
   type: 'object',
   additionalProperties: false,
-  required: ['rel', 'verdict', 'detail'],
+  required: ['rel', 'verdict', 'detail', 'diffstat'],
   properties: {
     rel: { type: 'string' },
     verdict: { type: 'string', enum: ['GO', 'NO-GO', 'UNREVIEWED'], description: 'UNREVIEWED only when you could not judge this file' },
     gate: { type: 'string', description: 'verbatim PASS/FAIL line from your independent invariance run' },
     detail: { type: 'string', description: 'condensed verdict, 1-2 sentences' },
+    diffstat: { type: 'string', description: "verbatim `git diff --stat HEAD -- <file>` line, run by the WRAPPER itself; 'empty' when no diff" },
   },
 }
 
@@ -77,6 +79,8 @@ const fileList = b => b.files.map(f => '  - ' + f.rel + '   (~' + f.n + ' commen
 const rewritePrompt = b => `<grok-exec:dispatch>
 model: grok-4-5 (fall back to the CLI default if this id is unknown)
 max execution time: 40 minutes
+workspace: /tmp/wf-comment-cleanup/rw-${b.idx} — mkdir -p it and keep ALL your scratch state (prompt file, session id, out, pid) inside it. Re-derive every path from this literal on each step. NEVER store state in the session scratchpad or any shared file, and NEVER read another workspace under /tmp/wf-comment-cleanup/ or /tmp/grok-exec.*: sibling wrappers run concurrently and pointer files get clobbered.
+verify before returning (pilot lesson — resumed CLI sessions fabricate completion): the CLI's claims are unverified narrative. From /Users/Shared/repos/meridian-rs run git diff --stat HEAD -- <file> YOURSELF for every batch file and fill each diffstat field from your own run. If the CLI claimed changed=true but your diffstat is empty, set that file changed=false, set overall status partial, and say so in reason (task: CLI claimed edits that never landed). If you relaunch or resume the CLI, re-verify from disk — never accept a resumed session's summary as fact.
 </grok-exec:dispatch>
 <grok-exec:payload>
 You are one agent in a fleet minimizing comments across a Rust repo. You own exactly ONE batch of files; work through them one at a time.
@@ -89,6 +93,7 @@ WRITE ACCESS — exactly the .rs files listed above plus their listed notes file
 
 HARD RULES
 - Comments only. Every non-comment token must survive byte-identical: no code, string, attribute, or macro changes. Never delete a comment that separates two tokens without leaving a space.
+- Edit each repo file IN PLACE with your file-edit tool. Never build a script pipeline that writes a cleaned copy somewhere else, and never edit copies under /tmp — edits that are not in the working tree do not exist.
 - No cargo, rustc, build, test, fmt, or clippy runs. No worktree. Git is read-only for you: never commit, stash, checkout, branch, or add.
 - After editing each file, prove code-invariance mechanically before moving on:
     B=$(mktemp -d)/before.rs
@@ -113,6 +118,9 @@ RETURN a single JSON object per the schema you were given: status (ok | partial 
 const reviewPrompt = (b, rw) => `<codex-exec:dispatch>
 model: gpt-5-6-sol, reasoning effort: medium (fall back to the CLI default model at medium reasoning if this id is unknown)
 max execution time: 30 minutes
+sandbox: launch codex with a workspace-write sandbox rooted at /Users/Shared/repos/meridian-rs (e.g. --sandbox workspace-write with the repo as cwd) so it can append verdict sections under docs/comment-cleanup/. Read-only mode broke verdict writes in the pilot.
+workspace: /tmp/wf-comment-cleanup/rv-${b.idx} — mkdir -p it and keep ALL your scratch state inside it. Re-derive every path from this literal on each step. NEVER store state in the session scratchpad or any shared file, and NEVER read another workspace under /tmp/wf-comment-cleanup/ or /tmp/codex-exec.*: sibling wrappers run concurrently and pointer files get clobbered.
+verify before returning (pilot lesson — a reviewer CLI rubber-stamped files that were never edited): from /Users/Shared/repos/meridian-rs run git diff --stat HEAD -- <file> YOURSELF for every batch file and fill each diffstat field from your own run; a verdict whose story contradicts your diffstat is fabricated — replace it with NO-GO detail 'reviewer claim contradicts disk'. Then test -f each notes md the verdict says it wrote; if the CLI could not write a verdict section (sandbox), append the returned section to the md YOURSELF with your Write tool before returning.
 </codex-exec:dispatch>
 <codex-exec:payload>
 You review ONE other agent's comment-cleanup batch in a Rust repo, file by file. Review only: you fix nothing, revert nothing, and never iterate with the other agent.
@@ -125,15 +133,14 @@ Rewriter's report: ${JSON.stringify(rw)}
 The ONLY paths you may write are the listed notes files. Other agents are editing OTHER batches concurrently: ignore every path outside this batch. The rewrite of this batch is finished; judge each working-tree file against git show HEAD:<file>.
 
 FOR EACH FILE in the batch, in order:
+0. Disk truth FIRST: git diff --stat HEAD -- <file>. If empty while the rewriter claimed changed=true: NO-GO immediately, detail "no edits on disk", skip the other checks for this file. If empty and the rewriter said changed=false: verify and GO with detail "no changes".
 1. Code-invariance (mechanical):
     B=$(mktemp -d)/before.rs
     git show HEAD:<file> > "$B"
     python3 tools/comment-audit/invariance.py "$B" <file>
    FAIL here is an automatic NO-GO for that file regardless of everything else.
-2. Information preservation: read git diff HEAD -- <file>. For every deleted or shortened paragraph that carried non-obvious substance — invariants, contracts, SAFETY reasoning, workarounds, findings about system state — verify the substance survives in the remaining comment or in that file's notes file. Every unsafe block must still carry a SAFETY comment.
+2. Information preservation: read git diff HEAD -- <file>. For every deleted or shortened paragraph that carried non-obvious substance — invariants, contracts, SAFETY reasoning, workarounds, findings about system state — verify the substance survives in the remaining comment or in that file's notes file. cat the notes file before describing it; a notes file the rewriter claimed but which does not exist is an info-preservation fail. Every unsafe block must still carry a SAFETY comment.
 3. Style: remaining comments are minimal — no narration of what code does, no commented-out code, doc comments short — and reworded comments are still accurate (a simplified comment must not say something false about the code).
-4. If the rewriter recorded changed=false for the file: verify git diff HEAD -- <file> really is empty; GO with detail "no changes" when true, NO-GO when the report lied.
-
 VERDICT per file: GO or NO-GO. Append to that file's notes file (mkdir -p the parent; if missing, create it starting with the line: # <file> — comment-cleanup notes ; never edit existing sections):
 
 ## Review verdict: <GO|NO-GO>
@@ -653,8 +660,11 @@ const BATCHES = [
   ] },
 ]
 
-// Pass {limit: N} as args to run only the first N batches (pilot).
-const SCOPE = BATCHES.slice(0, (args && args.limit) || BATCHES.length)
+// args: {limit: N} runs only the first N in-scope batches (pilot);
+// {skip: [i, ...]} excludes batches by their index in BATCHES (already-done runs).
+const skipSet = new Set((args && args.skip) || [])
+const withIdx = BATCHES.map((b, i) => ({ ...b, idx: i }))
+const SCOPE = withIdx.filter(b => !skipSet.has(b.idx)).slice(0, (args && args.limit) || BATCHES.length)
 const nFiles = SCOPE.reduce((a, b) => a + b.files.length, 0)
 log('comment-cleanup: ' + nFiles + ' files in ' + SCOPE.length + ' of ' + BATCHES.length + ' batches, rewrite=grok-exec review=codex-exec, md root ' + MD_ROOT)
 
@@ -662,7 +672,7 @@ const results = await pipeline(
   SCOPE,
   (b, _, i) => agent(rewritePrompt(b), {
     agentType: 'grok-exec', model: 'sonnet', effort: 'low',
-    label: 'rewrite:' + b.crate + '#' + i + ' (' + b.files.length + ' files)',
+    label: 'rewrite:' + b.crate + '#' + b.idx + ' (' + b.files.length + ' files)',
     phase: 'Rewrite', schema: REWRITE_SCHEMA,
   }).then(rw => rw ?? { status: 'failed', reason: 'rewrite agent lost (skipped or terminal API error)', files: [], summary: '' }),
   (rw, b, i) => {
@@ -671,7 +681,7 @@ const results = await pipeline(
     }
     return agent(reviewPrompt(b, rw), {
       agentType: 'codex-exec', model: 'sonnet', effort: 'low',
-      label: 'review:' + b.crate + '#' + i + ' (' + b.files.length + ' files)',
+      label: 'review:' + b.crate + '#' + b.idx + ' (' + b.files.length + ' files)',
       phase: 'Review', schema: REVIEW_SCHEMA,
     }).then(rv => ({ batch: b, rewrite: rw, review: rv }))
   },
@@ -681,7 +691,7 @@ const results = await pipeline(
 const perFile = []
 const lostBatches = []
 results.forEach((r, i) => {
-  if (!r) { lostBatches.push(i); SCOPE[i].files.forEach(f => perFile.push({ rel: f.rel, verdict: 'LOST', changed: false, mdCreated: false, detail: 'batch pipeline item lost', batch: i })); return }
+  if (!r) { lostBatches.push(SCOPE[i].idx); SCOPE[i].files.forEach(f => perFile.push({ rel: f.rel, verdict: 'LOST', changed: false, mdCreated: false, detail: 'batch pipeline item lost', batch: SCOPE[i].idx })); return }
   const fallback = r.review === null ? 'SKIPPED' : 'UNREVIEWED'
   for (const f of r.batch.files) {
     const rw = r.rewrite?.files?.find(x => x.rel === f.rel)
@@ -692,7 +702,7 @@ results.forEach((r, i) => {
       changed: rw?.changed ?? false,
       mdCreated: rw?.mdCreated ?? false,
       detail: rv?.detail ?? (r.review === null ? (r.rewrite?.reason ?? 'rewrite failed') : (r.review?.reason ?? 'no per-file verdict returned')),
-      batch: i,
+      batch: r.batch.idx,
     })
   }
 })
@@ -711,7 +721,7 @@ const summary = {
   failedBatches: results.map((r, i) => ({ r, i }))
     .filter(({ r }) => !r || r.rewrite?.status !== 'ok' || (r.review && r.review.status !== 'ok'))
     .map(({ r, i }) => ({
-      batch: i, crate: SCOPE[i].crate,
+      batch: SCOPE[i].idx, crate: SCOPE[i].crate,
       rewrite: r?.rewrite ? { status: r.rewrite.status, reason: r.rewrite.reason ?? '', sessionId: r.rewrite.sessionId ?? '' } : null,
       review: r?.review ? { status: r.review.status, reason: r.review.reason ?? '', sessionId: r.review.sessionId ?? '' } : null,
     })),
