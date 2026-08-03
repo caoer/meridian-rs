@@ -97,9 +97,7 @@ fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
 fn refusal_is_redesigned(doc_name: &str, step_id: &str) -> bool {
     matches!(
         (doc_name, step_id),
-        ("basic", "r-sections-all-missing")
-            | ("empty", "r-sections")
-            | ("basic", "r-frag-plus-sections")
+        ("basic", "r-sections-all-missing" | "r-frag-plus-sections") | ("empty", "r-sections")
     )
 }
 

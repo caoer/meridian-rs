@@ -603,7 +603,7 @@ mod tests {
         );
     }
 
-    /// replace_section: rev required; trailing-NL; empty body empty; if_node_rev.
+    /// `replace_section`: rev required; trailing-NL; empty body empty; `if_node_rev`.
     #[test]
     fn replace_section_rev_and_payload() {
         let raw = "# Notes\n\nold\n";

@@ -458,3 +458,107 @@ fn reconcile_without_prune_leaves_ephemeral_in_place() {
     // The missing declared path is still materialized (additive is unconditional).
     assert!(root.0.join("results/plan.md").exists());
 }
+
+// ---------------------------------------------------------------------------
+// The directory half of the prune allowlist (design element §5.3). Before the
+// U19 conformance audit this could not fire at all: the candidate set and the
+// declared-prefix skip set were derived from the same expression, so every
+// candidate was skipped and `pruned_dirs` came back empty on every input. The
+// three assertions below are the ones that were vacuous.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_empty_undeclared_dir_under_the_scaffold_is_pruned() {
+    let (_tmp, root) = workspace(&[
+        ("presets/session.md", RECONCILE_PRESET),
+        ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
+        ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
+        ("results/plan.md", "---\ntype: plan\n---\n\n# P\n"),
+    ]);
+    // A nest of empty dirs beneath a scaffold directory: both collapse in ONE
+    // pass, deepest-first, which is the claim the sort exists to make.
+    std::fs::create_dir_all(root.0.join("tasks/scratch/inner")).unwrap();
+
+    let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
+
+    assert_eq!(
+        report.pruned_dirs,
+        vec!["tasks/scratch/inner".to_owned(), "tasks/scratch".to_owned()],
+        "the empty nest is pruned deepest-first: {report:?}"
+    );
+    assert!(
+        !root.0.join("tasks/scratch").exists(),
+        "the empty undeclared dir is gone from disk"
+    );
+    assert!(
+        root.0.join("tasks/index.md").exists(),
+        "the scaffold directory itself is never pruned"
+    );
+}
+
+#[test]
+fn a_dir_holding_content_or_a_declared_path_is_never_pruned() {
+    let (_tmp, root) = workspace(&[
+        ("presets/session.md", RECONCILE_PRESET),
+        ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
+        ("tasks/index.md", "---\ntype: index\n---\n\n# I\n"),
+        ("results/plan.md", "---\ntype: plan\n---\n\n# P\n"),
+        // Undeclared CONTENT under an undeclared dir — the dir is not empty, so
+        // it stands, and its file is a finding rather than a deletion.
+        ("tasks/keep/work.md", "---\ntype: note\n---\n\n# mine\n"),
+    ]);
+
+    let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
+
+    assert!(
+        report.pruned_dirs.is_empty(),
+        "a dir holding content is never pruned: {report:?}"
+    );
+    assert!(root.0.join("tasks/keep/work.md").exists());
+    // Every declared directory survives, unconditionally.
+    for declared_dir in ["tasks", "results"] {
+        assert!(
+            root.0.join(declared_dir).is_dir(),
+            "{declared_dir} is a scaffold directory and must stand"
+        );
+    }
+}
+
+#[test]
+fn the_workspace_root_is_never_walked_for_directory_candidates() {
+    // A scaffold of top-level files alone creates NO directory, so it offers no
+    // candidate. Without this bound, every empty directory anywhere in a user's
+    // workspace would be a prune target under `--prune`.
+    const TOP_LEVEL_PRESET: &str = r#"---
+type: def
+defines: session
+root: SESSION.md
+inputs:
+  - "conventions/reviewer-not-owner/CHECK.md@rev-a"
+---
+
+# Unfold
+
+- SESSION.md
+
+# Ephemeral
+
+- *.lock
+"#;
+    let (_tmp, root) = workspace(&[
+        ("presets/top.md", TOP_LEVEL_PRESET),
+        ("SESSION.md", "---\ntype: session\n---\n\n# S\n"),
+    ]);
+    std::fs::create_dir_all(root.0.join("unrelated-empty")).unwrap();
+
+    let report = reconcile(&root, "presets/top.md", true, &opts()).unwrap();
+
+    assert!(
+        report.pruned_dirs.is_empty(),
+        "the workspace root is not this shape's territory: {report:?}"
+    );
+    assert!(
+        root.0.join("unrelated-empty").is_dir(),
+        "an empty dir outside the scaffold's territory must survive"
+    );
+}
