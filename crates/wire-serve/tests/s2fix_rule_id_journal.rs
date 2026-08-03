@@ -1,51 +1,22 @@
-//! R44 P0-1 (R45 shape B), re-keyed by the registration cutover — a rule
-//! IDENTIFIER cannot carry a forged `@fp` claim into the RESERVED JOURNAL,
-//! because it cannot enter the engine at all.
+//! R44 P0-1 (R45 shape B): a rule id cannot carry a forged `@fp` into the reserved journal.
 //!
-//! # The door, and what the cutover changed about it
-//! `force_journal_write` strips the trailing anchor off a line
-//! `receipt::journal::render_row` already returned, interpolates
-//! `forced_rule={token_safe(&skip.rule)}`, and re-attaches the anchor.
-//! `token_safe` is `split_whitespace().join("_")`: it removes no `[`, `]`, `@`,
-//! `#`, `^`. So any identifier reaching `ForcedSkip.rule` lands verbatim in the
-//! ledger the chain-continuity detector reads — **a forged claim in the journal
-//! forges the chain detector's own input.**
-//!
-//! What changed is only WHICH identifier that is. It was an armed convention's
-//! FOLDER NAME, guarded by `policy::validate_slug`; the folder loader is gone, and
-//! `policy::gate` now builds `GateFinding.rule` from the armed row's `RuleId`. So
-//! the intake that must hold is `RuleId::parse`'s § 2 grammar
-//! (`[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*`), which is strictly NARROWER than
-//! the slug charset it replaces.
-//!
-//! R45's ruling survives the re-key unchanged, and it is the reason this is one
-//! test rather than one per renderer: the hostile bytes are made
-//! **unrepresentable rather than removable**, at INTAKE, so every renderer added
-//! later inherits the guard. The id has three intakes and the grammar sits at all
-//! three — a page's `id:` frontmatter (`register_page`), the ARM act
-//! (`ArmRequest.id`), and reading an attested page back (`parse_artifact`'s
-//! `parse_row`). The hostile leg below drives the THIRD, because a hand-edited
-//! artifact row is the only way a string that never passed the other two can
-//! present itself as armed.
-//!
-//! THE ASSERT IS THE ARTIFACT (R26): `syntax::fp_removals` over the journal bytes
-//! ON DISK, never a string that looks right. The absence is carried by a CONTROL
-//! leg that drives the SAME force through the SAME fixture with a legal id and
-//! proves the journal row is really written — so "no token" can never be "no row".
+//! `ForcedSkip.rule` lands verbatim via `token_safe` (whitespace only). Intake is
+//! `RuleId::parse` §2 grammar (narrower than old folder-slug charset). Hostile bytes
+//! are unrepresentable at intake (three sites; this suite drives `parse_artifact`).
+//! Assert is R26: `syntax::fp_removals` over journal bytes on disk, with a control leg
+//! proving the force path actually journals a row under a legal id.
 
 use policy::armed::Mode;
 use wire::{Edit, EditShape, Path as WPath, PinSpec, PutAt, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// An `@fp` claim token in a claim-link position, spelled as a rule id.
+/// `@fp` claim token spelled as a rule id.
 const TOKEN_ID: &str = "[[guide#^goal@green.b3af12cd|G]]";
 
-/// The legal id the control leg arms — and the placeholder the hostile artifact is
-/// rendered through, so both legs read bytes the ENGINE produced.
+/// Legal id for the control leg; also the placeholder the hostile artifact is re-keyed from.
 const LEGAL_ID: &str = "harness.frozen-guide";
 
-/// A rule page that refuses every change to `guide.md` — the live refusal the
-/// `--force` leg must escape. Registers by TAG, with no `kind:` key.
+/// Rule page that refuses every change to `guide.md` (tag-registered, no `kind:`).
 fn frozen_guide(id: &str) -> String {
     format!(
         "---\ntags: [type/rule, rules/check]\nid: {id}\npaths:\n  - guide.md\n---\n\n\
@@ -59,16 +30,7 @@ fn frozen_guide(id: &str) -> String {
 const RULE_PATH: &str = "rules/frozen-guide.md";
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 
-/// Arm `id` in a fresh workspace: the rule page on disk, an attested artifact
-/// pinned to its live rev, and the once-armed marker.
-///
-/// The artifact is rendered by the ENGINE through [`LEGAL_ID`] and then re-keyed to
-/// `id`, so the hostile leg reads the exact row grammar `ArmedArtifact::render`
-/// emits rather than a hand-typed imitation — and the same fixture builds
-/// identically before and after the intake guard.
-///
-/// BOTH files are written. The artifact alone leaves a workspace the marker says
-/// was never armed; the marker alone is `ArmedFault::Missing`.
+/// Arm `id`: page + engine-rendered artifact (re-keyed from LEGAL_ID) + once-armed marker.
 fn arm(root: &fs::WorkspaceRoot, id: &str) {
     let page = frozen_guide(LEGAL_ID);
     write(root, RULE_PATH, &page);
@@ -91,9 +53,7 @@ fn arm(root: &fs::WorkspaceRoot, id: &str) {
     .render();
 
     if id != LEGAL_ID {
-        // The hostile leg presents the page under the hostile id too, so the row
-        // and the page agree — the fixture is not refused for a mismatch it did
-        // not mean to test.
+        // Hostile leg: page id matches the re-keyed row (not testing mismatch).
         write(root, RULE_PATH, &frozen_guide(id));
     }
     write(
@@ -142,9 +102,7 @@ fn pin_args(force: bool) -> SpliceArgs {
     }
 }
 
-/// The journal page's bytes, or empty when no row was ever appended — an absent
-/// page is the strongest possible "no forged row", and reading it this way keeps
-/// the assertion about BYTES rather than about a file's existence.
+/// Journal bytes, or empty if never written (assert on bytes, not file existence).
 fn journal(root: &fs::WorkspaceRoot) -> String {
     std::fs::read_to_string(root.0.join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap_or_default()
 }
@@ -153,9 +111,7 @@ fn read(root: &fs::WorkspaceRoot, rel: &str) -> String {
     std::fs::read_to_string(root.0.join(rel)).expect("read")
 }
 
-/// **THE GATE.** The production splice choke point, `force: true`, against a
-/// workspace whose attested artifact carries a row keyed by a claim token. The
-/// journal bytes on disk carry no `@fp` claim.
+/// Gate: force-pin against artifact keyed by claim-token id → no `@fp` in journal; corrupt refusal.
 #[test]
 fn a_rule_id_lands_no_claim_token_in_the_reserved_journal() {
     let (_dir, root) = workspace();
@@ -165,7 +121,6 @@ fn a_rule_id_lands_no_claim_token_in_the_reserved_journal() {
 
     let outcome = splice(&root, 0, &pin_args(true), &[], None);
 
-    // THE ASSERT — the artifact, first, so a regression quotes the ranges.
     let journal = journal(&root);
     assert!(
         syntax::fp_removals(&journal).is_empty(),
@@ -175,10 +130,7 @@ fn a_rule_id_lands_no_claim_token_in_the_reserved_journal() {
         syntax::fp_removals(&journal)
     );
 
-    // And it is absent for the RIGHT reason: the id grammar refused the row, so the
-    // artifact never parsed and nothing was armed under that name. Note `--force`
-    // does NOT escape this — an armed-law fault refuses before the gate reads
-    // `change.force`, which is what makes the absence above unconditional.
+    // Id grammar refused before force is considered; absence is unconditional.
     let err = outcome.expect_err("the id grammar refuses a row keyed outside the charset");
     let message = err.message.clone().unwrap_or_default();
     assert!(
@@ -187,7 +139,7 @@ fn a_rule_id_lands_no_claim_token_in_the_reserved_journal() {
         err.code
     );
 
-    // A refusal writes nothing (R32 (1)): both files byte-unchanged.
+    // R32: refusal writes nothing.
     assert_eq!(
         read(&root, "plan.md"),
         plan_before,
@@ -196,17 +148,12 @@ fn a_rule_id_lands_no_claim_token_in_the_reserved_journal() {
     assert_eq!(read(&root, "guide.md"), guide_before, "the target stands");
 }
 
-/// **THE CONTROL for the absence above** — an assertion of absence passes on an
-/// empty world, so this drives the SAME force through the SAME fixture with a legal
-/// id: the armed law refuses unforced, `--force` escapes it, and the journal really
-/// does gain an `op=force` row naming `forced_rule=`. The gate above is therefore
-/// measuring a door that is open, not machinery that never ran.
+/// Control: same force + legal id journals a real `forced_rule=` row (door is open).
 #[test]
 fn the_same_force_journals_a_row_when_the_id_is_in_charset() {
     let (_dir, root) = workspace();
     arm(&root, LEGAL_ID);
 
-    // The armed rule genuinely refuses — the force escapes something real.
     splice(&root, 0, &pin_args(false), &[], None)
         .expect_err("the armed rule refuses the unforced pin");
 
@@ -223,17 +170,7 @@ fn the_same_force_journals_a_row_when_the_id_is_in_charset() {
     );
 }
 
-/// **THE SECOND SOURCE of `forced_rule=`, enumerated and driven.**
-/// `ForcedSkip.rule` has exactly two origins in `policy::gate`: an armed row's
-/// `RuleId` (closed by intake, above) and the ENGINE-DERIVED
-/// `binding-break:{index|file}` of a forced one-sided change. The second is a
-/// constant the engine writes, not caller bytes — but "engine-derived" is a claim,
-/// and an undriven door of a named shape is the enumeration not closing. So it is
-/// driven: the row lands, and it carries no claim token either.
-///
-/// The break is now a direct edit of the ARMED PAGE — the page-side binding break,
-/// re-keyed from the folder generation's `conventions/<slug>/CHECK.md` shape to
-/// membership in what the workspace attested.
+/// Second `ForcedSkip.rule` origin: engine-derived `binding-break:file` (armed-page edit).
 #[test]
 fn the_engine_derived_forced_rule_journals_no_claim_token_either() {
     let (_dir, root) = workspace();
@@ -265,7 +202,6 @@ fn the_engine_derived_forced_rule_journals_no_claim_token_either() {
         pin: None,
     };
 
-    // CONTROL — unforced, the door law refuses, so the force escapes something real.
     splice(&root, 0, &break_args(false), &[], None)
         .expect_err("the binding law refuses a one-sided change to an armed rule page");
 

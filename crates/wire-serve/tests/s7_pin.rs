@@ -1,23 +1,15 @@
-//! S7: `mrd pin` mints a real `meridian-lock` pin — the read-mint gate (D16),
-//! rev-neutral slug promotion (D15), and content+lock in ONE `commit_batch`
-//! (D7).
-//!
-//! The pin rides `Op::Splice` as a sibling field, so `args.path` is the PINNING
-//! page and the lock block is a content edit on it. Every test here drives the
-//! production choke-point (`wire_serve::write::splice`) against a real
-//! on-disk workspace, and the gate tests are SINGLE-SESSION IN-PROCESS: one
-//! `ReadMintStore` held across a read call and then a pin call, which is the
-//! only shape that models a daemon session (two CLI processes could not).
+//! S7: `mrd pin` mints a real `meridian-lock` pin — read-mint gate (D16),
+//! rev-neutral slug promotion (D15), content+lock in one `commit_batch` (D7).
+//! Drives `write::splice` on a real workspace; gate tests are single-session
+//! in-process (`ReadMintStore` across read then pin).
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PutAt, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// The pinning page — the drawing end. It has no lock block, so the first pin
-/// BIRTHS one at EOF.
+/// Pinning page (no lock yet — first pin births one at EOF).
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 
-/// The pinned page. `Leader's Guideline` exercises the D15 slug (apostrophe
-/// dropped, not separating): the derived id is `leaders-guideline`.
+/// Pinned page; `Leader's Guideline` → D15 slug `leaders-guideline`.
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
@@ -29,7 +21,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (dir, root)
 }
 
-/// A pin-only splice: no caller edits, the lock block IS the write.
+/// Pin-only splice (lock block is the write).
 fn pin_args(selector: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -50,7 +42,7 @@ fn pin_args(selector: &str) -> SpliceArgs {
     }
 }
 
-/// The pin fact off a splice response.
+/// Pin fact off a splice response.
 fn pin_fact(body: &ResponseBody) -> wire::PinFact {
     let ResponseBody::Splice { pin, .. } = body else {
         panic!("splice body");
@@ -64,11 +56,7 @@ fn read_page(root: &fs::WorkspaceRoot, rel: &str) -> String {
     std::fs::read_to_string(root.0.join(rel)).expect("read")
 }
 
-/// The live fingerprint of a lock `ref`, computed exactly the way the VERIFY
-/// plane computes it: parse the ref through the normative selector grammar,
-/// resolve it against the live document, hash that span. Every drift assertion
-/// in this file goes through here — a pin whose minted token does not equal this
-/// value is a pin that reads red the moment it lands.
+/// Live fingerprint of a lock `ref`, same path as the verify plane.
 fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
     let (rel, _) = declared_ref.split_once('#').expect("a ref names a section");
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
@@ -91,18 +79,12 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
         .into_string()
 }
 
-// ---------------------------------------------------------------------------
-// GATE 1 + 3: a real pin lands, and the bare CLI (actor absent) is trusted
-// ---------------------------------------------------------------------------
+// GATE 1 + 3: real pin lands; bare CLI (actor absent) is trusted
 
-/// The whole verb, end to end: a pin with NO actor (the local-operator-trusted
-/// CLI door, D16) births a canonical lock block carrying `pins:` AND `objects:`,
-/// promotes the slug anchor into the target, and mints a fingerprint the verify
-/// plane recomputes identically.
+/// Bare CLI pin (no actor, D16): lock block + slug promotion + green fingerprint.
 #[test]
 fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let (dir, root) = workspace();
-    // A repo, so the `objects:` plane has a blob to name.
     git_init(dir.path());
 
     let out =
@@ -125,14 +107,12 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let blob = fact.blob.clone().expect("a real repo answers a blob oid");
     assert_eq!(blob.len(), 40, "a git blob oid: {blob}");
 
-    // The pinned digest is EXACTLY what the verify plane recomputes.
     assert_eq!(
         fact.fingerprint,
         live_fingerprint(&root, "guide.md#Guide/Leader's Guideline"),
         "a freshly minted pin must verify green immediately"
     );
 
-    // The lock block, on disk, in canonical form.
     let pinner = read_page(&root, "plan.md");
     let expected_block = format!(
         "```meridian-lock\n\
@@ -156,7 +136,6 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
          and the page's own bytes untouched"
     );
 
-    // The promotion landed on its OWN LINE under the heading, and nowhere else.
     assert_eq!(
         read_page(&root, "guide.md"),
         TARGET.replace(
@@ -167,18 +146,13 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
          text (and therefore the section's address) untouched"
     );
 
-    // And it round-trips through the strict reader.
     let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
     let found = lock::find(&doc).expect("parses").expect("present");
     assert_eq!(found.lock.pins.len(), 1);
     assert_eq!(found.lock.objects, vec![("guide.md".into(), blob)]);
 }
 
-/// GATE 4a: the promotion is **rev-neutral** — the pinned section's fingerprint
-/// is byte-identical before and after the slug marker lands. This is the honesty
-/// claim behind D14 (promoting into a target this actor may not own is permitted
-/// BECAUSE it cannot move that target's fingerprint): if it moved, every OTHER
-/// page pinning the same section would redden on somebody else's pin.
+/// GATE 4a: promotion is rev-neutral (D14 honesty — cannot move pinned fingerprint).
 #[test]
 fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
     let (_dir, root) = workspace();
@@ -207,10 +181,7 @@ fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
     );
 }
 
-/// GATE 4b: promotion is **idempotent** — a re-pin recomputes the SAME slug,
-/// sees it already present, and promotes nothing. That is what keeps a benign
-/// orphan from accumulating (a counter or random id would leave a new marker per
-/// pin, each one a fingerprint-neutral but permanent wart).
+/// GATE 4b: re-pin is idempotent (same slug, no second marker).
 #[test]
 fn a_re_pin_reuses_the_same_slug_and_promotes_nothing() {
     let (_dir, root) = workspace();
@@ -235,29 +206,16 @@ fn a_re_pin_reuses_the_same_slug_and_promotes_nothing() {
         "the target is byte-unchanged by the re-pin"
     );
     assert_eq!(second.fingerprint, first.fingerprint);
-    // The lock still holds exactly ONE pin: `upsert_pin` unions in place.
     let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
     let found = lock::find(&doc).expect("parses").expect("present");
     assert_eq!(found.lock.pins.len(), 1, "a re-pin updates, never appends");
 }
 
-/// GATE 5a: a REFUSAL leaves no orphan. This test used to assert the opposite,
-/// and the assertion was the defect (review finding 12): it simulated the G3
-/// crash residual with a deterministic REFUSAL — a corrupt lock block on the
-/// pinning page — and then asserted the marker survived it. A refusal is not a
-/// crash. A crash is survivable and heals; that refusal repeated identically on
-/// every re-pin, so the bytes it left in a page the request does not even name
-/// could never heal, and the promotion is now ordered after every refusal rung.
-///
-/// The vehicle is worth keeping precisely because it refuses at a DIFFERENT rung
-/// from the ref-grammar repro in `s2fix_promotion` (`lock_engine_edit`, inside
-/// the batch composition rather than the prologue): between them they show it is
-/// the ORDERING that holds, not one patched rung.
+/// GATE 5a: refusal leaves no orphan (promotion ordered after every refusal rung).
 #[test]
 fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
     let (_dir, root) = workspace();
-    // A hand-mangled lock block: `lock::find` refuses it, so the pin cannot
-    // compose its lock edit at all.
+    // Corrupt lock: find refuses, so pin cannot compose its lock edit.
     std::fs::write(
         root.0.join("plan.md"),
         format!("{PINNER}\n```meridian-lock\nversion: 1\ngarbage\n```\n"),
@@ -286,8 +244,6 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
         "so nothing could have drifted"
     );
 
-    // Repair the page by hand (the #8 §3 remedy the refusal names) and the same
-    // pin commits — the refusal was about the lock state, not the pin.
     std::fs::write(root.0.join("plan.md"), PINNER).expect("repair");
     let fact = pin_fact(
         &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
@@ -301,19 +257,12 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
     assert_eq!(fact.fingerprint, fp_before);
 }
 
-/// GATE 5b: the benign orphan still heals. The pin's two inodes are two renames
-/// (residual G3, unchanged and still accepted), and the promotion's rename is
-/// ordered first — so the one survivable failure mode is a CRASH between them:
-/// "anchor written, lock not". A refusal can no longer produce that state
-/// ([`a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind`]), so the
-/// aftermath is staged the way a crash leaves it — the marker on disk, no claim
-/// — and the claim under test is what a later pin does with it.
+/// GATE 5b: crash orphan is benign; re-pin reuses it.
 #[test]
 fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
     let (_dir, root) = workspace();
     let fp_before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
-    // The state a crash between the two renames leaves behind: exactly what
-    // `promote_anchor` writes, and nothing else.
+    // State left by crash between the two renames: marker on disk, no claim.
     let orphaned = TARGET.replace(
         "## Leader's Guideline\n",
         "## Leader's Guideline\n^leaders-guideline\n",
@@ -340,14 +289,9 @@ fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
     assert_eq!(healed.fingerprint, fp_before);
 }
 
-// ---------------------------------------------------------------------------
-// GATE 2: the read-mint gate, single-session in-process
-// ---------------------------------------------------------------------------
+// GATE 2: read-mint gate, single-session in-process
 
-/// One engine session: a `ReadMintStore` held across a read call and then a pin
-/// call — the H1 shape (the ledger is NOT the engine's, so a write cannot
-/// evaporate it). Serving the read through the production arm is the point: the
-/// receipt under test is the one a real read mints.
+/// Production-arm read into a session store (H1 shape).
 fn session_read(
     root: &fs::WorkspaceRoot,
     store: &receipt::read_mint::ReadMintStore,
@@ -380,16 +324,13 @@ fn agent_pin_args(actor: &str, selector: &str) -> SpliceArgs {
     }
 }
 
-/// The agent path refuses an UNREAD pin — "you cannot attest content that was
-/// never in your context" — and the same request succeeds once a covering read
-/// has minted its receipt. Both halves in ONE session, ONE store.
+/// Unread pin refuses; covering read then admits the same request.
 #[test]
 fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     let (_dir, root) = workspace();
     let store = receipt::read_mint::ReadMintStore::new();
     let args = agent_pin_args("agent-7", "Guide/Leader's-Guideline");
 
-    // Nothing read yet.
     let err = splice(&root, 0, &args, &[], Some(&store)).expect_err("un-read pin refuses");
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
     assert_eq!(err.recovery, Recovery::Fix, "the caller reads, then pins");
@@ -401,11 +342,9 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
         "the refusal teaches: {:?}",
         err.message
     );
-    // And it refused BEFORE any byte moved — no promotion, no lock.
     assert_eq!(read_page(&root, "guide.md"), TARGET, "target untouched");
     assert_eq!(read_page(&root, "plan.md"), PINNER, "pinner untouched");
 
-    // Read the exact selector, then pin: same request, now admitted.
     session_read(
         &root,
         &store,
@@ -421,16 +360,12 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     );
 }
 
-/// The gate is keyed on all three parts of the receipt. A FOREIGN actor's read
-/// does not authorize mine, and a SIBLING section's read does not authorize a
-/// pin into a section nobody saw (D6's grain — the whole reason the receipt is
-/// selector-grained rather than doc-level).
+/// Gate is three-part (actor+path+selector); foreign/sibling receipts do not cover.
 #[test]
 fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
     let (_dir, root) = workspace();
     let store = receipt::read_mint::ReadMintStore::new();
 
-    // The right selector, read by the WRONG actor.
     session_read(
         &root,
         &store,
@@ -438,7 +373,6 @@ fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
         "guide.md",
         "Guide/Leader's-Guideline",
     );
-    // The right actor, reading a SIBLING selector.
     session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
 
     let err = splice(
@@ -453,9 +387,7 @@ fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
     assert_eq!(read_page(&root, "guide.md"), TARGET, "nothing was written");
 }
 
-/// A host with NO session layer (the per-request sidecar) cannot know what an
-/// actor read, so a pin carrying an actor refuses — and the message NAMES that
-/// reason, so the caller reads it as the architecture rather than a bug.
+/// Sidecar (no session ledger) refuses actor pins and names that reason.
 #[test]
 fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     let (_dir, root) = workspace();
@@ -477,9 +409,7 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     );
 }
 
-/// GATE 7: the rev-recheck. A receipt answers "was it read", never "is it
-/// current" — so a target edited between the read and the pin yields
-/// `write_conflict`, never a silent pin over bytes the actor never saw.
+/// GATE 7: receipt is "was it read", not "is it current" → write_conflict on drift.
 #[test]
 fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     let (_dir, root) = workspace();
@@ -492,7 +422,6 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
         "Guide/Leader's-Guideline",
     );
 
-    // A foreign writer changes the very section the receipt covers.
     std::fs::write(
         root.0.join("guide.md"),
         TARGET.replace("review before you close.", "review AFTER you close."),
@@ -517,7 +446,6 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
         "and it refused before the promotion — the gate is ordered first"
     );
 
-    // A re-read re-mints at the live rev; the pin then lands.
     session_read(
         &root,
         &store,
@@ -535,18 +463,13 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     .expect("the re-read authorizes the pin");
 }
 
-// ---------------------------------------------------------------------------
-// The rest of plan §6's edge cases
-// ---------------------------------------------------------------------------
+// Plan §6 edge cases
 
-/// An `^id` selector needs no promotion: the stable handle already exists, so
-/// the pin reuses it verbatim and the pin's grain is that block's own span.
+/// `^id` pin reuses the existing handle; no promotion; block-grain fingerprint.
 #[test]
 fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
     let (_dir, root) = workspace();
-    // The read face projects anchor rows from LIST ITEMS only (Go parity:
-    // paragraph/task/callout/fence anchors are not addressable there), and the
-    // pin path inherits that addressability rather than growing its own.
+    // Read face (and pin path) address list-item anchors only — Go parity.
     std::fs::write(
         root.0.join("guide.md"),
         "# Guide\n\n- the claim sentence. ^claim\n",
@@ -574,8 +497,7 @@ fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
     );
 }
 
-/// A missing page and a missing selector both refuse `pin_target_missing`
-/// rather than minting a claim the drift plane could only render red(dangling).
+/// Missing page/selector → `pin_target_missing` (not a permanently-red claim).
 #[test]
 fn a_missing_target_or_selector_refuses_pin_target_missing() {
     let (_dir, root) = workspace();
@@ -599,16 +521,13 @@ fn a_missing_target_or_selector_refuses_pin_target_missing() {
     assert_eq!(read_page(&root, "plan.md"), PINNER, "nothing written");
 }
 
-/// `--vibe` writes the blob EAGERLY into the object store, so the pinned content
-/// is retrievable before any commit references it (a normal pin only computes
-/// the oid). Proven by asking git whether the object exists.
+/// `--vibe` writes the blob eagerly; a normal pin only computes the oid.
 #[test]
 fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     let (dir, root) = workspace();
     git_init(dir.path());
     let repo = git::Repo::at(dir.path().to_path_buf());
 
-    // Normal pin: the oid is named, the object is NOT in the store.
     let normal = pin_fact(
         &splice(&root, 0, &pin_args("Guide/Other"), &[], None)
             .unwrap()
@@ -620,8 +539,6 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
         "a normal pin must not write the object store"
     );
 
-    // Vibe pin of the same target (its bytes moved under the promotion, so ask
-    // for the fresh oid) — now the object EXISTS.
     let mut vibe = pin_args("Guide/Other");
     vibe.pin.as_mut().expect("pin").vibe = Some(true);
     let eager = pin_fact(&splice(&root, 0, &vibe, &[], None).unwrap().body);
@@ -632,8 +549,7 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     );
 }
 
-/// Outside a git repository the claim plane still lands and the retrieval plane
-/// is simply ABSENT — honest degradation (D5), never a fabricated sha.
+/// Outside git: claim plane lands; retrieval plane absent (D5, no fabricated sha).
 #[test]
 fn without_git_the_pin_lands_with_no_objects_entry() {
     let (_dir, root) = workspace();
@@ -653,8 +569,7 @@ fn without_git_the_pin_lands_with_no_objects_entry() {
     );
 }
 
-/// A dry pin rehearses everything and writes NOTHING — not the lock, and not the
-/// promotion (zero disk effects means zero), while still reporting the plan.
+/// Dry pin rehearses and writes nothing (lock nor promotion).
 #[test]
 fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
     let (_dir, root) = workspace();
@@ -673,9 +588,7 @@ fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
     assert_eq!(read_page(&root, "guide.md"), TARGET, "no promotion");
 }
 
-/// A second pin on the same page UNIONS into the existing lock: the sibling
-/// claim keeps its position and its fingerprint, and the page carries exactly
-/// one block.
+/// Second pin unions into the existing lock (one block, both claims).
 #[test]
 fn a_second_pin_unions_into_the_existing_lock_block() {
     let (_dir, root) = workspace();
@@ -709,10 +622,7 @@ fn a_second_pin_unions_into_the_existing_lock_block() {
     );
 }
 
-/// A pin can ride ALONGSIDE caller edits on the pinning page: both the content
-/// edit and the lock block land in the SAME sealed batch, so the page moves
-/// once. The armed facts stay 1:1 with the REQUEST edits — the engine-minted
-/// lock edit is reported through the pin fact, never as a phantom armed row.
+/// Pin + caller edits land in one sealed batch; armed facts stay 1:1 with request.
 #[test]
 fn a_pin_rides_alongside_caller_edits_in_one_batch() {
     let (_dir, root) = workspace();
@@ -746,17 +656,11 @@ fn a_pin_rides_alongside_caller_edits_in_one_batch() {
     assert_eq!(frame.delta.files[0].path, WPath("plan.md".into()));
 }
 
-/// A page pinning ITS OWN section: the promotion lands on the same file the lock
-/// is about to be written to, so the pre-image must be re-read between them.
-/// Getting this wrong would splice the lock against stale spans.
-///
-/// The pinned section must not be the one the lock block lands in — see
-/// [`a_self_pin_of_the_section_holding_the_lock_refuses`] for that door.
+/// Self-pin of a non-lock-holding section: re-read pre-image between promotion and lock.
 #[test]
 fn a_page_can_pin_its_own_section() {
     let (_dir, root) = workspace();
-    // `# Plan` is the page's last section, so an EOF lock would land inside it;
-    // pin the FIRST of two sections instead.
+    // Pin first of two sections so EOF lock does not land inside the pin.
     std::fs::write(
         root.0.join("plan.md"),
         "---\ntitle: Plan\n---\n\n# Premise\n\nthe premise.\n\n# Plan\n\ndraws from it.\n",
@@ -779,10 +683,7 @@ fn a_page_can_pin_its_own_section() {
         "the promotion landed on its own line: {page}"
     );
     assert!(page.ends_with("```\n"), "and the lock block at EOF: {page}");
-    // Self-consistency: the lock block sits inside the PAGE but outside the
-    // PINNED section, so the pinned fingerprint is still the live one. This is
-    // the assertion that would break if the lock had been spliced against the
-    // pre-promotion pre-image.
+    // Lock sits in the page but outside the pinned section — green immediately.
     assert_eq!(
         fact.fingerprint,
         live_fingerprint(&root, "plan.md#Premise"),
@@ -790,9 +691,7 @@ fn a_page_can_pin_its_own_section() {
     );
 }
 
-/// The other half of lock-is-content: pinning the section the lock block itself
-/// lands in could never be green, on this write or any later one, so it is
-/// refused at mint time rather than written as a permanently-red claim.
+/// Self-pin of the section the lock lands in refuses (permanently red otherwise).
 #[test]
 fn a_self_pin_of_the_section_holding_the_lock_refuses() {
     let (_dir, root) = workspace();
@@ -814,8 +713,7 @@ fn a_self_pin_of_the_section_holding_the_lock_refuses() {
     );
 }
 
-/// A slug that is already taken by ANOTHER node refuses loudly instead of
-/// minting a duplicate id (which would make the handle ambiguous forever).
+/// Taken slug refuses rather than minting a duplicate id.
 #[test]
 fn a_taken_slug_refuses_rather_than_minting_a_duplicate_id() {
     let (_dir, root) = workspace();
@@ -837,10 +735,7 @@ fn a_taken_slug_refuses_rather_than_minting_a_duplicate_id() {
     );
 }
 
-/// A heading line ending in whitespace still promotes rev-neutrally, because the
-/// marker never touches that line: norm-v2's R2 removal takes the whole marker
-/// line including its terminator, so the padding is irrelevant. (A tail marker
-/// would have had to reason about it — and would have edited the heading text.)
+/// Trailing-whitespace heading still promotes rev-neutrally (marker is own line).
 #[test]
 fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
     let (_dir, root) = workspace();
@@ -870,9 +765,7 @@ fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
     assert_eq!(fact.fingerprint, before);
 }
 
-/// The world guard still means what it says on the pin path: a stale `if_root`
-/// refuses BEFORE the promotion, so a rejected plan never leaves a marker
-/// behind.
+/// Stale `if_root` refuses before promotion.
 #[test]
 fn a_stale_world_guard_refuses_before_the_promotion() {
     let (_dir, root) = workspace();
@@ -885,9 +778,7 @@ fn a_stale_world_guard_refuses_before_the_promotion() {
     assert_eq!(read_page(&root, "plan.md"), PINNER, "no lock");
 }
 
-/// A FRESH world guard passes even though the pin's own promotion advances the
-/// corpus root mid-splice — the guard is honored against the root the client
-/// pinned, and the batch re-guards on the current one.
+/// Fresh world guard survives the pin's own root advance (guard on client-pinned root).
 #[test]
 fn a_fresh_world_guard_survives_the_pins_own_root_advance() {
     let (_dir, root) = workspace();
@@ -912,8 +803,7 @@ fn a_fresh_world_guard_survives_the_pins_own_root_advance() {
     assert!(read_page(&root, "plan.md").contains("```meridian-lock"));
 }
 
-/// `git init` with a deterministic identity, so the fixture repo answers
-/// plumbing calls on any machine.
+/// `git init` with a deterministic identity for fixture plumbing.
 fn git_init(dir: &std::path::Path) {
     for args in [
         vec!["init", "-q"],
