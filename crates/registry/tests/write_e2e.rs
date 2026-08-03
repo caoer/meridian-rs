@@ -306,23 +306,16 @@ fn create_births_on_the_daemon_and_the_next_read_serves_the_newborn() {
         "birth is byte-transparent on the daemon too"
     );
 
-    // The journal row the guarded door writes — the assertion a daemon-side
-    // bypass could not satisfy.
-    let anchor = birth["body"]["journal_anchor"]
-        .as_str()
-        .expect("the birth reports its journal anchor");
-    let journal = fs::read_to_string(ws.join("meridian/journal.md")).expect("journal written");
-    let row = journal
-        .lines()
-        .find(|l| l.contains(&format!("^{anchor}")))
-        .unwrap_or_else(|| panic!("anchor `{anchor}` names a real row:\n{journal}"));
+    // The DOOR test used to read the journal row the guarded create wrote and
+    // match its anchor to the one the reply handed back — the assertion a
+    // daemon-side bypass could not satisfy. The journal is gone (ZT 2026-08-02),
+    // and with it that specific anti-bypass evidence; it is NOT replaced by an
+    // equivalent, and the seam note for U5 records the loss rather than papering
+    // over it. What still distinguishes the guarded door from a raw write is
+    // below: the exact bytes landed AND the world fingerprint advanced.
     assert!(
-        row.contains("create"),
-        "the row records the birth op: {row}"
-    );
-    assert!(
-        row.contains("notes/newborn.md"),
-        "the row names the path: {row}"
+        birth["body"]["journal_anchor"].is_null(),
+        "the retired journal anchor is gone from the birth reply: {birth}"
     );
 
     // v3 vocabulary, and a real root advance.

@@ -97,10 +97,6 @@ fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
         !root.0.join("receipts/2026-07-22.md").exists(),
         "no pre-exec receipt may be committed for a run that never started"
     );
-    assert!(
-        !root.0.join(fs::domain::RESERVED_JOURNAL_PATH).exists(),
-        "no journal row may date the tree to a run that never started"
-    );
 }
 
 /// G3 gate 2: the refusal is not silenced, it is relocated. It lands in the

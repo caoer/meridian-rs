@@ -37,8 +37,7 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 /// maintains is a page they can read: the ignore list rides the FRONTMATTER
 /// (frontmatter filters, body reads) and the body carries the rationale for
 /// each entry, which a bare YAML file has nowhere to put. It joins the reserved
-/// path family already here — [`RESERVED_JOURNAL_PATH`], [`ARMED_RULES_PATH`],
-/// [`ATTESTED_MARKER_PATH`].
+/// path family already here — [`ARMED_RULES_PATH`], [`ATTESTED_MARKER_PATH`].
 ///
 /// # This file is inside its own hash domain, deliberately
 /// Unlike [`CONFIG_FILE_NAME`] (non-md, structurally outside), a `.md` config
@@ -50,52 +49,6 @@ pub const CONFIG_FILE_NAME: &str = "mdfs_config.yaml";
 /// root-advancing act. Bootstrap is not circular — read the config, compute the
 /// domain, then hash the domain including the config.
 pub const DOMAIN_CONFIG_PATH: &str = "meridian/domain.md";
-
-/// The ONE reserved receipt-journal page (d2 §2.1 A3/A9; node-rev-merkle-spec
-/// §10 open-question 3). The receipt engine appends one row per guarded write
-/// here; it is in-vault markdown, git-tracked, and **root-EXCLUDED** — the
-/// workspace tree merkle never covers it. That exclusion is the whole point:
-/// without it every guarded write would move the very root it just guarded (a
-/// receipt records `root_after`, but writing that receipt would change the
-/// root again — "a root that self-invalidates on every splice is useless as a
-/// commit guard"). Excluding the journal lets a row carry BOTH `root_before`
-/// and `root_after`, which is what makes the chain-continuity detector
-/// (`receipt::journal::check_chain`) possible.
-///
-/// A NON-dot path on purpose: the dot-segment default-ignore would exclude a
-/// `.`-prefixed page incidentally, but the journal must be git-TRACKED (the
-/// outer git witness is one of its two integrity sides), and its exclusion is
-/// a NAMED law, not a side effect of the dot rule.
-///
-/// # Integrity residuals — both named, stated not hidden (d2 §2.1)
-/// 1. **Pre-push offline rewrite** — a full offline rewrite of the journal
-///    before the first push is undetectable from inside the engine. This is
-///    git's own trust floor; cryptographic closure is a deferred door.
-/// 2. **Root-preserving online forged-row insertion** — inserting a forged row
-///    whose `root_before`/`root_after` already chain is NOT caught by
-///    `check_chain` (the chain stays continuous). Detection rests on the
-///    receipt-engine-only write restriction (an ordinary `^put`/splice at this
-///    path refuses — `wire-serve`) plus the git witness, never on chain
-///    continuity alone.
-///
-///    **WIDENED, and stated because a silently-grown residual is worse than a
-///    named one (F1's staged interval):** such a row now buys MORE than a
-///    continuous-looking chain. `check::staged_trace` dates the git INDEX's tree
-///    against **any** row in this journal — a legitimately staged INTERMEDIATE
-///    governed state matches an earlier receipt, and refusing it was a measured
-///    false red on the commonest path there is (`git add`, then any further
-///    governed write). So a chain-continuous forged row whose `root_after` names
-///    a tree the attacker also stages will VOUCH FOR THAT STAGED TREE at the
-///    pre-commit fence.
-///
-///    **The capability is unchanged and so are its defences** — the attacker must
-///    still be able to write this path out of band, which the receipt-engine-only
-///    restriction refuses and the git witness records; what changed is what one
-///    such row is worth. Two things bound it: the staged journal must be a true
-///    PREFIX of this one (a spliced row is not), and the pin plane is assessed
-///    over the staged bytes independently, so a forged tree still has to satisfy
-///    every lock it carries. Carded as an s4 rider rather than left here.
-pub const RESERVED_JOURNAL_PATH: &str = "meridian/journal.md";
 
 /// The attested armed-set artifact (registration ruling § 4) — the ONE page the
 /// door reads to learn a workspace's armed set, one row per armed id. It is
@@ -115,9 +68,9 @@ pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
 /// marker defeats.
 ///
 /// A NON-markdown path on purpose: the md-only hash-domain floor keeps it out
-/// of the merkle root by construction (no carve-out needed, unlike the
-/// journal), so writing the marker never perturbs the very root a write
-/// guards. Arming (U4.4) creates it on the first arm and never removes it;
+/// of the merkle root by construction, so writing the marker never perturbs the
+/// very root a write guards. Arming (U4.4) creates it on the first arm and never
+/// removes it;
 /// U4.3's integrity floor refuses its deletion/rename at the door.
 pub const ATTESTED_MARKER_PATH: &str = "meridian/attested";
 
@@ -243,13 +196,6 @@ impl Domain {
         if segments.iter().any(|s| s.starts_with('.')) {
             return false;
         }
-        // 2b. the reserved receipt journal — root-EXCLUDED by NAMED law (d2
-        //     §2.1 A3/A9), structural like the dot rule (a `!` re-include
-        //     cannot lift it). Excluded so guarded writes do not self-
-        //     invalidate the root and so a journal row may carry root_after.
-        if is_reserved_journal(rel) {
-            return false;
-        }
         // 3. custom ignore — gitignore last-match-wins.
         let mut ignored = false;
         for rule in &self.rules {
@@ -324,11 +270,7 @@ impl Domain {
 /// member's spelling. A path that outlives its subject is the "renamed remnant"
 /// failure — it would keep the door refusing writes to what is now an ordinary
 /// file, and keep the walk carving a hole in the hash domain for nothing.
-pub const RESERVED_PATHS: &[&str] = &[
-    RESERVED_JOURNAL_PATH,
-    ARMED_RULES_PATH,
-    ATTESTED_MARKER_PATH,
-];
+pub const RESERVED_PATHS: &[&str] = &[ARMED_RULES_PATH, ATTESTED_MARKER_PATH];
 
 /// Is `dir` a directory on the path to `reserved`?
 fn is_prefix_of_reserved(dir: &[&str], reserved: &str) -> bool {
@@ -371,19 +313,8 @@ fn frontmatter(md: &str) -> Option<&str> {
     Some(&rest[..end])
 }
 
-/// Is `rel` the ONE reserved receipt-journal page? The single source of truth
-/// for that identity, shared by the hash-domain exclusion (above) and the
-/// write-choke-point restriction (`wire-serve`) so the two can never drift.
-/// Matches on normalized path segments (a leading `./` or empty segments do
-/// not defeat it), so a splice cannot dodge the restriction with a
-/// non-canonical spelling of the reserved path.
-#[must_use]
-pub fn is_reserved_journal(rel: &Path) -> bool {
-    normalized(rel) == RESERVED_JOURNAL_PATH
-}
-
-/// Is `rel` the attested armed-rules artifact ([`ARMED_RULES_PATH`])? Normalized
-/// like [`is_reserved_journal`], so a non-canonical spelling
+/// Is `rel` the attested armed-rules artifact ([`ARMED_RULES_PATH`])? Matches on
+/// normalized path segments, so a non-canonical spelling
 /// (`./meridian/armed-rules.md`) cannot dodge the INDEX-integrity floor at the
 /// write door — deleting the artifact must never read as disarming.
 #[must_use]
@@ -392,7 +323,7 @@ pub fn is_armed_rules(rel: &Path) -> bool {
 }
 
 /// Is `rel` the once-armed marker ([`ATTESTED_MARKER_PATH`])? Normalized like
-/// [`is_reserved_journal`]. The U4.3 INDEX-integrity floor refuses its
+/// [`is_armed_rules`]. The U4.3 INDEX-integrity floor refuses its
 /// deletion/rename at the write door (security F2: deleting the marker is the
 /// silent-disarm attack the fail-closed design defeats).
 #[must_use]
@@ -786,21 +717,14 @@ mod tests {
         assert!(d.contains(Path::new("notes/plan.md")));
     }
 
-    /// d2 §2.1 A3/A9: the reserved receipt journal is root-EXCLUDED by named
-    /// law — never in the hash domain, and a custom `!` re-include cannot lift
-    /// it (structural, above custom rules). Addressability is a separate
-    /// concern (`fs::load` reaches it by path); this only gates HASHING.
+    /// The journal's root-exclusion carve-out is RETIRED (journal removed, no
+    /// replacement — ZT 2026-08-02): `meridian/journal.md` is now an ordinary
+    /// in-domain page, carved out by nothing.
     #[test]
-    fn reserved_journal_is_root_excluded() {
+    fn retired_journal_page_is_an_ordinary_domain_member() {
         let d = Domain::new();
-        assert!(!d.contains(Path::new(RESERVED_JOURNAL_PATH)));
-        assert!(!d.contains(Path::new("meridian/journal.md")));
-        // a sibling page under the same dir stays IN the domain — only the one
-        // reserved page is carved out.
+        assert!(d.contains(Path::new("meridian/journal.md")));
         assert!(d.contains(Path::new("meridian/notes.md")));
-        // a `!` re-include cannot pull the journal back into the root.
-        let re = Domain::from_config("ignore:\n  - \"!meridian/journal.md\"\n");
-        assert!(!re.contains(Path::new(RESERVED_JOURNAL_PATH)));
     }
 
     #[test]

@@ -23,27 +23,18 @@ use wire::{ErrorBody, ErrorCode, NodeRev, Path, Severity, Span, Verdict};
 
 use crate::armed_disk;
 
-/// A passing gate's output: the advisory verdicts to merge into the response,
-/// plus the `--force`-escaped skips the mount must JOURNAL (U4.3, decision #6 —
-/// a forced bypass is journaled AND rendered). `forced_skips` is empty for an
-/// ordinary (non-forced) write.
+/// A passing gate's output: the advisory verdicts to merge into the response.
+///
+/// A `--force`-escaped skip used to leave this struct by a second door — a
+/// `forced_skips` list the mount journaled as permanent `op=force` rows. The
+/// journal is gone (ZT 2026-08-02), and P15 puts the whole record on the rendered
+/// surface instead: [`findings_to_verdicts`] marks a bypassed rule `forced:`, so
+/// the verdicts below carry it and there is nothing left for a second channel.
 #[derive(Debug, Default)]
 pub struct GatePass {
     /// The §11.1 advisory verdicts (warn findings, surviving armed-law faults, and
-    /// any forced-skip renders).
+    /// the `forced:`-marked renders of any `--force`-escaped skip).
     pub verdicts: Vec<Verdict>,
-    /// The forced skips — one per `--force`-escaped refusal, journaled by the
-    /// mount on a REAL commit.
-    pub forced_skips: Vec<ForcedSkip>,
-}
-
-/// One `--force`-escaped refusal — the loud record the mount journals.
-#[derive(Debug, Clone)]
-pub struct ForcedSkip {
-    /// The rule / binding-break the force bypassed.
-    pub rule: String,
-    /// The teaching message the skip carries.
-    pub message: String,
 }
 
 /// Build the `rulepack-api@2` change surface for one write and gate it — the ONE
@@ -107,20 +98,9 @@ pub fn enforce_gate(
 ) -> Result<GatePass, Box<ErrorBody>> {
     let law = armed_disk::resolve_at(root, target_path(change));
     match policy::gate(change, &law) {
-        policy::GateOutcome::Ok(findings) => {
-            let forced_skips = findings
-                .iter()
-                .filter(|f| f.forced)
-                .map(|f| ForcedSkip {
-                    rule: f.rule.clone(),
-                    message: f.message.clone(),
-                })
-                .collect();
-            Ok(GatePass {
-                verdicts: findings_to_verdicts(findings, subject_doc),
-                forced_skips,
-            })
-        }
+        policy::GateOutcome::Ok(findings) => Ok(GatePass {
+            verdicts: findings_to_verdicts(findings, subject_doc),
+        }),
         policy::GateOutcome::Refusal(refusal) => Err(gate_refusal_to_wire(refusal)),
     }
 }
@@ -128,6 +108,15 @@ pub fn enforce_gate(
 /// Project the armed findings onto wire verdicts (§11.1 advisory shape).
 /// Coordinates come from the subject document (path + root rev); a rule finding is
 /// document-grained, so it carries the whole-file rev and a zero span.
+///
+/// **P15 — a forced bypass NAMES the plane it bypassed, here.** A `--force`-escaped
+/// skip used to be recorded twice: once as an ordinary advisory verdict and once as
+/// a permanent `op=force` journal row carrying `forced_rule=`. The journal is gone
+/// (ZT 2026-08-02, remove-no-replacement), so this rendered surface is the ONLY
+/// place the bypass can be stated — and an unmarked verdict would render a bypassed
+/// rule identically to one that merely warned. The `forced:` prefix is that mark:
+/// `force` stays one word at the door (ZT's "fingerprint-or-force"), and what it
+/// escaped is legible in the response it escaped through.
 fn findings_to_verdicts(findings: Vec<policy::GateFinding>, doc: &model::Document) -> Vec<Verdict> {
     if findings.is_empty() {
         return Vec::new();
@@ -137,13 +126,20 @@ fn findings_to_verdicts(findings: Vec<policy::GateFinding>, doc: &model::Documen
     findings
         .into_iter()
         .map(|f| Verdict {
-            rule: f.rule,
             severity: Severity::Warn,
             path: Path(path.clone()),
             hpath: None,
             span: Span(0, 0),
             node_rev: node_rev.clone(),
-            message: format!("{} (legal path: {})", f.message, f.passing_scenario),
+            message: if f.forced {
+                format!(
+                    "forced: bypassed {} — {} (legal path: {})",
+                    f.rule, f.message, f.passing_scenario
+                )
+            } else {
+                format!("{} (legal path: {})", f.message, f.passing_scenario)
+            },
+            rule: f.rule,
         })
         .collect()
 }
@@ -795,9 +791,13 @@ mod scenarios {
         );
     }
 
-    // ── Scenario 2 — forced write → skip JOURNALED and RENDERED ─────────────────
+    // ── Scenario 2 — forced write → the skip is RENDERED (P15) ─────────────────
+    /// A `--force`-escaped skip used to be recorded twice: a permanent `op=force`
+    /// journal row AND a verdict. The journal is gone (ZT 2026-08-02), so the
+    /// rendered verdict is the ONLY record — and P15 requires it to NAME the plane
+    /// the force bypassed, which an unmarked warn verdict does not.
     #[test]
-    fn u43_s2_forced_write_journals_and_renders_the_skip() {
+    fn u43_s2_forced_write_renders_the_skip() {
         let (dir, root) = armed_block_ws();
         write_page(
             &root,
@@ -805,7 +805,7 @@ mod scenarios {
             "---\nowner: agent:alice\nstatus: open\n---\n# Fix\n\nbody\n",
         );
         // The owner self-closes (actor == owner) — the armed rule refuses it.
-        // `--force` escapes: the write lands, the skip is journaled + rendered.
+        // `--force` escapes: the write lands and the skip is rendered.
         let out = splice(
             &root,
             0,
@@ -832,38 +832,22 @@ mod scenarios {
             "a forced write lands its bytes"
         );
 
-        // JOURNALED: a permanent `op=force` row in the reserved journal.
-        let journal =
-            std::fs::read_to_string(dir.path().join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap();
-        assert!(
-            journal.contains("op=force") && journal.contains("path=tasks/fix.md"),
-            "the forced skip is journaled as a permanent force-row: {journal}"
-        );
-        assert!(
-            journal.contains("forced_rule="),
-            "the force-row names the bypassed rule: {journal}"
-        );
-
-        // U32: the splice's OWN row rides the same journal, and the two rows are
-        // one continuous chain — the splice row records the advance, the force row
-        // annotates it. `check_chain` compares `root_after(N)` to `root_before(N+1)`,
-        // so a force row re-claiming the splice's advance would break the chain and
-        // turn every forced write into a permanent `check` finding.
-        let rows = receipt::journal::parse_rows(&journal);
-        assert_eq!(rows.len(), 2, "one splice row + one force row: {rows:#?}");
-        assert_eq!(rows[0].op, "splice", "the write's own row comes first");
-        assert_eq!(rows[1].op, "force", "the annotation follows it");
+        // P15: the verdict NAMES the bypassed rule — the record the force-row
+        // used to carry. Without the `forced:` mark a bypassed rule would render
+        // identically to one that merely warned, and nothing else records it now.
+        let forced: Vec<&wire::Verdict> = verdicts
+            .iter()
+            .filter(|v| v.message.starts_with("forced: bypassed "))
+            .collect();
         assert_eq!(
-            rows[1].root_before, rows[0].root_after,
-            "the force row continues the chain where the splice row left it"
-        );
-        assert_eq!(
-            rows[1].root_before, rows[1].root_after,
-            "and claims no advance of its own — it annotates a write, it is not one"
+            forced.len(),
+            1,
+            "exactly one forced-skip verdict: {verdicts:?}"
         );
         assert!(
-            receipt::journal::check_chain(&rows).is_green(),
-            "so a forced write leaves a continuous chain: {rows:#?}"
+            forced[0].message.contains(&forced[0].rule),
+            "the forced verdict names the rule it bypassed: {:?}",
+            forced[0]
         );
     }
 

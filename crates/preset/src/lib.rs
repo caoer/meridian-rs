@@ -447,8 +447,6 @@ pub struct NewReport {
     /// The born record's whole-file rev (computed from the body — present on a
     /// dry run too).
     pub rev: String,
-    /// The birth receipt (`r-NNNNNN` journal anchor); `None` on a dry run.
-    pub receipt: Option<String>,
     /// Whether this was a `--dry` rehearsal (nothing landed).
     pub dry: bool,
 }
@@ -519,12 +517,11 @@ pub fn new_record(
         ));
     }
 
-    // Birth the first rev through the guarded create (CAS if_absent, journaled).
+    // Birth the first rev through the guarded create (CAS if_absent).
     match birth(root, &target, &body, opts)? {
-        BirthResult::Born(receipt) => Ok(NewOutcome::Born(NewReport {
+        BirthResult::Born => Ok(NewOutcome::Born(NewReport {
             target,
             rev: record.root.node_rev.0.clone(),
-            receipt,
             dry: opts.dry,
         })),
         BirthResult::Occupied(reason) => Ok(refuse_new(target, reason)),
@@ -604,13 +601,13 @@ impl UnfoldReport {
             .all(|f| matches!(f, FileOutcome::Born { .. }))
     }
 
-    /// Every born file's `(path, receipt)` — the birth-receipt sweep surface.
+    /// Every born file's path — the birth sweep surface.
     #[must_use]
-    pub fn births(&self) -> Vec<(&str, Option<&str>)> {
+    pub fn births(&self) -> Vec<&str> {
         self.files
             .iter()
             .filter_map(|f| match f {
-                FileOutcome::Born { path, receipt } => Some((path.as_str(), receipt.as_deref())),
+                FileOutcome::Born { path } => Some(path.as_str()),
                 FileOutcome::Occupied { .. } => None,
             })
             .collect()
@@ -625,8 +622,6 @@ pub enum FileOutcome {
     Born {
         /// The scaffold file path.
         path: String,
-        /// The birth receipt (`r-NNNNNN`); `None` on a dry run.
-        receipt: Option<String>,
     },
     /// The path already exists — the `if_absent` CAS refused the birth (the
     /// guarded-create semantics hold under unfold; nothing was clobbered).
@@ -640,9 +635,8 @@ pub enum FileOutcome {
 
 /// Materialize a preset's declared scaffold (`mrd unfold <preset>`, design d3 §6:
 /// reconcile toward the declared scaffold). Every `# Unfold` file is born through
-/// the U2.6 guarded create, so each carries a birth receipt (an `op=create`
-/// journal row); a path that already exists refuses via the `if_absent` CAS and
-/// is left byte-untouched. The root record is born pinning the preset (an
+/// the U2.6 guarded create; a path that already exists refuses via the
+/// `if_absent` CAS and is left byte-untouched. The root record is born pinning the preset (an
 /// `inputs` block sequence rendered through the U2.11 safe grain).
 ///
 /// # Errors
@@ -662,10 +656,7 @@ pub fn unfold(
             render_stub(&def, path, opts.now.as_deref())
         };
         let outcome = match birth(root, path, &body, opts)? {
-            BirthResult::Born(receipt) => FileOutcome::Born {
-                path: path.clone(),
-                receipt,
-            },
+            BirthResult::Born => FileOutcome::Born { path: path.clone() },
             BirthResult::Occupied(reason) => FileOutcome::Occupied {
                 path: path.clone(),
                 reason,
@@ -807,8 +798,6 @@ pub enum PruneOutcome {
     Removed {
         /// The removed file path.
         path: String,
-        /// The death receipt (`r-NNNNNN`); `None` on a dry run.
-        receipt: Option<String>,
     },
     /// The removal refused at the guarded door (a CAS/root drift or reserved
     /// path) — the file is left byte-untouched, the reason carried.
@@ -853,10 +842,7 @@ pub fn reconcile(
             render_stub(&def, path, opts.now.as_deref())
         };
         let outcome = match birth(root, path, &body, opts)? {
-            BirthResult::Born(receipt) => FileOutcome::Born {
-                path: path.clone(),
-                receipt,
-            },
+            BirthResult::Born => FileOutcome::Born { path: path.clone() },
             BirthResult::Occupied(reason) => FileOutcome::Occupied {
                 path: path.clone(),
                 reason,
@@ -906,9 +892,8 @@ fn prune_file(
         dry: opts.dry,
     };
     match wire_serve::write::remove(root, 0, &args, &[]) {
-        Ok(out) => Ok(PruneOutcome::Removed {
+        Ok(_) => Ok(PruneOutcome::Removed {
             path: path.to_owned(),
-            receipt: out.journal_anchor,
         }),
         Err(e) => Ok(PruneOutcome::Refused {
             path: path.to_owned(),
@@ -1014,8 +999,8 @@ fn scan_scope(root: &fs::WorkspaceRoot, declared: &[String]) -> Vec<String> {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            // Skip engine/system files — a dotfile (`.git`, `.DS_Store`) or the
-            // reserved journal is never "undeclared content" to reconcile.
+            // Skip engine/system files — a dotfile (`.git`, `.DS_Store`) is
+            // never "undeclared content" to reconcile.
             if name.starts_with('.') {
                 continue;
             }
@@ -1024,9 +1009,6 @@ fn scan_scope(root: &fs::WorkspaceRoot, declared: &[String]) -> Vec<String> {
             } else {
                 format!("{dir}/{name}")
             };
-            if rel == fs::domain::RESERVED_JOURNAL_PATH {
-                continue;
-            }
             live.push(rel);
         }
     }
@@ -1076,15 +1058,15 @@ pub fn render_block_sequence(key: &str, items: &[String]) -> String {
 // The shared guarded birth
 // ---------------------------------------------------------------------------
 
-/// One guarded birth's result: [`Born`](BirthResult::Born) with the receipt, or
+/// One guarded birth's result: [`Born`](BirthResult::Born), or
 /// [`Occupied`](BirthResult::Occupied) when the `if_absent` CAS refused.
 enum BirthResult {
-    Born(Option<String>),
+    Born,
     Occupied(RefusalReason),
 }
 
 /// Birth one file through the U2.6 guarded create ([`wire_serve::write::create`]):
-/// CAS `if_absent`, journaled birth, the gate seam over the bare commit (`&[]`).
+/// CAS `if_absent`, the gate seam over the bare commit (`&[]`).
 /// The `if_absent` CAS is the single no-clobber guard — an occupied path returns
 /// `cas_mismatch`, mapped to [`BirthResult::Occupied`], never a clobber.
 ///
@@ -1107,7 +1089,7 @@ fn birth(
         dry: opts.dry,
     };
     match wire_serve::write::create(root, 0, &args, &[]) {
-        Ok(out) => Ok(BirthResult::Born(out.journal_anchor)),
+        Ok(_) => Ok(BirthResult::Born),
         Err(e) if is_cas_mismatch(&e) => {
             Ok(BirthResult::Occupied(RefusalReason::cas_mismatch(path)))
         }

@@ -303,9 +303,7 @@ pub fn domain_snapshot(root: &WorkspaceRoot) -> io::Result<(DomainFiles, model::
 /// `overlay` is `(workspace-relative path, content)`: `Some(bytes)` replaces or
 /// adds a file, `None` removes one. Entries outside the hash domain are ignored
 /// here — they are not hashed in either interval — so a caller may pass whatever
-/// its producer reported without filtering it first. **The reserved journal is
-/// one of them** (root-excluded by named law): an interval's journal bytes are
-/// read from the same overlay by the caller, never from this fold.
+/// its producer reported without filtering it first.
 ///
 /// # Ordering is the fold's correctness, not a detail
 /// The files are re-keyed by [`PathBuf`] so the emitted order is byte-for-byte
@@ -669,11 +667,10 @@ pub fn replace_file(
 }
 
 /// Append one already-rendered `line` at a page's EOF, atomically (tmp+fsync+
-/// rename), creating the page and its parent directories when absent. The
-/// receipt engine appends journal rows through this: `fs` renders NOTHING
-/// (crate charter) — the caller passes the rendered row and this only lands
-/// bytes. `line` is written verbatim followed by one `\n` (the appender owns
-/// terminators; a rendered row leaf excludes its own).
+/// rename), creating the page and its parent directories when absent. `fs`
+/// renders NOTHING (crate charter) — the caller passes the rendered line and
+/// this only lands bytes. `line` is written verbatim followed by one `\n` (the
+/// appender owns terminators; a rendered leaf excludes its own).
 ///
 /// # Errors
 /// Any I/O failure at mkdir, read, tmp-write, fsync, or rename.
@@ -686,28 +683,6 @@ pub fn append_line(root: &WorkspaceRoot, rel_path: &Path, line: &str) -> io::Res
     bytes.extend_from_slice(line.as_bytes());
     bytes.push(b'\n');
     commit_rename(&stage_file(&dst, &bytes)?)
-}
-
-/// Read the reserved receipt journal page's bytes, or the empty string when the
-/// page does not exist yet — **an absent journal IS an empty journal** (a genesis
-/// workspace has never written a row). Reads raw text: the row grammar is
-/// line-oriented and belongs to `receipt`, so this crate still renders and parses
-/// NOTHING (crate charter) — it answers only "where the journal lives" and "what
-/// absent means", the two facts it owns as the page's disk home.
-///
-/// **U35:** every door that appends a row must read this page first (the counter
-/// is derived from it — `receipt::journal::next_seq`), so the absent-is-empty rule
-/// gets one owner here instead of one copy per door.
-///
-/// # Errors
-/// Any I/O failure other than the page being absent.
-pub fn read_journal_page(root: &WorkspaceRoot) -> io::Result<String> {
-    let page = root.0.join(domain::RESERVED_JOURNAL_PATH);
-    match fs::read_to_string(&page) {
-        Ok(text) => Ok(text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e),
-    }
 }
 
 /// A two-file commit staged to temp files (written + fsync'd), awaiting the two
@@ -1551,13 +1526,13 @@ mod tests {
     #[test]
     fn append_line_creates_then_appends_at_eof() {
         let (dir, root) = workspace();
-        let journal = Path::new("meridian/journal.md");
-        super::append_line(&root, journal, "- op=create ^r-000001").unwrap();
-        super::append_line(&root, journal, "- op=remove ^r-000002").unwrap();
+        let page = Path::new("meridian/appended.md");
+        super::append_line(&root, page, "- first").unwrap();
+        super::append_line(&root, page, "- second").unwrap();
         assert_eq!(
-            fs::read(dir.path().join(journal)).unwrap(),
-            b"- op=create ^r-000001\n- op=remove ^r-000002\n",
-            "each rendered row is appended verbatim with one terminator",
+            fs::read(dir.path().join(page)).unwrap(),
+            b"- first\n- second\n",
+            "each rendered line is appended verbatim with one terminator",
         );
     }
 

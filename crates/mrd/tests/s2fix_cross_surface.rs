@@ -316,7 +316,7 @@ fn board_rows(ws: &Path) -> Vec<BoardRow> {
     let root = fs::WorkspaceRoot(canonical);
     let (files, _fp) = fs::domain_snapshot(&root).expect("snapshot");
     let (_index, docs) = fs::build_corpus(files).expect("build corpus");
-    let conn = view::read_face::open_board(&docs, &[]).expect("open_board");
+    let conn = view::read_face::open_board(&docs).expect("open_board");
     let mut stmt = conn
         .prepare(
             "SELECT src_path, to_path, to_sel, color, reason \

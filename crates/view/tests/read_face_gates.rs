@@ -44,7 +44,7 @@ fn is_external_access_refusal(msg: &str) -> bool {
 fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
     let mut docs = BTreeMap::new();
     docs.insert(path.to_string(), doc(raw));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     conn.query_row(
         "SELECT node_rev FROM node WHERE path = ? AND selector = ?",
         [path, selector],
@@ -85,7 +85,7 @@ fn gate_blocked_attach() {
 
     // The real read face: build + lock, then every external/write path refuses.
     let docs = BTreeMap::new();
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     let attach_err = conn.execute_batch(&attach).unwrap_err().to_string();
     assert!(
@@ -171,7 +171,7 @@ fn gate_doctored_verdict() {
     let mut docs = BTreeMap::new();
     docs.insert("subject.md".to_string(), doc(subject_v1));
     docs.insert("review.md".to_string(), doc(&review));
-    let conn = open_board(&docs, &[]).expect("open board v1");
+    let conn = open_board(&docs).expect("open board v1");
     assert_eq!(
         scalar_i64(&conn, "SELECT count(*) FROM board_red"),
         0,
@@ -182,7 +182,7 @@ fn gate_doctored_verdict() {
     let mut docs2 = BTreeMap::new();
     docs2.insert("subject.md".to_string(), doc(subject_v2));
     docs2.insert("review.md".to_string(), doc(&review));
-    let conn2 = open_board(&docs2, &[]).expect("open board v2");
+    let conn2 = open_board(&docs2).expect("open board v2");
 
     let red: i64 = scalar_i64(
         &conn2,
@@ -211,7 +211,7 @@ fn gate_doctored_verdict() {
         doc("# Subject\n\nno anchor here anymore\n"),
     );
     docs3.insert("review.md".to_string(), doc(&review));
-    let conn3 = open_board(&docs3, &[]).expect("open board v3");
+    let conn3 = open_board(&docs3).expect("open board v3");
     assert_eq!(
         scalar_i64(
             &conn3,
@@ -236,7 +236,7 @@ fn gate_stale_projection() {
 
     let mut docs_v1 = BTreeMap::new();
     docs_v1.insert("subject.md".to_string(), doc(subject_v1));
-    let conn = open_board(&docs_v1, &[]).expect("open board v1");
+    let conn = open_board(&docs_v1).expect("open board v1");
 
     // Fresh at v1: nothing is stale relative to the docs it was built from.
     assert!(
@@ -258,7 +258,7 @@ fn gate_stale_projection() {
     );
 
     // Recompute: rebuild over v2 and the projection carries the new doc_rev.
-    let conn2 = open_board(&docs_v2, &[]).expect("rebuild v2");
+    let conn2 = open_board(&docs_v2).expect("rebuild v2");
     assert!(
         stale_paths(&conn2, &docs_v2)
             .expect("stale check")

@@ -1,7 +1,7 @@
 //! U11 (M1 decision #8): the guarded `meridian-lock` write path — the
 //! engine-sole-writer door for the NEW lock method. Format law (types, strict
 //! parse, canonical render, locate) is `crates/lock`'s; THIS suite gates the
-//! write path: locate-or-create, EOF placement law, CAS, flock, journal row,
+//! write path: locate-or-create, EOF placement law, CAS, flock,
 //! atomicity (lock-is-content — one file replace), and the fail-loud posture
 //! on a corrupt (hand-edited) lock state.
 
@@ -66,18 +66,13 @@ fn args(root: &fs::WorkspaceRoot, l: &lock::Lock, dry: bool) -> LockWriteArgs {
     }
 }
 
-fn journal_text(root: &fs::WorkspaceRoot) -> String {
-    std::fs::read_to_string(root.0.join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap_or_default()
-}
-
 fn fence_count(raw: &str) -> usize {
     raw.matches("```meridian-lock").count()
 }
 
 /// GATE — birth: a page without a lock gains ONE block at EOF (placement law:
 /// one blank line before, one terminator after), the block round-trips
-/// (find→parse == the lock written), the root advances, and ONE `op=lock`
-/// journal row carries both roots + the whole-file rev transition.
+/// (find→parse == the lock written), and the root advances.
 #[test]
 fn birth_lands_at_eof_and_round_trips() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -114,22 +109,11 @@ fn birth_lands_at_eof_and_round_trips() {
         .expect("the block is found");
     assert_eq!(found.lock, l, "disk round-trip preserves the lock object");
 
-    // Journal: one op=lock row, both roots, whole-file transition.
-    let row = journal_text(&root);
-    assert!(row.contains("op=lock path=page.md"), "{row}");
-    assert!(
-        row.contains(&format!(
-            "root_before={} root_after={}",
-            out.root_before.0,
-            out.root_after.unwrap().0
-        )),
-        "row carries BOTH roots: {row}"
+    // The write reports a real whole-file rev transition (the lock is content).
+    assert_ne!(
+        out.file_rev_before, out.file_rev_after,
+        "lock-is-content: the page's whole-file rev moved"
     );
-    assert!(
-        row.contains(&out.file_rev_before.0) && row.contains(&out.file_rev_after.0),
-        "row carries the whole-file rev transition: {row}"
-    );
-    assert_eq!(out.journal_anchor.as_deref(), Some("r-000001"));
 }
 
 /// GATE — update: a second write replaces the block IN PLACE (still exactly
@@ -198,8 +182,8 @@ fn cas_drift_refuses_citing_revs() {
     assert_eq!(fence_count(&read(&root, "page.md")), 0, "nothing landed");
 }
 
-/// Dry runs touch no disk: no block, no journal row, no root advance — but
-/// the outcome still reports the computed after-rev and `created`.
+/// Dry runs touch no disk: no block, no root advance — but the outcome still
+/// reports the computed after-rev and `created`.
 #[test]
 fn dry_writes_nothing() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -207,13 +191,11 @@ fn dry_writes_nothing() {
     let out = lock_write(&root, 0, &args(&root, &l, true)).expect("dry reports");
     assert!(out.dry && out.created);
     assert!(out.root_after.is_none() && out.committed.is_none());
-    assert!(out.journal_anchor.is_none());
     assert_ne!(
         out.file_rev_before, out.file_rev_after,
         "after-rev computed"
     );
     assert_eq!(read(&root, "page.md"), PAGE, "no byte landed");
-    assert!(journal_text(&root).is_empty(), "no journal row");
 }
 
 /// D9: the lock write serializes on the workspace write flock — a held lock

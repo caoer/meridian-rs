@@ -1085,8 +1085,8 @@ pub enum ResponseBody {
         pin: Option<Box<PinFact>>,
     },
     /// The BIRTH reply (the `create` op, v3-only): what the birth LANDED —
-    /// the born path, its whole-file rev, the root transition, and the journal
-    /// row that dates it. Never a delivery claim (A7), exactly like `splice`.
+    /// the born path, its whole-file rev, and the root transition. Never a
+    /// delivery claim (A7), exactly like `splice`.
     ///
     /// Shape-unique in this untagged enum: `file_rev_after` appears on no
     /// other variant, and `armed` (which `Splice` requires) appears on none of
@@ -1105,11 +1105,6 @@ pub enum ResponseBody {
         seq: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         dry: Option<bool>,
-        /// The birth's journal row anchor (`r-NNNNNN`) — the row that makes the
-        /// newborn datable by `mrd test --history`. Absent on a dry run,
-        /// because a rehearsal writes none.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        journal_anchor: Option<String>,
         /// The §11 rules-as-data surface over the birth's after-state — the
         /// same shape `splice` carries, `[]` on an unarmed workspace.
         verdicts: Vec<Verdict>,

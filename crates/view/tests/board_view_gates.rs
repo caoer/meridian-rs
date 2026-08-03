@@ -1,11 +1,15 @@
-//! U5.1 acceptance gates — the board view (colors) + the co-edit trace, wired
-//! over the U2.9 locked read face (plan U5.1; d2 §5.3). Four named gates:
+//! U5.1 acceptance gates — the board view (colors), wired over the U2.9 locked
+//! read face (plan U5.1; d2 §5.3). Four named gates:
 //!
-//! - `gate_doctored_verdict_board_and_trace` — a doctored verdict renders RED via
-//!   the default-face `board` SQL, AND the co-edit trace is visible
-//!   convention-free in `co_edit_trace` (the journal's mechanical write-facts).
-//!   Falsified: the un-doctored fixture is GREEN (red is not spurious), and a
-//!   single-write journal shows no co-edit (the second write is load-bearing).
+//! - `gate_doctored_verdict_board_red` — a doctored verdict renders RED via the
+//!   default-face `board` SQL. Falsified: the un-doctored fixture is GREEN (red
+//!   is not spurious).
+//!
+//!   This gate also asserted a co-edit trace over `co_edit_trace` until the
+//!   journal was removed (ZT 2026-08-02, remove-no-replacement). That half is
+//!   gone, not relaxed: the view projected the journal's mechanical write-facts,
+//!   so with the journal dead there is no convention-free co-edit surface left to
+//!   assert. The board half below is untouched and still falsified.
 //! - `gate_ungated_close_grey` — an ungated close (a declared-unpinned edge that
 //!   never froze a verdict rev) renders GREY, never green, never silently clean.
 //!   Falsified: a red-only board (the pre-U5.1 surface) DROPS the edge entirely
@@ -13,14 +17,12 @@
 //! - `gate_board_one_color_per_edge` — the board renders EXACTLY one color per
 //!   `^inputs` edge (green | red | grey), the composed-legend invariant.
 //! - `gate_locked_face_holds_with_board` — the U2.9 blocked-`ATTACH` assertion
-//!   still refuses with the `board` + `co_edit_trace` views loaded (no face
-//!   widening).
+//!   still refuses with the `board` view loaded (no face widening).
 
 use std::collections::BTreeMap;
 
 use duckdb::Connection;
 use model::Document;
-use view::facts::JournalRowInput;
 use view::read_face::open_board;
 
 // ---------------------------------------------------------------------------
@@ -39,7 +41,7 @@ fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
 fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
     let mut docs = BTreeMap::new();
     docs.insert(path.to_string(), doc(raw));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     conn.query_row(
         "SELECT node_rev FROM node WHERE path = ? AND selector = ?",
         [path, selector],
@@ -63,45 +65,19 @@ fn ungated_review_page() -> String {
         .to_string()
 }
 
-/// One journal write row (source-3 mechanical fact) at position `line_no`.
-fn journal_row(anchor: &str, op: &str, path: &str, actor: &str, line_no: u64) -> JournalRowInput {
-    JournalRowInput {
-        anchor: anchor.to_string(),
-        op: op.to_string(),
-        path: path.to_string(),
-        actor: Some(actor.to_string()),
-        now: None,
-        root_before: format!("b3:{}", line_no - 1),
-        root_after: format!("b3:{line_no}"),
-        edits: 1,
-        line_no,
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Gate 1 — doctored verdict: red via board SQL + co-edit trace convention-free
+// Gate 1 — doctored verdict renders red via board SQL
 // ---------------------------------------------------------------------------
 
 /// A verdict pins `subject.md#^claim` at close (rev R1 — frozen). The subject is
-/// then edited to R2. TWO independent facts land, both in the DEFAULT face:
-///   (a) `board` renders the review→subject edge RED (a reading of the frozen pin
-///       vs live — "verdicts freeze at close");
-///   (b) `co_edit_trace` shows the subject written at the close and EDITED AGAIN
-///       afterwards — the co-edit, visible with NO armed convention.
+/// then edited to R2. `board` renders the review→subject edge RED in the DEFAULT
+/// face — a reading of the frozen pin vs live ("verdicts freeze at close").
 #[test]
-fn gate_doctored_verdict_board_and_trace() {
+fn gate_doctored_verdict_board_red() {
     let subject_v1 = "# Subject\n\nThe reviewed claim body. ^claim\n";
     let subject_v2 = "# Subject\n\nThe body was quietly edited after close. ^claim\n";
     let r1 = live_node_rev("subject.md", subject_v1, "^claim");
     let review = review_page(&r1);
-
-    // The mechanical write-facts (source 3): subject created at R1, the verdict
-    // closed (pins R1), then subject doctored to R2 — a later write on subject.
-    let journal = [
-        journal_row("r-000001", "create", "subject.md", "worker", 1),
-        journal_row("r-000002", "create", "review.md", "reviewer", 2),
-        journal_row("r-000003", "splice", "subject.md", "doctorer", 3),
-    ];
 
     // --- Freshly closed (un-doctored): the FALSIFICATION control. -------------
     // With the subject still at R1, the board renders the edge GREEN — so the red
@@ -109,7 +85,7 @@ fn gate_doctored_verdict_board_and_trace() {
     let mut fresh = BTreeMap::new();
     fresh.insert("subject.md".to_string(), doc(subject_v1));
     fresh.insert("review.md".to_string(), doc(&review));
-    let conn_fresh = open_board(&fresh, &journal[..2]).expect("open board fresh");
+    let conn_fresh = open_board(&fresh).expect("open board fresh");
     assert_eq!(
         scalar_i64(
             &conn_fresh,
@@ -131,7 +107,7 @@ fn gate_doctored_verdict_board_and_trace() {
     let mut doctored = BTreeMap::new();
     doctored.insert("subject.md".to_string(), doc(subject_v2));
     doctored.insert("review.md".to_string(), doc(&review));
-    let conn = open_board(&doctored, &journal).expect("open board doctored");
+    let conn = open_board(&doctored).expect("open board doctored");
 
     // (a) board SQL renders RED in the DEFAULT face — no optional pack.
     assert_eq!(
@@ -155,42 +131,6 @@ fn gate_doctored_verdict_board_and_trace() {
         pinned, r1,
         "the frozen verdict rev (R1) is cited — freeze-at-close"
     );
-
-    // (b) co-edit trace visible CONVENTION-FREE: the subject was written twice —
-    // co-edited at the close, then edited again — surfaced by the journal alone.
-    let subject_edits = scalar_i64(
-        &conn,
-        "SELECT edits_on_path FROM co_edit_trace WHERE path='subject.md' LIMIT 1",
-    );
-    assert_eq!(
-        subject_edits, 2,
-        "the subject was co-edited then edited again"
-    );
-    // The doctoring edit (edit_ord 2) POST-DATES the close write on review.md.
-    let close_line = scalar_i64(
-        &conn,
-        "SELECT line_no FROM co_edit_trace WHERE path='review.md'",
-    );
-    let doctor_line = scalar_i64(
-        &conn,
-        "SELECT line_no FROM co_edit_trace WHERE path='subject.md' AND edit_ord=2",
-    );
-    assert!(
-        doctor_line > close_line,
-        "the doctoring edit ({doctor_line}) post-dates the close ({close_line}) — 'edited again at R2'",
-    );
-
-    // --- Falsify the trace: a single-write journal shows NO co-edit. ----------
-    let single = [journal_row("r-000001", "create", "subject.md", "worker", 1)];
-    let conn_single = open_board(&doctored, &single).expect("open board single-write");
-    assert_eq!(
-        scalar_i64(
-            &conn_single,
-            "SELECT edits_on_path FROM co_edit_trace WHERE path='subject.md' LIMIT 1",
-        ),
-        1,
-        "FALSIFY: one write ⇒ no co-edit — the second write is what the trace surfaces",
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +146,7 @@ fn gate_ungated_close_grey() {
     let mut docs = BTreeMap::new();
     docs.insert("subject.md".to_string(), doc(subject));
     docs.insert("ungated.md".to_string(), doc(&ungated_review_page()));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     // The ungated close renders GREY, present and named.
     let (color, reason): (String, String) = conn
@@ -281,7 +221,7 @@ fn gate_board_one_color_per_edge() {
     docs.insert("green.md".to_string(), doc(&green_page));
     docs.insert("review.md".to_string(), doc(&drift_page));
     docs.insert("grey.md".to_string(), doc(&ungated_review_page()));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     // Three edges, three distinct colors, one row each.
     assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM board"), 3);
@@ -326,7 +266,7 @@ fn gate_archived_v1_pin_renders_superseded_algo_grey() {
     let mut docs = BTreeMap::new();
     docs.insert("subject.md".to_string(), doc(subject));
     docs.insert("v1.md".to_string(), doc(v1_page));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     let (color, reason): (String, String) = conn
         .query_row(
@@ -357,7 +297,7 @@ fn gate_archived_v1_pin_renders_superseded_algo_grey() {
     let mut nd = BTreeMap::new();
     nd.insert("subject.md".to_string(), doc(subject));
     nd.insert("review.md".to_string(), doc(&native_page));
-    let conn2 = open_board(&nd, &[]).expect("open board native");
+    let conn2 = open_board(&nd).expect("open board native");
     let ncolor: String = conn2
         .query_row(
             "SELECT color FROM board WHERE src_path='review.md' AND to_path='subject.md'",
@@ -383,7 +323,7 @@ fn gate_form2_chain_renders_superseded_algo_grey() {
     let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
     let mut docs = BTreeMap::new();
     docs.insert("effect.md".to_string(), doc(raw));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     // NOT empty — the pre-change behavior was zero items (form-2 was invisible).
     assert_eq!(
@@ -420,7 +360,7 @@ fn gate_form2_chain_renders_superseded_algo_grey() {
     let multi = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta]]'\n  hash: 'merkle-v1:bbbb'\nhash-algo: v1\n```\n\n^inputs\n";
     let mut mdocs = BTreeMap::new();
     mdocs.insert("multi.md".to_string(), doc(multi));
-    let mconn = open_board(&mdocs, &[]).expect("open board multi");
+    let mconn = open_board(&mdocs).expect("open board multi");
     assert_eq!(
         scalar_i64(
             &mconn,
@@ -455,7 +395,7 @@ fn gate_form2_v2_wikilink_pin_renders_green() {
     let mut docs = BTreeMap::new();
     docs.insert("sources/target-page.md".to_string(), doc(target));
     docs.insert("effects/e.md".to_string(), doc(&effect_v2));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     let (color, reason, to_path): (String, String, String) = conn
         .query_row(
@@ -478,7 +418,7 @@ fn gate_form2_v2_wikilink_pin_renders_green() {
     let mut d1 = BTreeMap::new();
     d1.insert("sources/target-page.md".to_string(), doc(target));
     d1.insert("effects/e.md".to_string(), doc(&effect_v1));
-    let c1 = open_board(&d1, &[]).expect("open board v1");
+    let c1 = open_board(&d1).expect("open board v1");
     assert_eq!(
         scalar_i64(
             &c1,
@@ -494,7 +434,7 @@ fn gate_form2_v2_wikilink_pin_renders_green() {
     let mut d2 = BTreeMap::new();
     d2.insert("sources/target-page.md".to_string(), doc(target));
     d2.insert("effects/e.md".to_string(), doc(effect_v2_stale));
-    let c2 = open_board(&d2, &[]).expect("open board v2 stale");
+    let c2 = open_board(&d2).expect("open board v2 stale");
     assert_eq!(
         scalar_i64(
             &c2,
@@ -519,11 +459,10 @@ fn gate_locked_face_holds_with_board() {
     let mut docs = BTreeMap::new();
     docs.insert("subject.md".to_string(), doc(subject));
     docs.insert("ungated.md".to_string(), doc(&ungated_review_page()));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     // The board + trace views READ fine over the locked face.
     assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM board"), 1);
-    let _ = scalar_i64(&conn, "SELECT count(*) FROM co_edit_trace");
 
     // ATTACH still refuses — the face is not widened by the new views.
     let tmp = tempfile::tempdir().unwrap();
