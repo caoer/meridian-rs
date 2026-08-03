@@ -296,7 +296,7 @@ fn unreadable_rule_is_malformed() {
 }
 
 // ── P6-STARLARK pack-verbatim gates (impl-taskpack §9 gates 1 & 3) ───────────
-// Gate 2 (`grep -rn 'starlark' crates/wire crates/transport-proto` = 0) is a
+// Gate 2 (`grep -rn 'starlark' crates/wire` = 0) is a
 // wire-invariance grep gate, evidenced in the task card — not a Rust test.
 
 /// Gate 1 — a real fenced Starlark block from a rule page, evaluated over the
