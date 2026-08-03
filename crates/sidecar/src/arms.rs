@@ -133,6 +133,11 @@ pub(crate) fn dispatch(
                 epoch.seq(),
                 &wire_serve::write::SpliceArgs {
                     id,
+                    // U10: the per-process sidecar serves DECODED WIRE FRAMES,
+                    // so it is a wire door exactly like the resident daemon —
+                    // fingerprint-or-force applies here too. Only in-process
+                    // callers declare `Cli`.
+                    origin: wire_serve::guard::Origin::Wire,
                     path,
                     actor,
                     now,

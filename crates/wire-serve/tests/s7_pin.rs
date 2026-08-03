@@ -25,6 +25,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn pin_args(selector: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("plan.md".into()),
         actor: None,
         now: None,

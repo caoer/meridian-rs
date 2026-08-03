@@ -85,6 +85,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn pin_args(force: bool) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("plan.md".into()),
         actor: None,
         now: Some("2026-07-25T12:00:00Z".into()),
@@ -178,6 +179,7 @@ fn the_engine_derived_forced_rule_journals_no_claim_token_either() {
 
     let break_args = |force: bool| SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath(RULE_PATH.into()),
         actor: None,
         now: Some("2026-07-25T12:00:00Z".into()),

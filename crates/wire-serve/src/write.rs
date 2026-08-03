@@ -50,6 +50,11 @@ pub struct SpliceArgs {
     pub id: Option<u64>,
     /// The content file the batch edits.
     pub path: Path,
+    /// U10: the door this splice arrived through — the TRUST PLANE, stated by
+    /// the caller and never sniffed. `Wire` is guarded by fingerprint-or-force;
+    /// `Cli` is the local-operator-trusted in-process door and is exempt. There
+    /// is no default: a door added later states its plane or does not compile.
+    pub origin: crate::guard::Origin,
     /// The recorded actor (§9: recorded exactly as given, never invented).
     pub actor: Option<String>,
     /// The recorded timestamp (§9: recorded exactly as given, never invented).
@@ -252,13 +257,28 @@ pub fn splice(
     // (that list missed `create.title` and could not see a token two fields
     // compose between them) — it runs once, at DOCUMENT grain, over the
     // candidate this splice is about to commit ([`strip_fp_candidate`] below).
-    let lowered;
-    let effective_edits = if args.plan_edits.is_empty() {
-        &args.edits
+    let mut effective_edits = if args.plan_edits.is_empty() {
+        args.edits.clone()
     } else {
-        lowered = crate::plan::lower(&doc, &args.plan_edits)?;
-        &lowered
+        crate::plan::lower(&doc, &args.plan_edits)?
     };
+
+    // U10 — FINGERPRINT-OR-FORCE, mounted HERE and nowhere else (P2, revised).
+    // Post-lowering is the point both write faces have already reached: a guard
+    // at plan lowering would be MCP-only, and native `edits` would walk around it
+    // untouched (the field-rename bypass, adversarial finding 1.1/1.2). Per-edit
+    // by design, so an empty batch — `mrd pin` — passes through with nothing to
+    // demand. `Origin::Cli` is exempt by trust plane, not by oversight; see
+    // `crate::guard`.
+    let bypassed = crate::guard::guard_batch(
+        args.origin,
+        args.force,
+        &doc,
+        &args.path,
+        &args.plan_edits,
+        &mut effective_edits,
+    )?;
+    let effective_edits = &effective_edits[..];
 
     let (model_edits, before_facts) =
         model_edits_and_before_facts(&doc, effective_edits, &args.path)?;
@@ -400,6 +420,10 @@ pub fn splice(
     )?;
     verdicts.extend(gate_pass.verdicts);
     verdicts.extend(std::mem::take(&mut pin_gate.verdicts));
+    // U10/P15: a forced write NAMES the planes it wrote past — on the rendered
+    // surface, which is where a caller reads it (the journal is dead by ruling).
+    // Empty for every unforced write, so an ordinary response is unchanged.
+    verdicts.extend(crate::guard::bypass_verdicts(&bypassed, &doc, &args.path));
 
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
@@ -3545,6 +3569,7 @@ mod tests {
     fn journal_splice(dry: bool) -> SpliceArgs {
         SpliceArgs {
             id: None,
+            origin: crate::guard::Origin::Cli,
             path: Path(fs::domain::RESERVED_JOURNAL_PATH.to_string()),
             actor: Some("mallory".into()),
             now: None,
@@ -3949,6 +3974,7 @@ mod guarded_create_remove {
     fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         SpliceArgs {
             id: None,
+            origin: crate::guard::Origin::Cli,
             path: Path(path.into()),
             actor: Some("alice".into()),
             now: None,

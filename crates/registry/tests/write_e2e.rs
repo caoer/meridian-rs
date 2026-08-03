@@ -86,8 +86,19 @@ const PLAN: &str = "# Goals\n\nship by August\n";
 const PLAN_AFTER: &str = "# Goals\n\nship by September\n";
 
 /// A guarded `match` edit inside the Goals section: `ship by August` →
-/// `ship by September`.
-fn splice_frame() -> Value {
+/// `ship by September`. U10: a wire-origin content change carries the section's
+/// live fingerprint, so the frame reads the `toc` for it first.
+fn splice_frame(conn: &mut Conn) -> Value {
+    let toc = conn.call(&json!({"op": "toc", "path": "plan.md"}));
+    let rev = toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .find(|n| n["hpath"][0]["h"] == json!("Goals"))
+        .unwrap_or_else(|| panic!("Goals in toc: {toc}"))["node_rev"]
+        .as_str()
+        .expect("node_rev")
+        .to_string();
     json!({
         "id": 7,
         "op": "splice",
@@ -95,6 +106,7 @@ fn splice_frame() -> Value {
         "edits": [{
             "target": {"hpath": [{"h": "Goals"}]},
             "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+            "if_node_rev": rev,
         }],
     })
 }
@@ -119,7 +131,10 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
         .to_string();
 
     // splice: the edit commits through the shared choke-point.
-    let splice = conn.call(&splice_frame());
+    let splice = {
+        let f = splice_frame(&mut conn);
+        conn.call(&f)
+    };
     assert_eq!(splice["ok"], json!(true), "splice ok: {splice}");
     assert_eq!(
         splice["id"],
@@ -187,7 +202,7 @@ fn dry_splice_writes_nothing() {
     let mut conn = Conn::open(server.socket_path());
     conn.hello(&ws);
 
-    let mut frame = splice_frame();
+    let mut frame = splice_frame(&mut conn);
     frame["dry"] = json!(true);
     let splice = conn.call(&frame);
     assert_eq!(splice["ok"], json!(true), "dry splice ok: {splice}");
@@ -220,7 +235,18 @@ fn splice_without_hello_is_refused() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    let splice = conn.call(&splice_frame());
+    // Written out rather than built by `splice_frame`: an unbound connection
+    // cannot read a `toc` either, and the rung under test fires before any
+    // fingerprint would be looked at.
+    let splice = conn.call(&json!({
+        "id": 7,
+        "op": "splice",
+        "path": "plan.md",
+        "edits": [{
+            "target": {"hpath": [{"h": "Goals"}]},
+            "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+        }],
+    }));
     assert_eq!(
         splice["ok"],
         json!(false),

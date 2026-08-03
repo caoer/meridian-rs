@@ -232,6 +232,12 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
     assert_eq!(diff["body"]["batches"], json!([]), "diff empty: {diff}");
 
     // splice: the write frame carries `fingerprint_before`/`fingerprint_after`.
+    // U10: a wire-origin content change carries its fingerprint — `if_node_rev`
+    // is a frozen v2 field, so both vocabularies say the same thing here.
+    let goals_rev = toc_node_rev(
+        &conn.call(&json!({"op": "toc", "path": "plan.md"})),
+        "Goals",
+    );
     let splice = conn.call(&json!({
         "id": 7,
         "op": "splice",
@@ -239,6 +245,7 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
         "edits": [{
             "target": {"hpath": [{"h": "Goals"}]},
             "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+            "if_node_rev": goals_rev,
         }],
     }));
     assert_eq!(splice["ok"], json!(true), "splice ok: {splice}");
@@ -311,6 +318,12 @@ fn v2_session_emits_root_and_never_fingerprint() {
         "links carries the root staleness triple: {links}"
     );
 
+    // U10: a wire-origin content change carries its fingerprint — `if_node_rev`
+    // is a frozen v2 field, so both vocabularies say the same thing here.
+    let goals_rev = toc_node_rev(
+        &conn.call(&json!({"op": "toc", "path": "plan.md"})),
+        "Goals",
+    );
     let splice = conn.call(&json!({
         "id": 7,
         "op": "splice",
@@ -318,6 +331,7 @@ fn v2_session_emits_root_and_never_fingerprint() {
         "edits": [{
             "target": {"hpath": [{"h": "Goals"}]},
             "edit": {"match": {"old": "ship by August", "new": "ship by September"}},
+            "if_node_rev": goals_rev,
         }],
     }));
     assert!(
@@ -495,4 +509,23 @@ fn v3_is_exactly_v2_rekeyed_over_the_same_engine() {
     );
 
     server.shutdown();
+}
+
+/// One heading's live `node_rev` out of a `toc` frame — the fingerprint a
+/// wire-origin write must carry (U10). The v2 and v3 vocabularies spell the
+/// SURROUNDING frame differently; the per-node token is the same key in both.
+fn toc_node_rev(toc: &Value, heading: &str) -> String {
+    toc["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes array")
+        .iter()
+        .find(|n| {
+            n["hpath"]
+                .as_array()
+                .is_some_and(|h| h.last().is_some_and(|seg| seg["h"] == json!(heading)))
+        })
+        .unwrap_or_else(|| panic!("heading {heading} in toc: {toc}"))["node_rev"]
+        .as_str()
+        .expect("node_rev string")
+        .to_string()
 }

@@ -29,6 +29,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn mint_pin(root: &fs::WorkspaceRoot) {
     let args = SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("plan.md".into()),
         actor: None,
         now: None,
@@ -89,6 +90,7 @@ fn read_page(root: &fs::WorkspaceRoot, rel: &str) -> String {
 fn pin_free_args(path: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath(path.into()),
         actor: None,
         now: None,

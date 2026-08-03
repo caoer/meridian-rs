@@ -194,7 +194,10 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
 
     // The write: a real commit through the shared `splice → commit`
     // choke-point, landing in a sibling file — the shape of a pin's own lock
-    // write.
+    // write. U10: this arrives through the WIRE door, so it carries the
+    // section's fingerprint — read first, then write what you read.
+    let notes = conn.read_sections("notes.md", &["Notes"], Some("agent-7"));
+    let notes_rev = served_sec_rev(&notes, "Notes");
     let splice = conn.call(&json!({
         "id": 9,
         "op": "splice",
@@ -202,6 +205,7 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
         "edits": [{
             "target": {"hpath": [{"h": "Notes"}]},
             "edit": {"match": {"old": "nothing yet", "new": "pinned"}},
+            "if_node_rev": notes_rev,
         }],
     }));
     assert_eq!(splice["ok"], json!(true), "splice ok: {splice}");

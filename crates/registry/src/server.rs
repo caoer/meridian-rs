@@ -837,6 +837,10 @@ fn dispatch_read(
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
                 id,
+                // U10: THE wire door. Everything below this line is
+                // fingerprint-or-force; the in-process callers (`mrd`, the run
+                // plane) declare `Cli` and are exempt by trust plane.
+                origin: wire_serve::guard::Origin::Wire,
                 path,
                 actor,
                 now,

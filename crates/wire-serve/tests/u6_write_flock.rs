@@ -20,6 +20,7 @@ const PAGE: &str = "---\ntitle: Flock\n---\n# Log\n\nseed line\n";
 fn splice_args(text: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("log.md".into()),
         actor: Some("locker".into()),
         now: None,

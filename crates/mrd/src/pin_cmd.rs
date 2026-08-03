@@ -60,6 +60,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let splice_args = SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WirePath(parsed.page.clone()),
         // §9: the CLI stamps no provenance — and an absent actor IS the
         // local-operator trust door the gate reads (D16).
