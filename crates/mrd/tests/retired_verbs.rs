@@ -137,6 +137,62 @@ fn usage_teaches_the_emitter_and_no_retired_hook_grammar() {
     );
 }
 
+/// **`mrd journal` is retired with no alias and no shim** (ZT 2026-08-03:
+/// *"Engine does not have memory. It should not have. History is pin to git when
+/// we lock. Anything between locks is not history."*). The verb existed to reset
+/// a ledger the engine kept of its own writes; that ledger is gone, so there is
+/// nothing to reset and no successor verb — the successor is git.
+///
+/// A shim would be worse here than anywhere else in this file: `journal genesis`
+/// MOVED rows and truncated a file, so an operator who typed it and saw success
+/// would believe an archive exists.
+#[test]
+fn mrd_journal_no_longer_parses_and_usage_teaches_where_history_lives() {
+    for args in [
+        vec!["journal", "genesis", "--ruling", "some-ruling"],
+        vec!["journal", "genesis"],
+        vec!["journal"],
+    ] {
+        let out = mrd(&args);
+        assert_eq!(code(&out), 2, "{args:?} is a retired verb");
+        let err = stderr(&out);
+        assert!(
+            err.contains("unknown subcommand: journal"),
+            "the CLI refuses the retired verb rather than shimming it: {err}"
+        );
+        assert!(
+            err.contains("mrd test --history"),
+            "and USAGE — printed on the same refusal — names the surface that reads \
+             history now: {err}"
+        );
+    }
+}
+
+/// USAGE teaches no retired JOURNAL grammar, and the history tier's line says
+/// where history actually lives. A reader who only reads USAGE must not be able
+/// to conclude that the engine still keeps a ledger.
+#[test]
+fn usage_teaches_git_history_and_no_retired_journal_grammar() {
+    let out = mrd(&["attest", "x"]);
+    let usage = stderr(&out);
+    assert!(
+        !usage.contains("mrd journal"),
+        "USAGE still teaches the retired journal plane:\n{usage}"
+    );
+    assert!(
+        !usage.contains("^r-NNNNNN"),
+        "USAGE still teaches the retired journal's row anchors:\n{usage}"
+    );
+    assert!(
+        usage.contains("History is git"),
+        "USAGE states where history lives now:\n{usage}"
+    );
+    assert!(
+        usage.contains("<commit>:<path>"),
+        "and names the item id a golden list declares against:\n{usage}"
+    );
+}
+
 /// USAGE teaches no retired MARKER either (marker-retirement ruling,
 /// 2026-07-26). `mrd init`'s line sold `.meridian.toml` — a file the engine now
 /// reads nowhere — so the help text was advertising a contract that had died.

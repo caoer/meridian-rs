@@ -10,9 +10,10 @@
 //!   exit 0 each.
 //! - **genesis** — the reader-side semantics of a NEVER-ARMED workspace: absent
 //!   artifact + absent marker is unarmed, the door is a bit-for-bit no-op, and
-//!   the write is still journaled and still grey.
+//!   the write still lands and is still grey.
 //! - **history tier** — builds a fresh temp git workspace, seeds the
-//!   `reviewer-not-owner` floor PAGE + a journal, and drives `mrd test --history`:
+//!   `reviewer-not-owner` floor PAGE + three authored commits, and drives
+//!   `mrd test --history`:
 //!   the owner-self-close history row is a would-refuse item, declared in a
 //!   GOLDEN list.
 //! - **message-naming** — loads the `claim-cas` and `verdict-reviewer-bind`
@@ -136,7 +137,7 @@ const GENESIS_PAGE: &str = "# Genesis\n\nthe first write on a never-armed worksp
 /// writer's test and is owed at the ARM disk edge; nothing here writes either
 /// half of the pair.
 #[test]
-fn the_genesis_epoch_is_unarmed_ungated_journaled_and_grey() {
+fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
     let dir = tempfile::tempdir().expect("tmpdir");
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
 
@@ -184,13 +185,16 @@ fn the_genesis_epoch_is_unarmed_ungated_journaled_and_grey() {
         out.verdicts
     );
 
-    // PRESENT: ungated is not unrecorded.
-    let journal = std::fs::read_to_string(dir.path().join(fs::domain::RESERVED_JOURNAL_PATH))
-        .unwrap_or_default();
-    assert!(
-        journal.contains("op=create") && journal.contains("tasks/genesis.md"),
-        "the genesis write is journaled: {journal}"
-    );
+    // LOST, and deliberately: "ungated is not UNRECORDED" used to be asserted
+    // here by reading the write's row out of the receipt journal. ZT ruled the
+    // engine keeps no memory (2026-08-03) — an ungated write between two locks is
+    // not history at all — so there is no in-engine record to assert and the
+    // proof dies with the plane it read. It is NOT re-pointed at git: git records
+    // commits, and asserting that would test git rather than the engine, which is
+    // a different claim wearing this test's name.
+    //
+    // The test's subject survives whole: a never-armed write is UNGATED (asserted
+    // above) and it LANDS (asserted below).
 
     // And the bytes really landed.
     let landed =
@@ -403,18 +407,39 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
-/// Commit the whole working tree.
-fn commit(dir: &Path, message: &str) {
+/// Commit the whole working tree AS `author` — the actor of the write.
+///
+/// The author is the point, not decoration: history is git (ZT 2026-08-03), so
+/// the commit author IS the acting writer the rule compares against a task's
+/// `owner:`. It used to be an `actor=` token the engine wrote into a journal row
+/// itself.
+fn commit_as(dir: &Path, author: &str, message: &str) {
     git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", message]);
+    git(
+        dir,
+        &[
+            "-c",
+            &format!("user.name={author}"),
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    );
 }
 
-/// One journal row (matches `receipt::journal::parse_rows`: `- op= path= actor=
-/// root_before= root_after= … ^r-NNNNNN`).
-fn row(op: &str, path: &str, actor: &str, seq: u64, rb: &str, ra: &str, extra: &str) -> String {
-    format!(
-        "- op={op} path={path} actor={actor} root_before={rb} root_after={ra} {extra} ^r-{seq:06}"
-    )
+/// The full commit id of `HEAD` — half of an item id (`<commit>:<path>`), which
+/// is what a golden list declares against now that rows have no `^r-NNNNNN`
+/// anchor to be named by.
+fn head(dir: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("spawn git");
+    assert!(out.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
 const FIX_OPEN: &str =
@@ -424,9 +449,13 @@ const FIX_CLOSED: &str =
 const FIX_NOTE: &str =
     "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Fix parser\n\nbody\n\n- reviewed\n";
 
-/// Seed a temp git workspace with the reviewer-not-owner FLOOR page + a journal
-/// whose C1 row is an owner-self-close (would-refuse), C2 a reviewer edit (passes).
-fn seeded_workspace() -> tempfile::TempDir {
+/// Seed a temp git workspace with the reviewer-not-owner FLOOR page and three
+/// commits: C0 a create by worker-b, C1 an owner-self-close by worker-a
+/// (would-refuse), C2 a reviewer edit by reviewer-b (passes).
+///
+/// Returns the workspace and C1's commit id, because C1 is the row the golden
+/// list has to name.
+fn seeded_workspace() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("tmpdir");
     let ws = dir.path();
 
@@ -438,58 +467,21 @@ fn seeded_workspace() -> tempfile::TempDir {
     let page = std::fs::read_to_string(floors("rules/reviewer-not-owner.md")).unwrap();
     write(ws, HISTORY_RULE_PAGE, &page);
 
-    // C0 — bob creates fix-parser (owner worker-a) + r-000001 (create).
+    // C0 — worker-b creates fix-parser (owner worker-a). A create: no before
+    // side, so it reconstructs at fidelity A structural.
     write(ws, "tasks/fix-parser.md", FIX_OPEN);
-    let j1 = format!(
-        "# Receipt journal\n\n{}\n",
-        row(
-            "create",
-            "tasks/fix-parser.md",
-            "worker-b",
-            1,
-            "b3:0",
-            "b3:1",
-            "before=absent after=aaaa edits=0"
-        )
-    );
-    write(ws, "meridian/journal.md", &j1);
-    commit(ws, "C0 create fix-parser");
+    commit_as(ws, "worker-b", "C0 create fix-parser");
 
-    // C1 — worker-a (the OWNER) closes her own task + r-000002 (splice) → would-refuse.
+    // C1 — worker-a (the OWNER) closes her own task → would-refuse.
     write(ws, "tasks/fix-parser.md", FIX_CLOSED);
-    let j2 = format!(
-        "{j1}{}\n",
-        row(
-            "splice",
-            "tasks/fix-parser.md",
-            "worker-a",
-            2,
-            "b3:1",
-            "b3:2",
-            "edits=1 status:put:aaaa->bbbb"
-        )
-    );
-    write(ws, "meridian/journal.md", &j2);
-    commit(ws, "C1 owner self-close");
+    commit_as(ws, "worker-a", "C1 owner self-close");
+    let c1 = head(ws);
 
-    // C2 — reviewer-b edits + r-000003 (splice) → passes (reviewer != owner).
+    // C2 — reviewer-b edits → passes (reviewer != owner).
     write(ws, "tasks/fix-parser.md", FIX_NOTE);
-    let j3 = format!(
-        "{j2}{}\n",
-        row(
-            "splice",
-            "tasks/fix-parser.md",
-            "reviewer-b",
-            3,
-            "b3:2",
-            "b3:3",
-            "edits=1 Fix parser:put:bbbb->cccc"
-        )
-    );
-    write(ws, "meridian/journal.md", &j3);
-    commit(ws, "C2 reviewer edit");
+    commit_as(ws, "reviewer-b", "C2 reviewer edit");
 
-    dir
+    (dir, c1)
 }
 
 /// Run `mrd test --history <ws> --rule rules/reviewer-not-owner.md --json`.
@@ -515,12 +507,18 @@ fn run_history(ws: &Path, extra: &[&str]) -> (i32, Value) {
     (code, report)
 }
 
-/// The history tier reconstructs the journal, fires the owner-self-close row as
-/// an UNDECLARED would-refuse (exit 1), then a GOLDEN declaration flips it to a
-/// declared exception (exit 0). This is the `--history` tier recording.
+/// The history tier reconstructs the workspace's GIT history, fires the
+/// owner-self-close as an UNDECLARED would-refuse (exit 1), then a GOLDEN
+/// declaration flips it to a declared exception (exit 0). This is the
+/// `--history` tier recording.
+///
+/// **This is the Q2 equivalence gate.** The same corpus, the same rule, the same
+/// three writes and the same verdicts — one undeclared would-refuse at C1, two
+/// full-bytes reconstructions, one structural — as when the enumerator read
+/// journal rows. Only the enumerator changed; the evaluation is the evaluation.
 #[test]
 fn history_owner_self_close_is_a_would_refuse_then_declared() {
-    let dir = seeded_workspace();
+    let (dir, c1) = seeded_workspace();
     let ws = dir.path();
 
     // Undeclared: the owner self-close row is a would-refuse finding (exit 1).
@@ -547,11 +545,16 @@ fn history_owner_self_close_is_a_would_refuse_then_declared() {
     // Declare it in the GOLDEN list — a `golden` fence in a SPEC page that names
     // the rule it excepts (D2a). The spec is passed with `--spec`; nothing about
     // where it sits binds it to the rule, the `rule:` reference does.
-    let golden = "---\nrule: ../rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
-        ```golden\n\
-        - item=r-000002 reason=\"legacy owner self-close predates the reviewer-not-owner floor\"\n\
-        ```\n";
-    write(ws, HISTORY_GOLDEN_SPEC, golden);
+    // The item id is `<commit>:<path>` — git's two facts about one write, since
+    // there is no `^r-NNNNNN` anchor to name any more.
+    let golden = format!(
+        "---\nrule: ../rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
+         ```golden\n\
+         - item={c1}:tasks/fix-parser.md reason=\"legacy owner self-close predates \
+         the reviewer-not-owner floor\"\n\
+         ```\n"
+    );
+    write(ws, HISTORY_GOLDEN_SPEC, &golden);
     let (code, report) = run_history(ws, &["--spec", HISTORY_GOLDEN_SPEC]);
     assert_eq!(
         code, 0,

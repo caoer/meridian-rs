@@ -1284,19 +1284,6 @@ mod tests {
         );
     }
 
-    /// A `PinPlane` with nothing to report — the pin axis held flat so the gate
-    /// arms below measure the JOURNAL axis alone.
-    fn clean_pins() -> PinPlane {
-        PinPlane {
-            red: Vec::new(),
-            grey: Vec::new(),
-            orphaned: Vec::new(),
-            anchored: 0,
-            pending: 0,
-            never: 0,
-            cannot_ask: None,
-        }
-    }
 
     /// A journal page from `(anchor, root_before, root_after)` triples — the three
     /// facts a row asserts, in the shipped row grammar.
