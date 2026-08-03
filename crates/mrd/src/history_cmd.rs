@@ -2,13 +2,18 @@
 //! against a workspace's own past, with a golden list of declared exceptions as
 //! the gate.
 //!
-//! # What the tier does (rulings § test --history)
-//! The receipt journal ([`fs::domain::RESERVED_JOURNAL_PATH`]) is the append-only
-//! ledger of every guarded write; git is the witness that carries the actual
-//! bytes. This tier JOINs the two: for each journal row it finds the git commit
-//! that appended the row's `^r-NNNNNN` anchor (the **git-anchor JOIN**), reads the
-//! written path at that commit (the AFTER bytes) and at its parent (the BEFORE
-//! bytes), rebuilds both `Document`s through the fixture doc-building path
+//! # What the tier does (rulings § test --history; ZT 2026-08-03)
+//! **Git is the history.** ZT ruled it directly — *"Engine does not have memory.
+//! It should not have. History is pin to git when we lock. Anything between locks
+//! is not history."* — so the workspace's past is enumerated from `git log
+//! --name-status`, which is where it has always actually lived. The receipt
+//! journal that used to enumerate it was the engine keeping a memory of its own,
+//! and it is gone.
+//!
+//! One recorded write — one (commit, path) pair — is one row. The commit gives
+//! the AFTER bytes, its first parent the BEFORE bytes, and the commit's author
+//! and date are carried verbatim as the write's actor and time. From there the
+//! tier rebuilds both `Document`s through the fixture doc-building path
 //! (`syntax::parse` → `model::build`), derives the [`rulepack-api@2`](policy)
 //! change, and runs the rule's `check_change` over it — the SAME registration,
 //! loader and full-`EvalLimits` evaluator the door uses
@@ -23,8 +28,8 @@
 //!   remove no after); the recovered side is real, the absent side is the empty
 //!   document, so the doc facts a CHECK reads are honest even though the state
 //!   diff is structural.
-//! - **C grey** — neither side could be recovered (the row's anchor is in no
-//!   commit, or the path is absent from the tree). A grey row is COUNTED and
+//! - **C grey** — neither side could be recovered (the path is absent from both
+//!   the commit and its parent). A grey row is COUNTED and
 //!   RENDERED but NEVER run — the tier refuses to guess a change it cannot
 //!   reconstruct.
 //!
@@ -43,7 +48,12 @@
 //! page carries no registration tag, so it registers nothing by construction
 //! (§1 is tag-opt-in) and no exclusion rule is owed for it.
 //!
-//! Each row declares one would-refuse item by its journal anchor plus a reason.
+//! Each row declares one would-refuse item by its ITEM ID plus a reason. An item
+//! id is `<commit>:<path>` — the two facts that name one recorded write, both
+//! git's, and both stable for as long as the commit is. (It was the journal's
+//! `^r-NNNNNN` anchor when the engine kept its own ledger; a golden list written
+//! against those anchors names writes nothing can resolve any more, and its rows
+//! read as undeclared until they are re-declared against git.)
 //! Triage = editing that page through the ordinary write door; exceptions are
 //! declared, never erased. `test --history` FAILS (exit 1) on any would-refuse
 //! item ABSENT from the list; a declared item passes with its reason rendered.
@@ -52,13 +62,12 @@
 //! # Output + exit codes (§4 preamble law, `docs/status.md`)
 //! JSON under `--json`, a human table otherwise. Exit 0 (every would-refuse item
 //! is declared), 1 (an undeclared would-refuse item — a finding), 2 (a tool
-//! failure: bad usage, an unreadable workspace / rule page / journal, a git
+//! failure: bad usage, an unreadable workspace / rule page / spec page, a git
 //! failure, or a CHECK that faulted on real history).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use model::{Document, Edit, NodeKind};
 use policy::{
@@ -76,9 +85,9 @@ const GOLDEN_FENCE: &str = "golden";
 /// Run `mrd test --history WORKSPACE --rule PAGE [--spec PAGE] [--json]`.
 ///
 /// # Errors
-/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / journal /
-/// spec page, a spec whose `rule:` names another page, a git failure, or a
-/// faulting CHECK) or exit 1 (an undeclared would-refuse item).
+/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / spec
+/// page, a spec whose `rule:` names another page, a git failure, or a faulting
+/// CHECK) or exit 1 (an undeclared would-refuse item).
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut workspace: Option<String> = None;
     let mut rule: Option<String> = None;
@@ -140,9 +149,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Load the rule page, read the golden list from the named spec, parse the
-/// journal, JOIN each row against git, run the CHECK, and fold the outcomes into
-/// a report.
+/// Load the rule page, read the golden list from the named spec, enumerate the
+/// recorded writes off git, run the CHECK, and fold the outcomes into a report.
 fn run_history(
     workspace_arg: &Path,
     page: &str,
@@ -182,57 +190,18 @@ fn run_history(
     //    this rule (no `--spec` ⇒ nothing declared yet).
     let golden = load_golden(&workspace, spec, page)?;
 
-    // 3. The receipt journal — the append-only ledger of guarded writes.
-    let journal_rel = fs::domain::RESERVED_JOURNAL_PATH;
-    let journal_abs = workspace.join(journal_rel);
-    let journal_text = std::fs::read_to_string(&journal_abs).map_err(|e| {
-        Fail::tool(format!(
-            "no readable receipt journal at {journal_rel} under {}: {e}",
-            workspace.display()
-        ))
-    })?;
-    let rows = receipt::journal::parse_rows(&journal_text);
+    // 3. The history: every write git recorded, with both sides' bytes.
+    let rows = enumerate(&workspace)?;
 
-    // 4. The git-anchor JOIN: which commit appended each row's anchor.
-    let anchor_commit = anchor_commits(&workspace, journal_rel)?;
-
-    // 5. Reconstruct + check each row.
+    // 4. Reconstruct + check each row.
     let mut results = Vec::with_capacity(rows.len());
     for row in &rows {
-        results.push(process_row(&workspace, &rule, &golden, &anchor_commit, row));
+        results.push(process_row(&rule, &golden, row));
     }
 
     let mut report = HistoryReport::assemble(&id, page, &rows, results);
-    report.archived = archived_boundary(&workspace, &rows);
     report.golden_spec = spec.map(str::to_owned);
     Ok(report)
-}
-
-/// The genesis boundary (G2): what this tier did NOT calibrate over.
-///
-/// A journal that opens with an `op=genesis` row is a POST-RESET journal, and
-/// that row's `path` is the archive holding everything before it. Reading it
-/// here costs one file read and turns a silent truncation into a stated one:
-/// the tier reports a number, and a number without its population is the
-/// failure this lane keeps re-learning.
-///
-/// This CONSUMES the pointer G2 records rather than scanning for archive-shaped
-/// filenames — the row is the authority on where the rows went.
-///
-/// Note what this is NOT: traversal. The rows in the archive are not
-/// calibrated, because their git-anchor JOIN would have to target the path they
-/// were APPENDED to, not the path they now live in. That is its own card.
-fn archived_boundary(
-    workspace: &Path,
-    rows: &[receipt::journal::ParsedRow],
-) -> Option<(String, usize)> {
-    let first = rows.first()?;
-    if first.op != "genesis" {
-        return None;
-    }
-    let archive_rel = first.path.clone();
-    let text = std::fs::read_to_string(workspace.join(&archive_rel)).ok()?;
-    Some((archive_rel, receipt::journal::parse_rows(&text).len()))
 }
 
 /// Resolve the workspace argument against cwd and confirm it is a directory.
@@ -290,6 +259,84 @@ enum Verdict {
     Error { detail: String },
 }
 
+/// One recorded write, as the enumerator hands it to the evaluator: what git
+/// says happened, plus the bytes on each side of it.
+///
+/// This is the tier's whole coupling to where history lives. Everything below it
+/// — the rebuild, the derivation, the CHECK, the verdict, the golden compare —
+/// reads these fields and never asks where they came from.
+struct HistoryRow {
+    /// The item id a golden list declares: `<commit>:<path>`.
+    anchor: String,
+    /// The path this write landed on, workspace-relative.
+    path: String,
+    /// The op word (`create` / `splice` / `remove`).
+    op: String,
+    /// The commit's author, verbatim — git's attribution, not the engine's.
+    actor: Option<String>,
+    /// The bytes at the commit's first parent, or `None` when that side does not
+    /// resolve (a create, a root commit, or non-UTF-8 content).
+    before: Option<String>,
+    /// The bytes at the commit, or `None` when that side does not resolve (a
+    /// remove, or non-UTF-8 content).
+    after: Option<String>,
+}
+
+/// **The enumerator** — every write git recorded, oldest first, with both sides'
+/// bytes recovered.
+///
+/// Two git calls for the whole walk, never one per commit: one `git log
+/// --name-status` for the writes, one `git cat-file --batch` for the 2N sides
+/// they need. Both live in `crates/git`, the one auditable shell-out leaf.
+fn enumerate(workspace: &Path) -> Result<Vec<HistoryRow>, Fail> {
+    let repo = git::Repo::at(workspace);
+
+    // The tier's OWN precondition, stated here rather than left to git's
+    // message: the helper cannot know what the caller wanted git for, so a
+    // bubbled-up failure names the mechanism and never the requirement that was
+    // not met (issue-19). Only this caller knows the history tier needs
+    // committed history, so only this caller can say it.
+    let changes = repo.path_history(&[]).map_err(|e| {
+        Fail::tool(format!(
+            "the history tier replays COMMITTED changes, and this workspace could not \
+             supply them: {e}. Nothing was replayed — no rule ran and no golden list was \
+             compared. Fix: commit the tree, then re-run.",
+        ))
+    })?;
+
+    // Both sides of every write, in one batched read. The specs are built in
+    // pairs so the answers index back onto the walk positionally.
+    let mut specs = Vec::with_capacity(changes.len() * 2);
+    for change in &changes {
+        specs.push(format!("{}^:{}", change.commit, change.path));
+        specs.push(format!("{}:{}", change.commit, change.path));
+    }
+    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    let sides = repo
+        .blobs_at(&refs)
+        .map_err(|e| Fail::tool(format!("cannot read the recorded bytes: {e}")))?;
+
+    // Non-UTF-8 bytes collapse to `None` exactly like an unresolvable side: the
+    // tier reconstructs markdown documents, and bytes it cannot read as text are
+    // a side it did not recover.
+    let text = |side: &Option<Vec<u8>>| -> Option<String> {
+        side.clone().and_then(|bytes| String::from_utf8(bytes).ok())
+    };
+
+    Ok(changes
+        .iter()
+        .enumerate()
+        .map(|(i, change)| HistoryRow {
+            anchor: format!("{}:{}", change.commit, change.path),
+            path: change.path.clone(),
+            op: change.status.as_str().to_owned(),
+            actor: Some(change.author.clone()),
+            before: sides.get(i * 2).and_then(text),
+            after: sides.get(i * 2 + 1).and_then(text),
+        })
+        .collect())
+}
+
 /// One row's fully-resolved outcome.
 struct RowResult {
     anchor: String,
@@ -299,14 +346,8 @@ struct RowResult {
     verdict: Verdict,
 }
 
-/// Reconstruct one journal row and run the rule over it.
-fn process_row(
-    workspace: &Path,
-    rule: &Rule,
-    golden: &BTreeMap<String, String>,
-    anchor_commit: &BTreeMap<String, String>,
-    row: &receipt::journal::ParsedRow,
-) -> RowResult {
+/// Reconstruct one recorded write and run the rule over it.
+fn process_row(rule: &Rule, golden: &BTreeMap<String, String>, row: &HistoryRow) -> RowResult {
     let base = |fidelity, verdict| RowResult {
         anchor: row.anchor.clone(),
         path: row.path.clone(),
@@ -321,15 +362,9 @@ fn process_row(
         return base(Fidelity::Grey, Verdict::OutOfScope);
     }
 
-    // The git-anchor JOIN: the commit that appended this anchor gives the AFTER
-    // tree; its parent gives the BEFORE tree.
-    let (before, after) = match anchor_commit.get(&row.anchor) {
-        Some(commit) => (
-            git_show(workspace, &format!("{commit}^"), &row.path),
-            git_show(workspace, commit, &row.path),
-        ),
-        None => (None, None),
-    };
+    // The two sides the enumerator recovered: the commit's bytes (AFTER) and its
+    // first parent's (BEFORE).
+    let (before, after) = (row.before.clone(), row.after.clone());
 
     let fidelity = match (before.is_some(), after.is_some()) {
         (true, true) => Fidelity::FullBytes,
@@ -402,90 +437,6 @@ fn build_doc(path: &str, raw: String) -> Document {
         *p = path.to_string();
     }
     doc
-}
-
-// ── the git-anchor JOIN ──────────────────────────────────────────────────────
-
-/// Build the anchor → appending-commit map by walking the journal's git history
-/// oldest→newest: the FIRST commit an anchor appears in is the commit that
-/// appended its row. A row whose anchor is in no commit (uncommitted, or hand
-/// appended) simply does not appear — its reconstruction fails closed to grey.
-///
-/// # Errors
-/// git is unavailable, or the path is not a repository (`log` fails).
-fn anchor_commits(workspace: &Path, journal_rel: &str) -> Result<BTreeMap<String, String>, Fail> {
-    // The tier's OWN precondition, stated here rather than inside `git_text`:
-    // the helper is generic and cannot know what the caller wanted git for, so a
-    // bubbled-up `git log failed: …` names the mechanism that failed and never
-    // the requirement that was not met (issue-19). Only this caller knows the
-    // history tier needs committed history, so only this caller can say it.
-    let list = git_text(
-        workspace,
-        &[
-            "log",
-            "--reverse",
-            "--first-parent",
-            "--format=%H",
-            "--",
-            journal_rel,
-        ],
-    )
-    .map_err(|e| {
-        Fail::tool(format!(
-            "the history tier replays COMMITTED changes, and this workspace could not \
-             supply them: {}. Nothing was replayed — no rule ran and no golden list was \
-             compared. Fix: commit the tree (the receipt journal `{journal_rel}` must be \
-             in git history), then re-run.",
-            e.message
-        ))
-    })?;
-    let mut map = BTreeMap::new();
-    for commit in list.lines().filter(|l| !l.is_empty()) {
-        let Some(text) = git_show(workspace, commit, journal_rel) else {
-            continue;
-        };
-        for parsed in receipt::journal::parse_rows(&text) {
-            map.entry(parsed.anchor)
-                .or_insert_with(|| commit.to_owned());
-        }
-    }
-    Ok(map)
-}
-
-/// Read one blob's UTF-8 text at `rev:path`. `None` when the path is absent from
-/// the tree, the rev does not resolve (a root commit's `^`), or the bytes are not
-/// UTF-8 — every "cannot recover this side" collapses to `None`, which the caller
-/// folds into the fidelity class.
-fn git_show(workspace: &Path, rev: &str, path: &str) -> Option<String> {
-    let out = run_git(workspace, &["show", &format!("{rev}:{path}")]).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8(out.stdout).ok()
-}
-
-/// Run a git command that must succeed and yields UTF-8 text.
-fn git_text(workspace: &Path, args: &[&str]) -> Result<String, Fail> {
-    let out = run_git(workspace, args)?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        return Err(Fail::tool(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or(""),
-            stderr.trim()
-        )));
-    }
-    String::from_utf8(out.stdout).map_err(|e| Fail::tool(format!("git emitted non-UTF-8: {e}")))
-}
-
-/// Run `git -C workspace <args>`, capturing the output.
-fn run_git(workspace: &Path, args: &[&str]) -> Result<std::process::Output, Fail> {
-    Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(args)
-        .output()
-        .map_err(|e| Fail::tool(format!("cannot run git: {e}")))
 }
 
 // ── the golden list ──────────────────────────────────────────────────────────
@@ -637,8 +588,8 @@ struct HistoryReport {
     /// The page the rule was loaded from — its provenance, kept beside the id
     /// because a reader who has to go fix the law needs the file, not the name.
     page: String,
-    /// The journal span the run covered (first .. last row anchor), or `None` for
-    /// an empty journal.
+    /// The history span the run covered (first .. last item id), or `None` when
+    /// git recorded nothing.
     span: Option<(String, String)>,
     total_rows: usize,
     out_of_scope: usize,
@@ -651,10 +602,6 @@ struct HistoryReport {
     rows: Vec<RowResult>,
     /// CHECK faults on real history (each collapses the run to exit 2).
     errors: Vec<String>,
-    /// The genesis boundary (G2): `(archive path, rows it holds)` when this
-    /// journal opens with a genesis row. `None` means no reset has happened —
-    /// never "the archive is empty".
-    archived: Option<(String, usize)>,
     /// The spec page the golden list was read from, or `None` when the run
     /// declared no `--spec`. Reported rather than derived: a reader who has to go
     /// declare an exception needs the page the run actually read.
@@ -673,12 +620,7 @@ impl HistoryReport {
         }
     }
 
-    fn assemble(
-        id: &str,
-        page: &str,
-        rows: &[receipt::journal::ParsedRow],
-        results: Vec<RowResult>,
-    ) -> Self {
+    fn assemble(id: &str, page: &str, rows: &[HistoryRow], results: Vec<RowResult>) -> Self {
         let span = match (rows.first(), rows.last()) {
             (Some(f), Some(l)) => Some((f.anchor.clone(), l.anchor.clone())),
             _ => None,
@@ -697,9 +639,6 @@ impl HistoryReport {
             undeclared: 0,
             rows: results,
             errors: Vec::new(),
-            // Filled by the caller, which holds the workspace path the archive
-            // is read from (this fold is path-free by construction).
-            archived: None,
             // Filled by the caller, which holds the invocation's `--spec`.
             golden_spec: None,
         };
@@ -736,22 +675,15 @@ impl HistoryReport {
         let _ = writeln!(s, "# mrd test --history — {} ({})\n", self.id, self.page);
 
         let span = match &self.span {
-            Some((f, l)) => format!("^{f}..^{l}"),
-            None => "(empty journal)".to_owned(),
+            Some((f, l)) => format!("{f} .. {l}"),
+            None => "(nothing recorded)".to_owned(),
         };
         let in_scope = self.total_rows - self.out_of_scope;
         let _ = writeln!(
             s,
-            "journal span: {span}  ({} row(s), {in_scope} in scope, {} out of scope)",
+            "history span: {span}  ({} write(s), {in_scope} in scope, {} out of scope)",
             self.total_rows, self.out_of_scope
         );
-        if let Some((archive, count)) = &self.archived {
-            let _ = writeln!(
-                s,
-                "not calibrated: {count} row(s) predate a genesis reset and live in {archive} \
-                 — this run did not traverse them"
-            );
-        }
         let _ = writeln!(
             s,
             "fidelity: B full-bytes={}  A structural={}  C grey={}\n",
@@ -868,14 +800,7 @@ impl HistoryReport {
             // no `--spec`, so a consumer reads "nothing declared" as the absence
             // of a list rather than as an empty one.
             "golden_spec": self.golden_spec,
-            "journal_span": span,
-            // The genesis boundary (G2) — absent when no reset has happened,
-            // never an empty object, so a consumer cannot read "no archive" as
-            // "an archive with nothing in it".
-            "not_calibrated": self.archived.as_ref().map(|(archive, rows)| json!({
-                "archive": archive,
-                "rows": rows,
-            })),
+            "history_span": span,
             "rows": rows,
             "fidelity": {
                 "full_bytes": self.full_bytes,
@@ -1012,32 +937,83 @@ rule: ../rules/reviewer-not-owner.md
         assert_eq!(extract_reason("item=r-1 no reason"), None);
     }
 
-    /// G2 boundary: a post-genesis journal states what it did NOT calibrate
-    /// over, using the pointer the genesis row records.
+    /// The enumerator reads the workspace's own git history: one row per
+    /// (commit, path), the op word from git's status letter, the actor from the
+    /// commit author, and both sides' bytes recovered.
     #[test]
-    fn the_genesis_boundary_is_read_from_the_pointer() {
+    fn the_enumerator_reads_writes_out_of_git() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("meridian")).unwrap();
-        std::fs::write(
-            tmp.path().join("meridian/arch.md"),
-            "- op=splice path=a.md root_before=b3:1 root_after=b3:2 edits=0 ^r-000001\n\
-             - op=splice path=b.md root_before=b3:2 root_after=b3:3 edits=0 ^r-000002\n",
-        )
-        .unwrap();
-        let live = "- op=genesis path=meridian/arch.md root_before=b3:3 root_after=b3:4 edits=0 ^r-000001\n";
-        let rows = receipt::journal::parse_rows(live);
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        run(&["init", "--quiet"]);
+        run(&["config", "user.email", "hist@example.test"]);
+        run(&["config", "user.name", "History Fixture"]);
 
-        let found = archived_boundary(tmp.path(), &rows).expect("the pointer resolves");
-        assert_eq!(found, ("meridian/arch.md".to_owned(), 2));
+        std::fs::write(dir.join("a.md"), "# one\n").unwrap();
+        run(&["add", "a.md"]);
+        run(&["commit", "--quiet", "-m", "born"]);
+        std::fs::write(dir.join("a.md"), "# one\n\nmore\n").unwrap();
+        run(&["commit", "--quiet", "-am", "grown"]);
+        std::fs::remove_file(dir.join("a.md")).unwrap();
+        run(&["commit", "--quiet", "-am", "gone"]);
+
+        let rows = enumerate(dir).expect("the walk reads this repository");
+        let ops: Vec<&str> = rows.iter().map(|r| r.op.as_str()).collect();
+        assert_eq!(
+            ops,
+            vec!["create", "splice", "remove"],
+            "oldest first, git's own status letters"
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r.actor.as_deref() == Some("History Fixture")),
+            "the actor is the commit author NAME — the field an owner handle can equal"
+        );
+
+        let create = &rows[0];
+        assert_eq!(create.before, None, "a create has no before side");
+        assert_eq!(create.after.as_deref(), Some("# one\n"));
+
+        let splice = &rows[1];
+        assert_eq!(splice.before.as_deref(), Some("# one\n"));
+        assert_eq!(splice.after.as_deref(), Some("# one\n\nmore\n"));
+
+        let remove = &rows[2];
+        assert_eq!(remove.before.as_deref(), Some("# one\n\nmore\n"));
+        assert_eq!(remove.after, None, "a remove has no after side");
+
+        assert!(
+            create.anchor.ends_with(":a.md") && create.anchor.len() > 41,
+            "the item id is <commit>:<path>: {}",
+            create.anchor
+        );
     }
 
-    /// A journal that never had a reset reports NO boundary — absent, never a
-    /// zero, so a reader cannot mistake "no archive" for "an empty archive".
+    /// A workspace git recorded nothing in enumerates to nothing — an empty
+    /// history, never a failure. "Nothing has been committed yet" is a true
+    /// answer about the past, and the tier reports over it.
     #[test]
-    fn a_journal_without_a_genesis_row_has_no_boundary() {
+    fn a_repository_with_no_commits_enumerates_empty() {
         let tmp = tempfile::tempdir().unwrap();
-        let live = "- op=splice path=a.md root_before=b3:1 root_after=b3:2 edits=0 ^r-000001\n";
-        let rows = receipt::journal::parse_rows(live);
-        assert!(archived_boundary(tmp.path(), &rows).is_none());
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(["init", "--quiet"])
+            .output()
+            .expect("run git");
+        assert!(out.status.success());
+        assert!(
+            enumerate(tmp.path())
+                .expect("an empty history is an answer")
+                .is_empty()
+        );
     }
 }

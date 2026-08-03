@@ -2,6 +2,17 @@
 //! construction.** Every gate here drives the REAL binary (`CARGO_BIN_EXE_mrd`)
 //! over its process boundary.
 //!
+//! # Amendment 2026-08-03 — the journal plane this file argues against is GONE
+//!
+//! Everything below narrates the pin plane's blind spot in terms of the journal
+//! plane that could not see it. That framing is history: ZT ruled the engine
+//! keeps no memory (*"History is pin to git when we lock. Anything between locks
+//! is not history."*), so the journal plane was deleted whole. The file's SUBJECT
+//! is unchanged and its refusals still gate — what changed is that the isolation
+//! it used to establish by counting journal rows is now structural. Read the
+//! journal-plane prose below as the argument for why this test exists, not as a
+//! description of what `check` reads today.
+//!
 //! # What is left after u14i and U32, stated so a green cannot be misread (S3-R58)
 //!
 //! u14i downgraded the *claim* (a baseline it cannot date is `grey(cannot-assess)`,
@@ -46,7 +57,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fs::WorkspaceRoot;
-use fs::domain::RESERVED_JOURNAL_PATH;
 use receipt::anchor::ObjectAnchor;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
@@ -186,15 +196,10 @@ fn root_of(ws: &Path) -> WorkspaceRoot {
     WorkspaceRoot(workspace::canonicalize(ws).expect("canonicalize"))
 }
 
-fn journal_rows(root: &WorkspaceRoot) -> usize {
-    let page = std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).unwrap_or_default();
-    receipt::journal::parse_rows(&page).len()
-}
-
-/// Birth `path` through the PRODUCTION guarded-create write path. This is the
-/// **baseline refresher**: `create` journals a row whose `root_after` is the live
-/// tree root at that instant, so whatever moved the tree before it is accounted
-/// for and the journal plane reads a real verdict again.
+/// Birth `path` through the PRODUCTION guarded-create write path — a real
+/// governed write, so the corpus under test is one the engine actually made.
+/// (It was the **baseline refresher** when a journal row's `root_after`
+/// re-anchored the baseline; there is no baseline plane to refresh now.)
 fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     let args = CreateArgs {
         id: None,
@@ -287,24 +292,22 @@ fn pulled_corpus(sb: &Sandbox, name: &str) -> PathBuf {
     ws
 }
 
-/// Land ONE governed write, and assert the state change that makes this corpus
-/// decisive: the journal now carries exactly one row, so the baseline is CURRENT
-/// and a single row can break no chain. **Every journal detector is honestly
-/// green from here on** — anything `check` refuses now, it refuses because of the
-/// pin plane and nothing else.
-fn establish_a_spotless_journal(root: &WorkspaceRoot) {
-    assert_eq!(
-        journal_rows(root),
-        0,
-        "the pulled copy journaled nothing — a clone carries no receipts"
-    );
+/// Land ONE governed write so this corpus is decisive: anything `check` refuses
+/// from here on, it refuses because of the pin plane and nothing else.
+///
+/// **That isolation used to be ESTABLISHED and is now STRUCTURAL.** This
+/// function counted journal rows (0 on a fresh clone, 1 after the write) to
+/// prove the journal plane was spotless and could not be the cause of a refusal.
+/// ZT ruled the journal out of existence (2026-08-03: *"Engine does not have
+/// memory. It should not have."*), so the journal plane cannot be the cause
+/// because there is no journal plane — the architecture now does the job the
+/// counting did.
+///
+/// Recorded rather than silently deleted: a reader who finds a pin-plane test
+/// that once asserted something and no longer does is one step from re-adding a
+/// detector the ruling removed.
+fn establish_a_spotless_baseline(root: &WorkspaceRoot) {
     produce(root, "note.md", "# Note\n\ngoverned birth\n");
-    assert_eq!(
-        journal_rows(root),
-        1,
-        "R40 — one governed row over the pulled tree: baseline CURRENT, chain \
-         unbreakable (one row continues nothing), journal plane spotless"
-    );
 }
 
 // ── the REFUSAL: a drifted pin on a SPOTLESS journal plane ───────────────────
@@ -326,21 +329,25 @@ fn establish_a_spotless_journal(root: &WorkspaceRoot) {
 /// (`git` + `lock` in `crates/check/Cargo.toml`) and why only the refusal
 /// demonstrates delivery.
 #[test]
-fn check_refuses_a_drifted_pin_on_a_spotless_journal_plane() {
+fn check_refuses_a_drifted_pin_with_no_write_history_plane_to_blame() {
     let sb = sandbox();
     let ws = pulled_corpus(&sb, "drifted-spotless-journal");
     let root = root_of(&ws);
-    establish_a_spotless_journal(&root);
+    establish_a_spotless_baseline(&root);
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
 
-    // The journal plane's own honesty is the CONTROL, and it is what stops this
-    // gate being satisfied by u14i's grey wearing U14's costume: if the journal
-    // could refuse here, the corpus would not be measuring the pin plane at all.
+    // The CONTROL: the refusal below must come from the pin plane and nothing
+    // else. This used to be established — the render said `chain: green` and
+    // `foreign_edit: none`, so the journal plane demonstrably had no complaint.
+    // It is STRUCTURAL now: there is no write-history plane, and the surface says
+    // so in its own words. A verb that assesses no write history cannot refuse
+    // over one.
     assert!(
-        text.contains("chain: green") && text.contains("foreign_edit: none"),
-        "the journal plane is spotless — it is not the thing refusing: {text}"
+        text.contains(check::WRITE_HISTORY_NOT_ASSESSED),
+        "no write-history plane exists to be the thing refusing, and the surface \
+         states it: {text}"
     );
     assert!(
         !text.contains(check::GREY_CANNOT_ASSESS),
@@ -393,16 +400,9 @@ fn check_refuses_a_drifted_pin_on_a_spotless_journal_plane() {
 fn check_accepts_a_fully_governed_anchored_corpus() {
     let sb = sandbox();
     let ws = pinned_corpus(&sb, "all-governed", false);
-    let root = root_of(&ws);
-
     // Commit the pin so the pinned blob is reachable from a ref: anchored, the one
     // durable state. R40 — assert the state, not the command.
     commit_all(&ws, "pin");
-    assert_eq!(
-        journal_rows(&root),
-        1,
-        "the governed pin journaled its row (U32) — the baseline is present"
-    );
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
@@ -545,7 +545,6 @@ fn check_refuses_an_orphaned_pinned_blob() {
         &["pin", "claim.md", "source.md#Source/Guideline", "--vibe"],
     );
     assert_eq!(pin.status.code(), Some(0), "pin --vibe: {}", said(&pin));
-    let root = root_of(&ws);
 
     let recorded = git_in(&ws, &["hash-object", "--", "source.md"]);
     assert_eq!(
@@ -573,11 +572,6 @@ fn check_refuses_an_orphaned_pinned_blob() {
             .lines()
             .all(|line| !line.starts_with(&recorded)),
         "and no ref reaches the recorded blob either — it is held by nothing"
-    );
-    assert!(
-        journal_rows(&root) >= 1,
-        "the governed pin journaled its row, so the journal plane is healthy and \
-         has nothing to say about any of this"
     );
 
     let out = sb.run(&ws, &["check"]);
@@ -677,7 +671,7 @@ fn walk_status_and_check_agree_on_one_corpus_in_one_run() {
     //    arrived changed, one governed write leaves the journal plane SPOTLESS.
     //    All three planes must now read the same red pin. ────────────────────
     let ws = pulled_corpus(&sb, "three-planes-pulled");
-    establish_a_spotless_journal(&root_of(&ws));
+    establish_a_spotless_baseline(&root_of(&ws));
 
     let walk = sb.run(&ws, &["walk", "claim.md"]);
     let status = sb.run(&ws, &["status"]);

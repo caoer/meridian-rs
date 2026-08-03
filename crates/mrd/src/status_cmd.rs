@@ -7,14 +7,14 @@
 //!
 //! # What bare `status` is (plan §4 Block 3 U3.6; d2 §6.2)
 //! `status = freshness` (d2 §3; distinct from `check = validity`). Bare `status`
-//! answers "what is armed, what drifted, what was forced, and how fresh is my
-//! origin knowledge" — from FROZEN facts only. It is:
+//! answers "what is armed, what drifted, and how fresh is my origin knowledge" —
+//! from FROZEN facts only. It is:
 //!
 //! - **pure-local** — no daemon, no network, no fetch (cap-free);
 //! - **O(armed) + O(pins) + O(objects)** — it reads ONE index file
 //!   (`conventions/INDEX.md`) for the armed set, re-hashes each armed
 //!   convention's `CHECK.md` (O(armed) small reads), scans the bounded receipt
-//!   journal, and reads the git refs. The `meridian-lock` planes add ONE corpus
+//!   and reads the git refs. The `meridian-lock` planes add ONE corpus
 //!   build (the lock lives in the corpus's pages, so nothing smaller can see
 //!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
 //!   O(objects) plus at most TWO git calls PER OBJECT STORE (one `rev-list`, one
@@ -54,24 +54,45 @@
 //!   METER, never a gate: it never enters the exit triad.
 //!
 //! # The armed summary line
-//! `<A> armed · <D> drifted · <F> forced-since-realise (receipts boundary)`:
+//! `<A> armed · <D> drifted · forced-since-realise: not tracked`:
 //! - `armed` — the row count of the attested armed-rules artifact
 //!   ([`fs::domain::ARMED_RULES_PATH`]);
 //! - `drifted` — armed rows whose live PAGE rev ≠ the rev the artifact pinned
 //!   (the arming drift gate, read-only);
-//! - `forced-since-realise` — the count of `op=force` journal rows (U4.3) newer
-//!   than the last realise APPLY. The boundary is the last `now` in
-//!   `receipts/realise.md` (the realise receipt ledger — realise applies leave NO
-//!   reserved-journal marker, so this is a receipts boundary, not a
-//!   journal-anchored guarantee). It resolves toward VISIBILITY: no realise
-//!   receipt ⇒ genesis (count all forced writes), and a tied/unordered `now`
-//!   COUNTS — the counter over-reports violations, never under-reports.
+//! - `forced-since-realise` — **rendered as explicitly not tracked, and the line
+//!   says why.** It used to count `op=force` rows in the receipt journal since
+//!   the last realise apply. ZT ruled the ledger out of existence (2026-08-03:
+//!   *"Engine does not have memory. It should not have. History is pin to git
+//!   when we lock. Anything between locks is not history."*), so a forced write
+//!   between two locks is not a thing `status` can observe — by design, not by
+//!   accident.
+//!
+//! # Why the axis is DISCLOSED and not deleted
+//! Deleting the line would be a silent narrowing, which is the one move both
+//! this docket's rulings forbid. Two facts make it worse here than in a
+//! read-only report:
+//!
+//! 1. **The exit code moved.** A forced write used to make `status` exit 1. A
+//!    workspace that exits 0 today may be one a forced write is live in. A
+//!    reader who is not told reads the same green as before and concludes
+//!    something `status` never checked.
+//! 2. **The question is still good.** "Has anyone forced past an armed rule?"
+//!    did not stop mattering; it stopped being answerable HERE. The line names
+//!    where the answer lives now — git — so the reader's next move is one hop
+//!    away instead of a wrong conclusion.
+//!
+//! It is the same shape `check` was ruled into for its sibling question: state,
+//! on both faces, that the property is not assessed. A count is not re-derivable
+//! from git (a forced splice and an ordinary one land as the same commit), so
+//! the honest surface is a disclosure, never a re-derivation and never silence.
 //!
 //! # Exit triad (§4 preamble)
-//! - **0** — clean: nothing armed drifted and nothing was forced.
-//! - **1** — a finding: an armed rule drifted, a forced write is live, or the
-//!   armed-rules artifact faulted. Field-equivalent to `md status`'s red
-//!   (drifted) exit at the semantic class.
+//! - **0** — clean: nothing armed drifted and the armed law is readable. NOTE
+//!   what 0 no longer covers: a forced write cannot move this code, because it
+//!   is not observed (see the disclosure above).
+//! - **1** — a finding: an armed rule drifted, or the armed-rules artifact
+//!   faulted. Field-equivalent to `md status`'s red (drifted) exit at the
+//!   semantic class.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
 use std::collections::{BTreeMap, HashSet};
@@ -82,30 +103,21 @@ use model::Document;
 use model::selector::{Color, RedReason};
 use policy::armed::{Mode, parse_artifact};
 use policy::page_rev;
-use receipt::anchor::{
-    AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, Observed, TipPosition,
-};
-use receipt::journal::parse_rows;
-use serde_json::{Value, json};
+use receipt::anchor::{AnchorFacts, AnchorState, ObjectAnchor, ObjectAnchorFacts, TipPosition};
+use serde_json::json;
 use view::walk::{color_detail, color_label, color_reason, color_tone};
 
 use crate::{Fail, Format, current_dir};
 
 /// The finding leg of the triad: the invocation was well-formed, but the summary
-/// carries a live drift, a forced write, or a faulted armed-rules artifact.
+/// carries a live drift or a faulted armed-rules artifact.
 const EXIT_FINDING: u8 = 1;
-
-/// The realise receipt ledger — the `forced-since-realise` boundary source. NOT
-/// the reserved journal: realise applies append `- run {json} ^r-NNNNNN` lines
-/// here, never an `op=force`-carrying journal row.
-const REALISE_RECEIPTS: &str = "receipts/realise.md";
 
 /// Run `mrd status [--json] [--cwd PATH]`.
 ///
 /// # Errors
 /// [`Fail`] exit 2 on a bad invocation or an unresolvable / unreadable workspace;
-/// exit 1 when the summary carries a finding (drift, a forced write, or a faulted
-/// INDEX).
+/// exit 1 when the summary carries a finding (drift, or a faulted INDEX).
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let (format, cwd_arg) = parse(tail)?;
     let cwd = match cwd_arg {
@@ -176,27 +188,15 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
     Ok((format, cwd))
 }
 
-/// One `--force`-escaped skip surfaced as a violation row (U4.3 §11.1): the
-/// bypassed rule, the journal anchor, and the recorded `now`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Violation {
-    /// The bypassed convention / binding-break (the `forced_rule=` token).
-    rule: String,
-    /// The journal row anchor (`r-NNNNNN`) — the permanent record of the skip.
-    anchor: String,
-    /// The recorded timestamp of the forced write, verbatim (never invented).
-    now: Option<String>,
-}
+/// What the forced-since-realise axis says now that nothing observes it. One
+/// constant, used by BOTH faces, so the human line and the `--json` face cannot
+/// drift into disagreeing about what was checked.
+const FORCED_NOT_TRACKED: &str = "not-tracked";
 
-/// Where the `forced-since-realise` count is anchored — named so the render can
-/// state precisely that this is a receipts boundary, not a journal guarantee.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Boundary {
-    /// No realise receipt exists — count ALL forced writes (visibility fallback).
-    Genesis,
-    /// The last realise-apply `now` from `receipts/realise.md`.
-    LastApply(String),
-}
+/// Why it is not tracked, in the words of the law that made it so. Rendered, not
+/// implied: a reader meeting a missing axis needs the reason in front of them,
+/// not in a changelog.
+const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — a forced write between two locks is      not history; look in git";
 
 /// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of.
 ///
@@ -342,10 +342,6 @@ struct StatusReport {
     armed: usize,
     /// Count of armed conventions whose live `CHECK.md` rev ≠ pinned `armed_rev`.
     drifted: usize,
-    /// Count of `op=force` journal rows newer than the realise boundary.
-    forced: usize,
-    /// Where the forced count is anchored.
-    boundary: Boundary,
     /// The armed-rules artifact's fault detail, when the workspace's armed law
     /// cannot be trusted: a corrupt artifact, or an artifact missing on a
     /// workspace the once-armed marker says HAS been armed. Absent artifact AND
@@ -363,15 +359,17 @@ struct StatusReport {
     anchor_axis: String,
     /// The as-known-ageless nudge hint, when present.
     nudge: Option<&'static str>,
-    /// The `--force`-escaped skips since the boundary.
-    violations: Vec<Violation>,
 }
 
 impl StatusReport {
-    /// A finding is live when armed evidence drifted, a forced write is unresolved,
-    /// or the armed-rules artifact faulted — the exit-1 predicate.
+    /// A finding is live when armed evidence drifted or the armed-rules artifact
+    /// faulted — the exit-1 predicate.
+    ///
+    /// A forced write is NOT in it any more, and that is the disclosure's whole
+    /// point: the axis left the exit code with the data source, so the surface
+    /// says so rather than letting a quieter 0 pass for a cleaner one.
     fn has_findings(&self) -> bool {
-        self.drifted > 0 || self.forced > 0 || self.artifact_fault.is_some()
+        self.drifted > 0 || self.artifact_fault.is_some()
     }
 
     /// The one-line stderr summary that rides the exit-1 `Fail`.
@@ -379,10 +377,7 @@ impl StatusReport {
         if let Some(detail) = &self.artifact_fault {
             return format!("armed-rules fault: {detail}");
         }
-        format!(
-            "{} drifted, {} forced-since-realise",
-            self.drifted, self.forced
-        )
+        format!("{} drifted", self.drifted)
     }
 
     /// The composed multi-axis line — armed-pin color · meridian-lock color ·
@@ -407,14 +402,11 @@ impl StatusReport {
         use std::fmt::Write as _;
         let mut out = String::new();
         let _ = writeln!(out, "status  {} ({})", self.workspace, self.source);
-        let boundary = match &self.boundary {
-            Boundary::Genesis => "genesis".to_owned(),
-            Boundary::LastApply(now) => format!("since {now}"),
-        };
         let _ = writeln!(
             out,
-            "  armed-rules: {} armed · {} drifted · {} forced-since-realise (receipts boundary: {boundary})",
-            self.armed, self.drifted, self.forced,
+            "  armed-rules: {} armed · {} drifted · forced-since-realise: {FORCED_NOT_TRACKED} \
+             ({FORCED_NOT_TRACKED_WHY})",
+            self.armed, self.drifted,
         );
         let _ = writeln!(out, "  {}", self.composed_line());
         if let Some(nudge) = self.nudge {
@@ -423,38 +415,28 @@ impl StatusReport {
         if let Some(detail) = &self.artifact_fault {
             let _ = writeln!(out, "  armed-rules fault: {detail}");
         }
-        for v in &self.violations {
-            let _ = writeln!(out, "  {}", render_violation_row(v));
-        }
         out
     }
 
     /// The `--json` shape: the three axes as fields, the counts, the boundary, and
     /// the violation rows.
     fn json(&self) -> String {
-        let violations: Vec<Value> = self
-            .violations
-            .iter()
-            .map(|v| {
-                json!({
-                    "rule": v.rule,
-                    "anchor": v.anchor,
-                    "now": v.now,
-                })
-            })
-            .collect();
-        let boundary = match &self.boundary {
-            Boundary::Genesis => json!({ "kind": "genesis" }),
-            Boundary::LastApply(now) => json!({ "kind": "receipts", "since": now }),
-        };
         let doc = json!({
             "workspace": self.workspace,
             "source": self.source,
             "armed_rules": {
                 "armed": self.armed,
                 "drifted": self.drifted,
-                "forced_since_realise": self.forced,
-                "boundary": boundary,
+                // The count key and its `boundary` are REMOVED, not zeroed and
+                // not nulled: a 0 reads as "checked, none found" and a null as
+                // "checked, no answer", and both are lies about a property
+                // nothing observes. What replaces them is a string that cannot
+                // be mistaken for a count, carrying its own reason.
+                "forced_since_realise": {
+                    "tracked": false,
+                    "state": FORCED_NOT_TRACKED,
+                    "why": FORCED_NOT_TRACKED_WHY,
+                },
                 "fault": self.artifact_fault,
             },
             "composed": {
@@ -485,26 +467,17 @@ impl StatusReport {
                 },
             },
             "nudge": self.nudge,
-            "violations": violations,
+            // `violations` is REMOVED for the same reason: an empty array reads
+            // as "looked, found none".
             "findings": self.has_findings(),
         });
         serde_json::to_string_pretty(&doc).unwrap_or_else(|_| doc.to_string())
     }
 }
 
-/// Render one forced-write violation row (U4.3 §11.1) — the visible, permanent
-/// record of a `--force`-escaped armed refusal.
-fn render_violation_row(v: &Violation) -> String {
-    let now = v.now.as_deref().unwrap_or("(no timestamp)");
-    format!(
-        "violation: forced past `{}` · convention block · ^{} ({now})",
-        v.rule, v.anchor,
-    )
-}
-
 /// Gather the status summary over a canonical workspace path. The impure edge: it
 /// reads the armed-rules artifact, the once-armed marker, the armed rule PAGES,
-/// the journal, the realise receipts, and the git refs — every read frozen, none
+/// and the git refs — every read frozen, none
 /// re-evaluated. It never fails: every
 /// absent / unreadable frozen fact degrades to its honest empty case (genesis,
 /// unverified), so status always renders a summary.
@@ -531,16 +504,10 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
     };
     let mode_rollup = armed.iter().map(|a| a.mode).max().unwrap_or(Mode::Off);
 
-    // 3. The journal + the realise boundary — the forced-since-realise count.
-    let journal_text = read_optional(workspace, receipt_journal_rel());
-    let rows = parse_rows(&journal_text);
-    let boundary = realise_boundary(workspace);
-    let (forced, violations) = forced_since(&journal_text, &rows, &boundary);
+    // 3. The anchor axis — git refs, fetch-less, never verified (U2.7).
+    let (anchor_axis, nudge) = anchor_axis(workspace);
 
-    // 4. The anchor axis — git refs, fetch-less, never verified (U2.7).
-    let (anchor_axis, nudge) = anchor_axis(workspace, &rows);
-
-    // 5. The meridian-lock planes — ONE corpus build answering both the pin
+    // 4. The meridian-lock planes — ONE corpus build answering both the pin
     //    colors (claim plane) and the vibe-debt gauge (retrieval plane).
     let (lock, vibe_debt) = lock_planes(workspace);
 
@@ -549,8 +516,6 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
         source: source.to_owned(),
         armed: armed.len(),
         drifted,
-        forced,
-        boundary,
         artifact_fault,
         pin_rollup,
         lock,
@@ -558,7 +523,6 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
         mode_rollup,
         anchor_axis,
         nudge,
-        violations,
     }
 }
 
@@ -889,103 +853,12 @@ fn page_drifted(workspace: &Path, page: &str, attested_rev: &str) -> bool {
     }
 }
 
-/// The reserved receipt-journal path, workspace-relative.
-fn receipt_journal_rel() -> &'static str {
-    fs::domain::RESERVED_JOURNAL_PATH
-}
-
-/// Read a workspace-relative page, treating any read error (absent, unreadable) as
-/// the empty string — the genesis / tolerated case for the frozen-fact reads.
-fn read_optional(workspace: &Path, rel: &str) -> String {
-    std::fs::read_to_string(workspace.join(rel)).unwrap_or_default()
-}
-
-/// Resolve the `forced-since-realise` boundary from the realise receipt ledger:
-/// the LAST realise-apply `now` (`- run {json} ^r-NNNNNN` lines), or [`Boundary::Genesis`]
-/// when the ledger is absent / has no dated apply.
-fn realise_boundary(workspace: &Path) -> Boundary {
-    let text = read_optional(workspace, REALISE_RECEIPTS);
-    match last_receipt_now(&text) {
-        Some(now) => Boundary::LastApply(now),
-        None => Boundary::Genesis,
-    }
-}
-
-/// The `now` field of the LAST `- run {json} ^r-NNNNNN` receipt line, or `None`
-/// when no dated apply is present. Parses only the JSON envelope — never a
-/// predicate.
-fn last_receipt_now(receipts: &str) -> Option<String> {
-    receipts
-        .lines()
-        .rev()
-        .filter_map(|line| line.trim().strip_prefix("- run "))
-        .find_map(|rest| {
-            // Strip the trailing ` ^r-NNNNNN` anchor, parse the JSON envelope.
-            let json = rest.rsplit_once(" ^").map_or(rest, |(head, _)| head);
-            serde_json::from_str::<Value>(json.trim())
-                .ok()
-                .and_then(|v| v.get("now").and_then(Value::as_str).map(str::to_owned))
-        })
-}
-
-/// Count the `op=force` journal rows newer than the realise boundary, and collect
-/// them as violation rows. Resolves toward VISIBILITY (leader ruling): a forced
-/// write with no `now`, or a `now` that ties / is unordered relative to the
-/// boundary, COUNTS — only a row strictly older than the boundary is excluded.
-fn forced_since(
-    journal_text: &str,
-    rows: &[receipt::journal::ParsedRow],
-    boundary: &Boundary,
-) -> (usize, Vec<Violation>) {
-    let lines: Vec<&str> = journal_text.lines().collect();
-    let mut violations = Vec::new();
-    for row in rows.iter().filter(|r| r.op == "force") {
-        if !counts_since(row.now.as_deref(), boundary) {
-            continue;
-        }
-        let rule = lines
-            .get(row.line_no.saturating_sub(1))
-            .and_then(|line| forced_rule(line))
-            .unwrap_or_else(|| "(unnamed)".to_owned());
-        violations.push(Violation {
-            rule,
-            anchor: row.anchor.clone(),
-            now: row.now.clone(),
-        });
-    }
-    (violations.len(), violations)
-}
-
-/// Whether a forced row's `now` counts against the boundary. Over-reports: only a
-/// dated row STRICTLY older than a dated boundary is excluded; genesis, an undated
-/// row, and a tie all count.
-fn counts_since(row_now: Option<&str>, boundary: &Boundary) -> bool {
-    // Exclude ONLY a dated row strictly older than a dated boundary; genesis, an
-    // undated row, and a tie all fall through to `true` (over-report).
-    match (boundary, row_now) {
-        (Boundary::LastApply(b), Some(n)) => n >= b.as_str(),
-        _ => true,
-    }
-}
-
-/// Extract the `forced_rule=<rule>` token from a raw `op=force` journal line. The
-/// token is whitespace-collapsed at write time (one token, no split), so a plain
-/// whitespace tokenize recovers it. `ParsedRow` does not model it.
-fn forced_rule(line: &str) -> Option<String> {
-    line.split_whitespace()
-        .find_map(|tok| tok.strip_prefix("forced_rule="))
-        .map(str::to_owned)
-}
-
 /// Render the anchor-qualified tip axis (U2.7) for the workspace, plus any nudge
 /// hint. Fetch-less: `run_observed` is ALWAYS false, so the state is never
 /// `verified` and never renders a bare `at-tip` (the W-C1 invariant). Returns a
 /// custom "no origin ref" render when the remote-tracking ref is absent (no tip to
 /// compare) rather than a misleading bare position.
-fn anchor_axis(
-    workspace: &Path,
-    rows: &[receipt::journal::ParsedRow],
-) -> (String, Option<&'static str>) {
+fn anchor_axis(workspace: &Path) -> (String, Option<&'static str>) {
     let branch = git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let head = git(workspace, &["rev-parse", "HEAD"]);
     let origin_ref = format!("refs/remotes/origin/{branch}");
@@ -995,15 +868,16 @@ fn anchor_axis(
     );
 
     let now_unix = now_unix();
-    let last_observation = receipt::anchor::last_observation(rows).and_then(|now| {
-        parse_rfc3339(now).map(|unix| Observed {
-            now: now.to_owned(),
-            unix,
-        })
-    });
+    // No dated observation exists to carry: the row extractor that supplied one
+    // died with the engine's memory (U4; ZT 2026-08-03), and status does not
+    // fetch, so it has observed nothing itself. `None` classifies to
+    // `AsKnownAgeless` — "the ref is here, I cannot say how current it is" —
+    // which is the true state and the one that keeps its nudge. `classify` is
+    // untouched: a caller that CAN date an observation still classifies exactly
+    // as before.
     let facts = AnchorFacts {
         run_observed: false,
-        last_observation,
+        last_observation: None,
         origin_ref_present: origin.is_some(),
     };
     let state = AnchorState::classify(&facts, now_unix);
@@ -1070,53 +944,11 @@ fn git(workspace: &Path, args: &[&str]) -> Option<String> {
     }
 }
 
-/// Parse a canonical RFC3339 UTC token (`YYYY-MM-DDTHH:MM:SSZ`) to epoch seconds,
-/// or `None` when it is not that exact shape. The anchor's journaled observations
-/// are minted in this form; a non-canonical token is undatable, so the anchor
-/// degrades to as-known-AGELESS (never a wrong age). No date crate — the civil
-/// arithmetic is exact and dependency-free.
-fn parse_rfc3339(token: &str) -> Option<i64> {
-    let bytes = token.as_bytes();
-    // YYYY-MM-DDTHH:MM:SSZ is exactly 20 bytes with fixed separators.
-    if bytes.len() != 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
-        return None;
-    }
-    if bytes[13] != b':' || bytes[16] != b':' || bytes[19] != b'Z' {
-        return None;
-    }
-    let num = |lo: usize, hi: usize| token.get(lo..hi)?.parse::<i64>().ok();
-    let year = num(0, 4)?;
-    let month = num(5, 7)?;
-    let day = num(8, 10)?;
-    let hour = num(11, 13)?;
-    let min = num(14, 16)?;
-    let sec = num(17, 19)?;
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    if hour > 23 || min > 59 || sec > 60 {
-        return None;
-    }
-    let days = days_from_civil(year, month, day);
-    Some(((days * 24 + hour) * 60 + min) * 60 + sec)
-}
-
-/// Days since the Unix epoch (1970-01-01) for a civil date, by Howard Hinnant's
-/// `days_from_civil` algorithm — exact for the proleptic Gregorian calendar, no
-/// lookup tables, no dependency.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146_097 + doe - 719_468
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use model::selector::GreyReason;
+    use serde_json::Value;
 
     // ── the four-grey render fixtures (U6.2 full color law) ──────────────────
 
@@ -1199,8 +1031,6 @@ mod tests {
             source: "git-root".to_owned(),
             armed: 0,
             drifted: 0,
-            forced: 0,
-            boundary: Boundary::Genesis,
             artifact_fault: None,
             pin_rollup: pin,
             lock,
@@ -1208,7 +1038,6 @@ mod tests {
             mode_rollup: mode,
             anchor_axis: anchor_axis.to_owned(),
             nudge: None,
-            violations: Vec::new(),
         }
     }
 
@@ -1449,121 +1278,70 @@ mod tests {
         assert_eq!(v["findings"], json!(false));
     }
 
-    // ── the forced-write violation row fixture (U4.3 §11.1) ──────────────────
+    // ── the forced-since-realise DISCLOSURE (ZT 2026-08-03) ──────────────────
 
-    /// The forced-write violation row renders the bypassed rule, the block
-    /// severity, and the permanent journal anchor.
+    /// The human line states the axis is not tracked AND why. A reader who used
+    /// to read a count must not be able to read this line as a clean zero.
     #[test]
-    fn forced_write_renders_the_violation_row() {
-        let v = Violation {
-            rule: "reviewer-not-owner".to_owned(),
-            anchor: "r-000042".to_owned(),
-            now: Some("2026-07-23T10:00:00Z".to_owned()),
-        };
-        assert_eq!(
-            render_violation_row(&v),
-            "violation: forced past `reviewer-not-owner` · convention block · ^r-000042 (2026-07-23T10:00:00Z)"
-        );
-    }
-
-    /// `forced_rule=` is recovered from a raw `op=force` journal line (it is not a
-    /// `ParsedRow` field).
-    #[test]
-    fn forced_rule_reads_the_token() {
-        let line = "- op=force path=tasks/fix.md actor=agent:a root_before=b3:1 root_after=b3:2 edits=0 forced_rule=reviewer-not-owner ^r-000042";
-        assert_eq!(forced_rule(line).as_deref(), Some("reviewer-not-owner"));
-        assert_eq!(forced_rule("- op=splice ^r-000001"), None);
-    }
-
-    // ── the forced-since-realise boundary (leader ruling: over-report) ───────
-
-    /// Genesis (no realise receipt) counts every forced write.
-    #[test]
-    fn genesis_boundary_counts_all_forced() {
-        assert!(counts_since(
-            Some("2020-01-01T00:00:00Z"),
-            &Boundary::Genesis
-        ));
-        assert!(counts_since(None, &Boundary::Genesis));
-    }
-
-    /// A dated boundary excludes ONLY a strictly-older dated row; a newer row, a
-    /// tie, and an undated row all count (visibility).
-    #[test]
-    fn dated_boundary_over_reports() {
-        let b = Boundary::LastApply("2026-07-23T00:00:00Z".to_owned());
+    fn the_human_line_discloses_that_forced_writes_are_not_tracked() {
+        let report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        let out = report.render_human();
         assert!(
-            !counts_since(Some("2026-07-22T23:59:59Z"), &b),
-            "strictly older is excluded"
+            out.contains("forced-since-realise: not-tracked"),
+            "the axis is named and disclosed, not dropped: {out}"
         );
         assert!(
-            counts_since(Some("2026-07-23T00:00:00Z"), &b),
-            "a tie counts"
+            out.contains("the engine keeps no memory by design"),
+            "and the line carries the reason: {out}"
         );
         assert!(
-            counts_since(Some("2026-07-23T00:00:01Z"), &b),
-            "newer counts"
+            !out.contains("0 forced-since-realise"),
+            "it must never render as a count: {out}"
         );
-        assert!(counts_since(None, &b), "an undated row counts");
     }
 
-    /// The last realise-apply `now` is read from the receipt ledger's last
-    /// `- run {json}` line; an absent / undated ledger is genesis.
+    /// The `--json` face carries the same disclosure, and carries NO count and
+    /// NO violations array. An absent key reads as "not checked"; a `0` or an
+    /// empty array would read as "checked, none found", which is the lie.
     #[test]
-    fn last_receipt_now_reads_the_latest_apply() {
-        let ledger = "# realise receipts\n\
-            - run {\"page\":\"a.md\",\"now\":\"2026-07-23T09:00:00Z\"} ^r-000001\n\
-            - run {\"page\":\"b.md\",\"now\":\"2026-07-23T10:00:00Z\"} ^r-000002\n";
-        assert_eq!(
-            last_receipt_now(ledger).as_deref(),
-            Some("2026-07-23T10:00:00Z")
+    fn the_json_face_discloses_rather_than_zeroing() {
+        let report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        let v: Value = serde_json::from_str(&report.json()).expect("json");
+        let forced = &v["armed_rules"]["forced_since_realise"];
+        assert_eq!(forced["tracked"], serde_json::json!(false));
+        assert_eq!(forced["state"], serde_json::json!("not-tracked"));
+        assert!(
+            forced["why"].as_str().is_some_and(|w| w.contains("git")),
+            "the reason names where the answer lives now: {forced}"
         );
-        assert_eq!(last_receipt_now(""), None);
-        assert_eq!(last_receipt_now("# empty\n"), None);
+        assert!(
+            !forced.is_number(),
+            "the key must not be a count any more: {forced}"
+        );
+        assert!(
+            v["armed_rules"].get("boundary").is_none(),
+            "the receipts boundary bounded a count that no longer exists: {v}"
+        );
+        assert!(
+            v.get("violations").is_none(),
+            "an empty violations array would read as 'looked, found none': {v}"
+        );
     }
 
-    /// End-to-end forced count over a journal: two force rows after the boundary,
-    /// one before — the boundary excludes only the strictly-older one.
+    /// A forced write cannot move the exit code any more, because nothing
+    /// observes one. The predicate is drift and artifact fault only — asserted
+    /// so a later edit cannot quietly re-add a source nothing feeds.
     #[test]
-    fn forced_since_counts_rows_after_boundary() {
-        let journal = "# journal\n\
-            - op=splice path=a.md root_before=b3:0 root_after=b3:1 edits=1 ^r-000001\n\
-            - op=force path=x.md actor=agent:a root_before=b3:1 root_after=b3:2 edits=0 forced_rule=rule-old ^r-000002\n\
-            - op=force path=y.md actor=agent:a root_before=b3:2 root_after=b3:3 edits=0 forced_rule=rule-new ^r-000003\n";
-        // Manually stamp `now` onto the force rows by re-parsing after injecting.
-        let journal = journal
-            .replace(
-                "forced_rule=rule-old ^r-000002",
-                "now=2026-07-22T00:00:00Z forced_rule=rule-old ^r-000002",
-            )
-            .replace(
-                "forced_rule=rule-new ^r-000003",
-                "now=2026-07-24T00:00:00Z forced_rule=rule-new ^r-000003",
-            );
-        let rows = parse_rows(&journal);
-        let boundary = Boundary::LastApply("2026-07-23T00:00:00Z".to_owned());
-        let (count, violations) = forced_since(&journal, &rows, &boundary);
-        assert_eq!(count, 1, "only the post-boundary force row counts");
-        assert_eq!(violations[0].rule, "rule-new");
-        assert_eq!(violations[0].anchor, "r-000003");
-
-        // Genesis counts both.
-        let (all, _) = forced_since(&journal, &rows, &Boundary::Genesis);
-        assert_eq!(all, 2, "genesis counts every forced write");
-    }
-
-    // ── the RFC3339 → epoch parser (anchor age arithmetic) ───────────────────
-
-    /// Known epoch anchors round-trip; a non-canonical token is undatable
-    /// (`None`), so the anchor degrades to ageless rather than mis-dating.
-    #[test]
-    fn rfc3339_parses_canonical_utc_only() {
-        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_rfc3339("2000-01-01T00:00:00Z"), Some(946_684_800));
-        assert_eq!(parse_rfc3339("2026-07-23T00:00:00Z"), Some(1_784_764_800));
-        // Non-canonical shapes are undatable.
-        assert_eq!(parse_rfc3339("2026-07-23"), None);
-        assert_eq!(parse_rfc3339("2026-07-23T00:00:00+00:00"), None);
-        assert_eq!(parse_rfc3339("not-a-date"), None);
+    fn the_finding_predicate_is_drift_and_fault_only() {
+        let mut report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
+        assert!(!report.has_findings(), "a clean workspace exits 0");
+        report.drifted = 1;
+        assert!(report.has_findings(), "drift is still a finding");
+        report.drifted = 0;
+        report.artifact_fault = Some("corrupt".to_owned());
+        assert!(
+            report.has_findings(),
+            "a faulted artifact is still a finding"
+        );
     }
 }
