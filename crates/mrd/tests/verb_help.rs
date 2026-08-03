@@ -473,3 +473,87 @@ fn the_bare_help_verb_still_prints_everything() {
         assert_eq!(stdout(&out), full, "{door:?} is the same door");
     }
 }
+
+// ── 4. the surface is written for its reader ──────────────────────────────────
+
+/// **The A6 gate.** No internal unit tag reaches help output. `mrd new --help`
+/// used to open its description with `file birth (U5.3):` — a docket bookkeeping
+/// id, legible to whoever held the plan and to nobody else. A reader who has
+/// never seen the docket reads `(U5.3)` as a version, a flag, or an error code.
+///
+/// The claim is over the whole surface, derived rather than listed: every page
+/// the CLI can print is scanned for the shape `U<digit>.<digit>`, so a tag added
+/// to a verb written next year fails here without this file being edited.
+#[test]
+fn no_internal_unit_tag_reaches_a_help_page() {
+    /// The docket's tag shape: `U`, a digit, a dot, then an alphanumeric —
+    /// `U5.3`, `U3.5b`, `U2.11`. Scanned by hand; a regex crate is a dependency
+    /// this workspace does not take for one predicate.
+    fn unit_tags(text: &str) -> Vec<String> {
+        let bytes: Vec<char> = text.chars().collect();
+        let mut found = Vec::new();
+        for (i, ch) in bytes.iter().enumerate() {
+            if *ch != 'U' {
+                continue;
+            }
+            // A `U` that continues a word (`REDUCE`) is not a tag opener.
+            if i > 0 && bytes[i - 1].is_alphanumeric() {
+                continue;
+            }
+            let tag: String = bytes[i..]
+                .iter()
+                .take_while(|c| c.is_ascii_alphanumeric() || **c == '.')
+                .collect();
+            let mut parts = tag[1..].split('.');
+            let (Some(major), Some(minor)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if !major.is_empty()
+                && major.chars().all(|c| c.is_ascii_digit())
+                && !minor.is_empty()
+                && minor.starts_with(|c: char| c.is_ascii_digit())
+            {
+                found.push(tag);
+            }
+        }
+        found
+    }
+
+    // The scanner really can fail — the positive control. Without this, a broken
+    // predicate would report a clean surface forever.
+    assert_eq!(
+        unit_tags("file birth (U5.3): resolve the def"),
+        vec!["U5.3".to_owned()],
+        "the scanner must detect the tag it exists to detect"
+    );
+    assert_eq!(
+        unit_tags("the reconciliation loop (U3.5b; ZT ruling #3)"),
+        vec!["U3.5b".to_owned()]
+    );
+    assert!(
+        unit_tags("a REDUCE.2 word and a bare U and version 2.1").is_empty(),
+        "the scanner does not fire on ordinary prose"
+    );
+
+    let full = listing();
+    assert!(
+        unit_tags(&full).is_empty(),
+        "internal unit tags in `mrd --help`: {:?}",
+        unit_tags(&full)
+    );
+
+    // Every per-verb page too — the pages are lexed out of the listing, but a
+    // future help surface that is not need not be, and this gate outlives that.
+    for (_, synopsis) in verb_lines(&full) {
+        let address = address_of(&synopsis);
+        let mut args = address.clone();
+        args.push("--help");
+        let page = stdout(&mrd(&args));
+        assert!(
+            unit_tags(&page).is_empty(),
+            "internal unit tags in `mrd {} --help`: {:?}",
+            address.join(" "),
+            unit_tags(&page)
+        );
+    }
+}
