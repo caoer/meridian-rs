@@ -937,6 +937,7 @@ mod tests {
         }
         Claim {
             selector: selector.to_string(),
+            rule: None,
             check: Box::new(Fixed(outcome)),
             apply: None,
             retry_budget: 0,
@@ -1287,6 +1288,7 @@ mod tests {
         let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
         let claim = Claim {
             selector: "faulty".to_string(),
+            rule: None,
             check: Box::new(Faults),
             apply: None,
             retry_budget: 0,
