@@ -70,7 +70,8 @@ pub struct RunSpec<'a> {
     pub pre_receipt: Option<ReceiptAddr>,
     /// Decision-#26 explicit foreign-edit takeover.
     pub takeover: bool,
-    /// Bash scratch cwd (caller-created; unused on the starlark path).
+    /// Bash artifact scratch dir (caller-created; NOT the cwd since U16;
+    /// unused on the starlark path).
     pub scratch: &'a Path,
     /// Bash wall-clock ceiling (#21; unused on the starlark path).
     pub timeout: Duration,
