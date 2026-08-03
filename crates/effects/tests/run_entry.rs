@@ -175,7 +175,7 @@ fn sandbox_exposes_no_process_or_io_names() {
 
 #[test]
 fn run_eval_is_deterministic_across_repeats() {
-    let src = "def run(ctx):\n    for a in ctx.args:\n        warn(message = a)\n    append_section(section = \"Log\", content = ctx.env[\"HOME_WIKI\"])\n";
+    let src = "def run(ctx):\n    for a in ctx.args:\n        notice(message = a)\n    append_section(section = \"Log\", content = ctx.env[\"HOME_WIKI\"])\n";
     let a = run(src).unwrap();
     let b = run(src).unwrap();
     assert_eq!(a, b);

@@ -100,7 +100,7 @@ fn any_ctx() -> impl Strategy<Value = RunCtx> {
 fn probe_task(ctx: &RunCtx) -> Rule {
     Rule::new(
         ctx.task.clone(),
-        "def run(ctx):\n    notice(message = ctx.page)\n    for a in ctx.args:\n        warn(message = a)\n    for k in ctx.env:\n        send(to = [k], message = ctx.env[k])\n",
+        "def run(ctx):\n    notice(message = ctx.page)\n    for a in ctx.args:\n        notice(message = a)\n    for k in ctx.env:\n        send(to = [k], message = ctx.env[k])\n",
     )
 }
 

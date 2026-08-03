@@ -62,7 +62,6 @@ every argument named):
 | `remind(message, at=?)` | `proto.remind` | proto |
 | `ask(message, options=?)` | `proto.ask` | proto |
 | `notice(message)` | `proto.notice` | proto |
-| `warn(message, section=?)` | `proto.warn` | proto |
 
 A rule reaches these plus the Starlark standard library and nothing else: no
 file, net, os, clock, random, `print`, or `load`. An effect is inert data a
