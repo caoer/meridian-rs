@@ -1,8 +1,20 @@
 //! Bash process supervision (U6a, plan decision #21, review S3) — exec one
 //! task block under the run plane's resource bracket:
 //!
-//! - **Scratch cwd:** the block runs in a caller-provided scratch directory,
-//!   never in the tree. Tree access exists ONLY through the shim fd.
+//! - **Invocation cwd (U16, requirements row E1):** the block runs where `mrd`
+//!   runs — the process cwd is INHERITED, never relocated. The supervisor once
+//!   chdir'd the child into the scratch directory; the ruling overturned that
+//!   ("DO NOT CHANGE THE RUNNING PATH"), and `run/tests/exec.rs` asserts the
+//!   new truth. Scratch stays minted by the caller as the artifact location —
+//!   it is simply no longer the cwd.
+//! - **Tree access is not confinement:** the cwd inheritance means a step CAN
+//!   write into the workspace. Such a write is not tolerated and not merely
+//!   reported — the U6b exec bracket detects it as [`crate::snapshot::Detection::OutOfBand`]
+//!   and phase 2 REFUSES to converge: nothing the step emitted applies, and the
+//!   ungoverned write is never rolled back (ruling 2). Governed change reaches
+//!   the tree ONLY through the shim fd. Gates:
+//!   `run/tests/dispatch_bash.rs::an_ungoverned_tree_write_refuses_phase2_with_the_delta_named`
+//!   and `::a_project_root_relative_stray_write_refuses_convergence`.
 //! - **Own process group:** `setsid()` in the child pre-exec — the block and
 //!   everything it spawns share one group the supervisor can address.
 //! - **Wall-clock timeout (#21):** past the deadline the WHOLE group is
@@ -13,7 +25,10 @@
 //!   write into the post-step window.
 //! - **Env hygiene:** the child env is cleared; it gets `PATH`, `LC_ALL=C`
 //!   (framing lengths are BYTE counts — C locale makes bash `${#var}` count
-//!   bytes), the contract-validated declared env, and `MD_EFFECT_FD`.
+//!   bytes), the contract-validated declared env, `MD_EFFECT_FD`, and
+//!   `MERIDIAN_PROJECT_ROOT` (U16, plan decision P6 — the project root as a
+//!   convenience for a step that no longer starts there; it grants nothing,
+//!   and a write through it refuses exactly as above).
 //! - **Shim fd:** fd 3 in the child, also named by `$MD_EFFECT_FD`. The
 //!   captured stream feeds [`crate::shim::parse`]; capture past the storage
 //!   cap sets the overflow flag and the stream fails closed downstream.
@@ -57,8 +72,13 @@ pub struct ExecSpec<'a> {
     pub args: &'a [String],
     /// Contract-validated declared env — the ONLY caller env the child sees.
     pub env: &'a BTreeMap<String, String>,
-    /// The scratch cwd (caller-created, out-of-tree).
+    /// The caller-created out-of-tree scratch directory — the artifact
+    /// location. NOT the cwd (U16): the step inherits the invocation cwd.
     pub scratch: &'a Path,
+    /// The project root, exported to the step as `$MERIDIAN_PROJECT_ROOT`
+    /// (P6). Convenience only — it confers no write authority, and a stray
+    /// write under it refuses convergence (module docs).
+    pub project_root: &'a Path,
     /// The wall-clock ceiling (#21).
     pub timeout: Duration,
 }
@@ -145,7 +165,7 @@ where
         .arg(spec.source)
         .arg("mrd-task")
         .args(spec.args)
-        .current_dir(spec.scratch)
+        // No `current_dir`: U16 — the step runs where `mrd` runs.
         .env_clear()
         .env(
             "PATH",
@@ -154,6 +174,8 @@ where
         .env("LC_ALL", "C")
         .envs(spec.env)
         .env("MD_EFFECT_FD", SHIM_FD.to_string())
+        // After `envs`, so a declared key cannot shadow the plane's own.
+        .env("MERIDIAN_PROJECT_ROOT", spec.project_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

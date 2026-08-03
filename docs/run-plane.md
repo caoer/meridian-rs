@@ -105,9 +105,24 @@ design tests: `crates/run/tests/caps_home.rs`.
 ## Fence dispatch — two languages, one write path
 
 The runner dispatches on the fence language (decision #13): `starlark` →
-hermetic kernel eval; `bash` → exec in a scratch cwd. The language set is
-closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
+hermetic kernel eval; `bash` → exec in the **invocation cwd**. The language set
+is closed. There is **no `Exec` EffectKind** — a replayed exec would re-run
 arbitrary code, so exec never enters the effect surface.
+
+A bash step runs where `mrd` runs (U16, requirements row E1 — *"DO NOT CHANGE
+THE RUNNING PATH"*). The supervisor does not relocate the process; the
+caller-minted out-of-tree scratch directory stays, as the artifact location
+only. The project root reaches the step as `$MERIDIAN_PROJECT_ROOT`
+(convenience, decision P6).
+
+Say the consequence plainly: a step CAN write into the tree, and such a write is
+neither tolerated nor merely reported. The U6b exec bracket detects it as
+`OutOfBand` and **phase 2 refuses to converge** — nothing the step emitted
+applies, no completion receipt is written, and the ungoverned write is never
+rolled back (ruling 2). Governed change reaches the tree only over the shim fd.
+Gates: `crates/run/tests/dispatch_bash.rs`
+(`an_ungoverned_tree_write_refuses_phase2_with_the_delta_named`,
+`a_project_root_relative_stray_write_refuses_convergence`).
 
 Both paths converge on the **shared executor** (decision #4), the one write
 path:
