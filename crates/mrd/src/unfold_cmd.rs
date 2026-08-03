@@ -44,7 +44,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
             "{}",
             serde_json::to_string_pretty(&json!({ "unfold": report })).expect("json")
         ),
-        Format::Human => print_human(&report),
+        Format::Human => print_human(&report, parsed.dry),
     }
 
     if report.is_clean() {
@@ -63,17 +63,20 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
 }
 
 /// Print the unfold report as a human table.
-fn print_human(report: &UnfoldReport) {
+fn print_human(report: &UnfoldReport, dry: bool) {
     println!("unfold {}", report.preset);
     if !report.floor.is_empty() {
         println!("  floor pins: {}", report.floor.join(", "));
     }
     for file in &report.files {
         match file {
-            FileOutcome::Born { path, receipt } => match receipt {
-                Some(r) => println!("  born {path} [birth receipt ^{r}]"),
-                None => println!("  would-birth {path}"),
-            },
+            FileOutcome::Born { path } => {
+                if dry {
+                    println!("  would-birth {path}");
+                } else {
+                    println!("  born {path}");
+                }
+            }
             FileOutcome::Occupied { path, reason } => {
                 println!(
                     "  occupied {path} — {} [{}/{}]",

@@ -3567,7 +3567,7 @@ mod guarded_create_remove {
 
     /// **U32 — the write door's own gate, after the journal.** A splice advances
     /// the tree root. The original gate proved that through the journal: each
-    /// guarded write appended a row, and `check_chain` proved the run of rows was
+    /// guarded write appended a row, and the chain recompute proved the run of rows was
     /// continuous, which is what dated the tree for `check`.
     ///
     /// The journal is gone (ZT 2026-08-02, remove-no-replacement), so the CHAIN

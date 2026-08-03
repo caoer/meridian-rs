@@ -1,30 +1,24 @@
-//! End-to-end `check` fixtures over a REAL tmpdir workspace (U2.10 gates).
+//! End-to-end gates for the `check` engine, driven through the PRODUCTION write
+//! path (a guarded `create` / `splice` — no in-memory double), over a real tree.
 //!
-//! Every fixture seeds the journal through the PRODUCTION write path (a guarded
-//! `create` mints real journal rows with real tree roots — no in-memory double),
-//! then exercises the `check` engine over the resulting on-disk state:
-//! - [`spliced_journal_caught_through_check`] — the U2.1 spliced-row fixture
-//!   caught THROUGH `check` itself (chain red, the forged row cited), not just at
-//!   the library level;
-//! - [`a_moved_tree_is_a_stale_baseline_whoever_moved_it`] — a tree that no longer
-//!   matches the last receipt is grey, not red: an out-of-writer edit and a
-//!   governed splice leave identical evidence (S3-R8, superseding the
-//!   `foreign_edit` RED this file used to assert);
-//! - [`layer1_run_is_read_only`] — a layer-1 armed run over the tree mutates
-//!   nothing (no rev, no journal row, no file byte).
-
-use std::collections::BTreeMap;
-use std::path::Path;
+//! # What this file used to gate, and why it does not any more
+//! Every fixture here once seeded the reserved receipt journal and asserted the
+//! journal TRACE: a spliced row reddening the chain recompute, a stale baseline
+//! greying both detectors, the `foreign_edit` withdrawal. **That plane is deleted
+//! and is not re-derived**, so those arms are gone with it rather than being
+//! reshaped into something that looks like coverage without being any.
+//!
+//! What remains is gated here honestly: the planes `check` still reads, driven the
+//! same production way — and, explicitly, **the law itself**
+//! ([`the_engine_keeps_no_memory_and_this_pins_it`]), so that the engine's memorylessness
+//! is a pinned, visible fact rather than an absence a later reader has to infer.
 
 use fs::WorkspaceRoot;
-use fs::domain::RESERVED_JOURNAL_PATH;
-use receipt::journal::{JournalRow, parse_rows, render_row};
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, SpliceArgs, create, splice};
 
-/// Birth `path` with `body` through the production guarded-create write path — the
-/// real journal-row-minting edge (no in-memory double). Panics on refusal (the
-/// fixtures never provoke one).
+/// Birth `path` with `body` through the production guarded-create write path.
+/// Panics on refusal (the fixtures never provoke one).
 fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     let args = CreateArgs {
         id: None,
@@ -40,8 +34,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 }
 
 /// Edit `path`'s body through the PRODUCTION splice write path — a fully governed
-/// write (flock, CAS, armed gate, receipt), which advances the tree root and
-/// journals nothing. That asymmetry with [`produce`] is the mechanism under test.
+/// write (flock, CAS, armed gate, receipt), which advances the tree root.
 fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, new: &str) {
     let args = SpliceArgs {
         id: None,
@@ -72,405 +65,147 @@ fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, ne
         .unwrap_or_else(|e| panic!("production splice on {path} refused: {e:?}"));
 }
 
-/// Read the reserved journal page bytes.
-fn read_journal(root: &WorkspaceRoot) -> String {
-    std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).expect("journal page present")
-}
-
-/// The live tree merkle root (journal-excluded) — the quantity a receipt records.
+/// The live tree merkle root.
 fn live_root(root: &WorkspaceRoot) -> String {
     fs::domain_snapshot(root).expect("snapshot").1.0
 }
 
-/// **spliced-journal end-to-end** (task gate). Two honest writes chain; a forged
-/// row is spliced BETWEEN them (the U2.1 fixture shape). `check`'s journal TRACE
-/// recomputes the chain over the on-disk journal and reddens, citing the forged
-/// row — the U2.1 primitive mounted end-to-end. The journal is root-EXCLUDED, so
-/// the splice does not move the tree root: `foreign_edit` stays clear, isolating
-/// the chain break as the signal.
-#[test]
-fn spliced_journal_caught_through_check() {
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let root = WorkspaceRoot(dir.path().to_path_buf());
-
-    // Two honest writes → journal rows r-000001, r-000002 with real roots.
-    produce(&root, "a.md", "# A\n\nalpha\n");
-    produce(&root, "b.md", "# B\n\nbeta\n");
-    let page = read_journal(&root);
-    assert!(
-        page.contains("^r-000001") && page.contains("^r-000002"),
-        "two honest rows landed"
-    );
-
-    // Splice a forged row BETWEEN the two honest rows: its roots belong to no real
-    // write, so it fails to continue the chain (the tamper the detector must catch).
-    let forged = render_row(&JournalRow {
-        seq: 99,
-        op: "splice",
-        path: "a.md",
-        actor: Some("mallory"),
-        now: None,
-        root_before: "b3:FORGED_BEFORE",
-        root_after: "b3:FORGED_AFTER",
-        file: None,
-        edits: Vec::new(),
-    });
-    let spliced: String = page
-        .lines()
-        .flat_map(|line| {
-            if line.contains("^r-000002") {
-                vec![forged.as_str(), line]
-            } else {
-                vec![line]
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(root.0.join(RESERVED_JOURNAL_PATH), format!("{spliced}\n"))
-        .expect("rewrite journal");
-
-    // Through check itself (not the bare check_chain library call). The last
-    // honest row still records the LIVE root — the journal is root-excluded, so
-    // the forged line moved no tree byte — which keeps the baseline current and
-    // the chain break the isolated signal.
-    let trace = check::journal_trace(&root).expect("journal trace");
-    let check::JournalTrace::Assessed { chain } = &trace else {
-        panic!(
-            "the journal's last receipt still accounts for the live tree — this TRACE is \
-             assessed, not grey"
-        );
-    };
-    assert!(chain.is_red(), "the spliced row breaks the chain");
-    assert_eq!(
-        chain.breaks[0].row_anchor, "r-000099",
-        "the forged row is cited first"
-    );
-    let summary = trace.red_summary().expect("red render");
-    assert!(
-        summary.contains("^r-000099"),
-        "the red render cites the forged row: {summary}"
-    );
+/// Build the corpus and run the layer-0 core the way `mrd check` runs it.
+fn core_over(root: &WorkspaceRoot) -> check::CoreReport {
+    let (files, _fold) = fs::domain_snapshot(root).expect("snapshot");
+    let (_index, docs) = fs::build_corpus(files).expect("corpus");
+    check::core(root, &docs, &[], &[]).expect("core read")
 }
 
-/// **The stale-baseline fixture and its green-path control** (S3-R8, then U32).
-/// One honest write records the tree root; then the tree moves twice, and the two
-/// movers must now be told apart.
+/// A governed corpus reads GREEN, and the green is EARNED — the write path really
+/// ran, the tree really moved, and every plane `check` holds was really read.
 ///
-/// This test supersedes `foreign_edit_caught_through_check`, which asserted RED on
-/// the out-of-writer case. That red was measured on the deployed binary against a
-/// fully governed corpus and it accused a legitimate write (finding-01, corrected),
-/// so check states the mismatch as evidence and declines to name a cause.
-///
-/// **U32 changed the second arm's outcome, and that inversion is the unit.** A
-/// governed splice used to land in the SAME stale state as an out-of-band edit —
-/// it advanced the root and journaled nothing. It now journals its row, so the
-/// governed corpus is ASSESSED and green while the out-of-band one stays grey.
-/// Without this pairing a "fix" that greyed everything would read as success
-/// (S3-R8(c)).
-///
-/// The accusation stays withdrawn even so: a stale baseline is still what ANY
-/// byte-landing door that skips the journal leaves, and the tree cannot say who
-/// moved it. What U32 bought is that governed work no longer produces the state.
+/// Load-bearing against the opposite failure: a verb that lost its planes and
+/// returned green unconditionally would also pass this arm, which is why
+/// [`a_drifted_pin_still_reddens_after_the_journal_died`] runs beside it.
 #[test]
-fn a_governed_splice_re_dates_the_tree_an_out_of_band_edit_does_not() {
-    // ── cause 1: an out-of-writer edit ──────────────────────────────────────
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let root = WorkspaceRoot(dir.path().to_path_buf());
+fn a_governed_corpus_is_green_on_every_plane_check_still_holds() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = WorkspaceRoot(tmp.path().to_path_buf());
     produce(&root, "a.md", "# A\n\nalpha\n");
-    let recorded = live_root(&root); // the root the receipt r-000001 recorded
-
-    std::fs::write(root.0.join("a.md"), "# A\n\nEDITED OUT OF BAND\n").expect("raw edit");
-    let now = live_root(&root);
-    assert_ne!(recorded, now, "the out-of-band edit moved the tree root");
-
-    let trace = check::journal_trace(&root).expect("journal trace");
-    let check::JournalTrace::StaleBaseline(m) = &trace else {
-        panic!("the live tree no longer matches the last receipt: that is a stale baseline");
-    };
-    assert_eq!(m.last_receipt, "r-000001", "cites the last journaled write");
-    assert_eq!(
-        m.recorded_root, recorded,
-        "the receipt's recorded root_after"
-    );
-    assert_eq!(m.live_root, now, "the drifted live root");
-    assert!(
-        !trace.is_red(),
-        "the evidence is real but it does not identify a culprit — grey, not red"
-    );
-    assert!(trace.cannot_assess(), "and it says so");
-
-    // The grey names no culprit — the withdrawn accusation, still withdrawn.
-    let grey = trace.grey_summary().expect("the grey carries its reason");
-    assert!(
-        grey.contains("r-000001") && grey.contains(&recorded) && grey.contains(&now),
-        "the EVIDENCE is stated in full: {grey}"
-    );
-    assert!(
-        !grey.contains("out-of-writer") && !grey.contains("splice"),
-        "but no cause is named — the tree cannot say who moved it: {grey}"
-    );
-
-    // ── the green-path control: a fully GOVERNED splice, U32 ─────────────────
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let governed = WorkspaceRoot(dir.path().to_path_buf());
-    produce(&governed, "a.md", "# A\n\nalpha\n");
-    let recorded = live_root(&governed);
-    let rows_before = parse_rows(&read_journal(&governed)).len();
-
-    splice_through_the_write_path(&governed, "a.md", "alpha", "beta");
-
-    let rows = parse_rows(&read_journal(&governed));
-    assert_eq!(
-        rows.len(),
-        rows_before + 1,
-        "the mechanism, asserted not assumed: U32 — a governed splice journals a row"
-    );
+    let before = live_root(&root);
+    splice_through_the_write_path(&root, "a.md", "alpha", "alpha edited");
     assert_ne!(
-        recorded,
-        live_root(&governed),
-        "it DOES move the tree root — which is what staleness WOULD have been"
-    );
-    let last = rows.last().expect("the splice row");
-    assert_eq!(last.op, "splice", "and the row names the op that moved it");
-    assert_eq!(
-        last.root_after,
-        live_root(&governed),
-        "the row re-dates the tree: its root_after IS the live root"
+        before,
+        live_root(&root),
+        "FIXTURE: the governed splice really advanced the tree"
     );
 
-    let trace = check::journal_trace(&governed).expect("journal trace");
-    let check::JournalTrace::Assessed { chain } = &trace else {
-        panic!(
-            "THE FIX: a corpus whose every write was governed is ASSESSED, not grey — \
-             {trace:?}"
-        );
-    };
+    let report = core_over(&root);
+    assert!(!report.is_red(), "a governed corpus lies about nothing");
     assert!(
-        chain.is_green(),
-        "and it reads green: create → splice is one continuous chain: {chain:?}"
+        !report.cannot_assess(),
+        "and every plane it holds was readable"
     );
-    assert!(
-        !trace.cannot_assess(),
-        "a governed corpus is something check CAN assess"
-    );
+    assert_eq!(report.red_summary(), None);
+    assert_eq!(report.grey_summary(), None);
 }
 
-/// The `reviewer.not-owner` CHECK page: it refuses when the actor closing a task is
-/// that task's declared owner, scoped `tasks/**`. It registers by TAG — the page IS
-/// the rule, and no `kind:` key restates it.
-const REVIEWER_PAGE: &str = r#"---
-tags: [type/rule, rules/check]
-id: reviewer.not-owner
-paths:
-  - tasks/**
----
-
-# reviewer.not-owner
-
-```starlark
-def check_change(change):
-    owner = change.doc.frontmatter.get("owner")
-    actor = change.actor
-    if actor != None and owner != None and actor == owner:
-        refuse(message = "reviewer must not be the owner", passing = "reviewer-close")
-```
-"#;
-
-/// ARM `pages` — `(workspace path, bytes, id, mode)` — at the workspace root, on
-/// DISK: the pages themselves, the attested artifact, and the once-armed marker.
+/// **THE LAW, PINNED** (ZT, 2026-08-03): *"Engine does not have memory. It should
+/// not have. History is pin to git when we lock. Anything between locks is not
+/// history."*
 ///
-/// **Both engine files, always.** The artifact alone leaves a workspace the marker
-/// says was never armed (a bit-for-bit no-op gate), and the marker alone is
-/// `ArmedFault::Missing`. The production ARM disk-edge writer is out of scope by
-/// ruling, so a fixture that wants an armed workspace writes them itself.
-fn arm_ws(root: &WorkspaceRoot, pages: &[(&str, &str, &str, policy::armed::Mode)]) {
-    for (path, bytes, ..) in pages {
-        let at = root.0.join(path);
-        std::fs::create_dir_all(at.parent().expect("a page has a parent")).expect("mkdir");
-        std::fs::write(at, bytes).expect("write rule page");
-    }
-    let index =
-        policy::RuleIndex::discover(pages.iter().map(|(path, bytes, ..)| policy::PageRef {
-            layer: policy::ScopeLayer::Workspace,
-            page: path,
-            bytes,
-        }));
-    let artifact = policy::armed::arm(
-        &index,
-        &policy::armed::ArmRoot::workspace(),
-        pages
-            .iter()
-            .map(|(_, bytes, id, mode)| policy::armed::ArmRequest {
-                id: policy::RuleId::parse(id).expect("a legal id"),
-                mode: *mode,
-                attested_rev: policy::page_rev(bytes),
-            }),
-    )
-    .expect("the fixture arms");
-
-    let artifact_path = root.0.join(fs::domain::ARMED_RULES_PATH);
-    std::fs::create_dir_all(artifact_path.parent().expect("under meridian/")).expect("mkdir");
-    std::fs::write(artifact_path, artifact.render()).expect("write the attested artifact");
-    std::fs::write(root.0.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("write the marker");
-}
-
-/// **read-only** (task gate). A layer-1 armed run over the tree mutates nothing:
-/// load a page from disk, derive a change, evaluate the workspace's armed law, and
-/// confirm every workspace byte (including the journal) and the tree root are
-/// byte-identical before and after — no rev, no journal row, no projection write.
+/// An out-of-band edit — a plain filesystem write behind the engine's back, exactly
+/// what the journal's stale-baseline grey once caught — is followed by nothing that
+/// re-reads it. `check` returns GREEN, because it answers at-rest truth only: does
+/// the world still match the pins. It does, so it says so.
 ///
-/// The law is resolved through the PRODUCTION disk edge
-/// (`wire_serve::armed_disk::resolve_at` — the one call both armed-law hosts make),
-/// so the read under test is the read the door performs, marker probe and all.
+/// **This arm asserts that on purpose, and it is not an apology.** The engine is
+/// ruled not to keep memory, so non-detection here is the DESIGN, not a hole the
+/// engine tolerates. Anyone who arrives wanting to "fix" it fails this test and has
+/// to read the ruling first — a detector would be this engine reaching back into
+/// memory it is ruled not to have. Archaeology is git; attribution is transcript
+/// JSONL.
 #[test]
-fn layer1_run_is_read_only() {
-    use policy::armed::Mode;
-    use policy::{ChangeOp, Invocation, derive_change};
-
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let root = WorkspaceRoot(dir.path().to_path_buf());
-
-    // A real task in the rule's `tasks/**` scope, born through the write path —
-    // before the arm, so the governed create is the no-op an unarmed gate is.
-    produce(
-        &root,
-        "tasks/t.md",
-        "---\nowner: agent:alice\nstatus: open\n---\n# T\n\nx\n",
-    );
-    arm_ws(
-        &root,
-        &[(
-            "rules/reviewer.md",
-            REVIEWER_PAGE,
-            "reviewer.not-owner",
-            Mode::Block,
-        )],
-    );
-
-    let before_bytes = snapshot_tree(dir.path());
-    let before_root = live_root(&root);
-
-    // The layer-1 run over the tree: load the doc, frame it as a change, evaluate
-    // the armed law. Owner == actor, so the rule FIRES — a firing rule still writes
-    // nothing.
-    let mut doc = fs::load(&root, Path::new("tasks/t.md")).expect("load doc");
-    // The disk edge stamps the path model::build leaves empty (change.rs law) —
-    // the rule's `tasks/**` scope matches on it.
-    if let model::NodeKind::Document { path, .. } = &mut doc.root.kind {
-        *path = "tasks/t.md".to_string();
-    }
-    let no_edges = |_: &str| None;
-    let change = derive_change(
-        &doc,
-        &doc,
-        &[],
-        Invocation {
-            op: ChangeOp::Splice,
-            actor: Some("agent:alice"),
-            force: false,
-        },
-        &[],
-        &no_edges,
-    );
-    let law = wire_serve::armed_disk::resolve_at(&root, "tasks/t.md");
-    assert!(
-        law.faults().is_empty(),
-        "the armed law reads clean off disk: {:?}",
-        law.faults()
-    );
-    let report = check::evaluate(law.rules(), &change);
-    assert!(report.is_red(), "the armed rule fired (owner self-close)");
-
-    let after_bytes = snapshot_tree(dir.path());
-    let after_root = live_root(&root);
-
-    assert_eq!(
-        before_bytes, after_bytes,
-        "a layer-1 run mutates no workspace byte (no rev, no journal row, no projection)"
-    );
-    assert_eq!(before_root, after_root, "the tree root is unmoved");
-}
-
-/// Recursively snapshot every file under `dir` as `relative-path → bytes` — the
-/// whole tree, so nothing (journal included) can change unseen.
-fn snapshot_tree(dir: &Path) -> BTreeMap<String, Vec<u8>> {
-    let mut out = BTreeMap::new();
-    collect(dir, dir, &mut out);
-    out
-}
-
-fn collect(base: &Path, cur: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
-    let entries = std::fs::read_dir(cur).expect("read_dir");
-    for entry in entries {
-        let path = entry.expect("dir entry").path();
-        if path.is_dir() {
-            collect(base, &path, out);
-        } else {
-            let rel = path
-                .strip_prefix(base)
-                .expect("under base")
-                .to_string_lossy()
-                .into_owned();
-            out.insert(rel, std::fs::read(&path).expect("read file"));
-        }
-    }
-}
-
-/// A sanity assertion the fixtures rely on: a clean production write leaves a
-/// green core (chain continuous, no foreign edit) — check does not cry wolf.
-#[test]
-fn clean_production_writes_leave_a_green_core() {
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let root = WorkspaceRoot(dir.path().to_path_buf());
+fn the_engine_keeps_no_memory_and_this_pins_it() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = WorkspaceRoot(tmp.path().to_path_buf());
     produce(&root, "a.md", "# A\n\nalpha\n");
-    produce(&root, "b.md", "# B\n\nbeta\n");
+    let governed = live_root(&root);
 
-    // Confirm the chain the honest writes built is actually continuous.
-    let rows = parse_rows(&read_journal(&root));
-    assert_eq!(rows.len(), 2, "two honest rows");
+    // The out-of-band write: no flock, no CAS, no receipt, no engine involvement.
+    std::fs::write(
+        root.0.join("a.md"),
+        "# A\n\nlaundered — landed behind the engine's back\n",
+    )
+    .expect("out-of-band write");
+    assert_ne!(
+        governed,
+        live_root(&root),
+        "FIXTURE: the tree really moved, and nothing governed moved it"
+    );
 
-    let trace = check::journal_trace(&root).expect("journal trace");
-    let check::JournalTrace::Assessed { chain } = &trace else {
-        panic!("two governed creates left a current baseline — this TRACE is assessed, not grey");
-    };
-    assert!(chain.is_green(), "honest writes chain");
-    assert!(!trace.is_red(), "a clean tree is green convention-free");
+    let report = core_over(&root);
     assert!(
-        !trace.cannot_assess(),
-        "the last receipt accounts for the live tree — this green is earned, not vacuous"
+        !report.is_red(),
+        "BY DESIGN: check holds no plane that can see an out-of-band edit, because \
+         the engine keeps no memory (ZT 2026-08-03). If you are here wanting to catch \
+         this, read the ruling first — history is pinned to git at lock, anything \
+         between locks is not history, and a detector here would rebuild the memory \
+         the engine is ruled not to have."
+    );
+    assert!(
+        !report.cannot_assess(),
+        "and it is not grey either — check does not ASK about write history, so there \
+         is no unanswered question to report. Not-checked is not cannot-assess."
     );
 }
 
-/// **S3-R5, at the engine surface.** A workspace with no governed write has no
-/// journal row, so the TRACE is grey: it cannot assess, it is not red, and it
-/// carries no green for a caller to render. The very next governed write gives it
-/// a baseline and the same workspace becomes assessable — the grey is about the
-/// evidence, not about the workspace being new.
+/// The surviving plane still reddens end-to-end: a pin whose target drifted is a
+/// finding, over a real corpus, through the real core.
+///
+/// This is the arm that makes the two greens above mean something — a core that had
+/// lost its remaining planes too would pass those and fail this one.
 #[test]
-fn a_workspace_with_no_journal_row_cannot_be_assessed() {
-    let dir = tempfile::tempdir().expect("tmpdir");
-    let root = WorkspaceRoot(dir.path().to_path_buf());
-    std::fs::write(dir.path().join("a.md"), "# A\n\nalpha\n").expect("raw write");
-    assert!(
-        !root.0.join(RESERVED_JOURNAL_PATH).exists(),
-        "nothing governed has written here"
-    );
+fn a_drifted_pin_still_reddens_after_the_journal_died() {
+    use std::collections::BTreeMap;
 
-    let trace = check::journal_trace(&root).expect("journal trace");
-    assert!(trace.cannot_assess(), "no rows, no verdict");
-    assert!(!trace.is_red(), "grey is not red");
-    assert_eq!(
-        trace.red_summary(),
-        None,
-        "no lie was found — none was read"
-    );
-
-    // One governed write later, the same tree IS assessable.
-    produce(&root, "b.md", "# B\n\nbeta\n");
-    let trace = check::journal_trace(&root).expect("journal trace");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = WorkspaceRoot(tmp.path().to_path_buf());
+    let docs: BTreeMap<String, model::Document> = BTreeMap::new();
+    let drifted = check::PinRow {
+        src_path: "claim.md".to_string(),
+        declared_ref: "source.md#S".to_string(),
+        color: model::selector::Color::Red(model::selector::RedReason::Drifted),
+        label: "red content-drifted".to_string(),
+    };
+    let plane = check::pin_plane(&root, &docs, std::slice::from_ref(&drifted));
     assert!(
-        !trace.cannot_assess(),
-        "a journaled write is the baseline the detectors needed"
+        plane.is_red(),
+        "the ledger claims content that is not there"
     );
-    assert!(!trace.is_red(), "the governed write is attributable");
+    assert!(
+        !plane.cannot_assess(),
+        "it was assessed — that is why it is red, and it is not filed as an absence"
+    );
+}
+
+/// **Honest degradation survives the journal.** An object store that cannot be
+/// asked leaves the retrieval plane UNREAD — grey, never an empty reading a caller
+/// could bank as clean. The false green this closes is one plane over from the one
+/// the engine is ruled not to hold, and it is still closed.
+#[test]
+fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
+    use std::collections::BTreeMap;
+
+    let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+    let page = format!(
+        "# P\n\n```meridian-lock\nversion: 1\nobjects:\n  \"source.md\": \"{}\"\n```\n",
+        "a".repeat(40)
+    );
+    let doc = model::build(page.clone(), syntax::parse(&page));
+    let docs = BTreeMap::from([("claim.md".to_string(), doc)]);
+
+    let plane = check::pin_plane(&root, &docs, &[]);
+    assert!(
+        plane.cannot_ask.is_some(),
+        "there is no repository at /nonexistent — the question could not be put"
+    );
+    assert!(plane.cannot_assess(), "so the plane is grey");
+    assert!(!plane.is_green(), "and it is not clean");
 }
