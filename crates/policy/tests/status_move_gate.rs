@@ -29,9 +29,10 @@ struct MemPages(BTreeMap<String, String>);
 
 impl PageSource for MemPages {
     fn read(&self, page: &str) -> std::io::Result<String> {
-        self.0.get(page).cloned().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {page}"))
-        })
+        self.0
+            .get(page)
+            .cloned()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("no {page}")))
     }
 }
 
@@ -64,7 +65,10 @@ fn armed_law() -> policy::ArmedLaw {
     )
     .expect("the page arms")
     .render();
-    let pages = MemPages(BTreeMap::from([(page.to_string(), STATUS_MOVE.to_string())]));
+    let pages = MemPages(BTreeMap::from([(
+        page.to_string(),
+        STATUS_MOVE.to_string(),
+    )]));
     resolve_armed_law(Some(&artifact), true, CARD, &pages, CheckLimits::default())
 }
 
@@ -98,7 +102,11 @@ fn status_move(from: &str, to: &str) -> Change {
 fn refusal_of(change: &Change) -> policy::GateViolation {
     match gate(change, &armed_law()) {
         GateOutcome::Refusal(GateRefusal::Blocked { mut violations }) => {
-            assert_eq!(violations.len(), 1, "one guard, one refusal: {violations:?}");
+            assert_eq!(
+                violations.len(),
+                1,
+                "one guard, one refusal: {violations:?}"
+            );
             violations.remove(0)
         }
         other => panic!("the move must refuse: {other:?}"),
