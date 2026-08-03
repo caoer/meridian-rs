@@ -33,3 +33,6 @@ effects = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+# The card gates assert `created:` against the format law's OWN predicate
+# (`wire::now_is_rfc3339`) rather than a second transcription of RFC3339.
+wire = { workspace = true }
