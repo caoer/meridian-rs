@@ -14,10 +14,8 @@ Run 2026-07-29 16:19 UTC · `zmax` (aarch64 macos, Apple M4 Max, 16 cores) · gi
 | `project.p99.file` | us | — | — | — | UNTESTED | UNTESTED by dependency, not by dormancy: wire_map::project landed 8883e5ca/M2-PROJECT, but perfsuite has no wire-map dev-dep — wiring benches/project.rs is a stage-4 card. Registers the gate; never a fabricated PASS. Stage as us when wired |
 | `roundtrip.op.p99` | ms | — | — | — | UNTESTED | rung 1+; the number Go actually feels — composes parse+assemble+project+codec |
 | `transport.codec.ndjson_roundtrip_p99` | us | — | — | 20.591 | MEASURED | LIVE day 1 (NdjsonCodec is implemented); no baseline yet — first fleet run establishes it |
-| `transport.codec.proto_roundtrip_p99` | us | — | — | 4.711 | MEASURED | LIVE (typed protobuf path, ZT ruling 2026-07-18); same frame mix as the ndjson claim for codec-to-codec comparison; no baseline yet — first fleet run establishes it |
 | `ingest.cold.vault_1gb` | ms | 22200.000 | ≤ 2220000 | 26015.136 | PASS | walk+read today; syntax::parse joins the pass at rung 1 |
 | `ingest.codec.ndjson.vault_1gb` | ms | 1780.000 | ≤ 178000 | 1768.831 | PASS | the untyped seam's real bulk cost: JSON string escaping both ways. Frames pre-built outside the timed window |
-| `ingest.codec.proto.vault_1gb` | ms | 583.000 | ≤ 58300 | 585.065 | PASS | the typed path's real bulk cost on identical content — codec-to-codec comparison against the ndjson claim |
 | `policy.assertion.p99` | us | — | ruleset | — | UNTESTED | rung 6: thresholds are product data — Budget{class, p99_us} per rule manifest (policy-schema T2; fenced Starlark predicates, ruling 008, metered under EvalBudget{steps,mem}). Step/mem budgets are deterministic (post-eval tick-count + peak heap) and enforced as tests, not benched; this claim is the wall-time half |
 | `policy.pack_load.fixtures` | ms | — | — | — | UNTESTED | rung 6: every rule ships pass/fail fixtures run at pack load — edit the fenced Starlark predicate → fixtures → done must stay in milliseconds; baseline TBD on first fleet run |
 | `policy.evaluate.p99.vault_1gb` | us | — | ruleset | 31.375 | MEASURED | P6-EVAL wall-time: p99 of one policy::evaluate call over a real model::build AST (blurb-required Starlark pack). Measured not asserted (risk R2 posture); gate arrives from policy vocab() Budget{p99_us} when it lands — ruleset-sourced so a local number never falsely PASS/FAILs |
@@ -32,7 +30,7 @@ Run 2026-07-29 16:19 UTC · `zmax` (aarch64 macos, Apple M4 Max, 16 cores) · gi
 | `view.sql.roundtrip.p99.vault_2026` | ms | — | — | — | UNTESTED | OD8: the number an agent feels for `mrd sql` — open the RO view, read the _meridian_view stamp as authoritative as_of, run the query client-side, fold live AFTER the result. Baseline TBD on the first fleet run. UNTESTED in V1 (registers the gate). |
 | `check.worktree.p99` | ms | — | ≤ 2000 | — | UNTESTED | THRESHOLD PROVENANCE: ZT design-intent statement, 2026-07-28, quoted — "our meridian-rs runs 180k md doc with total of 1GB for less than 2 seconds". DESIGN INTENT ONLY, deliberately NOT benchmark-backed, and no baseline is declared because no bench has ever measured this path. The <2s figure at 180k/1GB belongs to ingest.codec.proto.vault_1gb — encode+decode of ALREADY-IN-MEMORY content, frames pre-built outside the timed window, no filesystem and no parse. This lane's own recorded filesystem number at that scale is ingest.cold.vault_1gb: 22.2 s baseline, 34.3 s at the 2026-07-26 run. Citing the codec envelope as backing for the walk+read+parse path was an unmeasured join; it is not repeated here. UNTESTED by absence of harness, never a fabricated PASS. Field evidence pending the bench (bfa6affe, field-notes, 2026-07-28, /usr/bin/time -p, 3 runs): 34.78 s cold / 22.07 s / 18.38 s warm, user CPU FLAT at 3.63-3.99 s, sys 6.43-13.89 s — 51-58% CPU utilisation, so roughly half the wall clock is off-CPU blocking I/O. The path is I/O-bound and serial, not parse-bound: userland total bounds parse+model from above at ~4 s. `mrd status` shares the same tree-fold cost and needs its own claim once this one has a harness. |
 
-**Tally:** 8 MEASURED · 3 PASS · 14 UNTESTED — over **25 claims registered** in `claims.toml` at this run.
+**Tally:** 7 MEASURED · 2 PASS · 14 UNTESTED — over **23 claims registered** in `claims.toml` at this run.
 
 ## Latency distributions (hdrhistogram path, µs)
 
@@ -43,7 +41,6 @@ Run 2026-07-29 16:19 UTC · `zmax` (aarch64 macos, Apple M4 Max, 16 cores) · gi
 | `policy.evaluate.p99.vault_1gb` | 31.375 | us | 8000 | 22.6 | 26.2 | 31.4 | 91.7 | 178.3 |
 | `policy.splice.match_scan.p99` | 104.191 | us | 8000 | 83.8 | 90.4 | 104.2 | 176.0 | 228.5 |
 | `transport.codec.ndjson_roundtrip_p99` | 20.591 | us | 20000 | 14.3 | 16.7 | 20.6 | 27.9 | 64.7 |
-| `transport.codec.proto_roundtrip_p99` | 4.711 | us | 20000 | 3.0 | 3.8 | 4.7 | 9.8 | 19.6 |
 
 ## Criterion estimates
 

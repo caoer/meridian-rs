@@ -52,11 +52,6 @@
       "verdict": "MEASURED"
     },
     {
-      "claim_id": "transport.codec.proto_roundtrip_p99",
-      "measured": 4.711,
-      "verdict": "MEASURED"
-    },
-    {
       "claim_id": "ingest.cold.vault_1gb",
       "measured": 26015.135667,
       "verdict": "PASS"
@@ -64,11 +59,6 @@
     {
       "claim_id": "ingest.codec.ndjson.vault_1gb",
       "measured": 1768.830959,
-      "verdict": "PASS"
-    },
-    {
-      "claim_id": "ingest.codec.proto.vault_1gb",
-      "measured": 585.0647919999999,
       "verdict": "PASS"
     },
     {
@@ -160,13 +150,6 @@
       "dist": null
     },
     {
-      "id": "ingest.codec.proto.vault_1gb",
-      "value": 585.0647919999999,
-      "unit": "ms",
-      "samples": 1,
-      "dist": null
-    },
-    {
       "id": "ingest.cold.vault_1gb",
       "value": 26015.135667,
       "unit": "ms",
@@ -242,20 +225,6 @@
         "p999_us": 27.887,
         "max_us": 64.671
       }
-    },
-    {
-      "id": "transport.codec.proto_roundtrip_p99",
-      "value": 4.711,
-      "unit": "us",
-      "samples": 20000,
-      "dist": {
-        "mean_us": 2.061236699999999,
-        "p50_us": 2.959,
-        "p90_us": 3.835,
-        "p99_us": 4.711,
-        "p999_us": 9.799,
-        "max_us": 19.599
-      }
     }
   ],
   "criterion": [
@@ -283,16 +252,6 @@
       "id": "roundtrip/ndjson_encode_1000",
       "mean_ns": 1388626.1616318766,
       "median_ns": 1387443.595345345
-    },
-    {
-      "id": "roundtrip/proto_decode_1000",
-      "mean_ns": 1456188.539777626,
-      "median_ns": 1455123.261904762
-    },
-    {
-      "id": "roundtrip/proto_encode_1000",
-      "mean_ns": 548667.2027511073,
-      "median_ns": 544044.9286437246
     }
   ]
 }

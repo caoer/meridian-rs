@@ -15,7 +15,6 @@ default-members = [
     "crates/wire-map",
     "crates/receipt",
     "crates/transport",
-    "crates/transport-proto",
     "crates/policy",
     "crates/query",
     "crates/wire-serve",
@@ -61,7 +60,6 @@ render = { path = "crates/render", version = "0.0.0" }
 sidecar = { path = "crates/sidecar", version = "0.1.0" }
 receipt = { path = "crates/receipt", version = "0.0.0" }
 transport = { path = "crates/transport", version = "0.0.0" }
-transport-proto = { path = "crates/transport-proto", version = "0.0.0" }
 policy = { path = "crates/policy", version = "0.0.0" }
 query = { path = "crates/query", version = "0.0.0" }
 workspace = { path = "crates/workspace", version = "0.0.0" }
@@ -116,9 +114,6 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 toml = "0.8"
 rand_chacha = "0.9"
 hdrhistogram = "7"
-# typed proto transport: prost pair pinned together; build needs `protoc`
-prost = "0.14"
-prost-build = "0.14"
 # Kernel test stack (decisions/0003 § Testing methodology): insta = golden
 # descriptor snapshots; proptest = invariants (determinism, fuel bounds, no
 # panic on any event). Dev-only; the plain `cargo test` path drives both (no

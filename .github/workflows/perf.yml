@@ -3,7 +3,6 @@
 # (pinned fleet host) — wall-time baselines are only meaningful when the
 # machine doesn't change under them. Until that runner exists this workflow
 # simply queues; registering it is an infra-ops task, not a repo change.
-# Runner prerequisite: `protoc` on PATH (transport-proto's prost-build).
 #
 # Baseline discipline (criterion + critcmp):
 #   - every run saves baseline "run-<sha7>"
