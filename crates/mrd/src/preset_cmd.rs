@@ -1,6 +1,10 @@
-//! Shared plumbing for the two preset verbs (`mrd new`, `mrd unfold`, U5.3):
-//! resolve the ambient workspace root, and resolve a `<kind>`/`<preset>` token to
-//! its def page path.
+//! Shared plumbing for the three preset verbs (`mrd new`, `mrd unfold`, `mrd
+//! reconcile`): resolve the ambient workspace root, and resolve a
+//! `<kind>`/`<preset>` token to its def page path.
+//!
+//! [`resolve_root`] is the wider of the two — every verb that needs the ambient
+//! workspace dials it, `mrd realise` and `mrd journal` included, so the
+//! resolution `pin`/`attest` run is the resolution they all run.
 
 use crate::Fail;
 
