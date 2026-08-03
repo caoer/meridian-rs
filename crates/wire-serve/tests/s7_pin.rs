@@ -409,7 +409,7 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     );
 }
 
-/// GATE 7: receipt is "was it read", not "is it current" → write_conflict on drift.
+/// GATE 7: receipt is "was it read", not "is it current" → `write_conflict` on drift.
 #[test]
 fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     let (_dir, root) = workspace();

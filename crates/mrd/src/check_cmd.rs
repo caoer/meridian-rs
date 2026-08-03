@@ -113,6 +113,8 @@
 //! which is the permanent-fact-as-per-commit-verdict defect above wearing a new
 //! sign.
 
+use std::fmt::Write as _;
+
 use std::path::Path;
 
 use check::{Accounted, CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinPlane, PinRow};
@@ -314,7 +316,7 @@ fn refusal_list(label: &str, summary: &str) -> String {
     };
     let mut out = format!("check refuses ({label}) — {} {noun}:", findings.len());
     for (i, finding) in findings.iter().enumerate() {
-        out.push_str(&format!("\n  {}. {finding}", i + 1));
+        let _ = write!(out, "\n  {}. {finding}", i + 1);
     }
     out
 }

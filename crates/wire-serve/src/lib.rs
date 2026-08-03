@@ -411,7 +411,7 @@ mod tests {
         }
     }
 
-    /// plan_edits: mutual exclusion, empty-array law, per-shape strictness.
+    /// `plan_edits`: mutual exclusion, empty-array law, per-shape strictness.
     #[test]
     fn v3_plan_edits_strict_negatives() {
         // both edits and plan_edits → bad_request
