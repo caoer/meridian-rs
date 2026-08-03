@@ -3,4 +3,5 @@
 # per-run history: CI artifacts carry it; only the current table + latest.json are tracked
 /crates/perfsuite/results/20*.json
 /.claude/agent-memory
+/.claude/settings.local.json
 /result
