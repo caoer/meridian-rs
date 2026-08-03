@@ -111,7 +111,7 @@ fn v3_hello_advertises_create_and_a_v2_session_refuses_the_op() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn create_births_the_callers_exact_bytes_and_journals_the_birth() {
+fn create_births_the_callers_exact_bytes() {
     let (_dir, root) = workspace();
     let body = "---\ntype: note\n---\n\n# Newborn\n\nborn over the wire\n";
 
@@ -163,29 +163,17 @@ fn create_births_the_callers_exact_bytes_and_journals_the_birth() {
         "a v3 session emits no `root` spelling: {b}"
     );
 
-    // THE DOOR TEST. A journal row exists, it is a `create` row, and its anchor
-    // is the one the reply handed back. A daemon-side birth writes no row —
-    // this assertion is what a bypass cannot satisfy.
-    let anchor = b["journal_anchor"]
-        .as_str()
-        .expect("the birth reports its journal anchor");
-    let journal = std::fs::read_to_string(root.0.join("meridian/journal.md"))
-        .expect("the birth wrote the reserved journal");
-    let row = journal
-        .lines()
-        .find(|l| l.contains(&format!("^{anchor}")))
-        .unwrap_or_else(|| panic!("the reply's anchor `{anchor}` names a real row:\n{journal}"));
+    // THE DOOR TEST was a journal read: a `create` row existed and its anchor was
+    // the one the reply handed back, which a birth that bypassed the guarded door
+    // could not produce. The journal is gone (ZT 2026-08-02, remove-no-
+    // replacement), so that anti-bypass evidence is gone with it — deliberately,
+    // and NOT swapped for a weaker stand-in. The actor-verbatim (§9) leg went with
+    // it too: the row was the only surface that recorded the caller's actor.
+    // What remains above still binds the reply to the disk: the landed bytes, the
+    // newborn's rev, and the advanced world fingerprint.
     assert!(
-        row.contains("create"),
-        "the row records the birth op: {row}"
-    );
-    assert!(
-        row.contains("notes/newborn.md"),
-        "the row names the born path: {row}"
-    );
-    assert!(
-        row.contains("agent:design-test"),
-        "the row records the caller's actor verbatim (§9): {row}"
+        b["journal_anchor"].is_null(),
+        "the retired journal anchor is gone from the birth reply: {b}"
     );
 }
 
@@ -229,20 +217,11 @@ fn a_second_create_refuses_cas_mismatch_and_leaves_the_occupant_untouched() {
         first,
         "a refused birth never overwrote the occupant"
     );
-
-    // And no second journal row was written for the refusal.
-    let journal = std::fs::read_to_string(root.0.join("meridian/journal.md")).expect("journal");
-    assert_eq!(
-        journal.matches("once.md").count(),
-        1,
-        "the refused birth journaled nothing:\n{journal}"
-    );
 }
 
 #[test]
 fn a_dry_birth_writes_nothing_and_reports_a_null_root_after() {
     let (_dir, root) = workspace();
-    let before = std::fs::read_to_string(root.0.join("meridian/journal.md")).unwrap_or_default();
 
     let dry = json!({"id":2,"op":"create","path":"rehearsal.md","body":"# R\n",
                      "actor":"agent:design-test","dry":true})
@@ -258,21 +237,12 @@ fn a_dry_birth_writes_nothing_and_reports_a_null_root_after() {
         "a rehearsal advances no root — null, not absent: {b}"
     );
     assert!(
-        b["journal_anchor"].is_null(),
-        "a rehearsal writes no journal row, so it reports no anchor: {b}"
-    );
-    assert!(
         b["file_rev_after"].as_str().is_some(),
         "the rev IS computable from the spec, so a rehearsal still reports it: {b}"
     );
     assert!(
         !root.0.join("rehearsal.md").exists(),
         "a rehearsal births no file"
-    );
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("meridian/journal.md")).unwrap_or_default(),
-        before,
-        "a rehearsal leaves the journal byte-identical"
     );
 }
 
@@ -367,25 +337,12 @@ fn the_birth_runs_the_engines_own_guards_not_a_parallel_path() {
     );
 }
 
-#[test]
-fn the_reserved_journal_cannot_be_born_over() {
-    let (_dir, root) = workspace();
-    let frames = serve(
-        &root,
-        &format!(
-            "{HELLO_V3}\n{}\n",
-            create_frame(2, "meridian/journal.md", "# tamper\n")
-        ),
-    );
-    assert_handshake_ok(&frames[0]);
-
-    assert_eq!(frames[1]["error"]["code"], json!("bad_request"));
-    let msg = frames[1]["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("reserved receipt journal"),
-        "the refusal teaches WHY the journal is untouchable: {msg}"
-    );
-}
+// `the_reserved_journal_cannot_be_born_over` lived here: a guarded create aimed
+// at `meridian/journal.md` refused `bad_request` because that path was reserved to
+// the receipt engine. The reserved path is RETIRED with the journal (ZT
+// 2026-08-02) — the page is ordinary content now, so a birth there is an ordinary
+// birth and there is no refusal left to assert. Workspace confinement (below) is
+// untouched and still refuses what it always did.
 
 #[test]
 fn a_path_escaping_the_workspace_refuses_bad_path_at_the_wire() {

@@ -140,7 +140,7 @@ fn scalar_i64(conn: &duckdb::Connection, sql: &str) -> i64 {
 fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
     let mut docs = BTreeMap::new();
     docs.insert(path.to_string(), doc(raw));
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     conn.query_row(
         "SELECT node_rev FROM node WHERE path = ? AND selector = ?",
         [path, selector],
@@ -164,7 +164,7 @@ fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
 #[test]
 fn gate_projected_verdict_equals_the_color_planes_answer() {
     let docs = six_state_corpus();
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     // The color plane's listing (what `mrd walk` / `mrd status` render).
     let walk_rows: Vec<(String, String, Option<String>, Option<String>)> = lock_pin_colors(&docs)
@@ -254,7 +254,7 @@ fn gate_projected_verdict_equals_the_color_planes_answer() {
 #[test]
 fn gate_board_renders_the_same_verdict_the_walk_renders() {
     let docs = six_state_corpus();
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     assert_eq!(
         board_rows(&conn),
@@ -336,7 +336,7 @@ fn gate_board_renders_the_same_verdict_the_walk_renders() {
 #[test]
 fn gate_exactly_one_board_row_per_lock_row_across_both_planes() {
     let docs = six_state_corpus();
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
 
     let locks = scalar_i64(&conn, "SELECT count(*) FROM input_lock");
     assert_eq!(locks, 7, "six lock rows + one legacy row");
@@ -387,7 +387,7 @@ fn gate_legacy_inputs_rows_are_untouched_by_the_verdict_column() {
         doc("# U\n\n```yaml ^inputs\nitems:\n  - {ref: 'subject.md', claim: 'declared-only'}\n```\n"),
     );
 
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     assert_eq!(
         scalar_i64(
             &conn,
@@ -421,7 +421,7 @@ fn gate_legacy_inputs_rows_are_untouched_by_the_verdict_column() {
     // And the legacy drift arm still fires: edit the subject after the pin.
     let mut drifted = docs;
     drifted.insert("subject.md".to_string(), doc(subject_v2));
-    let conn2 = open_board(&drifted, &[]).expect("open board drifted");
+    let conn2 = open_board(&drifted).expect("open board drifted");
     assert_eq!(
         scalar_i64(
             &conn2,

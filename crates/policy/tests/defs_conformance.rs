@@ -180,7 +180,7 @@ fn defs_conformance_matches_the_u0_goldens() {
                 "- 2026-01-01: seeded\n- freeform without colon\n",
             ),
         ),
-        "write violates the probe def: # Log: entry \"- freeform without colon\" does not parse as \"- {date}: {note}\" → would be tagged #legacy — fix the content, or re-submit with force to override — forced warnings are journaled and surface in the def census (R-force)",
+        "write violates the probe def: # Log: entry \"- freeform without colon\" does not parse as \"- {date}: {note}\" → would be tagged #legacy — fix the content, or re-submit with force to override — forced warnings render a `forced:` verdict and surface in the def census (R-force)",
         &session,
         "entry-grammar-miss",
     );
@@ -238,7 +238,7 @@ fn defs_conformance_matches_the_u0_goldens() {
             &item_done,
             &item_done.replace("type: probe", "type: probe\nvibe: high"),
         ),
-        "write violates the probe def: vibe: not declared by the probe def (forward-compat: kept, reported) — fix the content, or re-submit with force to override — forced warnings are journaled and surface in the def census (R-force)",
+        "write violates the probe def: vibe: not declared by the probe def (forward-compat: kept, reported) — fix the content, or re-submit with force to override — forced warnings render a `forced:` verdict and surface in the def census (R-force)",
         &session,
         "unknown-key-warn-refuses",
     );
@@ -286,7 +286,7 @@ fn defs_conformance_matches_the_u0_goldens() {
             REC_BROKEN,
             &REC_BROKEN.replace("status: open", "status: x"),
         ),
-        "the broken def failed to load, so this write cannot be validated: def $SESSION/defs/broken.md: INVALID_PARAMS: status: unknown shape \"sparkle\" (closed set: line text iso int bool ref list(line) list(ref) list(iso)) — fix the def file (fail closed), or re-submit with force to override — forced writes are journaled and surface in the def census",
+        "the broken def failed to load, so this write cannot be validated: def $SESSION/defs/broken.md: INVALID_PARAMS: status: unknown shape \"sparkle\" (closed set: line text iso int bool ref list(line) list(ref) list(iso)) — fix the def file (fail closed), or re-submit with force to override — forced writes render a `forced:` verdict and surface in the def census",
         &session,
         "malformed-def",
     );

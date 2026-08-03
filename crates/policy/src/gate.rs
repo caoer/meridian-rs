@@ -103,7 +103,7 @@ pub enum GateRefusal {
     ArmedLawFault { faults: Vec<ArmedFault> },
     /// U4.3 taxonomy row 9: a one-sided artifact↔page change stopped at the door
     /// (a hand-edited row in the artifact, or a direct edit of an armed page).
-    /// Force-escapable — a `--force` write converts this to a journaled +
+    /// Force-escapable — a `--force` write converts this to a
     /// rendered finding instead. Mints `binding_break`.
     BindingBreak {
         /// Which side the one-sided change touched (`index` / `file`).
@@ -167,7 +167,7 @@ fn gate_armed(change: &Change, law: &ArmedLaw) -> GateOutcome {
             return GateOutcome::Refusal(GateRefusal::IndexIntegrity { target, teaching });
         }
         // A binding break is the sanctioned-bypass class: `--force` escapes it,
-        // the skip becoming a journaled + rendered finding.
+        // the skip becoming a rendered `forced:` finding.
         crate::binding::DoorLaw::BindingBreak {
             side,
             path,

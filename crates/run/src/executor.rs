@@ -728,12 +728,6 @@ pub fn apply_under(
         }
     };
 
-    // 7b. The tree this write starts from, folded by the SAME `fs::domain_snapshot`
-    // the journal's reader uses (`check::layer0::journal_trace`), read here under
-    // the run lock — immediately before the commit and after the last rung that
-    // can refuse, so a refused apply folds nothing and journals nothing.
-    let root_before = tree_root(root)?;
-
     // 8. THE commit — the only write, atomic, two files (§6.5 crash window
     // accepted: content-without-receipt recovers by re-derive + lint).
     fs::apply_batch(
@@ -755,23 +749,7 @@ pub fn apply_under(
         reason: e.to_string(),
     })?;
 
-    // 8b. U35 — THE ROW THIS DOOR OWES THE LEDGER. The run plane lands bytes
-    // through `fs::apply_batch`, never through the wire splice choke-point where
-    // U32's journal row is written, so it advanced the tree root and left the
-    // journal's last row describing the tree BEFORE it: a stale baseline, both
-    // `check` detectors refusing `grey(cannot-assess)`, and the installed fence
-    // refusing a commit whose only write was governed (U34 measured it). The row
-    // is appended after the commit — a crash between them leaves the honest
-    // unknown, never a row claiming a write that did not land.
     let file_rev_after = after_doc.document().root.node_rev.0.clone();
-    journal_apply(
-        root,
-        req,
-        &root_before,
-        &tree_root(root)?,
-        &doc.root.node_rev.0,
-        &file_rev_after,
-    )?;
 
     // 9. Apply→event synthesis with REAL post-apply fingerprints (the dry
     // bytes ARE the committed bytes — no re-read).
@@ -781,70 +759,6 @@ pub fn apply_under(
         event,
         receipt_line,
         file_rev_after,
-    })
-}
-
-/// The live workspace tree root, in this plane's error frame — the SAME
-/// `fs::domain_snapshot` fold the journal's reader uses, so a row this plane
-/// writes and the detector that reads it cannot disagree about what "the tree" is.
-///
-/// # Errors
-/// [`ExecError::Io`] when the domain snapshot cannot be read or folded.
-fn tree_root(root: &fs::WorkspaceRoot) -> Result<String, ExecError> {
-    Ok(fs::domain_snapshot(root)
-        .map_err(|e| ExecError::Io {
-            reason: format!("workspace tree fold: {e}"),
-        })?
-        .1
-        .0)
-}
-
-/// **U35 — journal one run-plane apply.** The row rides U32's row writer
-/// (`receipt::journal::render_row`) and reads its counter through the one owner
-/// of that rule (`receipt::journal::next_seq`); this door adds FACTS, never a
-/// second renderer and never a second counter.
-///
-/// `op=run` with a whole-file rev transition and `edits=0` is the `op=lock` row
-/// shape (`wire-serve::lock_write`). The node-grain transitions of this batch are
-/// not omitted — they are the RUN RECEIPT's, rendered into the receipt line that
-/// rode the same commit (§6.1), and a second copy here would be a second owner of
-/// the same fact. What the journal row adds is what only it can: the tree advance
-/// this write caused, dated so `check` can read the two facts as one chain.
-///
-/// # Errors
-/// [`ExecError::Io`] when the journal page cannot be read or appended.
-fn journal_apply(
-    root: &fs::WorkspaceRoot,
-    req: &ApplyRequest<'_>,
-    root_before: &str,
-    root_after: &str,
-    file_rev_before: &str,
-    file_rev_after: &str,
-) -> Result<(), ExecError> {
-    let page = fs::read_journal_page(root).map_err(|e| ExecError::Io {
-        reason: format!("receipt journal read: {e}"),
-    })?;
-    // The actor the run plane already names itself by, everywhere it records a
-    // fact about a task's write (`render_receipt`'s `run:<task>`).
-    let actor = format!("run:{}", req.task);
-    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
-        seq: receipt::journal::next_seq(&page),
-        op: "run",
-        path: req.page,
-        actor: Some(&actor),
-        now: req.now,
-        root_before,
-        root_after,
-        file: Some(receipt::journal::FileTransition {
-            before: Some(file_rev_before),
-            after: Some(file_rev_after),
-        }),
-        edits: Vec::new(),
-    });
-    fs::append_line(root, Path::new(fs::domain::RESERVED_JOURNAL_PATH), &line).map_err(|e| {
-        ExecError::Io {
-            reason: format!("receipt journal append: {e}"),
-        }
     })
 }
 

@@ -230,7 +230,7 @@ fn proper_close_passes_gate_and_renders_green() {
     let subject = "# Subject\n\nbody. ^claim\n";
     let mut probe = BTreeMap::new();
     probe.insert("subject.md".to_string(), doc("subject.md", subject));
-    let probe_conn = open_board(&probe, &[]).expect("probe board");
+    let probe_conn = open_board(&probe).expect("probe board");
     let rev: String = probe_conn
         .query_row(
             "SELECT node_rev FROM node WHERE path='subject.md' AND selector='^claim'",
@@ -247,7 +247,7 @@ fn proper_close_passes_gate_and_renders_green() {
         "verdicts/close.md".to_string(),
         doc("verdicts/close.md", &review),
     );
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     let color: String = conn
         .query_row(
             "SELECT color FROM board WHERE src_path='verdicts/close.md'",
