@@ -9,7 +9,6 @@ use effects::{ChangeEvent, EventFacts, Rule};
 /// Load a committed rule fixture by file stem (its id = the stem).
 pub fn rule(stem: &str) -> Rule {
     let source = match stem {
-        "status_binding" => include_str!("../fixtures/rules/status_binding.star"),
         "broadcast_outbox" => include_str!("../fixtures/rules/broadcast_outbox.star"),
         "task_conventions" => include_str!("../fixtures/rules/task_conventions.star"),
         "join_arming" => include_str!("../fixtures/rules/join_arming.star"),
@@ -22,7 +21,6 @@ pub fn rule(stem: &str) -> Rule {
 /// Every committed rule fixture, in a stable order.
 pub fn all_rules() -> Vec<Rule> {
     [
-        "status_binding",
         "broadcast_outbox",
         "task_conventions",
         "join_arming",

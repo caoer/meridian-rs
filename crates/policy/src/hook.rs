@@ -1039,7 +1039,6 @@ how:
             "proto.remind",
             "proto.ask",
             "proto.notice",
-            "proto.warn",
         ] {
             let page = FOUNDING_HOOK.replace("[proto.send]", &format!("[{cap}]"));
             let err = load(&page).expect_err("a cap outside slice 1 must refuse");

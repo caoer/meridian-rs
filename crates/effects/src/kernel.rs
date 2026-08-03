@@ -492,20 +492,6 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         store(eval)?.push(EffectKind::Notice, args);
         Ok(NoneType)
     }
-
-    /// `proto.warn` — a warning `message` about the change, optionally anchored to
-    /// a `section`.
-    fn warn(
-        #[starlark(require = named)] message: String,
-        #[starlark(require = named)] section: Option<String>,
-        eval: &mut Evaluator<'_, '_, '_>,
-    ) -> anyhow::Result<NoneType> {
-        let mut args = BTreeMap::new();
-        args.insert("message".to_owned(), ArgValue::Str(message));
-        insert_opt(&mut args, "section", section);
-        store(eval)?.push(EffectKind::Warn, args);
-        Ok(NoneType)
-    }
 }
 
 /// Peak eval-heap bytes as `u64` (saturating). Peak (not current) is monotonic
@@ -1039,7 +1025,6 @@ mod tests {
             "remind",
             "ask",
             "notice",
-            "warn",
         ] {
             assert!(names.contains(ctor), "missing constructor `{ctor}`");
         }
