@@ -77,10 +77,13 @@ fn print_human(report: &ReconcileReport, dry: bool, prune: bool) {
     println!("reconcile {}{mode}", report.preset);
     for file in &report.materialized {
         match file {
-            FileOutcome::Born { path, receipt } => match receipt {
-                Some(r) => println!("  materialize {path} [birth receipt ^{r}]"),
-                None => println!("  would-materialize {path}"),
-            },
+            FileOutcome::Born { path } => {
+                if dry {
+                    println!("  would-materialize {path}");
+                } else {
+                    println!("  materialize {path}");
+                }
+            }
             FileOutcome::Occupied { path, reason } => {
                 println!("  present {path} — {} [{}]", reason.message, reason.code);
             }
@@ -89,10 +92,13 @@ fn print_human(report: &ReconcileReport, dry: bool, prune: bool) {
     if prune {
         for p in &report.pruned {
             match p {
-                PruneOutcome::Removed { path, receipt } => match receipt {
-                    Some(r) => println!("  prune {path} [death receipt ^{r}]"),
-                    None => println!("  would-prune {path}"),
-                },
+                PruneOutcome::Removed { path } => {
+                    if dry {
+                        println!("  would-prune {path}");
+                    } else {
+                        println!("  prune {path}");
+                    }
+                }
                 PruneOutcome::Refused { path, reason } => {
                     println!("  prune-refused {path} — {reason}");
                 }

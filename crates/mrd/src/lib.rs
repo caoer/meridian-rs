@@ -198,16 +198,23 @@ usage:
                            alike, each with its own reason word / 2 bad
                            invocation
   mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
-                           recomputes the receipt journal's chain continuity and
-                           the foreign_edit trace (last-receipt-vs-live) over the
-                           resolved workspace. Writes nothing. When the journal
-                           cannot date the live tree — no rows, or a last receipt
-                           the tree no longer matches — both detectors refuse
-                           grey(cannot-assess) instead of claiming a green they
-                           never read or an out-of-writer edit they cannot
-                           identify. Exits: 0 green / 1 a chain break, or
-                           grey(cannot-assess) — the exit says do-not-proceed, the
-                           reason word says why / 2 bad invocation
+                           observes every claim against the current tree and reads
+                           the pin plane — the CLAIM half (did pinned content
+                           drift) and the RETRIEVAL half (is the pinned blob
+                           durably anchored). Writes nothing.
+                           WRITE HISTORY IS NOT ASSESSED, by design: the engine
+                           keeps no memory — history is pinned to git at lock, and
+                           anything between locks is not history. So chain
+                           continuity and last-receipt-vs-live are not checked at
+                           all (not grey, NOT CHECKED) and both faces say so with
+                           the reason. A green here is NARROWER than the green this
+                           verb once returned: it means the world still matches the
+                           pins, and nothing about how it got that way.
+                           Archaeology is git; attribution is transcript JSONL.
+                           Exits: 0 green / 1 a
+                           finding, or grey(cannot-assess) — the exit says
+                           do-not-proceed, the reason word says why / 2 bad
+                           invocation
   mrd skill hook           EMIT the commit-fence contract to stdout, and nothing
                            else: the markdown IS the contract — what to place, at
                            which three doors (pre-commit, pre-merge-commit,

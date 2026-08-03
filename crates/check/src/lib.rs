@@ -3,28 +3,34 @@
 //!
 //! # What check is
 //! `status = freshness, check = validity` (d2 §3). `check` reads a workspace and
-//! answers whether it LIES: is the receipt chain intact, are the claims realised,
-//! and (armed) do the workspace's own rules hold — all without writing a byte,
-//! minting a receipt, or spending a cap. Two layers, split by whether the
-//! workspace has armed anything:
+//! answers whether it LIES — without writing a byte, minting a receipt, or
+//! spending a cap. Two layers, split by whether the workspace has armed anything:
 //!
-//! - **Layer 0 — rule-free core** ([`layer0`]). Three pack-free reads:
-//!   1. **the baseline check** — last-receipt-vs-live: the live tree root must
-//!      equal the last receipt's recorded `root_after`. When there is no row, or
-//!      the roots differ, the journal cannot date the tree and the TRACE is grey
-//!      (`cannot-assess`) — it claims nothing rather than claiming wrongly.
-//!   2. **chain recompute** — past that gate, parse the reserved receipt journal
-//!      and recompute chain continuity (the U2.1
-//!      [`receipt::journal::check_chain`] primitive, mounted here end-to-end); a
-//!      spliced/forged row reddens with a row cite.
-//!   3. **claims realised** — observe each claim against the current tree and
+//! - **Layer 0 — rule-free core** ([`layer0`]). Two pack-free reads:
+//!   1. **claims realised** — observe each claim against the current tree and
 //!      report the drifted ones (the realise engine's pure detection, run here
 //!      read-only — no apply, no cap).
+//!   2. **the pin plane** — the CLAIM plane (did the pinned content drift?) and the
+//!      RETRIEVAL plane (is the pinned blob durably anchored?).
 //!
-//!   The historical `foreign_edit` RED — "an out-of-writer edit landed with no
-//!   receipt" — is withdrawn to the grey above (S3-R8): a governed splice advances
-//!   the tree root and writes no journal row, so it leaves evidence identical to
-//!   the edit that finding was accusing. The interim reports what it can prove.
+//! # Why check holds no write-history plane — the LAW (ZT, 2026-08-03)
+//! Verbatim: *"Engine does not have memory. It should not have. History is pin to
+//! git when we lock. Anything between locks is not history."*
+//!
+//! `check` therefore answers **at-rest / at-touch truth only: does the world still
+//! match the pins.** The receipt journal is deleted, and chain continuity, baseline
+//! dating and interval accounting are **never rebuilt as check memory** — they were
+//! never this engine's to carry. Archaeology lives in git; attribution lives in
+//! transcript JSONL.
+//!
+//! An out-of-band edit followed by a governed write is not detected here. That is
+//! **outside the engine's domain by design**, not a tolerated defect.
+//!
+//! One consequence is disclosed rather than absorbed: a corpus that once read grey
+//! (*"I cannot date your write history"*) now reads green (*"the world still matches
+//! the pins"*). The claim is SMALLER, not stronger, so both faces carry
+//! [`WRITE_HISTORY_NOT_ASSESSED`] together with the reason — a reader must never
+//! carry the old, wider green forward.
 //!
 //! - **Layer 1 — armed rules read-only** ([`layer1`]). Each armed rule's
 //!   `check_change` runs over the change through the page loader — the SAME
@@ -52,9 +58,8 @@ use fs::WorkspaceRoot;
 use model::Document;
 
 pub use layer0::{
-    Accounted, BaselineMismatch, ClaimFinding, GREY_CANNOT_ASSESS, JournalTrace,
-    NO_BASELINE_DETAIL, NO_RECORD_DETAIL, OrphanedBlob, PinPlane, PinRow, claims_realised,
-    interval_accounted, journal_page, journal_trace, journal_trace_of, pin_plane, staged_trace,
+    ClaimFinding, GREY_CANNOT_ASSESS, OrphanedBlob, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED,
+    claims_realised, pin_plane,
 };
 // Layer 1 exports no armed-input type and no fault type of its own: the input is
 // `policy::ArmedRule` (sealed to `policy::resolve_armed_law`) and an evaluation
@@ -62,27 +67,23 @@ pub use layer0::{
 // See `layer1`'s module doc for why both belong to `policy` and not here.
 pub use layer1::{ArmedFinding, ArmedReport, evaluate};
 
-/// The layer-0 (rule-free core) verdict over a workspace: the journal
-/// TRACE (the baseline check, then chain continuity), the claims-realised
-/// findings, and the PIN PLANE. Green ⇔ the journal dated the tree, the chain is
-/// continuous, every claim converged, every pin holds and every pinned blob is
-/// anchored. With no baseline, or a baseline the journal cannot show is current,
-/// the TRACE is grey ([`CoreReport::cannot_assess`]) — never green, because
-/// nothing was assessed.
+/// The layer-0 (rule-free core) verdict over a workspace: the claims-realised
+/// findings and the PIN PLANE. Green ⇔ every claim converged, every pin holds and
+/// every pinned blob is anchored.
 ///
-/// # The two planes fail INDEPENDENTLY (U14)
-/// Before U14 this report was the journal plane alone, so a green meant *"baseline
-/// provable AND nothing the journal plane can see"* — a true statement about the
-/// journal plane that stayed **silent about the pin plane**. The silence was the
-/// debt: a lock that arrives by clone or pull while its source has moved leaves the
-/// journal plane with nothing whatever to report, and a pinned blob no ref reaches
-/// is a fact **no journal row will ever carry**. The fence reads this verb's triad,
-/// so the verb has to hold both planes or the fence is a false green by
-/// construction.
+/// **A green here says nothing about write history**, because this report holds no
+/// write-history plane at all — not a grey one, none. The engine keeps no memory by
+/// design (ZT 2026-08-03), so that is the law rather than a gap. It is narrower than
+/// the green this struct once returned, and the renderers disclose it
+/// ([`WRITE_HISTORY_NOT_ASSESSED`]) rather than letting the old meaning ride.
+///
+/// # The planes fail INDEPENDENTLY (U14)
+/// A lock that arrives by clone or pull while its source has moved, and a pinned
+/// blob no ref reaches, are facts no journal row ever carried — which is why the pin
+/// plane outlived the journal plane. The fence reads this verb, so the verb has to
+/// hold every plane it claims or the fence is a false green by construction.
 #[derive(Debug)]
 pub struct CoreReport {
-    /// The journal TRACE: the baseline check, then the chain recompute.
-    pub trace: JournalTrace,
     /// The claims whose observation drifted (not realised) — empty ⇔ all realised.
     pub drifted_claims: Vec<ClaimFinding>,
     /// The pin plane: red/grey pins, and the `objects:` blobs no ref reaches.
@@ -105,7 +106,7 @@ impl CoreReport {
     /// drifted claim, a red pin, or a blob reachable from nothing.
     #[must_use]
     pub fn is_red(&self) -> bool {
-        self.trace.is_red() || !self.drifted_claims.is_empty() || self.pins.is_red()
+        !self.drifted_claims.is_empty() || self.pins.is_red()
     }
 
     /// The core could not assess something: the journal detectors (no baseline, or
@@ -115,7 +116,7 @@ impl CoreReport {
     /// undatable journal), and red is what it is called then.
     #[must_use]
     pub fn cannot_assess(&self) -> bool {
-        self.trace.cannot_assess() || self.pins.cannot_assess()
+        self.pins.cannot_assess()
     }
 
     /// The grey render — everything that could not be assessed and why — or `None`
@@ -128,9 +129,6 @@ impl CoreReport {
     #[must_use]
     pub fn grey_summary(&self) -> Option<String> {
         let mut lines = Vec::new();
-        if let Some(trace) = self.trace.grey_summary() {
-            lines.push(format!("{GREY_CANNOT_ASSESS}: {trace}"));
-        }
         // A grey PIN carries its own word (`unmounted`, `path-unseeable`, …) in
         // its label, so prefixing it with `cannot-assess` would collapse two
         // distinct causes into one tone — S3-R43 read backwards, which cost a
@@ -153,9 +151,6 @@ impl CoreReport {
             return None;
         }
         let mut lines = Vec::new();
-        if let Some(trace) = self.trace.red_summary() {
-            lines.push(trace);
-        }
         for claim in &self.drifted_claims {
             lines.push(format!(
                 "claim not realised: {} — {}",
@@ -191,10 +186,9 @@ fn render_pin(pin: &PinRow) -> String {
     }
 }
 
-/// Run the rule-free core (layer 0) over a workspace: recompute the journal
-/// TRACE (the baseline check, then the chain), check every claim realised, and
-/// read the PIN PLANE. Reads the reserved journal page, folds the live tree
-/// merkle, and asks git about the pinned blobs — no write, no cap.
+/// Run the rule-free core (layer 0) over a workspace: check every claim realised
+/// and read the PIN PLANE. Folds nothing and reads no history — asks git about the
+/// pinned blobs, and that is all. No write, no cap.
 ///
 /// `docs` is the corpus the caller already built, and `pins` are the colours it
 /// read off THAT build through the one pin computer. Both are passed in rather
@@ -202,22 +196,18 @@ fn render_pin(pin: &PinRow) -> String {
 /// them describe two.
 ///
 /// # Errors
-/// [`io::Error`](std::io::Error) if the journal page or the tree snapshot cannot
-/// be read; [`realise::CheckError`] if a claim's observation itself faults
-/// (distinct from a clean drift). A caller with no claims passes `&[]`. The pin
-/// plane never errors — an unanswerable question there is a REPORTED grey, not a
-/// fault, because refusing to run is a worse answer than saying what could not be
-/// asked.
+/// [`realise::CheckError`] if a claim's observation itself faults (distinct from a
+/// clean drift). A caller with no claims passes `&[]`. The pin plane never errors —
+/// an unanswerable question there is a REPORTED grey, not a fault, because refusing
+/// to run is a worse answer than saying what could not be asked.
 pub fn core(
     root: &WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
     claims: &[realise::Claim],
     pins: &[PinRow],
 ) -> Result<CoreReport, CoreError> {
-    let trace = journal_trace(root).map_err(CoreError::Io)?;
     let drifted_claims = claims_realised(root, claims).map_err(CoreError::Claim)?;
     Ok(CoreReport {
-        trace,
         drifted_claims,
         pins: pin_plane(root, docs, pins),
         orphans: orphan::orphaned_runs(docs),
@@ -227,57 +217,35 @@ pub fn core(
 /// [`core`] over an INTERVAL the caller holds the bytes of — the same verdict, on
 /// a snapshot that is not the worktree.
 ///
-/// `journal_page` and `live_root` are that interval's own journal bytes and its
-/// own folded tree root ([`fs::overlay_snapshot`]); `docs` and `pins` are the
-/// corpus built from the same bytes. `root` is used for the OBJECT STORE alone —
-/// blob reachability is a property of the repository, not of an interval, and the
-/// same store answers for both.
+/// `docs` and `pins` are the corpus built from that interval's bytes. `root` is
+/// used for the OBJECT STORE alone — blob reachability is a property of the
+/// repository, not of an interval, and the same store answers for both.
 ///
-/// # Why an interval-bearing entry point exists at all (F1)
-/// The pre-commit fence's whole job is to speak about what is being committed,
-/// and what is being committed is the INDEX. A verdict computer reachable only
-/// through a worktree read can be given the right question and still answer about
-/// the wrong bytes — a false green with every gate intact. So the interval is a
-/// PARAMETER here, and [`core`] is this function with the worktree supplied.
+/// # Why an interval-bearing entry point still exists (F1)
+/// The pre-commit fence's whole job is to speak about what is being committed, and
+/// what is being committed is the INDEX. A verdict computer reachable only through
+/// a worktree read can be given the right question and still answer about the wrong
+/// bytes — a false green with every gate intact. So the interval stays a PARAMETER,
+/// and [`core`] is this function with the worktree supplied.
 ///
-/// **Claims are not evaluated over a foreign interval.** A claim's observation is
-/// a live read against the tree ([`claims_realised`] takes the root), so it cannot
-/// be re-pointed at bytes on no disk; the worktree pass owns that plane and this
-/// one reports it empty rather than pretending to have asked.
+/// **There is no longer a separate staged entry point.** `core_of_staged` existed
+/// solely to date a staged interval against the RECORD instead of its own last row,
+/// because a legitimately staged intermediate state is not the current one and
+/// refusing it was a false red. With the journal deleted there is no record and no
+/// dating, so the two entry points collapsed into this one — the staged and
+/// worktree intervals now differ only in which bytes built the corpus.
+///
+/// **Claims are not evaluated over a foreign interval.** A claim's observation is a
+/// live read against the tree ([`claims_realised`] takes the root), so it cannot be
+/// re-pointed at bytes on no disk; the worktree pass owns that plane and this one
+/// reports it empty rather than pretending to have asked.
 #[must_use]
 pub fn core_of(
     root: &WorkspaceRoot,
-    journal_page: &str,
-    live_root: &str,
     docs: &BTreeMap<String, Document>,
     pins: &[PinRow],
 ) -> CoreReport {
     CoreReport {
-        trace: journal_trace_of(journal_page, live_root),
-        drifted_claims: Vec::new(),
-        pins: pin_plane(root, docs, pins),
-        orphans: orphan::orphaned_runs(docs),
-    }
-}
-
-/// [`core_of`] for an interval dated against the RECORD — the worktree's journal —
-/// rather than only against its own last row ([`staged_trace`]).
-///
-/// The pin plane and the object store are unchanged; the only difference is the
-/// journal TRACE, because a legitimately staged INTERMEDIATE governed state is not
-/// the current one and refusing it is a false red. `worktree_journal` is the record;
-/// the worktree pass validates it in the same run.
-#[must_use]
-pub fn core_of_staged(
-    root: &WorkspaceRoot,
-    journal_page: &str,
-    live_root: &str,
-    worktree_journal: &str,
-    docs: &BTreeMap<String, Document>,
-    pins: &[PinRow],
-) -> CoreReport {
-    CoreReport {
-        trace: staged_trace(journal_page, live_root, worktree_journal),
         drifted_claims: Vec::new(),
         pins: pin_plane(root, docs, pins),
         orphans: orphan::orphaned_runs(docs),
@@ -288,8 +256,6 @@ pub fn core_of_staged(
 /// is never a false green.
 #[derive(Debug)]
 pub enum CoreError {
-    /// The journal page or the tree snapshot could not be read.
-    Io(std::io::Error),
     /// A claim's observation faulted (page load / I/O) — not a clean drift.
     Claim(realise::CheckError),
 }
@@ -297,10 +263,134 @@ pub enum CoreError {
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoreError::Io(e) => write!(f, "check core read failed: {e}"),
             CoreError::Claim(e) => write!(f, "check core claim observation failed: {e}"),
         }
     }
 }
 
 impl std::error::Error for CoreError {}
+
+#[cfg(test)]
+mod honesty {
+    //! **The honesty law, proven structurally rather than asserted.**
+    //!
+    //! Coherence finding C1 caught the original spec asserting honesty while the
+    //! risk map denied it, so it is a thing this crate PROVES: `check` must hold no
+    //! member — type or word — that can report a property it no longer observes.
+    //! These arms fail the moment someone reintroduces one.
+
+    /// The whole point, in one arm: **no verdict member can say "clean" or
+    /// "verified" about a plane `check` does not read.**
+    ///
+    /// `CoreReport`'s fields ARE the planes it observes. A journal/chain/baseline
+    /// field reappearing here means the write-history plane came back without the
+    /// evidence to support it — which is the false green the unit exists to close.
+    /// The source text is the structural surface, because a field can be added
+    /// without any existing arm noticing.
+    #[test]
+    fn no_core_report_field_claims_a_property_check_no_longer_observes() {
+        let src = include_str!("lib.rs");
+        let decl = src
+            .split_once("pub struct CoreReport {")
+            .expect("CoreReport is declared here")
+            .1
+            .split_once("\n}")
+            .expect("and it closes")
+            .0;
+        for banned in [
+            "trace",
+            "chain",
+            "journal",
+            "baseline",
+            "accounted",
+            "vouches",
+            "verified",
+            "clean",
+        ] {
+            assert!(
+                !decl.contains(banned),
+                "CoreReport gained a `{banned}` member. check does not observe write history — a \
+                 field that reports one is memory the engine is ruled not to keep (ZT 2026-08-03)."
+            );
+        }
+    }
+
+    /// **`is_red` and `cannot_assess` may only consult planes that were READ.**
+    /// A verdict that consulted a journal field would be reporting an unobserved
+    /// property even if the field itself were honestly named.
+    #[test]
+    fn the_verdict_consults_only_the_planes_that_were_read() {
+        let src = include_str!("lib.rs");
+        for f in ["pub fn is_red", "pub fn cannot_assess"] {
+            let body = src
+                .split_once(f)
+                .expect("the verdict reader is declared")
+                .1
+                .split_once("\n    }")
+                .expect("and it closes")
+                .0;
+            assert!(
+                !body.contains("trace") && !body.contains("chain"),
+                "{f} consults a write-history plane that check does not read"
+            );
+        }
+    }
+
+    /// **The narrowing is DISCLOSED, not silent** (advisor gate 1 §2, mandatory).
+    /// A corpus that once read grey now reads green, and the claim behind that green
+    /// is smaller. The constant is what stops a reader carrying the old, wider green
+    /// forward — deleting it would make the narrowing invisible, which is the whole
+    /// failure this condition guards.
+    #[test]
+    fn the_narrowed_green_carries_its_disclosure() {
+        assert_eq!(
+            crate::WRITE_HISTORY_NOT_ASSESSED,
+            "not-assessed",
+            "one spelling, shared by both faces (S3-R6)"
+        );
+    }
+
+    /// A green `CoreReport` is green on the planes it actually holds — and that is
+    /// the ONLY thing its green means. Load-bearing in both directions: a red pin
+    /// still reddens, so this is not a verdict that always passes.
+    #[test]
+    fn a_green_report_means_only_the_planes_it_holds() {
+        use crate::{CoreReport, PinPlane};
+        let clean = || PinPlane {
+            red: Vec::new(),
+            grey: Vec::new(),
+            orphaned: Vec::new(),
+            anchored: 0,
+            pending: 0,
+            never: 0,
+            cannot_ask: None,
+        };
+        let green = CoreReport {
+            drifted_claims: Vec::new(),
+            pins: clean(),
+            orphans: Vec::new(),
+        };
+        assert!(!green.is_red(), "nothing was found");
+        assert!(!green.cannot_assess(), "and nothing was unreadable");
+        assert_eq!(green.red_summary(), None);
+        assert_eq!(green.grey_summary(), None);
+
+        let drifted = CoreReport {
+            pins: PinPlane {
+                red: vec![crate::PinRow {
+                    src_path: "claim.md".to_string(),
+                    declared_ref: "source.md#S".to_string(),
+                    color: model::selector::Color::Red(model::selector::RedReason::Drifted),
+                    label: "red content-drifted".to_string(),
+                }],
+                ..clean()
+            },
+            drifted_claims: Vec::new(),
+            orphans: Vec::new(),
+        };
+        assert!(
+            drifted.is_red(),
+            "the surviving plane still reddens — the green above is earned, not automatic"
+        );
+    }
+}
