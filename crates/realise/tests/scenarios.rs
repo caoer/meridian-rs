@@ -142,6 +142,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
 
     let claim = Claim {
         selector: "status-must-be-done".to_owned(),
+        rule: Some("status-move".to_owned()),
         check: field_check("target.md", "status", "done"),
         apply: None, // not apply-capable → drift is pending-agent
         retry_budget: 0,
@@ -173,6 +174,23 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         "card carries the drift detail: {card_body}"
     );
 
+    // The card references its rule BY ID — key plus one wikilink, and nothing
+    // else about the rule (decision 8 / verdict 18.1).
+    assert!(card_body.contains("\nrule: status-move\n"), "{card_body}");
+    assert!(card_body.contains("[[status-move]]"), "{card_body}");
+
+    // `created:` is the caller's RFC3339 clock, verbatim (verdict 15.7) —
+    // never unix seconds, never a clock this engine read.
+    assert!(
+        card_body.contains("\ncreated: 2026-07-23T10:00:00Z\n"),
+        "{card_body}"
+    );
+    let created = card_body
+        .lines()
+        .find_map(|l| l.strip_prefix("created: "))
+        .expect("the card stamps a created:");
+    assert!(wire::now_is_rfc3339(created), "created={created:?}");
+
     // The card was born through the guarded create: a before=absent journal row.
     let journal = journal_text(&root);
     assert!(
@@ -188,6 +206,7 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
     // does not error — the guarded create's if_absent CAS is the idempotency.
     let claim2 = Claim {
         selector: "status-must-be-done".to_owned(),
+        rule: Some("status-move".to_owned()),
         check: field_check("target.md", "status", "done"),
         apply: None,
         retry_budget: 0,
@@ -212,6 +231,7 @@ fn retry_exhausted_renders_non_convergent() {
 
     let claim = Claim {
         selector: "resolve-drift".to_owned(),
+        rule: None,
         check: field_check("drift.md", "resolved", "done"), // apply never sets this
         apply: Some(binding("drift.md", "nudge")),
         retry_budget: 3,
@@ -252,6 +272,7 @@ fn no_apply_lands_unrecorded() {
         // converges after exactly one apply
         Claim {
             selector: "converge-status".to_owned(),
+            rule: None,
             check: field_check("conv.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")),
             retry_budget: 3,
@@ -259,6 +280,7 @@ fn no_apply_lands_unrecorded() {
         // already converged — must run zero applies, mint no receipt
         Claim {
             selector: "already-done".to_owned(),
+            rule: None,
             check: field_check("already.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")),
             retry_budget: 3,
@@ -301,12 +323,14 @@ fn caps_union_is_the_union_of_every_apply_claims_declared_caps() {
     let claims = vec![
         Claim {
             selector: "c1".to_owned(),
+            rule: None,
             check: field_check("conv.md", "status", "done"),
             apply: Some(binding("conv.md", "fix")), // md.set_field
             retry_budget: 1,
         },
         Claim {
             selector: "c2".to_owned(),
+            rule: None,
             check: field_check("flag.md", "flag", "on"),
             apply: Some(binding("flag.md", "flip")), // md.set_field
             retry_budget: 1,
@@ -331,6 +355,7 @@ fn dry_run_uses_zero_caps_projects_blast_radius_and_writes_nothing() {
 
     let claim = Claim {
         selector: "converge-status".to_owned(),
+        rule: None,
         check: field_check("conv.md", "status", "done"),
         apply: Some(binding("conv.md", "fix")),
         retry_budget: 3,
@@ -361,6 +386,7 @@ fn a_converged_claim_runs_no_apply() {
 
     let claim = Claim {
         selector: "already".to_owned(),
+        rule: None,
         check: field_check("already.md", "status", "done"),
         apply: Some(binding("already.md", "fix")),
         retry_budget: 3,
@@ -370,4 +396,97 @@ fn a_converged_claim_runs_no_apply() {
     assert_eq!(report.claims[0].state, ClaimState::Converged);
     assert_eq!(report.claims[0].applies, 0);
     assert!(!root.0.join("receipts/realise.md").exists());
+}
+
+// ---------------------------------------------------------------------------
+// F1 (verdict 18.1) — the card references its rule, never embeds it, and its
+// `created:` is the caller's RFC3339 clock.
+// ---------------------------------------------------------------------------
+
+/// Mint one pending-agent card in a fresh workspace and return its bytes.
+fn mint_card(rule: Option<&str>, now: Option<&str>) -> String {
+    let (_tmp, root, scratch) = workspace(&[("target.md", "---\nstatus: todo\n---\n\n# Body\n")]);
+    let claim = Claim {
+        selector: "status-must-be-done".to_owned(),
+        rule: rule.map(str::to_owned),
+        check: field_check("target.md", "status", "done"),
+        apply: None,
+        retry_budget: 0,
+    };
+    let mut s = spec(&scratch);
+    s.now = now.map(str::to_owned);
+    realise(&root, &[claim], &s).unwrap();
+    std::fs::read_to_string(root.0.join("board/status-must-be-done.md")).unwrap()
+}
+
+/// The law itself: whatever a card says about its rule, it is a REFERENCE. A
+/// starlark fence, a `def check_change`, or a `refuse(` on a board card would
+/// mean the rule was copied out of its page and can now drift from it.
+#[test]
+fn a_card_never_embeds_a_rule_body() {
+    let card = mint_card(Some("status-move"), Some("2026-07-23T10:00:00Z"));
+    for embedded in [
+        "```starlark",
+        "def check_change",
+        "def on_change",
+        "refuse(",
+    ] {
+        assert!(
+            !card.contains(embedded),
+            "card embeds rule body ({embedded}): {card}"
+        );
+    }
+    // What it carries instead: the id, twice — the key and the link.
+    assert!(card.contains("rule: status-move"), "{card}");
+    assert!(card.contains("[[status-move]]"), "{card}");
+}
+
+/// A claim that names no rule gets no rule key and no dangling link — a card
+/// never invents a reference it was not given.
+#[test]
+fn a_ruleless_claim_mints_a_card_with_no_rule_key() {
+    let card = mint_card(None, Some("2026-07-23T10:00:00Z"));
+    assert!(!card.contains("rule:"), "{card}");
+    assert!(!card.contains("[["), "{card}");
+    // Everything else about the card is unchanged.
+    assert!(card.contains("state: pending-agent"), "{card}");
+    assert!(card.contains("created: 2026-07-23T10:00:00Z"), "{card}");
+}
+
+/// The clock is an ARGUMENT: the same passed-in `now` renders the same card,
+/// byte for byte. Nothing in this path reads a wall clock (§9).
+#[test]
+fn a_fixed_now_renders_a_byte_identical_card() {
+    let first = mint_card(Some("status-move"), Some("2026-07-23T10:00:00Z"));
+    let second = mint_card(Some("status-move"), Some("2026-07-23T10:00:00Z"));
+    assert_eq!(first, second, "same now ⇒ same card");
+
+    let later = mint_card(Some("status-move"), Some("2026-07-24T10:00:00Z"));
+    assert_ne!(first, later, "a different now moves `created:`");
+    assert!(later.contains("created: 2026-07-24T10:00:00Z"), "{later}");
+}
+
+/// A `now` that is not RFC3339 is refused loud at the mint, never stamped onto
+/// a governed page (verdict 15.7 — the format law is validated, not coerced).
+#[test]
+fn a_malformed_now_refuses_the_card_mint() {
+    let (_tmp, root, scratch) = workspace(&[("target.md", "---\nstatus: todo\n---\n\n# Body\n")]);
+    let claim = Claim {
+        selector: "status-must-be-done".to_owned(),
+        rule: Some("status-move".to_owned()),
+        check: field_check("target.md", "status", "done"),
+        apply: None,
+        retry_budget: 0,
+    };
+    let mut s = spec(&scratch);
+    s.now = Some("1753264800".to_owned()); // unix seconds — the old shape
+    let err = realise(&root, &[claim], &s).unwrap_err();
+    assert!(
+        format!("{err:?}").contains("not RFC3339"),
+        "expected a card-mint refusal, got {err:?}"
+    );
+    assert!(
+        !root.0.join("board/status-must-be-done.md").exists(),
+        "no card is born on a malformed clock"
+    );
 }
