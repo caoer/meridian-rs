@@ -17,7 +17,7 @@ use crate::{Fail, Format};
 
 /// Exit 1 — a finding (the birth refused). Distinct from `Fail::tool` (exit 2).
 fn refused(message: String) -> Fail {
-    Fail { code: 1, message }
+    Fail::findings(message)
 }
 
 /// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`.

@@ -17,7 +17,7 @@ use crate::{Fail, Format};
 /// Exit 1 — a finding (a scaffold path already existed). Distinct from
 /// `Fail::tool` (exit 2).
 fn findings(message: String) -> Fail {
-    Fail { code: 1, message }
+    Fail::findings(message)
 }
 
 /// Run `mrd unfold <preset> [--dry] [--actor A] [--now T] [--json]`.
