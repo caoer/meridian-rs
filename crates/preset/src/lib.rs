@@ -922,31 +922,36 @@ fn prune_file(
 }
 
 /// Remove empty-undeclared directories in the scaffold scope (the dir half of the
-/// prune allowlist). A directory is prunable iff it is EMPTY, is not a prefix of a
-/// declared path, and holds no finding. Deepest-first so a nest of empty dirs
-/// collapses in one pass. Raw `rmdir` (a directory carries no governed rev); dry
-/// runs report without removing.
+/// prune allowlist, design element §5.3). A directory is prunable iff it lives
+/// STRICTLY BENEATH a directory the scaffold itself creates, is not a prefix of a
+/// declared path, holds no finding, and is EMPTY. Deepest-first, so a nest of
+/// empty dirs collapses in one pass. Raw `rmdir` — a directory carries no
+/// governed rev and no bytes, the one guarded-door exception the element states
+/// (§3.3); dry runs report without removing.
+///
+/// The candidate set is walked LIVE. Deriving it from the declared paths is what
+/// the first implementation did, and it could not work: the candidates and the
+/// declared-prefix skip set were the same expression, so every candidate was
+/// skipped and no directory was ever removed. A declared path can only ever name
+/// its own ancestors, which are exactly the directories that must be KEPT.
 fn prune_empty_dirs(
     root: &fs::WorkspaceRoot,
     declared: &[String],
     findings: &[String],
     dry: bool,
 ) -> Vec<String> {
-    let mut dirs: Vec<String> = scope_dirs(declared).into_iter().collect();
-    // Deepest-first: more path separators = deeper.
+    let scaffold_dirs = scope_dirs(declared);
+    let mut dirs = live_subdirs(root, &scaffold_dirs);
+    // Deepest-first: more path separators = deeper. A parent that held only
+    // empty children is itself empty by the time it is reached.
     dirs.sort_by(|a, b| {
         b.matches('/')
             .count()
             .cmp(&a.matches('/').count())
             .then(b.cmp(a))
     });
-    let declared_prefixes: std::collections::BTreeSet<&str> =
-        declared.iter().flat_map(|d| ancestors_of(d)).collect();
     let mut removed = Vec::new();
     for dir in dirs {
-        if declared_prefixes.contains(dir.as_str()) {
-            continue; // a declared path lives under here — keep it
-        }
         if findings.iter().any(|f| f.starts_with(&format!("{dir}/"))) {
             continue; // holds undeclared content — never pruned
         }
@@ -962,6 +967,44 @@ fn prune_empty_dirs(
     removed
 }
 
+/// Every live directory strictly beneath a scaffold directory, excluding the
+/// scaffold directories themselves — the undeclared half of the shape's own
+/// territory (§5.3). A scaffold that declares only top-level files creates no
+/// directory, so it offers no candidate and prunes no directory: the workspace
+/// root is never walked.
+fn live_subdirs(
+    root: &fs::WorkspaceRoot,
+    scaffold_dirs: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut queue: Vec<String> = scaffold_dirs.iter().cloned().collect();
+    let mut found = Vec::new();
+    while let Some(dir) = queue.pop() {
+        let Ok(entries) = std::fs::read_dir(root.0.join(&dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            // A dotfile directory (`.git`) is engine/system, never the shape's.
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = format!("{dir}/{name}");
+            // A scaffold directory is already in the queue and must be KEPT: a
+            // declared path lives under it.
+            if !scaffold_dirs.contains(&rel) {
+                found.push(rel.clone());
+                queue.push(rel);
+            }
+        }
+    }
+    found
+}
+
 /// Every workspace-relative ancestor directory of a path (`a/b/c.md` → `a`,
 /// `a/b`), the set a directory must avoid to be "undeclared".
 fn ancestors_of(path: &str) -> Vec<&str> {
@@ -971,8 +1014,8 @@ fn ancestors_of(path: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The directories the scaffold occupies, walked live — the reconcile scope. Only
-/// these dirs are scanned for undeclared content and empty-dir prune.
+/// The directories the declared scaffold CREATES — every ancestor of a declared
+/// path. These are kept unconditionally; the empty-dir prune walks beneath them.
 fn scope_dirs(declared: &[String]) -> std::collections::BTreeSet<String> {
     declared
         .iter()
