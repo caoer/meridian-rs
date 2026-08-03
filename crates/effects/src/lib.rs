@@ -1019,7 +1019,10 @@ mod tests {
         // The batch path aborts on the first bad rule; telemetry must NOT — a
         // faulting rule reports its own error while the others still report their
         // effects (replay needs every rule's outcome).
-        let good = Rule::new("good", "def on_change(event):\n    notice(message = \"w\")\n");
+        let good = Rule::new(
+            "good",
+            "def on_change(event):\n    notice(message = \"w\")\n",
+        );
         let bad = Rule::new("bad", "def on_change(event):\n    fail(\"boom\")\n");
         let good2 = Rule::new(
             "good2",
