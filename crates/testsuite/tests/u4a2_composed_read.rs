@@ -89,11 +89,49 @@ fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
 /// The goldens themselves are untouched — they remain the faithful record of
 /// what meridian-go said. Only this crate's claim over the engine's wording is
 /// narrowed, and only for these two steps.
+///
+/// `r-frag-plus-sections` joined them when site 8 of the same sweep was fixed:
+/// its refusal is the same redesigned read contract, and its byte pin bound it
+/// for the same superseded reason. Its properties differ from the section-miss
+/// family's, so it gets its own contract rather than a loosened shared one.
 fn refusal_is_redesigned(doc_name: &str, step_id: &str) -> bool {
     matches!(
         (doc_name, step_id),
-        ("basic", "r-sections-all-missing") | ("empty", "r-sections")
+        ("basic", "r-sections-all-missing")
+            | ("empty", "r-sections")
+            | ("basic", "r-frag-plus-sections")
     )
+}
+
+/// The both-selector-planes refusal's contract — same four properties, its own
+/// subject. The caller passed a `#fragment` AND `sections[]`, so there is no ref
+/// that "did not resolve": what the message owes instead is the CONTRADICTION it
+/// found, in the terms the original taught.
+///
+/// The negative is the load-bearing half here too. This refusal used to name no
+/// file at all, so asserting the file's presence is what fails if a later edit
+/// drops the subject back out of the sentence.
+fn assert_both_planes_contract(ctx: &str, message: &str) {
+    assert!(
+        message.contains("basic.md"),
+        "{ctx}: names the file it is talking about: {message}"
+    );
+    assert!(
+        message.contains("scopes the whole call") && message.contains("document-absolute"),
+        "{ctx}: keeps the distinction the original taught: {message}"
+    );
+    assert!(
+        message.contains("Nothing was read") && message.contains("no rev was minted"),
+        "{ctx}: discloses the partial state: {message}"
+    );
+    assert!(
+        message.contains("Fix:"),
+        "{ctx}: carries a fix clause: {message}"
+    );
+    assert!(
+        !message.contains("mode toc") && !message.contains("mode sections"),
+        "{ctx}: the fix must NOT name an internal mode name: {message}"
+    );
 }
 
 /// The engine's OWN refusal contract: the four properties the `mrd config`
@@ -222,7 +260,11 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
                 if refusal_is_redesigned(&doc_name, step_id) {
                     // Design test of the engine's own contract (ruling
                     // d9419c03) — properties, not bytes.
-                    assert_refusal_contract(&ctx, got);
+                    if *step_id == "r-frag-plus-sections" {
+                        assert_both_planes_contract(&ctx, got);
+                    } else {
+                        assert_refusal_contract(&ctx, got);
+                    }
                 } else {
                     assert_eq!(
                         Some(got),
