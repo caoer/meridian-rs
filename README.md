@@ -44,7 +44,6 @@ registry daemon.
 | `check` | The check engine: the pure READ verb of the reconciliation loop |
 | `view` | The DuckDB view organ: a write-only leaf projecting the warm corpus into a disposable, fingerprint-stamped file; also the lock-aware read face that renders each `meridian-lock` pin's drift color through `model`'s one computer |
 | `preset` | Presets + session birth: def-pinned convention floor; `unfold`/`new` materialize through the guarded create |
-| `transcript` | Transcript cross-check: a corroborating (never authenticating) detector over the journal's actor claims |
 | `sidecar` (bin) | The per-workspace NDJSON stdin/stdout host — wiring only; dispatches through `wire-serve` |
 | `workspace` | Workspace identity: the discovery ladder (env → `.meridian.toml` → git root → bare), canonicalization, and the deny-ceiling predicate — pure filesystem functions, writes nothing |
 | `cache` | The central hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use stamping, and the Cargo-grade GC sweep |
