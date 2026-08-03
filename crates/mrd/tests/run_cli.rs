@@ -109,8 +109,14 @@ fn code(out: &Output) -> i32 {
     out.status.code().expect("exit code")
 }
 
-/// `--list` names every task with language, guarantee class, caps, and
-/// contract — exit 0.
+/// `--list` names every task with language, guarantee class, contract, and —
+/// where capabilities apply — its caps. Exit 0.
+///
+/// `detected` was in this list as the bash row's class; the row now reads
+/// `unsandboxed  effects: undeclared` (`docs/laws.md` § Amendment —
+/// capabilities do not apply to bash). `md.set_field:status` moved with it:
+/// that cap is `fix-drift`'s bash declaration, which the engine no longer
+/// reads, so the needle below is `fix-note`'s starlark grant instead.
 #[test]
 fn list_shows_every_task_with_class_and_caps() {
     let ws = Ws::new();
@@ -124,8 +130,9 @@ fn list_shows_every_task_with_class_and_caps() {
         "check-sh",
         "starlark",
         "hermetic",
-        "detected",
-        "md.set_field:status",
+        "unsandboxed",
+        "effects: undeclared",
+        "md.set_field",
         "env: HOME_WIKI",
     ] {
         assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
@@ -258,8 +265,13 @@ fn dry_starlark_prints_effect_truth_applies_nothing() {
     assert_eq!(before, after);
 }
 
-/// `--dry` bash: the block + resolved caps show, exec is REFUSED (exit 0, the
-/// refusal is the content) — and the block demonstrably did not run.
+/// `--dry` bash: the block shows, exec is REFUSED (exit 0, the refusal is the
+/// content) — and the block demonstrably did not run.
+///
+/// The `md.set_field:status` assertion is GONE, not relocated: it required
+/// `--dry` to print `fix-drift`'s declared caps, and a bash task declares no
+/// capability (`docs/laws.md` § Amendment). The surface states the two honest
+/// facts instead.
 #[test]
 fn dry_bash_shows_block_and_refuses_exec() {
     let ws = Ws::new();
@@ -268,7 +280,8 @@ fn dry_bash_shows_block_and_refuses_exec() {
     let text = stdout(&out);
     assert!(text.contains("NOT executed"), "{text}");
     assert!(text.contains("touch pwned-by-fix-drift"), "{text}");
-    assert!(text.contains("md.set_field:status"), "{text}");
+    assert!(text.contains("unsandboxed"), "{text}");
+    assert!(text.contains("effects: undeclared"), "{text}");
     // No descriptor fiction and no exec: the touch never happened.
     assert!(!ws.file("pwned-by-fix-drift").exists());
 }

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use effects::{Domain, EvalError, EvalLimits};
 use model::MerkleRoot;
-use run::caps::CapSet;
+use run::caps::{Authority, CapSet};
 use run::dispatch_starlark::{self, DispatchError, StarlarkDispatch};
 use run::executor::{ExecError, ReceiptAddr};
 use run::fence::GuaranteeClass;
@@ -29,7 +29,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn dispatch_of<'a>(
     source: &'a str,
     root_at_eval: &'a MerkleRoot,
-    caps: &'a CapSet,
+    authority: &'a Authority,
 ) -> StarlarkDispatch<'a> {
     StarlarkDispatch {
         page: "page.md",
@@ -41,7 +41,7 @@ fn dispatch_of<'a>(
         invocation_id: "inv-1",
         now: Some("2026-07-22T02:00:00Z"),
         root_at_eval,
-        caps,
+        authority,
         receipt: Some(ReceiptAddr {
             path: "receipts/2026-07-22.md".to_owned(),
             anchor: "r-000001".to_owned(),
@@ -55,7 +55,7 @@ fn dispatch_of<'a>(
 fn starlark_set_field_applies_via_the_splice_batch() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = CapSet::parse("md.set_field").unwrap();
+    let caps = Authority::granted(CapSet::parse("md.set_field").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = ctx.args[0])\n    notice(message = \"applied\")\n";
 
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
@@ -79,7 +79,7 @@ fn starlark_set_field_applies_via_the_splice_batch() {
 fn no_md_effects_means_nothing_applied_nothing_written() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = CapSet::none();
+    let caps = Authority::granted(CapSet::none());
     let src = "def run(ctx):\n    warn(message = \"advisory only\")\n";
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
     assert!(out.applied.is_none());
@@ -95,7 +95,7 @@ fn no_md_effects_means_nothing_applied_nothing_written() {
 fn wrong_plane_source_propagates_the_typed_eval_error() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = CapSet::none();
+    let caps = Authority::granted(CapSet::none());
     let src = "def on_change(event):\n    pass\n";
     let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap_err();
     assert!(matches!(
@@ -112,7 +112,7 @@ fn wrong_plane_source_propagates_the_typed_eval_error() {
 fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = CapSet::none();
+    let caps = Authority::granted(CapSet::none());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
     let err = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap_err();
     assert!(matches!(
@@ -129,7 +129,7 @@ fn cap_denied_at_the_choke_propagates_and_applies_nothing() {
 fn evaluate_alone_is_the_dry_seam_full_truth_nothing_applied() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
-    let caps = CapSet::parse("md.set_field").unwrap();
+    let caps = Authority::granted(CapSet::parse("md.set_field").unwrap());
     let src = "def run(ctx):\n    set_field(field = \"status\", value = \"x\")\n";
     let effects = dispatch_starlark::evaluate(&dispatch_of(src, &now, &caps)).unwrap();
     assert_eq!(effects.len(), 1, "all descriptors reported");

@@ -82,7 +82,7 @@ use policy::{
     evaluate_counterfactual_hooks_for_corpus_metered, evaluate_hooks_for_test_metered, load_rule,
     load_rule_for_corpus, register_page,
 };
-use run::caps::CapSet;
+use run::caps::{Authority, CapSet};
 use run::executor::{ApplyRequest, IntentApply, ReceiptAddr};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1342,8 +1342,10 @@ fn apply_generation(
     // Nothing is lost by that: `caps.route` already narrowed the emission on the
     // policy side before the executor sees it, so this ceiling is the executor's
     // choke point, not the declaration's.
-    let caps = CapSet::parse("md.set_field md.append_section")
-        .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?;
+    let authority = Authority::granted(
+        CapSet::parse("md.set_field md.append_section")
+            .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?,
+    );
     let live: MerkleRoot = fs::domain_snapshot(&root)
         .map_err(|error| ProofFault::Workspace(format!("proof workspace fold: {error}")))?
         .1;
@@ -1355,7 +1357,7 @@ fn apply_generation(
         invocation_id: &invocation,
         now: None,
         effects: &[],
-        caps: &caps,
+        authority: &authority,
         pin_root: &live,
         live_root: &live,
         receipt: None,
