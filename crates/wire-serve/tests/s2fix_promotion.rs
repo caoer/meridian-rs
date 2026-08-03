@@ -21,7 +21,7 @@ fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoo
 fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath(pinning_page.into()),
         actor: None,
         now: None,

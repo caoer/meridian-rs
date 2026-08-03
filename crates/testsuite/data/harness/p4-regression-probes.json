@@ -1,42 +1,216 @@
 {
   "_comment": "Class-4 wire-level regression probes — the engine-stage half of the regression hunt (the text-stage half is bin/check_regressions.py). Each row is a request the future engine must answer as stated; until an engine exists these bind the CONTRACT TEXT: executing 'against the text' means deriving, from the final text alone, what the engine must answer — a probe the text cannot decide is itself a finding (underspecification). Fixture vault: fixtures/walkvault/; workspace states: fixtures/wsfix/.",
   "probes": [
-    {"id": "MP-1", "class": "UC-R9", "request": {"op": "cat", "path": "walk.md", "sec": {"hpath": [{"h": "b"}]}},
-     "expect": {"ok": false, "code": "ref_not_found"},
-     "law": "mint plane is per-segment BYTE-EQUALITY — lowercase 'b' must NOT match '# B'; case-insensitivity lives only in the walk plane",
-     "kills": "the exact team-h death: a case-folded spelling reaching the mint surface"},
-    {"id": "MP-2", "class": "UC-R9", "request": {"op": "cat", "path": "blocks.md", "sec": {"anchor": "dup1"}},
-     "expect": {"ok": false, "code": "ambiguous_ref"},
-     "law": "duplicate block id: mint plane refuses LOUD while the walk plane stays app-silent (WX-5 pair)",
-     "kills": "silent-last-wins minting — team-h's second UC-R9 breach"},
-    {"id": "MP-3", "class": "UC-R9", "request": {"op": "cat", "path": "walk.md", "sec": {"hpath": [{"h": "A"}, {"h": "Beta", "n": 2}]}},
-     "expect": {"ok": true, "target": "the SECOND '## Beta'", "note": "response must carry node_rev"},
-     "law": "occurrence index makes duplicates exactly addressable on the mint plane — the loud alternative to silent picking",
-     "kills": "contracts that refuse duplicates without offering an exact address (unusable strictness)"},
-    {"id": "MP-4", "class": "W2", "request": {"op": "resolve", "from": "walk.md", "ref": "#A#Beta"},
-     "expect": {"ok": true, "must_not_contain_keys": ["node_rev", "file_rev", "rev"]},
-     "law": "the walk-plane response type has NO rev field — mint partition as a type-level fact",
-     "kills": "any resolve output that can be replayed as a CAS token"},
-    {"id": "MP-5", "class": "W2", "request": {"op": "splice", "path": "walk.md", "edits": [{"target": {"ref": "walk#B"}, "edit": {"match": {"old": "x", "new": "y"}}}]},
-     "expect": {"ok": false, "code": "bad_request"},
-     "law": "write targets speak the strict grammar ONLY (hpath/anchor/fm_key); raw linktext in a splice target is not a form",
-     "kills": "any path where a walked ref arms a write (W2 proper)"},
-    {"id": "MP-6", "class": "007", "request": {"op": "splice", "path": "notes/plan.md", "edits": [{"target": {"hpath": [{"h": "Goals"}]}, "span": [20, 136], "edit": {"match": {"old": "a", "new": "b"}}}]},
-     "expect": {"ok": false, "code": "bad_request"},
-     "law": "strict server: unknown request fields reject loudly; no client span field exists — offsets on the wire request are unrepresentable",
-     "kills": "decision-007 breach: byte offsets sneaking back into requests"},
-    {"id": "MP-7", "class": "007", "request": {"op": "splice", "path": "notes/plan.md", "edits": [{"target": {"hpath": [{"h": "Goals"}, {"h": "Q3"}]}, "edit": {"match": {"old": "ship by August", "new": "ship by September"}}}]},
-     "expect": {"ok": true, "note": "NO if_node_rev, NO if_root, NO actor, NO now — must succeed at the wire (state s0)"},
-     "law": "decision 007: requests never require revs; guardless splices are legal wire frames forever (mandatoriness = Go ratchet, never wire law)",
-     "kills": "safety ceremony reappearing as wire-level requiredness"},
-    {"id": "MP-8", "class": "011", "request": {"op": "extract", "path": "blocks.md", "kinds": ["block_anchor"]},
-     "expect": {"ok": true, "must_not_advertise": "^under-probe_x as a resolvable anchor",
-       "note": "kind name per final text's extract enum; post-011 charset is [A-Za-z0-9-]+ both planes — advertise-nothing-resolve-nothing (W3 identity): extract emits ⇔ resolve resolves"},
-     "law": "decision 011: a '_'-bearing id is charset-invalid; the mint plane must not advertise what the walk plane cannot resolve",
-     "kills": "two-plane charset residue surviving the veto"},
-    {"id": "MP-9", "class": "B3", "request": {"_check": "GT provenance, not a wire frame"},
-     "expect": {"resolution_gt_source": "app-generated obsidian-compat pack (live oracle)", "lane_pack": "demoted"},
-     "law": "B3: ground truth is regenerated FROM the final contract; resolution GT comes from the live app oracle, never hand-frozen fixtures, never a rejected dialect's lane pack",
-     "kills": "GT gating the engine against a dialect the tournament rejected"}
+    {
+      "id": "MP-1",
+      "class": "UC-R9",
+      "request": {
+        "op": "cat",
+        "path": "walk.md",
+        "sec": {
+          "hpath": [
+            {
+              "h": "b"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "ref_not_found"
+      },
+      "law": "mint plane is per-segment BYTE-EQUALITY — lowercase 'b' must NOT match '# B'; case-insensitivity lives only in the walk plane",
+      "kills": "the exact team-h death: a case-folded spelling reaching the mint surface"
+    },
+    {
+      "id": "MP-2",
+      "class": "UC-R9",
+      "request": {
+        "op": "cat",
+        "path": "blocks.md",
+        "sec": {
+          "anchor": "dup1"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "code": "ambiguous_ref"
+      },
+      "law": "duplicate block id: mint plane refuses LOUD while the walk plane stays app-silent (WX-5 pair)",
+      "kills": "silent-last-wins minting — team-h's second UC-R9 breach"
+    },
+    {
+      "id": "MP-3",
+      "class": "UC-R9",
+      "request": {
+        "op": "cat",
+        "path": "walk.md",
+        "sec": {
+          "hpath": [
+            {
+              "h": "A"
+            },
+            {
+              "h": "Beta",
+              "n": 2
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ok": true,
+        "target": "the SECOND '## Beta'",
+        "note": "response must carry node_rev"
+      },
+      "law": "occurrence index makes duplicates exactly addressable on the mint plane — the loud alternative to silent picking",
+      "kills": "contracts that refuse duplicates without offering an exact address (unusable strictness)"
+    },
+    {
+      "id": "MP-4",
+      "class": "W2",
+      "request": {
+        "op": "resolve",
+        "from": "walk.md",
+        "ref": "#A#Beta"
+      },
+      "expect": {
+        "ok": true,
+        "must_not_contain_keys": [
+          "node_rev",
+          "file_rev",
+          "rev"
+        ]
+      },
+      "law": "the walk-plane response type has NO rev field — mint partition as a type-level fact",
+      "kills": "any resolve output that can be replayed as a CAS token"
+    },
+    {
+      "id": "MP-5",
+      "class": "W2",
+      "request": {
+        "op": "splice",
+        "path": "walk.md",
+        "edits": [
+          {
+            "target": {
+              "ref": "walk#B"
+            },
+            "edit": {
+              "match": {
+                "old": "x",
+                "new": "y"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "code": "bad_request"
+      },
+      "law": "write targets speak the strict grammar ONLY (hpath/anchor/fm_key); raw linktext in a splice target is not a form",
+      "kills": "any path where a walked ref arms a write (W2 proper)"
+    },
+    {
+      "id": "MP-6",
+      "class": "007",
+      "request": {
+        "op": "splice",
+        "path": "notes/plan.md",
+        "edits": [
+          {
+            "target": {
+              "hpath": [
+                {
+                  "h": "Goals"
+                }
+              ]
+            },
+            "span": [
+              20,
+              136
+            ],
+            "edit": {
+              "match": {
+                "old": "a",
+                "new": "b"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "code": "bad_request"
+      },
+      "law": "strict server: unknown request fields reject loudly; no client span field exists — offsets on the wire request are unrepresentable",
+      "kills": "decision-007 breach: byte offsets sneaking back into requests"
+    },
+    {
+      "id": "MP-7",
+      "class": "007+write",
+      "request": {
+        "op": "splice",
+        "path": "notes/plan.md",
+        "edits": [
+          {
+            "target": {
+              "hpath": [
+                {
+                  "h": "Goals"
+                },
+                {
+                  "h": "Q3"
+                }
+              ]
+            },
+            "edit": {
+              "match": {
+                "old": "ship by August",
+                "new": "ship by September"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "ok": false,
+        "error_code": "guard_required",
+        "note": "RE-AIMED to 007+write under requirements decision 18 (ZT, 2026-08-03). NO if_node_rev, NO if_root, NO actor, NO now. BOTH halves are asserted here: (a) SCHEMA-OPTIONALITY survives — the frame is legal and DECODES, guard fields are never required at the schema; (b) REQUIREDNESS IS WRITE POLICY on content-mutating edits — the write is refused semantically with guard_required. This probe encodes the law; it is never left red as a standing signal."
+      },
+      "law": "requirements decision 18 / R1.1 as amended (ZT, verbatim): \"Content-mutating writes on every wire door require fingerprint match or force; guard fields stay schema-optional; force is any client's refuse→rewrite path; MCP is the main agent client that implements that path, not a separate trust plane.\" Decision 007 splits: its SCHEMA half (guard fields optional, guardless frames legal and decodable) SURVIVES verbatim; its BEHAVIOURAL half (a guardless content-mutating write succeeds) is SUPERSEDED. Enforcement binds every wire door — registry and sidecar alike.",
+      "kills": "a semantic write refusal being implemented as frame rejection — which would make guard fields effectively required AT THE SCHEMA and resurrect exactly the ceremony 007 killed; and, symmetrically, a wire door quietly exempted because it is not the MCP client"
+    },
+    {
+      "id": "MP-8",
+      "class": "011",
+      "request": {
+        "op": "extract",
+        "path": "blocks.md",
+        "kinds": [
+          "block_anchor"
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "must_not_advertise": "^under-probe_x as a resolvable anchor",
+        "note": "kind name per final text's extract enum; post-011 charset is [A-Za-z0-9-]+ both planes — advertise-nothing-resolve-nothing (W3 identity): extract emits ⇔ resolve resolves"
+      },
+      "law": "decision 011: a '_'-bearing id is charset-invalid; the mint plane must not advertise what the walk plane cannot resolve",
+      "kills": "two-plane charset residue surviving the veto"
+    },
+    {
+      "id": "MP-9",
+      "class": "B3",
+      "request": {
+        "_check": "GT provenance, not a wire frame"
+      },
+      "expect": {
+        "resolution_gt_source": "app-generated obsidian-compat pack (live oracle)",
+        "lane_pack": "demoted"
+      },
+      "law": "B3: ground truth is regenerated FROM the final contract; resolution GT comes from the live app oracle, never hand-frozen fixtures, never a rejected dialect's lane pack",
+      "kills": "GT gating the engine against a dialect the tournament rejected"
+    }
   ]
 }

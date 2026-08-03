@@ -390,17 +390,18 @@ fn an_empty_batch_is_unaffected() {
     );
 }
 
-/// The CLI exemption, tested so it cannot rot into an accident: an in-process
-/// call writes existing content with no fingerprint, by design (5.7 precedent,
-/// local-operator trust).
+/// The in-process path is not a wire door, so the ruling does not reach it and
+/// its behaviour is unchanged. Tested so the scope boundary cannot rot into an
+/// accident — this is SCOPE, not a trust class: no door is exempted for who is
+/// behind it.
 #[test]
-fn the_cli_in_process_door_is_exempt() {
+fn the_in_process_path_is_outside_the_rulings_reach() {
     let (_d, root) = ws();
     let a = SpliceArgs {
         edits: vec![replace_edit(None)],
-        ..args(Origin::Cli)
+        ..args(Origin::InProcess)
     };
-    splice(&root, 0, &a, &[], None).expect("the CLI door is local-operator-trusted");
+    splice(&root, 0, &a, &[], None).expect("not a wire door — the ruling does not govern it");
     assert!(
         std::fs::read_to_string(root.0.join("memo.md"))
             .expect("read")
@@ -470,5 +471,115 @@ fn the_field_rename_bypass_is_closed() {
         err.code,
         ErrorCode::GuardRequired,
         "a native payload must not walk around the guard"
+    );
+}
+
+// ── Frame legality vs semantic refusal (the ZT ruling, 2026-08-03) ───────────
+//
+// > Content-mutating writes on every wire door require fingerprint match or
+// > force; guard fields stay schema-optional; force is any client's
+// > refuse→rewrite path; MCP is the main agent client that implements that
+// > path, not a separate trust plane.
+//
+// Decision 007's SCHEMA half survives whole: a guardless splice is still a legal
+// frame that DECODES. Only its behavioural half is superseded — the write is
+// refused semantically, after decode. These two tests are the seam; if either
+// inverts, the ruling is violated rather than merely this module's intent.
+
+/// A guardless splice frame is STILL A LEGAL FRAME: it decodes clean. Guard
+/// fields stay schema-optional — the refusal must never be a decode failure.
+#[test]
+fn a_guardless_frame_is_still_a_legal_frame() {
+    let frame = serde_json::json!({
+        "op": "splice",
+        "path": "memo.md",
+        "edits": [{
+            "target": {"hpath": [{"h": "Memo"}, {"h": "Tasks"}]},
+            "edit": {"match": {"old": "item one", "new": "item ONE"}},
+        }],
+    });
+    let obj = frame.as_object().expect("frame object");
+
+    for rev in [wire_serve::rev::Rev::V2, wire_serve::rev::Rev::V3] {
+        let decoded = wire_serve::decode::decode(obj, rev);
+        assert!(
+            decoded.is_ok(),
+            "a guardless splice must DECODE under {rev:?} — guard fields stay \
+             schema-optional (decision 007's surviving half): {:?}",
+            decoded.err()
+        );
+    }
+}
+
+/// …and the guard's answer is a SEMANTIC refusal on the write, never
+/// frame-illegality. `guard_required` is a fix-class refusal about the WRITE;
+/// `bad_frame`/`bad_request` would say the caller's frame was malformed, which
+/// under this ruling would be a lie and a violation.
+#[test]
+fn the_refusal_is_semantic_never_frame_illegality() {
+    let (_d, root) = ws();
+    let a = SpliceArgs {
+        edits: vec![replace_edit(None)],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, 0, &a, &[], None).expect_err("the WRITE is refused");
+
+    assert_eq!(err.code, ErrorCode::GuardRequired);
+    assert_ne!(
+        err.code,
+        ErrorCode::BadFrame,
+        "the frame was well-formed; saying otherwise violates the ruling"
+    );
+    assert_ne!(
+        err.code,
+        ErrorCode::BadRequest,
+        "the request was well-formed; the WRITE is what is refused"
+    );
+}
+
+/// ORDERING: a target that does not resolve is not this rung's to answer.
+///
+/// The guard is scoped to edits that mutate EXISTING content, so a dangling or
+/// ambiguous target has nothing for it to demand — the resolution rung answers
+/// with the refusal that names the caller's real mistake. Demanding a
+/// fingerprint first would send them to read a rev for a node that does not
+/// exist, and would bury `ref_not_found` / `ambiguous_ref` behind a refusal
+/// that describes the wrong problem. `sidecar::selector_ambiguity` covers the
+/// same law end-to-end; this pins it at the unit.
+#[test]
+fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
+    let (_d, root) = ws();
+    let dangling = SpliceArgs {
+        edits: vec![Edit {
+            target: SecRef::Anchor {
+                anchor: "no-such-anchor".into(),
+            },
+            edit: EditShape::Match {
+                old: "item one".into(),
+                new: "item ONE".into(),
+            },
+            if_node_rev: None,
+        }],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, 0, &dangling, &[], None).expect_err("refuses");
+    assert_eq!(
+        err.code,
+        ErrorCode::RefNotFound,
+        "the selector's own refusal speaks, not the guard: {:?}",
+        err.message
+    );
+
+    // The same target, once it exists, IS the guard's to answer.
+    let real = SpliceArgs {
+        edits: vec![replace_edit(None)],
+        ..args(Origin::Wire)
+    };
+    assert_eq!(
+        splice(&root, 0, &real, &[], None)
+            .expect_err("refuses")
+            .code,
+        ErrorCode::GuardRequired,
+        "existing content is guarded"
     );
 }

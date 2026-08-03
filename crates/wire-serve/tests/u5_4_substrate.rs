@@ -274,7 +274,7 @@ fn close_edits() -> Vec<Edit> {
 fn close_args(edits: Vec<Edit>) -> SpliceArgs {
     SpliceArgs {
         id: Some(7),
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath("card.md".to_string()),
         actor: Some("alice".to_string()),
         now: Some("2026-07-23T12:00:00Z".to_string()),

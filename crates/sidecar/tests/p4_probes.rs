@@ -145,22 +145,44 @@ fn p4_probes_applicable_at_rung_2() {
             }
             // splice probes, BOUND at D4-SPLICE — split runner below.
             "MP-5" | "MP-6" => assert_splice_decode_kill(id, &frame),
-            // decision 007, BOUND at D4-SPLICE: guardless/actor-less splices
-            // are legal wire frames forever — this probe assumes "state s0",
-            // so it runs against the wsfix S0 workspace and must SUCCEED.
+            // decision 007, BOUND at D4-SPLICE — AMENDED 2026-08-03 under the
+            // ZT ruling. The probe now asserts 007's SURVIVING half and the
+            // ruling's supersession of the other, which is the SAME exchange
+            // read at a finer grain:
+            //   - the frame is LEGAL and DECODES (guard fields schema-optional);
+            //   - the WRITE is refused SEMANTICALLY (`guard_required`), never as
+            //     frame-illegality.
+            // The distinction is load-bearing: implementing this refusal as a
+            // frame rejection would make guards required AT THE SCHEMA and
+            // resurrect the ceremony 007 exists to kill.
             "MP-7" => {
                 let (_d, s0_root) = s0_workspace();
                 let frame = answer(&s0_root, &probe["request"]);
-                assert_eq!(frame["ok"], true, "{id}: {frame}");
-                assert!(
-                    frame["body"]["armed"]["edits"]
-                        .as_array()
-                        .is_some_and(|e| e.len() == 1),
-                    "{id}: guardless splice arms: {frame}"
+                assert_eq!(frame["ok"], false, "{id}: the WRITE is refused: {frame}");
+                assert_eq!(
+                    frame["error"]["code"], "guard_required",
+                    "{id}: a SEMANTIC write refusal: {frame}"
                 );
-                assert!(
-                    frame["body"]["root_after"].as_str().is_some(),
-                    "{id}: a real commit advances the root: {frame}"
+                // 007's surviving half, asserted as a NEGATIVE: whatever else is
+                // true, the frame must never be called malformed.
+                for illegal in ["bad_frame", "bad_request", "unknown_op"] {
+                    assert_ne!(
+                        frame["error"]["code"], illegal,
+                        "{id}: a guardless frame stays a LEGAL frame — 007's \
+                         schema half survives: {frame}"
+                    );
+                }
+                assert_eq!(
+                    frame["error"]["recovery"], "fix",
+                    "{id}: fix class — change the request, not the channel: {frame}"
+                );
+                // It DECODED and reached the WRITE path: the refusal names the
+                // target file, a fact only the post-decode guard can fill in —
+                // a frame rejection has no path to echo.
+                assert_eq!(
+                    frame["error"]["path"], probe["request"]["path"],
+                    "{id}: the refusal comes from the write path, so the frame \
+                     decoded: {frame}"
                 );
             }
             // TEXT-LAWFUL answer (D-C5) — deviation from the probe file's

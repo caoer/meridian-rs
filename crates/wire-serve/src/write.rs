@@ -50,10 +50,11 @@ pub struct SpliceArgs {
     pub id: Option<u64>,
     /// The content file the batch edits.
     pub path: Path,
-    /// U10: the door this splice arrived through — the TRUST PLANE, stated by
-    /// the caller and never sniffed. `Wire` is guarded by fingerprint-or-force;
-    /// `Cli` is the local-operator-trusted in-process door and is exempt. There
-    /// is no default: a door added later states its plane or does not compile.
+    /// U10: WHICH DOOR this splice arrived through, stated by the caller and
+    /// never sniffed. Every `Wire` door enforces fingerprint-or-force —
+    /// bookkeeping, not a trust class. `InProcess` is not a wire door, so the
+    /// ruling does not reach it. No default: a door states its side or does not
+    /// compile.
     pub origin: crate::guard::Origin,
     /// The recorded actor (§9: recorded exactly as given, never invented).
     pub actor: Option<String>,
@@ -268,7 +269,8 @@ pub fn splice(
     // at plan lowering would be MCP-only, and native `edits` would walk around it
     // untouched (the field-rename bypass, adversarial finding 1.1/1.2). Per-edit
     // by design, so an empty batch — `mrd pin` — passes through with nothing to
-    // demand. `Origin::Cli` is exempt by trust plane, not by oversight; see
+    // demand. The refusal is SEMANTIC: the frame decoded fine and the WRITE is
+    // refused, which is what leaves decision 007's schema half intact. See
     // `crate::guard`.
     let bypassed = crate::guard::guard_batch(
         args.origin,
@@ -3569,7 +3571,7 @@ mod tests {
     fn journal_splice(dry: bool) -> SpliceArgs {
         SpliceArgs {
             id: None,
-            origin: crate::guard::Origin::Cli,
+            origin: crate::guard::Origin::InProcess,
             path: Path(fs::domain::RESERVED_JOURNAL_PATH.to_string()),
             actor: Some("mallory".into()),
             now: None,
@@ -3974,7 +3976,7 @@ mod guarded_create_remove {
     fn splice_args(path: &str, old: &str, new: &str) -> SpliceArgs {
         SpliceArgs {
             id: None,
-            origin: crate::guard::Origin::Cli,
+            origin: crate::guard::Origin::InProcess,
             path: Path(path.into()),
             actor: Some("alice".into()),
             now: None,

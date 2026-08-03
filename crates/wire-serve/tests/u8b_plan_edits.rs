@@ -28,7 +28,7 @@ fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn plan_args(path: &str, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
     SpliceArgs {
         id: None,
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),
         actor: Some("agent:alice".into()),
         now: Some("2026-07-24T12:00:00Z".into()),

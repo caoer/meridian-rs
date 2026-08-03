@@ -56,7 +56,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let splice_args = SpliceArgs {
         id: None,
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(parsed.path.clone()),
         actor: parsed.actor.clone(),
         now: parsed.now.clone(),
