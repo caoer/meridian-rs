@@ -82,6 +82,32 @@
 //! asserted something about a RECORD that no longer exists, so the word is now
 //! `pins-hold`, which names the plane that actually answered.
 //!
+//! # THE FAIL-CLOSED READING MOVED FROM DEFAULT TO OPT-IN (`--require-pins`)
+//! A corpus that declares NO pin now PASSES the gate. It used to refuse, and the
+//! refusal was **journal mechanics rather than independent doctrine**: an empty
+//! record meant no baseline, no baseline meant a grey write-history plane, and the
+//! grey gated the exit. That antecedent died with the journal, so what was removed
+//! is a mechanism with no input left — not a safety principle.
+//!
+//! *"Unknown is not clean"* is untouched where it applies. It protects the case
+//! where the gate CANNOT ASSESS something it claims to gate — a grey pin, an
+//! unaskable object store — and both **still fail closed**. Zero pins is not that
+//! case: nothing is unknown because nothing was asked, and over zero pins *"does the
+//! world still match the pins"* is vacuously true.
+//!
+//! **But a shell script cannot read a disclosure line.** `write_history:
+//! not-assessed` and `pin_coverage: 0` are legible to a human and invisible to
+//! `if [ $? -ne 0 ]`, so a caller that wants no-coverage to mean REFUSE says so with
+//! `--require-pins` and gets it in the exit code, under its own word
+//! (`no-pin-coverage`, never grey's — grey means a question was put and could not be
+//! answered, and here none was put).
+//!
+//! It is OPT-IN, and that is the load-bearing half: a fail-closed default on pinless
+//! workspaces would turn this gate into a coverage mandate nobody ruled, and make it
+//! un-adoptable on every vault that has not started pinning. **The shipped fence
+//! (`mrd skill hook`) runs the bare gate and therefore inherits the permissive
+//! default** — deliberately, and a checkout that wants strictness edits its own hook.
+//!
 //! Read-only. Exit triad (§4 preamble):
 //! - **0** — green: every claim converged, every pin holds, every pinned blob is
 //!   anchored. Under `--commit-gate`: the interval a commit records holds its pins.
@@ -185,7 +211,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
 
     let gate = parsed
         .commit_gate
-        .then(|| build_gate(&interval, &worktree, staged.as_ref()));
+        .then(|| build_gate(&interval, &worktree, staged.as_ref(), parsed.require_pins));
 
     // **The CHECKOUT's fence coverage — read here, reported below, and reachable
     // from no exit path in this function** (row 21). It is deliberately taken on
@@ -299,12 +325,17 @@ fn build_gate<'a>(
     interval: &'a Interval,
     worktree: &'a Assessed,
     staged: Option<&'a Assessed>,
+    require_pins: bool,
 ) -> Gate<'a> {
     let (label, pins) = match (interval, staged) {
         (Interval::Diverges(_), Some(staged)) => (STAGED, &staged.report.pins),
         _ => (WORKTREE, &worktree.report.pins),
     };
-    Gate { label, pins }
+    Gate {
+        label,
+        pins,
+        require_pins,
+    }
 }
 
 /// Print the verdict on the caller's chosen face. One writer for both, so a face
@@ -375,13 +406,55 @@ struct Gate<'a> {
     /// That interval's pin plane — now the ONLY gated plane. A pin is a claim about
     /// the bytes being committed, so it belongs to the interval, not to the history.
     pins: &'a PinPlane,
+    /// **The caller asked for fail-closed-on-no-coverage** (`--require-pins`).
+    /// Off by default; see [`NO_COVERAGE`] for the whole reasoning.
+    require_pins: bool,
 }
+
+/// The refusal word for a corpus that declares no pin at all, under
+/// `--require-pins`.
+///
+/// **Distinct from [`GREY_CANNOT_ASSESS`] on purpose.** Grey means *a question was
+/// put and could not be answered*; this is not that. Every question that was put
+/// was answered — there simply were none. Spelling it grey would say the gate tried
+/// and failed, which is the one thing that did not happen here.
+const NO_COVERAGE: &str = "no-pin-coverage";
 
 impl Gate<'_> {
     /// May this commit proceed? An unread plane is not a clean one — unknown is not
     /// clean.
+    ///
+    /// # Zero pins is VACUOUS TRUTH, not unknown — and that is why the default passes
+    /// The fail-closed doctrine (*"unknown is not clean"*) protects the case where
+    /// the gate CANNOT ASSESS something it claims to gate. That case is a grey pin
+    /// or an unaskable object store, and it keeps failing closed here, untouched.
+    ///
+    /// A corpus with no pins has declared nothing. The gate's whole question is
+    /// *"does the world still match the pins"*, and over zero pins that is
+    /// vacuously yes. Nothing is unknown because nothing was asked.
+    ///
+    /// This USED to exit 1, and the reason was journal mechanics rather than
+    /// independent doctrine: an empty record meant no baseline, no baseline meant a
+    /// grey write-history plane, and the grey gated. That antecedent died with the
+    /// journal by ruling, so the pass is not a safety principle being overturned —
+    /// it is a mechanism with no input left being removed.
+    ///
+    /// # But the doctrine survives as the CALLER'S choice
+    /// A shell script cannot read a disclosure line. `write_history: not-assessed`
+    /// and `pin_coverage: 0` are legible to a human and invisible to `if [ $? -ne 0
+    /// ]`, so a caller who wants *"no coverage ⇒ refuse"* must be able to say it in
+    /// the exit code. `--require-pins` is that, and it is OPT-IN: a fail-closed
+    /// default on pinless workspaces would silently turn this gate into a coverage
+    /// mandate nobody ruled, and make it un-adoptable on every vault that has not
+    /// started pinning. Doctrine preserved as a choice; adoption preserved as the
+    /// default.
     fn permits(&self) -> bool {
-        !self.pins.is_red() && !self.pins.cannot_assess()
+        !self.pins.is_red() && !self.pins.cannot_assess() && !self.uncovered()
+    }
+
+    /// The corpus declares no pin, and the caller asked to refuse exactly that.
+    fn uncovered(&self) -> bool {
+        self.require_pins && self.pins.declared == 0
     }
 
     /// The verdict WORD — what was read, and what it said.
@@ -390,6 +463,8 @@ impl Gate<'_> {
             PINS_HOLD
         } else if self.pins.is_red() {
             RED
+        } else if self.uncovered() {
+            NO_COVERAGE
         } else {
             GREY_CANNOT_ASSESS
         }
@@ -400,6 +475,17 @@ impl Gate<'_> {
         if self.permits() {
             return "every pin in the interval holds and every pinned blob is durably \
                  anchored; write history is not assessed — the engine keeps no memory by design"
+                .to_string();
+        }
+        // Before the pin findings, because it is not one: nothing is wrong with
+        // this corpus, there is simply nothing in it to be right or wrong. Saying
+        // so plainly is the difference between a caller learning it has no
+        // coverage and a caller believing it has a defect.
+        if self.uncovered() {
+            return "this corpus declares no pin at all, so the gate had nothing to read — \
+                    you asked for --require-pins, which refuses exactly that. Without the \
+                    flag this is a PASS: over zero pins, `does the world still match the \
+                    pins` is vacuously true"
                 .to_string();
         }
         if let Some(pin) = self.pins.red.first().or_else(|| self.pins.grey.first()) {
@@ -844,6 +930,14 @@ struct Check {
     /// the index carries and there is no coherent commit gate without it. One flag
     /// for the fence to pass, not two that can be passed apart and mean nothing.
     commit_gate: bool,
+    /// **Refuse a corpus that declares NO PIN** (`--require-pins`), turning the
+    /// gate's vacuous pass into a refusal for callers that want coverage enforced.
+    ///
+    /// Opt-in, and only meaningful beside [`Check::commit_gate`] — passing it alone
+    /// is refused as a bad invocation rather than silently ignored, because a flag
+    /// that appears to tighten a gate nobody asked for is worse than no flag.
+    /// Reasoning: [`Gate::permits`].
+    require_pins: bool,
 }
 
 impl Check {
@@ -851,6 +945,7 @@ impl Check {
         let mut json = false;
         let mut staged = false;
         let mut commit_gate = false;
+        let mut require_pins = false;
         for arg in args {
             match arg.as_str() {
                 "--json" => json = true,
@@ -868,6 +963,12 @@ impl Check {
                     commit_gate = true;
                     staged = true;
                 }
+                // The STRICTNESS the caller chooses, kept a separate word from the
+                // question itself: `--commit-gate` says which question, this says
+                // how strict the answer must be. Folding it into the first would
+                // have made one flag mean two things and left no way to ask the
+                // ordinary question.
+                "--require-pins" => require_pins = true,
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -876,10 +977,21 @@ impl Check {
                 }
             }
         }
+        // Refused rather than ignored: a caller who typed `--require-pins` believes
+        // a gate is being tightened, and the one thing a fence's verb must never do
+        // is answer confidently about a question it did not ask.
+        if require_pins && !commit_gate {
+            return Err(Fail::tool(
+                "--require-pins tightens --commit-gate and means nothing without it: it says \
+                 REFUSE a corpus that declares no pin, and only the commit gate refuses"
+                    .to_string(),
+            ));
+        }
         Ok(Check {
             format: if json { Format::Json } else { Format::Human },
             staged,
             commit_gate,
+            require_pins,
         })
     }
 }
@@ -962,19 +1074,31 @@ fn interval_line(interval: &Interval) -> String {
     }
 }
 
-/// **The PREDICATE the staged interval asserts, stated because it is WEAKER than the
-/// worktree's and S3-R29 is about the claim as much as the byte range.**
+/// **The PREDICATE the staged interval asserts** (S3-R29 is about the claim as much
+/// as the byte range).
 ///
-/// The worktree pass asks *"are these bytes the CURRENT governed state?"*. The staged
-/// pass cannot: `git add` stages content without the journal, so an ordinary
-/// `git add` followed by any further governed write leaves a staged tree that is an
-/// EARLIER governed state, and refusing it is a false red on the commonest path there
-/// is. So this interval asks the weaker question, and says which one it asked.
+/// # THIS LINE USED TO BE FALSE, and it is repaired here rather than left standing
+/// It read: *"these bytes were PRODUCED BY A GOVERNED WRITE (they match a receipt in
+/// the journal) and the journal being committed is a truthful PREFIX of it"*. Both
+/// halves name the journal, both describe reads this verb no longer performs, and
+/// the sentence was printed on every staged render — **an assertion of an unobserved
+/// property, which is exactly the banned member the honesty law names**, and the same
+/// defect `foreign_edit: none` was deleted for.
+///
+/// It also contradicted this file's own module doc four hundred lines above, which
+/// already records that the two passes *"now run the same reads over different
+/// bytes"*. The weaker-question framing was entirely journal: the staged pass was
+/// dated against the record rather than its own last row, so a legitimately partial
+/// stage was not a false red. With the record gone the asymmetry goes with it.
+///
+/// So the interval is now the ONLY thing separating the two passes, and the line says
+/// what it actually asserts: the pin plane, over the bytes a commit records.
 fn staged_predicate_line() -> String {
     format!(
-        "  {STAGED} asserts: these bytes were PRODUCED BY A GOVERNED WRITE (they match a receipt \
-         in the journal) and the journal being committed is a truthful PREFIX of it — NOT that \
-         they are the current governed state, which a partial stage legitimately is not\n"
+        "  {STAGED} asserts: every pin this corpus declares still holds against THESE bytes — \
+         the ones a commit would record, which are not necessarily the ones on disk. Write \
+         history is not assessed here either: the engine keeps no memory, so this says nothing \
+         about how these bytes came to be staged\n"
     )
 }
 
@@ -1147,6 +1271,15 @@ fn to_json(
             "detail": gate.detail(),
             "gated_planes": ["pins"],
             "write_history": WRITE_HISTORY_NOT_ASSESSED,
+            // **The POPULATION the gate read, on the face a machine reads**
+            // (S3-R23(5)). `permits: true` over `pin_coverage: 0` and over
+            // `pin_coverage: 50` are entirely different assurances, and a caller
+            // that cannot tell them apart is the caller `--require-pins` exists
+            // for. Both keys live INSIDE `commit_gate`, which is itself absent
+            // unless the gate was asked — so the shipped `pins` block is
+            // byte-identical and no existing consumer moves.
+            "pin_coverage": gate.pins.declared,
+            "require_pins": gate.require_pins,
         });
     }
     // **Top-level, and never inside [`interval_json`]** (row 21): the fence is a
@@ -1284,10 +1417,12 @@ mod tests {
         );
     }
 
-
-    /// A journal page from `(anchor, root_before, root_after)` triples — the three
-    /// facts a row asserts, in the shipped row grammar.
     /// A pin plane with nothing to report — the gate's passing input.
+    ///
+    /// `declared: 1` on purpose: this is a plane that WAS asked something and had no
+    /// complaint, which is a different input from one that was asked nothing. The
+    /// zero-coverage case is its own fixture ([`no_pins_declared`]), because
+    /// `--require-pins` is the one reader that tells them apart.
     fn holding_pins() -> PinPlane {
         PinPlane {
             red: Vec::new(),
@@ -1297,6 +1432,15 @@ mod tests {
             pending: 0,
             never: 0,
             cannot_ask: None,
+            declared: 1,
+        }
+    }
+
+    /// A corpus that declares NO pin — clean, and covering nothing.
+    fn no_pins_declared() -> PinPlane {
+        PinPlane {
+            declared: 0,
+            ..holding_pins()
         }
     }
 
@@ -1319,6 +1463,7 @@ mod tests {
         let gate = Gate {
             label: WORKTREE,
             pins: &pins,
+            require_pins: false,
         };
         assert!(
             gate.permits(),
@@ -1342,6 +1487,65 @@ mod tests {
         );
     }
 
+    /// **Zero pins passes by DEFAULT — vacuous truth, not unknown.** The gate asks
+    /// *"does the world still match the pins"*, and over no pins that is vacuously
+    /// yes. This exited 1 before the ruling, and the reason was journal mechanics:
+    /// an empty record meant no baseline, and the grey baseline gated. That
+    /// antecedent is gone, so the refusal had no input left.
+    #[test]
+    fn a_corpus_that_declares_no_pin_permits_by_default() {
+        let pins = no_pins_declared();
+        let gate = Gate {
+            label: WORKTREE,
+            pins: &pins,
+            require_pins: false,
+        };
+        assert!(gate.permits(), "nothing was asked, so nothing is unknown");
+        assert_eq!(gate.word(), PINS_HOLD);
+        assert!(gate.exit().is_ok());
+    }
+
+    /// **The fail-closed doctrine, preserved as the caller's choice.** The SAME plane
+    /// under `--require-pins` refuses — and with its own word, never grey's, because
+    /// nothing here was unanswerable.
+    #[test]
+    fn require_pins_turns_zero_coverage_into_a_refusal() {
+        let pins = no_pins_declared();
+        let gate = Gate {
+            label: WORKTREE,
+            pins: &pins,
+            require_pins: true,
+        };
+        assert!(
+            !gate.permits(),
+            "the caller asked for coverage and got none"
+        );
+        assert_eq!(
+            gate.word(),
+            NO_COVERAGE,
+            "its own word — grey would say the gate tried and failed, and it did not try"
+        );
+        assert_ne!(
+            gate.word(),
+            GREY_CANNOT_ASSESS,
+            "the two are distinct facts and must stay distinct words"
+        );
+        assert!(gate.exit().is_err(), "and it fails CLOSED, as asked");
+
+        // The other direction, same flag: coverage present ⇒ the flag is silent.
+        let covered = holding_pins();
+        let strict = Gate {
+            label: WORKTREE,
+            pins: &covered,
+            require_pins: true,
+        };
+        assert!(
+            strict.permits(),
+            "the flag refuses ABSENCE of coverage, never coverage itself — a flag \
+             that refused both would be a gate wired shut"
+        );
+    }
+
     /// **A red pin refuses, and the gate is load-bearing in that direction.** Without
     /// this arm the test above passes over a gate that permits unconditionally.
     #[test]
@@ -1356,6 +1560,7 @@ mod tests {
         let gate = Gate {
             label: STAGED,
             pins: &pins,
+            require_pins: false,
         };
         assert!(
             !gate.permits(),
@@ -1384,6 +1589,7 @@ mod tests {
         let gate = Gate {
             label: WORKTREE,
             pins: &pins,
+            require_pins: false,
         };
         assert!(!gate.permits(), "an unread plane is not a clean one");
         assert_eq!(
@@ -1407,6 +1613,7 @@ mod tests {
         let gate = Gate {
             label: WORKTREE,
             pins: &pins,
+            require_pins: false,
         };
         assert!(!gate.permits());
         assert_eq!(gate.word(), GREY_CANNOT_ASSESS);

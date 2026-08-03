@@ -1,36 +1,58 @@
 //! End-to-end gates for `mrd check` (U2.10), driving the REAL binary
-//! (`CARGO_BIN_EXE_mrd`) over its process boundary. Three legs of one verb:
+//! (`CARGO_BIN_EXE_mrd`) over its process boundary.
 //!
-//! - **green** — a journal carrying real `create` rows whose last receipt matches
-//!   the live tree reads green and exits 0. Asserted render-for-render (the whole
-//!   stdout, and the whole `--json` value), so the baseline-PRESENT path is pinned
-//!   byte-for-byte and the grey below cannot leak into it.
-//! - **red** — a spliced/forged journal row reddens with the row cited, exit 1.
-//! - **grey** — S3-R5: with NO journal baseline BOTH layer-0 detectors are
-//!   vacuous, so `check` reports that it CANNOT ASSESS and does not exit clean.
-//!   The corpus is finding-01's own — `init` → `pin` → git commit → a plain shell
-//!   rewrite of the pinned section, the exact out-of-band write the fence exists
-//!   to catch — and `mrd walk` reads the SAME corpus in the SAME run, so the
-//!   cross-surface disagreement that the finding measured stays visible here.
+//! # WHAT THESE LEGS BECAME, and why (ZT, 2026-08-03)
+//! Verbatim: *"Engine does not have memory. It should not have. History is pin to
+//! git when we lock. Anything between locks is not history."*
 //!
-//! The grey asserts are shaped by R26: they assert the **absence of green** and a
-//! non-clean exit, never the presence of a new string. A gate that only greps for
-//! `cannot assess` passes while a second vacuous detector still prints green.
+//! This file used to be three legs about a **journal**: a green earned by a current
+//! baseline, a red earned by a spliced row, and a grey earned by a baseline that
+//! could not date the tree. There is no journal, no baseline and no chain, so none
+//! of those three antecedents exists. The legs were not repaired — they were
+//! re-derived against the proposition `check` actually makes now (U5's derivation
+//! note § 2):
+//!
+//! > Every claim this corpus declares converges against the bytes on disk, every pin
+//! > holds against the content it names, and every pinned blob is durably held.
+//!
+//! Three legs again, on the surviving planes:
+//!
+//! - **green** — a governed corpus reads green and exits 0, asserted render-for-render
+//!   and key-for-key so the MANDATORY `write_history: not-assessed` disclosure cannot
+//!   be dropped without this file failing.
+//! - **red** — an out-of-band rewrite of PINNED content reddens, exit 1, cited per-pin.
+//!   The pin plane is the surviving detector and it still fires.
+//! - **blind** — a forged journal-shaped page moves NO verdict, and that is asserted
+//!   rather than left unsaid ([`check_is_blind_to_a_forged_journal_page`]).
+//!
+//! # WHAT THIS FILE NO LONGER PROVES — recorded, not hidden
+//! 1. **The chain-break red.** `check`'s only write-history red is gone. The two arms
+//!    that proved it (`check_reddens_and_cites_a_spliced_journal_row`,
+//!    `check_json_carries_the_break_and_reddens`) had no antecedent left and were not
+//!    weakened into passing — they were replaced by the blind arm, which asserts the
+//!    absence of the detector as a positive fact so nobody re-adds it by accident.
+//! 2. **The vacuous-baseline grey.** Both `cannot_assess` arms proved that an
+//!    undateable write history refuses. `check` no longer asks, so an empty workspace
+//!    is GREEN — U5 corpus row 01, tagged **[LAW]**. The assertion INVERTED, with the
+//!    reason stated at [`check_is_green_on_an_empty_workspace`]; the disclosure line is
+//!    what keeps the narrower green from reading as the old wider one.
+//! 3. **The `cannot_assess` JSON block** and the `core.chain` / `core.foreign_edit`
+//!    keys. Removed, never nulled, per U5 § 6 — and their ABSENCE is now asserted.
+//!
+//! The grey asserts that remain are still shaped by R26: they assert the **absence of
+//! green** and a non-clean exit, never merely the presence of a new string.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use fs::WorkspaceRoot;
-use fs::domain::RESERVED_JOURNAL_PATH;
 use mrd::hook::FENCE_VERSION;
 use wire::Path as WirePath;
 use wire_serve::write::{CreateArgs, create};
 
 /// The binary every drive here goes through. `MRD_BIN` names another artifact —
 /// the fixv convention (`crates/mrd/tests/s2fix_cross_surface.rs`), reused here so
-/// the SAME asserts can run against a pre-change build: the baseline-present legs
-/// must pass on both binaries (that is what "unchanged" means), and the grey legs
-/// must fail on the old one (that is what "reddens" means).
+/// the SAME asserts can run against a pre-change build.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -127,15 +149,29 @@ fn write(ws: &Path, rel: &str, body: &str) {
 /// cannot drift from the legs asserting its presence.
 const GREY: &str = "grey(cannot-assess)";
 
+/// **The RETIRED reserved path, spelled as a LITERAL on purpose.**
+///
+/// This was `fs::domain::RESERVED_JOURNAL_PATH`, and the constant is deleted:
+/// `RESERVED_PATHS` is now exactly `ARMED_RULES_PATH` + `ATTESTED_MARKER_PATH`, and
+/// this path reserves nothing. Re-importing a constant would imply a reservation
+/// that no longer exists, so the literal IS the point.
+///
+/// **And it must be THIS path, not a merely-unused one.** A forged page at a path
+/// that never meant anything is a page `check` was always free to ignore, and
+/// ignoring it would be no evidence at all that the reservation died. This is the
+/// exact path a stale reader, an old clone, or anyone working from the retired docs
+/// would recreate — so `check` staying green over IT is the executable record.
+/// (Verified with U6 against the tree at `f4ad5677:crates/fs/src/domain.rs:98`.)
+///
+/// Not to be confused with `receipts/realise.md`, a different and still-live path.
+const FORMER_JOURNAL_PATH: &str = "meridian/journal.md";
+
 /// **Row 21's fence block for a workspace that is no git repository**, spelled once
 /// for the two key-for-key legs below.
 ///
 /// The door-plane keys (`doors`, `fenced_doors`, `total_doors`) are **absent, not
 /// null**: this face's law is that an absent field reads as *not checked*, and a
-/// root with no hook directory has no door plane that could have been read. A
-/// `null` would say the doors WERE read and came back as nothing — a different
-/// fact, and a false one. Row 21's own suite (`s4r21_fence_line.rs`) holds that
-/// absence against a fenced root where the same keys ARE present.
+/// root with no hook directory has no door plane that could have been read.
 fn no_repo_fence(root: &Path) -> serde_json::Value {
     serde_json::json!({
         "state": "not-a-git-repo",
@@ -151,24 +187,25 @@ fn no_repo_fence(root: &Path) -> serde_json::Value {
     })
 }
 
-/// One journal row line in the `render_row` grammar (`parse_rows` reads
-/// `root_before=`, `root_after=`, and the trailing `^r-NNNNNN`).
-fn row(anchor: &str, root_before: &str, root_after: &str) -> String {
+/// The MANDATORY disclosure line, verbatim, spelled once (U5 § 6; advisor gate 1
+/// §2). Every render assert below carries it, so deleting the line fails this file
+/// rather than silently returning a reader to the old, wider green.
+fn write_history_line() -> String {
     format!(
-        "- op=splice path=a.md root_before={root_before} root_after={root_after} edits=0 ^{anchor}"
+        "  write_history: {} — the engine keeps no memory by design: history is pinned to git at \
+         lock, and anything between locks is not history. This verb answers at-rest truth only \
+         (does the world still match the pins), so chain continuity and last-receipt-vs-live are \
+         not checked here at all — not grey, NOT CHECKED\n",
+        check::WRITE_HISTORY_NOT_ASSESSED
     )
 }
 
-/// How many rows the reserved journal carries right now — the baseline's size,
-/// read the way the detectors read it.
-fn journal_rows(root: &WorkspaceRoot) -> usize {
-    let page = std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).unwrap_or_default();
-    receipt::journal::parse_rows(&page).len()
-}
-
 /// Birth `path` through the PRODUCTION guarded-create write path — the real
-/// journal-row-minting edge, so the baseline-present fixture below has a journal
-/// nobody hand-wrote.
+/// governed-write edge, so a "governed corpus" fixture is one the engine wrote
+/// rather than one the test hand-built.
+///
+/// It journals nothing now, and nothing here asks it to: what makes this a
+/// governed write is that it went through the door, not that a row records it.
 fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
     let args = CreateArgs {
         id: None,
@@ -183,52 +220,36 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));
 }
 
-// ── the baseline-PRESENT path: unchanged, pinned render-for-render ───────────
+// ── the GREEN path: pinned render-for-render ─────────────────────────────────
 
-/// **The unchanged path (S3-R5 bound).** A workspace that journals `create` rows
-/// has a real baseline: the chain recompute has rows to recompute and the last
-/// receipt's `root_after` is the live tree root, so `check` reads GREEN and exits
-/// 0 — the honest green, earned against evidence.
+/// **The green, earned against the planes that answer.** A workspace whose writes
+/// all went through the door has nothing drifted and nothing unanchored, so `check`
+/// reads GREEN and exits 0.
 ///
-/// The whole stdout is asserted, not a substring: this is the render that must
-/// stay byte-identical while the vacuous-baseline path turns grey.
+/// The whole stdout is asserted, not a substring — that is what makes the
+/// disclosure line load-bearing rather than decorative.
 ///
-/// # The `interval:` line is an AMENDMENT with a named adjudicator (S3-R30)
-/// This golden gained one line, and the artifact that adjudicates it is not this
-/// unit's: **S3-R29 — "a byte check is only as wide as the INTERVAL IT SPANS, so
-/// STATE THE INTERVAL WHENEVER YOU STATE THE CHECK"** — ruled before F1 was found
-/// and unmoved by this change. The four journal/pin lines below are byte-identical;
-/// what is added is the sentence the ruling requires, and it says plainly that a
-/// bare `mrd check` did NOT read the index. *The pin caught the addition, which is
-/// what it is for.*
-///
-/// # And the `fence:` line is a SECOND amendment, adjudicated by row 21
-/// Its adjudicator is likewise not this unit's: **fence coverage is per-checkout
-/// and opt-in, permanently, so a checkout that carries no fence must be TOLD so
-/// unasked** — the silence, not the absence, was the defect. This workspace is not
-/// a git repository, so the observed state is `not-a-git-repo` and there is no
-/// door plane to print beside it. **Every verdict line above is byte-identical**,
-/// and the exit code is unmoved — which is row 21's own central claim, held here
-/// by `s4r21_fence_line.rs` over a checkout read fenced and unfenced.
+/// # This assert CHANGED, and the change is the ruling, not a repair
+/// It used to open by reading two `create` rows out of the journal and asserting
+/// `chain: green · foreign_edit: none` in the render. Both lines are DELETED:
+/// `foreign_edit: none` was the sharpest false green in the surface, reading
+/// "assessed, nothing found" about a property the verb no longer observes. The
+/// `write_history:` line stands in their place and says the opposite of what their
+/// silence would have said.
 #[test]
-fn check_is_green_when_the_journal_carries_create_rows() {
+fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
     let sb = sandbox();
     let ws = sb.workspace();
     let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
 
     produce(&root, "b.md", "# B\n\nbeta\n");
     produce(&root, "c.md", "# C\n\ngamma\n");
-    let journal = std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).expect("journal");
-    assert!(
-        journal.contains("^r-000001") && journal.contains("^r-000002"),
-        "two real create rows landed — the baseline this leg is about:\n{journal}"
-    );
 
     let out = sb.run(&ws, &["check"]);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "a baseline-present clean tree exits 0: {}",
+        "a governed clean tree exits 0: {}",
         said(&out)
     );
     assert_eq!(
@@ -236,17 +257,17 @@ fn check_is_green_when_the_journal_carries_create_rows() {
         format!(
             "check core {ws}\n  interval: worktree — the bytes on disk. The git INDEX was not \
              read, so this says nothing about what a commit would record: `mrd check --staged` \
-             asks that question\n  chain: green\n  foreign_edit: none\n  pins: green\n  \
-             anchoring: no pinned objects\n  fence: not-a-git-repo — {ws} is not a git \
-             repository, so there is no hook directory to place a fence in. A meridian workspace \
-             does not have to be a git repository — this is a supported state, not a fault in \
-             the workspace · REPORTED, never gated on — fence coverage is a property of this \
-             local checkout and not of the corpus, so this line does not move check's exit\n",
-            ws = root.0.display()
+             asks that question\n{disclosure}  pins: green\n  anchoring: no pinned objects\n  \
+             fence: not-a-git-repo — {ws} is not a git repository, so there is no hook directory \
+             to place a fence in. A meridian workspace does not have to be a git repository — \
+             this is a supported state, not a fault in the workspace · REPORTED, never gated on \
+             — fence coverage is a property of this local checkout and not of the corpus, so \
+             this line does not move check's exit\n",
+            ws = root.0.display(),
+            disclosure = write_history_line()
         ),
-        "the baseline-present render is pinned byte for byte — the two JOURNAL \
-         lines are unchanged, U14's two PIN-PLANE lines and row 21's fence line \
-         are the additions"
+        "the green render is pinned byte for byte — the two JOURNAL lines are GONE \
+         and the write_history disclosure stands where they stood"
     );
 
     let out = sb.run(&ws, &["check", "--json"]);
@@ -257,15 +278,18 @@ fn check_is_green_when_the_journal_carries_create_rows() {
         serde_json::json!({
             "workspace": root.0.display().to_string(),
             "red": false,
+            // U5 § 6: `write_history` REPLACES `core.chain` and `core.foreign_edit`.
+            // It is not a colour and not a detector — it is the statement that this
+            // verb does not look, so a consumer cannot mistake the narrowed green
+            // for the wider one it used to mean. The key-for-key compare is what
+            // holds the two deleted keys deleted.
+            "write_history": check::WRITE_HISTORY_NOT_ASSESSED,
             "core": {
-                "chain": { "green": true, "breaks": [] },
-                "foreign_edit": null,
                 "drifted_claims": [],
             },
-            // U14: the pin plane, asserted key for key beside the untouched
-            // `core` block. `asked: 0` is the POPULATION (S3-R23(5)) — this
-            // workspace pins nothing, so the empty list is a reading of nothing
-            // rather than a clean bill over something.
+            // U14: the pin plane, asserted key for key. `asked: 0` is the
+            // POPULATION (S3-R23(5)) — this workspace pins nothing, so the empty
+            // list is a reading of nothing rather than a clean bill over something.
             "pins": {
                 "red": [],
                 "grey": [],
@@ -278,10 +302,9 @@ fn check_is_green_when_the_journal_carries_create_rows() {
                 },
                 "anchoring_cannot_assess": null,
             },
-            // F1 / S3-R29 — the interval, on the machine face. `not-asked` plus
-            // `spans_the_commit: false` is the honest pair for a bare `mrd check`:
-            // the answer is about the worktree, and the reader is told so rather
-            // than left to assume the index was read.
+            // F1 / S3-R29 — the interval, on the machine face. Untouched by the
+            // ruling: the interval says which BYTES an answer covers, which is a
+            // question about git and not about engine memory.
             "interval": {
                 "state": "not-asked",
                 "spans_the_commit": false,
@@ -290,35 +313,101 @@ fn check_is_green_when_the_journal_carries_create_rows() {
                 "staged": null,
             },
             // Row 21 — the CHECKOUT's fence coverage, reported beside the verdict
-            // and reaching no exit. Top-level, never inside the interval objects:
-            // it is a reading of the local checkout, not of any byte range.
+            // and reaching no exit.
             "fence": no_repo_fence(&root.0),
         }),
-        "the baseline-present json: the `core` block is unchanged key for key, \
-         the pin plane and row 21's fence block are the additions"
+        "the green json: `write_history` present, `core.chain` / `core.foreign_edit` \
+         / `cannot_assess` absent"
     );
 }
 
-// ── the vacuous-baseline path: grey, never green (S3-R5) ─────────────────────
-
-/// **S3-R5, on finding-01's own corpus.** `mrd init` → `mrd pin` → git commit →
-/// a plain shell rewrite of the PINNED section. The measured behaviour was
-/// `chain: green · foreign_edit: none`, EXIT 0, on the exact out-of-band write the
-/// fence exists to catch.
+/// **The green survives a fully governed corpus with a real pin in it** — the
+/// green-path control (S3-R8(c)). A fence built on this verb accepts a commit whose
+/// writes were all governed.
 ///
-/// The assert is the REFUSAL (R26): check must not say green anywhere, and must
-/// not exit clean. `mrd walk` reads the same corpus in the same run, holding the
-/// cross-surface disagreement in view — it reddens, and check may not disagree by
-/// claiming a clean bill it cannot support.
-///
-/// **U32 changed this leg's MECHANISM, not its verdict.** This fixture used to
-/// assert that the pin journaled nothing — that WAS the vacuous baseline the grey
-/// rested on. A splice now journals its row, so the baseline here is present and
-/// the out-of-band rewrite makes it STALE; the refusal is now earned against
-/// evidence instead of produced by its absence. Every refusal assert below is
-/// unchanged; only the witness of the state the workspace is in was replaced.
+/// # What this leg lost, and what it kept
+/// It used to count journal rows before and after the `mrd pin` to prove the
+/// governed splice refreshed the baseline it advanced past. There is no baseline,
+/// so that mechanism assert is GONE — the loss is real and is recorded here rather
+/// than in a commit message. What it still proves is the whole reason it existed:
+/// a corpus with no out-of-band edit anywhere is ACCEPTED, and the false red that
+/// once accused it is still absent.
 #[test]
-fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
+fn check_accepts_a_fully_governed_corpus() {
+    let sb = sandbox();
+    let ws = sb.git_workspace("all-governed");
+    write(&ws, "source.md", "# Source\n\n## Guideline\n\nthe body\n");
+    write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["commit", "-qm", "init"]);
+
+    let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
+    produce(&root, "note.md", "# Note\n\ngoverned birth\n");
+    let out = sb.run(&ws, &["check"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "control: a governed corpus is green before the pin too: {}",
+        said(&out)
+    );
+
+    // One ordinary governed write later — through the shipped CLI, no raw edit.
+    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
+    assert_eq!(pin.status.code(), Some(0), "pin: {}", said(&pin));
+
+    // R40: assert the state change, never a command's exit status.
+    assert!(
+        std::fs::read_to_string(ws.join("claim.md"))
+            .expect("claim")
+            .contains("meridian-lock"),
+        "the governed write landed"
+    );
+
+    let out = sb.run(&ws, &["check"]);
+    let text = said(&out);
+    assert!(
+        !text.contains(GREY),
+        "nothing here is unassessable — every plane the verb reads answered: {text}"
+    );
+    assert!(
+        text.contains("pins: green"),
+        "the pin plane reads a real verdict off the live content: {text}"
+    );
+    assert!(
+        text.contains(check::WRITE_HISTORY_NOT_ASSESSED),
+        "and the green is DISCLOSED as the narrower claim it is: {text}"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the green-path control (S3-R8(c)): a fully governed corpus is ACCEPTED: {text}"
+    );
+}
+
+// ── the RED path: the surviving detector, and both surfaces now AGREE ────────
+
+/// **The pin plane reddens on an out-of-band rewrite of pinned content, and `mrd
+/// walk` reddens on the same corpus in the same run.**
+///
+/// # This leg INVERTED from grey to red, and that is a sharpening
+/// It used to assert `grey(cannot-assess)`: the out-of-band write left the journal
+/// baseline STALE, and the stale baseline could see the *evidence* of the edit
+/// without being allowed to name a cause. The finding it was built from
+/// (finding-01) was a cross-surface DISAGREEMENT — `check` green, `walk` red.
+///
+/// The journal is gone, so the grey has no antecedent. But the edit rewrites PINNED
+/// content, so the surviving pin plane names it outright: `red content-drifted`,
+/// citing the pin, exit 1 — **the same reason word `walk` uses, because both read
+/// `view::walk::lock_pin_colors`**. The disagreement finding-01 measured is now an
+/// AGREEMENT by construction, and the assert is stronger than the grey it replaced,
+/// not weaker.
+///
+/// **What it no longer covers:** an out-of-band edit to content NOTHING pins. That
+/// case is invisible here and is asserted as invisible at
+/// [`check_is_blind_to_a_forged_journal_page`] — it is the laundered edit, and under
+/// the ruling it is outside the engine's domain rather than a hole in this file.
+#[test]
+fn check_reddens_on_the_pin_only_corpus_that_walk_also_reddens() {
     let sb = sandbox();
     let ws = sb.git_workspace("pin-only");
     write(
@@ -335,15 +424,9 @@ fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "pin"]);
 
-    // U32: the governed pin journaled its row, and at THIS instant the workspace
-    // is clean — the green-path control (S3-R8(c)), so the refusal below is caused
-    // by the out-of-band write and not by the corpus.
-    let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
-    assert_eq!(
-        journal_rows(&root),
-        1,
-        "the pin is a guarded write and leaves a row"
-    );
+    // The green-path control, in the same run: at THIS instant the workspace is
+    // clean, so the refusal below is caused by the out-of-band write and not by
+    // the corpus (S3-R8(c)).
     let clean = sb.run(&ws, &["check"]);
     assert_eq!(
         clean.status.code(),
@@ -367,219 +450,152 @@ fn check_cannot_assess_on_the_pin_only_corpus_that_walk_reddens() {
             .contains("OUT OF BAND"),
         "the out-of-band rewrite landed on disk"
     );
-    assert_eq!(
-        journal_rows(&root),
-        1,
-        "and it journaled nothing — that is what makes it out-of-band, and it is \
-         what leaves the present baseline STALE"
-    );
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
 
-    assert!(
-        !text.contains("green"),
-        "S3-R5: with no journal baseline check may not print green ANYWHERE — \
-         not for chain, not for a second vacuous detector: {text}"
-    );
-    assert!(
-        !text.contains("foreign_edit: none"),
-        "`none` is the foreign_edit detector's green — it has no baseline to say it from: {text}"
-    );
     assert_ne!(
         out.status.code(),
         Some(0),
-        "unknown is not clean: check may not exit 0 on a baseline it never had: {text}"
+        "an out-of-band rewrite of PINNED content is a lie about the corpus, and \
+         check may not exit clean over it: {text}"
     );
-    // S3-R6: exit 1 (the closed triad, no fourth code) carrying the RULED reason
-    // word — the exit says "do not proceed", the word says why.
     assert_eq!(
         out.status.code(),
         Some(1),
-        "grey refuses on the finding leg, not on a code of its own: {text}"
-    );
-
-    // BOTH vacuous detectors, not just the first one touched.
-    assert!(
-        text.contains("chain: grey(cannot-assess)"),
-        "the chain recompute names itself with the ruled reason word: {text}"
+        "a finding rides exit 1 — the triad stays CLOSED, no fourth code (S3-R6): {text}"
     );
     assert!(
-        text.contains("foreign_edit: grey(cannot-assess)"),
-        "the foreign_edit trace names itself with the ruled reason word: {text}"
+        text.contains("pins: red content-drifted"),
+        "the PIN PLANE is the detector that survived, and it names its colour and \
+         its reason: {text}"
+    );
+    assert!(
+        text.contains("claim.md → source.md#Source/Guideline"),
+        "citing the pin per-pin, so the operator can locate it: {text}"
+    );
+    assert!(
+        !text.contains(GREY),
+        "and it is a VERDICT, not an unanswerable question — the grey this leg used \
+         to assert had a journal baseline behind it and there is none: {text}"
     );
 
-    // The cross-surface control: the same corpus, the same run. walk reddens.
+    // The cross-surface control: the same corpus, the same run. Both surfaces
+    // redden, and with the SAME reason word — they share one computer.
     let walk = sb.run(&ws, &["walk", "claim.md"]);
     assert_eq!(
         walk.status.code(),
         Some(1),
-        "walk reddens on this corpus — the disagreement the finding measured: {}",
+        "walk reddens on this corpus: {}",
         said(&walk)
     );
     assert!(
         stdout(&walk).contains("red content-drifted"),
-        "walk sees the out-of-band edit per-pin: {}",
+        "and it is the same reason word check printed — the disagreement finding-01 \
+         measured is now an agreement by construction: {}",
         stdout(&walk)
     );
 }
 
-/// **The OTHER direction (S3-R8): the false RED, now closed at the root.** A
-/// corpus in which every write was governed — a journaled `create`, then a
-/// `mrd pin` through the CLI — and where **no out-of-band edit exists anywhere**.
+// ── the [LAW] moves: green where a grey used to stand ────────────────────────
+
+/// **U5 corpus row 01, tagged [LAW] — an empty workspace was grey and is now
+/// GREEN.** This assertion INVERTED. The reason is on the record and it is not a
+/// weakening:
 ///
-/// The shipped verb answered `foreign_edit: RED`, exit 1 — *it accused a fully
-/// governed workspace* — because the splice advanced the tree root and journaled
-/// no row, so the recorded baseline went stale. u14i withdrew that accusation and
-/// left a grey; **U32 removed the mechanism, so the honest answer here is now
-/// GREEN, exit 0.** A fence built on this verb accepts a commit whose writes were
-/// all governed, which is the green-path control criterion 5 lacked (S3-R8(c)).
+/// The old grey said *"I could not date your write history"*. The new green says
+/// *"the planes I read are clean"*. **A narrower claim, not a stronger one about
+/// the same question** — and the narrowing is exactly what the ruling ordered.
 ///
-/// This leg's assert INVERTED, and that is the unit's whole point: what changed is
-/// the engine's behaviour, not the test's standard. The refusal direction is
-/// asserted on its own corpus in `u32_governed_journal.rs`.
+/// **The disclosure is what makes this leg honest, so this leg asserts it.** A green
+/// a reader mistakes for the old, wider green is the false green U5 existed to
+/// prevent, and the only thing standing between the two is the `write_history:`
+/// line. Delete that line and this test fails — which is the point of asserting it
+/// here rather than only in the byte-pinned render above.
+///
+/// This SUPERSEDES `check_cannot_assess_a_workspace_with_no_journal_page`, whose
+/// subject (a missing journal page) no longer names anything.
 #[test]
-fn check_accepts_a_fully_governed_corpus() {
+fn check_is_green_on_an_empty_workspace() {
     let sb = sandbox();
-    let ws = sb.git_workspace("all-governed");
-    write(&ws, "source.md", "# Source\n\n## Guideline\n\nthe body\n");
-    write(&ws, "claim.md", "# Claim\n\nwe rely on the guideline.\n");
-    git(&ws, &["add", "-A"]);
-    git(&ws, &["commit", "-qm", "init"]);
-
-    // A journaled write establishes a REAL baseline: `create` records the live
-    // tree root in its row, so at this instant check has everything it needs.
-    let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
-    produce(&root, "note.md", "# Note\n\ngoverned birth\n");
-    let rows_before = journal_rows(&root);
-    assert_eq!(rows_before, 1, "one journaled write — the baseline");
-    let out = sb.run(&ws, &["check"]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "control: with a CURRENT baseline this corpus is green: {}",
-        said(&out)
-    );
-
-    // One ordinary governed write later — through the shipped CLI, no raw edit.
-    let pin = sb.run(&ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
-    assert_eq!(pin.status.code(), Some(0), "pin: {}", said(&pin));
-
-    // R40: assert the state change and the mechanism, never a command's exit.
+    let ws = sb.workspace();
     assert!(
-        std::fs::read_to_string(ws.join("claim.md"))
-            .expect("claim")
-            .contains("meridian-lock"),
-        "the governed write landed"
-    );
-    assert_eq!(
-        journal_rows(&root),
-        rows_before + 1,
-        "THE MECHANISM U32 DELIVERS: the governed splice journaled its row, so the \
-         baseline it advanced past is the baseline it refreshed"
+        !ws.join(FORMER_JOURNAL_PATH).exists(),
+        "nothing has written that path — and nothing would give it meaning if it had"
     );
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
-    assert!(
-        !text.contains("foreign_edit: RED"),
-        "S3-R8: no out-of-band edit exists in this corpus — accusing one is the \
-         false red the fence would have blocked every governed commit on: {text}"
-    );
-    assert!(
-        !text.contains("out-of-writer edit landed"),
-        "and the accusation must not survive in the exit message either: {text}"
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "[LAW] corpus row 01: the planes this verb reads are clean, so it is green — \
+         the grey it used to answer was about a plane it no longer has: {text}"
     );
     assert!(
         !text.contains(GREY),
-        "nor may it refuse what it CAN now assess — every write here was governed \
-         and every one of them is journaled: {text}"
+        "there is nothing left here that could be unassessable: {text}"
     );
     assert!(
-        text.contains("chain: green") && text.contains("foreign_edit: none"),
-        "both detectors read a real verdict off a current baseline: {text}"
-    );
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "the green-path control (S3-R8(c)): a fully governed corpus is ACCEPTED: {text}"
+        text.contains(&write_history_line()),
+        "AND THE DISCLOSURE IS MANDATORY: without this line a reader banks the old, \
+         wider green, which is the false green this whole unit exists to prevent: {text}"
     );
 }
 
-/// The same vacuity with no pin plane in sight: a workspace whose journal page
-/// does not exist has no baseline either, so `check` cannot assess it. (This
-/// SUPERSEDES the former `check_green_on_fresh_workspace`, which asserted the
-/// false green S3-R5 overrules: "a fresh workspace reads GREEN" was check
-/// reporting a clean bill on evidence it never had.)
+/// **The former reserved path is an ordinary page and moves no verdict.** Writing
+/// `meridian/receipts.md` used to be writing the ledger the verb read; the path is
+/// reserved by nothing now, and a page sitting there is a page.
+///
+/// This SUPERSEDES `check_cannot_assess_an_empty_journal_page`, which proved that
+/// a journal parsing to zero rows was as vacuous as a missing one. Both antecedents
+/// are gone. What is worth keeping is the converse claim, and it is the one asserted
+/// here: **the path has no residual power**, so nobody re-derives one from the fact
+/// that the engine once cared about it.
 #[test]
-fn check_cannot_assess_a_workspace_with_no_journal_page() {
-    let sb = sandbox();
-    let ws = sb.workspace();
-    assert!(
-        !ws.join(RESERVED_JOURNAL_PATH).exists(),
-        "no journal page — the vacuous baseline"
-    );
-
-    let out = sb.run(&ws, &["check"]);
-    let text = said(&out);
-    // NARROWED BY U14, and the narrowing is a sharpening. S3-R5's subject is the
-    // two JOURNAL detectors — the assert's own message says so ("not for chain,
-    // not for a second vacuous detector"). A bare `!contains("green")` now also
-    // forbids the pin plane's green, which on this corpus is EARNED: nothing is
-    // pinned, so nothing is owed. Naming the detectors asserts what the ruling
-    // actually said, and it is strictly more precise than grepping a word with two
-    // legitimate producers (S3-R23(1) — an instrument's precision buys its
-    // survival). The pin plane's green is adjudicated by its own suite, which this
-    // assert does not own: `u14_check_pin_plane.rs` proves it appears only when
-    // earned and is replaced by a refusal when it is not.
-    assert!(
-        !text.contains("chain: green"),
-        "no journal green without a baseline: {text}"
-    );
-    assert!(
-        !text.contains("foreign_edit: none"),
-        "no vacuous `none` either: {text}"
-    );
-    assert_ne!(out.status.code(), Some(0), "unknown is not clean: {text}");
-}
-
-/// A journal page that exists but parses to ZERO rows is the same vacuity by a
-/// different route — the detectors read parsed rows, not bytes. Without this the
-/// grey could be implemented as "the file is missing" and still ship a green on
-/// an empty (or unparseable) journal.
-#[test]
-fn check_cannot_assess_an_empty_journal_page() {
+fn the_former_journal_path_is_an_ordinary_page_and_moves_no_verdict() {
     let sb = sandbox();
     let ws = sb.workspace();
     let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
+
+    let before = sb.run(&ws, &["check"]);
+    assert_eq!(before.status.code(), Some(0), "control: green before");
+
     std::fs::create_dir_all(root.0.join("meridian")).expect("meridian dir");
     std::fs::write(
-        root.0.join(RESERVED_JOURNAL_PATH),
+        root.0.join(FORMER_JOURNAL_PATH),
         "# Receipt journal\n\nno rows yet.\n",
     )
-    .expect("write journal");
+    .expect("write the page");
 
-    let out = sb.run(&ws, &["check"]);
-    let text = said(&out);
-    // Narrowed to the journal detectors for the reason given on the sibling gate
-    // above: this corpus pins nothing, so the pin plane's green is earned.
-    assert!(
-        !text.contains("chain: green"),
-        "zero parsed rows is zero baseline: {text}"
+    let after = sb.run(&ws, &["check"]);
+    assert_eq!(
+        after.status.code(),
+        Some(0),
+        "the page moved no verdict: {}",
+        said(&after)
     );
     assert!(
-        !text.contains("foreign_edit: none"),
-        "zero parsed rows is zero baseline: {text}"
+        !said(&after).contains(GREY),
+        "and produced no unassessable plane — there is no reader left to be confused \
+         by it: {}",
+        said(&after)
     );
-    assert_ne!(out.status.code(), Some(0), "unknown is not clean: {text}");
 }
 
-/// The `--json` face of the grey: `red` stays honest (grey is not red), the two
-/// vacuous detectors are `null` rather than a green object, and the
-/// `cannot_assess` block carries the SAME ruled reason word the human line does
-/// (S3-R6 — distinct on both faces), plus which detectors it covers. Exit 1.
+/// The `--json` face of the green, asserted for what is ABSENT as much as for what
+/// is present (U5 § 6, ruled decision 3).
+///
+/// `core.chain`, `core.foreign_edit` and the whole `cannot_assess` block are
+/// **removed as keys, not set to null**. This face's own law is that an absent
+/// field reads as *"not checked"*, and null was justified for those keys precisely
+/// because they HAD been checked. They are not checked now, so absence is the only
+/// honest encoding and a null would be the lie. The explicit `is_none()` asserts
+/// below are what keep them from creeping back as nulls.
+///
+/// This SUPERSEDES `check_json_says_cannot_assess_and_names_both_detectors`.
 #[test]
-fn check_json_says_cannot_assess_and_names_both_detectors() {
+fn check_json_discloses_write_history_and_carries_no_chain_keys() {
     let sb = sandbox();
     let ws = sb.workspace();
     let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
@@ -587,31 +603,38 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
     let out = sb.run(&ws, &["check", "--json"]);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "unknown is not clean in json either — and it rides the finding leg: {}",
+        Some(0),
+        "[LAW] corpus row 01 on the machine face too: {}",
         said(&out)
     );
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+
+    assert_eq!(
+        value["write_history"],
+        serde_json::json!(check::WRITE_HISTORY_NOT_ASSESSED),
+        "the disclosure is on BOTH faces (S3-R6 — distinct on each): {value}"
+    );
+    assert!(
+        value.get("cannot_assess").is_none(),
+        "the block named `chain` and `foreign_edit` as its detectors; there are no \
+         such detectors, so there is no block: {value}"
+    );
+    assert!(
+        value["core"].get("chain").is_none(),
+        "REMOVED, not nulled — a null would assert a read that never happened: {value}"
+    );
+    assert!(
+        value["core"].get("foreign_edit").is_none(),
+        "REMOVED, not nulled — this was the JSON twin of `foreign_edit: none`: {value}"
+    );
+
     assert_eq!(
         value,
         serde_json::json!({
             "workspace": root.0.display().to_string(),
             "red": false,
-            "cannot_assess": {
-                "reason": "grey(cannot-assess)",
-                "detectors": ["chain", "foreign_edit"],
-                "detail": "the receipt journal carries no row, so the chain recompute \
-                           and the foreign_edit trace have nothing to compare against",
-                "baseline": null,
-            },
-            "core": {
-                "chain": null,
-                "foreign_edit": null,
-                "drifted_claims": [],
-            },
-            // U14: the pin plane rides beside the journal's `cannot_assess`, not
-            // inside it. The two planes fail independently, so one refusing must
-            // never be reported as the other refusing.
+            "write_history": check::WRITE_HISTORY_NOT_ASSESSED,
+            "core": { "drifted_claims": [] },
             "pins": {
                 "red": [],
                 "grey": [],
@@ -624,11 +647,6 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
                 },
                 "anchoring_cannot_assess": null,
             },
-            // F1 / S3-R29: the interval is STATED on the machine face too, and
-            // `state: "not-asked"` is a fact — a bare `mrd check` did not read the
-            // index, so `spans_the_commit` is FALSE and a reader cannot bank this
-            // answer as being about their commit. The adjudicator for this addition
-            // is S3-R29 itself (see the sibling render gate), not this unit.
             "interval": {
                 "state": "not-asked",
                 "spans_the_commit": false,
@@ -636,92 +654,94 @@ fn check_json_says_cannot_assess_and_names_both_detectors() {
                 "diverged_paths": [],
                 "staged": null,
             },
-            // Row 21 — the fence block rides beside the journal's `cannot_assess`
-            // for the same reason the pin plane does: it is a separate proposition
-            // about a separate subject, and one refusing must never be reported as
-            // the other refusing. `gates_the_exit: false` is the whole claim.
             "fence": no_repo_fence(&root.0),
         }),
-        "the grey json: no `green: true` for a reader to mistake for assessed, and \
-         the ruled reason word verbatim"
+        "and the whole shape key for key, so a key cannot return unnoticed"
     );
 }
 
-// ── the RED path: unchanged ─────────────────────────────────────────────────
+// ── the BLIND arm: the deleted detector, asserted as deleted ─────────────────
 
-/// A spliced/forged journal row reddens `mrd check`: the chain recompute cites the
-/// forged row and the verb exits 1 (a finding, never a door refusal). The last
-/// honest row's `root_after` is pinned to the LIVE tree root, so `foreign_edit`
-/// stays clear and the chain break is the isolated signal.
+/// **THE LOST DETECTOR, PINNED AS AN EXECUTABLE FACT.** A forged, chain-broken,
+/// journal-shaped page is written into the workspace — the exact three-row fixture
+/// (`r-000001` → a spliced `r-000099` → `r-000002`) that
+/// `check_reddens_and_cites_a_spliced_journal_row` used to redden on — and `mrd
+/// check` answers GREEN, exit 0, on both faces.
+///
+/// # This test asserts a REDUCTION, and it is here so nobody has to rediscover it
+/// `chain: RED` was `check`'s **only** write-history red (U5 § 3; corpus row 04). It
+/// is gone. Under the ruling that is the design and not a hole — *"Engine does not
+/// have memory. It should not have"* — but a reduction nobody wrote down is a
+/// reduction the next reader re-derives as a bug and re-implements. So it is
+/// written down HERE, where it runs.
+///
+/// Two arms that used to prove the detector fires (`..._reddens_and_cites_a_spliced
+/// _journal_row`, `check_json_carries_the_break_and_reddens`) had no antecedent left.
+/// **They were not weakened until they passed** — their subject was deleted, and
+/// this arm asserts the deletion instead, in the direction that can actually fail:
+/// if anyone rebuilds chain detection, THIS test reddens and the ruling gets
+/// re-opened deliberately rather than drifted past.
 #[test]
-fn check_reddens_and_cites_a_spliced_journal_row() {
+fn check_is_blind_to_a_forged_journal_page() {
     let sb = sandbox();
     let ws = sb.workspace();
-
-    // The live tree root the binary will fold at check time (journal-excluded, so
-    // writing the journal below does not move it).
     let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
-    let live = fs::domain_snapshot(&root).expect("snapshot").1.0;
 
-    // Two honest rows chain (R0 -> R1 -> LIVE); a forged row is spliced BETWEEN
-    // them. The forged row's roots continue nothing, breaking the chain; the last
-    // honest row's root_after == LIVE, so there is no foreign_edit.
-    let journal = format!(
-        "# Receipt journal\n{}\n{}\n{}\n",
-        row("r-000001", "b3:R0", "b3:R1"),
-        row("r-000099", "b3:FORGED_BEFORE", "b3:FORGED_AFTER"),
-        row("r-000002", "b3:R1", &live),
-    );
+    let forged = "# Receipt journal\n\
+                  - op=splice path=a.md root_before=b3:R0 root_after=b3:R1 edits=0 ^r-000001\n\
+                  - op=splice path=a.md root_before=b3:FORGED_BEFORE root_after=b3:FORGED_AFTER \
+                  edits=0 ^r-000099\n\
+                  - op=splice path=a.md root_before=b3:R1 root_after=b3:LIVE edits=0 ^r-000002\n";
     std::fs::create_dir_all(root.0.join("meridian")).expect("meridian dir");
-    std::fs::write(root.0.join(RESERVED_JOURNAL_PATH), journal).expect("write journal");
+    std::fs::write(root.0.join(FORMER_JOURNAL_PATH), forged).expect("write the forged page");
+
+    // R40: the state change, asserted before any verdict is read.
+    assert!(
+        std::fs::read_to_string(root.0.join(FORMER_JOURNAL_PATH))
+            .expect("read back")
+            .contains("r-000099"),
+        "the forged row is on disk — the fixture is a fixture"
+    );
 
     let out = sb.run(&ws, &["check"]);
+    let text = said(&out);
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "a spliced journal row is a finding (exit 1): {} / {}",
-        stdout(&out),
-        stderr(&out)
-    );
-    let text = stdout(&out);
-    assert!(text.contains("chain: RED"), "the chain reddens: {text}");
-    assert!(
-        text.contains("r-000099"),
-        "the render cites the forged row end-to-end: {text}"
+        Some(0),
+        "THE REDUCTION: a spliced row used to exit 1 citing r-000099. `check` does \
+         not read write history at all, so the forged page is just a page: {text}"
     );
     assert!(
-        text.contains("foreign_edit: none"),
-        "the last honest row matches the live root — no foreign_edit noise: {text}"
+        !text.contains("RED"),
+        "nothing reddens — there is no chain to break: {text}"
     );
-}
-
-/// The `--json` face carries the chain break and the top-level `red` verdict, and
-/// still exits 1.
-#[test]
-fn check_json_carries_the_break_and_reddens() {
-    let sb = sandbox();
-    let ws = sb.workspace();
-
-    let root = WorkspaceRoot(workspace::canonicalize(&ws).expect("canonicalize"));
-    let live = fs::domain_snapshot(&root).expect("snapshot").1.0;
-    let journal = format!(
-        "# Receipt journal\n{}\n{}\n{}\n",
-        row("r-000001", "b3:R0", "b3:R1"),
-        row("r-000099", "b3:FORGED_BEFORE", "b3:FORGED_AFTER"),
-        row("r-000002", "b3:R1", &live),
-    );
-    std::fs::create_dir_all(root.0.join("meridian")).expect("meridian dir");
-    std::fs::write(root.0.join(RESERVED_JOURNAL_PATH), journal).expect("write journal");
-
-    let out = sb.run(&ws, &["check", "--json"]);
-    assert_eq!(out.status.code(), Some(1), "json red still exits 1");
-    let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
-    assert_eq!(value["red"], serde_json::json!(true));
-    assert_eq!(value["core"]["chain"]["green"], serde_json::json!(false));
-    let breaks = value["core"]["chain"]["breaks"].as_array().expect("breaks");
     assert!(
-        breaks.iter().any(|b| b["row_anchor"] == "r-000099"),
-        "the forged row is cited in json: {breaks:?}"
+        !text.contains("r-000099"),
+        "and nothing cites the forged row, because nothing parsed it: {text}"
     );
-    assert_eq!(value["core"]["foreign_edit"], serde_json::Value::Null);
+    assert!(
+        text.contains(check::WRITE_HISTORY_NOT_ASSESSED),
+        "what the operator IS told is that write history was not assessed — the \
+         disclosure is the whole mitigation, and it is the only one: {text}"
+    );
+
+    // The same blindness on the machine face, where a fence reads it.
+    let js = sb.run(&ws, &["check", "--json"]);
+    assert_eq!(
+        js.status.code(),
+        Some(0),
+        "json is green too: {}",
+        said(&js)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&js.stdout).expect("json");
+    assert_eq!(
+        value["red"],
+        serde_json::json!(false),
+        "a machine consumer is told green, and told why the green is narrow: {value}"
+    );
+    assert_eq!(
+        value["write_history"],
+        serde_json::json!(check::WRITE_HISTORY_NOT_ASSESSED),
+        "which is the disclosure doing the only job left to do: {value}"
+    );
 }
