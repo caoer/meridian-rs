@@ -285,7 +285,7 @@ fn a_heading_fragment_at_is_never_touched() {
     );
 }
 
-/// I4: strip at both check_write pre-flight and flocked splice so they judge the same bytes.
+/// I4: strip at both `check_write` pre-flight and flocked splice so they judge the same bytes.
 #[test]
 fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
     let (_dir, root) = workspace();
@@ -403,7 +403,7 @@ fn a_malformed_fp_address_refuses_and_writes_nothing() {
     assert_eq!(read_page(&root, "guide.md"), before, "nothing reached disk");
 }
 
-/// Wire decoder strips shaped token before its own mint guard (decode_anchor).
+/// Wire decoder strips shaped token before its own mint guard (`decode_anchor`).
 #[test]
 fn the_wire_decoder_strips_before_its_own_mint_guard() {
     let frame = |anchor: &str| {
