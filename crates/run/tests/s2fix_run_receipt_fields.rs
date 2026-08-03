@@ -66,7 +66,9 @@ fn receipt_after_apply(page_name: &str, seed: &str, effects: &[Effect]) -> Strin
             invocation_id: "inv-1",
             now: Some("2026-07-25T01:00:00Z"),
             effects,
-            authority: &Authority::granted(CapSet::parse("md.set_field md.append_section").unwrap()),
+            authority: &Authority::granted(
+                CapSet::parse("md.set_field md.append_section").unwrap(),
+            ),
             pin_root: &live,
             live_root: &live,
             receipt: Some(ReceiptAddr {

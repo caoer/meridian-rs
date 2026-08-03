@@ -99,8 +99,8 @@ fn check_and_verify_names_refuse_a_bash_fence_loudly() {
     // runs BEFORE the short-circuit below.
     let d = doc(support::PAGE);
     for task in ["check-links", "verify-roots"] {
-        let err =
-            caps::resolve_authority(&d, task, TaskLanguage::Bash, &Conventions::none()).unwrap_err();
+        let err = caps::resolve_authority(&d, task, TaskLanguage::Bash, &Conventions::none())
+            .unwrap_err();
         assert!(
             matches!(err, CapsError::BashFenceRefused { .. }),
             "{task}: {err:?}"

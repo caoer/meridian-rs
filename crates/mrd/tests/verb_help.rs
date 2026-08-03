@@ -300,11 +300,15 @@ fn dry_is_explained_under_every_verb_that_takes_it() {
 #[test]
 fn a_page_is_self_contained() {
     let page = stdout(&mrd(&["status", "--help"]));
-    assert!(page.starts_with("mrd — the meridian workspace CLI\n"), "{page}");
+    assert!(
+        page.starts_with("mrd — the meridian workspace CLI\n"),
+        "{page}"
+    );
     assert!(page.contains("in the gutter marks a verb"), "{page}");
     assert!(page.contains("usage:"), "{page}");
     assert!(
-        page.trim_end().ends_with("see `mrd --help` for every verb."),
+        page.trim_end()
+            .ends_with("see `mrd --help` for every verb."),
         "{page}"
     );
 }
@@ -377,7 +381,12 @@ fn the_write_classification_is_twelve_of_twenty_six() {
         ],
         "the verbs marked as writers"
     );
-    assert_eq!(readers.len(), 14, "the rest are reads: {:?}", named(&readers));
+    assert_eq!(
+        readers.len(),
+        14,
+        "the rest are reads: {:?}",
+        named(&readers)
+    );
 }
 
 /// `mrd test` writes only into temporary directories, and `mrd sql` reads a
