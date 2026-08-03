@@ -68,6 +68,67 @@ fn serve(doc_dir: &std::path::Path, requests: &[Value]) -> Vec<Value> {
 /// The expected `rendered_text` for a step: the pinned elided expectation
 /// (`render-elided/<doc>.<step>.txt`, U4b render-divergent-by-design) when
 /// present, else the captured Go golden text.
+/// The two steps whose refusal MESSAGE is no longer meridian-go's to pin.
+///
+/// **Ruling `d9419c03`, 2026-08-02 — an APPLICATION of ratified law, not new
+/// authority.** Two independent sources agree: the meridian-rs end-state ruling
+/// (`CLAUDE.md`, 2026-07-22 **plus § Amendment 2026-07-26**; llm-wiki
+/// `decisions/2026-07-22-meridian-go-end-state.md`) says the remaining bridge
+/// legs owe NO byte parity with meridian-go — and read/put is not among them: it
+/// already migrated as a REDESIGNED CONTRACT (M1 `9a21d6d3`, stage-2
+/// `ae0568c6`). So these two byte-pins were a bridge-era gate binding a
+/// redesigned-contract leg. They were correct for a world that had already been
+/// superseded.
+///
+/// **CONVERTED, not re-captured, and that distinction is the point.** Re-pinning
+/// today's bytes as tomorrow's golden is a snapshot: it would block the NEXT
+/// refusal improvement exactly as it blocked this one. Asserting the refusal's
+/// PROPERTIES survives any honest rewording and still fails any regression below
+/// the bar.
+///
+/// The goldens themselves are untouched — they remain the faithful record of
+/// what meridian-go said. Only this crate's claim over the engine's wording is
+/// narrowed, and only for these two steps.
+fn refusal_is_redesigned(doc_name: &str, step_id: &str) -> bool {
+    matches!(
+        (doc_name, step_id),
+        ("basic", "r-sections-all-missing") | ("empty", "r-sections")
+    )
+}
+
+/// The engine's OWN refusal contract: the four properties the `mrd config`
+/// exemplar sets — the ref that failed, the cause, the partial state, the fix —
+/// plus the one negative the redesign exists to enforce.
+fn assert_refusal_contract(ctx: &str, message: &str) {
+    assert!(
+        message.contains("Ghost"),
+        "{ctx}: names the ref that did not resolve: {message}"
+    );
+    assert!(
+        message.contains("no section addressed by"),
+        "{ctx}: names the cause: {message}"
+    );
+    assert!(
+        message.contains("Nothing was read") && message.contains("no rev was minted"),
+        "{ctx}: discloses the partial state — a reader must not have to wonder \
+         whether anything was served: {message}"
+    );
+    assert!(
+        message.contains("Fix:"),
+        "{ctx}: carries a fix clause: {message}"
+    );
+    assert!(
+        message.contains("mrd read"),
+        "{ctx}: the fix names a RUNNABLE COMMAND: {message}"
+    );
+    // The defect this whole redesign exists to kill: naming an internal mode the
+    // caller never selected instead of a command they can type (issue-05).
+    assert!(
+        !message.contains("mode toc"),
+        "{ctx}: the fix must NOT name an internal mode name: {message}"
+    );
+}
+
 fn expected_text(doc_name: &str, step_id: &str, golden: &str) -> String {
     std::fs::read_to_string(
         testsuite::parity_dir()
@@ -155,11 +216,20 @@ fn composed_read_matches_u0_goldens_over_the_wire() {
             let ctx = format!("{doc_name}/{step_id}");
             if *want_err {
                 assert_eq!(frame["ok"], json!(false), "{ctx}: refusal frame: {frame}");
-                assert_eq!(
-                    frame["error"]["message"].as_str(),
-                    Some(want_text.as_str()),
-                    "{ctx}: verbatim refusal message"
-                );
+                let got = frame["error"]["message"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{ctx}: refusal carries a message: {frame}"));
+                if refusal_is_redesigned(&doc_name, step_id) {
+                    // Design test of the engine's own contract (ruling
+                    // d9419c03) — properties, not bytes.
+                    assert_refusal_contract(&ctx, got);
+                } else {
+                    assert_eq!(
+                        Some(got),
+                        Some(want_text.as_str()),
+                        "{ctx}: verbatim refusal message"
+                    );
+                }
                 refusal_steps += 1;
             } else {
                 assert_eq!(frame["ok"], json!(true), "{ctx}: ok frame: {frame}");

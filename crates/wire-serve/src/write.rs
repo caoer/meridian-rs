@@ -260,7 +260,8 @@ pub fn splice(
         &lowered
     };
 
-    let (model_edits, before_facts) = model_edits_and_before_facts(&doc, effective_edits)?;
+    let (model_edits, before_facts) =
+        model_edits_and_before_facts(&doc, effective_edits, &args.path)?;
     let mut batch = model::SpliceRequest {
         // The CLIENT's world guard was honored above, against the root it
         // actually pinned. The batch re-guards on the CURRENT root instead of
@@ -293,6 +294,7 @@ pub fn splice(
                 effective_edits,
                 &doc,
                 &before_facts,
+                &args.path,
             ));
         }
     };
@@ -497,7 +499,9 @@ pub fn splice(
         },
     )
     .map_err(|e| match e {
-        CommitError::Refused(v) => verdict_to_wire(&v, effective_edits, &doc, &before_facts),
+        CommitError::Refused(v) => {
+            verdict_to_wire(&v, effective_edits, &doc, &before_facts, &args.path)
+        }
         CommitError::Env(err) => err,
         CommitError::Io(err) => commit_io_to_wire(&err, &args.path),
     })?;
@@ -1317,9 +1321,11 @@ fn mint_pin(
         return Err(pin_target_missing(
             &spec.target,
             format!(
-                "no section addressed by \"{}\" in {} — read it with mode toc to \
-                 list the section paths",
-                spec.selector, spec.target.0
+                "no section addressed by \"{}\" in {}. Nothing was written — the pin's \
+                 page is byte-untouched. {}",
+                spec.selector,
+                spec.target.0,
+                crate::section_recovery(&spec.selector, Some(spec.target.0.as_str()))
             ),
         ));
     };
@@ -2991,6 +2997,7 @@ fn lock_artifact_guard(
 fn model_edits_and_before_facts(
     doc: &model::Document,
     edits: &[Edit],
+    path: &Path,
 ) -> Result<(Vec<model::Edit>, Vec<model::Target>), Box<ErrorBody>> {
     let mut model_edits = Vec::with_capacity(edits.len());
     let mut before_facts = Vec::with_capacity(edits.len());
@@ -3023,7 +3030,9 @@ fn model_edits_and_before_facts(
         } else {
             model::resolve(doc, &target).map_err(|e| {
                 Box::new(match e {
-                    model::ResolveError::NotFound => ErrorBody::new(ErrorCode::RefNotFound),
+                    model::ResolveError::NotFound => {
+                        crate::read::ref_not_found(&edit.target, doc, path.0.as_str())
+                    }
                     model::ResolveError::Ambiguous(c) => ambiguous(&edit.target, doc, &c),
                 })
             })?
@@ -3157,6 +3166,7 @@ fn verdict_to_wire(
     edits: &[Edit],
     doc: &model::Document,
     before_facts: &[model::Target],
+    path: &Path,
 ) -> Box<ErrorBody> {
     let e = match verdict {
         model::SpliceVerdict::Validated(_) => {
@@ -3168,7 +3178,25 @@ fn verdict_to_wire(
             e.actual = Some(NodeRev(actual.0.clone()));
             e
         }
-        model::SpliceVerdict::RefNotFound => ErrorBody::new(ErrorCode::RefNotFound),
+        // Normally pre-empted by the per-target resolution in
+        // `model_edits_and_before_facts`, which raises the same teaching. Routed
+        // through the shared helper anyway so the two miss sites cannot drift
+        // into one sentence and one bare code (issue-08).
+        model::SpliceVerdict::RefNotFound => {
+            let offending = edits
+                .iter()
+                .map(|e| &e.target)
+                .find(|t| {
+                    to_model_ref(t).is_ok_and(|r| {
+                        matches!(model::resolve(doc, &r), Err(model::ResolveError::NotFound))
+                    })
+                })
+                .or_else(|| edits.first().map(|e| &e.target));
+            match offending {
+                Some(t) => crate::read::ref_not_found(t, doc, path.0.as_str()),
+                None => ErrorBody::new(ErrorCode::RefNotFound),
+            }
+        }
         model::SpliceVerdict::Ambiguous(candidates) => {
             // Name each duplicate by node index + ^block via the shared helper
             // (§2.1 / d1 teaching refusal). In the splice flow this arm is

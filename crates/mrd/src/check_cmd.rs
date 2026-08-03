@@ -289,13 +289,34 @@ fn worst_of_exit(worktree: &CoreReport, staged: Option<&Assessed>) -> Result<(),
             .iter()
             .find_map(|(label, report)| summarise(report).map(|s| (*label, s)))
         {
-            return Err(Fail::with_code(
-                EXIT_FINDING,
-                format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
-            ));
+            return Err(Fail::with_code(EXIT_FINDING, refusal_list(label, &summary)));
         }
     }
     Ok(())
+}
+
+/// The refusal line for a summary that carries N findings: a COUNT, then one
+/// finding per line, numbered.
+///
+/// `red_summary`/`grey_summary` already build exactly this list, one finding per
+/// `\n`. The old spelling re-serialized it with `.replace('\n', "; ")`, which
+/// scaled into an unwrapped wall the moment a corpus carried more than the two
+/// findings this repo produces — and stacked a third separator (`;`) on top of
+/// the `:` and ` — ` the findings already use, so neither an eye nor a script
+/// could tell where one ended (issue-04). The count is what tells a reader they
+/// have reached the end of the list rather than the end of their terminal.
+fn refusal_list(label: &str, summary: &str) -> String {
+    let findings: Vec<&str> = summary.lines().collect();
+    let noun = if findings.len() == 1 {
+        "finding"
+    } else {
+        "findings"
+    };
+    let mut out = format!("check refuses ({label}) — {} {noun}:", findings.len());
+    for (i, finding) in findings.iter().enumerate() {
+        out.push_str(&format!("\n  {}. {finding}", i + 1));
+    }
+    out
 }
 
 /// **Which interval a commit records**, and the scoped question put to it. When the
