@@ -364,6 +364,145 @@ pub fn verify_object(pinned: &str, observed_git_oid: &str) -> bool {
     pinned == observed_git_oid
 }
 
+// ── The property arm of the fingerprint plane (R4 18a.2) ───────────────────
+//
+// A `meridian-lock` pin selects EITHER body path segments OR frontmatter
+// property keys (R4, `path` XOR `properties`). The body arm is `span2` above.
+// This is the property arm, and it exists here rather than in `lock` for two
+// reasons: [`Fingerprint`]'s field is sealed (R31), and blake3 is the engine's
+// ONE hasher — a second mint site in another crate would hold both properties
+// only by convention.
+
+/// The codec token a PROPERTY fingerprint carries — **distinct from
+/// [`CODEC_SPAN2`], and that distinctness is the point.**
+///
+/// A properties digest is not span bytes, so under never-conflate-hash-planes
+/// it is a different digest domain and must be self-describing as one. The
+/// consequence that earns it: [`verify_content`] compares the codec field and
+/// answers [`ContentVerdict::Unverifiable`] for anything it does not implement,
+/// so a props token handed to the span verifier **refuses loudly** instead of
+/// recomputing span bytes and reporting a confident wrong answer. A shared
+/// token would have made that failure silent — the one silent failure in a
+/// schema whose every other refusal is loud.
+///
+/// Ruled 2026-08-03 (advisor `c2e19632`): ZT's typed blocks in `86449b4e` spell
+/// a codec only on the PATH arm; for the properties arm he typed *"the
+/// fingerprint would be the wire format of such objects"* (17:36) and later
+/// ruled the canonical-keyed-map digest. No token was ever ratified, so the
+/// governing laws decide and there is nothing here overruled.
+pub const CODEC_PROPS1: &str = "props1";
+
+/// Domain separation for the property arm: the first bytes of every canonical
+/// property serialization.
+///
+/// Belt AND braces with [`CODEC_PROPS1`]. The token says which domain a digest
+/// claims; this says which domain the HASHER actually ran over. Separating in
+/// the bytes as well as in the label means a props digest cannot equal a span
+/// digest even if some future caller mislabels one.
+pub const PROPS_DOMAIN: &str = "props1\n";
+
+/// The state of one frontmatter property — **three states, and all three
+/// fingerprint differently** (R4 18a.2, re-extracted from session `86449b4e`).
+///
+/// The distinction is not academic: Obsidian's own property editor produces
+/// bare `status:` routinely, so a page that never had the key and a page whose
+/// key was cleared in the UI are different facts about the page. A fixed-column
+/// table collapses the first into the second; a keyed map cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropValue {
+    /// The key is omitted from the map entirely.
+    Absent,
+    /// The key is present and null — bare `status:`, or an explicit null
+    /// spelling ([`NULL_SPELLINGS`]).
+    Null,
+    /// A present, non-null value in its WIRE FORM verbatim. Nothing is coerced,
+    /// so true types survive and `status: ""` stays the empty string — which is
+    /// neither absent nor null.
+    Scalar(String),
+}
+
+/// Every spelling of YAML null, pinned as data rather than as parser behavior.
+///
+/// This crate hand-parses frontmatter (no-serde crate law), so "bare `status:`
+/// is null" is OUR rule to keep true. The pinned list is what the
+/// parser-behavior tests assert against, so a future library swap that
+/// disagrees fails a test instead of silently re-collapsing a state.
+pub const NULL_SPELLINGS: [&str; 5] = ["", "~", "null", "Null", "NULL"];
+
+/// Classify `key` in `map` into its [`PropValue`] state.
+#[must_use]
+pub fn classify_property(map: &crate::YamlMap, key: &str) -> PropValue {
+    match map.0.iter().find(|(k, _)| k == key) {
+        None => PropValue::Absent,
+        Some((_, raw)) => {
+            let trimmed = raw.trim();
+            if NULL_SPELLINGS.contains(&trimmed) {
+                PropValue::Null
+            } else {
+                PropValue::Scalar(raw.clone())
+            }
+        }
+    }
+}
+
+/// The canonical keyed-map serialization a property fingerprint hashes.
+///
+/// - **Keyed map, never a fixed-column table** (R4): each entry names its key,
+///   so [`PropValue::Absent`] is a value the map can hold rather than a row
+///   that is missing.
+/// - **Sorted keys**, so selector order is irrelevant BY CONSTRUCTION rather
+///   than by a caller remembering to sort.
+/// - **Length-prefixed** key and value, so no key or value byte sequence can
+///   forge a delimiter and make two different maps serialize identically.
+///
+/// An empty `keys` selects ALL keys in the map — R4's `[]` = all, symmetric
+/// with the path arm's `[]` = the whole body.
+#[must_use]
+pub fn canonical_property_bytes(map: &crate::YamlMap, keys: &[String]) -> String {
+    let mut selected: Vec<&str> = if keys.is_empty() {
+        map.keys().collect()
+    } else {
+        keys.iter().map(String::as_str).collect()
+    };
+    selected.sort_unstable();
+
+    let mut out = String::from(PROPS_DOMAIN);
+    for key in selected {
+        out.push_str(&key.len().to_string());
+        out.push(':');
+        out.push_str(key);
+        match classify_property(map, key) {
+            PropValue::Absent => out.push_str("=A"),
+            PropValue::Null => out.push_str("=N"),
+            PropValue::Scalar(value) => {
+                out.push_str("=S");
+                out.push_str(&value.len().to_string());
+                out.push(':');
+                out.push_str(&value);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Mint the property fingerprint of `keys` in `map` (R4's `properties` arm).
+///
+/// Infallible, unlike [`fingerprint_span`]: [`PROPS_DOMAIN`] means the hashed
+/// input is never empty, so the universal-match hazard R31 guards against
+/// cannot arise here. A selection that resolves to no keys is a real, distinct
+/// statement about the page rather than an uninformative token.
+///
+/// Duplicate keys in the selector are the CALLER's refusal (`lock` refuses them
+/// per R4, never dedupes) — this function is given a validated selection.
+#[must_use]
+pub fn properties_fingerprint(map: &crate::YamlMap, keys: &[String]) -> Fingerprint {
+    Fingerprint(format!(
+        "{FP_VERSION}.{CODEC_PROPS1}.{HASHFN_B3}.{}",
+        blake3::hash(canonical_property_bytes(map, keys).as_bytes()).to_hex()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,5 +760,57 @@ mod tests {
             .expect("utf8 oid")
             .trim()
             .to_string()
+    }
+
+    fn fm(raw: &str) -> crate::YamlMap {
+        fn walk(n: &Node) -> Option<crate::YamlMap> {
+            if let NodeKind::Frontmatter { map } = &n.kind {
+                return Some(map.clone());
+            }
+            n.children.iter().find_map(walk)
+        }
+        walk(&doc(raw).root).expect("the fixture has frontmatter")
+    }
+
+    /// **The whole reason the property arm gets its own codec** (ruled
+    /// 2026-08-03): a props token handed to the SPAN verifier must refuse
+    /// loudly, never recompute span bytes and answer confidently about a digest
+    /// that never covered them.
+    #[test]
+    fn a_props_token_is_unverifiable_to_the_span_verifier() {
+        let d = doc("---\nstatus: open\n---\n\n# A\nbody\n");
+        let token = properties_fingerprint(&fm("---\nstatus: open\n---\n\nbody\n"), &[]);
+
+        assert!(
+            token.as_str().starts_with("fp1.props1.b3."),
+            "the token names its own domain: {token}"
+        );
+        // It is a well-formed token — the refusal below is about the CODEC, not
+        // about the grammar (without this, `Unverifiable` proves nothing).
+        let parts = parse_fingerprint(token.as_str()).expect("a props token is grammatical");
+        assert_eq!(parts.codec, CODEC_PROPS1);
+
+        match verify_content(&d, &d.root, token.as_str()) {
+            ContentVerdict::Unverifiable { codec, .. } => assert_eq!(codec, CODEC_PROPS1),
+            other => panic!("a props token must not be verified as span bytes: {other:?}"),
+        }
+        // Had the arms shared `span2`, this same call would have returned Red
+        // with a confident, meaningless `actual`.
+        assert_ne!(CODEC_PROPS1, CODEC_SPAN2);
+    }
+
+    /// The canonical keyed map is length-prefixed, so no key or value can forge
+    /// a delimiter: two DIFFERENT maps must not serialize identically.
+    #[test]
+    fn canonical_property_bytes_cannot_be_forged() {
+        // `a` = "b=Sx" vs a key literally spelled to imitate the encoding.
+        let one = fm("---\na: \"b=S1:c\"\n---\n\nbody\n");
+        let two = fm("---\na: b\nc: d\n---\n\nbody\n");
+        assert_ne!(
+            canonical_property_bytes(&one, &[]),
+            canonical_property_bytes(&two, &[])
+        );
+        // Domain separation is the first thing in the bytes.
+        assert!(canonical_property_bytes(&one, &[]).starts_with(PROPS_DOMAIN));
     }
 }
