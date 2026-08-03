@@ -46,6 +46,22 @@ fn splice(path: &str, target: &Value) -> String {
     .unwrap()
 }
 
+/// U10: a wire-origin write on EXISTING content carries the target node's
+/// fingerprint. Only the writes that are meant to SERVE need it — a write at an
+/// unresolvable or ambiguous selector is answered by the selector's own refusal,
+/// which is the rung this file exists to gate.
+fn guarded_splice(root: &fs::WorkspaceRoot, path: &str, target: &Value) -> String {
+    let doc = fs::load(root, Path::new(path)).expect("load");
+    let sec: wire::SecRef = serde_json::from_value(target.clone()).expect("target decodes");
+    let rev = match wire_serve::read::cat(&doc, Some(sec)).expect("cat") {
+        wire::ResponseBody::Cat { node_rev, .. } => node_rev.0,
+        other => panic!("cat returned {other:?}"),
+    };
+    let mut v: Value = serde_json::from_str(&splice(path, target)).expect("frame");
+    v["edits"][0]["if_node_rev"] = Value::String(rev);
+    v.to_string()
+}
+
 /// THE load-bearing gate: a write at the AMBIGUOUS selector refuses
 /// `ambiguous_ref`, naming BOTH candidates by node index (`n=`) AND block id
 /// (`^block`), while a write at the unambiguous sibling still SERVES.
@@ -98,7 +114,8 @@ fn ambiguous_selector_refuses_naming_both_candidates_sibling_serves() {
     // (2) write at the UNAMBIGUOUS sibling still serves — the F6 fix.
     let sib = one(
         &root,
-        &splice(
+        &guarded_splice(
+            &root,
             "notes/dup.md",
             &serde_json::json!({"hpath": [{"h": "Task"}, {"h": "Notes"}]}),
         ),
@@ -112,7 +129,8 @@ fn ambiguous_selector_refuses_naming_both_candidates_sibling_serves() {
     // (3) the duplicate is addressable by node index (`n=`) — the write serves.
     let by_index = one(
         &root,
-        &splice(
+        &guarded_splice(
+            &root,
             "notes/dup.md",
             &serde_json::json!({"hpath": [{"h": "Task"}, {"h": "Objective", "n": 1}]}),
         ),

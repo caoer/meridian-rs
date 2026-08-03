@@ -1,8 +1,9 @@
-# Fingerprint-or-force — the wire-origin write guard (U10)
+# Fingerprint-or-force — the write guard at every wire door (U10)
 
-The standing law, recalled from the win tournament (requirements decision 12 /
-R1.1): **via the wire, no content change reaches disk without its fingerprint.
-`force` is the only bypass.**
+The law, as ruled by ZT on 2026-08-03: **content-mutating writes on every wire
+door require fingerprint match or force.** Guard fields stay schema-optional;
+`force` is any client's refuse→rewrite path. See § Ruled below for the
+ratification act and what it superseded.
 
 ## Where the guard sits, and why not at plan lowering
 
@@ -11,9 +12,9 @@ post-lowering** — `crates/wire-serve/src/guard.rs`, called from
 `write::splice` immediately after `plan::lower`.
 
 Plan lowering was the obvious placement and it is wrong (adversarial finding
-1.1/1.2, plan decision P2 revised): lowering is an MCP-only layer. Native
-`edits` reach the splice choke-point without ever being lowered, so a guard
-mounted there is bypassed by a field rename. The intake is the one point both
+1.1/1.2, plan decision P2 revised): lowering is reachable only through the plan
+face. Native `edits` reach the splice choke-point without ever being lowered, so
+a guard mounted there is bypassed by a field rename. The intake is the one point both
 faces have already reached. `tests/u10_guard.rs::the_field_rename_bypass_is_closed`
 is that finding as a regression test.
 
@@ -37,6 +38,14 @@ An append changes existing content and is guarded like every other change; the
 replace-shaped reading is exactly what let append escape.
 `tests/u10_guard.rs::s3_append_on_existing_content_is_guarded` holds that line.
 
+## `force` is rung zero of the ladder
+
+The ruled path is one continuous act: **write → refuse (+ladder) → rewrite**, for
+any wire client. So `guard_required` is not a mechanism beside the R1.2
+mismatch-recovery ladder — it is where the ladder attaches. The refusal is a
+plain error envelope whose `expected`/`actual`/`message` slots are what a rung
+enriches; a later unit adds rungs without replacing this.
+
 ## `force` and CAS are now one mechanism
 
 Before this unit `force: bool` existed on the write path but was never wired to
@@ -57,50 +66,54 @@ negative, never an internal mode name. It has its **own** contract assertion
 (`assert_guard_contract`), added rather than loosening a shared one, following
 the `assert_both_planes_contract` precedent.
 
-## Two exemptions, both deliberate
+## What the guard does NOT reach — scope, never trust
 
-- **The CLI in-process door is exempt** (`Origin::Cli`) — local-operator trust,
-  following the 5.7 `read_mint_required` precedent where the bare CLI carries no
-  session actor. A reader who finds `mrd put` writing without a fingerprint is
-  looking at a trust-plane split, not a hole. Tested, so it cannot rot into an
-  accident: `the_cli_in_process_door_is_exempt`.
-- **The run-plane shim door is a NON-GOAL of this unit.** ZT ruled it directly
-  (Q3): it is a different trust plane — declared caps plus a detection bracket.
-  It is not guarded here and must not be.
+There are no trust classes here. Every wire door enforces identically, whoever
+is behind it. Two paths are outside the ruling's reach because they are not wire
+doors:
 
-`Origin` has no `Default` on purpose: a door added later states its trust plane
-or does not compile.
+- **The in-process path** (`Origin::InProcess` — `mrd`, the run plane, the test
+  harness). Behaviour unchanged. Tested so the boundary cannot rot into an
+  accident: `the_in_process_path_is_outside_the_rulings_reach`.
+- **The run-plane effects shim**, a different door entirely — no fingerprint
+  there unless ZT re-rules. A NON-GOAL of this unit, per requirements **decision
+  18**, which supersedes the earlier Q3 reference as the governing authority.
 
-## ⚠ ESCALATED, UNRESOLVED — this unit collides with decision 007
+`Origin` has no `Default` on purpose: a door added later states which side of the
+wire it is on, or does not compile. It is door bookkeeping and carries no trust
+vocabulary — MCP is the main agent client that implements the refuse→rewrite
+path, not a plane of its own.
 
-**Two ratified rulings say opposite things, and this unit cannot satisfy both.**
+## Ruled — ZT, 2026-08-03
 
-- **Requirements decision 12 / R1.1** (this unit): via the wire, no content
-  change without its fingerprint.
-- **Decision 007**, bound as conformance probe **MP-7** in
-  `crates/testsuite/data/harness/p4-regression-probes.json`: *"requests never
-  require revs; guardless splices are legal wire frames forever (mandatoriness =
-  Go ratchet, never wire law)"* — and its `kills` field names the failure mode
-  verbatim: *"safety ceremony reappearing as wire-level requiredness."*
+This unit was escalated: it appeared to collide head-on with decision 007 (bound
+probe MP-7: "guardless splices are legal wire frames forever … never wire law").
+ZT ruled, verbatim:
 
-U10 IS wire-level requiredness. MP-7 fails against this implementation and was
-**left failing on purpose**: it is a bound probe of a standing decision, so
-editing it to pass would erase the conflict instead of surfacing it. The same
-statement appears as prose at `docs/wire-contract-v2.md` line 330.
+> Content-mutating writes on every wire door require fingerprint match or force;
+> guard fields stay schema-optional; force is any client's refuse→rewrite path;
+> MCP is the main agent client that implements that path, not a separate trust
+> plane.
 
-No frozen v2 **type or byte** moves — `pf_frozen_sweep` is green, and
-`if_node_rev` is itself a frozen v2 field, so a v2 client can comply without
-learning a new key. What changed is v2 wire BEHAVIOR.
+The collision dissolved on an axis nobody had proposed: **frame legality vs
+semantic refusal.** 007 protects the FRAME, not the write's success. Its schema
+half survives untouched — guard fields stay optional, a guardless splice decodes
+— and only its behavioural half is superseded. The refusal is semantic, after
+decode; a path that rejected the FRAME would violate the ruling.
 
-Reconciliation is a ZT question, per the amendment-3 ask-don't-widen law. The
-options, none of them a worker's to pick:
+Consequences, all implemented here:
 
-1. Amend decision 007 — fingerprint-or-force supersedes it at the wire door.
-2. Scope the guard to v3 sessions. **This leaves a bypass**: a client declaring
-   `contract: v2` writes unguarded, which defeats the unit.
-3. Move the demand out of the wire decode plane into the armed/policy plane, so
-   007's "mandatoriness = ratchet, never wire law" survives intact. This
-   contradicts P2's placement ruling and would be a re-plan of the unit.
+- **Every wire door enforces** — the resident daemon and the sidecar alike. The
+  sidecar is not an MCP door, which is the point: the law binds the door, never
+  the client.
+- **No trust planes.** `Origin` is door bookkeeping with no trust vocabulary.
+- **The in-process path is out of the ruling's reach** — not a wire door, so
+  unchanged. Scope, not trust.
+- **Decision 12's "via MCP" is descriptive**, not scoping.
+
+Full record, with the ratification act quoted as such:
+`docs/wire-contract-fingerprint-or-force-amendment.md`. The frozen v2 prose is
+never edited (v3-amendment precedent); the amendment doc carries the change.
 
 ## Named residuals
 

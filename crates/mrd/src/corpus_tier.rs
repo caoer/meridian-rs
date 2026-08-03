@@ -1491,7 +1491,7 @@ fn apply_production_edit(
 
     let args = SpliceArgs {
         id: None,
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(path.to_owned()),
         actor: actor.map(str::to_owned),
         now: None,

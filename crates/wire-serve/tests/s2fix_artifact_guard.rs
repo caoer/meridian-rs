@@ -41,7 +41,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn args_for(path: &str, actor: Option<&str>, edits: Vec<Edit>, pin: Option<PinSpec>) -> SpliceArgs {
     SpliceArgs {
         id: None,
-        origin: wire_serve::guard::Origin::Cli,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),
         actor: actor.map(str::to_owned),
         now: None,
