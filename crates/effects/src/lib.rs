@@ -146,14 +146,12 @@ pub enum EffectKind {
     Ask,
     /// `proto.notice` — a low-severity advisory notice.
     Notice,
-    /// `proto.warn` — a warning advisory about the change.
-    Warn,
 }
 
 impl EffectKind {
     /// Every descriptor kind, in a stable order — the "declare all capabilities"
     /// convenience and the source of truth for the closed surface.
-    pub const ALL: [EffectKind; 8] = [
+    pub const ALL: [EffectKind; 7] = [
         EffectKind::SetField,
         EffectKind::AppendSection,
         EffectKind::RefreshView,
@@ -161,7 +159,6 @@ impl EffectKind {
         EffectKind::Remind,
         EffectKind::Ask,
         EffectKind::Notice,
-        EffectKind::Warn,
     ];
 
     /// The namespaced wire / snapshot identity.
@@ -175,7 +172,6 @@ impl EffectKind {
             EffectKind::Remind => "proto.remind",
             EffectKind::Ask => "proto.ask",
             EffectKind::Notice => "proto.notice",
-            EffectKind::Warn => "proto.warn",
         }
     }
 
@@ -185,11 +181,9 @@ impl EffectKind {
         match self {
             EffectKind::SetField | EffectKind::AppendSection => Domain::Md,
             EffectKind::RefreshView => Domain::Daemon,
-            EffectKind::Send
-            | EffectKind::Remind
-            | EffectKind::Ask
-            | EffectKind::Notice
-            | EffectKind::Warn => Domain::Proto,
+            EffectKind::Send | EffectKind::Remind | EffectKind::Ask | EffectKind::Notice => {
+                Domain::Proto
+            }
         }
     }
 
@@ -212,12 +206,11 @@ impl EffectKind {
             EffectKind::Remind => "remind",
             EffectKind::Ask => "ask",
             EffectKind::Notice => "notice",
-            EffectKind::Warn => "warn",
         }
     }
 
     /// The [`EffectKind`] a wire identity names (`"proto.send"` → [`EffectKind::Send`]),
-    /// or `None` when the string is not one of the eight — the closed surface is the
+    /// or `None` when the string is not one of the seven — the closed surface is the
     /// vocabulary, so an unknown name is denied rather than guessed at.
     #[must_use]
     pub fn from_wire_name(name: &str) -> Option<Self> {
@@ -1026,7 +1019,7 @@ mod tests {
         // The batch path aborts on the first bad rule; telemetry must NOT — a
         // faulting rule reports its own error while the others still report their
         // effects (replay needs every rule's outcome).
-        let good = Rule::new("good", "def on_change(event):\n    warn(message = \"w\")\n");
+        let good = Rule::new("good", "def on_change(event):\n    notice(message = \"w\")\n");
         let bad = Rule::new("bad", "def on_change(event):\n    fail(\"boom\")\n");
         let good2 = Rule::new(
             "good2",

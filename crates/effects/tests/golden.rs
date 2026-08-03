@@ -8,32 +8,6 @@ mod support;
 use effects::{EffectKind, eval};
 use support::{all_rules, event, rule};
 
-// status_binding fires when the Status section moved but the frontmatter status
-// field did not — one advisory warn.
-#[test]
-fn golden_status_binding_drift_warns() {
-    let effects = eval(
-        &[rule("status_binding")],
-        &event("tasks/t.md", &["Status"], &[], "aaa", "bbb"),
-    )
-    .unwrap();
-    insta::assert_json_snapshot!("status_binding_drift", effects);
-}
-
-// status_binding stays silent when the field moved too (no drift).
-#[test]
-fn golden_status_binding_in_sync_is_silent() {
-    let effects = eval(
-        &[rule("status_binding")],
-        &event("tasks/t.md", &["Status"], &["status"], "aaa", "bbb"),
-    )
-    .unwrap();
-    assert!(
-        effects.is_empty(),
-        "in-sync change teaches nothing: {effects:?}"
-    );
-}
-
 // broadcast_outbox sends a fleet re-read anchored to the post-change fingerprint.
 #[test]
 fn golden_broadcast_outbox_sends() {
