@@ -660,7 +660,10 @@ mod help {
 
     /// Does a verb's own synopsis offer this flag?
     fn offers(synopsis: &str, flag: &str) -> bool {
-        synopsis.split_whitespace().map(bare).any(|token| token == flag)
+        synopsis
+            .split_whitespace()
+            .map(bare)
+            .any(|token| token == flag)
     }
 
     /// The verb an option belongs to: the first word inside the `(...)` its
@@ -769,9 +772,10 @@ mod help {
             .into_iter()
             .filter(|opt| {
                 opt.owner.as_deref().is_some_and(|o| owners.contains(&o))
-                    || opt.flags.iter().any(|flag| {
-                        synopses.iter().any(|synopsis| offers(synopsis, flag))
-                    })
+                    || opt
+                        .flags
+                        .iter()
+                        .any(|flag| synopses.iter().any(|synopsis| offers(synopsis, flag)))
             })
             .collect();
 
@@ -886,7 +890,12 @@ mod help {
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
-            assert_eq!(marked.len(), 12, "marked as writers:\n{}", marked.join("\n"));
+            assert_eq!(
+                marked.len(),
+                12,
+                "marked as writers:\n{}",
+                marked.join("\n")
+            );
             assert_eq!(blocks().len(), 26, "verb blocks in the listing");
         }
 

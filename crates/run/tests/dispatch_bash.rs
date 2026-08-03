@@ -114,11 +114,7 @@ fn a_preflight_refusal_is_findable_in_the_run_log() {
     std::fs::write(tmp.path().join("secret.md"), "out-of-tree\n").unwrap();
     std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("linked.md")).unwrap();
 
-    let _ = dispatch_bash::run(
-        &root,
-        &dispatch_of("echo hi\n", &scratch),
-        &mut Vec::new(),
-    );
+    let _ = dispatch_bash::run(&root, &dispatch_of("echo hi\n", &scratch), &mut Vec::new());
 
     let runs = root.0.join(".meridian/runs");
     let logged: String = std::fs::read_dir(&runs)
@@ -337,8 +333,7 @@ fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let out =
-        dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut live).unwrap();
 
     assert!(out.status.success());
     // Not a fault: the empty batch applied, and it applied NOTHING.
@@ -375,12 +370,7 @@ fn a_completed_zero_effect_run_leaves_both_receipts() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
 
-    dispatch_bash::run(
-        &root,
-        &dispatch_of("echo ok", &scratch),
-        &mut Vec::new(),
-    )
-    .unwrap();
+    dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut Vec::new()).unwrap();
 
     let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
     assert!(
@@ -410,8 +400,7 @@ fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let out =
-        dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
 
     assert!(
         matches!(out.phase2, Phase2::Applied { .. }),
@@ -433,8 +422,7 @@ fn a_held_workspace_lock_is_a_fast_typed_refusal() {
     let mut live: Vec<u8> = Vec::new();
 
     let _held = WorkspaceLock::acquire(&root.0).unwrap();
-    let err =
-        dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch), &mut live).unwrap_err();
+    let err = dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch), &mut live).unwrap_err();
     assert!(matches!(err, BashError::Phase1(ExecError::WorkspaceBusy)));
 }
 
@@ -588,12 +576,7 @@ fn a_clean_window_verdict_rides_the_outcome() {
     let scratch = tempfile::tempdir().unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let out = dispatch_bash::run(
-        &root,
-        &dispatch_of(EMIT_SET_FIELD, &scratch),
-        &mut live,
-    )
-    .unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
 
     assert!(out.detection.is_clean());
     let Phase2::Applied { effects, applied } = &out.phase2 else {

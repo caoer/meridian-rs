@@ -286,9 +286,17 @@ fn read_published_address_round_trips_into_put() {
     );
 
     let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
-    assert_eq!(code(&out), 0, "the published address is a put target: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "the published address is a put target: {}",
+        stderr(&out)
+    );
     let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
-    assert!(after.contains("INNER body"), "the write landed on the section read: {after}");
+    assert!(
+        after.contains("INNER body"),
+        "the write landed on the section read: {after}"
+    );
     assert!(after.contains("outer body"), "and nowhere else: {after}");
 }
 
@@ -302,7 +310,11 @@ fn the_sanitized_address_does_not_round_trip() {
     let ws = sb.workspace_with("# Scratch notes\n\nouter body\n\n## Findings\n\ninner body\n");
     let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
     let sanitized = serde_json::json!([{"h": "Scratch-notes"}, {"h": "Findings"}]);
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&sanitized, "inner", "INNER"));
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        &match_at(&sanitized, "inner", "INNER"),
+    );
     assert_eq!(code(&out), 1, "the sanitized spelling addresses nothing");
     assert_eq!(
         std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
@@ -325,7 +337,9 @@ fn each_collider_round_trips_to_its_own_section() {
     let rows = toc_rows(&sb, &ws);
     assert_eq!(rows.len(), 3, "three heading rows: {rows:?}");
     assert_eq!(
-        rows.iter().map(|r| r.get("hpath").cloned().unwrap_or(Value::Null)).collect::<Vec<_>>(),
+        rows.iter()
+            .map(|r| r.get("hpath").cloned().unwrap_or(Value::Null))
+            .collect::<Vec<_>>(),
         vec![
             Value::from("Scratch-notes"),
             Value::from("Scratch-notes"),
@@ -355,7 +369,10 @@ fn each_collider_round_trips_to_its_own_section() {
     }
     let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
     for body in ["alpha", "beta", "gamma"] {
-        assert!(after.contains(&format!("{body} EDITED")), "{body} landed: {after}");
+        assert!(
+            after.contains(&format!("{body} EDITED")),
+            "{body} landed: {after}"
+        );
     }
 }
 
@@ -383,11 +400,26 @@ fn occurrence_index_rides_only_where_the_raw_text_is_ambiguous() {
     );
 
     let addr = published_address(&rows[1]);
-    let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "second", "SECOND"));
-    assert_eq!(code(&out), 0, "the disambiguated address writes: {}", stderr(&out));
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md"],
+        &match_at(&addr, "second", "SECOND"),
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "the disambiguated address writes: {}",
+        stderr(&out)
+    );
     let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
-    assert!(after.contains("SECOND body"), "n=2 selected the second: {after}");
-    assert!(after.contains("first body"), "and left the first alone: {after}");
+    assert!(
+        after.contains("SECOND body"),
+        "n=2 selected the second: {after}"
+    );
+    assert!(
+        after.contains("first body"),
+        "and left the first alone: {after}"
+    );
 }
 
 /// Gate — the case that PROVES `n`-only-where-ambiguous, per leader 2702bc87.
@@ -415,7 +447,12 @@ fn a_prepended_duplicate_makes_the_published_address_refuse_loud() {
     .expect("prepend");
 
     let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "body", "EDITED"));
-    assert_eq!(code(&out), 1, "the stale address must refuse, not pick: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        1,
+        "the stale address must refuse, not pick: {}",
+        stderr(&out)
+    );
     let after = std::fs::read_to_string(ws.join("doc.md")).expect("read back");
     assert!(
         after.contains("interloper body") && after.contains("original body"),
@@ -488,7 +525,16 @@ fn the_n_carrying_address_round_trips_and_n_counts_same_text_siblings() {
 fn sections_mode_publishes_the_round_trippable_address() {
     let sb = sandbox();
     let ws = sb.workspace_with("# Scratch notes\n\nouter body\n\n## Findings\n\ninner body\n");
-    let out = sb.run(&ws, &["read", "doc.md", "--section", "Scratch-notes/Findings", "--json"]);
+    let out = sb.run(
+        &ws,
+        &[
+            "read",
+            "doc.md",
+            "--section",
+            "Scratch-notes/Findings",
+            "--json",
+        ],
+    );
     assert_eq!(code(&out), 0, "read --section: {}", stderr(&out));
     let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
     let sections = v["read"]["sections"].as_array().expect("sections").clone();
@@ -501,9 +547,16 @@ fn sections_mode_publishes_the_round_trippable_address() {
         "the section row carries the raw array too"
     );
     let out = sb.run_stdin(&ws, &["put", "doc.md"], &match_at(&addr, "inner", "INNER"));
-    assert_eq!(code(&out), 0, "the section's own address writes: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "the section's own address writes: {}",
+        stderr(&out)
+    );
     assert!(
-        std::fs::read_to_string(ws.join("doc.md")).expect("read back").contains("INNER body"),
+        std::fs::read_to_string(ws.join("doc.md"))
+            .expect("read back")
+            .contains("INNER body"),
         "the write landed on the section served"
     );
 }
