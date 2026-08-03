@@ -364,6 +364,7 @@ mod honesty {
             pending: 0,
             never: 0,
             cannot_ask: None,
+            declared: 0,
         };
         let green = CoreReport {
             drifted_claims: Vec::new(),

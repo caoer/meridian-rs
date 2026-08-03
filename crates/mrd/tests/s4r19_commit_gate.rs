@@ -1,10 +1,10 @@
-//! **S4-R19 — three propositions rode one exit code, and the fence spent the
-//! permanent one on every commit.**
+//! **S4-R19 — what `--commit-gate` still proves, re-derived after the journal
+//! died. This file is a REWRITE, not a repair, and the axis it measures is now
+//! ONE-DIMENSIONAL.**
 //!
-//! `mrd check --staged` answers with a deliberate two-part shape: the exit says
-//! *"may this proceed?"* and the reason word says why (`check_cmd.rs` § exit
-//! triad). A pre-commit fence branches on the code alone, so three facts arrived
-//! at it as one byte:
+//! # The card this file was built for
+//! Three propositions rode one exit code, and the fence spent the permanent one on
+//! every commit:
 //!
 //! | | proposition | about | permanence |
 //! |---|---|---|---|
@@ -12,64 +12,62 @@
 //! | **P2** | this index carries an out-of-band write | **this interval** | per-commit |
 //! | **P3** | the journal cannot date the tree | **evidence availability** | per-state |
 //!
-//! Past the first break P1 is permanently true, so the exit stopped varying with
-//! what was staged. A guard whose verdict no longer depends on the thing it guards
-//! carries zero information about it, and the only remaining paths are
-//! `MRD_HOOK_FORCE` and `--no-verify` — so the P2 enforcement is destroyed as well.
-//! **That is the defect: not that the break is permanent (it is, correctly), but
-//! that a permanent fact about the ledger's history is spent as a per-commit
-//! verdict about bytes it never examined.**
+//! Past the first break P1 was permanently true, so the exit stopped varying with
+//! what was staged — a guard whose verdict no longer depends on the thing it guards
+//! carries zero information about it. `--commit-gate` asked the per-commit question
+//! instead, and the old 8-arm matrix measured that it discriminated across the axis
+//! **chain-break × staged-write**.
 //!
-//! `--commit-gate` asks the per-commit question instead. This unit measures that
-//! it discriminates.
+//! # WHY THE MATRIX COLLAPSED (ZT, 2026-08-03)
+//! *"Engine does not have memory. It should not have. History is pin to git when we
+//! lock. Anything between locks is not history."*
 //!
-//! # THE INSTRUMENT, and why every arm here can fail
-//! The subject is a check that could not discriminate, so an arm that passes both
-//! before and after the change is decoration. Two devices make these arms
-//! falsifiable:
+//! **P1 and P3 are both journal propositions and both are gone.** The gate reads the
+//! PIN PLANE and nothing else (U5's derivation note § 6): `permits() ==
+//! !pins.is_red() && !pins.cannot_assess()`. So the chain-break axis has no
+//! antecedent — `break_the_chain` forged a `root_before` inside a file that does not
+//! exist — and **half the old matrix was measuring a dimension that no longer has
+//! two values.**
 //!
-//! 1. **The pre-fix invocation is measured in the same run.** `mrd check --staged`
-//!    is unchanged and still present, so every arm asserts BOTH codes over ONE
-//!    corpus. The discrimination is the DIFFERENCE between them
-//!    ([`arm1_chain_broken_plus_governed_staged_write_commits_and_tells_the_break`]
-//!    asserts `--staged` is 1 while `--commit-gate` is 0). A fix that unblocked by
-//!    weakening the verb would move both codes and fail the `--staged` half.
-//! 2. **Acceptance and refusal arms in the same run** (S3-R99). A fence that
-//!    permits and a fence that is silently broken look identical from the caller,
-//!    so arms 3 and 4 prove it still says NO beside the arms that prove it says
-//!    YES. Arm 4 is the specificity arm: it fails if the gate was implemented as
-//!    "ignore the journal", which would trade a stuck-closed fence for a
-//!    stuck-open one.
+//! P2 survives whole, and its DETECTOR changed underneath it: an out-of-band edit is
+//! caught because the rewritten file is a **pinned target**, so the pin plane reads
+//! `red content-drifted`. Same proposition, different plane answering.
 //!
-//! # What each arm needs broken to fail
-//! - **1** — delete the scoped question, or let the worktree's chain break reach
-//!   the exit again: exit 1, no commit.
-//! - **2** — unblock by disabling the gate: `--staged` stops refusing anything.
-//! - **3, 4** — gate on the journal alone, or ignore it: an out-of-band write
-//!   lands in history.
-//! - **5** — let the break heal or be acknowledged away: unscoped `check` goes
-//!   green.
-//! - **6** — spell the weakened pass `green`: the operator banks a claim the
-//!   evidence does not support.
-//! - **7** — fold `NoRecord` into the tampering leg: every fresh clone is accused.
-//! - **8** — fail open on an absent record: an unvouched corpus commits freely.
+//! **A 4-arm matrix that honestly covers one axis beats an 8-arm one with four dead
+//! arms.** The axis is: *does the interval a commit records carry a pin that no
+//! longer holds?*
+//!
+//! # THE OLD ARMS, each accounted for — none weakened into passing
+//! | old arm | disposition |
+//! |---|---|
+//! | 1 — chain-broken + governed staged write commits, break told | **DELETED.** Both halves are chain. Nothing tells a break. |
+//! | 2 — clean chain + governed write passes both questions | **SURVIVES** as [`a_governed_corpus_passes_both_questions`]. |
+//! | 3 — clean chain + out-of-band write refused | **SURVIVES** as [`an_out_of_band_write_to_pinned_content_is_refused`]; only the reason STRING moved (`no governed write ever produced` was baseline vocabulary). |
+//! | 4 — the specificity arm, index vs worktree | **SURVIVES** as [`a_forged_index_is_refused_even_when_the_worktree_is_clean`]. Its real subject was always the INTERVAL; the chain was scenery, so it is rebuilt on a clean corpus. |
+//! | 5 — the break never heals | **DELETED.** No break to heal. |
+//! | 6 — a gated pass over a broken record is not spelled green | **PARTLY SURVIVES** as [`the_passing_word_names_the_plane_that_answered`]: the vocabulary claim outlived its corpus, and the word to hold honest is now `pins-hold`. |
+//! | 7 — an empty record refuses without accusing | **REVERSED, BY RULING** — see [`a_pinless_corpus_passes_by_default`]. |
+//! | 8 — empty record + out-of-band write fails closed | **REVERSED, same antecedent** — [`a_pinless_corpus_passes_even_with_an_out_of_band_write`]. |
+//!
+//! # THE INSTRUMENT, and why every arm here can still fail
+//! The subject is a gate that must DISCRIMINATE, so an arm that passes whatever the
+//! gate does is decoration. Two devices keep these arms falsifiable:
+//!
+//! 1. **Acceptance and refusal over ONE corpus** (S3-R99). A gate that permits and a
+//!    gate that is silently broken look identical from the caller, so the refusal
+//!    arms sit beside acceptance arms built from the same fixture mutated.
+//! 2. **The unscoped question is measured in the same run** where the two can
+//!    differ, so an arm cannot be satisfied by a verb that stopped refusing
+//!    anything.
 //!
 //! # The fence here is a TEST FIXTURE, not the shipped one
-//! This harness places its own `pre-commit` that execs the scoped question —
-//! exactly as `u35_journaled_doors` places one that execs `mrd check` — so these
+//! This harness places its own `pre-commit` that execs the scoped question, so these
 //! arms measure `--commit-gate` itself and not the contract built on it.
-//!
-//! The shipped fence caught up on 2026-07-29: `mrd skill hook`'s emitted body now
-//! runs `mrd check --commit-gate`, which was this card's parallel-card scope when
-//! the note above was written. `crates/mrd/tests/skill_hook_emit.rs` holds it
-//! there; `crates/mrd/tests/u15_hook_fence_e2e.rs` drives the real thing.
+//! `crates/mrd/tests/skill_hook_emit.rs` holds the shipped document;
+//! `crates/mrd/tests/hook_plane_fence.rs` drives the real emitted body.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-
-use fs::WorkspaceRoot;
-use fs::domain::RESERVED_JOURNAL_PATH;
-use receipt::journal::{ParsedRow, parse_rows};
 
 /// The binary every drive goes through — the shipped CLI, never a library call.
 fn mrd_bin() -> PathBuf {
@@ -134,7 +132,8 @@ impl Sandbox {
     }
 
     /// A real git repo with a pinnable source and three claim pages, `mrd init`,
-    /// one commit, then the fence. **Nothing here writes a journal row.**
+    /// one commit, then the fence. **Nothing here declares a pin** — that is
+    /// [`Sandbox::pin_a_claim`]'s job, and the difference is now the whole axis.
     fn corpus(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -154,11 +153,32 @@ impl Sandbox {
         ws
     }
 
-    /// One governed write through the engine's own door — `mrd pin` journals its
-    /// row (U32), so this is what "produced by a governed write" means here.
-    fn governed_write(&self, ws: &Path, claim: &str) {
+    /// One governed write through the engine's own door: `mrd pin` declares a claim
+    /// against a section of `source.md`.
+    ///
+    /// **Renamed from `governed_write`.** The old name meant *"a write that journals
+    /// a row"*, and there are no rows — keeping it would have left the file's
+    /// central fixture named after the vanished plane. What makes this a governed
+    /// write is that it went through the door; what makes it matter HERE is that it
+    /// leaves a PIN, which is the only thing the gate reads.
+    /// # The pin is COMMITTED, and that is not incidental — it is the axis
+    /// The gate reads **the interval a commit records**. A pin that has been made
+    /// but not staged is not in that interval: the index still carries the page
+    /// WITHOUT its lock, so the bytes a commit would record declare nothing, and
+    /// the gate correctly reports zero coverage.
+    ///
+    /// Measured while writing this file — two arms failed on exactly that, and the
+    /// engine was right both times. Left recorded here so the next reader does not
+    /// re-derive it as a defect: `--require-pins` refusing a workspace whose pin is
+    /// not staged yet is the flag working, not the flag misfiring.
+    ///
+    /// `--no-verify` because this is SETUP: a fixture step that ran the fence would
+    /// make every corpus depend on the thing under test.
+    fn pin_a_claim(&self, ws: &Path, claim: &str) {
         let pin = self.run(ws, &["pin", claim, "source.md#Source/Guideline"]);
         assert_eq!(code(&pin), 0, "the governed write lands: {}", said(&pin));
+        git(ws, &["add", "-A"]);
+        git(ws, &["commit", "--no-verify", "-qm", "pin"]);
     }
 
     fn commit(&self, ws: &Path, message: &str) -> (i32, String) {
@@ -212,18 +232,14 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// stdout+stderr together — the render rides stdout, the refusal and the STANDING
-/// REPORT ride stderr, and "what did the operator see" is a question about both.
+/// stdout+stderr together — the render rides stdout, the refusal rides stderr, and
+/// "what did the operator see" is a question about both.
 fn said(out: &Output) -> String {
     format!(
         "{}{}",
         stdout(out),
         String::from_utf8_lossy(&out.stderr).into_owned()
     )
-}
-
-fn stderr(out: &Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
 fn code(out: &Output) -> i32 {
@@ -244,94 +260,36 @@ fn git_head(ws: &Path) -> String {
     }
 }
 
-fn root_of(ws: &Path) -> WorkspaceRoot {
-    WorkspaceRoot(workspace::canonicalize(ws).expect("canonicalize"))
-}
-
-fn journal_page(root: &WorkspaceRoot) -> String {
-    std::fs::read_to_string(root.0.join(RESERVED_JOURNAL_PATH)).unwrap_or_default()
-}
-
-fn rows(root: &WorkspaceRoot) -> Vec<ParsedRow> {
-    parse_rows(&journal_page(root))
-}
-
-/// **Break the chain the way a hand-inserted row breaks it** — alter the last
-/// row's `root_before` so it no longer continues the row before it.
-///
-/// The journal is root-EXCLUDED from the hash domain, so this moves no tree fold:
-/// the last row's `root_after` still dates the live tree, the baseline stays
-/// CURRENT, and the trace therefore reaches `check_chain` and reddens. That is P1
-/// in its pure form — a finding about the PAST, with the present fully governed.
-///
-/// Returns the anchor of the row the break is cited at.
-fn break_the_chain(root: &WorkspaceRoot) -> String {
-    let page = journal_page(root);
-    let parsed = parse_rows(&page);
-    assert!(
-        parsed.len() >= 2,
-        "a chain break needs a PAIR to fail: {parsed:#?}"
+/// Rewrite the PINNED section by hand — an out-of-band edit through no meridian
+/// writer, to content a lock names. This is what the surviving detector detects.
+fn rewrite_pinned_content(ws: &Path, marker: &str) {
+    write(
+        ws,
+        "source.md",
+        &format!("# Source\n\n## Guideline\n\n{marker}\n"),
     );
-    let victim = parsed.last().expect("the last row").clone();
-    let broken = page.replace(
-        &format!("root_before={}", victim.root_before),
-        "root_before=b3:FORGED_PREDECESSOR",
-    );
-    assert_ne!(broken, page, "the fixture actually altered the page");
-    std::fs::write(root.0.join(RESERVED_JOURNAL_PATH), broken).expect("write journal");
-    victim.anchor
-}
-
-/// The corpus every chain-break arm starts from: two governed writes, the chain
-/// broken between them, and the break CONFIRMED red before anything is measured.
-/// Returns the workspace and the anchor the break cites.
-fn chain_broken_corpus(sb: &Sandbox, name: &str) -> (PathBuf, String) {
-    let ws = sb.corpus(name);
-    sb.governed_write(&ws, "claim.md");
-    sb.governed_write(&ws, "claim2.md");
-    let root = root_of(&ws);
-    let anchor = break_the_chain(&root);
-
-    // The fixture is only a fixture if it produced the state it claims to.
-    let unscoped = sb.run(&ws, &["check"]);
-    assert_eq!(
-        code(&unscoped),
-        1,
-        "FIXTURE: the chain is broken, so unscoped check refuses: {}",
-        said(&unscoped)
-    );
-    assert!(
-        said(&unscoped).contains(&anchor),
-        "FIXTURE: and it cites the broken row {anchor}: {}",
-        said(&unscoped)
-    );
-    (ws, anchor)
 }
 
 // ── the instrument's own control ─────────────────────────────────────────────
 
 /// **The gate can both accept and refuse.** Without this the whole file could be
 /// satisfied by a gate wired to a constant, and a constant is precisely the defect
-/// under test wearing the other sign.
+/// this card started from wearing the other sign.
 #[test]
-fn the_gate_accepts_governed_work_and_refuses_an_out_of_band_edit() {
+fn the_gate_accepts_pinned_work_and_refuses_an_out_of_band_edit() {
     let sb = sandbox();
     let ws = sb.corpus("control");
-    sb.governed_write(&ws, "claim.md");
+    sb.pin_a_claim(&ws, "claim.md");
 
     let accepts = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
         code(&accepts),
         0,
-        "governed work passes the gate: {}",
+        "a corpus whose pins hold passes the gate: {}",
         said(&accepts)
     );
 
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Guideline\n\nrewritten by hand\n",
-    );
+    rewrite_pinned_content(&ws, "rewritten by hand");
     // STAGED, because the gate reads the index — which is the state a pre-commit
     // fence actually fires in, and the reason the interval exists at all (F1).
     git(&ws, &["add", "-A"]);
@@ -339,7 +297,7 @@ fn the_gate_accepts_governed_work_and_refuses_an_out_of_band_edit() {
     assert_eq!(
         code(&refuses),
         1,
-        "and an out-of-band edit does not: {}",
+        "and an out-of-band edit to pinned content does not: {}",
         said(&refuses)
     );
     assert_ne!(
@@ -351,33 +309,22 @@ fn the_gate_accepts_governed_work_and_refuses_an_out_of_band_edit() {
 
 /// **A BOUNDARY, asserted so a later reader finds it stated rather than
 /// surprising.** An out-of-band edit that is NOT staged does not refuse: the index
-/// still carries governed bytes, and those are the bytes a commit would record.
+/// still carries clean bytes, and those are the bytes a commit would record.
 ///
-/// This is F1 working in the direction it was built for — *"the bytes on your disk
-/// are fine"* and *"the bytes you are about to commit are not"* are different
-/// instructions, and so are their converses. The forgery is refused the instant it
-/// is staged, which [`the_gate_accepts_governed_work_and_refuses_an_out_of_band_edit`]
-/// measures directly above.
-///
-/// Measured while writing this unit: the first draft of that control asserted a
-/// refusal here and failed, because it read the worktree's forgery as if it were
-/// the commit's. Left as an arm so the next reader does not repeat it.
+/// This is F1 working in the direction it was built for, and **it is untouched by
+/// the ruling** — the interval is a question about git, not about engine memory.
 #[test]
-fn an_unstaged_out_of_band_edit_does_not_gate_a_governed_index() {
+fn an_unstaged_out_of_band_edit_does_not_gate_a_clean_index() {
     let sb = sandbox();
     let ws = sb.corpus("boundary");
-    sb.governed_write(&ws, "claim.md");
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Guideline\n\nrewritten by hand, and NOT staged\n",
-    );
+    sb.pin_a_claim(&ws, "claim.md");
+    rewrite_pinned_content(&ws, "rewritten by hand, and NOT staged");
 
     let gated = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
         code(&gated),
         0,
-        "the index carries governed bytes, and the index is what a commit records: {}",
+        "the index carries clean bytes, and the index is what a commit records: {}",
         said(&gated)
     );
     assert!(
@@ -397,120 +344,55 @@ fn an_unstaged_out_of_band_edit_does_not_gate_a_governed_index() {
     );
 }
 
-// ── ACCEPTANCE ARMS ──────────────────────────────────────────────────────────
+// ── ACCEPTANCE ───────────────────────────────────────────────────────────────
 
-/// **ARM 1 — THE REDDEN.** A chain-broken history plus a fully governed staged
-/// write: the commit LANDS, and the standing break is told anyway.
-///
-/// This is the arm that fails against the pre-fix behaviour, and it says so in the
-/// same run: `mrd check --staged` — the shipped invocation, unchanged — refuses
-/// this exact corpus with exit 1, while the scoped question accepts it with exit 0.
-/// **The assertion is the DIFFERENCE**, so it cannot be satisfied by a gate that
-/// merely stopped refusing: arm 2 and arms 3-4 hold that door shut.
+/// **Was ARM 2, and it survives untouched in substance.** A corpus whose pins hold
+/// passes BOTH questions, so a gate that learned to say "no" to everything is caught
+/// right here, and a verb whose unscoped form broke outright is caught beside it.
 #[test]
-fn arm1_chain_broken_plus_governed_staged_write_commits_and_tells_the_break() {
+fn a_governed_corpus_passes_both_questions() {
     let sb = sandbox();
-    let (ws, anchor) = chain_broken_corpus(&sb, "arm1");
-
-    // A third governed write, on top of the broken history. Fully governed: the
-    // engine wrote every byte of it.
-    sb.governed_write(&ws, "claim3.md");
-
-    // THE PRE-FIX BEHAVIOUR, measured live in this same run.
-    let staged = sb.run(&ws, &["check", "--staged"]);
-    assert_eq!(
-        code(&staged),
-        1,
-        "PRE-FIX: `check --staged` refuses this corpus — the permanent P1 spent on a \
-         per-commit question: {}",
-        said(&staged)
-    );
-
-    // THE SCOPED QUESTION over the identical bytes.
-    let gated = sb.run(&ws, &["check", "--commit-gate"]);
-    assert_eq!(
-        code(&gated),
-        0,
-        "the interval a commit records IS accounted for, so the gate permits: {}",
-        said(&gated)
-    );
-    assert_ne!(
-        code(&staged),
-        code(&gated),
-        "THE DISCRIMINATION: one corpus, two questions, two answers — this is the \
-         whole deliverable, and it is what a stale exit code could not express"
-    );
-
-    // C2 — downgrade the blocking, never the telling.
-    let told = stderr(&gated);
-    assert!(
-        told.contains(&anchor),
-        "the STANDING BREAK is told on the passing run, citing the same row {anchor}: {told}"
-    );
-    assert!(
-        told.contains("STANDING"),
-        "and it is named a standing fact, not a verdict about the commit: {told}"
-    );
-
-    // R40 — the assert is the STATE CHANGE, not the exit code.
-    let head_before = git_head(&ws);
-    let (commit_code, commit_said) = sb.commit(&ws, "governed work over a broken chain");
-    let head_after = git_head(&ws);
-    assert_eq!(
-        commit_code, 0,
-        "and a REAL commit lands through the fence: {commit_said}"
-    );
-    assert_ne!(
-        head_before, head_after,
-        "HEAD moved — the governed commit is history: {commit_said}"
-    );
-    assert!(
-        commit_said.contains(&anchor),
-        "the operator was told the standing break at commit time too: {commit_said}"
-    );
-}
-
-/// **ARM 2 — a clean chain still passes.** Guards against a fix that unblocks by
-/// disabling the gate: here BOTH questions must answer 0, so a gate that learned to
-/// say "yes" to everything is invisible to arm 1 but not to arms 3-4, and a verb
-/// that broke `--staged` outright is caught right here.
-#[test]
-fn arm2_clean_chain_plus_governed_staged_write_passes_both_questions() {
-    let sb = sandbox();
-    let ws = sb.corpus("arm2");
-    sb.governed_write(&ws, "claim.md");
+    let ws = sb.corpus("clean");
+    sb.pin_a_claim(&ws, "claim.md");
 
     let staged = sb.run(&ws, &["check", "--staged"]);
     let gated = sb.run(&ws, &["check", "--commit-gate"]);
-    assert_eq!(code(&staged), 0, "the shipped question: {}", said(&staged));
+    assert_eq!(code(&staged), 0, "the unscoped question: {}", said(&staged));
     assert_eq!(code(&gated), 0, "and the scoped one: {}", said(&gated));
-    assert!(
-        stderr(&gated).is_empty(),
-        "an intact record has NO standing break to tell — a report printed \
-         unconditionally would be noise that teaches operators to ignore it: {}",
-        stderr(&gated)
-    );
 
-    let (commit_code, commit_said) = sb.commit(&ws, "governed work over a clean chain");
+    // An ordinary edit to a page nothing pins — the commonest commit there is, and
+    // the one a gate must never stand in the way of.
+    write(
+        &ws,
+        "claim2.md",
+        "# Claim\n\nwe rely on it, and said so twice.\n",
+    );
+    let (commit_code, commit_said) = sb.commit(&ws, "work over a corpus whose pins hold");
     assert_eq!(commit_code, 0, "the commit lands: {commit_said}");
 }
 
-// ── REFUSAL ARMS, in the same run ────────────────────────────────────────────
+// ── REFUSAL, in the same run ─────────────────────────────────────────────────
 
-/// **ARM 3 — a clean chain plus an out-of-band write is refused**, naming the
-/// interval. The per-commit proposition P2 must survive the change untouched; if
-/// the scoped question were "ignore the journal", this arm is where that shows.
+/// **Was ARM 3.** An out-of-band write to pinned content is refused, naming the
+/// interval. The per-commit proposition P2 survives the ruling whole.
+///
+/// # What changed here is the DETECTOR and therefore the WORDS, not the verdict
+/// The arm used to require the refusal to say `"no governed write ever produced"` —
+/// `Accounted::ForeignBytes`, the journal-derived leg, which asserted that no
+/// recorded write produced these bytes. That vocabulary is gone with the record.
+///
+/// The refusal is now the pin plane's and carries the pin plane's reason word,
+/// `red content-drifted`, which is the SAME word `mrd walk` and `mrd status` print
+/// over the same corpus (one computer, `view::walk::lock_pin_colors`). The exit code
+/// and the subject are unmoved; only the sentence naming the cause moved, because a
+/// different plane is the one answering.
 #[test]
-fn arm3_clean_chain_plus_out_of_band_write_is_refused() {
+fn an_out_of_band_write_to_pinned_content_is_refused() {
     let sb = sandbox();
-    let ws = sb.corpus("arm3");
-    sb.governed_write(&ws, "claim.md");
+    let ws = sb.corpus("out-of-band");
+    sb.pin_a_claim(&ws, "claim.md");
 
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Guideline\n\nrewritten by hand, through no writer\n",
-    );
+    rewrite_pinned_content(&ws, "rewritten by hand, through no writer");
     // Staged: this is the state the fence fires in, and the bytes a commit records.
     git(&ws, &["add", "-A"]);
 
@@ -518,12 +400,18 @@ fn arm3_clean_chain_plus_out_of_band_write_is_refused() {
     assert_eq!(
         code(&gated),
         1,
-        "the bytes being committed were NOT produced by a governed write: {}",
+        "the bytes being committed contradict a pin this corpus declares: {}",
         said(&gated)
     );
     assert!(
-        said(&gated).contains("no governed write ever produced"),
-        "and the refusal says which condition failed: {}",
+        said(&gated).contains("content-drifted"),
+        "and the refusal says which condition failed, in the pin plane's own reason \
+         word: {}",
+        said(&gated)
+    );
+    assert!(
+        said(&gated).contains("claim.md"),
+        "citing the page whose claim was broken, so the operator can locate it: {}",
         said(&gated)
     );
 
@@ -537,38 +425,48 @@ fn arm3_clean_chain_plus_out_of_band_write_is_refused() {
     );
 }
 
-/// **ARM 4 — THE SPECIFICITY ARM.** A chain-broken history plus an out-of-band
-/// write staged in the INDEX, with the worktree restored to its governed bytes
+/// **Was ARM 4 — THE SPECIFICITY ARM, and its subject was never the chain.** An
+/// out-of-band write staged in the INDEX with the worktree restored to clean bytes
 /// (the F1 shape). The gate must still refuse.
 ///
-/// It fails if the scoped question was implemented as "ignore the journal", which
-/// would trade a stuck-closed fence for a stuck-open one — the same defect with the
-/// sign flipped, and a strictly worse outcome than the one this card started from.
-/// It also fails if the gate read the WORKTREE here: the worktree is fully governed
-/// at this instant, so a gate pointed at the wrong interval passes cleanly while a
-/// forgery goes into history.
+/// It fails if the gate read the WORKTREE here: the worktree is spotless at this
+/// instant, so a gate pointed at the wrong interval passes cleanly while a forgery
+/// goes into history.
+///
+/// **Rebuilt on a clean corpus.** The old arm started from `chain_broken_corpus`,
+/// but the break was scenery — it was there to prove the gate ignored P1 while still
+/// catching P2. There is no P1 to ignore, so the scenery is struck and the arm
+/// measures its actual subject with nothing else in the frame.
 #[test]
-fn arm4_chain_broken_plus_out_of_band_staged_write_is_still_refused() {
+fn a_forged_index_is_refused_even_when_the_worktree_is_clean() {
     let sb = sandbox();
-    let (ws, _anchor) = chain_broken_corpus(&sb, "arm4");
-    let governed = std::fs::read_to_string(ws.join("source.md")).expect("governed bytes");
+    let ws = sb.corpus("forged-index");
+    sb.pin_a_claim(&ws, "claim.md");
+    let clean = std::fs::read_to_string(ws.join("source.md")).expect("clean bytes");
 
-    // Stage a forgery, then restore the worktree: the index carries bytes no
-    // governed write produced, while the bytes on disk are perfectly fine.
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Guideline\n\nforged, then hidden from the worktree\n",
-    );
+    // Stage a forgery, then restore the worktree: the index carries bytes that
+    // contradict the pin, while the bytes on disk are perfectly fine.
+    rewrite_pinned_content(&ws, "forged, then hidden from the worktree");
     git(&ws, &["add", "source.md"]);
-    write(&ws, "source.md", &governed);
+    write(&ws, "source.md", &clean);
+
+    // The CONTROL that makes this arm mean what it says: the worktree really is
+    // clean, so a refusal below can only have come from the index.
+    let worktree_only = sb.run(&ws, &["check"]);
+    assert_eq!(
+        code(&worktree_only),
+        0,
+        "the worktree is spotless — if this refused, the arm below would prove \
+         nothing about intervals: {}",
+        said(&worktree_only)
+    );
 
     let gated = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
         code(&gated),
         1,
         "the INDEX carries a forgery, so the gate refuses even though the worktree \
-         is governed: {}",
+         is clean: {}",
         said(&gated)
     );
     assert!(
@@ -587,56 +485,234 @@ fn arm4_chain_broken_plus_out_of_band_staged_write_is_still_refused() {
     );
 }
 
-// ── NEVER-HEALS ARMS ─────────────────────────────────────────────────────────
+// ── THE REVERSED ARMS — ruled, recorded, and given the flag they needed ──────
 
-/// **ARM 5 — the break never heals.** After arm 1's commit lands, the unscoped verb
-/// still reports it, red, citing the same row anchor. No acknowledgement state
-/// exists to clear it, and a governed write on top does not launder it.
+/// **Was ARM 7, and its assertion is INVERTED BY RULING.** A corpus that declares no
+/// pin PASSES `--commit-gate`: exit 0, verdict `pins-hold`.
 ///
-/// Fails the moment the downgrade is implemented as healing rather than as scoping.
+/// # The old arm, and why its doctrine did not simply lose
+/// It asserted exit 1, under the name *"an empty record refuses without accusing"* —
+/// unknown is not clean, fail CLOSED. **That reading was journal mechanics, not
+/// independent doctrine:** an empty record meant no baseline, no baseline meant a
+/// grey write-history plane, and the grey gated the exit. The antecedent died with
+/// the journal by ruling, so this is a mechanism with no input left being removed —
+/// not a safety principle being overturned.
+///
+/// # Zero pins is VACUOUS TRUTH, not unknown
+/// Fail-closed protects the case where the gate CANNOT ASSESS something it claims to
+/// gate. That case is a grey pin or an unaskable object store, and **it still fails
+/// closed, untouched.** A corpus with no pins has declared nothing; the gate's whole
+/// question is *"does the world still match the pins"*, and over zero pins that is
+/// vacuously yes. Nothing is unknown because nothing was asked.
+///
+/// # The old doctrine survives as the CALLER'S choice, and the next arm holds it
+/// A shell script cannot read a disclosure line, so `--require-pins` puts the
+/// fail-closed reading in the EXIT CODE for callers that want it. It is opt-in
+/// because a fail-closed default would turn this gate into a coverage mandate nobody
+/// ruled and make it un-adoptable on every vault that has not started pinning.
+///
+/// This is **U5 corpus row 09**, tagged [LAW], and the sharpest movement in the
+/// corpus alongside row 08.
 #[test]
-fn arm5_the_break_never_heals_after_a_gated_commit_lands() {
+fn a_pinless_corpus_passes_by_default() {
     let sb = sandbox();
-    let (ws, anchor) = chain_broken_corpus(&sb, "arm5");
-    sb.governed_write(&ws, "claim3.md");
+    let ws = sb.corpus("pinless");
 
-    let (commit_code, commit_said) = sb.commit(&ws, "governed work over a broken chain");
-    assert_eq!(commit_code, 0, "arm 1's commit lands: {commit_said}");
-
-    let after = sb.run(&ws, &["check"]);
+    let gated = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
-        code(&after),
-        1,
-        "the unscoped claim 'this corpus's write history is intact' is dead PERMANENTLY: {}",
-        said(&after)
+        code(&gated),
+        0,
+        "[LAW] corpus row 09: nothing is claimed, so nothing is unknown: {}",
+        said(&gated)
+    );
+    let told = said(&gated);
+    assert!(
+        told.contains("pins-hold"),
+        "the passing word names the plane that answered: {told}"
     );
     assert!(
-        said(&after).contains(&anchor),
-        "and it cites the SAME row {anchor} it always did: {}",
-        said(&after)
+        told.contains(check::WRITE_HISTORY_NOT_ASSESSED),
+        "AND THE DISCLOSURE RIDES WITH IT — the pass is narrower than the pass this \
+         gate once gave, and the line saying so is what keeps a reader from banking \
+         the wider one: {told}"
     );
 
-    // A further governed write does not launder it either.
-    sb.governed_write(&ws, "claim2.md");
-    let later = sb.run(&ws, &["check"]);
-    assert_eq!(code(&later), 1, "still refusing: {}", said(&later));
-    assert!(
-        said(&later).contains(&anchor),
-        "still citing {anchor}: {}",
-        said(&later)
+    // The population, on the machine face: `permits: true` over zero pins and over
+    // fifty are different assurances (S3-R23(5)).
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&sb.run(&ws, &["check", "--commit-gate", "--json"])))
+            .expect("json");
+    assert_eq!(
+        json["commit_gate"]["permits"], true,
+        "permitted: {}",
+        json["commit_gate"]
+    );
+    assert_eq!(
+        json["commit_gate"]["pin_coverage"], 0,
+        "and the caller is TOLD the population it passed over, so a machine can see \
+         what a human reads in the disclosure: {}",
+        json["commit_gate"]
     );
 }
 
-/// **ARM 6 — a gated pass over a broken record is NEVER spelled green.** With the
-/// chain broken, the record that accounted for the interval may itself hold a
-/// forged row, so the acceptance is genuinely weaker and must be rendered as the
-/// weaker claim it is. Hiding that would be this card's defect wearing the other
-/// sign.
+/// **Was ARM 8 — same antecedent, same reversal.** A pinless corpus plus an
+/// out-of-band write still passes, because there is no pin for the write to
+/// contradict.
+///
+/// # This is U5 corpus row 08, and it is the largest reduction in enforcement here
+/// The old gate refused this via `Accounted::ForeignBytes`: the record had produced
+/// no such root. **It permits now**, because the record is gone and the pin plane is
+/// all that gates — and the pin plane has nothing to say about content nobody
+/// claimed.
+///
+/// The forged bytes are caught at the **write door**, and at lock time by git.
+/// `check` is at-rest truth, and at rest this world matches its (zero) pins. U5
+/// flagged this row for U25 re-verdict; it is ruled, and this arm is where the
+/// ruling is executable rather than only written down.
+///
+/// **The contrast arm is the point:** the same forgery against a corpus that DOES
+/// pin the file is refused ([`an_out_of_band_write_to_pinned_content_is_refused`]).
+/// The difference is coverage, not the gate going soft.
 #[test]
-fn arm6_a_gated_pass_over_a_broken_record_is_not_spelled_green() {
+fn a_pinless_corpus_passes_even_with_an_out_of_band_write() {
     let sb = sandbox();
-    let (ws, _anchor) = chain_broken_corpus(&sb, "arm6");
-    sb.governed_write(&ws, "claim3.md");
+    let ws = sb.corpus("pinless-forged");
+    rewrite_pinned_content(&ws, "rewritten by hand, and nothing pins it");
+    git(&ws, &["add", "-A"]);
+
+    let gated = sb.run(&ws, &["check", "--commit-gate"]);
+    assert_eq!(
+        code(&gated),
+        0,
+        "[LAW] corpus row 08: no pin covers these bytes, so the gate has no claim \
+         to check them against: {}",
+        said(&gated)
+    );
+
+    let head_before = git_head(&ws);
+    let (commit_code, commit_said) = sb.commit(&ws, "out-of-band over a pinless corpus");
+    assert_eq!(commit_code, 0, "and the commit LANDS: {commit_said}");
+    assert_ne!(
+        head_before,
+        git_head(&ws),
+        "R40 — HEAD moved, so this is a real reduction and not a rendering: \
+         {commit_said}"
+    );
+}
+
+/// **THE OPT-IN FLAG: the fail-closed doctrine, preserved as a caller's choice.**
+/// `--require-pins` refuses exactly the corpus the two arms above let through, and
+/// it refuses it with its OWN word rather than borrowing grey's.
+///
+/// # Both directions, so the flag is shown to discriminate
+/// The same run measures the flag refusing a pinless corpus AND permitting a pinned
+/// one. A flag that refused everything would satisfy the first half alone, and would
+/// be a strictly worse gate than the one it was added to.
+///
+/// # Why the word is `no-pin-coverage` and not `grey(cannot-assess)`
+/// Grey means *a question was put and could not be answered*. That is not this:
+/// every question that was put WAS answered — there were none. Spelling it grey
+/// would tell the operator the gate tried and failed, which is the one thing that
+/// did not happen.
+#[test]
+fn require_pins_refuses_a_pinless_corpus_and_permits_a_pinned_one() {
+    let sb = sandbox();
+
+    // REFUSAL — no pin declared, and the caller asked to refuse exactly that.
+    let bare = sb.corpus("require-pins-bare");
+    let strict = sb.run(&bare, &["check", "--commit-gate", "--require-pins"]);
+    assert_eq!(
+        code(&strict),
+        1,
+        "the caller asked for coverage and there is none: {}",
+        said(&strict)
+    );
+    assert!(
+        said(&strict).contains("no-pin-coverage"),
+        "with its own reason word: {}",
+        said(&strict)
+    );
+    assert!(
+        !said(&strict).contains("grey(cannot-assess)"),
+        "and NOT grey — nothing here was unanswerable, there was simply nothing to \
+         ask: {}",
+        said(&strict)
+    );
+
+    // The default over the SAME corpus, in the same run: this is the discrimination.
+    let lax = sb.run(&bare, &["check", "--commit-gate"]);
+    assert_eq!(
+        code(&lax),
+        0,
+        "and without the flag the same corpus passes — the strictness is the \
+         CALLER'S, not the engine's: {}",
+        said(&lax)
+    );
+
+    // ACCEPTANCE — the flag is not a gate wired shut.
+    let pinned = sb.corpus("require-pins-covered");
+    sb.pin_a_claim(&pinned, "claim.md");
+    let covered = sb.run(&pinned, &["check", "--commit-gate", "--require-pins"]);
+    assert_eq!(
+        code(&covered),
+        0,
+        "a corpus WITH coverage passes under the flag — otherwise it would be a \
+         refusal wired to a constant: {}",
+        said(&covered)
+    );
+
+    // A grey pin still fails closed WITH OR WITHOUT the flag; that leg is not this
+    // flag's business and the flag must not be read as having introduced it.
+    assert!(
+        !said(&covered).contains("no-pin-coverage"),
+        "coverage exists, so the flag has nothing to say: {}",
+        said(&covered)
+    );
+}
+
+/// **The flag means nothing without the question, and says so** rather than being
+/// silently ignored. A caller who typed `--require-pins` believes a gate is being
+/// tightened; answering confidently about a question that was never asked is the one
+/// shape a fence's verb must never produce.
+#[test]
+fn require_pins_without_the_gate_is_a_bad_invocation() {
+    let sb = sandbox();
+    let ws = sb.corpus("flag-alone");
+
+    let out = sb.run(&ws, &["check", "--require-pins"]);
+    assert_eq!(
+        code(&out),
+        2,
+        "a bad invocation rides exit 2, never a verdict code: {}",
+        said(&out)
+    );
+    assert!(
+        said(&out).contains("--commit-gate"),
+        "and it names the flag it needs: {}",
+        said(&out)
+    );
+}
+
+// ── VOCABULARY AND SHAPE ─────────────────────────────────────────────────────
+
+/// **What survives of ARM 6.** Its corpus (a broken chain) is gone, but its claim
+/// was about VOCABULARY — a gated pass must never be spelled in a word stronger than
+/// the evidence — and that claim outlived the corpus.
+///
+/// The word to hold honest changed with the plane. `accounted` and
+/// `accounted(unvouched-record)` both asserted something about a RECORD that no
+/// longer exists; **a passing word that asserts an unobserved property is the same
+/// defect as an enum member that does, wearing a different coat.** `pins-hold` names
+/// the plane that actually answered.
+///
+/// `record_vouches` and `standing_report` are asserted ABSENT: there is no ledger
+/// left to vouch for itself, so a key saying whether it does would be answering
+/// about nothing.
+#[test]
+fn the_passing_word_names_the_plane_that_answered() {
+    let sb = sandbox();
+    let ws = sb.corpus("vocabulary");
+    sb.pin_a_claim(&ws, "claim.md");
 
     let gated = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(code(&gated), 0, "it passes: {}", said(&gated));
@@ -647,31 +723,42 @@ fn arm6_a_gated_pass_over_a_broken_record_is_not_spelled_green() {
         .expect("the gate states its verdict")
         .to_owned();
     assert!(
-        verdict.contains("accounted(unvouched-record)"),
-        "the pass carries the WEAKER word: {verdict}"
+        verdict.contains("pins-hold"),
+        "the pass names the plane that answered: {verdict}"
+    );
+    assert!(
+        !verdict.contains("accounted"),
+        "and never the retired word — it asserted that a RECORD accounted for these \
+         bytes, which is a claim this verb can no longer make: {verdict}"
     );
     assert!(
         !verdict.contains("green"),
-        "and never the strong one — an operator must not bank a claim the evidence \
-         does not support: {verdict}"
+        "nor the strong one — an operator must not bank a claim wider than the \
+         plane that produced it: {verdict}"
     );
 
-    // The same fact on the --json face, where a machine reads it.
-    let json = sb.run(&ws, &["check", "--commit-gate", "--json"]);
-    let value: serde_json::Value =
-        serde_json::from_str(&stdout(&json)).expect("the gated json face parses");
-    let gate = &value["commit_gate"];
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout(&sb.run(&ws, &["check", "--commit-gate", "--json"])))
+            .expect("the gated json face parses");
+    let gate = &json["commit_gate"];
+    assert_eq!(gate["permits"], true, "the commit is permitted: {gate}");
     assert_eq!(
-        gate["permits"],
-        true,
-        "the commit is permitted: {}",
-        stdout(&json)
+        gate["verdict"], "pins-hold",
+        "the same word on both faces (S3-R6): {gate}"
     );
     assert_eq!(
-        gate["record_vouches"],
-        false,
-        "AND the record does not vouch for itself — two facts, never one byte: {}",
-        stdout(&json)
+        gate["gated_planes"],
+        serde_json::json!(["pins"]),
+        "and the face NAMES the one plane it gated on, so a machine reader learns \
+         the narrowing the same way a human does: {gate}"
+    );
+    assert!(
+        gate.get("record_vouches").is_none(),
+        "REMOVED with the record it reported on: {gate}"
+    );
+    assert!(
+        gate.get("standing_report").is_none(),
+        "likewise — there is no standing break to report: {gate}"
     );
 }
 
@@ -679,15 +766,11 @@ fn arm6_a_gated_pass_over_a_broken_record_is_not_spelled_green() {
 /// gate block is ABSENT without `--commit-gate`, per this face's own law — *an
 /// absent field reads as "not checked"* — and a `null` would instead claim the gate
 /// was asked and had nothing to say.
-///
-/// Measured while writing this unit: emitting `"commit_gate": null`
-/// unconditionally broke two `check_e2e` arms that assert the object key for key.
-/// They were right to break, and the shape was what was wrong.
 #[test]
 fn the_shipped_json_face_gains_nothing_until_the_gate_is_asked() {
     let sb = sandbox();
     let ws = sb.corpus("json-shape");
-    sb.governed_write(&ws, "claim.md");
+    sb.pin_a_claim(&ws, "claim.md");
 
     let plain: serde_json::Value =
         serde_json::from_str(&stdout(&sb.run(&ws, &["check", "--json"]))).expect("json");
@@ -703,96 +786,11 @@ fn the_shipped_json_face_gains_nothing_until_the_gate_is_asked() {
         gated.get("commit_gate").is_some(),
         "and present when it was: {gated}"
     );
-}
-
-// ── DRIFT ARMS — the ruled cache-resident journal ─────────────────────────────
-
-/// **ARM 7 — an empty record is distinguishable from a chain break, and does not
-/// accuse.** Under the ruled cache-resident JSONL journal a fresh clone carries
-/// zero rows, so P3 stops being an edge case and becomes the common one. It must
-/// refuse — unknown is not clean — but it must refuse as an ABSENCE OF EVIDENCE,
-/// not as tampering, and it must not read like arm 1's corpus.
-///
-/// Fails if `NoRecord` is folded into the tampering leg, which is exactly what a
-/// bare `is_prefix_of` + `accounts_for` pair does: both conditions are false over an
-/// empty record, so a naive pair spells "there is no ledger" as "you forged this",
-/// and accuses every fresh clone.
-#[test]
-fn arm7_an_empty_record_refuses_without_accusing_and_is_not_a_chain_break() {
-    let sb = sandbox();
-    let ws = sb.corpus("arm7");
-    let root = root_of(&ws);
+    // The population keys ride INSIDE the gate block, so the shipped `pins` block
+    // is byte-identical and no existing consumer moves.
     assert!(
-        rows(&root).is_empty(),
-        "FIXTURE: no governed write has happened, so the record is empty"
-    );
-
-    let gated = sb.run(&ws, &["check", "--commit-gate"]);
-    assert_eq!(
-        code(&gated),
-        1,
-        "unknown is not clean — it fails CLOSED: {}",
-        said(&gated)
-    );
-    let told = said(&gated);
-    assert!(
-        told.contains("carries no row"),
-        "it says the evidence is absent: {told}"
-    );
-    assert!(
-        told.contains("tampered with nothing") || told.contains("not a finding against them"),
-        "and says plainly that this is not an accusation: {told}"
-    );
-    assert!(
-        told.contains("grey(cannot-assess)"),
-        "carrying the reason word for an unanswerable question: {told}"
-    );
-    assert!(
-        !told.contains("no governed write ever produced"),
-        "and NOT the forgery wording — that is the accusation this arm exists to \
-         keep off a fresh clone: {told}"
-    );
-
-    // DISTINGUISHABLE from arm 1's chain-break corpus, which is the claim.
-    let (broken_ws, _) = chain_broken_corpus(&sb, "arm7-contrast");
-    sb.governed_write(&broken_ws, "claim3.md");
-    let broken = sb.run(&broken_ws, &["check", "--commit-gate"]);
-    assert_ne!(
-        code(&gated),
-        code(&broken),
-        "P3 and P1 reach different answers now — under the shipped verb both were \
-         exit 1, which is the conflation this card names"
-    );
-}
-
-/// **ARM 8 — an empty record plus an out-of-band write still fails closed.** The
-/// widened grey leg must not become a hole: with nothing recorded, nothing is
-/// accounted for, and a workspace that can vouch for nothing may commit nothing.
-#[test]
-fn arm8_an_empty_record_plus_an_out_of_band_write_fails_closed() {
-    let sb = sandbox();
-    let ws = sb.corpus("arm8");
-    write(
-        &ws,
-        "source.md",
-        "# Source\n\n## Guideline\n\nrewritten by hand\n",
-    );
-    git(&ws, &["add", "-A"]);
-
-    let gated = sb.run(&ws, &["check", "--commit-gate"]);
-    assert_eq!(
-        code(&gated),
-        1,
-        "no record accounts for anything, so nothing passes: {}",
-        said(&gated)
-    );
-
-    let head_before = git_head(&ws);
-    let (commit_code, commit_said) = sb.commit(&ws, "out-of-band over an empty record");
-    assert_ne!(commit_code, 0, "the fence REFUSES: {commit_said}");
-    assert_eq!(
-        head_before,
-        git_head(&ws),
-        "R40 — nothing entered history: {commit_said}"
+        plain["pins"].get("pin_coverage").is_none(),
+        "the coverage count is the GATE's reading, not a new key on the pin plane: \
+         {plain}"
     );
 }

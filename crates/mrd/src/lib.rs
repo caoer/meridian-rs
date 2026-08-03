@@ -210,10 +210,21 @@ usage:
                            verb once returned: it means the world still matches the
                            pins, and nothing about how it got that way.
                            Archaeology is git; attribution is transcript JSONL.
+                           --commit-gate --require-pins REFUSES a corpus that
+                           declares no pin at all. Opt-in, and only with
+                           --commit-gate. By default a pinless corpus PASSES: the
+                           gate asks `does the world still match the pins`, and
+                           over zero pins that is vacuously true, so nothing is
+                           unknown because nothing was asked. A grey pin or an
+                           unaskable object store still fails CLOSED either way —
+                           that is a question that WAS put and could not be
+                           answered, which is a different thing. The flag is for
+                           callers that want no-coverage to mean refuse in the
+                           EXIT CODE, since a shell cannot read a disclosure line.
                            Exits: 0 green / 1 a
-                           finding, or grey(cannot-assess) — the exit says
-                           do-not-proceed, the reason word says why / 2 bad
-                           invocation
+                           finding, grey(cannot-assess), or no-pin-coverage under
+                           --require-pins — the exit says do-not-proceed, the
+                           reason word says why / 2 bad invocation
   mrd skill hook           EMIT the commit-fence contract to stdout, and nothing
                            else: the markdown IS the contract — what to place, at
                            which three doors (pre-commit, pre-merge-commit,

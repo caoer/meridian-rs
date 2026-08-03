@@ -210,6 +210,21 @@ pub struct PinPlane {
     /// Why the object store could not be asked at all, when it could not be.
     /// `Some` ⇒ the retrieval plane is UNREAD, never read clean.
     pub cannot_ask: Option<String>,
+    /// **How many pins this corpus DECLARES — the CLAIM plane's population**
+    /// (S3-R23(5), the same doctrine [`PinPlane::asked`] carries for the retrieval
+    /// plane).
+    ///
+    /// [`PinPlane::red`] and [`PinPlane::grey`] list only pins that are not green,
+    /// so an empty pair means two entirely different things over fifty pins and
+    /// over none — *"a gate whose population empties is the quietest way for
+    /// coverage to disappear"*. Before the journal died the difference was
+    /// academic; it is now load-bearing, because the pin plane is the ONLY thing
+    /// `--commit-gate` reads, and zero declared pins is the case where it gates on
+    /// nothing at all.
+    ///
+    /// Read by `--require-pins` (`mrd check`), which is how a caller that wants
+    /// "no coverage ⇒ refuse" says so.
+    pub declared: usize,
 }
 
 impl PinPlane {
@@ -282,6 +297,7 @@ pub fn pin_plane(
         pending: 0,
         never: 0,
         cannot_ask: None,
+        declared: pins.len(),
     };
     for pin in pins {
         match pin.color {
@@ -550,6 +566,7 @@ mod tests {
             pending: 1,
             never: 1,
             cannot_ask: None,
+            declared: 3,
         };
         assert_eq!(lifecycle.asked(), 3, "the population is the three states");
         assert!(
