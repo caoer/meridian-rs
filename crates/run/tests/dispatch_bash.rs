@@ -505,7 +505,7 @@ fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
 /// U16 honest semantics: the step now runs in the invocation cwd and is handed
 /// `$MERIDIAN_PROJECT_ROOT`, so reaching the tree is EASY. Reaching it is not
 /// tolerating it — a stray write through that very variable is detected as
-/// OutOfBand and REFUSES convergence: nothing applies, no completion receipt,
+/// `OutOfBand` and REFUSES convergence: nothing applies, no completion receipt,
 /// and (ruling 2) the write is never rolled back.
 #[test]
 fn a_project_root_relative_stray_write_refuses_convergence() {
