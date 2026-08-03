@@ -314,6 +314,7 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
         depth: f.depth,
         title: f.title.clone(),
         hpath: f.hpath.clone(),
+        hpath_raw: f.hpath_raw.clone(),
         words: f.words,
         sec_rev: NodeRev(f.sec_rev.clone()),
         span: f.span,
@@ -563,6 +564,7 @@ fn composed_sections(
             wire::ReadSectionOut {
                 sel: row.sel.to_owned(),
                 hpath: row.fact.hpath.clone(),
+                hpath_raw: row.fact.hpath_raw.clone(),
                 sec_rev: NodeRev(row.fact.sec_rev.clone()),
                 words,
                 content,
