@@ -119,7 +119,40 @@ fn an_illegal_move_refuses_with_the_authored_message() {
         "status-move: tasks/fix-parser.md moved `review` -> `todo`, which is not a \
          legal board move. From `review` the legal moves are: `done`, `in-progress`. \
          Move the card one step along the board (`todo` -> `in-progress` -> `review` \
-         -> `done`), or bounce it back from `review` to `in-progress` for rework."
+         -> `done`); `review` bounces back to `in-progress` for rework, and \
+         `in-progress` parks at `blocked` while the card is escalated."
+    );
+}
+
+/// `blocked` is entered from the work it interrupts and nowhere else: a `todo`
+/// card has no one working it to block, so `todo` -> `blocked` refuses, and the
+/// message names the one legal move out of `todo`.
+#[test]
+fn entering_blocked_from_todo_refuses_naming_the_legal_moves() {
+    let violation = refusal_of(&status_move("todo", "blocked"));
+    assert_eq!(
+        violation.message,
+        "status-move: tasks/fix-parser.md moved `todo` -> `blocked`, which is not a \
+         legal board move. From `todo` the legal moves are: `in-progress`. Move the \
+         card one step along the board (`todo` -> `in-progress` -> `review` -> \
+         `done`); `review` bounces back to `in-progress` for rework, and \
+         `in-progress` parks at `blocked` while the card is escalated."
+    );
+}
+
+/// A `blocked` card is parked, not finished: it returns to the work it
+/// interrupted, so `blocked` -> `review` refuses and names `in-progress` as the
+/// way back.
+#[test]
+fn leaving_blocked_for_review_refuses_naming_the_legal_moves() {
+    let violation = refusal_of(&status_move("blocked", "review"));
+    assert_eq!(
+        violation.message,
+        "status-move: tasks/fix-parser.md moved `blocked` -> `review`, which is not a \
+         legal board move. From `blocked` the legal moves are: `in-progress`. Move the \
+         card one step along the board (`todo` -> `in-progress` -> `review` -> \
+         `done`); `review` bounces back to `in-progress` for rework, and \
+         `in-progress` parks at `blocked` while the card is escalated."
     );
 }
 
@@ -144,12 +177,28 @@ fn an_off_vocabulary_source_status_refuses_naming_the_board() {
     assert_eq!(
         violation.message,
         "status-move: tasks/fix-parser.md sits at `parked`, which is not a board \
-         status. The board is `todo` -> `in-progress` -> `review` -> `done`. Set the \
-         card to the board status it really occupies, then move it one step."
+         status. The board is `todo` -> `in-progress` -> `review` -> `done`, with \
+         `in-progress` <-> `blocked` while the card is escalated. Set the card to the \
+         board status it really occupies, then move it one step."
     );
 }
 
 // ── the permitted moves ───────────────────────────────────────────────────────
+
+/// The escalation pair lands in BOTH directions: `in-progress` parks at
+/// `blocked` when the work is stuck, and the card returns to `in-progress` when
+/// the escalation clears. A guard that refused either direction would forbid the
+/// board's own escalation signal.
+#[test]
+fn the_blocked_escalation_edges_land() {
+    for (from, to) in [("in-progress", "blocked"), ("blocked", "in-progress")] {
+        assert_eq!(
+            gate(&status_move(from, to), &armed_law()),
+            GateOutcome::Ok(Vec::new()),
+            "`{from}` -> `{to}` is the board's escalation path"
+        );
+    }
+}
 
 /// Every forward step, plus the `review` → `in-progress` bounce, lands.
 #[test]
