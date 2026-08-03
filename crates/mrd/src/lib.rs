@@ -267,28 +267,28 @@ usage:
                            and exit 2. Exits: 0 clean / 1 run refused or failed
                            / 2 bad invocation
 ! mrd new <KIND> <ID> [--dry] [--actor A] [--now T]
-                           file birth (U5.3): resolve the def (presets/<KIND>.md
-                           or a page path), fill its ^template, validate the
-                           filled record against its ^properties, and birth the
-                           first rev through the guarded create (inline birth
+                           file birth: resolve the def (presets/<KIND>.md or a
+                           page path), fill its ^template, validate the filled
+                           record against its ^properties, and birth the first
+                           rev through the guarded create (inline birth
                            receipt). An invalid def refuses def_invalid naming the
                            rule; an occupied target refuses cas_mismatch. Exits: 0
                            born (or dry) / 1 refused / 2 bad invocation
 ! mrd unfold <PRESET> [--dry] [--actor A] [--now T]
-                           materialize a preset's declared scaffold (U5.3): every
+                           materialize a preset's declared scaffold: every
                            # Unfold file is born through the guarded create, so
                            each carries a birth receipt; an existing path refuses
                            via the if_absent CAS, byte-untouched. Exits: 0 all
                            born (or dry) / 1 a path already existed / 2 bad
                            invocation
 ! mrd reconcile <PRESET> [--prune] [--dry] [--actor A] [--now T]
-                           reconcile the tree toward a preset's declared scaffold
-                           (U3.5b; ZT ruling #3): materialize ALL missing declared
-                           paths (guarded create). --prune removes ONLY declared
-                           -ephemeral files (guarded remove) + empty-undeclared
-                           dirs; undeclared content renders as findings, NEVER a
-                           prune. Exits: 0 converged (or dry) / 1 a finding / 2 bad
-                           invocation
+                           reconcile the tree toward a preset's declared scaffold:
+                           materialize ALL missing declared paths (guarded
+                           create). --prune removes ONLY declared-ephemeral files
+                           (guarded remove) + empty-undeclared dirs beneath the
+                           scaffold; undeclared content renders as findings,
+                           NEVER a prune. Exits: 0 converged (or dry) / 1 a
+                           finding / 2 bad invocation
 ! mrd journal genesis --ruling <REF> [--archive PATH] [--dry] [--json]
                            the GOVERNED reset of the receipt journal (G2): move
                            every row to a dated archive page, truncate, and open
@@ -306,7 +306,7 @@ usage:
                            done (or dry) / 1 the plane refused (nothing to
                            archive, archive exists) / 2 bad invocation
 ! mrd realise <PAGE> [--dry]
-                           the reconciliation loop (U3.5b): observe -> check ->
+                           the reconciliation loop: observe -> check ->
                            apply (only on drift, once) -> re-check over the page's
                            declared claim (realise.field/realise.expected +
                            realise.apply). Apply rides mrd run. Reports one terminal
