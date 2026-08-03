@@ -15,6 +15,10 @@
 //!   expected value. Pure read, no cap.
 //! - `realise.apply` — the apply task name addressed on the page (`task.<name>`);
 //!   absent ⇒ the claim is NOT apply-capable, a drift classifies `pending-agent`.
+//! - `realise.rule` — the id of the rule this claim realises. A pending-agent
+//!   card references it BY ID and never embeds the rule body (decision 8): the
+//!   rule keeps one home, its own registered page. Optional; validated against
+//!   the `policy::RuleId` grammar at parse time.
 //!
 //! The retry budget is ONE apply then one re-check — parity with the legacy
 //! engine's single-apply budget.
@@ -101,8 +105,25 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         env: BTreeMap::new(),
     });
 
+    // `realise.rule` names the rule this claim realises, BY ID. A pending-agent
+    // card references it and never copies its body (decision 8) — so the id is
+    // validated against the registration grammar here, at the page edge, rather
+    // than minting a card that points at nothing parseable.
+    let rule = match fm_scalar(&doc, "realise.rule") {
+        None => None,
+        Some(id) => {
+            policy::RuleId::parse(&id).map_err(|e| {
+                Fail::tool(format!(
+                    "{page} declares `realise.rule: {id}` — not a rule id: {e:?}"
+                ))
+            })?;
+            Some(id)
+        }
+    };
+
     let claim = realise::Claim {
         selector: format!("{page}#{field}"),
+        rule,
         check: Box::new(FieldEquals {
             page: page.to_owned(),
             field: field.clone(),
@@ -253,8 +274,14 @@ fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-/// Mint the realise identity at the §9 boundary: a unique, path-safe invocation id
-/// and a unix-seconds time fact (the same shape `mrd run` mints).
+/// Mint the realise identity at the §9 boundary: a unique, path-safe invocation
+/// id and an RFC3339 time fact.
+///
+/// The clock is read HERE, once, and passed in — the engine reads none
+/// (`wire::now_is_rfc3339` validates, never generates), so every surface
+/// downstream renders deterministically from an argument. Unix seconds are the
+/// invocation id's business, never a timestamp a human or a governed page sees
+/// (verdict 15.7).
 fn mint_identity() -> Result<(String, String), Fail> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -265,7 +292,30 @@ fn mint_identity() -> Result<(String, String), Fail> {
         elapsed.subsec_millis(),
         std::process::id()
     );
-    Ok((id, secs.to_string()))
+    Ok((id, rfc3339_utc(secs)))
+}
+
+/// Format unix seconds as an RFC3339 UTC date-time (`YYYY-MM-DDTHH:MM:SSZ`) —
+/// the `now` format law transcribed in `wire::now_is_rfc3339`, from the other
+/// side. Pure and dependency-free (the workspace carries no date crate); the
+/// civil-date split is Hinnant's `civil_from_days` algorithm, exact for every
+/// day in the proleptic Gregorian calendar.
+fn rfc3339_utc(secs: u64) -> String {
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // Shift the epoch to 0000-03-01 so leap day lands at the end of the era.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097; // day of era, [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // March-based month, [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = era * 400 + yoe + u64::from(month <= 2);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z")
 }
 
 /// The parsed `realise` invocation.
@@ -296,5 +346,48 @@ impl Parsed {
             dry,
             format: if json { Format::Json } else { Format::Human },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The minted clock satisfies the engine's OWN format predicate — the two
+    /// sides of the §9 law (host formats, engine validates) meet here.
+    #[test]
+    fn minted_now_is_rfc3339() {
+        let (_id, now) = mint_identity().expect("system clock");
+        assert!(wire::now_is_rfc3339(&now), "now={now:?}");
+    }
+
+    /// Known instants, including the leap-year and century-rule edges the
+    /// civil-date split has to get right.
+    #[test]
+    fn rfc3339_utc_formats_known_instants() {
+        for (secs, expect) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (1, "1970-01-01T00:00:01Z"),
+            (86_399, "1970-01-01T23:59:59Z"),
+            (86_400, "1970-01-02T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"), // leap year, century rule
+            (1_709_164_800, "2024-02-29T00:00:00Z"),
+            (1_753_264_800, "2025-07-23T10:00:00Z"),
+            (4_102_444_800, "2100-01-01T00:00:00Z"), // 2100 is NOT a leap year
+        ] {
+            assert_eq!(rfc3339_utc(secs), expect, "secs={secs}");
+        }
+    }
+
+    /// Every formatted instant validates — the format law holds across the
+    /// whole span the calendar split covers, not only the sampled instants.
+    #[test]
+    fn rfc3339_utc_output_always_validates() {
+        let mut secs: u64 = 0;
+        while secs < 4_200_000_000 {
+            let s = rfc3339_utc(secs);
+            assert!(wire::now_is_rfc3339(&s), "secs={secs} → {s}");
+            secs += 1_000_003; // a prime-ish stride: walks every weekday/month
+        }
     }
 }

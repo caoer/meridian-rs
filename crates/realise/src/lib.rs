@@ -187,6 +187,12 @@ pub struct Claim {
     /// The claim selector — the board-card key and the pending-agent name.
     /// Card idempotency is keyed on this (§5.4).
     pub selector: String,
+    /// The id of the rule this claim realises (`policy::RuleId` grammar), when
+    /// the caller declared one. A minted board card carries it as a REFERENCE
+    /// — the rule lives at its own page and the card never copies its body
+    /// (requirements decision 8, verdict 18.1). `None` ⇒ the claim names no
+    /// rule and the card carries no rule key.
+    pub rule: Option<String>,
     /// Observe + check: reads the current tree, returns convergence. Pure.
     pub check: Box<dyn Check>,
     /// The apply program. `None` ⇒ the claim is NOT apply-capable: a drifted
@@ -391,7 +397,7 @@ pub fn realise(
                 let card = if spec.dry_run {
                     None
                 } else {
-                    mint_board_card(root, &claim.selector, &detail, spec)?
+                    mint_board_card(root, &claim.selector, claim.rule.as_deref(), &detail, spec)?
                 };
                 results.push(ClaimResult {
                     selector: claim.selector.clone(),
@@ -527,6 +533,7 @@ fn applied_of(outcome: TaskOutcome) -> Option<Applied> {
 fn mint_board_card(
     root: &fs::WorkspaceRoot,
     selector: &str,
+    rule: Option<&str>,
     detail: &str,
     spec: &RealiseSpec,
 ) -> Result<Option<String>, RealiseError> {
@@ -535,7 +542,18 @@ fn mint_board_card(
         spec.board_dir.trim_end_matches('/'),
         card_slug(selector)
     );
-    let body = render_card(selector, detail, spec.now.as_deref());
+    // The card's `created:` is RFC3339 or nothing (verdict 15.7). The clock is
+    // the caller's (§9) — a malformed one is refused loud here rather than
+    // stamped onto a governed page, and an absent one stays absent.
+    if let Some(now) = spec.now.as_deref()
+        && !wire::now_is_rfc3339(now)
+    {
+        return Err(RealiseError::CardMint {
+            selector: selector.to_owned(),
+            reason: format!("`now` is not RFC3339: {now:?}"),
+        });
+    }
+    let body = render_card(selector, rule, detail, spec.now.as_deref());
     let args = wire_serve::write::CreateArgs {
         id: None,
         path: wire::Path(path),
@@ -580,10 +598,27 @@ fn card_slug(selector: &str) -> String {
 
 /// Render a pending-agent board card: a governed markdown page an agent pulls
 /// from the board and works through the same doors as any editor (§5.4).
-fn render_card(selector: &str, detail: &str, now: Option<&str>) -> String {
-    let created = now.unwrap_or("");
+///
+/// **A card references its rule, it never embeds it** (requirements decision 8,
+/// verdict 18.1 — rule-vs-fix-task embedding). The rule lives at its own page,
+/// registered under its `id:`; the card carries that id in `rule:` plus one
+/// wikilink, so the law has exactly one home and a card can never drift from
+/// the rule it names. `created:` is RFC3339 (verdict 15.7) and comes from the
+/// caller's `now` — this function reads no clock, so a fixed `now` renders a
+/// byte-identical card.
+fn render_card(selector: &str, rule: Option<&str>, detail: &str, now: Option<&str>) -> String {
+    let created = now.map_or_else(String::new, |now| format!("created: {now}\n"));
+    let (rule_key, rule_ref) = rule.map_or_else(
+        || (String::new(), String::new()),
+        |id| {
+            (
+                format!("rule: {id}\n"),
+                format!("Rule: [[{id}]] — read the law there; this card carries the id, not the body.\n\n"),
+            )
+        },
+    );
     format!(
-        "---\ntype: board-card\nstate: pending-agent\nclaim: {selector}\ncreated: {created}\n---\n\n# pending-agent: {selector}\n\nCheck drifted with no apply-capable claim in scope.\n\n{detail}\n"
+        "---\ntype: board-card\nstate: pending-agent\nclaim: {selector}\n{rule_key}{created}---\n\n# pending-agent: {selector}\n\nCheck drifted with no apply-capable claim in scope.\n\n{rule_ref}{detail}\n"
     )
 }
 
