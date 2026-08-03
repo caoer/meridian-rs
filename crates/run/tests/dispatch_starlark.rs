@@ -80,7 +80,7 @@ fn no_md_effects_means_nothing_applied_nothing_written() {
     let (_tmp, root) = workspace();
     let now = fs::domain_snapshot(&root).unwrap().1;
     let caps = CapSet::none();
-    let src = "def run(ctx):\n    warn(message = \"advisory only\")\n";
+    let src = "def run(ctx):\n    notice(message = \"advisory only\")\n";
     let out = dispatch_starlark::dispatch(&root, &dispatch_of(src, &now, &caps)).unwrap();
     assert!(out.applied.is_none());
     assert_eq!(out.unexecuted.len(), 1);

@@ -66,7 +66,7 @@ fn load_statement_is_rejected() {
     );
 }
 
-/// All eight descriptor constructors ARE defined — the closed capability surface
+/// All seven descriptor constructors ARE defined — the closed capability surface
 /// is present in full. Each fires exactly one effect of its kind.
 #[test]
 fn all_constructors_are_defined_and_emit_their_kind() {
@@ -84,7 +84,6 @@ fn all_constructors_are_defined_and_emit_their_kind() {
         ("remind(message = \"m\")", EffectKind::Remind),
         ("ask(message = \"m\")", EffectKind::Ask),
         ("notice(message = \"m\")", EffectKind::Notice),
-        ("warn(message = \"m\")", EffectKind::Warn),
     ];
     for (call, kind) in cases {
         let src = format!("def on_change(event):\n    {call}\n");

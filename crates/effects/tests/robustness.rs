@@ -58,7 +58,6 @@ fn body_line() -> impl Strategy<Value = String> {
         "_ = event.file".to_string(),
         "pass".to_string(),
         "return".to_string(),
-        "warn(message = event.file)".to_string(),
         "1 / 0".to_string(),
         "event.sections_changed[3]".to_string(),
         "open(\"/etc/passwd\")".to_string(),
