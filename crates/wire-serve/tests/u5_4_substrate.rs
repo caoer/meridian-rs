@@ -1,24 +1,9 @@
-//! U5.4 remaining substrate debts — the merge-gate acceptance suite.
+//! U5.4 substrate debts — merge-gate acceptance suite.
 //!
-//! Two named gates, each falsification-verified in the body:
-//!
-//! - **Gate 1 — heading-rename round-trip preserves block ids + reddens
-//!   hpath-pinned dependents correctly.** `query::plan_rename` (the rung-5 gap,
-//!   the heading-rename op) is applied through the strict writer
-//!   (`model::validate_batch` → `fs::apply_batch`, the query charter's "model
-//!   validation + fs execution"). After the rename: every `^block-id` survives
-//!   (`preserves_block_ids`), an hpath pin reddens `red(selector-unresolved)`, a
-//!   body-`^block-id` pin stays green (U2.2 `classify_edge`), and renaming BACK
-//!   restores the original bytes → the hpath pin greens again (true round-trip).
-//!   Falsification: a body-DROPPING rename loses `^abc` — the block-id assertion
-//!   discriminates.
-//!
-//! - **Gate 2 — the general N-edit close batch lands atomically with one rev
-//!   mint.** A 3-edit `splice` (a frontmatter `upsert` property + two body
-//!   `match`es) commits through `wire_serve::write::splice` in ONE root advance,
-//!   one receipt line. Failure case (the falsification): one invalid edit refuses
-//!   the WHOLE batch — the card is byte-identical (the valid `status: closed`
-//!   never lands), no receipt, no rev minted.
+//! Gate 1: heading-rename round-trip preserves `^block-id`s, reddens hpath pins,
+//! keeps body-block pins green; backlink fixup rewrites heading links only.
+//! Gate 2: N-edit close batch lands atomically (one rev mint); one invalid edit
+//! refuses the whole batch with no partial write.
 
 use std::collections::BTreeMap;
 use std::path::Path as FsPath;
@@ -31,11 +16,7 @@ use query::{RenamePlan, plan_rename};
 use wire::{Edit, EditShape, Path as WPath, PutAt, ReceiptAddr, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
-// ---------------------------------------------------------------------------
-// Shared helpers
-// ---------------------------------------------------------------------------
-
-/// Build a temp workspace from `(path, content)` files.
+/// Temp workspace from `(path, content)` files.
 fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     for (path, content) in files {
@@ -57,7 +38,7 @@ fn build_doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
 }
 
-/// The borrowed corpus (index + docs) `plan_rename` reads.
+/// Borrowed corpus for `plan_rename`.
 fn corpus(root: &fs::WorkspaceRoot, files: &[&str]) -> (CorpusIndex, BTreeMap<String, Document>) {
     let mut index = CorpusIndex::new();
     let mut docs = BTreeMap::new();
@@ -84,10 +65,7 @@ fn node_rev(doc: &Document, r#ref: &Ref) -> NodeRev {
     model::resolve(doc, r#ref).expect("resolves").node_rev
 }
 
-/// Apply a [`RenamePlan`] through the strict writer: validate each `(path, batch)`
-/// splice and land it atomically via `fs::apply_batch` (the query charter's
-/// "model validation + fs execution"). A refusal panics loud — the plan is
-/// supposed to validate.
+/// Apply [`RenamePlan`] via strict writer (`validate_batch` + `fs::apply_batch`); refusal panics.
 fn apply_plan(root: &fs::WorkspaceRoot, plan: &RenamePlan) {
     for (path, batch) in &plan.edits {
         let doc = build_doc(&read(root, path));
@@ -108,25 +86,16 @@ fn apply_plan(root: &fs::WorkspaceRoot, plan: &RenamePlan) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Gate 1 — heading-rename round-trip: block ids + selector colors
-// ---------------------------------------------------------------------------
-
-/// The heading rename preserves every `^block-id`, reddens the hpath pin to the
-/// old name (`red(selector-unresolved)`), keeps the body-`^block-id` pin green,
-/// and — renamed BACK — restores the original bytes so the hpath pin greens
-/// again. Every color is asserted, none assumed.
+/// Gate 1: rename preserves block ids, reddens hpath pin, keeps body-block pin green; rename-back greens again.
 #[test]
 fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     let original = "# Foo\n\nalpha body ^abc\n\nbeta body\n";
     let (_d, root) = ws(&[("page.md", original)]);
 
-    // Pins captured against the PRE-rename document.
     let before = build_doc(original);
     let pinned_hpath = node_rev(&before, &hpath(&["Foo"]));
     let pinned_block = node_rev(&before, &Ref::anchor("abc").unwrap());
 
-    // Rename # Foo -> # Bar through the strict writer.
     let (index, docs) = corpus(&root, &["page.md"]);
     let plan = plan_rename(&index, &docs, "page.md", &hpath(&["Foo"]), "Bar");
     apply_plan(&root, &plan);
@@ -134,7 +103,6 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     let after_raw = read(&root, "page.md");
     let after = build_doc(&after_raw);
 
-    // Block id survives the rename — present in bytes AND still resolvable.
     assert!(
         after_raw.contains("^abc"),
         "the block id survives: {after_raw:?}"
@@ -143,11 +111,9 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
         model::resolve(&after, &Ref::anchor("abc").unwrap()).is_ok(),
         "the ^abc anchor still resolves after the rename"
     );
-    // The heading text actually changed.
     assert!(after_raw.contains("# Bar"), "heading renamed to Bar");
     assert!(!after_raw.contains("# Foo"), "the old heading text is gone");
 
-    // hpath pin reddens: the old selector resolves to nothing.
     let hpath_color = classify_edge(
         &Selector::Heading(vec!["Foo".to_string()]),
         Some(&pinned_hpath),
@@ -161,7 +127,6 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
         "an hpath pin to the renamed heading must render red(selector-unresolved): {hpath_color:?}"
     );
 
-    // block pin stays green: the body block is byte-untouched, rev unchanged.
     let block_color = classify_edge(
         &Selector::Block("abc".to_string()),
         Some(&pinned_block),
@@ -173,9 +138,7 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
         "a body-^block-id pin is unaffected by a heading rename (stays green)"
     );
 
-    // Round-trip: rename BACK restores byte-identical content → the hpath pin
-    // greens again (the section rev is heading-inclusive, so an exact restore is
-    // an exact rev).
+    // Rename back: heading-inclusive rev → exact restore greens hpath pin.
     let (index2, docs2) = corpus(&root, &["page.md"]);
     let back = plan_rename(&index2, &docs2, "page.md", &hpath(&["Bar"]), "Foo");
     apply_plan(&root, &back);
@@ -197,17 +160,13 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     );
 }
 
-/// FALSIFICATION for gate 1's block-id guard: a rename that DROPS the section
-/// body (a naive whole-section `put`) loses `^abc` — so the gate's block-id
-/// assertion is load-bearing (it fails under a body-dropping rename), and the
-/// hpath-pin `red` is what a broken rename would still leave green.
+/// Falsification: body-dropping put loses `^abc` — gate 1's block-id assert is load-bearing.
 #[test]
 fn gate1_falsification_body_dropping_rename_loses_block_id() {
     let original = "# Foo\n\nalpha body ^abc\n\nbeta body\n";
     let (_d, root) = ws(&[("page.md", original)]);
 
-    // A broken "rename" that replaces the whole section with just a heading line
-    // (put at:all) — the shape plan_rename deliberately does NOT emit.
+    // Broken rename shape plan_rename does not emit (put at:all → heading only).
     let doc = build_doc(original);
     let bad = SpliceRequest {
         engine: None,
@@ -235,18 +194,13 @@ fn gate1_falsification_body_dropping_rename_loses_block_id() {
     .expect("apply");
 
     let after_raw = read(&root, "page.md");
-    // The guard the real rename upholds is exactly this negation: a body-dropping
-    // rename LOSES the block id (so `preserves_block_ids` above truly discriminates).
     assert!(
         !after_raw.contains("^abc"),
         "the body-dropping rename drops the block id — the gate-1 assertion is load-bearing"
     );
 }
 
-/// The rung-5 op is a heading rename WITH backlink fixup: every wikilink/embed
-/// whose fragment is the renamed heading is rewritten (`#Foo` → `#Bar`),
-/// alias-preserving, while a `^block-id` link is left untouched (its anchor
-/// survives the rename). Cross-file and sub-section links both covered.
+/// Backlink fixup: heading links rewritten (alias preserved); `^block-id` links untouched.
 #[test]
 fn gate1_backlink_fixup_rewrites_heading_links_not_block_links() {
     let page = "# Foo\n\nbody ^abc\n";
@@ -275,19 +229,13 @@ fn gate1_backlink_fixup_rewrites_heading_links_not_block_links() {
         "the ^block-id link is left untouched — the anchor survives the rename"
     );
 
-    // And the heading itself renamed, block id preserved.
     let page_after = read(&root, "page.md");
     assert!(page_after.contains("# Bar") && page_after.contains("^abc"));
 }
 
-// ---------------------------------------------------------------------------
-// Gate 2 — the general N-edit close batch: atomic, one rev mint
-// ---------------------------------------------------------------------------
-
 const CARD: &str = "---\ntitle: draft\nstatus: open\nowner: alice\n---\n\n# Task\n\n- [ ] item one ^t1\n\nclosing note ^done\n";
 
-/// The canonical close batch: a frontmatter `upsert` property + two body
-/// `match`es, mixed in ONE splice. Distinct-target, disjoint spans.
+/// Canonical close batch: fm upsert + two body matches in one splice.
 fn close_edits() -> Vec<Edit> {
     vec![
         Edit {
@@ -349,7 +297,7 @@ fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
     let outcome =
         splice(&root, 0, &close_args(close_edits()), &[], None).expect("the close batch commits");
 
-    // ONE root advance = one rev mint; ONE delta batch at seq 1.
+    // One root advance / one delta batch at seq 1.
     let ResponseBody::Splice {
         armed,
         root_before,
@@ -375,14 +323,11 @@ fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
         frame.delta.seq, 1,
         "one delta = one batch = one root advance"
     );
-    // ONE delta (one batch, one seq) carries the content card plus the receipt it
-    // rides — the atomicity fact is the single seq/root advance, not the file count.
     assert!(
         frame.delta.files.iter().any(|f| f.path.0 == "card.md"),
         "the one batch carries the content card"
     );
 
-    // All three edits landed together.
     let card = read(&root, "card.md");
     assert!(
         card.contains("status: closed"),
@@ -401,7 +346,6 @@ fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
         "block ids intact"
     );
 
-    // Exactly one receipt row (the close's audit record) — one journal-grade line.
     let receipts = read(&root, "receipts.md");
     let rows: Vec<&str> = receipts
         .lines()
@@ -414,15 +358,11 @@ fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
     );
 }
 
-/// FALSIFICATION for gate 2's atomicity: one invalid edit (a `match` with no
-/// occurrence) refuses the WHOLE batch — zero partial splice, no rev minted. The
-/// load-bearing assertion is that the VALID `status: closed` never lands: a
-/// non-atomic writer would leak it, and this test would fail.
+/// Falsification: one invalid match refuses whole batch — valid status upsert must not leak.
 #[test]
 fn gate2_falsification_one_invalid_edit_refuses_the_whole_batch() {
     let (_d, root) = ws(&[("card.md", CARD)]);
 
-    // Edit 2 now cannot match — the batch must refuse as a whole.
     let mut edits = close_edits();
     edits[1] = Edit {
         target: SecRef::Anchor {
@@ -438,8 +378,6 @@ fn gate2_falsification_one_invalid_edit_refuses_the_whole_batch() {
     let result = splice(&root, 0, &close_args(edits), &[], None);
     assert!(result.is_err(), "one invalid edit refuses the whole batch");
 
-    // ZERO partial splice: the card is byte-identical — the valid property edit
-    // NEVER landed (the atomicity proof).
     let card = read(&root, "card.md");
     assert_eq!(card, CARD, "no partial splice — the card is byte-identical");
     assert!(
@@ -447,7 +385,6 @@ fn gate2_falsification_one_invalid_edit_refuses_the_whole_batch() {
         "the valid status upsert did NOT leak"
     );
 
-    // No rev minted: the receipt file was never created.
     assert!(
         !root.0.join("receipts.md").exists(),
         "a refused batch writes no receipt (no rev minted)"

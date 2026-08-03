@@ -1,37 +1,10 @@
-//! The shared typed edge — strict decode + the read-op arms — lifted out of the
-//! sidecar so the resident registry daemon and the per-workspace sidecar answer
-//! the wire contract through ONE implementation (arch map A6: "lift, don't
-//! duplicate").
+//! Shared typed edge: strict decode + read-op arms for both hosts (A6: lift, don't duplicate).
 //!
-//! # Charter
-//! **Owns:** the hand-rolled strict-decode pass ([`decode`] — wire §3.2 server
-//! law: unknown request fields and unknown enum values are rejected loudly,
-//! because serde's `deny_unknown_fields` does not compose with `flatten`), the
-//! read-op arms ([`read`] — `toc`/`cat`/`extract`/`links`/`resolve`) served over
-//! BORROWED parsed state, and the WRITE choke-point ([`write::splice`] — the
-//! `splice → commit` seam both hosts commit through, W1).
-//!
-//! **The read arms never** own the corpus, read disk, parse, or hold a serve
-//! loop: each takes already-built `model` state (`&Document`, or the
-//! `&CorpusIndex` + document map) and the ambient root as data; the CALLER
-//! obtains that state — the sidecar builds it per request, the daemon reuses its
-//! warm engine. That split is the whole point: one projection, two state
-//! sources, no drift.
-//!
-//! **The write choke-point is inherently stateful** — a commit IS disk I/O — so
-//! [`write`] necessarily reads + writes disk (`fs`), reparses the after-state
-//! (`syntax`), renders receipts (`receipt`), and evaluates verdicts (`policy`).
-//! It is still ONE implementation both hosts share; the delta ring stays with the
-//! caller (see [`write`]). The disk-load + fold helpers the read arms and the
-//! write path both use — [`load_doc`], [`ambient_root`], [`domain_snapshot`] —
-//! live here too, so there is one fs→wire mapper, not two.
-//!
-//! # Root / diff live with the caller
-//! `root` and `diff` are cursor/history plumbing whose source genuinely differs
-//! by host (the sidecar owns a per-epoch ring; the resident daemon has none
-//! until the watcher lands), so they are NOT arms here — each host builds those
-//! two responses from its own `seq`/history. This crate holds only the corpus
-//! reads whose logic is identical across hosts.
+//! Owns [`decode`] (wire §3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
+//! does not compose with `flatten`), [`read`] arms over borrowed model state, and
+//! [`write::splice`] (W1 choke-point both hosts commit through). Read arms never own corpus
+//! or disk; callers supply state. Write is stateful (disk/reparse/receipt/policy) but still
+//! one shared impl. `root`/`diff` stay with each host (different cursor/history plumbing).
 
 pub mod armed_disk;
 pub mod check_write;
@@ -46,21 +19,16 @@ pub mod write;
 
 use wire::{ErrorBody, ErrorCode, Path, Root};
 
-/// The one protocol both hosts speak (wire §3.2, proto-1). The strict decode
-/// validates a `hello`'s `proto` against this.
+/// Protocol both hosts speak (wire §3.2, proto-1). Strict decode validates `hello`'s `proto` against this.
 pub const PROTO: u32 = 1;
 
-/// Is `rev` a contract rev the server serves (wire v3 amendment)? An unknown
-/// declared rev is refused LOUD at `hello` decode, never silently downgraded.
-/// The negotiation itself (which rev a session runs) is the caller's; this is
-/// only the decode-time known-set check.
+/// Whether `rev` is a contract rev the server serves (v3 amendment). Unknown rev refused loud at hello; never silent downgrade.
 #[must_use]
 pub fn is_known_rev(rev: &str) -> bool {
     matches!(rev, "v2" | "v3")
 }
 
-/// A `bad_request` carrying a human message — the strict-decode workhorse
-/// (wire §8: `bad_request` ⇒ recovery `fix`).
+/// `bad_request` with a human message (wire §8: `bad_request` ⇒ recovery `fix`).
 #[must_use]
 pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     let mut e = ErrorBody::new(ErrorCode::BadRequest);
@@ -68,13 +36,11 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// `fs::load` with the §8 error split: `file_not_found` (env — the file is gone,
-/// path echoed), `invalid_utf8` (refused, never lossy-decoded), `io_error{cause}`
-/// otherwise. Shared by both hosts' single-file reads and the write path (which
-/// loads fresh disk before validating) — one fs→wire mapper, not two.
+/// `fs::load` with §8 error split: `file_not_found` / `invalid_utf8` / `io_error{cause}`.
+/// Shared fs→wire mapper for both hosts' reads and the write path.
 ///
 /// # Errors
-/// The wire envelope for a missing file, a non-UTF-8 file, or an I/O failure.
+/// Wire envelope for missing file, non-UTF-8, or I/O failure.
 pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document, Box<ErrorBody>> {
     fs::load(root, std::path::Path::new(&path.0)).map_err(|e| {
         Box::new(match e.kind() {
@@ -93,25 +59,18 @@ pub fn load_doc(root: &fs::WorkspaceRoot, path: &Path) -> Result<model::Document
     })
 }
 
-/// The ambient workspace root (v2 §4.1/§12): the §12 hash domain's file bytes
-/// folded through `model::merkle_root` — the one blake3 home. A fresh disk fold
-/// shared by the sidecar read arms and the write path's `root_before`/`root_after`
-/// (the resident daemon's warm engine carries the same fold as `at_fingerprint`).
+/// Ambient workspace root (v2 §4.1/§12): domain file bytes folded via `model::merkle_root`.
 ///
 /// # Errors
-/// The wire `io_error` envelope when the domain snapshot read/fold fails.
+/// Wire `io_error` when domain snapshot read/fold fails.
 pub fn ambient_root(root: &fs::WorkspaceRoot) -> Result<Root, Box<ErrorBody>> {
     Ok(domain_snapshot(root)?.1)
 }
 
-/// The §12 hash-domain snapshot: every domain file's bytes + the root folded over
-/// exactly those bytes — one read, one fold, so a consumer parses the same bytes
-/// its `as_of_root` describes and the answer cannot drift from its stamp. The
-/// shared `fs::domain_snapshot` primitive re-homed into the wire `Root` token and
-/// the `io::Error` into the wire `io_error` frame.
+/// §12 hash-domain snapshot: domain file bytes + folded root in one read/fold (no stamp drift).
 ///
 /// # Errors
-/// The wire `io_error` envelope when the domain snapshot read/fold fails.
+/// Wire `io_error` when domain snapshot read/fold fails.
 pub fn domain_snapshot(
     root: &fs::WorkspaceRoot,
 ) -> Result<(fs::DomainFiles, Root), Box<ErrorBody>> {
@@ -165,7 +124,7 @@ mod tests {
 
     #[test]
     fn decode_rejects_an_unknown_field_by_name() {
-        // serde would silently drop `bogus`; the strict pass refuses it loud.
+        // serde would silently drop `bogus`; strict pass refuses loud.
         let e = super::decode::decode(
             &obj(json!({"op": "toc", "path": "a.md", "bogus": 1})),
             super::rev::Rev::V2,
@@ -186,17 +145,12 @@ mod tests {
         assert_eq!(e.code, ErrorCode::UnknownOp);
     }
 
-    // ------------------------------------------------------------------
-    // M1 U8b rider-1 fixtures: the rev-threaded splice field wall.
-    // ------------------------------------------------------------------
-
     fn plan_splice() -> Value {
         json!({"op": "splice", "path": "a.md",
             "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]})
     }
 
-    /// The FROZEN v2 negative (rider 1): `plan_edits` under a v2 session hits
-    /// the existing unknown-field wall, byte-for-byte.
+    /// Frozen v2 negative: `plan_edits` under v2 hits unknown-field wall byte-for-byte.
     #[test]
     fn v2_splice_plan_edits_refuses_on_the_frozen_wall() {
         let e = super::decode::decode(&obj(plan_splice()), super::rev::Rev::V2)
@@ -232,10 +186,7 @@ mod tests {
             wire::PlanEdit::Match { all: true, rev: Some(r), .. } if r == "r"));
     }
 
-    /// S7 `splice.pin`: v3-only at decode, strict on its own three keys, and —
-    /// the security shape — carrying NO actor key (D13). A pin IS a write, so a
-    /// pin-only splice is a complete batch and the frozen "missing `edits`"
-    /// refusal must not fire on it.
+    /// S7 pin: v3-only, strict keys, no actor key (D13); pin-only splice is a complete batch.
     #[test]
     fn v3_splice_pin_decodes_and_carries_no_actor() {
         let frame = json!({"op": "splice", "path": "plan.md",
@@ -250,9 +201,7 @@ mod tests {
         assert_eq!(pin.selector, "Guide/Q3");
         assert_eq!(pin.vibe, Some(true));
 
-        // The actor wall (D13): there is no `pin.actor` key to set, so a caller
-        // cannot forge a pin as another actor — the pin's identity is the
-        // splice's own daemon-derived `actor` and nothing else.
+        // D13: no pin.actor — identity is splice's daemon-derived actor only.
         let forged = json!({"op": "splice", "path": "plan.md",
             "pin": {"target": "guide.md", "selector": "Q3", "actor": "someone-else"}});
         let e = super::decode::decode(&obj(forged), super::rev::Rev::V3)
@@ -263,10 +212,10 @@ mod tests {
         );
     }
 
-    /// The v2 wall and the per-key strictness around the pin.
+    /// v2 wall and per-key strictness around pin.
     #[test]
     fn splice_pin_strict_negatives() {
-        // v2 never heard of `pin` — the frozen unknown-field refusal, verbatim.
+        // v2 never heard of `pin` — frozen unknown-field refusal.
         let v2 = json!({"op": "splice", "path": "plan.md",
             "pin": {"target": "guide.md", "selector": "Q3"}});
         let e = super::decode::decode(&obj(v2.clone()), super::rev::Rev::V2)
@@ -302,11 +251,7 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------------------
-    // The BIRTH op's decode contract (`create`).
-    // ------------------------------------------------------------------
-
-    /// The full field set decodes into the typed birth op, `if_root` included.
+    /// Full create field set decodes into typed birth op, `if_root` included.
     #[test]
     fn create_decodes_its_whole_field_set() {
         let frame = json!({"id": 9, "op": "create", "path": "notes/newborn.md",
@@ -332,10 +277,7 @@ mod tests {
         assert_eq!(dry, Some(true));
     }
 
-    /// Decode is rev-AGNOSTIC (like `read`/`check_write`): the v3 gate is at
-    /// DISPATCH, so a v2 frame decodes here and is refused `unknown_op` by the
-    /// host arm. Asserted so a future reader does not "fix" decode by adding a
-    /// rev branch that would move the refusal to the wrong plane.
+    /// Create decode is rev-agnostic; v3 gate is at dispatch (do not move refusal into decode).
     #[test]
     fn create_decode_is_rev_agnostic_the_gate_is_dispatch() {
         let frame = json!({"op": "create", "path": "a.md", "body": "x"});
@@ -346,12 +288,7 @@ mod tests {
         }
     }
 
-    /// **The no-forced-birth wall, and the not-a-batch wall.** The guarded door
-    /// carries no `--force` escape, so admitting the key would advertise a
-    /// bypass that does not exist; and a birth is ONE path with ONE body, so
-    /// the whole splice batch vocabulary is foreign to it. Every one of these
-    /// is refused BY NAME, so a client that reached for the wrong op learns
-    /// which field it invented.
+    /// No `force` / batch vocabulary on create; each unknown field refused by name.
     #[test]
     fn create_refuses_the_fields_it_deliberately_lacks() {
         for extra in ["force", "edits", "receipt", "plan_edits", "pin", "sec"] {
@@ -368,8 +305,7 @@ mod tests {
         }
     }
 
-    /// Anti-vacuity for the wall above: the fields the op DOES declare are
-    /// admitted, so "everything is refused" cannot pass that test.
+    /// Anti-vacuity: declared create fields are admitted.
     #[test]
     fn create_admits_exactly_its_declared_fields() {
         for field in super::decode::CREATE_FIELDS {
@@ -385,8 +321,7 @@ mod tests {
         }
     }
 
-    /// Every strict-decode refusal arm, asserted by its CAUSE — the message a
-    /// client reads to fix its frame, not merely the code.
+    /// Strict-decode refusals asserted by cause message (what the client fixes).
     #[test]
     fn create_strict_negatives_name_their_cause() {
         for (frame, want) in [
@@ -426,9 +361,7 @@ mod tests {
         }
     }
 
-    /// The path-law wall is the FIRST jail: a birth cannot even be SPELLED
-    /// outside the workspace. `bad_path` echoes the offending spelling; the
-    /// engine's own `path_confined` is the second wall behind it.
+    /// Path-law wall first: birth cannot be spelled outside workspace (`bad_path` before engine).
     #[test]
     fn create_path_law_refuses_before_the_engine_is_reached() {
         for bad in ["/etc/passwd", "../escape.md", "", "a/../../b.md"] {
@@ -440,8 +373,7 @@ mod tests {
         }
     }
 
-    /// Mutual exclusion + the explicit empty-array law (C note 6) + the
-    /// strict per-shape wall.
+    /// plan_edits: mutual exclusion, empty-array law, per-shape strictness.
     #[test]
     fn v3_plan_edits_strict_negatives() {
         // both edits and plan_edits → bad_request
@@ -454,7 +386,7 @@ mod tests {
             Some("`edits` and `plan_edits` are mutually exclusive on `splice`")
         );
 
-        // present-but-empty plan_edits → the explicit empty-batch refusal
+        // present-but-empty plan_edits → explicit empty-batch refusal
         let empty = json!({"op": "splice", "path": "a.md", "plan_edits": []});
         let e = super::decode::decode(&obj(empty), super::rev::Rev::V3).expect_err("empty refused");
         assert_eq!(
@@ -462,7 +394,7 @@ mod tests {
             Some("`plan_edits` must carry at least one edit")
         );
 
-        // neither edits nor plan_edits → the frozen v2 missing-edits refusal
+        // neither → frozen v2 missing-edits refusal
         let neither = json!({"op": "splice", "path": "a.md"});
         let e =
             super::decode::decode(&obj(neither), super::rev::Rev::V3).expect_err("neither refused");

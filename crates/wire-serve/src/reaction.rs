@@ -1,48 +1,12 @@
 //! Reaction-mode evaluation for one landed document change.
 //!
-//! This is the shared feeder leaf used by both hosts (`docs/laws.md` Law 3): it
-//! derives the reaction payload from the same before/after model states the guarded
-//! write and the external watcher already hold, resolves the armed HOOKs governing
-//! the changed path, and evaluates them. It does not interpret `how:`, deliver an
-//! intent, or make a delivery claim.
-//!
-//! # Resolution is the ARM effective set, and nothing else
-//! The armed law comes from the attested artifact at [`policy::armed::ARMED_RULES_PATH`]
-//! (registration ruling § 4) through exactly ONE call,
-//! [`policy::armed_law::resolve_armed_law`], which pivots on the once-armed state,
-//! selects the rows governing the path, freeze-checks them, and loads each one's
-//! page. This leaf composes none of that by hand: `verify_at`'s own documentation
-//! records that each obvious hand-composition of `select_at` + `verify` is a live
-//! defect, in opposite directions.
-//!
-//! The once-armed state is the `meridian/attested` MARKER, read through the same
-//! [`crate::armed_disk`] both hosts use. It is the marker rather than the
-//! artifact's presence because an absent artifact on an armed workspace is a
-//! FAULT, not a disarm: pivoting on the artifact would make deleting it read as
-//! "never armed", which is the silent-disarm attack in its rawest form. Both
-//! armed-law surfaces now pivot on that one marker, so the workspace cannot
-//! disagree with itself about whether it is armed.
-//!
-//! The feeder walks no `conventions/` folder and reads no `kind:` frontmatter to
-//! decide what is armed — both are dead registration surfaces under the ruling. A
-//! row's `mode` carries its kind, and `armed` is hook vocabulary, so the firing hook
-//! rows fall out of that one call with no kind test of our own.
-//!
-//! # A reaction never vetoes, so every fault is REPORTED
-//! Everything here runs AFTER the write has landed, so this leaf can neither refuse
-//! nor mutate. That makes silence its only failure mode, and silence was the defect:
-//! an artifact fault used to reach a `.unwrap_or_default()` at both call sites and
-//! read as "nothing to react to".
-//!
-//! So faults ride the frame instead, as [`wire::EffectFinding::ArmedFault`] — this
-//! host's CHANNEL onto the one artifact-fault surface, rendered in that surface's own
-//! words ([`policy::armed_law::ArmedFault`]). The door refuses on the same faults,
-//! with the same text; the disposition differs because the ruling splits it by kind,
-//! and the vocabulary does not differ at all.
-//!
-//! A fault is also isolated per ROW: one armed page that will not load reports itself
-//! and leaves every other rule at the path firing. Propagating it instead silenced
-//! the whole path, which is the same silent disarm one layer down.
+//! Shared feeder leaf for both hosts (Law 3): resolves armed HOOKs for a landed
+//! change from the same before/after model states, evaluates them, and reports
+//! faults. Does not interpret `how:`, deliver an intent, or claim delivery.
+//! Resolution is one call (`resolve_armed_law`); the once-armed MARKER is the
+//! pivot (not artifact presence — silent-disarm). Faults ride the frame as
+//! [`wire::EffectFinding::ArmedFault`], isolated per row so one bad page cannot
+//! silence the path. A reaction never vetoes.
 
 use model::{Document, Edit};
 use policy::armed::Mode;
@@ -50,18 +14,11 @@ use policy::armed_law::ArmedFault;
 
 use crate::armed_disk;
 
-/// Evaluate the armed, in-scope HOOKs for one change that has already landed, and
-/// report every fault that kept one from running.
+/// Evaluate armed in-scope HOOKs for a landed change; report every fault that kept one from running.
 ///
-/// The file revisions come from the supplied model states. They are the cursor
-/// coordinates the canonical receipt address is built from; no caller can substitute
-/// a different post-change revision. Empty evaluations are dropped, because they
-/// armed nothing and must not perturb the no-effects wire bytes — a FAULT envelope is
-/// never empty and is never dropped.
-///
-/// There is no error return. A reaction may not fail a write that has already landed,
-/// and an unreported fault is the silent disarm this surface exists to close, so the
-/// only honest shape is "envelopes, some of which are faults".
+/// Revisions come from the supplied model states (receipt cursor). Empty evaluations
+/// are dropped (no-effects wire bytes); fault envelopes are never dropped. No error
+/// return — a reaction must not fail a write that already landed.
 #[must_use]
 pub fn feed_landed_change(
     root: &fs::WorkspaceRoot,
@@ -71,10 +28,7 @@ pub fn feed_landed_change(
     op: policy::ChangeOp,
     actor: Option<&str>,
 ) -> Vec<wire::EffectEnvelope> {
-    // The MARKER is the once-armed pivot. A never-armed workspace reacts to
-    // nothing, and the no-op has to be free as well as silent, so this returns
-    // before deriving anything. On an armed workspace an absent artifact falls
-    // through to the resolver, which reports it as a fault rather than as silence.
+    // Never-armed: free silent no-op. Armed + absent artifact falls through as fault.
     if !armed_disk::once_armed(root) {
         return Vec::new();
     }
@@ -94,14 +48,11 @@ pub fn feed_landed_change(
 
     let law = armed_disk::resolve_at(root, &change.doc.path);
 
-    // Every fault reaches the operator, including the ones that refuse at the door:
-    // the door is not on this path, and a fault nobody reports is the defect.
+    // Every fault reaches the operator (door is not on this path).
     let mut envelopes: Vec<wire::EffectEnvelope> =
         law.faults().iter().map(fault_envelope).collect();
 
-    // `mode == armed` is hook vocabulary, so this filter alone leaves the firing HOOK
-    // rows — no kind test of our own. A check row governing the same path is the
-    // door's business and silently not ours.
+    // `mode == armed` is hook vocabulary — no kind test of our own.
     let hooks: Vec<(String, &policy::Hook)> = law
         .rules()
         .iter()
@@ -128,16 +79,13 @@ pub fn feed_landed_change(
             });
             envelopes.extend(outcomes.into_iter().map(project_outcome));
         }
-        // An already-loaded predicate faulting at evaluation aborts the batch — the
-        // evaluator's own all-or-nothing, not this leaf's. Reported through the same
-        // channel so it is a fault the operator reads, never an empty frame.
+        // Evaluator all-or-nothing; report via same fault channel, never empty frame.
         Err(error) => envelopes.push(fault_finding(rule_id_of(&error), &error)),
     }
     envelopes
 }
 
-/// One artifact fault as its own envelope: no intents, no `how:` (there is no
-/// declaration behind a fault), and the surface's own rendering as the finding.
+/// One artifact fault as its own envelope: no intents, no `how:`, surface rendering as finding.
 fn fault_envelope(fault: &ArmedFault) -> wire::EffectEnvelope {
     fault_finding(
         fault.id().map(|id| id.as_str().to_string()),
@@ -206,11 +154,7 @@ mod tests {
     use policy::armed::{ArmRequest, ArmRoot};
     use policy::{PageRef, RuleId, RuleIndex, ScopeLayer, page_rev};
 
-    /// The first tag-registered HOOK page in this tree. It carries BOTH key sets on
-    /// purpose: `tags:` + `id:` are the REGISTRATION layer (ruling § 1/§ 2), while
-    /// `kind:`/`severity:`/`paths:`/`caps:`/`budget:`/`how:` are C1's declaration
-    /// layer, which § 5 leaves untouched. The feeder reads only the former to decide
-    /// what is armed.
+    /// First tag-registered HOOK page: registration keys + C1 declaration keys (feeder uses registration only).
     const HOOK_ID: &str = "task.review-notify";
 
     fn hook_page(paths: &str) -> String {
@@ -255,13 +199,7 @@ def on_change(event):
         doc
     }
 
-    /// A workspace whose rule page is armed at `mode`, through the real ARM act.
-    ///
-    /// Pages sit DIRECTLY in the folder they govern (the § 3 "gitignore-style"
-    /// layout), so each mounts at that folder under the landed `mount_dir`. The
-    /// ruled layout-folder style (`<scope>/rules/*.md` mounting at `<scope>`) is
-    /// deliberately not used here: the mount law is ruled but not yet implemented,
-    /// and this card consumes armed rows rather than minting the mount rule.
+    /// Workspace with a rule page armed at `mode` via the real ARM act (direct mount, not rules-folder).
     fn armed_workspace(
         page_body: &str,
         mode: Mode,
@@ -301,11 +239,7 @@ def on_change(event):
             policy::armed::ARMED_RULES_PATH,
             &artifact.render(),
         );
-        // The once-armed MARKER, beside the artifact. Arming is ONE act over TWO
-        // files, and the marker is the pivot both armed-law surfaces read — a
-        // fixture that wrote only the artifact would be testing a workspace this
-        // engine considers never armed, so every reaction below would be a no-op
-        // that passed for a pass.
+        // Marker + artifact: both required; artifact alone reads as never-armed.
         write_page(temp.path(), fs::domain::ATTESTED_MARKER_PATH, "");
         let root = fs::WorkspaceRoot(temp.path().to_path_buf());
         (temp, root)
@@ -317,7 +251,7 @@ def on_change(event):
         std::fs::write(absolute, body).expect("write page");
     }
 
-    /// The common fixture: the hook armed workspace-wide over `tasks/*.md`.
+    /// Hook armed workspace-wide over `tasks/*.md`.
     fn armed_root() -> (tempfile::TempDir, fs::WorkspaceRoot) {
         armed_workspace(
             &hook_page("\"tasks/*.md\""),
@@ -345,7 +279,7 @@ def on_change(event):
         )
     }
 
-    /// Every `ArmedFault` finding the frame carries, as `(rule id, detail)`.
+    /// Every `ArmedFault` finding as `(rule id, detail)`.
     fn faults(envelopes: &[wire::EffectEnvelope]) -> Vec<(Option<String>, String)> {
         envelopes
             .iter()
@@ -359,7 +293,7 @@ def on_change(event):
             .collect()
     }
 
-    /// The envelopes that carry an actual reaction, not a fault report.
+    /// Envelopes that carry a reaction, not a fault report.
     fn reactions(envelopes: &[wire::EffectEnvelope]) -> Vec<&wire::EffectEnvelope> {
         envelopes
             .iter()
@@ -393,13 +327,11 @@ def on_change(event):
         assert!(feed(&root, "tasks/x.md", "in-progress", "review").is_empty());
     }
 
-    /// An artifact that EXISTS and cannot be read is a fault, not a never-armed
-    /// workspace. Folding the two would be the silent disarm at its rawest: making
-    /// the law unreadable would turn the gate off.
+    /// Unreadable-but-present artifact is a fault, never never-armed (silent-disarm).
     #[test]
     fn an_unreadable_artifact_is_a_fault_never_a_never_armed_workspace() {
         let (temp, root) = armed_root();
-        // A directory at the artifact's path reads as an error, not as absence.
+        // Directory at artifact path → error, not absence.
         let artifact = temp.path().join(policy::armed::ARMED_RULES_PATH);
         std::fs::remove_file(&artifact).expect("clear the artifact");
         std::fs::create_dir(&artifact).expect("make it unreadable");
@@ -426,8 +358,6 @@ def on_change(event):
         assert!(!root.0.join("tasks/x.md").exists());
         assert_eq!(feed(&root, "tasks/x.md", "in-progress", "review").len(), 1);
     }
-
-    // ── the ARM effective set governs, and only it ────────────────────────────
 
     #[test]
     fn a_row_armed_off_does_not_fire_though_its_page_is_intact_and_in_scope() {
@@ -458,9 +388,7 @@ def on_change(event):
             reactions(&outcomes).is_empty(),
             "the row reddened, so it does not fire on the new bytes"
         );
-        // Silent to the WRITE — a hook never vetoes — but never silent to the
-        // operator: the drift is reported through the same channel every other
-        // artifact fault takes.
+        // Silent to write, reported to operator via same fault channel.
         let found = faults(&outcomes);
         let [(id, detail)] = found.as_slice() else {
             panic!("the drift is reported: {outcomes:?}");
@@ -471,8 +399,7 @@ def on_change(event):
 
     #[test]
     fn selection_is_by_arm_root_so_a_sibling_scope_never_fires() {
-        // Armed at `sessions/s1`, so a write under the sibling `sessions/s2` is not
-        // under any arm root and selects nothing.
+        // Armed at sessions/s1 only — sibling s2 selects nothing.
         let (_temp, root) = armed_workspace(
             &hook_page("\"sessions/**/*.md\""),
             Mode::Armed,
@@ -491,12 +418,7 @@ def on_change(event):
         );
     }
 
-    // ── the three fault shapes, through the ONE surface ───────────────────────
-
-    /// **The feed-error shape.** A corrupt artifact on an ARMED workspace used to
-    /// map to "no reaction" at both call sites (`.unwrap_or_default()`), so a
-    /// gate-disabling edit dressed as a parse reached nobody. It now reaches the
-    /// operator on the frame.
+    /// Corrupt artifact on armed workspace must reach the operator (was silent disarm).
     #[test]
     fn a_corrupt_artifact_on_an_armed_workspace_reaches_the_operator() {
         let (temp, root) = armed_root();
@@ -519,10 +441,7 @@ def on_change(event):
         assert!(detail.contains("is corrupt"), "{detail}");
     }
 
-    /// **F2.** The row deletion LOOKS legitimate — a well-formed artifact page with
-    /// its title, preamble and byte-exact header, and zero rows. Bound to the
-    /// once-armed marker it is now a reported fault instead of a silent total
-    /// disarm; at the door the same fault refuses the write.
+    /// F2: emptied well-formed artifact on armed workspace reports disarm, does not obey it.
     #[test]
     fn an_emptied_artifact_on_an_armed_workspace_reports_the_disarm_rather_than_obeying_it() {
         let (temp, root) = armed_root();
@@ -540,9 +459,7 @@ def on_change(event):
         assert!(detail.contains("attests no row at all"), "{detail}");
     }
 
-    /// **F-1.** Two hooks are armed over the same path and one page will not load.
-    /// The loop used to propagate that fault with `?`, so ONE bad page silenced
-    /// every reaction at the path. The fault is now isolated to its own row.
+    /// F-1: one unloadable row must not silence other reactions at the path.
     #[test]
     fn one_unloadable_row_does_not_silence_the_other_reactions_at_the_path() {
         let good = hook_page("\"tasks/*.md\"");
@@ -568,10 +485,7 @@ def on_change(event):
         assert!(detail.contains("bare.md"), "{detail}");
     }
 
-    /// The kind seam has ONE enforcement point (`load_rule`), so a page in the
-    /// ruled shape — registration tag, no `kind:` key — fires. Loading through the
-    /// filename-shaped hook loader instead asserted `kind: hook`, which let a page
-    /// arm cleanly and never fire.
+    /// Kind seam is only at `load_rule`; ruled shape (tag, no `kind:`) still arms and fires.
     #[test]
     fn a_hook_page_without_a_kind_key_arms_and_fires() {
         let ruled = hook_page("\"tasks/*.md\"").replace("kind: hook\n", "");
@@ -586,9 +500,7 @@ def on_change(event):
         assert_eq!(reactions(&outcomes).len(), 1, "the tag is the one name");
     }
 
-    /// An already-loaded predicate faulting at EVALUATION aborts the evaluator's
-    /// batch — its all-or-nothing, one layer below this leaf. It travels the same
-    /// channel, so the operator reads a fault rather than an empty frame.
+    /// Loaded-hook eval fault reports via same channel, not dropped as empty frame.
     #[test]
     fn a_loaded_hook_eval_fault_is_reported_rather_than_dropped() {
         let faulting = hook_page("\"tasks/*.md\"").replace(

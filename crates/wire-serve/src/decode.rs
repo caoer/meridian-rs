@@ -1,13 +1,6 @@
-//! The hand-rolled strict-decode pass (v2 §3.2 server law, the repo's own
-//! recorded obligation — risk R5: fixture-driven because manual).
-//!
-//! serde's default silently IGNORES unknown request fields, and
-//! `deny_unknown_fields` does not compose with `flatten` — a silently dropped
-//! CAS guard corrupts data. So every armed op's field set is validated here by
-//! hand, loudly: unknown field → `bad_request` naming it; unknown enum value →
-//! `bad_request` (with `unknown_kinds` echoed for `extract`, D-C5); mistyped
-//! value → `bad_request`. Ops the wire doesn't arm at this rung answer
-//! `unknown_op` (§3.2: an op is in `caps` or answers `unknown_op`).
+//! Hand-rolled strict-decode pass (v2 §3.2): unknown fields/enums/mistypes refuse
+//! loud. serde ignores unknown fields and `deny_unknown_fields` does not compose
+//! with `flatten` — a dropped CAS guard corrupts data. Unarmed ops → `unknown_op`.
 
 use serde_json::{Map, Value};
 use wire::{ErrorBody, ErrorCode, HpathSeg, Op, Path, PlanEdit, SecRef};
@@ -18,20 +11,12 @@ use crate::rev::Rev;
 /// Envelope keys every request may carry beside the op fields.
 const ENVELOPE: [&str; 2] = ["id", "op"];
 
-/// `splice`'s FROZEN v2 field set (wire v2 §4.4). Never grows — a v2 session's
-/// field wall is byte-identical for the life of the contract.
+/// Frozen v2 `splice` field set (wire v2 §4.4) — never grows.
 pub(crate) const SPLICE_V2_FIELDS: [&str; 8] = [
     "path", "actor", "now", "receipt", "if_root", "dry", "force", "edits",
 ];
 
-/// `splice`'s v3 field set: the v2 list plus the v3-era amendments.
-///
-/// This array is the ONE owner of "which splice fields exist under v3", and the
-/// v3-era amendments are exactly `SPLICE_V3_FIELDS \ SPLICE_V2_FIELDS`. R23:
-/// each of those amendments MUST be advertised by the v3 caps projection as
-/// `splice.<field>` — enforced by the enumeration test
-/// [`crate::rev::tests::v3_splice_amendments_are_all_advertised`], which derives
-/// its expected set from these two arrays rather than from a hand-copied list.
+/// v3 `splice` fields: ONE owner of the set; amendments = V3 \\ V2 (R23 caps).
 pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
     "path",
     "actor",
@@ -45,22 +30,13 @@ pub(crate) const SPLICE_V3_FIELDS: [&str; 10] = [
     "pin",
 ];
 
-/// Strict-decode one request object into a [`wire::Op`], validating its field
-/// set by hand (§3.2 server law). Both hosts call this — the sidecar over stdio
-/// and the resident daemon over its socket — so the strict pass is one
-/// implementation.
+/// Strict-decode one request into [`wire::Op`] by hand (§3.2). Shared by both hosts.
 ///
-/// `rev` is the session's negotiated contract rev, threaded in by BOTH hosts
-/// (M1 U8b rider 1): the ONE rev-dependent decode surface is `splice`'s field
-/// list — `plan_edits` decodes under v3 and hits the frozen unknown-field wall
-/// under v2 (fixture-pinned). Every other op decodes rev-agnostically (v3-only
-/// ops like `read`/`check_write` gate at DISPATCH, unchanged).
+/// `rev` gates only `splice`'s field list (`plan_edits` under v3); other ops are
+/// rev-agnostic (v3-only ops gate at DISPATCH).
 ///
 /// # Errors
-/// A `bad_request` for an unknown field, an unknown enum value, a mistyped
-/// value, a malformed path/anchor/`now`, or an unknown declared contract rev; a
-/// `bad_path` for a path-law violation; `unsupported_proto` for a `hello` whose
-/// `proto` this server does not speak; `unknown_op` for an unrecognized op name.
+/// `bad_request` / `bad_path` / `unsupported_proto` / `unknown_op` as appropriate.
 pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let Some(op) = obj.get("op").and_then(Value::as_str) else {
         return Err(bad_request("`op` must be a string"));
@@ -77,8 +53,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
                 e.supported = Some(vec![crate::PROTO]);
                 return Err(Box::new(e));
             }
-            // v3-amendment negotiation: an unknown DECLARED rev is refused LOUD,
-            // never a silent fallback (docs/wire-contract-v3-amendment.md).
+            // Unknown declared rev refuses loud — never silent fallback.
             if let Some(rev) = &contract
                 && !crate::is_known_rev(rev)
             {
@@ -124,13 +99,12 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "root" => {
-            // v2 §4.7: no parameters — the root is world-grain.
+            // v2 §4.7: no parameters — root is world-grain.
             check_fields(obj, op, &[])?;
             Ok(Op::Root)
         }
         "links" => {
-            // v2 §4.6: both fields optional — `path` absent is the
-            // whole-corpus edge map; `require_root` is the §10.2 opt-in.
+            // v2 §4.6: both optional; absent path = whole-corpus edges.
             check_fields(obj, op, &["path", "require_root"])?;
             Ok(Op::Links {
                 path: opt_path(obj, op, "path")?,
@@ -145,7 +119,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
             })
         }
         "sub" => {
-            // v2 §4.7 push path: the reserved shape, live at T5-SUB.
+            // v2 §4.7 push path: reserved shape, live at T5-SUB.
             check_fields(obj, op, &["from_seq"])?;
             Ok(Op::Sub {
                 from_seq: req_u64(obj, op, "from_seq")?,
@@ -154,11 +128,7 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         "read" => decode_read(obj),
         "check_write" => decode_check_write(obj),
         "view_path" => {
-            // V2 §Q2 the view-organ path forwarder. `cwd` is a RAW host path
-            // (absolute) the daemon resolves to a workspace — NOT a
-            // workspace-relative wire path, so it takes `req_str`, never
-            // `req_path` (path-law would reject a leading `/`). `fresh` is the
-            // optional bounded-rebuild knob (§Q3).
+            // `cwd` is a raw host absolute path — `req_str`, not `req_path`.
             check_fields(obj, op, &["cwd", "fresh"])?;
             Ok(Op::ViewPath {
                 cwd: req_str(obj, op, "cwd")?,
@@ -167,15 +137,12 @@ pub fn decode(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> 
         }
         "splice" => decode_splice(obj, rev),
         "create" => decode_create(obj),
-        // §3.2 discovery honesty: every op is armed as of T5-SUB — only
-        // genuinely unknown names land here.
+        // §3.2: only genuinely unknown names land here.
         _ => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
     }
 }
 
-/// M1 U4a2 the composed read op (v3-only at DISPATCH — decode is
-/// rev-agnostic; a v2 session's dispatch answers `unknown_op`, §3.2
-/// discovery honesty against the frozen v2 caps).
+/// Composed `read` (v3-only at DISPATCH; decode is rev-agnostic).
 fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "read";
     check_fields(
@@ -218,16 +185,12 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         frag: opt_str(obj, op, "frag")?,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
-        // §9 read-provenance slot (D-Actor/B): opaque string, same law as
-        // splice's actor — a wire input, never ambient.
+        // §9 read-provenance (D-Actor/B): wire input, never ambient.
         actor: opt_str(obj, op, "actor")?,
     })
 }
 
-/// M1 U8c the I4 def-conformance verdict op (v3-only at DISPATCH, like
-/// `read`). `target` is a RAW host path string (the caller's absolute
-/// spelling — labels refusal strings + anchors def-layer discovery), so it
-/// takes `req_str`, never `req_path`. `edits` is the put-plan vocabulary.
+/// `check_write` (v3-only at DISPATCH). `target` is a raw host path (`req_str`).
 fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "check_write";
     check_fields(obj, op, &["path", "target", "actor", "now", "edits"])?;
@@ -262,25 +225,10 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     })
 }
 
-/// The BIRTH op's field set. A v3-era op, so unlike `splice` there is no
-/// frozen v2 twin: the whole op ships as ONE cap (`create`), exactly like
-/// `read` and `check_write`, and no dotted `create.<field>` cap exists. This
-/// array is the one owner of "which create fields exist"; the negative
-/// [`crate::decode::tests`] rows derive their expectations from it.
-///
-/// `force` is deliberately ABSENT: the guarded door has no forced-birth escape
-/// (`write::create`), so admitting the key would advertise a bypass that does
-/// not exist.
+/// Birth-op fields. No `force` — guarded door has no forced-birth escape.
 pub(crate) const CREATE_FIELDS: [&str; 6] = ["path", "body", "actor", "now", "if_root", "dry"];
 
-/// Strict-decode the birth op. Rev-agnostic here (like `read`/`check_write`) —
-/// the v3 gate is at DISPATCH, so a v2 session answers `unknown_op` against the
-/// frozen v2 caps (§3.2 discovery honesty).
-///
-/// `now` takes the SAME RFC 3339 validation `splice` applies, and for the same
-/// reason: this op writes a journal row stamped with the caller's clock (§9 —
-/// the engine validates time, never generates it), so a malformed `now` must
-/// refuse at the wire rather than land an undatable row.
+/// Strict-decode `create`. Rev-agnostic; v3 gate at DISPATCH. `now` is RFC 3339.
 fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     let op = "create";
     check_fields(obj, op, &CREATE_FIELDS)?;
@@ -302,16 +250,8 @@ fn decode_create(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     })
 }
 
-/// v2 §4.4: the only write op UNDER V2, batch-only (v3 adds `create`, the birth
-/// door; `splice` stays the only op that EDITS an existing file). §9: `now` is
-/// RFC 3339,
-/// format-VALIDATED never generated — a malformed `now` is the server's
-/// `bad_request` (the pass W4 left to this build-out).
-///
-/// M1 U8b (rider 1): under a v3 session the field list additionally admits
-/// `plan_edits` — the plan-level batch, mutually exclusive with `edits`. Under
-/// v2 the list is FROZEN, so a v2 `plan_edits` refuses on the existing
-/// unknown-field wall byte-for-byte (fixture-pinned negative).
+/// `splice`: only write-existing under v2; v3 also admits `plan_edits`/`pin`.
+/// `now` RFC 3339 validated, never generated (§9).
 fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody>> {
     let op = "splice";
     if rev == Rev::V3 {
@@ -331,8 +271,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
         None => Vec::new(),
         Some(v) => decode_plan_edits(v)?,
     };
-    // S7: a `pin` is itself a write, so a pin-only splice is a complete batch.
-    // Decoded BEFORE the edits gate because that gate reads its presence.
+    // S7: pin is a write; pin-only batch is complete. Decode before edits gate.
     let pin = match obj.get("pin") {
         None => None,
         Some(v) => Some(decode_pin(v)?),
@@ -347,8 +286,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
             decode_edits(edits_v)?
         }
         None if plan_edits.is_empty() && pin.is_none() => {
-            // The frozen v2 refusal, verbatim — a plan-less, edit-less splice
-            // reads exactly as before (C note 6: never a serde accident).
+            // Frozen v2 refusal, verbatim (C note 6).
             return Err(bad_request("missing `edits` on `splice`"));
         }
         None => Vec::new(),
@@ -367,10 +305,7 @@ fn decode_splice(obj: &Map<String, Value>, rev: Rev) -> Result<Op, Box<ErrorBody
     })
 }
 
-/// Strict-decode `splice.pin` (S7): `{target, selector, vibe?}` and nothing
-/// else. There is deliberately no `actor` key — a pin's mint identity IS the
-/// splice's own daemon-derived actor (D13), so admitting one here would let a
-/// caller forge a pin as another actor.
+/// `splice.pin` (S7): `{target, selector, vibe?}`. No `actor` — identity is D13.
 fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     let Some(obj) = v.as_object() else {
         return Err(bad_request("`pin` must be an object on `splice`"));
@@ -389,10 +324,7 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
     })
 }
 
-/// M1 U8b `plan_edits` (v3-only; the caller gated on rev before calling):
-/// externally tagged items, exactly one tag each, every shape's field set
-/// validated by hand — the same strict wall as the native edit union. An
-/// empty array refuses like the native empty batch (a batch IS its edits).
+/// `plan_edits`: externally tagged, one tag each, strict field wall per shape.
 fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`plan_edits` must be an array"));
@@ -465,8 +397,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
     Ok(out)
 }
 
-/// The strict field wall for one plan-edit shape body (no envelope keys ride
-/// inside a shape, so this is a plain closed-set check).
+/// Closed field set for one plan-edit shape body (no envelope keys).
 fn plan_fields(
     obj: &Map<String, Value>,
     shape: &str,
@@ -480,8 +411,7 @@ fn plan_fields(
     Ok(())
 }
 
-/// §6.1 receipt address: `{path, anchor}` exactly — path law on `path`, the
-/// mint-guard charset on `anchor` (a receipt anchor is a mint position).
+/// §6.1 receipt address: `{path, anchor}` — path law + mint-guard charset.
 fn decode_receipt(v: &Value) -> Result<wire::ReceiptAddr, Box<ErrorBody>> {
     let Value::Object(r) = v else {
         return Err(bad_request("`receipt` must be an object"));
@@ -508,17 +438,13 @@ fn decode_receipt(v: &Value) -> Result<wire::ReceiptAddr, Box<ErrorBody>> {
     Ok(wire::ReceiptAddr { path, anchor })
 }
 
-/// §4.4 batch edits: each `{target, edit, if_node_rev?}`, the target in THE
-/// §2.1 grammar (mint-guarded), the edit exactly one of the two shapes.
+/// §4.4 batch edits: each `{target, edit, if_node_rev?}`; empty array refuses.
 fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`edits` must be an array"));
     };
     if items.is_empty() {
-        // Derived reading (no frozen empty-batch form exists): a batch IS
-        // its edits, and an edit-less commit would mint a Delta with no
-        // root advance — unrepresentable under §7.1 "one Delta = one batch
-        // = one root advance". Refused loud, recorded as derived-data.
+        // Empty batch unrepresentable under §7.1 (one Delta = one root advance).
         return Err(bad_request("`edits` must carry at least one edit"));
     }
     let mut edits = Vec::with_capacity(items.len());
@@ -551,8 +477,7 @@ fn decode_edits(v: &Value) -> Result<Vec<wire::Edit>, Box<ErrorBody>> {
     Ok(edits)
 }
 
-/// Exactly two edit shapes (§4.4): externally tagged `{"match":{…}}` /
-/// `{"put":{…}}`, exactly one tag, each shape's fields validated by hand.
+/// Exactly two edit shapes (§4.4): externally tagged `match` / `put`.
 fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
     let Value::Object(shape) = v else {
         return Err(bad_request("`edit` must be an object"));
@@ -605,8 +530,7 @@ fn decode_edit_shape(v: &Value) -> Result<wire::EditShape, Box<ErrorBody>> {
     }
 }
 
-/// The strict-server field wall: any key outside the op's declared set (and
-/// the envelope) is rejected loudly, by name.
+/// Strict field wall: any key outside the op's set (+ envelope) refuses by name.
 fn check_fields(
     obj: &Map<String, Value>,
     op: &str,
@@ -662,14 +586,12 @@ fn req_u64(obj: &Map<String, Value>, op: &str, key: &str) -> Result<u64, Box<Err
     }
 }
 
-/// [`req_path`]'s optional twin: absent is `None`, present is path-law
-/// validated.
+/// Optional twin of [`req_path`]: absent → `None`, present → path-law.
 fn opt_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Option<Path>, Box<ErrorBody>> {
     obj.get(key).map(|_| req_path(obj, op, key)).transpose()
 }
 
-/// v2 §1 path law: workspace-relative, `/`-separated, never absolute, no
-/// `.`/`..` segments. Violations are the server's `bad_path`, echoed.
+/// v2 §1 path law: workspace-relative, `/`-separated, never absolute, no `.`/`..`.
 fn req_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Path, Box<ErrorBody>> {
     let s = req_str(obj, op, key)?;
     let violates = s.is_empty()
@@ -684,10 +606,7 @@ fn req_path(obj: &Map<String, Value>, op: &str, key: &str) -> Result<Path, Box<E
     Ok(Path(s))
 }
 
-/// A §2.1 mint ref, strictly: exactly one of `hpath`/`anchor`/`fm_key`, no
-/// other key, each form's shape validated by hand. The anchor form passes the
-/// mint-guard (`model::Ref::anchor`, decision 011): a block id outside
-/// `[A-Za-z0-9-]+` — e.g. `_`-bearing — is `bad_request` at this plane.
+/// §2.1 mint ref: exactly one of `hpath`/`anchor`/`fm_key`; anchor mint-guarded.
 fn decode_sec(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     let Value::Object(sec) = v else {
         return Err(bad_request("`sec` must be an object"));
@@ -714,20 +633,10 @@ fn decode_anchor(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     let Value::String(id) = v else {
         return Err(bad_request("`anchor` must be a string"));
     };
-    // Stage-2 S10: the `@fp` strip is ordered BEFORE the mint-guard here, and
-    // this is the FIRST of the two guard sites a wire address meets (the other
-    // is `read::to_model_ref`, the belt for in-process callers that build a
-    // `SecRef` directly). Decoding to the STORED spelling is what makes the
-    // decorated address agent-plane rather than display-only: an agent that
-    // read `[[guide#^goal@green.b3af12cd]]` can address `^goal@green.b3af12cd`
-    // and reach exactly the node `^goal` names.
-    //
-    // Additive on the frozen v2 plane by construction: the only inputs whose
-    // outcome moves are shaped tokens, which every pre-S10 build refused and no
-    // v2 client can produce (the grammar did not exist). An `@` the shape does
-    // NOT recognize still refuses, verbatim, below.
+    // S10: strip `@fp` before mint-guard (first of two sites; makes decorated
+    // addresses agent-plane). Unrecognized `@` shapes still refuse below.
     let id = syntax::split_fp(id).0;
-    // the mint-guard: one block-id charset, both planes (§2.4)
+    // mint-guard: one block-id charset, both planes (§2.4)
     match model::Ref::anchor(id.to_owned()) {
         Ok(_) => Ok(SecRef::Anchor {
             anchor: id.to_owned(),
@@ -750,8 +659,7 @@ fn decode_hpath(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     Ok(SecRef::Hpath { hpath })
 }
 
-/// One hpath segment: the object form `{"h":…}`/`{"h":…,"n":…}` or the v1
-/// bare string (dual-deserialization bridge, §2.1). `n` is a 1-based `u32`.
+/// One hpath segment: `{"h":…,"n"?}` or v1 bare string; `n` is 1-based `u32`.
 fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
     match v {
         Value::String(h) => Ok(HpathSeg {
@@ -785,10 +693,7 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
     }
 }
 
-/// `extract.kinds` values against the closed 11-kind enum: any unknown value
-/// is `bad_request{unknown_kinds}`, loud (D-C5 — the typo-silently-returns-
-/// nothing trap, killed). The valid names are the wire enum's own serde
-/// spellings — never a duplicated list.
+/// `extract.kinds` vs closed enum: unknown → `bad_request{unknown_kinds}` (D-C5).
 fn decode_kinds(v: &Value) -> Result<Vec<String>, Box<ErrorBody>> {
     let Value::Array(items) = v else {
         return Err(bad_request("`kinds` must be an array of strings"));

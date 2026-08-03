@@ -1,18 +1,8 @@
-//! S10: the claim-link `@fp` decorate-on-read / strip-on-put transform (D10).
+//! S10: claim-link `@fp` decorate-on-read / strip-on-put (D10).
 //!
-//! The two SAFETY tests this unit was designed around (plan §8: S10 is the
-//! plan's lowest-confidence unit because the grammar is greenfield, and these
-//! are its net) come first, written before the grammar existed:
-//!
-//! 1. **Round-trip, disk clean** — an agent reads the DECORATED face, copies a
-//!    decorated link into an edit, and puts it. The stored bytes carry no `@fp`
-//!    token, asserted at the byte level over the whole file.
-//! 2. **Heading-`@` intact** — `[[Page#Q@Home]]` is a legitimate heading
-//!    fragment containing an `@`. The shaped grammar (D10) must not see an fp
-//!    token there, on the render plane or the put plane.
-//!
-//! Everything drives the production surfaces: `wire_serve::read::composed_read`
-//! for the decorated face and `wire_serve::write::splice` for the put.
+//! SAFETY: (1) decorated link round-trips to disk with no `@fp` token;
+//! (2) heading-fragment `@` (`[[Page#Q@Home]]`) is never treated as an fp token.
+//! Surfaces: `composed_read` (decorated) and `write::splice` (put/strip).
 
 use std::collections::BTreeMap;
 
@@ -20,13 +10,10 @@ use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PutAt, ResponseBo
 use wire_serve::read::{ReadParams, composed_read, page_decorations};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// The pinning page — it draws from the guide and cites it with a claim link.
-/// The link addresses the slug S7's promotion mints (`^leaders-guideline`),
-/// which is the HANDLE this unit decorates; the pin's own identity is the
-/// section chain, never this slug.
+/// Pinning page citing the guide via claim-link slug `^leaders-guideline` (S7 handle; pin id is section chain).
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from [[guide#^leaders-guideline|Leader's Guideline]].\n";
 
-/// The pinned page.
+/// Pinned guide page.
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
@@ -38,9 +25,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (dir, root)
 }
 
-/// Mint a REAL pin through the production choke-point (S7), so the decoration
-/// under test rests on a real lock block and a real fingerprint — never a
-/// hand-written fixture that could disagree with what `mrd pin` writes.
+/// Mint a real pin through production choke-point (S7) — not a hand-written lock fixture.
 fn mint_pin(root: &fs::WorkspaceRoot) {
     let args = SpliceArgs {
         id: None,
@@ -62,8 +47,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
     splice(root, 0, &args, &[], None).expect("the pin commits");
 }
 
-/// The corpus the decoration builder reads: every page, plus the linkpath index
-/// the link resolver uses. The registry daemon holds exactly this.
+/// Corpus the decoration builder reads (registry shape: every page + linkpath index).
 fn corpus(root: &fs::WorkspaceRoot) -> (model::CorpusIndex, BTreeMap<String, model::Document>) {
     let mut docs = BTreeMap::new();
     let mut index = model::CorpusIndex::new();
@@ -77,8 +61,7 @@ fn corpus(root: &fs::WorkspaceRoot) -> (model::CorpusIndex, BTreeMap<String, mod
     (index, docs)
 }
 
-/// The composed read as the registry serves it: the decorated `rendered_text`
-/// plus the RAW `sections[]` rows.
+/// Composed read as the registry serves: decorated `rendered_text` + raw `sections[]`.
 fn read_decorated(root: &fs::WorkspaceRoot, rel: &str, sel: &str) -> ResponseBody {
     let (index, docs) = corpus(root);
     let doc = docs.get(rel).expect("the page is in the corpus");
@@ -102,7 +85,7 @@ fn read_page(root: &fs::WorkspaceRoot, rel: &str) -> String {
     std::fs::read_to_string(root.0.join(rel)).expect("read")
 }
 
-/// An empty splice frame — the caller fills in `edits` or `plan_edits`.
+/// Empty splice frame — caller fills `edits` or `plan_edits`.
 fn pin_free_args(path: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -119,8 +102,7 @@ fn pin_free_args(path: &str) -> SpliceArgs {
     }
 }
 
-/// A `put at:end` on a section — appends INSIDE the section without rewriting
-/// what is already there (so an engine block living in it is untouched).
+/// `put at:end` — appends inside the section without rewriting existing content (lock block safe).
 fn put_end(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     SpliceArgs {
         edits: vec![Edit {
@@ -140,7 +122,7 @@ fn put_end(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     }
 }
 
-/// One `Put{content}` edit on a section — the whole-section replace.
+/// Whole-section `Put{content}` replace.
 fn put_content(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     SpliceArgs {
         edits: vec![Edit {
@@ -160,25 +142,12 @@ fn put_content(path: &str, hpath: &str, text: &str) -> SpliceArgs {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SAFETY TEST 1 — the round trip, asserted at the byte level on disk
-// ---------------------------------------------------------------------------
-
-/// **Gate 1 (exit criterion 4).** The whole loop: pin → read (decorated) →
-/// edit → put → disk clean.
-///
-/// The vector this closes is the real one. An agent's context is
-/// `rendered_text`, so the link it copies into its next edit is the DECORATED
-/// spelling; if the put path did not strip it, the `@fp` token would be
-/// authored into the file, and the file would then claim a fingerprint that no
-/// engine minted. The assertion is byte-level over the WHOLE file: no `@`
-/// anywhere the page did not already have.
+/// Gate 1: pin → decorated read → put decorated link → disk has no `@fp` (whole-file byte assert).
 #[test]
 fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
     let (_dir, root) = workspace();
     mint_pin(&root);
 
-    // ── read: the rendered face carries the shaped token ──────────────────
     let body = read_decorated(&root, "plan.md", "Plan");
     let ResponseBody::Read {
         rendered_text,
@@ -212,23 +181,14 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         "tone word + 8-hex digest: {token}"
     );
 
-    // The RAW face is never decorated — put reads `sections[].content`, and a
-    // decorated view feeding a write is the A-K1 data-loss class.
+    // sections[].content is raw (A-K1: never feed decorated face into a write).
     let raw = &sections.as_ref().expect("sections")[0].content;
     assert!(
         !raw.contains('@'),
         "sections[].content is the raw face, verbatim: {raw}"
     );
 
-    // ── edit: the agent copies the DECORATED link into its next write ─────
-    //
-    // Through the PLAN batch, which is the agent-facing put vocabulary. Both
-    // halves carry the decorated spelling, and both matter:
-    //
-    // - `old` is a NEEDLE matched against STORED bytes, which never carry a
-    //   token. Unstripped, an agent could never match the link it just read.
-    // - `new` is the PAYLOAD. Unstripped, the token lands on disk and the file
-    //   starts claiming a fingerprint no engine minted.
+    // Plan batch: strip both needle (`old` vs stored) and payload (`new`).
     let mut plan = pin_free_args("plan.md");
     plan.plan_edits = vec![wire::PlanEdit::Match {
         hpath: "Plan".into(),
@@ -239,7 +199,6 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
     }];
     splice(&root, 0, &plan, &[], None).expect("the plan put commits");
 
-    // ── disk: byte-level, whole file ──────────────────────────────────────
     let on_disk = read_page(&root, "plan.md");
     assert!(
         !on_disk.contains('@'),
@@ -249,14 +208,12 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         on_disk.contains("[[guide#^leaders-guideline|Leader's Guideline]] — reviewed."),
         "the edit landed, and the link is back to its stored spelling:\n{on_disk}"
     );
-    // The lock block the pin wrote is still there — the agent edited its own
-    // prose, and the engine's block is not in the blast radius.
     assert!(
         on_disk.contains("```meridian-lock"),
         "the lock block survives the round trip:\n{on_disk}"
     );
 
-    // ── the NATIVE edit vocabulary strips at the same intake ──────────────
+    // Native edit vocabulary strips at the same intake.
     let mut native = pin_free_args("plan.md");
     native.edits = vec![Edit {
         target: SecRef::Hpath {
@@ -284,33 +241,20 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// SAFETY TEST 2 — a legitimate `@` inside a heading fragment
-// ---------------------------------------------------------------------------
-
-/// **Gate 2.** `[[Page#Q@Home]]` is a heading fragment that happens to contain
-/// an `@`. A fully-opaque "anything after `@`" rule would eat it (D10's whole
-/// reason for a SHAPED token). It must survive both planes untouched: the put
-/// stores it verbatim, and the decorated read renders it verbatim.
+/// Gate 2: heading-fragment `@` is never an fp token (D10 shaped grammar).
 #[test]
 fn a_heading_fragment_at_is_never_touched() {
     let (_dir, root) = workspace();
     mint_pin(&root);
 
-    // Every `@`-bearing shape that is NOT a well-formed fp token in a block-ref
-    // slot: the plan's own case, an fp-SHAPED tail on a heading fragment, an
-    // `@` in a label, and a block ref whose tail is shaped but not hex.
+    // Non-token `@` shapes: heading fragment, shaped tail on heading, label, non-hex block tail, email.
     let authored = "\n\
         - [[Page#Q@Home]]\n\
         - [[Page#Q@green.b3af12cd]]\n\
         - [[guide#^leaders-guideline|ping @zt]]\n\
         - [[guide#^other@green.nothex1]]\n\
         - plain text me@example.com\n\n";
-    // `put at:end`, not `at:content`: the minted lock block sits at EOF inside
-    // this very section, and a whole-section rewrite would DELETE it. The R25
-    // artifact guard refuses that (asserted by name in
-    // `s2fix_artifact_guard::a_whole_section_rewrite_that_would_delete_the_lock_refuses`)
-    // — this test's claim is about the `@` shapes, so it appends instead.
+    // put at:end (not content): lock at EOF would be deleted by whole-section rewrite (R25).
     splice(&root, 0, &put_end("plan.md", "Plan", authored), &[], None).expect("the put commits");
 
     let on_disk = read_page(&root, "plan.md");
@@ -321,8 +265,7 @@ fn a_heading_fragment_at_is_never_touched() {
         );
     }
 
-    // And the decorated READ leaves them alone too: the heading-fragment `@`
-    // is not a block-ref slot, so the decorator never looks at it.
+    // Decorated read leaves them alone (token rides block-ref slot only).
     let body = read_decorated(&root, "plan.md", "Plan");
     let ResponseBody::Read { rendered_text, .. } = &body else {
         panic!("read body");
@@ -342,11 +285,7 @@ fn a_heading_fragment_at_is_never_touched() {
     );
 }
 
-/// The I4 ladder has ONE owner and TWO entry points (S4a/D4): the host's
-/// `check_write` PRE-FLIGHT and the flocked `splice`. They must judge the same
-/// bytes, so the strip runs at BOTH intakes — otherwise an agent's decorated
-/// `find` would miss in the pre-flight and hit in the write, which is the
-/// two-answers-to-one-question shape this milestone keeps closing.
+/// I4: strip at both check_write pre-flight and flocked splice so they judge the same bytes.
 #[test]
 fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
     let (_dir, root) = workspace();
@@ -377,19 +316,7 @@ fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The colour the token carries — the reason the whole module exists
-// ---------------------------------------------------------------------------
-
-/// The token's tone is the PIN's colour, and the pin's identity is the SECTION
-/// its `ref` resolves to — never the `^slug` the link addresses.
-///
-/// This is the false-green trap S7 named, tested from the decoration end. The
-/// slug marker's own model span is its HOST LINE, so a decorator that took the
-/// slug for the identity would recompute an unchanged one-line span and render
-/// **green on every body edit**. Here the pinned section's BODY moves and
-/// nothing else — the heading is untouched, the slug is untouched, the link is
-/// untouched — and the token must go red.
+/// Token tone is pin colour by section identity (not `^slug`) — body drift must go red (false-green trap).
 #[test]
 fn a_body_edit_under_the_pinned_heading_turns_the_token_red() {
     let (_dir, root) = workspace();
@@ -399,7 +326,6 @@ fn a_body_edit_under_the_pinned_heading_turns_the_token_red() {
         "a freshly minted pin decorates green"
     );
 
-    // Move ONLY the pinned section's body.
     let guide = read_page(&root, "guide.md");
     std::fs::write(
         root.0.join("guide.md"),
@@ -419,9 +345,7 @@ fn a_body_edit_under_the_pinned_heading_turns_the_token_red() {
     );
 }
 
-/// Grey never renders green. A pin whose token names a version this build does
-/// not implement is `Unverifiable` — the ledger did not measure it — so the
-/// decoration says so rather than showing an attested-looking green.
+/// Unverifiable pin version decorates grey, never green.
 #[test]
 fn an_unverifiable_pin_decorates_grey() {
     let (_dir, root) = workspace();
@@ -440,8 +364,7 @@ fn an_unverifiable_pin_decorates_grey() {
     );
 }
 
-/// The decorated token body (`green.b3af12cd`) currently on the claim link in
-/// `plan.md` — read through the production composed-read arm.
+/// Decorated token body (`green.b3af12cd`) on the claim link via composed-read.
 fn token_body(root: &fs::WorkspaceRoot) -> String {
     let body = read_decorated(root, "plan.md", "Plan");
     let ResponseBody::Read { rendered_text, .. } = &body else {
@@ -457,14 +380,7 @@ fn token_body(root: &fs::WorkspaceRoot) -> String {
         .to_string()
 }
 
-// ---------------------------------------------------------------------------
-// GATE 3 — the refusal backstop, and the address that DOES strip
-// ---------------------------------------------------------------------------
-
-/// A malformed `@fp` on an ADDRESS refuses `bad_request` and writes nothing:
-/// the block-id charset (§2.4) has no `@`, so anything the shaped strip does
-/// not recognize dies at `model::Ref::anchor` validation. That refusal is the
-/// backstop the strip's ordering makes unreachable for well-formed tokens.
+/// Malformed `@fp` on address refuses at block-id charset; writes nothing.
 #[test]
 fn a_malformed_fp_address_refuses_and_writes_nothing() {
     let (_dir, root) = workspace();
@@ -487,12 +403,7 @@ fn a_malformed_fp_address_refuses_and_writes_nothing() {
     assert_eq!(read_page(&root, "guide.md"), before, "nothing reached disk");
 }
 
-/// The SAME law at the wire's own guard. `decode_anchor` runs `Ref::anchor`
-/// before any arm does, so the strip is ordered there too — otherwise the
-/// decorated address would be display-only, refused by the decoder before the
-/// bridge that strips it ever ran. Both halves are asserted on the decoded
-/// value: a shaped token decodes to the STORED spelling, an unshaped `@` still
-/// refuses verbatim.
+/// Wire decoder strips shaped token before its own mint guard (decode_anchor).
 #[test]
 fn the_wire_decoder_strips_before_its_own_mint_guard() {
     let frame = |anchor: &str| {
@@ -537,9 +448,7 @@ fn the_wire_decoder_strips_before_its_own_mint_guard() {
     );
 }
 
-/// The positive half of the same law: a WELL-FORMED `@fp` on an address is
-/// stripped BEFORE `model::Ref::anchor` sees it, so the agent-plane decorated
-/// address addresses exactly what its stored spelling addresses.
+/// Well-formed `@fp` on address strips before `Ref::anchor` and resolves to stored spelling.
 #[test]
 fn a_well_formed_fp_address_strips_and_resolves() {
     let (_dir, root) = workspace();
