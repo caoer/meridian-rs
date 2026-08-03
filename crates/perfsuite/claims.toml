@@ -87,14 +87,6 @@ direction = "lower"
 harness = "benches/roundtrip.rs"
 note = "LIVE day 1 (NdjsonCodec is implemented); no baseline yet — first fleet run establishes it"
 
-[[claim]]
-id = "transport.codec.proto_roundtrip_p99"
-title = "transport-proto encode+decode round-trip p99, single frame (typed pb::Frame)"
-metric = "us"
-direction = "lower"
-harness = "benches/roundtrip.rs"
-note = "LIVE (typed protobuf path, ZT ruling 2026-07-18); same frame mix as the ndjson claim for codec-to-codec comparison; no baseline yet — first fleet run establishes it"
-
 # --- cold-ingest lane (ZT ruling 2026-07-18): real-world smoke detector.
 # One cold pass, no repetition, page cache uncontrolled. The gate philosophy is
 # order-of-magnitude: a 10× swing is noise we accept, 100×+ says something is
@@ -123,18 +115,6 @@ baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1130 MB encode
 harness = "benches/cold_ingest.rs"
 recipe = "vault-1gb seed=1 files=180000"
 note = "the untyped seam's real bulk cost: JSON string escaping both ways. Frames pre-built outside the timed window"
-
-[[claim]]
-id = "ingest.codec.proto.vault_1gb"
-title = "1 GB through transport-proto: typed pb::Frame encode+decode per file, single pass"
-metric = "ms"
-direction = "lower"
-baseline = 583.0
-threshold = 58300.0 # 100x
-baseline_provenance = "first run 2026-07-18, zmax (arm64 M4 Max): 1096 MB encoded in 0.58 s (1880 MB/s) — 3.1x the ndjson path, 34 MB smaller encoded"
-harness = "benches/cold_ingest.rs"
-recipe = "vault-1gb seed=1 files=180000"
-note = "the typed path's real bulk cost on identical content — codec-to-codec comparison against the ndjson claim"
 
 [[claim]]
 id = "policy.assertion.p99"

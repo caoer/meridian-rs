@@ -33,7 +33,6 @@ registry daemon.
 | `git` | The git plumbing organ: shell-out blob object ids, the eager `-w` write, and object reachability against a repo handle — git owns content-addressing, the engine never computes an oid. A `std`-only leaf |
 | `receipt` | The receipt family: the persisted outcome-as-fact line committed in the same batch as the edit, the append-only journal + forgery detector, the anchor freshness and blob three-state axes, and the ephemeral read-mint ledger |
 | `transport` | Untyped NDJSON message envelope + codec seam (knows framing, never meaning) |
-| `transport-proto` | Opt-in typed protobuf transport: `meridian.proto` + length-delimited framing |
 | `policy` | Ruleset compilation and assertion evaluation under declared budgets; produces edit-time verdicts and the blocking armed-plane gate |
 | `query` | Corpus reads: backlinks, board queries, span-exact rename planning — borrows the model's index |
 | `wire-serve` | The shared typed edge: strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the v3 projection — one implementation, two hosts |

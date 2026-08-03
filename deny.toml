@@ -9,8 +9,8 @@ allow = [
     "MIT",
     "Apache-2.0",
     "Unicode-3.0",
-    # foldhash (via prost-build → petgraph → hashbrown, build-dep only);
-    # zlib/libpng-family permissive
+    # foldhash (via duckdb → hashlink → hashbrown, and starlark → allocative
+    # → hashbrown); zlib/libpng-family permissive
     "Zlib",
 ]
 # Per-crate scoped exceptions (strict default stays). All OSI-permissive;
