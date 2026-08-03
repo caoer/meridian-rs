@@ -156,7 +156,7 @@ mechanism that makes one:
 |---|---|---|
 | in-window writes | the `out-of-band delta` detector | **detects, never prevents** — `docs/run-plane.md` scopes it so, and the offending file persists |
 | after the window | nothing | the detector's own wording is *"during exec window"*; a `nohup`, launchd plist, cron line or daemon writes with no observer |
-| outside the corpus | nothing | cwd isolation and env scrubbing do not restrict network, credentials, SSH, or `rm -rf` — none of it is an "effect" |
+| outside the corpus | nothing | env scrubbing does not restrict network, credentials, SSH, or `rm -rf` — none of it is an "effect"; and since U16 there is no cwd isolation at all, the step runs where `mrd` runs |
 
 A guard escapable by `nohup` is not a guard, so **no honest value exists for a
 bash `caps:` field — including `none`, including `(read-only)`.** What the

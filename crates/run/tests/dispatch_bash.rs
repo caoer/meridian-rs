@@ -502,6 +502,40 @@ fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
     assert!(!receipts.contains("^r-000001"));
 }
 
+/// U16 honest semantics: the step now runs in the invocation cwd and is handed
+/// `$MERIDIAN_PROJECT_ROOT`, so reaching the tree is EASY. Reaching it is not
+/// tolerating it — a stray write through that very variable is detected as
+/// OutOfBand and REFUSES convergence: nothing applies, no completion receipt,
+/// and (ruling 2) the write is never rolled back.
+#[test]
+fn a_project_root_relative_stray_write_refuses_convergence() {
+    let (_tmp, root) = workspace();
+    let scratch = tempfile::tempdir().unwrap();
+    let mut live: Vec<u8> = Vec::new();
+
+    let src = format!("echo stray > \"$MERIDIAN_PROJECT_ROOT/stray.md\"\n{EMIT_SET_FIELD}");
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
+
+    assert!(out.status.success(), "the step itself exited 0");
+    assert!(matches!(out.phase2, Phase2::RefusedDetection));
+    let Detection::OutOfBand(delta) = &out.detection else {
+        panic!("expected OutOfBand, got {:?}", out.detection);
+    };
+    assert_eq!(delta.unexpected, vec!["stray.md".to_string()]);
+    // Refused, not merely reported: the honest descriptor did not apply.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
+        PAGE
+    );
+    let receipts = std::fs::read_to_string(root.0.join("receipts/2026-07-22.md")).unwrap();
+    assert!(!receipts.contains("^r-000001"), "no completion receipt");
+    // Ruling 2: never rolled back.
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("stray.md")).unwrap(),
+        "stray\n"
+    );
+}
+
 /// U6b #20, the config-widening attack end-to-end: bash rewrites
 /// `mdfs_config.yaml` to ignore its rogue path. The config bracket refuses
 /// before the residual could be filtered by the widened domain.

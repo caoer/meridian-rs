@@ -7,7 +7,7 @@
 //! └──────────────────────────────────────────────────────────────────┘
 //!   → U6b bracket OPENS against the computed root (PreExecMismatch ⇒
 //!     refuse, the exec never starts)
-//!   → exec (scratch cwd, `setsid`, timeout→group SIGKILL; stdout teed
+//!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL; stdout teed
 //!     into the U8 record; md.* descriptors on the shim fd)
 //!   → U6b bracket CLOSES after the group kill (residual-compare #19 +
 //!     config bracket #20 + symlink refusal #25) — verdict on EVERY path
@@ -105,7 +105,8 @@ pub struct BashDispatch<'a> {
     pub receipt: Option<ReceiptAddr>,
     /// Decision-#26 explicit foreign-edit takeover (phase 2 only).
     pub takeover: bool,
-    /// The scratch cwd (caller-created, out-of-tree).
+    /// The caller-created out-of-tree scratch directory (artifacts; NOT the
+    /// cwd — U16 runs the step in the invocation cwd).
     pub scratch: &'a Path,
     /// The wall-clock ceiling (#21; resolve via [`exec::configured_timeout`]).
     pub timeout: Duration,
@@ -326,6 +327,7 @@ pub fn run(
         args: &d.args,
         env: &d.env,
         scratch: d.scratch,
+        project_root: &root.0,
         timeout: d.timeout,
     };
     let (result, stdout) = exec::exec_streaming(&spec, move |mut out| {

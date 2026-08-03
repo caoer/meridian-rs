@@ -1,6 +1,6 @@
-//! U6a gates — bash process supervision (#21/S3): scratch cwd, own process
-//! group, wall-clock timeout → group SIGKILL, step-end background-child
-//! reaping, env hygiene, and the shim-fd capture.
+//! U6a gates — bash process supervision (#21/S3): the invocation cwd (U16),
+//! own process group, wall-clock timeout → group SIGKILL, step-end
+//! background-child reaping, env hygiene, and the shim-fd capture.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -19,6 +19,7 @@ fn spec_in<'a>(
         args: &[],
         env,
         scratch: scratch.path(),
+        project_root: scratch.path(),
         timeout: Duration::from_secs(30),
     }
 }
@@ -35,16 +36,45 @@ fn exit_code_and_stdout_and_stderr_are_captured() {
     assert!(r.shim.bytes.is_empty());
 }
 
+/// U16 (requirements row E1): the block runs WHERE `mrd` RUNS. This assertion
+/// is the inversion of the one it replaces — the supervisor used to chdir the
+/// child into scratch, and the ruling ("DO NOT CHANGE THE RUNNING PATH")
+/// overturned it. The ruling drove the inversion, not test convenience.
 #[test]
-fn the_block_runs_in_the_scratch_cwd() {
+fn the_block_runs_in_the_invocation_cwd() {
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
     let r = exec::exec(&spec_in(&tmp, "pwd", &env)).unwrap();
     let reported = String::from_utf8(r.stdout).unwrap();
     assert_eq!(
         std::fs::canonicalize(reported.trim()).unwrap(),
-        std::fs::canonicalize(tmp.path()).unwrap()
+        std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap()
     );
+    assert_ne!(
+        std::fs::canonicalize(reported.trim()).unwrap(),
+        std::fs::canonicalize(tmp.path()).unwrap(),
+        "scratch is the artifact location, never the cwd"
+    );
+}
+
+/// P6: the project root reaches the step as `$MERIDIAN_PROJECT_ROOT` — the
+/// convenience that replaces the relocation. It is a path, not an authority:
+/// a write under it still refuses convergence (gated in `dispatch_bash.rs`).
+#[test]
+fn the_project_root_is_exported_to_the_step() {
+    let scratch = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let env = BTreeMap::new();
+    let r = exec::exec(&ExecSpec {
+        source: r#"printf '%s' "${MERIDIAN_PROJECT_ROOT:-unset}""#,
+        args: &[],
+        env: &env,
+        scratch: scratch.path(),
+        project_root: project.path(),
+        timeout: Duration::from_secs(30),
+    })
+    .unwrap();
+    assert_eq!(r.stdout, project.path().as_os_str().as_encoded_bytes());
 }
 
 #[test]
@@ -88,6 +118,7 @@ fn timeout_sigkills_the_group_and_is_a_distinct_state() {
         args: &[],
         env: &env,
         scratch: tmp.path(),
+        project_root: tmp.path(),
         timeout: Duration::from_millis(300),
     })
     .unwrap();
@@ -112,12 +143,14 @@ fn a_background_child_is_reaped_at_step_end() {
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
     let started = Instant::now();
-    let r = exec::exec(&spec_in(
-        &tmp,
-        "( sleep 15; echo leaked > leak.txt; echo late ) & exit 0",
-        &env,
-    ))
-    .unwrap();
+    // The leak path is ABSOLUTE: since U16 the step runs in the invocation
+    // cwd, so a relative write would land beside the test binary's cwd and the
+    // assertion below would pass without proving anything.
+    let src = format!(
+        "( sleep 15; echo leaked > '{}/leak.txt'; echo late ) & exit 0",
+        tmp.path().display()
+    );
+    let r = exec::exec(&spec_in(&tmp, &src, &env)).unwrap();
     assert!(r.status.success());
     assert!(
         started.elapsed() < Duration::from_secs(5),
