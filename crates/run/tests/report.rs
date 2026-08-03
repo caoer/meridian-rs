@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use effects::{ArgValue, Effect, EffectKind, Provenance};
 use model::MerkleRoot;
-use run::caps::{Cap, CapResolution, CapSet, CapSource};
+use run::caps::{Authority, Cap, CapResolution, CapSet, CapSource};
 use run::dispatch_bash::{BashOutcome, Phase2};
 use run::dispatch_starlark::DispatchOutcome;
 use run::exec::ExecStatus;
@@ -64,7 +64,7 @@ fn starlark(effects: Vec<Effect>, caps: CapResolution, cap_reached: bool) -> Run
         task: "fix-x".to_owned(),
         task_rev: "b3:proc-abc".to_owned(),
         guarantee: GuaranteeClass::Hermetic,
-        caps,
+        authority: Authority::Capabilities(caps),
         outcome: TaskOutcome::Starlark(Box::new(DispatchOutcome {
             guarantee: GuaranteeClass::Hermetic,
             effects,
@@ -80,8 +80,9 @@ fn bash(phase2: Phase2, status: ExecStatus, pre_receipt: Option<&str>) -> RunRep
     RunReport {
         task: "fix-x".to_owned(),
         task_rev: "b3:proc-abc".to_owned(),
-        guarantee: GuaranteeClass::Detected,
-        caps: caps("md.set_field", CapSource::Explicit, &[]),
+        guarantee: GuaranteeClass::Unsandboxed,
+        // Bash claims no capability at all (docs/laws.md § Amendment).
+        authority: Authority::Unsandboxed,
         outcome: TaskOutcome::Bash(Box::new(BashOutcome {
             pre_receipt_line: pre_receipt.map(str::to_owned),
             status,
@@ -164,8 +165,9 @@ fn narrowed_caps_are_rendered_in_text_and_json() {
         ),
         false,
     ));
-    assert_eq!(r.caps.narrowed, vec!["md.append_section".to_owned()]);
-    assert_eq!(r.caps.source, "convention:fix-*");
+    let caps = r.caps.as_ref().expect("starlark renders its caps");
+    assert_eq!(caps.narrowed, vec!["md.append_section".to_owned()]);
+    assert_eq!(caps.source, "convention:fix-*");
     assert!(
         r.to_text()
             .contains("narrowed by ceiling: md.append_section")

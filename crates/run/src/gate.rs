@@ -214,7 +214,7 @@ mod scenario {
 
     use effects::{ArgValue, Effect, EffectKind, Provenance};
 
-    use crate::caps::CapSet;
+    use crate::caps::{Authority, CapSet};
     use crate::executor::{self, ApplyRequest, ExecError, ReceiptAddr};
 
     /// A task page under `tasks/**` (the rule's declared scope), owned by
@@ -323,7 +323,7 @@ mod scenario {
                 invocation_id: "inv-1",
                 now: Some("2026-07-22T01:00:00Z"),
                 effects: &effects,
-                caps: &CapSet::parse("md.set_field").unwrap(),
+                authority: &Authority::granted(CapSet::parse("md.set_field").unwrap()),
                 pin_root: &now,
                 live_root: &now,
                 receipt: Some(ReceiptAddr {

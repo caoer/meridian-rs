@@ -6,7 +6,6 @@
 //! recorded before the implementation changed, not asserted afterwards.
 
 use run::caps::{self, Cap, CapSet, CapSource, CapsError, ConventionSource, Conventions};
-use run::fence::TaskLanguage;
 
 /// A root that declares itself, plus whatever `run.*` keys the test needs.
 fn declare(root: &std::path::Path, body: &str) {
@@ -49,7 +48,7 @@ fn a_declared_ceiling_narrows_an_explicit_grant() {
 
     let (conv, _) = caps::load_conventions(Some(tmp.path())).unwrap();
     let explicit = set(&["md.set_field", "md.append_section"]);
-    let r = caps::resolve_caps("fix-x", TaskLanguage::Bash, Some(&explicit), &conv).unwrap();
+    let r = caps::resolve_caps("fix-x", Some(&explicit), &conv);
 
     assert_eq!(r.source, CapSource::Explicit);
     assert_eq!(
@@ -116,7 +115,7 @@ fn no_root_is_the_empty_table_stated_never_an_error() {
         "the absence of a ceiling must be stated, not implied: {source}"
     );
 
-    let r = caps::resolve_caps("fix-x", TaskLanguage::Bash, None, &conv).unwrap();
+    let r = caps::resolve_caps("fix-x", None, &conv);
     assert_eq!(r.source, CapSource::DenyDefault);
     assert_eq!(r.effective, CapSet::none());
 }
@@ -227,6 +226,6 @@ fn a_retired_marker_grants_nothing() {
     // And it cannot ceiling anything either: an explicit grant passes whole,
     // because a retired file is not a policy plane.
     let explicit = set(&["md.set_field", "md.append_section"]);
-    let r = caps::resolve_caps("fix-x", TaskLanguage::Bash, Some(&explicit), &conv).unwrap();
+    let r = caps::resolve_caps("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, explicit);
 }

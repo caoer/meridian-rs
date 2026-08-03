@@ -4,9 +4,9 @@
 //! this module only strings them together and drives the generation loop:
 //!
 //! ```text
-//! load_page → resolve_task → contract validate → caps resolve
+//! load_page → resolve_task → contract validate → authority resolve
 //!   → dispatch by fence (starlark hermetic | bash two-phase)
-//!   → guarantee label, evidence-derived (#23)
+//!   → guarantee label (hermetic by construction | unsandboxed)
 //!   → cascade: event → eval(&[Rule]) → md.* through the executor → event…
 //! ```
 //!
@@ -18,19 +18,19 @@
 //! `event.depth >= limits.max_depth` the kernel suppresses cascading `md.*`
 //! (terminal `daemon.*`/`proto.*` survive) — the runner records the
 //! cap-reached fact for the report's generic cap line (U9) and stops.
-//! Cascade generations ride the block's resolved caps (the run's granted
-//! authority is the ceiling — a cascade can never exceed it) and carry no
-//! receipt (resident-cascade receipt policy is phase-2 scope).
+//! Cascade generations ride the block's resolved authority (the run's is the
+//! ceiling — a cascade can never exceed it) and carry no receipt
+//! (resident-cascade receipt policy is phase-2 scope).
 //!
-//! # The guarantee label (#23, ACTIVE)
+//! # The guarantee label
 //! Ruling 4: every block's claim ships scoped, per block. `hermetic` is
-//! starlark's by construction. `detected` is claimed EVIDENCE-DERIVED,
-//! post-dispatch, off the rendered `BashOutcome::detection` verdict — a
-//! compile-time binding (exhaustive match), never an assertion. The #23
-//! sharpened gate that once refused bash at a pre-flight label is
-//! satisfied and its scaffold is gone: the U6b detection bracket is wired
-//! through `dispatch_bash` (7553071, hardened 6c48ace) and the U9 report
-//! renders the `narrowed[]` caps facts (e289596, fixed 0c6ccf4).
+//! starlark's by construction. Bash is `unsandboxed` — there is no guarantee
+//! to derive, because the exec-window bracket detects rather than prevents and
+//! the window is escaped by anything that outlives it (`docs/laws.md`
+//! § Amendment — capabilities do not apply to bash; gate
+//! `crates/mrd/tests/law_no_caps_on_bash.rs`). The bracket verdict is still
+//! rendered on every bash run, as the report's out-of-band-delta line: an
+//! observation about the window, never the block's class.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -40,13 +40,12 @@ use std::time::Duration;
 use effects::{ChangeEvent, Domain, Effect, EvalError, EvalLimits, Rule};
 
 use crate::address::{self, AddressError};
-use crate::caps::{self, CapResolution, CapSet, CapsError};
+use crate::caps::{self, Authority, CapsError};
 use crate::contracts::{self, ContractError, ContractViolation};
 use crate::dispatch_bash::{self, BashDispatch, BashError, BashOutcome};
 use crate::dispatch_starlark::{self, DispatchError, DispatchOutcome, StarlarkDispatch};
 use crate::executor::{self, Applied, ApplyRequest, ExecError, ReceiptAddr};
 use crate::fence::{GuaranteeClass, TaskLanguage};
-use crate::snapshot::Detection;
 
 /// One run request: the addressed page/task plus the caller-supplied
 /// identity, receipts, and bash bracket inputs (§9 — nothing here mints or
@@ -98,8 +97,9 @@ pub struct RunReport {
     pub task_rev: String,
     /// The block's guarantee class (#23-gated).
     pub guarantee: GuaranteeClass,
-    /// The caps resolution — source and `narrowed[]` facts for the report.
-    pub caps: CapResolution,
+    /// What the engine may claim about the block's effects — a real capability
+    /// resolution on the starlark path, `Unsandboxed` on the bash path.
+    pub authority: Authority,
     /// Generation 0: the dispatch outcome, whole.
     pub outcome: TaskOutcome,
     /// Cascade generations 1.. (empty in S1 — `&[Rule]` is empty).
@@ -246,32 +246,24 @@ pub fn run(
     let contract = contracts::contract_for(&doc, &name).map_err(RunnerError::Contract)?;
     contracts::validate(&name, &contract, &spec.args, &spec.env).map_err(RunnerError::Violation)?;
 
-    let explicit = caps::explicit_caps(&doc, &name).map_err(RunnerError::Caps)?;
     let (conventions, _source) =
         caps::load_conventions(spec.declaring_root).map_err(RunnerError::Caps)?;
-    let resolution = caps::resolve_caps(&name, task.block.lang, explicit.as_ref(), &conventions)
+    let authority = caps::resolve_authority(&doc, &name, task.block.lang, &conventions)
         .map_err(RunnerError::Caps)?;
 
     // 2. Dispatch by fence language (decision #13).
-    let outcome = dispatch(root, spec, &task, &name, &resolution.effective, live)?;
+    let outcome = dispatch(root, spec, &task, &name, &authority, live)?;
 
-    // 3. The guarantee label, evidence-derived (#23): hermetic is the sealed
-    // kernel's proof by construction; `detected` is claimed ONLY off the
-    // rendered bracket verdict the bash outcome carries — the binding below
-    // is the proof, and removing `detection` from the outcome breaks this
-    // claim at compile time, never silently.
+    // 3. The guarantee label. `hermetic` is the sealed kernel's proof by
+    // construction. Bash has NO guarantee to derive — the exec-window bracket
+    // detects, never prevents, and a `nohup` or launchd plist writes after the
+    // window closes with no observer, so `unsandboxed` is the whole honest
+    // label (`docs/laws.md` § Amendment). The bracket verdict still rides the
+    // report's out-of-band-delta line, where it is an observation rather than
+    // a class.
     let guarantee = match &outcome {
         TaskOutcome::Starlark(_) => GuaranteeClass::Hermetic,
-        // Any rendered verdict proves the bracket ran — clean-vs-delta is
-        // phase 2's gate, not the label's. The exhaustive match keeps the
-        // claim honest against future Detection growth.
-        TaskOutcome::Bash(o) => match &o.detection {
-            Detection::Clean { .. }
-            | Detection::OutOfBand(_)
-            | Detection::ConfigChanged
-            | Detection::Symlink { .. }
-            | Detection::Failed { .. } => GuaranteeClass::Detected,
-        },
+        TaskOutcome::Bash(_) => GuaranteeClass::Unsandboxed,
     };
 
     // 4. The cascade loop over generation 0's event.
@@ -290,7 +282,7 @@ pub fn run(
         rules,
         &name,
         &task.task_rev,
-        &resolution.effective,
+        &authority,
         first_event,
     )
     .map_err(RunnerError::Cascade)?;
@@ -299,7 +291,7 @@ pub fn run(
         task: name,
         task_rev: task.task_rev,
         guarantee,
-        caps: resolution,
+        authority,
         outcome,
         cascade,
         cap_reached,
@@ -313,7 +305,7 @@ fn dispatch(
     spec: &RunSpec<'_>,
     task: &address::ResolvedTask,
     name: &str,
-    caps: &CapSet,
+    authority: &Authority,
     live: &mut (dyn Write + Send),
 ) -> Result<TaskOutcome, RunnerError> {
     match task.block.lang {
@@ -337,7 +329,7 @@ fn dispatch(
                         invocation_id: spec.invocation_id,
                         now: spec.now,
                         root_at_eval: &root_at_eval,
-                        caps,
+                        authority,
                         receipt: spec.receipt.clone(),
                         takeover: spec.takeover,
                         limits: spec.limits,
@@ -358,7 +350,6 @@ fn dispatch(
                     env: spec.env.clone(),
                     invocation_id: spec.invocation_id,
                     now: spec.now,
-                    caps,
                     pre_receipt: spec.pre_receipt.clone(),
                     receipt: spec.receipt.clone(),
                     takeover: spec.takeover,
@@ -382,7 +373,7 @@ fn cascade(
     rules: &[Rule],
     task: &str,
     task_rev: &str,
-    caps: &CapSet,
+    authority: &Authority,
     mut event: Option<ChangeEvent>,
 ) -> Result<(Vec<Generation>, bool), CascadeError> {
     let mut generations = Vec::new();
@@ -430,7 +421,7 @@ fn cascade(
                         invocation_id: spec.invocation_id,
                         now: spec.now,
                         effects: &md,
-                        caps,
+                        authority,
                         pin_root: &live,
                         live_root: &live,
                         receipt: None,

@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use effects::Provenance;
-use run::caps::CapSet;
 use run::dispatch_bash::{self, BashDispatch, BashError, Phase2};
 use run::exec::ExecStatus;
 use run::executor::{ExecError, ReceiptAddr, WorkspaceLock};
@@ -37,11 +36,7 @@ printf '%s:%s\n' "${#p}" "$p" >&"$MD_EFFECT_FD"
 printf 'end:1\n' >&3
 "#;
 
-fn dispatch_of<'a>(
-    source: &'a str,
-    scratch: &'a tempfile::TempDir,
-    caps: &'a CapSet,
-) -> BashDispatch<'a> {
+fn dispatch_of<'a>(source: &'a str, scratch: &'a tempfile::TempDir) -> BashDispatch<'a> {
     BashDispatch {
         page: "page.md",
         task: "fix-x",
@@ -51,7 +46,6 @@ fn dispatch_of<'a>(
         env: BTreeMap::new(),
         invocation_id: "inv-1",
         now: Some("2026-07-22T02:00:00Z"),
-        caps,
         pre_receipt: Some(ReceiptAddr {
             path: "receipts/2026-07-22.md".to_owned(),
             anchor: "p-000001".to_owned(),
@@ -80,7 +74,6 @@ fn dispatch_of<'a>(
 fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
     let (tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::default();
 
     let secret = tmp.path().join("secret.md"); // OUT of tree, beside the ws
     std::fs::write(&secret, "out-of-tree\n").unwrap();
@@ -89,7 +82,7 @@ fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
     let before = domain_digest(&root);
     let err = dispatch_bash::run(
         &root,
-        &dispatch_of("echo hi\nprintf 'end:1\\n' >&3\n", &scratch, &caps),
+        &dispatch_of("echo hi\nprintf 'end:1\\n' >&3\n", &scratch),
         &mut Vec::new(),
     )
     .expect_err("the guarded walk must refuse this workspace");
@@ -118,13 +111,12 @@ fn a_preflight_refusal_writes_nothing_to_the_attested_domain() {
 fn a_preflight_refusal_is_findable_in_the_run_log() {
     let (tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::default();
     std::fs::write(tmp.path().join("secret.md"), "out-of-tree\n").unwrap();
     std::os::unix::fs::symlink(tmp.path().join("secret.md"), root.0.join("linked.md")).unwrap();
 
     let _ = dispatch_bash::run(
         &root,
-        &dispatch_of("echo hi\n", &scratch, &caps),
+        &dispatch_of("echo hi\n", &scratch),
         &mut Vec::new(),
     );
 
@@ -160,12 +152,11 @@ fn domain_digest(root: &fs::WorkspaceRoot) -> Vec<(String, Vec<u8>)> {
 fn a_clean_run_applies_the_shim_batch_two_phase() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let root_before = fs::domain_snapshot(&root).unwrap().1;
     let mut live: Vec<u8> = Vec::new();
 
     let src = format!("echo running{EMIT_SET_FIELD}");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     // The page changed through the ONE phase-2 batch.
     let text = std::fs::read_to_string(root.0.join("page.md")).unwrap();
@@ -217,12 +208,11 @@ fn a_clean_run_applies_the_shim_batch_two_phase() {
 fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     // A VALID stream, then a failing exit — S2: exec-fail refuses phase 2.
     let src = format!("{EMIT_SET_FIELD}\nexit 7");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     assert_eq!(out.status, ExecStatus::Exited { code: 7 });
     let Phase2::RefusedExecFailed { applied } = &out.phase2 else {
@@ -262,14 +252,13 @@ fn a_nonzero_exit_refuses_phase2_and_phase1_stands() {
 fn a_signaled_step_records_no_completion_and_stays_an_orphan() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     // A valid stream, then the step kills ITSELF — the supervisor's own
     // step-end SIGKILL would be indistinguishable from a timeout, so the
     // signal has to come from inside the block.
     let src = format!("{EMIT_SET_FIELD}\nkill -TERM $$\nsleep 5");
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     assert!(
         matches!(out.status, ExecStatus::Signaled { .. }),
@@ -293,7 +282,6 @@ fn a_signaled_step_records_no_completion_and_stays_an_orphan() {
 fn a_truncated_stream_fails_the_whole_batch_closed() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     // A record with NO trailer and a clean exit — S6: fails closed.
@@ -301,7 +289,7 @@ fn a_truncated_stream_fails_the_whole_batch_closed() {
 p='{"op":"md.set_field","field":"status","value":"done"}'
 printf '%s:%s\n' "${#p}" "$p" >&3
 "#;
-    let out = dispatch_bash::run(&root, &dispatch_of(src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(src, &scratch), &mut live).unwrap();
 
     assert!(out.status.success());
     assert!(matches!(
@@ -318,10 +306,9 @@ printf '%s:%s\n' "${#p}" "$p" >&3
 fn a_timeout_is_distinct_and_refuses_phase2() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
-    let mut d = dispatch_of("sleep 30", &scratch, &caps);
+    let mut d = dispatch_of("sleep 30", &scratch);
     d.timeout = Duration::from_millis(300);
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 
@@ -348,11 +335,10 @@ fn a_timeout_is_distinct_and_refuses_phase2() {
 fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
     let out =
-        dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch, &caps), &mut live).unwrap();
+        dispatch_bash::run(&root, &dispatch_of("echo ok", &scratch), &mut live).unwrap();
 
     assert!(out.status.success());
     // Not a fault: the empty batch applied, and it applied NOTHING.
@@ -388,11 +374,10 @@ fn zero_descriptors_on_a_clean_exit_is_not_a_fault() {
 fn a_completed_zero_effect_run_leaves_both_receipts() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
 
     dispatch_bash::run(
         &root,
-        &dispatch_of("echo ok", &scratch, &caps),
+        &dispatch_of("echo ok", &scratch),
         &mut Vec::new(),
     )
     .unwrap();
@@ -408,30 +393,36 @@ fn a_completed_zero_effect_run_leaves_both_receipts() {
     );
 }
 
+/// **Rewritten from `the_choke_point_refuses_an_uncapped_descriptor`**, which
+/// asserted the OLD contract: an undeclared bash descriptor refusing at the
+/// choke point with `CapDenied`. Capabilities do not apply to bash
+/// (`docs/laws.md` § Amendment), so the dispatcher passes
+/// `Authority::Unsandboxed` and the descriptor APPLIES.
+///
+/// This is a real behaviour change, not a renamed print: the refusal it
+/// replaces was a live gate. Denying the shim never bounded the block — it
+/// only pushed the same write to `sed -i`, off the attested path, where the
+/// U6b bracket at most detects it. The choke point stays real where authority
+/// is real; `law_no_caps_on_bash.rs` holds both halves at the binary boundary.
 #[test]
-fn the_choke_point_refuses_an_uncapped_descriptor() {
+fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none(); // deny-by-default
     let mut live: Vec<u8> = Vec::new();
 
-    let out = dispatch_bash::run(
-        &root,
-        &dispatch_of(EMIT_SET_FIELD, &scratch, &caps),
-        &mut live,
-    )
-    .unwrap();
+    let out =
+        dispatch_bash::run(&root, &dispatch_of(EMIT_SET_FIELD, &scratch), &mut live).unwrap();
 
-    assert!(matches!(
-        out.phase2,
-        Phase2::RefusedExec {
-            error: ExecError::CapDenied { .. },
-            ..
-        }
-    ));
-    assert_eq!(
-        std::fs::read_to_string(root.0.join("page.md")).unwrap(),
-        PAGE
+    assert!(
+        matches!(out.phase2, Phase2::Applied { .. }),
+        "{:?}",
+        out.phase2
+    );
+    assert!(
+        std::fs::read_to_string(root.0.join("page.md"))
+            .unwrap()
+            .contains("status: done"),
+        "the descriptor did not apply"
     );
 }
 
@@ -439,12 +430,11 @@ fn the_choke_point_refuses_an_uncapped_descriptor() {
 fn a_held_workspace_lock_is_a_fast_typed_refusal() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
     let _held = WorkspaceLock::acquire(&root.0).unwrap();
     let err =
-        dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch, &caps), &mut live).unwrap_err();
+        dispatch_bash::run(&root, &dispatch_of("echo hi", &scratch), &mut live).unwrap_err();
     assert!(matches!(err, BashError::Phase1(ExecError::WorkspaceBusy)));
 }
 
@@ -452,10 +442,9 @@ fn a_held_workspace_lock_is_a_fast_typed_refusal() {
 fn an_unsafe_invocation_id_refuses_before_anything_commits() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
-    let mut d = dispatch_of("echo hi", &scratch, &caps);
+    let mut d = dispatch_of("echo hi", &scratch);
     d.invocation_id = "../evil";
     let err = dispatch_bash::run(&root, &d, &mut live).unwrap_err();
     assert!(matches!(err, BashError::Record(_)));
@@ -471,11 +460,10 @@ fn an_unsafe_invocation_id_refuses_before_anything_commits() {
 fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
     let src = format!("echo sneaky > '{}/rogue.md'", root.0.display());
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     assert!(out.status.success());
     assert!(matches!(out.phase2, Phase2::RefusedDetection));
@@ -502,14 +490,13 @@ fn an_ungoverned_tree_write_refuses_phase2_with_the_delta_named() {
 fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     let src = format!(
         "echo sneaky > '{}/rogue.md'\n{EMIT_SET_FIELD}",
         root.0.display()
     );
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     assert!(matches!(out.phase2, Phase2::RefusedDetection));
     let Detection::OutOfBand(delta) = &out.detection else {
@@ -534,14 +521,13 @@ fn an_honest_descriptor_plus_rogue_write_refuses_everything() {
 fn a_config_rewrite_in_the_window_refuses_phase2() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
     let src = format!(
         "printf 'ignore:\\n  - \"rogue.md\"\\n' > '{ws}/mdfs_config.yaml'\necho sneaky > '{ws}/rogue.md'",
         ws = root.0.display()
     );
-    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch, &caps), &mut live).unwrap();
+    let out = dispatch_bash::run(&root, &dispatch_of(&src, &scratch), &mut live).unwrap();
 
     assert!(matches!(out.detection, Detection::ConfigChanged));
     assert!(matches!(out.phase2, Phase2::RefusedDetection));
@@ -559,11 +545,10 @@ fn a_config_rewrite_in_the_window_refuses_phase2() {
 fn the_completion_receipt_carries_the_sealed_exec_facts() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     let src = format!("echo running{EMIT_SET_FIELD}");
-    let mut d = dispatch_of(&src, &scratch, &caps);
+    let mut d = dispatch_of(&src, &scratch);
     d.env = BTreeMap::from([("HOME_WIKI".to_string(), "secret-value".to_string())]);
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 
@@ -601,12 +586,11 @@ fn the_completion_receipt_carries_the_sealed_exec_facts() {
 fn a_clean_window_verdict_rides_the_outcome() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let mut live: Vec<u8> = Vec::new();
 
     let out = dispatch_bash::run(
         &root,
-        &dispatch_of(EMIT_SET_FIELD, &scratch, &caps),
+        &dispatch_of(EMIT_SET_FIELD, &scratch),
         &mut live,
     )
     .unwrap();
@@ -634,10 +618,9 @@ fn a_clean_window_verdict_rides_the_outcome() {
 fn a_timeout_still_renders_the_detection_verdict() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::none();
     let mut live: Vec<u8> = Vec::new();
 
-    let mut d = dispatch_of("sleep 30", &scratch, &caps);
+    let mut d = dispatch_of("sleep 30", &scratch);
     d.timeout = Duration::from_millis(300);
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 
@@ -650,11 +633,10 @@ fn a_timeout_still_renders_the_detection_verdict() {
 fn without_a_pre_receipt_the_run_still_pins_a_locked_window_root() {
     let (_tmp, root) = workspace();
     let scratch = tempfile::tempdir().unwrap();
-    let caps = CapSet::parse("md.set_field").unwrap();
     let root_before = fs::domain_snapshot(&root).unwrap().1;
     let mut live: Vec<u8> = Vec::new();
 
-    let mut d = dispatch_of(EMIT_SET_FIELD, &scratch, &caps);
+    let mut d = dispatch_of(EMIT_SET_FIELD, &scratch);
     d.pre_receipt = None;
     let out = dispatch_bash::run(&root, &d, &mut live).unwrap();
 

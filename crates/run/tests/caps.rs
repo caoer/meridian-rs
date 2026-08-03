@@ -3,6 +3,13 @@
 //! read-only conventions, and the bash-fence load refusal (check-*/verify-*
 //! only — fix-* is where bash writes are wanted).
 //!
+//! The ladder is STARLARK's: capabilities do not apply to bash (`docs/laws.md`
+//! § Amendment), so `resolve_caps` takes no language and the tests below name
+//! none. The language-aware entry is `resolve_authority`, tested here only for
+//! the two answers it owns — the `check-*` name refusal, and `Unsandboxed`.
+//! The whole law is gated at the binary boundary in
+//! `crates/mrd/tests/law_no_caps_on_bash.rs`.
+//!
 //! WHERE the convention table is declared is a separate law with its own file:
 //! `caps_home.rs` (the root's own `MERIDIAN.md`, marker-retirement ruling).
 
@@ -10,7 +17,7 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use run::caps::{self, Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
+use run::caps::{self, Authority, Cap, CapResolution, CapSet, CapSource, CapsError, Conventions};
 use run::fence::TaskLanguage;
 use support::doc;
 
@@ -28,23 +35,13 @@ fn conventions(entries: &[(&str, &[&str])]) -> Conventions {
     .unwrap()
 }
 
-fn resolve(
-    task: &str,
-    lang: TaskLanguage,
-    explicit: Option<&CapSet>,
-    conv: &Conventions,
-) -> CapResolution {
-    caps::resolve_caps(task, lang, explicit, conv).unwrap()
+fn resolve(task: &str, explicit: Option<&CapSet>, conv: &Conventions) -> CapResolution {
+    caps::resolve_caps(task, explicit, conv)
 }
 
 #[test]
 fn undeclared_block_is_read_only_deny_by_default() {
-    let r = resolve(
-        "anything",
-        TaskLanguage::Starlark,
-        None,
-        &Conventions::none(),
-    );
+    let r = resolve("anything", None, &Conventions::none());
     assert_eq!(r.source, CapSource::DenyDefault);
     assert_eq!(r.effective, CapSet::none());
     assert!(r.narrowed.is_empty());
@@ -55,7 +52,7 @@ fn undeclared_block_is_read_only_deny_by_default() {
 fn explicit_frontmatter_beats_convention_as_grant_source() {
     let conv = conventions(&[("fix-*", &["md.set_field", "md.append_section"])]);
     let explicit = set(&["md.set_field:status"]);
-    let r = resolve("fix-drift", TaskLanguage::Bash, Some(&explicit), &conv);
+    let r = resolve("fix-drift", Some(&explicit), &conv);
     assert_eq!(r.source, CapSource::Explicit);
     // The explicit grant is inside the convention ceiling — survives intact.
     assert_eq!(r.effective, explicit);
@@ -65,7 +62,7 @@ fn explicit_frontmatter_beats_convention_as_grant_source() {
 #[test]
 fn convention_grants_when_no_explicit_declaration() {
     let conv = conventions(&[("fix-*", &["md.set_field"])]);
-    let r = resolve("fix-drift", TaskLanguage::Bash, None, &conv);
+    let r = resolve("fix-drift", None, &conv);
     assert_eq!(r.source, CapSource::Convention("fix-*".to_owned()));
     assert!(r.effective.admits("md.set_field", Some("status")));
     assert!(!r.effective.admits("md.append_section", None));
@@ -77,7 +74,7 @@ fn convention_narrows_an_explicit_grant_never_widens() {
     // drops the excess and the narrowing is visible, never silent.
     let conv = conventions(&[("fix-*", &["md.set_field"])]);
     let explicit = set(&["md.set_field", "md.append_section"]);
-    let r = resolve("fix-x", TaskLanguage::Bash, Some(&explicit), &conv);
+    let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.source, CapSource::Explicit);
     assert_eq!(r.effective, set(&["md.set_field"]));
     assert_eq!(r.narrowed, vec![Cap::parse("md.append_section").unwrap()]);
@@ -89,7 +86,7 @@ fn targeted_ceiling_tightens_an_untargeted_grant() {
     // the effective cap is the TARGETED one — narrower, and reported.
     let conv = conventions(&[("fix-*", &["md.set_field:status"])]);
     let explicit = set(&["md.set_field"]);
-    let r = resolve("fix-x", TaskLanguage::Bash, Some(&explicit), &conv);
+    let r = resolve("fix-x", Some(&explicit), &conv);
     assert_eq!(r.effective, set(&["md.set_field:status"]));
     assert!(r.effective.admits("md.set_field", Some("status")));
     assert!(!r.effective.admits("md.set_field", Some("title")));
@@ -98,9 +95,12 @@ fn targeted_ceiling_tightens_an_untargeted_grant() {
 
 #[test]
 fn check_and_verify_names_refuse_a_bash_fence_loudly() {
+    // A NAME law, not a capability: it survives the bash amendment, and it
+    // runs BEFORE the short-circuit below.
+    let d = doc(support::PAGE);
     for task in ["check-links", "verify-roots"] {
         let err =
-            caps::resolve_caps(task, TaskLanguage::Bash, None, &Conventions::none()).unwrap_err();
+            caps::resolve_authority(&d, task, TaskLanguage::Bash, &Conventions::none()).unwrap_err();
         assert!(
             matches!(err, CapsError::BashFenceRefused { .. }),
             "{task}: {err:?}"
@@ -108,12 +108,22 @@ fn check_and_verify_names_refuse_a_bash_fence_loudly() {
     }
 }
 
+/// **Rewritten from `fix_names_do_not_refuse_bash`**, which asserted the OLD
+/// contract: a `fix-*` bash task resolving `CapSource::DenyDefault`. Under
+/// `docs/laws.md` § Amendment there is no source to resolve — a bash task that
+/// clears the `check-*` name law is `Unsandboxed`, and its declaration is not
+/// read at all.
 #[test]
-fn fix_names_do_not_refuse_bash() {
-    // fix-* blocks DECLARE writes and are exactly where bash is wanted — the
+fn a_bash_task_resolves_no_capability_at_all() {
+    let d = doc(support::PAGE);
+    // `fix-*` blocks DECLARE writes and are exactly where bash is wanted — the
     // load refusal is check-*/verify-* ONLY (ruling 3).
-    let r = resolve("fix-wiki", TaskLanguage::Bash, None, &Conventions::none());
-    assert_eq!(r.source, CapSource::DenyDefault);
+    let conv = conventions(&[("fix-*", &["md.set_field"])]);
+    let authority = caps::resolve_authority(&d, "fix-wiki", TaskLanguage::Bash, &conv).unwrap();
+    assert_eq!(authority, Authority::Unsandboxed);
+    // Not a grant of everything — the absence of a gate. Nothing to report.
+    assert_eq!(authority.capabilities(), None);
+    assert!(authority.admits("md.set_field", Some("status")));
 }
 
 #[test]
@@ -121,12 +131,7 @@ fn builtin_read_only_ceiling_zeroes_even_explicit_caps() {
     // A check-* block with explicit write caps stays read-only: the builtin
     // ceiling is absolute, and the dropped caps are reported.
     let explicit = set(&["md.set_field", "md.append_section"]);
-    let r = resolve(
-        "check-links",
-        TaskLanguage::Starlark,
-        Some(&explicit),
-        &Conventions::none(),
-    );
+    let r = resolve("check-links", Some(&explicit), &Conventions::none());
     assert_eq!(r.effective, CapSet::none());
     assert_eq!(r.narrowed.len(), 2);
 }
@@ -182,12 +187,7 @@ fn empty_explicit_declaration_is_explicit_read_only() {
     let d = doc(page);
     let explicit = caps::explicit_caps(&d, "t").unwrap();
     assert_eq!(explicit, Some(CapSet(BTreeSet::new())));
-    let r = resolve(
-        "t",
-        TaskLanguage::Bash,
-        explicit.as_ref(),
-        &Conventions::none(),
-    );
+    let r = resolve("t", explicit.as_ref(), &Conventions::none());
     assert_eq!(r.source, CapSource::Explicit);
     assert_eq!(r.effective, CapSet::none());
 }

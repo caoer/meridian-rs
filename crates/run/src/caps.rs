@@ -9,6 +9,19 @@
 //! `check-*` / `verify-*` names refuse a bash fence loudly at load; `fix-*`
 //! does not — fix blocks declare writes and are exactly where bash is wanted.
 //!
+//! # Capabilities do not apply to bash (`docs/laws.md` § Amendment)
+//! The whole ladder above is **starlark's**. A bash task resolves
+//! [`Authority::Unsandboxed`]: no cap set, no source, no `deny-default`, and
+//! its `task.<name>.caps` frontmatter is not even READ — a value that governs
+//! nothing is not validated into looking like it might. [`Authority`] is what
+//! makes that structural rather than a printing convention: the bash path does
+//! not hold the type that carries a capability, so it cannot name one. The
+//! executable gate is `crates/mrd/tests/law_no_caps_on_bash.rs`.
+//!
+//! [`resolve_authority`] is the ONE language-aware entry, and the only place
+//! the bash short-circuit lives. [`resolve_caps`] below it takes no language:
+//! the ladder has no language axis to get wrong.
+//!
 //! # The convention plane (marker-retirement ruling, 2026-07-26)
 //! The table lives in the root's own self-declaration — `<root>/MERIDIAN.md`
 //! with `type: meridian-root`, the artifact D7's *"the root declares,
@@ -56,6 +69,11 @@ pub const CAPS_KEY_PREFIX: &str = "run.caps.";
 /// The reserved filename of the root's self-declaration. Re-exported from its
 /// ONE owner rather than re-spelled here.
 pub use config::mount::{DECLARATION_FILENAME, DECLARATION_TYPE};
+
+/// How every surface spells a bash block's effect declaration: there is none.
+/// One owner, so `--list`, `--dry` and the run report cannot drift into three
+/// wordings of the same fact.
+pub const UNDECLARED_EFFECTS: &str = "undeclared";
 
 /// Name patterns that are read-only BY CONVENTION, builtin and non-overridable:
 /// their ceiling is empty, and a bash fence under them refuses at load. `fix-*`
@@ -324,6 +342,73 @@ pub struct CapResolution {
     pub narrowed: Vec<Cap>,
 }
 
+/// What the engine may claim about one block's effects — the ONE value
+/// threaded from resolution to the executor's choke point.
+///
+/// Two variants, because there are two honest answers and no third. A block
+/// either carries a capability contract the engine can KEEP, or it is an
+/// unsandboxed shell the engine cannot bound at all. There is no `CapSet`
+/// spelling of the second: cwd isolation and env scrubbing do not restrict
+/// network, credentials, SSH or `rm -rf`, and the exec-window detector is
+/// escaped by a `nohup` — so no value, including `none`, is true of bash.
+///
+/// The law is `docs/laws.md` § "Amendment — capabilities do not apply to
+/// bash"; the executable gate is `crates/mrd/tests/law_no_caps_on_bash.rs`.
+/// Structural, not cosmetic: the bash dispatcher never holds a
+/// [`CapResolution`], so it cannot print, narrow, or half-enforce one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Authority {
+    /// Starlark: a real, enforceable grant. The hermetic evaluator cannot
+    /// reach past a descriptor, so the choke point validating against this set
+    /// is a promise the engine keeps.
+    Capabilities(CapResolution),
+    /// Bash: an unsandboxed shell with undeclared effects. No set, no source,
+    /// no `deny-default` — the engine states what it observes, never what the
+    /// block may do.
+    Unsandboxed,
+}
+
+impl Authority {
+    /// A stated grant with no ceiling history — for call sites that name the
+    /// caps directly (the proof corpus, executor tests) rather than resolving
+    /// them off a page.
+    #[must_use]
+    pub fn granted(effective: CapSet) -> Self {
+        Self::Capabilities(CapResolution {
+            effective,
+            source: CapSource::Explicit,
+            narrowed: Vec::new(),
+        })
+    }
+
+    /// The capability resolution, when this authority IS one.
+    ///
+    /// `None` for an unsandboxed shell, and every surface renders that as an
+    /// ABSENT key rather than an empty one: `null` or `[]` would still be an
+    /// answer to a question the engine cannot answer.
+    #[must_use]
+    pub fn capabilities(&self) -> Option<&CapResolution> {
+        match self {
+            Self::Capabilities(resolution) => Some(resolution),
+            Self::Unsandboxed => None,
+        }
+    }
+
+    /// Does this authority admit an effect of `kind` against `target`?
+    ///
+    /// `Unsandboxed` admits every descriptor — not a grant of everything, but
+    /// the absence of a gate. Denying the shim here would only push the same
+    /// write to `sed -i`, off the attested path, where the bracket at most
+    /// detects it.
+    #[must_use]
+    pub fn admits(&self, kind: &str, target: Option<&str>) -> bool {
+        match self {
+            Self::Capabilities(resolution) => resolution.effective.admits(kind, target),
+            Self::Unsandboxed => true,
+        }
+    }
+}
+
 /// Why capability handling refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapsError {
@@ -437,31 +522,56 @@ pub fn load_conventions(root: Option<&Path>) -> Result<(Conventions, ConventionS
     }
 }
 
-/// Resolve a block's effective capabilities (see the module docs for the law).
+/// Resolve what the engine may claim about one block — the ONE language-aware
+/// entry, and the only place the bash law lives.
 ///
-/// Order: (1) the builtin read-only conventions refuse a bash fence loudly;
-/// (2) the grant resolves explicit > convention > none; (3) ceilings narrow —
-/// a matching convention over an EXPLICIT grant, then the builtin read-only
-/// ceiling over everything it matches.
+/// Order: (1) a `check-*` / `verify-*` bash fence refuses loudly — that is a
+/// NAME law, not a capability, and it survives the amendment below; (2) any
+/// other bash block is [`Authority::Unsandboxed`], resolved WITHOUT reading its
+/// `task.<name>.caps` declaration, because that declaration governs nothing;
+/// (3) starlark runs the full ladder ([`resolve_caps`]).
 ///
 /// # Errors
-/// [`CapsError::BashFenceRefused`].
-pub fn resolve_caps(
+/// [`CapsError::BashFenceRefused`] on a read-only-by-convention bash fence;
+/// [`CapsError::BadCap`] on a malformed starlark cap declaration.
+pub fn resolve_authority(
+    doc: &Document,
     task: &str,
     lang: TaskLanguage,
+    conventions: &Conventions,
+) -> Result<Authority, CapsError> {
+    if lang == TaskLanguage::Bash {
+        if let Some(pattern) = READ_ONLY_PATTERNS.iter().find(|p| pattern_matches(p, task)) {
+            return Err(CapsError::BashFenceRefused {
+                task: task.to_owned(),
+                pattern: (*pattern).to_owned(),
+            });
+        }
+        return Ok(Authority::Unsandboxed);
+    }
+    let explicit = explicit_caps(doc, task)?;
+    Ok(Authority::Capabilities(resolve_caps(
+        task,
+        explicit.as_ref(),
+        conventions,
+    )))
+}
+
+/// The capability ladder, over an already-read declaration: the grant resolves
+/// explicit > convention > none, then ceilings narrow — a matching convention
+/// over an EXPLICIT grant, then the builtin read-only ceiling over everything
+/// it matches.
+///
+/// Takes no [`TaskLanguage`]: the ladder has no language axis to get wrong, and
+/// the one caller that has a language ([`resolve_authority`]) reaches here only
+/// for starlark.
+#[must_use]
+pub fn resolve_caps(
+    task: &str,
     explicit: Option<&CapSet>,
     conventions: &Conventions,
-) -> Result<CapResolution, CapsError> {
+) -> CapResolution {
     let read_only_match = READ_ONLY_PATTERNS.iter().find(|p| pattern_matches(p, task));
-    if lang == TaskLanguage::Bash
-        && let Some(pattern) = read_only_match
-    {
-        return Err(CapsError::BashFenceRefused {
-            task: task.to_owned(),
-            pattern: (*pattern).to_owned(),
-        });
-    }
-
     let convention_match = conventions.matching(task);
     let (grant, source) = match (explicit, convention_match) {
         (Some(set), _) => (set.clone(), CapSource::Explicit),
@@ -486,9 +596,9 @@ pub fn resolve_caps(
         effective = e;
         narrowed.extend(n);
     }
-    Ok(CapResolution {
+    CapResolution {
         effective,
         source,
         narrowed,
-    })
+    }
 }
