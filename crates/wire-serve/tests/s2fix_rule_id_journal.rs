@@ -30,7 +30,7 @@ fn frozen_guide(id: &str) -> String {
 const RULE_PATH: &str = "rules/frozen-guide.md";
 const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n";
 
-/// Arm `id`: page + engine-rendered artifact (re-keyed from LEGAL_ID) + once-armed marker.
+/// Arm `id`: page + engine-rendered artifact (re-keyed from `LEGAL_ID`) + once-armed marker.
 fn arm(root: &fs::WorkspaceRoot, id: &str) {
     let page = frozen_guide(LEGAL_ID);
     write(root, RULE_PATH, &page);
