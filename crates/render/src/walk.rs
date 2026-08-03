@@ -202,6 +202,10 @@ mod tests {
             depth: 1,
             title: "H".into(),
             hpath: "H".into(),
+            hpath_raw: vec![wire::HpathSeg {
+                h: "H".into(),
+                n: None,
+            }],
             words: 1,
             sec_rev: "x".into(),
             span: wire::Span(0, 10),
