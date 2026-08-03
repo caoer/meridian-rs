@@ -207,10 +207,13 @@ pub fn composed_read(
     let frag = params.frag.as_deref().unwrap_or("");
     let has_sections = params.sections.as_ref().is_some_and(|s| !s.is_empty());
     if !frag.is_empty() && has_sections {
-        return Err(bad_request(
-            "read: pass either a #fragment on ref or sections[], not both — \
-             the fragment scopes the whole call; sections[] selects document-absolute paths",
-        ));
+        return Err(bad_request(format!(
+            "read: pass either a #fragment on ref or sections[], not both, for {display} — \
+             the fragment scopes the whole call; sections[] selects document-absolute \
+             paths. Nothing was read and no rev was minted. Fix: drop the `#fragment` from \
+             the ref and keep the document-absolute `sections[]`, or drop `sections[]` and \
+             let the fragment scope the call."
+        )));
     }
     let header = render::Header {
         display_path: display,
