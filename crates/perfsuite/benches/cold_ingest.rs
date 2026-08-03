@@ -6,15 +6,13 @@
 //! enough to see that. Page-cache state is deliberately NOT controlled: this
 //! measures the experience, not the microarchitecture.
 //!
-//! Three phases, each a single timed pass, each staging one claim:
+//! Two phases, each a single timed pass, each staging one claim:
 //! - `ingest.cold.<profile>` — walk + read every file from disk
 //! - `ingest.codec.ndjson.<profile>` — every file through `NdjsonCodec`
 //!   encode+decode as a splice-shaped request (1 GB of real JSON cost)
-//! - `ingest.codec.proto.<profile>` — the same frames through the typed
-//!   `transport-proto` path (1 GB of real protobuf cost)
 //!
-//! Message construction is pre-built OUTSIDE the timed window so both codec
-//! claims measure encode+decode, not `String` clones. When rung 1 lands,
+//! Message construction is pre-built OUTSIDE the timed window so the codec
+//! claim measures encode+decode, not `String` clones. When rung 1 lands,
 //! `syntax::parse` joins as a fourth phase and the claims keep their history.
 //!
 //! Hand-written `main`, `harness = false` (roundtrip.rs pattern): under the
@@ -33,7 +31,6 @@ use std::time::Instant;
 
 use serde_json::json;
 use transport::{Codec, Message, NdjsonCodec, Request};
-use transport_proto::pb;
 
 use perfsuite::corpus;
 use perfsuite::measure::{Measurement, record_measurement};
@@ -88,15 +85,6 @@ fn main() {
         count,
         full_recipe,
     );
-
-    let (secs, bytes, count) = proto_pass(&loaded);
-    report(
-        &format!("ingest.codec.proto.{suffix}"),
-        secs,
-        bytes,
-        count,
-        full_recipe,
-    );
 }
 
 /// Phase 2: the corpus through the untyped NDJSON seam, one splice-shaped
@@ -139,63 +127,6 @@ fn ndjson_pass(loaded: &[(String, String)]) -> (f64, u64, usize) {
     }
     let elapsed = start.elapsed().as_secs_f64();
     assert_eq!(decoded, msgs.len(), "every frame decodes");
-    (elapsed, encoded_bytes, decoded)
-}
-
-/// Phase 3: identical content through the typed protobuf path.
-fn proto_pass(loaded: &[(String, String)]) -> (f64, u64, usize) {
-    let frames: Vec<pb::Frame> = loaded
-        .iter()
-        .enumerate()
-        .map(|(i, (path, text))| pb::Frame {
-            kind: Some(pb::frame::Kind::Request(pb::Request {
-                id: Some(i as u64),
-                op: Some(pb::request::Op::Splice(pb::SpliceRequest {
-                    path: path.clone(),
-                    actor: None,
-                    now: None,
-                    receipt: None,
-                    if_root: None,
-                    dry: None,
-                    force: None,
-                    edits: vec![pb::Edit {
-                        target: Some(pb::SecRef {
-                            form: Some(pb::sec_ref::Form::Hpath(pb::HpathRef {
-                                segs: vec![pb::HpathSeg {
-                                    h: "ingest".to_owned(),
-                                    n: None,
-                                }],
-                            })),
-                        }),
-                        edit: Some(pb::EditShape {
-                            shape: Some(pb::edit_shape::Shape::Put(pb::PutEdit {
-                                at: pb::PutAt::All.into(),
-                                text: text.clone(),
-                            })),
-                        }),
-                        if_node_rev: Some("0000000000000000".to_owned()),
-                    }],
-                })),
-            })),
-        })
-        .collect();
-    let mut buf = Vec::with_capacity(512 * 1024);
-    let mut encoded_bytes = 0u64;
-    let mut decoded = 0usize;
-    let start = Instant::now();
-    for frame in &frames {
-        buf.clear();
-        transport_proto::encode(frame, &mut buf).expect("encode");
-        encoded_bytes += buf.len() as u64;
-        let mut input: &[u8] = &buf;
-        let back = transport_proto::decode(&mut input)
-            .expect("decode")
-            .expect("one frame");
-        black_box(&back);
-        decoded += 1;
-    }
-    let elapsed = start.elapsed().as_secs_f64();
-    assert_eq!(decoded, frames.len(), "every frame decodes");
     (elapsed, encoded_bytes, decoded)
 }
 

@@ -57,9 +57,8 @@
             };
           };
 
-          # Build ONLY the sidecar bin (its dep graph excludes transport-proto,
-          # so no protoc is needed). Everything else in the workspace is off the
-          # delivery path.
+          # Build ONLY the sidecar bin. Everything else in the workspace is off
+          # the delivery path.
           cargoBuildFlags = [ "-p" "sidecar" ];
 
           # Tests need on-disk workspace fixtures + the testsuite data helpers;

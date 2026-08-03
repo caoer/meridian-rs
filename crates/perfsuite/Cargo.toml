@@ -25,7 +25,6 @@ syntax = { workspace = true }
 model = { workspace = true }
 policy = { workspace = true }
 transport = { workspace = true }
-transport-proto = { workspace = true }
 
 [[bin]]
 name = "corpusgen"
