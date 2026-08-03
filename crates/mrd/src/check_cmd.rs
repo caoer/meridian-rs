@@ -240,14 +240,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // answer is the F1 shape again with one more step in front of it — a true
     // statement about the wrong bytes.
     if let Interval::CannotAsk(detail) = &interval {
-        return Err(Fail {
-            code: EXIT_FINDING,
-            message: format!(
+        return Err(Fail::with_code(
+            EXIT_FINDING,
+            format!(
                 "check refuses ({STAGED}): {GREY_CANNOT_ASSESS} — {detail}; the interval a \
                  commit records could not be read, and a commit nobody could vouch for is not \
                  a verified one"
             ),
-        });
+        ));
     }
 
     // **The scoped exit, and it reads ONE interval.** The worst-of below is the
@@ -289,10 +289,10 @@ fn worst_of_exit(worktree: &CoreReport, staged: Option<&Assessed>) -> Result<(),
             .iter()
             .find_map(|(label, report)| summarise(report).map(|s| (*label, s)))
         {
-            return Err(Fail {
-                code: EXIT_FINDING,
-                message: format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
-            });
+            return Err(Fail::with_code(
+                EXIT_FINDING,
+                format!("check refuses ({label}): {}", summary.replace('\n', "; ")),
+            ));
         }
     }
     Ok(())
@@ -467,15 +467,15 @@ impl Gate<'_> {
         if self.permits() {
             return Ok(());
         }
-        Err(Fail {
-            code: EXIT_FINDING,
-            message: format!(
+        Err(Fail::with_code(
+            EXIT_FINDING,
+            format!(
                 "check refuses ({}): {} — {}",
                 self.label,
                 self.word(),
                 self.detail()
             ),
-        })
+        ))
     }
 
     /// **The STANDING BREAK, told on every run that has one** (never a blocker,

@@ -68,10 +68,7 @@ const RECEIPT_FILE: &str = "receipts/run.md";
 
 /// A run-plane refusal (exit 1) — distinct from [`Fail::tool`]'s exit 2.
 fn fail_run(message: String) -> Fail {
-    Fail {
-        code: EXIT_RUN,
-        message,
-    }
+    Fail::with_code(EXIT_RUN, message)
 }
 
 /// Addressing faults are invocation faults: exit 2 (plan §5).
@@ -359,10 +356,10 @@ fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
         Phase2::RefusedSignaled => match &outcome.status {
             ExecStatus::Signaled { signal } => {
                 let leg = u8::try_from(128 + *signal).unwrap_or(1);
-                return Err(Fail {
-                    code: leg,
-                    message: format!("bash was signaled ({signal}) — run interrupted"),
-                });
+                return Err(Fail::with_code(
+                    leg,
+                    format!("bash was signaled ({signal}) — run interrupted"),
+                ));
             }
             // Unreachable: this variant is built only under `Signaled`.
             other => format!("bash ended {other:?} — phase 2 refused"),
