@@ -135,12 +135,19 @@ fn raw_input_v2() -> String {
 #[test]
 fn v3_session_emits_fingerprint_never_root() {
     let (_d, root) = s0();
-    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
-         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n\
-         {\"id\":3,\"op\":\"fingerprint\"}\n\
-         {\"id\":4,\"op\":\"splice\",\"path\":\"notes/plan.md\",\"dry\":true,\
-           \"edits\":[{\"target\":{\"hpath\":[{\"h\":\"Goals\"},{\"h\":\"Q3\"}]},\
-           \"edit\":{\"match\":{\"old\":\"ship by August\",\"new\":\"ship by September\"}}}]}\n";
+    // U10: a dry run refuses exactly where the real write does, so the rehearsal
+    // carries the section's fingerprint too — read it from the `toc` first.
+    let q3_rev = toc_node_rev(&root, "Q3");
+    let input = format!(
+        "{{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}}\n\
+         {{\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}}\n\
+         {{\"id\":3,\"op\":\"fingerprint\"}}\n\
+         {{\"id\":4,\"op\":\"splice\",\"path\":\"notes/plan.md\",\"dry\":true,\
+           \"edits\":[{{\"target\":{{\"hpath\":[{{\"h\":\"Goals\"}},{{\"h\":\"Q3\"}}]}},\
+           \"if_node_rev\":\"{q3_rev}\",\
+           \"edit\":{{\"match\":{{\"old\":\"ship by August\",\"new\":\"ship by September\"}}}}}}]}}\n"
+    );
+    let input = input.as_str();
     let raw = serve_raw(&root, input);
     assert!(
         !raw.contains("\"root\""),
@@ -444,4 +451,28 @@ fn explicit_v2_contract_is_the_frozen_vocabulary() {
         frames[1],
         json!({"id":2,"ok":true,"body":{"root":R0,"seq":0}})
     );
+}
+
+/// One heading's live `node_rev` from a `toc` frame — the fingerprint U10 makes
+/// every wire-origin content change carry.
+fn toc_node_rev(root: &fs::WorkspaceRoot, heading: &str) -> String {
+    let frames = serve(
+        root,
+        "{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}\n\
+         {\"id\":2,\"op\":\"toc\",\"path\":\"notes/plan.md\"}\n",
+    );
+    frames[1]["body"]["nodes"]
+        .as_array()
+        .expect("toc nodes")
+        .iter()
+        .find(|n| {
+            n["hpath"]
+                .as_array()
+                .and_then(|h| h.last())
+                .is_some_and(|seg| seg["h"] == json!(heading))
+        })
+        .unwrap_or_else(|| panic!("heading {heading} in toc: {:?}", frames[1]))["node_rev"]
+        .as_str()
+        .expect("node_rev")
+        .to_string()
 }

@@ -29,6 +29,7 @@ const PAGE: &str = "---\ntitle: Race\n---\n# Log\n\nseed line\n";
 fn racer_args(i: usize) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("log.md".into()),
         actor: Some(format!("racer-{i}")),
         now: None,

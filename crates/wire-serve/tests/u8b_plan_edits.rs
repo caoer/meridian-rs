@@ -28,6 +28,7 @@ fn ws(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn plan_args(path: &str, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath(path.into()),
         actor: Some("agent:alice".into()),
         now: Some("2026-07-24T12:00:00Z".into()),
@@ -75,6 +76,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
                 PlanEdit::SetProperty {
                     key: "status".into(),
                     value: "closed".into(),
+                    rev: None,
                 },
                 PlanEdit::Append {
                     hpath: "Memo/Tasks".into(),
@@ -277,6 +279,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
             vec![PlanEdit::SetProperty {
                 key: "status".into(),
                 value: "closed\ninjected:pwned".into(),
+                rev: None,
             }],
         ),
         &[],
@@ -301,6 +304,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
             vec![PlanEdit::SetProperty {
                 key: "status".into(),
                 value: "closed\nowner: mallory".into(),
+                rev: None,
             }],
         ),
         &[],
@@ -319,10 +323,12 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
                 PlanEdit::SetProperty {
                     key: "owner".into(),
                     value: "alice".into(),
+                    rev: None,
                 },
                 PlanEdit::SetProperty {
                     key: "status".into(),
                     value: "closed\ninjected:pwned".into(),
+                    rev: None,
                 },
             ],
         ),
@@ -380,6 +386,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
             vec![PlanEdit::SetProperty {
                 key: FORGED.into(),
                 value: "x".into(),
+                rev: None,
             }],
         ),
         &[],
@@ -404,10 +411,12 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
                 PlanEdit::SetProperty {
                     key: "title".into(),
                     value: "Rewritten".into(),
+                    rev: None,
                 },
                 PlanEdit::SetProperty {
                     key: FORGED.into(),
                     value: "x".into(),
+                    rev: None,
                 },
             ],
         ),
@@ -433,6 +442,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
             vec![PlanEdit::SetProperty {
                 key: "review-state_2".into(),
                 value: "pending".into(),
+                rev: None,
             }],
         ),
         &[],

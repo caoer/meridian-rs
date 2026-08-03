@@ -633,6 +633,7 @@ mod scenarios {
     fn forged_row(force: bool) -> SpliceArgs {
         SpliceArgs {
             id: None,
+            origin: crate::guard::Origin::Cli,
             path: Path(fs::domain::ARMED_RULES_PATH.into()),
             actor: Some("agent:mallory".into()),
             now: None,
@@ -663,6 +664,7 @@ mod scenarios {
     fn content_splice(path: &str, actor: &str, force: bool) -> SpliceArgs {
         SpliceArgs {
             id: None,
+            origin: crate::guard::Origin::Cli,
             path: Path(path.into()),
             actor: Some(actor.into()),
             now: None,

@@ -80,7 +80,7 @@ pub fn lower(
     // Properties first (host order); last value per key wins; keys sorted.
     let mut props: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
     for e in plan_edits {
-        if let wire::PlanEdit::SetProperty { key, value } = e {
+        if let wire::PlanEdit::SetProperty { key, value, .. } = e {
             props.insert(key, value);
         }
     }
@@ -651,6 +651,7 @@ mod tests {
             &[PlanEdit::SetProperty {
                 key: "status".into(),
                 value: "closed".into(),
+                rev: None,
             }],
         )
         .expect("lowers");
@@ -664,6 +665,7 @@ mod tests {
             &[PlanEdit::SetProperty {
                 key: "zeta".into(),
                 value: "1".into(),
+                rev: None,
             }],
         )
         .expect("lowers");
@@ -678,14 +680,17 @@ mod tests {
                 PlanEdit::SetProperty {
                     key: "owner".into(),
                     value: "e".into(),
+                    rev: None,
                 },
                 PlanEdit::SetProperty {
                     key: "zeta".into(),
                     value: "1".into(),
+                    rev: None,
                 },
                 PlanEdit::SetProperty {
                     key: "status".into(),
                     value: "closed".into(),
+                    rev: None,
                 },
             ],
         )
@@ -706,6 +711,7 @@ mod tests {
             &[PlanEdit::SetProperty {
                 key: "status".into(),
                 value: "open".into(),
+                rev: None,
             }],
         )
         .expect_err("no fm refuses");
@@ -725,6 +731,7 @@ mod tests {
             &[PlanEdit::SetProperty {
                 key: "note".into(),
                 value: "a: b".into(),
+                rev: None,
             }],
         )
         .expect("lowers");
@@ -740,6 +747,7 @@ mod tests {
             &[PlanEdit::SetProperty {
                 key: "note".into(),
                 value: String::new(),
+                rev: None,
             }],
         )
         .expect("lowers");

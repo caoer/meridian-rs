@@ -49,6 +49,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn splice_args(dry: bool) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::Cli,
         path: WPath("rec.md".into()),
         actor: Some("w1234567".into()),
         now: Some("2026-07-25T09:00:00Z".into()),
