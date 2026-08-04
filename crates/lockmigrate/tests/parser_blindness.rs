@@ -142,6 +142,56 @@ fn an_enclosed_lock_fence_is_not_engine_placed() {
     );
 }
 
+/// **THE CONTAINER RULE, and the accident it replaced.**
+///
+/// A blockquoted lock fence (`> ```meridian-lock`) IS visible to the parser —
+/// the live archive carries one. It is excluded because the engine mints a lock
+/// by appending at EOF, unindented and unquoted, so a real page lock's fence
+/// always OPENS a line.
+///
+/// # Why this test exists rather than the outcome being taken on trust
+/// The blockquoted shape was already coming out excluded before this rule
+/// existed — **for the wrong reason.** Its span starts mid-line (after the
+/// `> ` marker), and `enclosed_by_code_fence` walked up to `span_start` rather
+/// than to the start of its LINE, so the block's OWN opener was counted as its
+/// enclosure. Right answer, accidental mechanism: the exact defect class this
+/// whole card exists to remove, reproduced inside the fix for it.
+#[test]
+fn a_fence_that_does_not_open_its_line_is_not_engine_placed() {
+    let block = lock_block();
+    let quoted: String = block
+        .lines()
+        .map(|l| format!("> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let raw = format!("# Doc\n\nZT wrote:\n\n{quoted}\n");
+    let doc = model::build(raw.clone(), syntax::parse(&raw));
+    let spans = lock::block_spans(&doc);
+    assert_eq!(spans.len(), 1, "a blockquoted fence IS parser-visible");
+    let start = spans[0].start;
+
+    assert!(
+        !lockmigrate::fence_starts_the_line_for_test(&raw, start),
+        "a blockquoted fence does not open its line"
+    );
+    // AND the enclosure predicate must NOT be what excludes it — that was the
+    // accident. If this flips to true, the off-by-one is back.
+    assert!(
+        !lockmigrate::enclosed_by_code_fence_for_test(&raw, start),
+        "a blockquoted fence is NOT enclosed; its own opener must not be \
+         mistaken for its enclosure"
+    );
+
+    // Discriminator: a real page lock DOES open its line.
+    let top = format!("# Page\n\nbody\n\n{block}\n");
+    let tdoc = model::build(top.clone(), syntax::parse(&top));
+    let tstart = lock::block_spans(&tdoc)[0].start;
+    assert!(
+        lockmigrate::fence_starts_the_line_for_test(&top, tstart),
+        "a real page lock must open its line, or this rule excludes everything"
+    );
+}
+
 /// The two protective layers are INDEPENDENT, and the card's premise that the
 /// archive is protected *only* by parser blindness is too strong — measured.
 ///
