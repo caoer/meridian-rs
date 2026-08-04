@@ -15,11 +15,22 @@
 //!   (`conventions/INDEX.md`) for the armed set, re-hashes each armed
 //!   convention's `CHECK.md` (O(armed) small reads), and reads the git refs.
 //!   The `meridian-lock` planes add ONE corpus
-//!   build (the lock lives in the corpus's pages, so nothing smaller can see
-//!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
+//!   build of THIS workspace (the lock lives in the corpus's pages, so nothing
+//!   smaller can see it), plus one corpus build per mount root **that this
+//!   corpus's own lock addresses actually name** — usually none. That last
+//!   clause is load-bearing and was once absent, in the doc and in the code:
+//!   `walk_cmd::load_mounts` built EVERY declared root eagerly, so a bare
+//!   `status` walked every tree in the machine's `~/MERIDIAN.md` to colour a
+//!   handful of ambient pins. Measured on a four-root machine: 271 MB and 43,524
+//!   directories per invocation, 80.6% of the run, at 0 armed rules
+//!   (`crates/mrd/src/walk_cmd.rs` § `load_mounts_for`). The narrowing is
+//!   [`lock_addressed_roots`];
+//!   shared by both planes: the pin colors are O(pins) and the vibe-debt gauge is
 //!   O(objects) plus at most TWO git calls PER OBJECT STORE (one `rev-list`, one
 //!   batched `cat-file`) — never O(corpus) and never a call per blob, so the
-//!   3k-corpus wall-time stays sub-second. A corpus whose pinned objects are
+//!   3k-corpus wall-time stays sub-second — a bound over the WORKSPACE corpus,
+//!   which holds only because the roots are no longer walked unconditionally. A
+//!   corpus whose pinned objects are
 //!   all ambient has exactly ONE store and so exactly the two calls it always
 //!   had; a key naming a root adds that root's store, because the anchoring
 //!   check runs against THAT root's git repo (U13, ratified cross-root
@@ -98,7 +109,7 @@
 //!   semantic class.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -563,13 +574,51 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     // `check` would have made these two planes disagree — the guarantee at
     // `check/src/layer0.rs` is that they agree BY CONSTRUCTION, and it stays true
     // because both are fed the same corpus and the same table.
-    let mounts = crate::walk_cmd::load_mounts();
+    //
+    // The table is loaded with the corpora NARROWED to the roots this corpus's
+    // own lock addresses name ([`lock_addressed_roots`]). The table itself is
+    // unnarrowed, so this stays the same table `walk` and `check` are fed and the
+    // by-construction agreement above is untouched — see
+    // [`crate::walk_cmd::load_mounts_for`] for why the corpora may differ and the
+    // verdicts may not.
+    let mounts = crate::walk_cmd::load_mounts_for(&lock_addressed_roots(&docs));
     let corpus = mounts.rooted(&docs);
     let colors: Vec<Color> = view::walk::lock_pin_colors_rooted(&corpus, mounts.set())
         .into_iter()
         .map(|p| p.color)
         .collect();
     (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
+}
+
+/// Every mount root the corpus's `meridian-lock` addresses NAME — the exact set
+/// of roots whose pages this run can read, and so the exact set worth building.
+///
+/// # Why the set is knowable before any root is loaded
+/// A pin's root is a property of its ADDRESS, not of the tree the address points
+/// into: `sessions:notes/plan.md` names `sessions` whether or not `sessions` is
+/// declared, readable, or holds that page. Reading the name therefore costs the
+/// ambient corpus that is already in memory and no root corpus at all.
+///
+/// The root is read off [`view::read_face::LockItem::declared_addr`] — the
+/// parsed address, which that field's contract names **the structural owner**
+/// (U10): *"Every consumer that needs the root, the path or the selector reads
+/// THIS; nothing re-splits `declared_ref`."* A second spelling of the address
+/// grammar here is exactly the drift that field exists to prevent, so this
+/// function contains none.
+///
+/// A row with no address — a lock refusal, or a spelling outside the grammar —
+/// contributes no root, which is correct rather than lossy: it resolves into no
+/// root, so no root's pages can answer for it.
+fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+    let mut roots = BTreeSet::new();
+    for doc in docs.values() {
+        for item in view::read_face::page_lock_items(doc) {
+            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
+                roots.insert(root.clone());
+            }
+        }
+    }
+    roots
 }
 
 /// Which object store one pinned blob belongs to: the ambient
