@@ -45,11 +45,17 @@ pub mod walk;
 pub type ByteSpan = Range<usize>;
 
 /// The `hash-algo` label this engine mints and computes — `blake3-256(span
-/// bytes)[:16]` (contract v2 §1; node-rev-merkle-spec §1). An `^inputs` lock
-/// whose `hash-algo` header is anything else carries a rev this engine cannot
-/// recompute, so the read face renders it grey `superseded-algo` — never green,
-/// never red (wire-contract-v2-colors-amendment § Colors; U0.2/U3.4). One owner
-/// for the label so `pin` (writer) and `view` (reader) never drift.
+/// bytes)[:16]` (contract v2 §1; node-rev-merkle-spec §1). A label that is
+/// anything else names a rev this engine cannot recompute, so it stays OUT of
+/// the node-rev compare ([`is_native_algo`]) and can never be called green.
+/// One owner for the label so `pin` (writer) and `view` (reader) never drift.
+///
+/// **It no longer names a rendering.** The `^inputs` plane it used to render
+/// grey `superseded-algo` on is retired (R1.3/U9c), and under R4 the
+/// foreign-algo case is answered by the FINGERPRINT plane and spelled
+/// `unverifiable-fingerprint` (wire-contract-v2-colors-amendment § Colors —
+/// the subject moved planes; it was not dropped). DECISION 22 (ZT,
+/// 2026-08-04).
 pub const NODE_REV_ALGO: &str = "node-rev";
 
 /// The effect-page `hash-algo` label the v1→v2 supersede stamps (design-2 §6.3:
@@ -62,11 +68,15 @@ pub const NODE_REV_ALGO: &str = "node-rev";
 pub const SUPERSEDE_ALGO_V2: &str = "v2";
 
 /// Whether `algo` is an engine-native `hash-algo` — one whose rev this engine's
-/// node-rev compare verifies to green/red, NOT grey `superseded-algo`. The
-/// native set is `{node-rev, v2}`: `node-rev` is what `pin` mints; `v2` is the
-/// design-2 §6.3 supersede label carrying the same node-rev value under the
-/// effect-page `vN` convention. Any other label (v1/merkle-v1, statusd-file-rev,
-/// read-rev, …) is a rev this engine cannot recompute → grey.
+/// node-rev compare can verify to green or red. The native set is
+/// `{node-rev, v2}`: `node-rev` is what `pin` mints; `v2` is the design-2 §6.3
+/// supersede label carrying the same node-rev value under the effect-page `vN`
+/// convention. Any other label (v1/merkle-v1, statusd-file-rev, read-rev, …)
+/// names a rev this engine cannot recompute.
+///
+/// **This is a FENCE, not a renderer.** It states which labels the node-rev
+/// compare may touch, so a non-native label can never buy a false green; it
+/// says nothing about what any plane renders. DECISION 22 (ZT, 2026-08-04).
 #[must_use]
 pub fn is_native_algo(algo: &str) -> bool {
     algo == NODE_REV_ALGO || algo == SUPERSEDE_ALGO_V2
