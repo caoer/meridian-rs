@@ -573,3 +573,48 @@ fn no_internal_unit_tag_reaches_a_help_page() {
         );
     }
 }
+
+// ── A refusal may not name a verb spelling the listing does not offer ────────
+
+/// A refusal's teaching half is only worth its line if the verb it names can be
+/// typed. `mrd lock migrate` was `lock-migrate` until U9b renamed it — the help
+/// surface moved and two refusal strings did not, so the tool spent a release
+/// telling users to run a verb that no longer existed. Nothing failed, because
+/// nothing pinned the refusal text.
+///
+/// The gate is deliberately NOT "does not contain `lock-migrate`". It is derived
+/// from the listing, so it holds for the NEXT rename too, and it cannot go stale
+/// the way a hardcoded spelling would.
+#[test]
+fn a_refusal_names_only_verbs_the_listing_offers() {
+    let full = stdout(&mrd(&["--help"]));
+    let lines = verb_lines(&full);
+    let addresses: Vec<Vec<&str>> = lines
+        .iter()
+        .map(|(_, synopsis)| address_of(synopsis))
+        .collect();
+    assert!(
+        addresses.iter().any(|a| a == &vec!["lock", "migrate"]),
+        "control: the listing must offer `lock migrate`, else this test is \
+         asserting against a surface it never reached: {addresses:?}"
+    );
+
+    // Invoke the verb wrong so it refuses, and read the refusal it hands back.
+    let out = mrd(&["lock", "migrate"]);
+    let refusal = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !refusal.is_empty(),
+        "control: invoking `lock migrate` with no --vault must produce a refusal"
+    );
+
+    // The hyphenated form is what a word-lexed listing can never address, so a
+    // refusal naming it sends the reader to a verb `--help` cannot even reach.
+    assert!(
+        !refusal.contains("lock-migrate"),
+        "the refusal names a verb spelling the listing does not offer: {refusal}"
+    );
+    assert!(
+        refusal.contains("lock migrate"),
+        "the refusal should name the verb as the listing spells it: {refusal}"
+    );
+}
