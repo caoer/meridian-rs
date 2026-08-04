@@ -146,11 +146,12 @@ pub struct RenamePlan {
 /// - **Block ids survive.** The heading edit is a `match` over the heading LINE
 ///   only (`## Old` → `## New`); every `^block-id` in the section BODY (and any
 ///   `^id` trailing the heading line) is byte-untouched.
-/// - **hpath pins redden, block pins stay green.** A dependent pinning
+/// - **hpath pins redden, block pins keep their rev.** A dependent pinning
 ///   `from_path#Old` (an hpath selector) resolves to nothing after the rename →
-///   `red(selector-unresolved)`; one pinning a body `^block-id` still resolves at
-///   an unchanged rev → green (U2.2 `classify_edge`). Backlink fixup rewrites
-///   `[[…]]` WIKILINKS, never `inputs:` pins — so pins redden as the law says.
+///   `red(selector-unresolved)`; one pinning a body `^block-id` still resolves,
+///   at an unchanged rev (`model::selector::resolve_selector`). Backlink fixup
+///   rewrites `[[…]]` WIKILINKS, never lock pins — so pins redden as the law
+///   says.
 ///
 /// Edit order is load-bearing: every backlink rewrite FIRST, the heading rename
 /// LAST — a self-referential link inside the renamed section is addressed by the
