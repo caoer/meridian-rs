@@ -521,7 +521,12 @@ fn enclosed_by_code_fence(raw: &str, span_start: usize) -> bool {
     let mut open: Option<usize> = None;
     let mut offset = 0usize;
     for line in raw.lines() {
-        if offset >= span_start {
+        // Stop before the line that CONTAINS `span_start`, not merely before
+        // `span_start` itself. A block whose span begins mid-line — a
+        // blockquoted fence starts after its `> ` marker — would otherwise have
+        // its OWN opener counted as its enclosure, which is the right answer
+        // for the wrong reason.
+        if offset + line.len() >= span_start {
             break;
         }
         let bare = line
@@ -546,6 +551,28 @@ fn enclosed_by_code_fence(raw: &str, span_start: usize) -> bool {
         offset += line.len() + 1; // the newline
     }
     open.is_some()
+}
+
+/// **Does this lock block's fence start at column 0?**
+///
+/// The engine mints a lock block by appending it at EOF, unindented and
+/// unquoted, so its fence always OPENS a line. A fence that starts mid-line sits
+/// inside a CONTAINER — a blockquote (`> ```meridian-lock`), a list item — and
+/// the engine has never written one there.
+///
+/// A second, independent reason a block is not engine-placed, and it is STATED
+/// rather than inherited from where a span boundary happened to fall.
+fn fence_starts_the_line(raw: &str, span_start: usize) -> bool {
+    raw[..span_start]
+        .rfind('\n')
+        .map_or(span_start == 0, |nl| nl + 1 == span_start)
+}
+
+/// Test-visible shim for [`fence_starts_the_line`].
+#[doc(hidden)]
+#[must_use]
+pub fn fence_starts_the_line_for_test(raw: &str, span_start: usize) -> bool {
+    fence_starts_the_line(raw, span_start)
 }
 
 /// Test-visible shim for [`enclosed_by_code_fence`] — the rule is unreachable
@@ -593,10 +620,9 @@ fn classify(doc: &model::Document) -> Candidate {
     // was watching. If that reach ever changes, this rule keeps the outcome the
     // same BY DECISION. See `parser_blindness.rs` for the tripwire that fires
     // when the reach does change.
-    if spans
-        .iter()
-        .all(|s| enclosed_by_code_fence(&doc.raw, s.start))
-    {
+    if spans.iter().all(|s| {
+        enclosed_by_code_fence(&doc.raw, s.start) || !fence_starts_the_line(&doc.raw, s.start)
+    }) {
         return Candidate::Verdict(Box::new(move |path| PageVerdict::NotEnginePlaced {
             path,
             blocks,
