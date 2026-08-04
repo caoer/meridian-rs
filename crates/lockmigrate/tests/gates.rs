@@ -486,6 +486,80 @@ fn a_vault_without_git_is_refused() {
     }
 }
 
+// ── The world guard, ARMED (--expect-root) ─────────────────────────────────
+
+/// **THE WORLD GUARD, TWO ARMS: a MATCHING root PASSES and a MISMATCHED root
+/// REFUSES.** Both arms, because a guard proven only by passing is a guard that
+/// might be ignoring its input.
+///
+/// # Why this gate exists at all
+/// The sweep shipped with `if_root: None` hard-coded — the §5.1 world guard was
+/// UNARMED on every page — while the runbook described it as armed and required
+/// (law 4.6). The claim and the code disagreed, and nothing would have caught
+/// that during a sweep: every per-page CAS still passes, because each page is
+/// individually consistent even when the VAULT is not the world the operator
+/// inspected. `--expect-root` is what makes the operator's "I looked at this
+/// vault" mean the vault they looked at.
+#[test]
+fn the_world_guard_refuses_a_mismatched_root_and_passes_a_matching_one() {
+    // ── ARM 1: MISMATCHED root must REFUSE, and write nothing. ──
+    let (_d, root) = one_page_vault();
+    let before = read(&root, "page.md");
+    let err = sweep(
+        &root,
+        &Options {
+            expect_root: Some(wire::Root("not-this-vaults-root".into())),
+            ..Options::default()
+        },
+    )
+    .expect_err("a mismatched world MUST refuse");
+    let lockmigrate::SweepError::Door { detail, .. } = &err else {
+        panic!("expected a door refusal, got {err:?}");
+    };
+    assert!(
+        detail.contains("root_mismatch"),
+        "the refusal must be the WORLD guard, not some neighbouring refusal: {detail}"
+    );
+    assert_eq!(read(&root, "page.md"), before, "the refusal wrote nothing");
+
+    // ── ARM 2: the MATCHING root must PASS. ──
+    // The acceptance half. Without it, a guard that refused EVERYTHING would
+    // satisfy arm 1 — and so would a `--expect-root` that was never read.
+    let ambient = wire_serve::ambient_root(&root).expect("the vault has an ambient root");
+    let report = sweep(
+        &root,
+        &Options {
+            expect_root: Some(ambient.clone()),
+            ..Options::default()
+        },
+    )
+    .expect("the matching world migrates");
+    assert_eq!(
+        report.migrated(),
+        1,
+        "the page rewrote under the armed guard"
+    );
+    assert_ne!(read(&root, "page.md"), before, "and the bytes really moved");
+
+    // ── The discriminator: the two arms differ, and differ FOR THE RIGHT
+    // REASON. The mismatched value must not be accidentally equal to the real
+    // one, or arm 1 would be proving nothing.
+    assert_ne!(
+        ambient.0, "not-this-vaults-root",
+        "the fixture's wrong root must actually be wrong"
+    );
+}
+
+/// UNARMED stays the default: `expect_root: None` migrates, exactly as the tool
+/// behaved before the flag existed. The flag ADDS a guard; it does not quietly
+/// become mandatory and break an operator who omits it.
+#[test]
+fn an_unarmed_sweep_is_unchanged() {
+    let (_d, root) = one_page_vault();
+    let report = sweep(&root, &Options::default()).expect("unarmed still runs");
+    assert_eq!(report.migrated(), 1);
+}
+
 // ── The expected drift, named in advance ───────────────────────────────────
 
 /// **S7: the expected full-body-pin drift is named BEFORE the sweep runs.**
