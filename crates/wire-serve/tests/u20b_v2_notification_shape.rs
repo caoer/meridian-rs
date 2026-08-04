@@ -202,20 +202,67 @@ fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
     );
 }
 
-/// **PROVENANCE protects the v2-LEGAL fields.** `message` and `path` are legal
-/// v2 vocabulary, so an ordinary refusal keeps them. Only the ladder's own are
-/// stripped, and `rung` is what proves the ladder wrote them.
+/// **The early return** — a refusal carrying nothing post-v2 is not demoted at
+/// all. True, and worth pinning. But note what it does NOT reach: it returns
+/// BEFORE the strip block, so it can say nothing about how that block behaves.
 ///
-/// This is the assertion that a registry row for `message` would break — the
-/// regression that the "migrate all six to the table" order would have shipped.
+/// This test was originally named for the provenance property and was BLIND to
+/// it. With the guard deleted and an unconditional strip shipped, it stayed
+/// green — measured by running both arms and diffing the results: no test
+/// changed colour. Renamed to what it actually tests; the real provenance pin
+/// is below.
 #[test]
-fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
+fn a_refusal_with_nothing_post_v2_is_not_demoted_at_all() {
     let mut error = cas_error();
     error.message = Some("plain refusal wording".into());
     error.path = Some(wire::Path("plan.md".into()));
     assert!(
         wire_serve::rev::demote_v2(&error_response(error)).is_none(),
-        "a refusal with no post-v2 field and no ladder mark is not demoted at all"
+        "no post-v2 field and no ladder mark ⇒ the early return, before any strip"
+    );
+}
+
+/// **PROVENANCE protects the v2-LEGAL fields — THE DIVERGENT CASE.**
+///
+/// `message` and `path` are legal v2 vocabulary, so an ordinary refusal keeps
+/// them; only the ladder's own are stripped, and `rung` proves the ladder wrote
+/// them. This is the assertion a registry row for `message` would break — the
+/// regression the "migrate all six to the table" order would have shipped, and
+/// which a botched mutation restore actually DID ship for one commit.
+///
+/// The fixture is a NON-ladder refusal that nevertheless carries a post-v2
+/// field. That combination is the only input where correct and incorrect
+/// behaviour differ: the vintage half forces a demotion, so control REACHES the
+/// strip block, and there the v2-legal slots must survive. Reaching the block is
+/// the entire point — assert this property from an input that returns early and
+/// the pin is green whether or not the guard exists.
+#[test]
+fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
+    let mut error = cas_error();
+    // No rung: not ladder-authored. A post-v2 field: forces the demotion, so we
+    // land INSIDE the strip block instead of returning before it.
+    error.new_fingerprint = Some(wire::NodeRev("beef000000000000".into()));
+    error.message = Some("plain refusal wording".into());
+    error.path = Some(wire::Path("plan.md".into()));
+
+    let demoted = wire_serve::rev::demote_v2(&error_response(error))
+        .expect("the post-v2 field forces a demotion, so the strip block runs");
+    let wire::ResponsePayload::Error { error } = &demoted.payload else {
+        panic!("still an error payload");
+    };
+    assert!(
+        error.new_fingerprint.is_none(),
+        "vintage: the post-v2 field goes"
+    );
+    assert_eq!(
+        error.message.as_deref(),
+        Some("plain refusal wording"),
+        "provenance: a v2-LEGAL message SURVIVES a demotion it did not author"
+    );
+    assert_eq!(
+        error.path.as_ref().map(|p| p.0.as_str()),
+        Some("plan.md"),
+        "provenance: so does its path"
     );
 }
 

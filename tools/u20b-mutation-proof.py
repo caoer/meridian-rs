@@ -128,16 +128,17 @@ MUTATIONS = [
         "v2-provenance-not-vintage",
         ("wire-serve", "u20b_v2_notification_shape",
          "a_non_ladder_refusal_keeps_its_v2_legal_message_and_path"),
+        # ONE edit, deliberately. The two-edit version of this row is what
+        # lie 3 corrupted, and it also masked a blind pin: it reddened via the
+        # SECOND edit (disabling the early return) while the pin could not
+        # detect the FIRST edit at all. One edit = the honest defect, and the
+        # pin must catch it unaided.
         [(
             "crates/wire-serve/src/rev.rs",
             "        if ladder_authored {\n            error.message = None;\n            error.path = None;\n        }",
             "        // MUTATION: treat the v2-LEGAL slots as vintage — the\n"
             "        // regression the \"migrate all six\" order would have shipped.\n"
             "        error.message = None;\n        error.path = None;",
-        ), (
-            "crates/wire-serve/src/rev.rs",
-            "    if !ladder_authored && !post_v2 {",
-            "    if false && !ladder_authored && !post_v2 {",
         )],
         "stripping a legitimate v2 message from a non-ladder refusal",
     ),
@@ -187,9 +188,18 @@ def main() -> int:
         try:
             for rel, old, new in edits:
                 path = ROOT / rel
-                backup = Path(tempfile.mkdtemp()) / path.name
-                shutil.copy2(path, backup)
-                backups[path] = backup
+                # BACK UP ON FIRST TOUCH ONLY. Taking the backup inside the loop
+                # and keying it by path means a row with N edits on ONE file
+                # stores the state after edit N-1 as its "pristine" copy — the
+                # restore then puts the file back MOSTLY MUTATED, and the row
+                # still prints REDDENS, because that verdict is a claim about
+                # the TEST while the restore is a claim about the SOURCE.
+                # Measured, not theorised: this shipped an unconditional strip
+                # to a pushed branch.
+                if path not in backups:
+                    backup = Path(tempfile.mkdtemp()) / path.name
+                    shutil.copy2(path, backup)
+                    backups[path] = backup
                 text = path.read_text()
                 if old not in text:
                     raise SystemExit(f"{name}: anchor not found in {rel}")
