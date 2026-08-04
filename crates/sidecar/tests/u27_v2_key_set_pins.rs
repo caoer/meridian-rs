@@ -151,8 +151,15 @@ fn frame_envelope_key_set_is_id_ok_and_exactly_one_payload() {
 #[test]
 fn hello_body_key_set_is_the_frozen_four() {
     let (_d, root) = s0();
-    let got = one(&root, r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#);
-    pin_keys(&got["body"], &["caps", "proto", "root", "server"], "hello body");
+    let got = one(
+        &root,
+        r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
+    );
+    pin_keys(
+        &got["body"],
+        &["caps", "proto", "root", "server"],
+        "hello body",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -386,18 +393,28 @@ fn splice_body_receipt_and_edit_key_sets_are_frozen() {
     pin_keys(&edits[0]["target"], &["hpath"], "splice armed edit target");
 }
 
-/// **The `armed` object as the v2 wire ACTUALLY serves it.**
+/// **BOTH armed pins are WITHHELD — the oracle contradicts itself here.**
 ///
-/// The frozen §4.4 worked response prints `armed:{path, edits}`. The live v2
-/// wire adds `file_rev_after`, which no amendment in `docs/` declares — a
-/// vintage-absent field on a frozen v2 shape (U27 finding 1; the `effects`
-/// sibling is amendment-declared and card-owned).
+/// The two halves of the frozen-v2 oracle disagree on exactly one field:
 ///
-/// This pin records what the wire does so the shape cannot drift FURTHER
-/// unseen. It is deliberately NOT the contract's answer:
-/// [`contract_armed_key_set_is_path_and_edits_only`] states that, ignored,
-/// pending disposition.
+/// - `docs/wire-contract-v2.md` §4.4 prints `armed` as `{path, edits}`.
+/// - `crates/sidecar/tests/splice_e2e.rs` asserts frozen frames that INCLUDE
+///   `armed.file_rev_after`, by exact-frame `assert_eq!`, on sessions that send
+///   no `hello` — i.e. v2 sessions.
+///
+/// Which half is authoritative is above this unit's line: it is escalated to
+/// the advisor (found by C3 / worker `0d110aa0`; the field arrived in commit
+/// `9365455a`, ZT-authored, touching no `.md`). Minting EITHER pin now decides
+/// the question by fiat — pinning the served shape would convert a possible
+/// fourth leak into a permanent regression lock, and pinning the doc shape
+/// would red-flag a field ZT may have amended in deliberately.
+///
+/// So both arms are landed `#[ignore]`d and neither is deleted: whichever way
+/// the ruling goes, the pin that survives is already written and one attribute
+/// away from live. Every OTHER shape in this file is minted normally — this is
+/// the only contested one.
 #[test]
+#[ignore = "U27 — armed shape BLOCKED by Leader 160c2d32: doc §4.4 and splice_e2e frozen frames disagree on `file_rev_after`; advisor ruling pending"]
 fn armed_key_set_as_served_on_v2_today() {
     let (_d, root) = s0();
     let got = one(&root, &e3_splice());
@@ -408,12 +425,11 @@ fn armed_key_set_as_served_on_v2_today() {
     );
 }
 
-/// **The CONTRACT's answer for `armed`, red today.** Frozen §4.4 prints
-/// `armed:{path, edits}` — no `file_rev_after`. Ignored, not deleted: the fix
-/// is dispositioned per field under `c3-v2-splice-response-effects-leak`, and a
-/// deleted test would let the disposition land with nothing asserting it.
+/// **The DOC half's answer for `armed`** — frozen §4.4 prints `{path, edits}`,
+/// no `file_rev_after`. The other arm of the withheld pair above; see that
+/// doc comment for why neither is live.
 #[test]
-#[ignore = "U27 finding 1 — vintage-absent `armed.file_rev_after` on frozen v2; fix owned by c3-v2-splice-response-effects-leak"]
+#[ignore = "U27 — armed shape BLOCKED by Leader 160c2d32: this arm asserts the doc half of a self-contradicting oracle; advisor ruling pending"]
 fn contract_armed_key_set_is_path_and_edits_only() {
     let (_d, root) = s0();
     let got = one(&root, &e3_splice());
@@ -494,7 +510,11 @@ fn delta_notification_key_sets_are_frozen() {
     let (_d, root) = s0();
     let frames = serve(
         &root,
-        &format!("{}\n{}\n", r#"{"id":1,"op":"sub","from_seq":0}"#, e3_splice()),
+        &format!(
+            "{}\n{}\n",
+            r#"{"id":1,"op":"sub","from_seq":0}"#,
+            e3_splice()
+        ),
     );
     let note = frames
         .iter()
@@ -728,7 +748,11 @@ fn remaining_frozen_error_key_sets_are_pinned() {
     );
 
     let raw_id = one(&root, r#"{"id":"7","op":"root"}"#);
-    assert_eq!(raw_id["id"], Value::Null, "§3.1: a bad lexeme echoes id:null");
+    assert_eq!(
+        raw_id["id"],
+        Value::Null,
+        "§3.1: a bad lexeme echoes id:null"
+    );
     pin_keys(
         &raw_id["error"],
         &["code", "id_raw", "recovery"],
