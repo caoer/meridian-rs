@@ -46,7 +46,15 @@ mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
-mod retire_cmd;
+// The type-2 retirement DSL. It is PUBLIC for one reason, the `hook` precedent
+// above: the U23 coverage census asserts that the set of reason words its
+// fixtures exercise IS the set `Reason::ALL` declares. That is a claim about two
+// artifacts agreeing, so the integration test has to be able to name both — and
+// a census that instead compared its fixture table against a hand-written copy
+// of the reason words would agree with itself forever and catch nothing. Only
+// `Reason`, `Reason::word` and `Reason::ALL` are `pub`; everything else in the
+// module stays crate-private.
+pub mod retire_cmd;
 mod rules_cmd;
 /// The rules walk (registration rework): the disk edge that enumerates the scope
 /// ladder's roots and offers every page in their hash domain to tag-indexed
