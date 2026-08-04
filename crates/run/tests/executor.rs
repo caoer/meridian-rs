@@ -670,7 +670,9 @@ fn the_run_plane_cannot_write_a_meridian_lock_block() {
         &Req {
             effects: &[append(
                 "Log",
-                "```meridian-lock\nversion: 1\npins:\n  - ref: \"t.md#T/S\"\n    fingerprint: \"fp1.b3.deadbeef\"\n```",
+                "```meridian-lock\nversion: 2\npins:\n  - object: \"[[t]]\"\n    \
+                 hash: \"9ae3f1deadbeef\"\n    path: [\"T\", \"S\"]\n    \
+                 fingerprint: \"fp1.span2.b3.a8222f5a\"\n```",
                 0,
             )],
             caps: write_caps(),
@@ -695,7 +697,9 @@ fn the_run_plane_still_writes_beside_an_untouched_lock() {
     std::fs::write(
         tmp.path().join("page.md"),
         format!(
-            "{PAGE}\n```meridian-lock\nversion: 1\npins:\n  - ref: \"t.md#T/S\"\n    fingerprint: \"fp1.b3.deadbeef\"\n```\n"
+            "{PAGE}\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[t]]\"\n    \
+             hash: \"9ae3f1deadbeef\"\n    path: [\"T\", \"S\"]\n    \
+             fingerprint: \"fp1.span2.b3.a8222f5a\"\n```\n"
         ),
     )
     .unwrap();

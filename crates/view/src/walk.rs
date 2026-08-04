@@ -2,7 +2,8 @@
 //!
 //! The walk computes — **per query, never stored** — the reachability listing
 //! over the declared pin graph: every edge [`crate::read_face::page_lock_items`]
-//! parses, in all three forms it reads (the legacy `^inputs` form-1/form-2 and
+//! parses (the engine's own `meridian-lock` block — the legacy `^inputs`
+//! form-1/form-2 readers were retired with the vocabulary, R1.3, and
 //! the engine's own `meridian-lock` block). One traversal, two directions:
 //!
 //! - **[`Direction::Up`]** — ancestors: what the root draws from, transitively —
@@ -18,7 +19,7 @@
 //!
 //! # Grain
 //! U2.3 traverses at PAGE grain: the root is a page (a `#fragment` in the arg is
-//! stripped), and a hop follows a page's whole `^inputs` set. Each entry still
+//! stripped), and a hop follows a page's whole pin set. Each entry still
 //! carries the full SELECTOR of the reached edge (`page` or `page#sel`), so the
 //! listing is selector-accurate even though the traversal key is the page.
 //! Selector-grain traversal is deferred to the wire leg (U3.1).
@@ -37,7 +38,7 @@ use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge, cla
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
 
-/// Which way the walk runs over the `^inputs` pin graph.
+/// Which way the walk runs over the lock pin graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Ancestors — what the root draws from (the context-assembly walk).
@@ -108,7 +109,7 @@ pub enum WalkError {
     Cycle(Vec<String>),
 }
 
-/// Walk the `^inputs` pin graph from `root` in `direction`, bounded to
+/// Walk the lock pin graph from `root` in `direction`, bounded to
 /// `depth_bound` hops (`None` = unbounded). Computed per query, never stored.
 ///
 /// `root` is a page path; a trailing `#fragment` is stripped (U2.3 page grain).
@@ -154,7 +155,7 @@ pub fn walk_rooted(
         return Err(WalkError::RootNotFound(root_page));
     }
 
-    // Parse every page's `^inputs` ONCE (the shared parser), so both directions
+    // Parse every page's pins ONCE (the shared parser), so both directions
     // read the SAME edge facts. `forward[src] = src's declared edges`.
     let forward = forward_edges(corpus, mounts);
 
@@ -252,8 +253,8 @@ pub struct PinColor {
 /// and for per-pin decoration; it colors through the same [`edge_color`] the
 /// walk uses, so no second computer can disagree with a walk listing.
 ///
-/// The legacy `^inputs` forms are excluded: they are the SQL board's plane and
-/// answer a different compare (`node_rev`, not a fingerprint). A page whose lock
+/// One form only: the legacy `^inputs` readers were retired with the
+/// vocabulary (R1.3), so there is no second plane to exclude. A page whose lock
 /// REFUSED contributes its one grey `lock-refused` row — a corrupt lock is
 /// visible here, never silently absent.
 #[must_use]
@@ -295,7 +296,11 @@ pub fn lock_pin_colors_rooted(
     for (path, doc) in docs {
         for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
             if item.fingerprint.is_none() && item.lock_refusal.is_none() {
-                continue; // a legacy `^inputs` row — the board's plane, not this one
+                // Unreachable under R4 — every pin row carries a fingerprint and
+                // every refusal carries its reason. Kept as a fail-CLOSED guard:
+                // a row that somehow carried neither would be uncolourable, and
+                // skipping it is the honest answer, not colouring it green.
+                continue;
             }
             out.push(PinColor {
                 src_path: path.clone(),
@@ -657,57 +662,6 @@ fn edge_page(edge: &LockItem) -> String {
 ///   different compare. Before this, such a pin fell into the foreign-algo
 ///   short-circuit below and rendered grey `superseded-algo` — visible but
 ///   permanently unverified.
-/// Translate R4's structural selector into the model's address selector — the
-/// TRANSLATION LAYER `classify_pin` needs, not a change to its signature.
-///
-/// The three arms are R4's own, and each is named in the schema:
-/// - `path: []` — the whole body without frontmatter, which is the document root;
-/// - `path: ["^id"]` — the ANCHOR pin: a `^id` as the SOLE element, block-grain,
-///   never widened to the host section (R4 provenance note 2). A `^` reaching
-///   here in any other position was refused at mint (U8: mixed arrays are
-///   unruled and refused loudly), so the sole-element test is the whole rule;
-/// - `path: [...]` — a heading chain, carried SEGMENT FOR SEGMENT. Nothing is
-///   split and nothing is joined, so a heading containing `/` survives — the
-///   case the array form exists for.
-///
-/// `properties:` has no analogue in the address enum: the frontmatter is not a
-/// body node. It maps to the document root, where its `props1` token meets the
-/// SPAN verifier and is refused loudly as unverifiable rather than being answered
-/// wrongly — the never-conflate-hash-planes law doing its job at read time.
-///
-/// # The transcript arm is why this takes the `object`
-/// `Selector::parse` recognized `session#seq-N` as [`Selector::ImmutableRoot`]
-/// from the FRAGMENT — a class that is *recognized, stored opaque, rendered grey
-/// `immutable-root`, and never resolved* (d2 §2.2). Read structurally without the
-/// object, `path: ["seq-160"]` is indistinguishable from a heading named
-/// `seq-160`, and a transcript pin would classify as an unresolved HEADING —
-/// **grey turning into red**, a false finding on a ref the engine is ruled never
-/// to resolve. The object carries the session id, so the arm needs both halves.
-fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
-    let lock::Selector::Path(segments) = selector else {
-        return Selector::Page;
-    };
-    match segments.split_first() {
-        None => Selector::Page,
-        Some((only, rest)) if rest.is_empty() => {
-            if let Some(id) = only.strip_prefix('^') {
-                return Selector::Block(id.to_string());
-            }
-            if let Some(seq) = only
-                .strip_prefix("seq-")
-                .and_then(|n| n.parse::<u64>().ok())
-            {
-                return Selector::ImmutableRoot {
-                    session: object.to_string(),
-                    seq,
-                };
-            }
-            Selector::Heading(segments.clone())
-        }
-        Some(_) => Selector::Heading(segments.clone()),
-    }
-}
-
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
@@ -759,6 +713,57 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     }
     let pinned = edge.pinned_rev.as_ref().map(|r| model::NodeRev(r.clone()));
     classify_edge(&selector, pinned.as_ref(), target)
+}
+
+/// Translate R4's structural selector into the model's address selector — the
+/// TRANSLATION LAYER `classify_pin` needs, not a change to its signature.
+///
+/// The three arms are R4's own, and each is named in the schema:
+/// - `path: []` — the whole body without frontmatter, which is the document root;
+/// - `path: ["^id"]` — the ANCHOR pin: a `^id` as the SOLE element, block-grain,
+///   never widened to the host section (R4 provenance note 2). A `^` reaching
+///   here in any other position was refused at mint (U8: mixed arrays are
+///   unruled and refused loudly), so the sole-element test is the whole rule;
+/// - `path: [...]` — a heading chain, carried SEGMENT FOR SEGMENT. Nothing is
+///   split and nothing is joined, so a heading containing `/` survives — the
+///   case the array form exists for.
+///
+/// `properties:` has no analogue in the address enum: the frontmatter is not a
+/// body node. It maps to the document root, where its `props1` token meets the
+/// SPAN verifier and is refused loudly as unverifiable rather than being answered
+/// wrongly — the never-conflate-hash-planes law doing its job at read time.
+///
+/// # The transcript arm is why this takes the `object`
+/// `Selector::parse` recognized `session#seq-N` as [`Selector::ImmutableRoot`]
+/// from the FRAGMENT — a class that is *recognized, stored opaque, rendered grey
+/// `immutable-root`, and never resolved* (d2 §2.2). Read structurally without the
+/// object, `path: ["seq-160"]` is indistinguishable from a heading named
+/// `seq-160`, and a transcript pin would classify as an unresolved HEADING —
+/// **grey turning into red**, a false finding on a ref the engine is ruled never
+/// to resolve. The object carries the session id, so the arm needs both halves.
+fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
+    let lock::Selector::Path(segments) = selector else {
+        return Selector::Page;
+    };
+    match segments.split_first() {
+        None => Selector::Page,
+        Some((only, [])) => {
+            if let Some(id) = only.strip_prefix('^') {
+                return Selector::Block(id.to_string());
+            }
+            if let Some(seq) = only
+                .strip_prefix("seq-")
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                return Selector::ImmutableRoot {
+                    session: object.to_string(),
+                    seq,
+                };
+            }
+            Selector::Heading(segments.clone())
+        }
+        Some(_) => Selector::Heading(segments.clone()),
+    }
 }
 
 /// The page-level adjacency in the walk direction, for the cycle check — only
@@ -1378,7 +1383,10 @@ mod tests {
     fn a_double_block_lock_renders_grey_not_absent() {
         let block = lock::render(&{
             let mut l = lock::Lock::new();
-            l.upsert_pin(pin_from_spelling("sources/target.md", &format!("fp1.span2.b3.{}", "0".repeat(64))));
+            l.upsert_pin(pin_from_spelling(
+                "sources/target.md",
+                &format!("fp1.span2.b3.{}", "0".repeat(64)),
+            ));
             l
         });
         let mut docs = BTreeMap::new();
@@ -1479,10 +1487,8 @@ mod tests {
         assert_eq!(objects[1].blob_sha, "b".repeat(40));
 
         // A page with no lock projects nothing at all.
-        let only_plain = BTreeMap::from([(
-            "plain.md".to_string(),
-            doc("# Plain\n\nno lock here\n"),
-        )]);
+        let only_plain =
+            BTreeMap::from([("plain.md".to_string(), doc("# Plain\n\nno lock here\n"))]);
         assert!(lock_objects(&only_plain).is_empty());
     }
 

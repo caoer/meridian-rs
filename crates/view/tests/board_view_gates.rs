@@ -56,7 +56,10 @@ fn pinned_page() -> String {
         lock::Selector::Path(Vec::new()),
         &format!("fp1.span2.b3.{}", "0".repeat(64)),
     ));
-    format!("# Effect\n\ndraws from the subject\n\n{}\n", lock::render(&l))
+    format!(
+        "# Effect\n\ndraws from the subject\n\n{}\n",
+        lock::render(&l)
+    )
 }
 
 // ---------------------------------------------------------------------------
