@@ -333,6 +333,15 @@ MEMBERS table:
 | `wire-contract-v2-cross-root-links-amendment.md` | `u21-cross-vault-links` | yes |
 
 **Six members become ten**, and the count in § The enumeration moves with them.
+
+**A modification to an existing member creates NO row obligation** — only a new
+self-declared document does. `u9a-gamma-repair` and `u9b-migration` both edit
+`wire-contract-v2-passenger-registry-amendment.md` and
+`wire-contract-v3-amendment.md`, which are already members. A sweep of the same
+kind that produced the table above returns **eight** files in flight, and four of
+those eight are edits to rows that already exist here. Written down because the
+next auditor runs the same sweep, sees eight, and would otherwise re-derive this
+distinction — which is the cost this file exists to remove.
 Named by file so the next reader meets the specific instances and not only the
 rule — a rule with no instance attached is the thing everyone agrees with and
 nobody executes.
