@@ -81,7 +81,7 @@ const KEY_OPEN: &str = "(retired: ";
 /// refusal's spelling from drifting and makes it testable (the
 /// `config::Reason` pattern).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Reason {
+pub enum Reason {
     /// A `meridian-retire` block the parser cannot read.
     BlockMalformed,
     /// R1 — the declared positive control matched nothing, so the term's zero
@@ -108,9 +108,31 @@ pub(crate) enum Reason {
 }
 
 impl Reason {
+    /// Every reason word this surface can emit, in declaration order.
+    ///
+    /// **This is what the coverage census reads.** A census that compared a
+    /// fixture table against a hand-written literal would be comparing two
+    /// copies of one list to each other — it would agree today and fail nothing
+    /// when a ninth variant arrived, because the variant would have to be added
+    /// to both lists before the comparison could notice. That is a control that
+    /// consults the thing it was derived from, and this file already carries one
+    /// story about exactly that defect (see the `outside` filter in `scan_doc`).
+    ///
+    /// `ALL` is the engine's own list, so the census reads the engine.
+    pub const ALL: [Reason; 8] = [
+        Reason::BlockMalformed,
+        Reason::ControlSilent,
+        Reason::HoldingUnresolvable,
+        Reason::IdAmbiguous,
+        Reason::WouldCorruptEngineBlock,
+        Reason::MarkerOrphaned,
+        Reason::MarkerMalformed,
+        Reason::TermNeverMatched,
+    ];
+
     /// The reason word, one spelling across the human line and `--json`.
     #[must_use]
-    pub(crate) fn word(self) -> &'static str {
+    pub fn word(self) -> &'static str {
         match self {
             Reason::BlockMalformed => "retire-block-malformed",
             Reason::ControlSilent => "retire-control-silent",
@@ -121,6 +143,37 @@ impl Reason {
             Reason::MarkerMalformed => "retire-marker-malformed",
             Reason::TermNeverMatched => "retire-term-never-matched",
         }
+    }
+}
+
+/// The tripwire that keeps [`Reason::ALL`] from falling behind the variants.
+///
+/// # What it actually guarantees, stated exactly
+/// A new variant fails to compile HERE (this match is exhaustive) and in
+/// [`Reason::word`] (so does that one). Neither failure can be discharged by
+/// editing a test fixture — the compiler demands both, at the definition site,
+/// before anything runs.
+///
+/// It does NOT prove `ALL` and the variant set are equal by construction; Rust
+/// has no way to say that without a derive macro this crate does not carry. It
+/// proves the weaker, sufficient thing: **you cannot add a variant without being
+/// sent to this function**, and this function's whole purpose is to say "add it
+/// to `ALL`". The accompanying test closes the loop by checking the mapping is a
+/// bijection onto `ALL`'s indices, so an entry that is missing, duplicated, or
+/// out of order is a red test rather than a silent gap.
+#[cfg(test)]
+const fn index_in_all(r: Reason) -> usize {
+    // Adding a variant breaks this match. The fix is to add it to `Reason::ALL`
+    // and give it its index here — in that order.
+    match r {
+        Reason::BlockMalformed => 0,
+        Reason::ControlSilent => 1,
+        Reason::HoldingUnresolvable => 2,
+        Reason::IdAmbiguous => 3,
+        Reason::WouldCorruptEngineBlock => 4,
+        Reason::MarkerOrphaned => 5,
+        Reason::MarkerMalformed => 6,
+        Reason::TermNeverMatched => 7,
     }
 }
 
@@ -1371,6 +1424,35 @@ mod tests {
         assert!(
             section_span(&d.root, &hpath).is_some(),
             "a `/`-bearing heading is addressable through the array — the whole point of R1.6"
+        );
+    }
+
+    /// `Reason::ALL` is a bijection onto the variants: every entry sits at the
+    /// index [`index_in_all`] assigns it, and there are exactly as many entries
+    /// as indices. An entry missing, duplicated, or out of order is red here.
+    ///
+    /// Together with the two exhaustive matches (this file's `index_in_all` and
+    /// `Reason::word`), a new variant cannot reach a release without being
+    /// added to `ALL` — which is what lets the integration census read `ALL`
+    /// and mean it.
+    #[test]
+    fn all_is_a_bijection_onto_the_reason_variants() {
+        for (i, reason) in Reason::ALL.iter().enumerate() {
+            assert_eq!(
+                index_in_all(*reason),
+                i,
+                "{} sits at ALL[{i}] but index_in_all says {}",
+                reason.word(),
+                index_in_all(*reason)
+            );
+        }
+        let mut words: Vec<&str> = Reason::ALL.iter().map(|r| r.word()).collect();
+        words.sort_unstable();
+        words.dedup();
+        assert_eq!(
+            words.len(),
+            Reason::ALL.len(),
+            "no reason word appears twice in ALL"
         );
     }
 

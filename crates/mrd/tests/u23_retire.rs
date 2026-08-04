@@ -887,23 +887,24 @@ fn every_reason_word_carries_the_four_property_contract() {
         covered.push((*reason).to_owned());
     }
 
-    // The census: the set this table exercises IS the set the engine emits. A
-    // ninth reason word fails here until it is given a fixture, rather than
-    // shipping with no contract coverage — which is exactly how the first eight
-    // came to be two-covered without anyone noticing.
+    // THE CENSUS — and it reads the ENGINE, not a copy of the engine.
+    //
+    // `Reason::ALL` is the crate's own list, kept honest at its definition site
+    // by two exhaustive matches and a bijection test. Comparing the fixture
+    // table against a hand-written literal here would have compared two copies
+    // of one list to each other: they would agree today, and a ninth variant
+    // would fail NOTHING, because it would have to be added to both before the
+    // comparison could notice. A control that consults the thing it was derived
+    // from is the defect this unit already found once, in its own positive
+    // control — it does not get to reappear in the arm built to prevent it.
+    let mut engine: Vec<String> = mrd::retire_cmd::Reason::ALL
+        .iter()
+        .map(|r| (*r).word().to_owned())
+        .collect();
+    engine.sort();
     covered.sort();
     assert_eq!(
-        covered,
-        [
-            "retire-block-malformed",
-            "retire-control-silent",
-            "retire-holding-unresolvable",
-            "retire-id-ambiguous",
-            "retire-marker-malformed",
-            "retire-marker-orphaned",
-            "retire-term-never-matched",
-            "retire-would-corrupt-engine-block",
-        ],
+        covered, engine,
         "every reason word the engine can emit has a fixture here"
     );
 }

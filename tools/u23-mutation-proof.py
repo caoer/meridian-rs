@@ -175,6 +175,31 @@ MUTATIONS = [
         "runnable command",
     ),
     (
+        "ninth-reason-word-uncovered",
+        "every_reason_word_carries_the_four_property_contract",
+        [
+            (SRC,
+             "    TermNeverMatched,\n}",
+             "    TermNeverMatched,\n    // MUTATION: a ninth reason word with no fixture.\n    NinthProbe,\n}"),
+            (SRC,
+             "    pub const ALL: [Reason; 8] = [",
+             "    pub const ALL: [Reason; 9] = ["),
+            (SRC,
+             "        Reason::TermNeverMatched,\n    ];",
+             "        Reason::TermNeverMatched,\n        Reason::NinthProbe,\n    ];"),
+            (SRC,
+             '            Reason::TermNeverMatched => "retire-term-never-matched",',
+             '            Reason::TermNeverMatched => "retire-term-never-matched",\n'
+             '            Reason::NinthProbe => "retire-ninth-probe",'),
+            (SRC,
+             "        Reason::TermNeverMatched => 7,",
+             "        Reason::TermNeverMatched => 7,\n        Reason::NinthProbe => 8,"),
+        ],
+        "a ninth refusal shipping with NO contract coverage — the world the old "
+        "census could not fail in, because it compared two hand-written lists to "
+        "each other",
+    ),
+    (
         "measured-declared-split",
         "the_report_never_mixes_what_it_measured_with_what_it_was_told",
         [(
@@ -216,9 +241,25 @@ def main() -> int:
         try:
             for rel, old, new in edits:
                 path = ROOT / rel
-                backup = Path(tempfile.mkdtemp()) / path.name
-                shutil.copy2(path, backup)
-                backups[path] = backup
+                # LIE 3, measured here: back up on FIRST TOUCH ONLY.
+                #
+                # The inherited loop backed up before every edit and keyed the
+                # store by path, so a row with N edits on ONE file stored the
+                # state after edit N-1 as the "pristine" copy. Restore then put
+                # the file back MOSTLY MUTATED, the row still reported REDDENS,
+                # and the corruption surfaced only in the restored-tree check at
+                # the very end — after which every later row runs against a
+                # broken tree. `git status` showed 88 insertions the row was
+                # supposed to have removed.
+                #
+                # It presents as a LATER row failing, which is All-Hands #8's
+                # shape: the damage surfaces downstream of the line that caused
+                # it. u20b-mutation-proof.py has the same loop and at least one
+                # multi-edit row on a single file.
+                if path not in backups:
+                    backup = Path(tempfile.mkdtemp()) / path.name
+                    shutil.copy2(path, backup)
+                    backups[path] = backup
                 text = path.read_text()
                 if old not in text:
                     raise SystemExit(f"{name}: anchor not found in {rel}")
