@@ -693,3 +693,217 @@ fn a_holding_hpath_that_addresses_nothing_refuses() {
         stdout(&out)
     );
 }
+
+// ---------------------------------------------------------------------------
+// The refusal-contract sweep — all eight reason words, four properties each
+// ---------------------------------------------------------------------------
+
+/// The four-property contract, asserted PER REFUSAL on its own structured
+/// fields.
+///
+/// This is the house `assert_refusal_contract` shape
+/// (`crates/testsuite/tests/u4a2_composed_read.rs`) re-authored for this
+/// surface, which is the sanctioned form: where a refusal needs different
+/// properties, ADD a per-surface contract assertion, never loosen the shared
+/// one. The differences are real — these are CLI-plane refusals carrying a
+/// closed reason word and no `wire::ErrorCode`, and their partial-state clause
+/// differs between the writer and the reader faces.
+///
+/// It asserts the STRUCTURED fields rather than substrings of `message`,
+/// because a substring test cannot tell a refusal that states its cause from
+/// one whose subject merely contains the words — an assertion that cannot
+/// distinguish the case it names from a neighbour is the defect this docket
+/// keeps meeting. The final arm proves `message` is assembled from exactly
+/// these four, so the human sentence cannot drift away from the checked
+/// properties.
+fn assert_contract(reason: &str, r: &Value) {
+    let get = |k: &str| -> String {
+        r[k].as_str()
+            .unwrap_or_else(|| panic!("{reason}: no `{k}` key: {r}"))
+            .to_owned()
+    };
+    let (subject, cause, partial, fix) = (get("subject"), get("cause"), get("partial"), get("fix"));
+
+    assert!(!subject.is_empty(), "{reason}: names its SUBJECT: {r}");
+    assert!(!cause.is_empty(), "{reason}: names its CAUSE: {r}");
+    assert!(
+        !partial.is_empty(),
+        "{reason}: discloses the PARTIAL STATE — a reader must not have to wonder whether anything landed: {r}"
+    );
+    assert!(!fix.is_empty(), "{reason}: carries a FIX: {r}");
+    assert!(
+        fix.contains("mrd "),
+        "{reason}: the fix names a RUNNABLE COMMAND, never an internal mode the caller never selected: {fix}"
+    );
+    assert!(
+        !fix.contains("retire-") && !fix.contains("Reason::"),
+        "{reason}: the fix never names the engine's own reason word back at the caller: {fix}"
+    );
+
+    let message = get("message");
+    assert_eq!(
+        message,
+        format!("refused: {subject} {cause} {partial} Fix: {fix}"),
+        "{reason}: the human sentence is assembled from exactly the four checked properties, so it cannot drift away from them"
+    );
+}
+
+/// **The coverage gate.** Every one of the eight reason words is TRIGGERED by
+/// its own fixture and put through [`assert_contract`].
+///
+/// # Why a table and not eight tests
+/// Coverage is the property being asserted, and coverage is a claim about the
+/// SET. The last arm asserts the set of reason words this table exercises is
+/// exactly the set the engine can emit — so a ninth refusal added later fails
+/// here until it is given a fixture, rather than shipping uncovered. A grep for
+/// an assertion's name cannot answer a coverage question; this can.
+///
+/// *Mutation:* drop any row and the census arm reddens naming the uncovered
+/// word.
+/// One fixture per reason word: the vault that triggers exactly it. Held apart
+/// from the gate so the TABLE is readable as a table and the assertion loop is
+/// readable as a loop.
+fn contract_cases() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    vec![
+        (
+            "retire-block-malformed",
+            vec![(
+                "decisions/retire.md",
+                // `id` before `version` — out of canonical order.
+                "# R\n\n## H\n\n```meridian-retire\nid: x\nversion: 1\n```\n".to_owned(),
+            )],
+        ),
+        (
+            "retire-control-silent",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "zzz-absent-token", true),
+                ),
+                ("guide.md", PROSE.to_owned()),
+            ],
+        ),
+        (
+            "retire-holding-unresolvable",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true)
+                        .replace("- h: The wire node carries segments", "- h: No Such Section"),
+                ),
+                ("guide.md", PROSE.to_owned()),
+            ],
+        ),
+        (
+            "retire-id-ambiguous",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true),
+                ),
+                (
+                    "decisions/again.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true),
+                ),
+                ("guide.md", PROSE.to_owned()),
+            ],
+        ),
+        (
+            "retire-marker-malformed",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true),
+                ),
+                (
+                    "bare.md",
+                    // A machine half with no visible half: no `~~…~~` on the line.
+                    "# B\n\n## Body\n\nthe old name (retired: hpath-text) here\nand hpath_text\n"
+                        .to_owned(),
+                ),
+            ],
+        ),
+        (
+            "retire-marker-orphaned",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true),
+                ),
+                (
+                    "stray.md",
+                    "# S\n\n## Body\n\nthe ~~gone~~ new (retired: not-declared) field\nand hpath_text\n".to_owned(),
+                ),
+            ],
+        ),
+        (
+            "retire-term-never-matched",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_txt", "hpath", true),
+                ),
+                ("guide.md", PROSE.to_owned()),
+            ],
+        ),
+        (
+            "retire-would-corrupt-engine-block",
+            vec![
+                (
+                    "decisions/retire.md",
+                    declaration("hpath-text", "hpath_text", "hpath", true),
+                ),
+                (
+                    "locked.md",
+                    "# L\n\n## Body\n\n```meridian-lock\nref: hpath_text\n```\n".to_owned(),
+                ),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn every_reason_word_carries_the_four_property_contract() {
+    let cases = contract_cases();
+    let mut covered: Vec<String> = Vec::new();
+    for (reason, files) in &cases {
+        let sb = sandbox();
+        let ws = sb.workspace(&as_pairs(files));
+        let out = sb.run(&ws, &["retire", "report", "--json"]);
+        let report = json(&out);
+        let found = report["refusals"]
+            .as_array()
+            .expect("refusals")
+            .iter()
+            .find(|r| r["reason"] == *reason)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{reason}: the fixture did not trigger it — it triggered {:?}: {report}",
+                    reasons(&report)
+                )
+            });
+        assert_contract(reason, found);
+        assert_eq!(code(&out), 1, "{reason}: a refusal is a finding");
+        covered.push((*reason).to_owned());
+    }
+
+    // The census: the set this table exercises IS the set the engine emits. A
+    // ninth reason word fails here until it is given a fixture, rather than
+    // shipping with no contract coverage — which is exactly how the first eight
+    // came to be two-covered without anyone noticing.
+    covered.sort();
+    assert_eq!(
+        covered,
+        [
+            "retire-block-malformed",
+            "retire-control-silent",
+            "retire-holding-unresolvable",
+            "retire-id-ambiguous",
+            "retire-marker-malformed",
+            "retire-marker-orphaned",
+            "retire-term-never-matched",
+            "retire-would-corrupt-engine-block",
+        ],
+        "every reason word the engine can emit has a fixture here"
+    );
+}

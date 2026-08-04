@@ -151,6 +151,31 @@ MUTATIONS = [
         "U9b's measured failure industrialized: a vault moving under a running sweep",
     ),
     (
+        "contract-cause-dropped",
+        "every_reason_word_carries_the_four_property_contract",
+        [(
+            SRC,
+            'cause: "the engine writes those bytes, and a marker in them would corrupt an engine artifact rather than annotate prose.".to_owned(),',
+            "// MUTATION: ship a refusal that states no cause.\n"
+            '                    cause: String::new(),',
+        )],
+        "a refusal missing one of the four properties, on a surface whose contract "
+        "was only ever checked on the two refusals that happened to fire together",
+    ),
+    (
+        "contract-fix-not-runnable",
+        "every_reason_word_carries_the_four_property_contract",
+        [(
+            SRC,
+            'fix: format!("{fix} Then run `mrd retire report --json` to confirm the block parses."),',
+            "// MUTATION: leave a parse fix as an edit instruction with no way to\n"
+            "        // check it — the gap the coverage sweep actually found.\n"
+            "        fix,",
+        )],
+        "a fix clause that describes the problem's inverse instead of naming a "
+        "runnable command",
+    ),
+    (
         "measured-declared-split",
         "the_report_never_mixes_what_it_measured_with_what_it_was_told",
         [(
