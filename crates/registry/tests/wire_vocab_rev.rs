@@ -411,8 +411,14 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
 }
 
 /// U2 addressing facts on the daemon socket: a v3 `extract` enriches heading
-/// nodes with `n`/`hpath_text`/`words`; a v2 `extract` against the SAME warm
-/// engine carries ZERO such keys (frozen shape).
+/// nodes with `n`/`words` and carries the address as SEGMENTS; a v2 `extract`
+/// against the SAME warm engine carries ZERO such keys (frozen shape).
+///
+/// **U14 removed `hpath_text`** (ZT decision 14) — the joined sanitized address
+/// was a string address on a machine surface, and the node already carries the
+/// segment address that round-trips into `put`. The v2 half still names
+/// `hpath_text` deliberately: it asserts what a v2 SESSION may receive, so it
+/// must keep failing if any future unit reintroduces the key.
 #[test]
 fn v3_extract_enriches_headings_v2_never() {
     let tmp = TempDir::new().unwrap();
@@ -434,14 +440,18 @@ fn v3_extract_enriches_headings_v2_never() {
         .collect();
     assert_eq!(heads.len(), 2, "two headings: {ex3}");
     assert_eq!(heads[0]["n"], json!("1"));
-    assert_eq!(heads[0]["hpath_text"], json!("Goals"));
+    assert_eq!(heads[0]["hpath"], json!([{"h": "Goals"}]));
+    assert!(
+        heads[0].get("hpath_text").is_none(),
+        "U14: the joined address is retired from this face: {ex3}"
+    );
     assert_eq!(
         heads[0]["words"],
         json!(8),
         "subtree words incl ## Q3 tokens"
     );
     assert_eq!(heads[1]["n"], json!("1.1"));
-    assert_eq!(heads[1]["hpath_text"], json!("Goals/Q3"));
+    assert_eq!(heads[1]["hpath"], json!([{"h": "Goals"}, {"h": "Q3"}]));
     assert_eq!(heads[1]["words"], json!(3));
 
     let mut v2 = Conn::open(server.socket_path());

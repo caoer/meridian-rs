@@ -64,12 +64,18 @@ fn build(raw: &str) -> (model::Document, Vec<ReadFact>) {
 /// the concatenated section content.
 fn rendered_content(raw: &str) -> String {
     let (doc, facts) = build(raw);
+    // U14: a row echoes the selector STRUCTURALLY, so the selectors are built
+    // alongside the rows and borrowed by them.
+    let sels: Vec<wire::ReadSel> = facts
+        .iter()
+        .map(|fact| wire::ReadSel::Hpath {
+            hpath: fact.hpath.clone(),
+        })
+        .collect();
     let rows: Vec<SectionRow<'_>> = facts
         .iter()
-        .map(|fact| SectionRow {
-            sel: fact.hpath.as_str(),
-            fact,
-        })
+        .zip(&sels)
+        .map(|(fact, sel)| SectionRow { sel, fact })
         .collect();
     let rendered = TextRenderer::with_meridian_elision()
         .render(
@@ -98,8 +104,18 @@ fn rendered_content(raw: &str) -> String {
 /// engine-emitted block, the two languages the engine only parses, an unclaimed
 /// reserved language, and an ordinary fence.
 fn mixed_page() -> String {
+    // FIXTURE REPAIR ONLY (U14): U8 deleted the `objects:` plane — R4 carries
+    // the blob hash per pin row — so `Lock::set_object` no longer exists and
+    // this test binary did not compile at `u8-rekey`. Rebuilt as an R4 pin row;
+    // this test is about fence LANGUAGES, so the lock's contents are only
+    // required to render as an engine-emitted block.
     let mut l = lock::Lock::new();
-    l.set_object("corpus/x.md", "9ae3f1deadbeef");
+    l.upsert_pin(lock::PinEntry::new(
+        "corpus/x",
+        "9ae3f1deadbeef",
+        lock::Selector::Path(vec!["Roots".into()]),
+        "fp1.green.0000000000000000",
+    ));
     let lock_block = lock::render(&l);
     let new_engine_block = lock::EngineEmitted::emit_canonical(&TestJournal { ts: "2026-07-26" });
     format!(

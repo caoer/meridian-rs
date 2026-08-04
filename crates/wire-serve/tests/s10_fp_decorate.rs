@@ -56,7 +56,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WPath("guide.md".into()),
-            selector: "Guide/Leader's-Guideline".into(),
+            selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
             vibe: None,
         }),
     };
@@ -88,7 +88,7 @@ fn read_decorated(root: &fs::WorkspaceRoot, rel: &str, sel: &str) -> ResponseBod
         &wire::Root("r".into()),
         &ReadParams {
             mode: Some("sections".into()),
-            sections: Some(vec![sel.into()]),
+            sections: Some(vec![wire::ReadSel::parse(sel)]),
             ..ReadParams::default()
         },
         None,

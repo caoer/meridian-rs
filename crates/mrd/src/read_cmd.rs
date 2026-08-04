@@ -81,6 +81,19 @@ struct Read {
     format: Format,
 }
 
+/// A `#Fragment` the user typed → the segment array the wire takes. It scopes
+/// a HEADING subtree, so it is parsed as a heading path and nothing else: a
+/// `^id` or a dewey ordinal in this position would be a subtree with no
+/// descendants, which is a section read, not a scope.
+fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
+    frag.split('/')
+        .map(|h| wire::HpathSeg {
+            h: h.to_owned(),
+            n: None,
+        })
+        .collect()
+}
+
 impl Read {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut positional: Option<String> = None;
@@ -183,6 +196,19 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
     }
 }
 
+/// A `#Fragment` the user typed → the segment array the wire takes. It scopes
+/// a HEADING subtree, so it is parsed as a heading path and nothing else: a
+/// `^id` or a dewey ordinal in this position would be a subtree with no
+/// descendants, which is a section read, not a scope.
+fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
+    frag.split('/')
+        .map(|h| wire::HpathSeg {
+            h: h.to_owned(),
+            n: None,
+        })
+        .collect()
+}
+
 impl Read {
     /// The wire `read` request this invocation maps onto. `display_path` is
     /// the PATH exactly as the user typed it (C's U4a2 contract: the engine
@@ -196,11 +222,20 @@ impl Read {
         if let Some(mode) = &self.mode {
             req["mode"] = json!(mode);
         }
+        // **The human/wire ingress door (U14, U7's ruled direction).** Both
+        // selector fields are STRUCTURED on the wire, and this is where a
+        // typed string becomes structure — once, at the edge, so nothing
+        // inward of the CLI carries a joined address.
         if let Some(frag) = &self.frag {
-            req["frag"] = json!(frag);
+            req["frag"] = json!(frag_segments(frag));
         }
         if !self.sections.is_empty() {
-            req["sections"] = json!(self.sections);
+            let sels: Vec<wire::ReadSel> = self
+                .sections
+                .iter()
+                .map(|s| wire::ReadSel::parse(s))
+                .collect();
+            req["sections"] = json!(sels);
         }
         req
     }
@@ -222,8 +257,11 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let ambient = wire_serve::ambient_root(&root).map_err(|e| engine::refusal_fail(&e))?;
     let params = wire_serve::read::ReadParams {
         mode: r.mode.clone(),
-        frag: r.frag.clone(),
-        sections: (!r.sections.is_empty()).then(|| r.sections.clone()),
+        // The SAME conversion the wire request does — one door, two transports,
+        // so warm and degrade cannot diverge on what a selector means.
+        frag: r.frag.as_deref().map(frag_segments),
+        sections: (!r.sections.is_empty())
+            .then(|| r.sections.iter().map(|s| wire::ReadSel::parse(s)).collect()),
         display_path: Some(r.path.clone()),
         // §9 read provenance is the DAEMON's to stamp; the local CLI sends
         // none on both warm and degrade paths (symmetry with the wire call).

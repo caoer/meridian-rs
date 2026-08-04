@@ -229,7 +229,9 @@ mod tests {
     #[test]
     fn v3_splice_pin_decodes_and_carries_no_actor() {
         let frame = json!({"op": "splice", "path": "plan.md",
-            "pin": {"target": "guide.md", "selector": "Guide/Q3", "vibe": true}});
+            "pin": {"target": "guide.md",
+                    "selector": {"hpath": [{"h": "Guide"}, {"h": "Q3"}]},
+                    "vibe": true}});
         let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
         let Op::Splice { edits, pin, .. } = op else {
             panic!("splice op");
@@ -237,12 +239,28 @@ mod tests {
         assert!(edits.is_empty(), "a pin-only splice needs no edits");
         let pin = pin.expect("the pin decoded");
         assert_eq!(pin.target, wire::Path("guide.md".into()));
-        assert_eq!(pin.selector, "Guide/Q3");
+        assert_eq!(
+            pin.selector,
+            wire::ReadSel::Hpath {
+                hpath: vec![
+                    wire::HpathSeg {
+                        h: "Guide".into(),
+                        n: None
+                    },
+                    wire::HpathSeg {
+                        h: "Q3".into(),
+                        n: None
+                    },
+                ]
+            },
+            "U14: the pin selector is tagged on the wire"
+        );
         assert_eq!(pin.vibe, Some(true));
 
         // D13: no pin.actor — identity is splice's daemon-derived actor only.
         let forged = json!({"op": "splice", "path": "plan.md",
-            "pin": {"target": "guide.md", "selector": "Q3", "actor": "someone-else"}});
+            "pin": {"target": "guide.md", "selector": {"hpath": [{"h": "Q3"}]},
+                    "actor": "someone-else"}});
         let e = super::decode::decode(&obj(forged), super::rev::Rev::V3)
             .expect_err("a pin actor is not a field");
         assert_eq!(
@@ -271,13 +289,15 @@ mod tests {
                 "missing `selector` on `pin`",
             ),
             (
-                json!({"op": "splice", "path": "p.md", "pin": {"selector": "Q3"}}),
+                json!({"op": "splice", "path": "p.md",
+                       "pin": {"selector": {"hpath": [{"h": "Q3"}]}}}),
                 "missing `target` on `pin`",
             ),
             (
                 json!({"op": "splice", "path": "p.md",
-                       "pin": {"target": "g.md", "selector": "  "}}),
-                "`pin.selector` must name a section (a sanitized heading path or `^id`)",
+                       "pin": {"target": "g.md", "selector": {"hpath": [{"h": "  "}]}}}),
+                "`pin.selector` must name a section (a heading path, a `^id`, or a dewey \
+                 ordinal) — no segment may be blank",
             ),
             (
                 json!({"op": "splice", "path": "p.md", "pin": []}),

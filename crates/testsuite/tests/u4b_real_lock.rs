@@ -23,12 +23,19 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     // the lock through the guarded U11 path.
     let doc0 = fs::load(&root, std::path::Path::new("page.md")).expect("load");
     let mut l = lock::Lock::new();
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("page.md#^c1").expect("a fixture ref is an address"),
-        fingerprint: model::fingerprint::fingerprint(&doc0, &doc0.root)
+    // FIXTURE REPAIR ONLY (U14): U7/U8 reshaped `PinEntry` to the R4 row —
+    // `object` + `hash` + a `path` ARRAY selector, no `declared_ref`. This
+    // fixture still built the retired shape, so this test binary did not
+    // compile at `u8-rekey`. Rebuilt in the current shape with no change to
+    // what the test asserts; the lock plane's own design is U9a's.
+    l.upsert_pin(lock::PinEntry::new(
+        "page",
+        "9ae3f1deadbeef",
+        lock::Selector::Path(vec!["^c1".into()]),
+        &model::fingerprint::fingerprint(&doc0, &doc0.root)
             .expect("fixture target has content")
             .into_string(),
-    });
+    ));
     let out = lock_write(
         &root,
         0,
@@ -55,7 +62,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     );
 
     let facts = read_facts(&wire_map::project_toc(&doc), doc.raw.as_bytes());
-    let fact = resolve_selector(&facts, "Claims").expect("Claims resolves");
+    let fact = resolve_selector(&facts, &wire::ReadSel::parse("Claims")).expect("Claims resolves");
 
     // RAW read/cat face (the content-span bytes): VERBATIM — pin #4. The
     // EOF-placed lock sits inside the last section's subtree-inclusive span.
@@ -70,7 +77,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     // RENDER face, production configuration: the lock is gone, the claim
     // body stays, and no pin payload leaks.
     let rows = [SectionRow {
-        sel: "Claims",
+        sel: &wire::ReadSel::parse("Claims"),
         fact,
     }];
     let header = Header {

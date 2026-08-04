@@ -47,19 +47,21 @@ const MAX_RECEIPTS_PER_ACTOR: usize = 1024;
 /// One minted read fact: this actor read this selector of this path, and the
 /// bytes it was served carried this rev.
 ///
-/// The three D9 facts and nothing else. `path` and `selector` are the WIRE
-/// spellings verbatim (workspace-relative path; canonical sanitized hpath, or
-/// `^id` for a block-anchor row) — the ledger re-derives no address. `sec_rev`
-/// is the node CAS token over exactly the bytes the read served, which is what
-/// a pin gate re-checks against disk inside its flock.
+/// The three D9 facts and nothing else. `path` is the workspace-relative wire
+/// spelling verbatim; `selector` is the read face's own TAGGED selector
+/// ([`wire::ReadSel`], U14) — the ledger re-derives no address and, since the
+/// key is structured, the mint site and the pin gate cannot key on two
+/// spellings of one address. `sec_rev` is the node CAS token over exactly the
+/// bytes the read served, which is what a pin gate re-checks against disk
+/// inside its flock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadReceipt {
     /// The DAEMON-derived actor (D13) the read was stamped with.
     pub actor: String,
     /// The workspace-relative document path the read served.
     pub path: String,
-    /// The canonical selector: sanitized hpath, or `^id` for an anchor row.
-    pub selector: String,
+    /// The canonical selector the read served, in the tagged read grammar.
+    pub selector: wire::ReadSel,
     /// The node CAS token (`sec_rev`) of the bytes served.
     pub sec_rev: String,
 }
@@ -92,18 +94,24 @@ impl ReadMintStore {
     /// is the CALLER's explicit branch (`wire_serve::read`), so this method is
     /// never reached with an absent actor and can never open a shared
     /// empty-string bucket.
-    pub fn mint(&self, actor: &str, path: &str, selector: &str, sec_rev: &str) -> ReadReceipt {
+    pub fn mint(
+        &self,
+        actor: &str,
+        path: &str,
+        selector: &wire::ReadSel,
+        sec_rev: &str,
+    ) -> ReadReceipt {
         let receipt = ReadReceipt {
             actor: actor.to_owned(),
             path: path.to_owned(),
-            selector: selector.to_owned(),
+            selector: selector.clone(),
             sec_rev: sec_rev.to_owned(),
         };
         let mut actors = self.actors.lock().unwrap_or_else(PoisonError::into_inner);
         let rows = actors.entry(actor.to_owned()).or_default();
         if let Some(at) = rows
             .iter()
-            .position(|r| r.path == path && r.selector == selector)
+            .position(|r| r.path == path && &r.selector == selector)
         {
             rows[at] = receipt.clone();
         } else {
@@ -133,14 +141,14 @@ impl ReadMintStore {
     /// caller gating a WRITE must re-check that rev against disk inside its own
     /// flock — a receipt is not a lease.
     #[must_use]
-    pub fn lookup(&self, actor: &str, path: &str, selector: &str) -> Option<ReadReceipt> {
+    pub fn lookup(&self, actor: &str, path: &str, selector: &wire::ReadSel) -> Option<ReadReceipt> {
         let actors = self.actors.lock().unwrap_or_else(PoisonError::into_inner);
         actors
             .get(actor)
             .and_then(|rows| {
                 rows.iter()
                     .rev()
-                    .find(|r| r.path == path && r.selector == selector)
+                    .find(|r| r.path == path && &r.selector == selector)
             })
             .cloned()
     }
@@ -171,21 +179,26 @@ mod tests {
 
     use super::*;
 
+    /// A selector from its human spelling, through the ONE ingress door.
+    fn sel(s: &str) -> wire::ReadSel {
+        wire::ReadSel::parse(s)
+    }
+
     #[test]
     fn a_minted_receipt_carries_the_three_d9_facts_and_is_found_by_its_key() {
         let store = ReadMintStore::new();
-        let minted = store.mint("agent-7", "notes/plan.md", "Notes/Q3", "b3:aa11");
+        let minted = store.mint("agent-7", "notes/plan.md", &sel("Notes/Q3"), "b3:aa11");
         assert_eq!(
             minted,
             ReadReceipt {
                 actor: "agent-7".into(),
                 path: "notes/plan.md".into(),
-                selector: "Notes/Q3".into(),
+                selector: sel("Notes/Q3"),
                 sec_rev: "b3:aa11".into(),
             }
         );
         assert_eq!(
-            store.lookup("agent-7", "notes/plan.md", "Notes/Q3"),
+            store.lookup("agent-7", "notes/plan.md", &sel("Notes/Q3")),
             Some(minted),
             "the lookup key is (actor, path, selector)"
         );
@@ -195,36 +208,73 @@ mod tests {
     #[test]
     fn each_key_part_isolates_actor_path_and_selector() {
         let store = ReadMintStore::new();
-        store.mint("mine", "a.md", "A", "rev-1");
+        store.mint("mine", "a.md", &sel("A"), "rev-1");
 
         assert!(
-            store.lookup("foreign", "a.md", "A").is_none(),
+            store.lookup("foreign", "a.md", &sel("A")).is_none(),
             "a foreign actor's lookup never sees my receipt"
         );
         assert!(
-            store.lookup("mine", "b.md", "A").is_none(),
+            store.lookup("mine", "b.md", &sel("A")).is_none(),
             "the same selector in another file is a different fact"
         );
         assert!(
-            store.lookup("mine", "a.md", "B").is_none(),
+            store.lookup("mine", "a.md", &sel("B")).is_none(),
             "a sibling selector is a different fact (D6 grain)"
+        );
+    }
+
+    /// U14: the key is TAGGED, so the three read grammars isolate from each
+    /// other too. A receipt for the heading named `1.2` does not answer for the
+    /// dewey row `1.2`, and neither answers for the block `^1.2` — before the
+    /// union these were one string and one key, so reading any of them opened
+    /// the pin gate for all three.
+    #[test]
+    fn the_grammars_isolate_a_heading_is_not_its_dewey_twin_nor_a_block_of_that_name() {
+        let store = ReadMintStore::new();
+        store.mint("mine", "a.md", &sel("1.2"), "rev-1");
+        assert!(
+            store
+                .lookup(
+                    "mine",
+                    "a.md",
+                    &wire::ReadSel::Hpath {
+                        hpath: vec![wire::HpathSeg {
+                            h: "1.2".to_owned(),
+                            n: None
+                        }]
+                    }
+                )
+                .is_none(),
+            "the dewey receipt does not cover the heading literally named `1.2`"
+        );
+        assert!(
+            store.lookup("mine", "a.md", &sel("^1.2")).is_none(),
+            "nor does it cover a block of that id"
+        );
+        assert_eq!(
+            store.lookup("mine", "a.md", &sel("1.2")).map(|r| r.sec_rev),
+            Some("rev-1".to_owned()),
+            "and the plane it WAS minted in still answers"
         );
     }
 
     #[test]
     fn a_nested_selector_is_a_miss_the_gate_fails_closed() {
         let store = ReadMintStore::new();
-        store.mint("mine", "a.md", "Notes/Plan", "rev-1");
+        store.mint("mine", "a.md", &sel("Notes/Plan"), "rev-1");
         assert!(
-            store.lookup("mine", "a.md", "Notes/Plan/Q3").is_none(),
+            store
+                .lookup("mine", "a.md", &sel("Notes/Plan/Q3"))
+                .is_none(),
             "a child selector is NOT covered by its parent's receipt"
         );
         assert!(
-            store.lookup("mine", "a.md", "Notes").is_none(),
+            store.lookup("mine", "a.md", &sel("Notes")).is_none(),
             "nor is the parent covered by a child's receipt"
         );
         assert!(
-            store.lookup("mine", "a.md", "^some-block").is_none(),
+            store.lookup("mine", "a.md", &sel("^some-block")).is_none(),
             "nor is a block anchor inside the read subtree"
         );
     }
@@ -232,11 +282,11 @@ mod tests {
     #[test]
     fn re_reading_a_selector_replaces_its_receipt_rather_than_adding_one() {
         let store = ReadMintStore::new();
-        store.mint("mine", "a.md", "A", "rev-1");
-        store.mint("mine", "a.md", "A", "rev-2");
+        store.mint("mine", "a.md", &sel("A"), "rev-1");
+        store.mint("mine", "a.md", &sel("A"), "rev-2");
         assert_eq!(store.len(), 1, "a re-read refreshes in place");
         assert_eq!(
-            store.lookup("mine", "a.md", "A").map(|r| r.sec_rev),
+            store.lookup("mine", "a.md", &sel("A")).map(|r| r.sec_rev),
             Some("rev-2".to_owned()),
             "the fresh rev wins — a stale rev never lingers for the same address"
         );
@@ -246,7 +296,7 @@ mod tests {
     fn the_per_actor_cap_bounds_memory_by_evicting_the_oldest() {
         let store = ReadMintStore::new();
         for i in 0..=MAX_RECEIPTS_PER_ACTOR {
-            store.mint("mine", "a.md", &format!("S{i}"), "rev-1");
+            store.mint("mine", "a.md", &sel(&format!("S{i}")), "rev-1");
         }
         assert_eq!(
             store.len(),
@@ -254,12 +304,12 @@ mod tests {
             "one actor's ledger is capped"
         );
         assert!(
-            store.lookup("mine", "a.md", "S0").is_none(),
+            store.lookup("mine", "a.md", &sel("S0")).is_none(),
             "the oldest receipt was evicted"
         );
         assert!(
             store
-                .lookup("mine", "a.md", &format!("S{MAX_RECEIPTS_PER_ACTOR}"))
+                .lookup("mine", "a.md", &sel(&format!("S{MAX_RECEIPTS_PER_ACTOR}")))
                 .is_some(),
             "the newest receipt is held"
         );
@@ -269,6 +319,6 @@ mod tests {
     fn a_fresh_ledger_is_empty() {
         let store = ReadMintStore::new();
         assert!(store.is_empty());
-        assert!(store.lookup("anyone", "a.md", "A").is_none());
+        assert!(store.lookup("anyone", "a.md", &sel("A")).is_none());
     }
 }

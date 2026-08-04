@@ -68,7 +68,7 @@ fn pin_args(target: &str, selector: &str) -> SpliceArgs {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WPath(target.into()),
-            selector: selector.into(),
+            selector: wire::ReadSel::parse(selector),
             vibe: None,
         }),
     }

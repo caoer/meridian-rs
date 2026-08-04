@@ -179,7 +179,7 @@ fn checked_bounds(
     if end > len || start > end {
         return Err(RenderFailed {
             node_kind: "heading".into(),
-            node_ref: fact.hpath.clone(),
+            node_ref: crate::address_text(fact),
             reason: format!("content span {start}..{end} exceeds the document ({len} bytes)"),
         });
     }
@@ -201,8 +201,7 @@ mod tests {
             n: "1".into(),
             depth: 1,
             title: "H".into(),
-            hpath: "H".into(),
-            hpath_raw: vec![wire::HpathSeg {
+            hpath: vec![wire::HpathSeg {
                 h: "H".into(),
                 n: None,
             }],
