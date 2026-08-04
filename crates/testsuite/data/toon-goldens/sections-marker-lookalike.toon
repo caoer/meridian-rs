@@ -1,0 +1,13 @@
+path: corpus/lookalike.md
+file_rev: f3ba9712c8c0a6dd
+words: 16
+sections[1]{hpath,rev,words,bytes}:
+  Notes,f3ba9712c8c0a6dd,16,79
+
+== Notes ==
+
+the face writes a line like
+
+== Notes ==
+
+and this section is ABOUT that line

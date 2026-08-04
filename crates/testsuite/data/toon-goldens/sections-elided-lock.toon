@@ -1,0 +1,12 @@
+path: corpus/locked.md
+file_rev: e876ab97c0f472b4
+words: 10
+sections[1]{hpath,rev,words,bytes}:
+  Pins,e876ab97c0f472b4,6,34
+
+== Pins ==
+
+before the lock
+
+
+after the lock

@@ -11,6 +11,7 @@ mod meridian_md;
 mod pf_frozen_sweep;
 mod s1_authz_facts;
 mod u14_read_face_contract;
+mod u15_toon_goldens;
 mod u36_per_language_elision;
 mod u4a2_composed_read;
 mod u4b_real_lock;
