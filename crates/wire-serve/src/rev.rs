@@ -208,10 +208,10 @@ pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
         if is_reserved("new_fingerprint", Position::ErrorPayload) {
             error.new_fingerprint = None;
         }
-        // MUTATION: treat the v2-LEGAL slots as vintage — the
-        // regression the "migrate all six" order would have shipped.
-        error.message = None;
-        error.path = None;
+        if ladder_authored {
+            error.message = None;
+            error.path = None;
+        }
     }
     Some(demoted)
 }
