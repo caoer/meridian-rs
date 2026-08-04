@@ -38,28 +38,6 @@ fn is_external_access_refusal(msg: &str) -> bool {
         || m.contains("permission error")
 }
 
-/// Read the live `node_rev` of one addressable selector from a fresh projection
-/// (the rev a pin would record). `selector` is `''` for the doc root, `^id` for
-/// an anchor, or a heading hpath for a section.
-fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
-    let mut docs = BTreeMap::new();
-    docs.insert(path.to_string(), doc(raw));
-    let conn = open_board(&docs).expect("open board");
-    conn.query_row(
-        "SELECT node_rev FROM node WHERE path = ? AND selector = ?",
-        [path, selector],
-        |r| r.get::<_, String>(0),
-    )
-    .unwrap_or_else(|e| panic!("no node row for {path}#{selector}: {e}"))
-}
-
-/// A review page whose `^inputs` lock pins `subject.md#^claim` at `pinned_rev`.
-fn review_page(pinned_rev: &str) -> String {
-    format!(
-        "## Verdict\n\napproved\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{pinned_rev}', rev_class: 'content'}}\n```\n"
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Gate — blocked-ATTACH assertion (load-bearing negative)
 // ---------------------------------------------------------------------------
@@ -151,76 +129,21 @@ fn gate_lock_read_face_primitive() {
 }
 
 // ---------------------------------------------------------------------------
-// Gate — doctored-verdict fixture renders red via default-face SQL only
+// Gate — doctored-verdict: RETIRED HERE, carried by the fingerprint plane
 // ---------------------------------------------------------------------------
-
-/// A verdict page pins the reviewed content at close (rev R1). Doctoring the
-/// subject after close makes its live rev R2 ≠ R1, so `board_red` returns the
-/// drift row — computed by DEFAULT-face SQL, no optional pack (checklist 24;
-/// §5.3 "verdicts freeze at close").
-#[test]
-fn gate_doctored_verdict() {
-    let subject_v1 = "# Subject\n\nThe reviewed claim body. ^claim\n";
-    let subject_v2 = "# Subject\n\nThe body was quietly edited after close. ^claim\n";
-
-    // Pin at the rev the subject's ^claim block composes to at close.
-    let r1 = live_node_rev("subject.md", subject_v1, "^claim");
-    let review = review_page(&r1);
-
-    // Freshly closed: pinned_rev == live_rev -> GREEN, board_red is empty.
-    let mut docs = BTreeMap::new();
-    docs.insert("subject.md".to_string(), doc(subject_v1));
-    docs.insert("review.md".to_string(), doc(&review));
-    let conn = open_board(&docs).expect("open board v1");
-    assert_eq!(
-        scalar_i64(&conn, "SELECT count(*) FROM board_red"),
-        0,
-        "a freshly closed verdict is green — no board red"
-    );
-
-    // Doctor: edit the subject after close. Live rev now R2 != pinned R1.
-    let mut docs2 = BTreeMap::new();
-    docs2.insert("subject.md".to_string(), doc(subject_v2));
-    docs2.insert("review.md".to_string(), doc(&review));
-    let conn2 = open_board(&docs2).expect("open board v2");
-
-    let red: i64 = scalar_i64(
-        &conn2,
-        "SELECT count(*) FROM board_red WHERE src_path='review.md' AND to_path='subject.md' AND to_sel='^claim' AND reason='content-drifted'",
-    );
-    assert_eq!(
-        red, 1,
-        "the doctored verdict renders red (content-drifted) via default-face board_red SQL"
-    );
-
-    // The red row cites the pinned rev and the live rev — the reader sees the drift.
-    let (pinned, live): (String, String) = conn2
-        .query_row(
-            "SELECT pinned_rev, live_rev FROM board_red WHERE src_path='review.md'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(pinned, r1, "board red cites the pinned rev R1");
-    assert_ne!(live, r1, "the live rev R2 differs from the pinned R1");
-
-    // A rename/delete of the pinned target renders red selector-unresolved too.
-    let mut docs3 = BTreeMap::new();
-    docs3.insert(
-        "subject.md".to_string(),
-        doc("# Subject\n\nno anchor here anymore\n"),
-    );
-    docs3.insert("review.md".to_string(), doc(&review));
-    let conn3 = open_board(&docs3).expect("open board v3");
-    assert_eq!(
-        scalar_i64(
-            &conn3,
-            "SELECT count(*) FROM board_red WHERE reason='selector-unresolved'"
-        ),
-        1,
-        "a pinned target whose selector no longer resolves renders red selector-unresolved"
-    );
-}
+//
+// `gate_doctored_verdict` asserted "verdicts freeze at close" through
+// `board_red` / `board_drift` — the legacy `node_rev` compare, fenced by
+// `verdict_color IS NULL`. R1.3 retired the `^inputs` plane that was the only
+// way to reach those arms, so the test could no longer fail and was deleted
+// rather than left passing by construction.
+//
+// **The law is not retired, and it is still asserted.** A doctored verdict
+// renders red through the FINGERPRINT compare instead:
+// `board_pin_verdict_gates::gate_board_renders_the_same_verdict_the_walk_renders`
+// pins `drifted.md -> red content-drifted` and `dangling.md -> red
+// dangling-anchor` on the same `board` view, with a green control beside them.
+// Same claim, surviving carrier, still falsified.
 
 // ---------------------------------------------------------------------------
 // Gate — stale projection recomputes on rev change

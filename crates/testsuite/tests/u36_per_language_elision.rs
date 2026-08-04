@@ -110,11 +110,15 @@ fn mixed_page() -> String {
     // this test is about fence LANGUAGES, so the lock's contents are only
     // required to render as an engine-emitted block.
     let mut l = lock::Lock::new();
+    // Pre-R4 this fixture carried an `objects:` table and no pins. R4 retired
+    // that plane and moved the blob hash onto the pin row, so the shipped block
+    // is now a one-pin lock — same role in this test (an engine-emitted block
+    // the elision must keep), expressed in the only schema that parses.
     l.upsert_pin(lock::PinEntry::new(
         "corpus/x",
         "9ae3f1deadbeef",
-        lock::Selector::Path(vec!["Roots".into()]),
-        "fp1.green.0000000000000000",
+        lock::Selector::Path(Vec::new()),
+        &format!("fp1.span2.b3.{}", "ab".repeat(32)),
     ));
     let lock_block = lock::render(&l);
     let new_engine_block = lock::EngineEmitted::emit_canonical(&TestJournal { ts: "2026-07-26" });

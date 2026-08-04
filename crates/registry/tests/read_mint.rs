@@ -92,7 +92,13 @@ impl Conn {
             "op": "read",
             "path": path,
             "mode": "sections",
-            "sections": selectors,
+            // U14: the wire takes TAGGED selectors. The helper keeps its
+            // ergonomic &[&str] and converts at its own door — which is
+            // exactly the ingress discipline the wire now enforces.
+            "sections": selectors
+                .iter()
+                .map(|s| wire::ReadSel::parse(s))
+                .collect::<Vec<_>>(),
         });
         if let Some(actor) = actor {
             frame["actor"] = json!(actor);
@@ -112,7 +118,9 @@ fn served_sec_rev(read: &Value, sel: &str) -> String {
         .as_array()
         .expect("sections array")
         .iter()
-        .find(|s| s["sel"] == json!(sel))
+        // U14: `sel` is echoed in the caller's own TAGGED grammar, so the
+        // match is structure-to-structure rather than string-to-string.
+        .find(|s| s["sel"] == json!(wire::ReadSel::parse(sel)))
         .unwrap_or_else(|| panic!("section {sel} served: {read}"))["sec_rev"]
         .as_str()
         .expect("sec_rev string")
@@ -160,11 +168,15 @@ fn an_agent_read_mints_a_receipt_carrying_actor_selector_and_rev() {
     let canonical = workspace::canonicalize(&ws).unwrap();
     let mints = server.registry().read_mints(&canonical);
     let receipt = mints
-        .lookup("agent-7", "plan.md", "Alpha")
+        .lookup("agent-7", "plan.md", &wire::ReadSel::parse("Alpha"))
         .expect("the read minted a receipt for the selector it served");
     assert_eq!(receipt.actor, "agent-7", "the receipt names the actor");
     assert_eq!(receipt.path, "plan.md", "…the path it read");
-    assert_eq!(receipt.selector, "Alpha", "…the canonical selector");
+    assert_eq!(
+        receipt.selector,
+        wire::ReadSel::parse("Alpha"),
+        "…the canonical selector, tagged since U14"
+    );
     assert_eq!(
         receipt.sec_rev, read_rev,
         "…and the rev of the bytes the caller actually received"
@@ -226,7 +238,7 @@ fn the_receipt_survives_the_write_that_rebuilds_the_warm_engine() {
     // The ledger is NOT the engine's: the receipt is still there…
     let mints = server.registry().read_mints(&canonical);
     let receipt = mints
-        .lookup("agent-7", "plan.md", "Alpha")
+        .lookup("agent-7", "plan.md", &wire::ReadSel::parse("Alpha"))
         .expect("the pin's own write must not evaporate the receipt that authorizes it");
     assert_eq!(receipt.sec_rev, read_rev, "…carrying its minted rev");
 
@@ -258,11 +270,15 @@ fn a_read_of_section_a_does_not_satisfy_a_lookup_for_section_b() {
     let canonical = workspace::canonicalize(&ws).unwrap();
     let mints = server.registry().read_mints(&canonical);
     assert!(
-        mints.lookup("agent-7", "plan.md", "Alpha").is_some(),
+        mints
+            .lookup("agent-7", "plan.md", &wire::ReadSel::parse("Alpha"))
+            .is_some(),
         "the section that WAS read is gated"
     );
     assert!(
-        mints.lookup("agent-7", "plan.md", "Beta").is_none(),
+        mints
+            .lookup("agent-7", "plan.md", &wire::ReadSel::parse("Beta"))
+            .is_none(),
         "the unread sibling section is NOT — the receipt is selector-grained"
     );
 
@@ -286,11 +302,15 @@ fn a_foreign_actors_read_does_not_mint_for_me() {
     let canonical = workspace::canonicalize(&ws).unwrap();
     let mints = server.registry().read_mints(&canonical);
     assert!(
-        mints.lookup("agent-other", "plan.md", "Alpha").is_some(),
+        mints
+            .lookup("agent-other", "plan.md", &wire::ReadSel::parse("Alpha"))
+            .is_some(),
         "the reading actor holds the receipt"
     );
     assert!(
-        mints.lookup("agent-mine", "plan.md", "Alpha").is_none(),
+        mints
+            .lookup("agent-mine", "plan.md", &wire::ReadSel::parse("Alpha"))
+            .is_none(),
         "another actor's read never gates MY pin"
     );
 

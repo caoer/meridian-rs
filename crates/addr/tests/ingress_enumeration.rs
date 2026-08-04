@@ -95,18 +95,8 @@ const PINNED: &[(&str, &str, Class)] = &[
         "pub fn parse",
         Class::InternalReader,
     ),
-    (
-        "crates/view/src/read_face.rs",
-        "fn split_selector",
-        Class::InternalReader,
-    ),
     // ---- Not addresses: pinned so a real ingress stays distinguishable -----
     ("crates/model/src/walk.rs", "fn stage2", Class::NotAnAddress),
-    (
-        "crates/view/src/read_face.rs",
-        "fn block_hash_algo",
-        Class::NotAnAddress,
-    ),
 ];
 
 /// The `#`-split forms a raw address spelling can be taken apart with.

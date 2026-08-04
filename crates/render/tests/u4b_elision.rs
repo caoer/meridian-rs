@@ -33,7 +33,7 @@ fn lock_block() -> String {
     l.upsert_pin(lock::PinEntry::new(
         "corpus/other",
         "9ae3f1deadbeef",
-        lock::Selector::Path(vec!["Design".into()]),
+        lock::Selector::Path(vec!["Design".to_string()]),
         &format!("fp1.span2.b3.{}", "ab".repeat(32)),
     ));
     lock::render(&l)

@@ -11,6 +11,7 @@ pub mod check_write;
 pub mod decode;
 pub mod gate;
 pub mod guard;
+pub mod ladder;
 pub mod plan;
 pub(crate) mod positions;
 pub mod reaction;
@@ -437,7 +438,7 @@ mod tests {
     fn v3_plan_edits_strict_negatives() {
         // both edits and plan_edits → bad_request
         let both = json!({"op": "splice", "path": "a.md",
-            "edits": [{"target": {"hpath": ["A"]}, "edit": {"put": {"at": "end", "text": "x"}}}],
+            "edits": [{"target": {"hpath": [{"h": "A"}]}, "edit": {"put": {"at": "end", "text": "x"}}}],
             "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]});
         let e = super::decode::decode(&obj(both), super::rev::Rev::V3).expect_err("both refused");
         assert_eq!(

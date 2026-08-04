@@ -603,13 +603,31 @@ fn name_the_file(err: LockError, doc: &Document) -> LockError {
 /// not the verb).
 #[must_use]
 pub fn block_texts(doc: &Document) -> Vec<&str> {
+    block_spans(doc)
+        .into_iter()
+        .filter_map(|span| doc.raw.get(span))
+        .collect()
+}
+
+/// Every `meridian-lock` block's fence-to-fence SPAN, in document order.
+///
+/// The locating half of [`block_texts`], and it parses nothing — the spans come
+/// from the fence info string alone. That is the whole point: a page carrying a
+/// **v1** lock cannot be located through [`find`], because `find` reads the
+/// grammar and a v1 body is [`LockError::UnsupportedVersion`] BY DESIGN (P4).
+/// The migration door needs the span of a block it is not allowed to
+/// understand, and this is how it gets one without a v1 read path existing
+/// anywhere in the engine.
+///
+/// **This is not a parser and must never become one.** It answers *"which bytes
+/// are a lock block"*, never *"what does the lock say"* — the second question
+/// has exactly one answer-giver, [`parse`], and it speaks v2 only.
+#[must_use]
+pub fn block_spans(doc: &Document) -> Vec<ByteSpan> {
     let mut spans: Vec<ByteSpan> = Vec::new();
     collect_lock_spans(&doc.root, &mut spans);
     spans.sort_by_key(|s| s.start);
     spans
-        .into_iter()
-        .filter_map(|span| doc.raw.get(span))
-        .collect()
 }
 
 fn collect_lock_spans(node: &Node, out: &mut Vec<ByteSpan>) {
@@ -1004,6 +1022,70 @@ mod tests {
             node.children.iter().find_map(find_fm)
         }
         find_fm(&doc(raw).root).expect("the fixture has frontmatter")
+    }
+
+    /// **The carrier of d2 §5.3, after the board arm that used to carry it.**
+    ///
+    /// "An ungated close renders grey, never green" was enforced by a board
+    /// detection arm — a declared-but-unpinned edge coloured grey. R1.3 retired
+    /// the `^inputs` plane that was the only way to reach it, and under R4 the
+    /// state that arm described is not merely unobserved but UNREPRESENTABLE:
+    /// the pin row IS the declaration, so there is no "declared without a minted
+    /// pin" to detect. The law did not retire; its enforcement changed category,
+    /// from board detection to SCHEMA REFUSAL.
+    ///
+    /// So the grammar is what holds the line, and this is the test that watches
+    /// it. It is mutation-provable in BOTH directions by construction: the
+    /// complete row parses, and dropping either mandatory field from that SAME
+    /// row makes it refuse. If the schema ever grows an optional-fingerprint or
+    /// optional-hash arm, this screams — which is exactly when the law would
+    /// need re-ruling rather than silently lapsing.
+    ///
+    /// `hash` is mandatory because *"if hash is missing, we lost the explicit
+    /// target meaning"* (R4); `fingerprint` is mandatory because it is the
+    /// claim — a row without one asserts nothing and could only ever be granted
+    /// a colour, never compute one.
+    #[test]
+    fn a_pin_row_missing_a_mandatory_field_refuses_at_parse() {
+        let complete = format!(
+            "```meridian-lock\n\
+             version: 2\n\
+             pins:\n\
+             \x20 - object: \"[[notes]]\"\n\
+             \x20   hash: \"13c3550f41b5796dd0\"\n\
+             \x20   path: [\"Findings\"]\n\
+             \x20   fingerprint: \"{}\"\n\
+             ```",
+            fp("ab")
+        );
+
+        // The positive control: the complete row parses, and to ONE pin.
+        let ok = parse(&complete).expect("the complete R4 row is legal");
+        assert_eq!(ok.pins.len(), 1, "the control row parses to one pin");
+
+        // Drop `fingerprint` from that same row — it must refuse, not default.
+        let no_fingerprint = complete
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("fingerprint:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            parse(&no_fingerprint).is_err(),
+            "a pin row without a fingerprint asserts nothing and must refuse, \
+             never parse to a row a reader could colour: {no_fingerprint}"
+        );
+
+        // Drop `hash` from that same row — it must refuse too.
+        let no_hash = complete
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("hash:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            parse(&no_hash).is_err(),
+            "\"if hash is missing, we lost the explicit target meaning\" — the \
+             grammar refuses rather than pinning a target it cannot name: {no_hash}"
+        );
     }
 
     /// The canonical byte form, pinned literal — R4's v2 shape.

@@ -391,8 +391,39 @@ fn status_json_shape() {
 /// `lock::render` emits (`crates/lock`), written by hand so this gate depends on
 /// the CLI's own reader, not on the writer that produced the bytes.
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
+    lock_block_pinning(declared_ref, FIXTURE_BLOB, fingerprint)
+}
+
+/// The R4 blob hash a fixture pin carries when the test is not measuring the
+/// retrieval plane. R4 makes `hash` MANDATORY — *"if hash is missing, we lost
+/// the explicit target meaning"* — so there is no pin without one.
+const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
+
+/// One R4 pin, hand-written in the exact bytes `lock::render` emits, so this
+/// gate depends on the CLI's own READER and not on the writer that produced
+/// them. `declared_ref` is a `page[#A/B]` convenience spelling, split into the
+/// `object` and the `path` ARRAY here — R4 admits no joined string on the row.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` across these fixtures.
+/// That is the LOCK FILE schema version, not the wire protocol version.
+fn lock_block_pinning(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
+    let (target, fragment) = match declared_ref.split_once('#') {
+        Some((t, f)) => (t, f),
+        None => (declared_ref, ""),
+    };
+    let object = target.strip_suffix(".md").unwrap_or(target);
+    let path = if fragment.is_empty() {
+        String::new()
+    } else {
+        fragment
+            .split('/')
+            .map(|seg| format!("\"{seg}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
-        "```meridian-lock\nversion: 1\npins:\n  - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\"\n```"
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"{blob}\"\n    path: [{path}]\n    fingerprint: \"{fingerprint}\"\n```"
     )
 }
 
@@ -487,14 +518,14 @@ fn status_renders_a_refused_lock_as_grey_not_silence() {
     let ws = sb.workspace("lockrefused");
     std::fs::write(
         ws.join("effect.md"),
-        "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n",
+        "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n",
     )
     .expect("write effect");
 
     let out = stdout(&sb.run(&ws, &["status"]));
     assert!(
         out.contains(
-            "lock grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins)) [1 pin]"
+            "lock grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, pins)) [1 pin]"
         ),
         "a refused lock names its damage: {out}"
     );
@@ -533,11 +564,15 @@ fn git(ws: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The canonical `meridian-lock` fence bytes for one `objects:` entry — the
+/// The canonical `meridian-lock` fence bytes for one pinned BLOB — the
 /// retrieval plane the gauge measures, written by hand so this gate depends on
 /// the CLI's own reader.
+///
+/// R4 retired the shared `objects:` table; the blob rides the pin row as its
+/// `hash`, so the retrieval plane is now measured off an ordinary pin. `key` is
+/// the target the blob is OF — the pin's `object`.
 fn lock_block_with_object(key: &str, blob_sha: &str) -> String {
-    format!("```meridian-lock\nversion: 1\nobjects:\n  \"{key}\": \"{blob_sha}\"\n```")
+    lock_block_pinning(key, blob_sha, &format!("fp1.span2.b3.{}", "0".repeat(64)))
 }
 
 /// The `composed.vibe_debt` object of a `status --json` run.

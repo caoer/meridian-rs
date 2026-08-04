@@ -878,16 +878,17 @@ mod tests {
     #[test]
     fn the_lock_block_keeps_the_canonical_root_form() {
         let raw = "# Page\n\n[[sessions:notes.md]]\n\n\
-                   ```meridian-lock\npins:\n  - ref: 'sessions:notes.md#Design'\n    \
-                   objects:\n      sessions:assets/logo.png: b3:dead\n```\n";
+                   ```meridian-lock\nversion: 2\npins:\n  - object: \"[[sessions:notes]]\"\n    \
+                   hash: \"9ae3f1deadbeef\"\n    path: [\"Design\"]\n    \
+                   fingerprint: \"fp1.span2.b3.a8222f5a\"\n```\n";
         let out = to_stored(raw, &mounts()).expect("translates");
         assert!(
-            out.contains("ref: 'sessions:notes.md#Design'"),
-            "lock `ref:` stays agent-plane: {out}",
+            out.contains("object: \"[[sessions:notes]]\""),
+            "the lock pin's `object` stays agent-plane: {out}",
         );
         assert!(
-            out.contains("sessions:assets/logo.png: b3:dead"),
-            "lock `objects:` keys stay agent-plane: {out}",
+            out.contains("path: [\"Design\"]") && out.contains("hash: \"9ae3f1deadbeef\""),
+            "the rest of the pin row is byte-identical too: {out}",
         );
         assert!(
             out.contains(

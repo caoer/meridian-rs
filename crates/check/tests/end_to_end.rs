@@ -195,10 +195,17 @@ fn an_unaskable_object_store_is_still_grey_and_never_a_clean_reading() {
     use std::collections::BTreeMap;
 
     let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
-    let page = format!(
-        "# P\n\n```meridian-lock\nversion: 1\nobjects:\n  \"source.md\": \"{}\"\n```\n",
-        "a".repeat(40)
-    );
+    // Rendered through `lock::render`, never hand-written: the pre-R4 fixture
+    // here was a `version: 1` `objects:` table that kept COMPILING after the
+    // schema it described was retired, and failed only at run time.
+    let mut lock = lock::Lock::new();
+    lock.upsert_pin(lock::PinEntry::new(
+        "source",
+        &"a".repeat(40),
+        lock::Selector::Path(vec!["S".to_string()]),
+        "fp1.span2.b3.a8222f5a",
+    ));
+    let page = format!("# P\n\n{}\n", lock::render(&lock));
     let doc = model::build(page.clone(), syntax::parse(&page));
     let docs = BTreeMap::from([("claim.md".to_string(), doc)]);
 

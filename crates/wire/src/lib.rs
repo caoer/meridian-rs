@@ -25,8 +25,14 @@
 //! # Rungs (contract v2 §4 op table)
 //! - Rung 1 (`hello`, error envelope, node object): v1 FROZEN 2026-07-18
 //!   (`proto: 1`), as amended by contract v2 (W2-AMEND): `Node.hpath` carries
-//!   `HpathSeg` (v2 §2.1, dual-deserialization for the v1 string form), the
-//!   error envelope is the nested `{code, recovery, …}` object (v2 §8).
+//!   `HpathSeg` (v2 §2.1), the error envelope is the nested
+//!   `{code, recovery, …}` object (v2 §8). **Freeze amendment, requirements
+//!   decision 20 (ZT, personal freeze authority per v2 §18):** W2-AMEND's
+//!   dual-deserialization of the v1 bare string was TRANSITIONAL and is
+//!   retired — the object form is the only form in BOTH directions. The bare
+//!   string cannot carry the occurrence index `n`, so the dual grammar was
+//!   incomplete, not merely loose; retiring it kills the same leftover
+//!   liberality as decision 14 / R1.6 / R4.
 //! - Rung 2 (`toc` v2 response, `cat`, `extract` + D-C5, `resolve` walk plane,
 //!   `SecRef` mint grammar): contract v2 §4.1–§4.5, §2.1 — FROZEN.
 //! - Rung 3 (`root` reshape, `diff` request, `root_mismatch`/`root_unknown`,
@@ -102,10 +108,20 @@ pub type RequestId = u64;
 /// v2 §2.1). Per-segment byte-equality against the real containment tree; no
 /// join string exists, so `#A#a/b` vs `#A#a#b` is unrepresentable.
 ///
-/// Serializes as the object form `{"h":…}` / `{"h":…,"n":…}`. Deserializes
-/// from BOTH the object form and the v1 bare string (`"Goals"` ≡
-/// `{"h":"Goals"}`) — the dual-serialization bridge for the one amendment to
-/// the frozen node object (v2 §2.1; deviation row in the W2-AMEND fixtures).
+/// The object form `{"h":…}` / `{"h":…,"n":…}` is the ONLY form, both
+/// directions (v2 §2.1 as amended; requirements decision 20). The v1 bare
+/// string (`"Goals"`) was accepted on input by the transitional W2-AMEND
+/// dual-in bridge; that bridge is retired here and the bare form is refused
+/// loud. The bare form could never carry `n`, so the dual grammar was
+/// incomplete — one dialect strictly less expressive than the other, forcing
+/// two spellings where the loose one cannot address every node.
+/// The one refusal text for the retired v1 bare-string segment, shared by
+/// every door that can meet it (this type's `Deserialize`, `wire-serve`'s
+/// decode) — a refusal message is a contract, single-sourced. Each door
+/// appends the offending value, so the refusal names what it refused.
+pub const HPATH_SEG_V1_REFUSAL: &str =
+    "hpath segment must be the object form `{h, n?}`; the v1 bare string is refused (v2 §2.1)";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct HpathSeg {
     pub h: String,
@@ -118,6 +134,9 @@ impl<'de> Deserialize<'de> for HpathSeg {
     where
         D: serde::Deserializer<'de>,
     {
+        // The string arm survives ONLY to name the refusal: matching it here
+        // turns a retired v1 spelling into a message that says so, instead of
+        // serde's generic "invalid type" for an unmatched variant.
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Repr {
@@ -128,10 +147,12 @@ impl<'de> Deserialize<'de> for HpathSeg {
                 n: Option<u32>,
             },
         }
-        Ok(match Repr::deserialize(deserializer)? {
-            Repr::Str(h) => HpathSeg { h, n: None },
-            Repr::Seg { h, n } => HpathSeg { h, n },
-        })
+        match Repr::deserialize(deserializer)? {
+            Repr::Str(h) => Err(serde::de::Error::custom(format!(
+                "{HPATH_SEG_V1_REFUSAL}: `{h}`"
+            ))),
+            Repr::Seg { h, n } => Ok(HpathSeg { h, n }),
+        }
     }
 }
 
@@ -1914,6 +1935,30 @@ pub struct ErrorBody {
     /// targets echoed in the §2.1 grammar (a ref-carrying surface).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Vec<SecRef>>,
+    /// `cas_mismatch` (**v3-additive**, U11 / R1.2): WHICH RUNG of the
+    /// mismatch-recovery ladder this refusal reached — `1` change diff, `2` new
+    /// content + new fingerprint, `3` the bare mismatch floor. The discriminant
+    /// is what lets a caller dispatch on richness without probing which extras
+    /// happen to be present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rung: Option<u32>,
+    /// `cas_mismatch` rung 1: the change from the caller's OWN pinned picture to
+    /// the node's current bytes — a unified line diff for section bodies, ops
+    /// form for frontmatter. Scoped to the target the caller addressed and
+    /// capped by size; a caller applies it and resends WITHOUT a re-read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// `cas_mismatch` rung 2: the targeted node's current bytes, whole. The
+    /// ETag-412-with-body shape — sent when no diff is computable or the diff
+    /// exceeded its cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_content: Option<String>,
+    /// `cas_mismatch` rungs 1–2: the token to resend with. It rides whichever
+    /// rung carries recoverable content, because that is the rung the caller
+    /// resends FROM — a rung that made the read unnecessary must not send them
+    /// back for the token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_fingerprint: Option<NodeRev>,
 }
 
 impl ErrorBody {
@@ -1941,6 +1986,10 @@ impl ErrorBody {
             lost: None,
             cause: None,
             overlap: None,
+            rung: None,
+            diff: None,
+            new_content: None,
+            new_fingerprint: None,
         }
     }
 }

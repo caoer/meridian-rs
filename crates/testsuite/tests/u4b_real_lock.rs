@@ -23,15 +23,12 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     // the lock through the guarded U11 path.
     let doc0 = fs::load(&root, std::path::Path::new("page.md")).expect("load");
     let mut l = lock::Lock::new();
-    // FIXTURE REPAIR ONLY (U14): U7/U8 reshaped `PinEntry` to the R4 row —
-    // `object` + `hash` + a `path` ARRAY selector, no `declared_ref`. This
-    // fixture still built the retired shape, so this test binary did not
-    // compile at `u8-rekey`. Rebuilt in the current shape with no change to
-    // what the test asserts; the lock plane's own design is U9a's.
     l.upsert_pin(lock::PinEntry::new(
         "page",
         "9ae3f1deadbeef",
-        lock::Selector::Path(vec!["^c1".into()]),
+        // R4's anchor pin: a `^id` as the SOLE path element — block grain, never
+        // widened to the host section.
+        lock::Selector::Path(vec!["^c1".to_string()]),
         &model::fingerprint::fingerprint(&doc0, &doc0.root)
             .expect("fixture target has content")
             .into_string(),
