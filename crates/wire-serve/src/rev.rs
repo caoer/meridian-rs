@@ -167,8 +167,18 @@ pub fn project_response(frame: &mut Value) {
 /// about revs.
 #[must_use]
 pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
-    let wire::ResponsePayload::Error { error } = &response.payload else {
-        return None;
+    let error = match &response.payload {
+        wire::ResponsePayload::Error { error } => error,
+        // The BODY side: a splice response's `armed.effects` postdates the
+        // freeze exactly as the notification-side `effects` does — one producer
+        // (`write.rs`) fills one value and writes it to two exits.
+        wire::ResponsePayload::Body { body } => {
+            return demote_body_v2(body).map(|body| wire::Response {
+                id: response.id,
+                ok: response.ok,
+                payload: wire::ResponsePayload::Body { body },
+            });
+        }
     };
     // Provenance: only the ladder's `message`/`path` are its to strip.
     let ladder_authored = error.rung.is_some();
@@ -455,6 +465,11 @@ pub enum Position {
     ResponseRoot,
     /// Inside a response's `error` payload.
     ErrorPayload,
+    /// Inside a splice response's `body.armed` fact. Named for where the field
+    /// actually sits rather than folded into [`Position::ResponseRoot`]: a
+    /// position that lies about depth would send the next implementer to strip
+    /// at the wrong level.
+    ResponseArmed,
 }
 
 /// One field that postdates frozen v2 and must never reach a v2 session.
@@ -515,6 +530,15 @@ pub const V2_RESERVED_FIELDS: &[ReservedField] = &[
               skips on an EMPTY VALUE, never on a v2 SESSION, so a fired HOOK put \
               it on a v2 wire",
     },
+    ReservedField {
+        key: "effects",
+        position: Position::ResponseArmed,
+        author: "C3 reaction plane",
+        why: "the SAME producer as the notification-side row — `write.rs` fills \
+              one `armed_effects` and writes it to BOTH the ring frame and the \
+              response body, so one field leaked at two exits; absent from the \
+              frozen §4.4/§5.2 armed key set {path, edits}",
+    },
     // U11's mismatch-recovery ladder: the four slots that genuinely postdate v2.
     // `message`/`path` are deliberately ABSENT — see the vintage/provenance note.
     ReservedField {
@@ -549,4 +573,21 @@ pub fn is_reserved(key: &str, position: Position) -> bool {
     V2_RESERVED_FIELDS
         .iter()
         .any(|field| field.key == key && field.position == position)
+}
+
+/// The BODY half of the v2 demotion: strip post-v2 fields from a response body,
+/// or `None` when it carries none. Typed, like every other strip here — a
+/// `Value` pass would alphabetize the key set (`preserve_order` is off).
+fn demote_body_v2(body: &wire::ResponseBody) -> Option<wire::ResponseBody> {
+    let wire::ResponseBody::Splice { armed, .. } = body else {
+        return None;
+    };
+    if armed.effects.is_empty() || !is_reserved("effects", Position::ResponseArmed) {
+        return None;
+    }
+    let mut demoted = body.clone();
+    if let wire::ResponseBody::Splice { armed, .. } = &mut demoted {
+        armed.effects.clear();
+    }
+    Some(demoted)
 }
