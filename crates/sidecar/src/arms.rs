@@ -133,6 +133,11 @@ pub(crate) fn dispatch(
                 epoch.seq(),
                 &wire_serve::write::SpliceArgs {
                     id,
+                    // U10: the per-process sidecar serves DECODED WIRE FRAMES,
+                    // so it is a wire door exactly like the resident daemon and
+                    // enforces identically. This door is NOT MCP — which is the
+                    // point: the ruling covers every wire door, not a client.
+                    origin: wire_serve::guard::Origin::Wire,
                     path,
                     actor,
                     now,

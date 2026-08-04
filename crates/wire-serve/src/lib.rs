@@ -10,6 +10,7 @@ pub mod armed_disk;
 pub mod check_write;
 pub mod decode;
 pub mod gate;
+pub mod guard;
 pub mod plan;
 pub(crate) mod positions;
 pub mod reaction;

@@ -31,6 +31,7 @@ fn ws(seed: &str) -> (tempfile::TempDir, fs::WorkspaceRoot) {
 fn args(edits: Vec<Edit>, plan_edits: Vec<PlanEdit>) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".into()),
         actor: Some("agent-scribe".into()),
         now: None,

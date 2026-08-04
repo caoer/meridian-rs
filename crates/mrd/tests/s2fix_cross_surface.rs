@@ -653,6 +653,7 @@ fn session_read(
 fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath("plan.md".into()),
         actor: Some(actor.to_owned()),
         now: None,
@@ -1149,6 +1150,7 @@ fn path_c_create_title() {
         0,
         &SpliceArgs {
             id: None,
+            origin: wire_serve::guard::Origin::InProcess,
             path: WPath("plan.md".into()),
             actor: Some("agent-scribe".into()),
             now: None,

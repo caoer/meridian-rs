@@ -61,27 +61,66 @@ fn one(root: &fs::WorkspaceRoot, line: &str) -> Value {
     frames.remove(0)
 }
 
+/// One node's live `node_rev` — the fingerprint U10 makes every wire-origin
+/// content change carry (requirements decision 18). The frozen §4.4 worked
+/// requests already show it on E3; the ruling makes it universal, so the
+/// companions below carry it too. Derived, never hand-typed: same discipline as
+/// every other value in this file.
+fn rev_of(root: &fs::WorkspaceRoot, sec: Value) -> String {
+    let doc = fs::load(root, std::path::Path::new("notes/plan.md")).expect("load");
+    let sec: wire::SecRef = serde_json::from_value(sec).expect("selector decodes");
+    match wire_serve::read::cat(&doc, Some(sec)).expect("cat") {
+        wire::ResponseBody::Cat { node_rev, .. } => node_rev.0,
+        other => panic!("cat returned {other:?}"),
+    }
+}
+
+fn q3(root: &fs::WorkspaceRoot) -> String {
+    rev_of(root, json!({"hpath": [{"h": "Goals"}, {"h": "Q3"}]}))
+}
+
+fn q4(root: &fs::WorkspaceRoot) -> String {
+    rev_of(root, json!({"hpath": [{"h": "Goals"}, {"h": "Q4"}]}))
+}
+
 /// The frozen §4.4 worked requests + companions, ONE serve session (one
 /// epoch): E3, E4, the three §5.2 failures, the `fm_key` dry, the §4.6 links
 /// exchange, the §4.7 root exchange — every request byte as printed.
-const SESSION: &str = concat!(
-    r#"{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}},"if_node_rev":"33d5b0e1b27cb48b"}]}"#,
-    "\n",
-    r#"{"id":57,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000043"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- new item\n"}}}]}"#,
-    "\n",
-    r#"{"id":88,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by September","new":"ship by October"}},"if_node_rev":"33d5b0e1b27cb48b"}]}"#,
-    "\n",
-    r#"{"id":89,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by October"}},"if_node_rev":"41f643f034e5681f"}]}"#,
-    "\n",
-    r#"{"id":91,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"match":{"old":"item","new":"entry"}}}]}"#,
-    "\n",
-    r#"{"id":60,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{"target":{"fm_key":"title"},"edit":{"match":{"old":"Plan","new":"Plan v2"}}}]}"#,
-    "\n",
-    r#"{"id":80,"op":"links","path":"notes/plan.md"}"#,
-    "\n",
-    r#"{"id":90,"op":"root"}"#,
-    "\n",
-);
+/// U10 (decision 18): every content-mutating wire write carries its fingerprint.
+/// The revs are DERIVED from the pre-session document, never typed — `q4_after`
+/// is the one that must be taken after E4 lands, because E4 moves Q4's own rev.
+fn session(root: &fs::WorkspaceRoot) -> String {
+    let q3 = q3(root);
+    let q4 = q4(root);
+    // E4 appends to Q4, so the later companion addresses the POST-E4 node. That
+    // rev is already a pinned fact of this fixture: E4's receipt line records it
+    // as the after-rev of the very edit above.
+    let q4_after = E4_LINE
+        .rsplit_once("->")
+        .expect("E4 receipt names the after-rev")
+        .1
+        .split_whitespace()
+        .next()
+        .expect("after-rev token")
+        .to_owned();
+    let title = rev_of(root, json!({"fm_key": "title"}));
+    [
+        format!(r#"{{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000042"}},"if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{q3}"}}]}}"#),
+        format!(r#"{{"id":57,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000043"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"put":{{"at":"end","text":"- new item\n"}}}},"if_node_rev":"{q4}"}}]}}"#),
+        format!(r#"{{"id":88,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by September","new":"ship by October"}}}},"if_node_rev":"{q3}"}}]}}"#),
+        // The one companion whose rev is NOT the live pre-image: this frame
+        // deliberately pins Q3's POST-E3 rev to exercise the §5.2 stale-CAS
+        // split, so it is a literal rather than a derived value.
+        r#"{"id":89,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by October"}},"if_node_rev":"41f643f034e5681f"}]}"#
+            .to_owned(),
+        format!(r#"{{"id":91,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"match":{{"old":"item","new":"entry"}}}},"if_node_rev":"{q4_after}"}}]}}"#),
+        format!(r#"{{"id":60,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{{"target":{{"fm_key":"title"}},"edit":{{"match":{{"old":"Plan","new":"Plan v2"}}}},"if_node_rev":"{title}"}}]}}"#),
+        r#"{"id":80,"op":"links","path":"notes/plan.md"}"#.to_owned(),
+        r#"{"id":90,"op":"root"}"#.to_owned(),
+    ]
+    .join("\n")
+        + "\n"
+}
 
 /// Gate 1 (+ gates 3 and 5, one epoch): the whole frozen worked world,
 /// derived. Eight printed exchanges byte-exact through one serve session,
@@ -90,7 +129,7 @@ const SESSION: &str = concat!(
 #[test]
 fn worked_session_e3_e4_failures_dry_links_root_byte_exact() {
     let (_d, root) = s0();
-    let frames = serve(&root, SESSION);
+    let frames = serve(&root, &session(&root));
     assert_eq!(frames.len(), 8, "eight exchanges");
 
     // §4.4 E3 armed response, printed (S0→S1).
@@ -211,11 +250,14 @@ fn dry_run_touches_nothing() {
     let (_d, root) = s0();
     let frames = serve(
         &root,
-        concat!(
-            r#"{"id":1,"op":"splice","path":"notes/plan.md","dry":true,"receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}]}"#,
-            "\n",
-            r#"{"id":2,"op":"root"}"#,
-            "\n",
+        &format!(
+            concat!(
+                r#"{{"id":1,"op":"splice","path":"notes/plan.md","dry":true,"receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000042"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{}"}}]}}"#,
+                "\n",
+                r#"{{"id":2,"op":"root"}}"#,
+                "\n",
+            ),
+            q3(&root)
         ),
     );
     assert_eq!(frames[0]["ok"], true, "{}", frames[0]);
@@ -253,16 +295,21 @@ fn armed_file_rev_after_matches_subsequent_toc() {
     let (_d, root) = s0();
     let frames = serve(
         &root,
-        concat!(
-            // the E3 real commit (plan edit + receipt) — root advances R0→R1
-            r#"{"id":1,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}]}"#,
-            "\n",
-            // read the map — its file_rev is the ground truth a consumer would fetch
-            r#"{"id":2,"op":"toc","path":"notes/plan.md"}"#,
-            "\n",
-            // a DRY splice on the committed S1 — writes nothing
-            r#"{"id":3,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- x\n"}}}]}"#,
-            "\n",
+        &format!(
+            concat!(
+                // the E3 real commit (plan edit + receipt) — root advances R0→R1
+                r#"{{"id":1,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000042"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{q3}"}}]}}"#,
+                "\n",
+                // read the map — its file_rev is the ground truth a consumer would fetch
+                r#"{{"id":2,"op":"toc","path":"notes/plan.md"}}"#,
+                "\n",
+                // a DRY splice on the committed S1 — writes nothing. Q4 is
+                // untouched by the E3 commit above, so its pre-session rev stands.
+                r#"{{"id":3,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"put":{{"at":"end","text":"- x\n"}}}},"if_node_rev":"{q4}"}}]}}"#,
+                "\n",
+            ),
+            q3 = q3(&root),
+            q4 = q4(&root),
         ),
     );
 
@@ -297,10 +344,15 @@ fn armed_file_rev_after_matches_subsequent_toc() {
 /// creates NOTHING, not even the directory.
 #[test]
 fn receipt_parent_dir_created_by_caller_real_only() {
-    let req = r#"{"id":7,"op":"splice","path":"notes/plan.md","receipt":{"path":"logs/2026/receipts.md","anchor":"r-000099"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}]}"#;
+    // The Q3 rev is identical in both fixtures below — same s0 pre-image — so it
+    // is taken once, from the first.
+    let (_d1, root_dry) = s0();
+    let req = format!(
+        r#"{{"id":7,"op":"splice","path":"notes/plan.md","receipt":{{"path":"logs/2026/receipts.md","anchor":"r-000099"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{}"}}]}}"#,
+        q3(&root_dry)
+    );
 
     // dry first: zero disk effects means zero — no file, no dir.
-    let (_d1, root_dry) = s0();
     let dry_req = req.replace(r#""op":"splice","#, r#""op":"splice","dry":true,"#);
     let frame = one(&root_dry, &dry_req);
     assert_eq!(frame["ok"], true, "{frame}");
@@ -311,7 +363,7 @@ fn receipt_parent_dir_created_by_caller_real_only() {
 
     // real: the caller mkdirs, the commit lands, the anchor resolves.
     let (_d2, root_real) = s0();
-    let frame = one(&root_real, req);
+    let frame = one(&root_real, &req);
     assert_eq!(frame["ok"], true, "{frame}");
     assert_eq!(frame["body"]["receipt"]["path"], "logs/2026/receipts.md");
     assert_eq!(frame["body"]["receipt"]["anchor"], "r-000099");
@@ -417,7 +469,12 @@ fn fm_upsert_creates_and_replaces() {
     let (_d1, root) = workspace(&[("notes/a.md", "---\ntitle: Plan\n---\n# Body\n")]);
     let frame = one(
         &root,
-        r#"{"id":1,"op":"splice","path":"notes/a.md","edits":[{"target":{"fm_key":"title"},"edit":{"put":{"at":"upsert","text":"Plan v2"}}}]}"#,
+        // U10 (decision 18): the key EXISTS, so this upsert mutates existing
+        // content and carries its fingerprint. The rev is `node_rev_before` from
+        // the armed fact asserted just below — the same derived value, not a
+        // second source of truth. Cases 2 and 3 are BIRTHS of an absent key and
+        // carry none: absence is their guard.
+        r#"{"id":1,"op":"splice","path":"notes/a.md","edits":[{"target":{"fm_key":"title"},"edit":{"put":{"at":"upsert","text":"Plan v2"}},"if_node_rev":"fa77480c79a853bc"}]}"#,
     );
     assert_eq!(frame["ok"], true, "{frame}");
     assert_eq!(
