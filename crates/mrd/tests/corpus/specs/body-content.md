@@ -22,7 +22,7 @@ structural-write
   "doc": "tasks/b3-gatecheck.md",
   "actor": "agent:alice",
   "edits": [
-    { "target": {"hpath": ["Task: b3-gatecheck", "Quality Gates"]},
+    { "target": {"hpath": [{"h": "Task: b3-gatecheck"}, {"h": "Quality Gates"}]},
       "edit": {"put": {"at": "end", "text": "\n## Smuggled\n\nrestructured under cover of a section edit.\n"}} }
   ],
   "expect": "structural-write" }
@@ -33,7 +33,7 @@ structural-write
   "doc": "tasks/b3-gatecheck.md",
   "actor": "agent:alice",
   "edits": [
-    { "target": {"hpath": ["Task: b3-gatecheck", "Quality Gates"]},
+    { "target": {"hpath": [{"h": "Task: b3-gatecheck"}, {"h": "Quality Gates"}]},
       "edit": {"put": {"at": "end", "text": "\n- every receipt names the command that produced it.\n"}} }
   ],
   "expect": "pass" }
