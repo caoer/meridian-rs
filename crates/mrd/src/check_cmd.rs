@@ -1284,7 +1284,6 @@ mod tests {
         );
     }
 
-
     /// A journal page from `(anchor, root_before, root_after)` triples — the three
     /// facts a row asserts, in the shipped row grammar.
     /// A pin plane with nothing to report — the gate's passing input.
