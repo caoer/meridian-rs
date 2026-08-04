@@ -2002,23 +2002,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lockmigrate"
-version = "0.0.0"
-dependencies = [
- "addr",
- "fs",
- "git",
- "lock",
- "model",
- "serde",
- "serde_json",
- "syntax",
- "tempfile",
- "wire",
- "wire-serve",
-]
-
-[[package]]
 name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2145,7 +2128,6 @@ dependencies = [
  "git",
  "libc",
  "lock",
- "lockmigrate",
  "model",
  "policy",
  "preset",

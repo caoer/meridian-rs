@@ -132,12 +132,6 @@ realise = { workspace = true }
 # `model` (already in the graph); no new external crate enters, `cargo deny`
 # unchanged.
 config = { workspace = true }
-# `mrd lock migrate` (U9b, SELF-RETIRING): the v1 -> R4 v2 field migration of
-# `meridian-lock` blocks. A local CLIENT of the `lockmigrate` engine -- it carries
-# the ONE quarantined v1 parser and lands every rewrite through the governed
-# `wire_serve::write::lock_migrate` door (already in the graph). This dep line
-# dies with the crate; no new external crate enters.
-lockmigrate = { workspace = true }
 # U11 — `mrd walk` names the canonical root type and the resolution-facing
 # mount projection to build the root-keyed corpus. A std-only leaf already in
 # the graph via `model`/`view` — no new external crate, `cargo deny` unchanged.

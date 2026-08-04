@@ -100,9 +100,9 @@ fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
     // 27 in the landing assembly: U9b's `lock migrate` and U23's `retire` each
-    // added one, on branches that could not see each other. Both members
-    // correctly read 26 alone.
-    assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
+    // added one, on branches that could not see each other. DECISION 26 (ZT
+    // 2026-08-04) deleted `lock migrate` with its crate, so it is 26 again.
+    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -348,31 +348,30 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned. Thirteen verbs change files or the
+/// The classification itself, pinned. Twelve verbs change files or the
 /// drawer; the other fourteen are reads. This is the list a reviewer argues
 /// with — if it changes, it changes here, deliberately.
 ///
 /// **Was twelve of twenty-six, then eleven of twenty-five when `journal genesis`
 /// was retired with the ledger it reset (U6) — nothing is being reset any more,
-/// so the write it performed had no subject.** It is thirteen of twenty-seven
-/// because TWO units each added a writer, on branches that could not see each
-/// other: U9b's `mrd lock migrate` and U23's `mrd retire mark`. Twelve is what
-/// each of them correctly measured alone; thirteen is the fact only the
-/// assembly can state.
+/// so the write it performed had no subject.** It went to thirteen of
+/// twenty-seven because TWO units each added a writer, on branches that could
+/// not see each other: U9b's `mrd lock migrate` and U23's `mrd retire mark`.
+/// **DECISION 26 (ZT 2026-08-04) deleted the lock migration** — two field locks
+/// were hand-migrated, so the tool had no remaining subject — and the count is
+/// twelve of twenty-six.
 ///
-/// **Both are WRITERS, and the reason is not their flag set.** `lock migrate`
-/// rewrites `meridian-lock` blocks in a LIVE VAULT through a governed
-/// byte-landing door (`wire_serve::write::lock_migrate` → `fs::replace_file`);
-/// `retire mark` sweeps `~~` markers across the vault's markdown. `--dry` does
-/// not exempt either any more than it exempts `pin`, `realise`, `reconcile`,
-/// `new` or `unfold`, all of which carry the same flag and are marked. Contrast
-/// `mrd test`, which is unmarked because it writes only into temporary
-/// directories — the distinction the sibling test pins.
+/// **`retire mark` is a WRITER, and the reason is not its flag set.** It sweeps
+/// `~~` markers across the vault's markdown. `--dry` does not exempt it any
+/// more than it exempts `pin`, `realise`, `reconcile`, `new` or `unfold`, all
+/// of which carry the same flag and are marked. Contrast `mrd test`, which is
+/// unmarked because it writes only into temporary directories — the
+/// distinction the sibling test pins.
 ///
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_thirteen_of_twenty_seven() {
+fn the_write_classification_is_twelve_of_twenty_six() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -400,7 +399,6 @@ fn the_write_classification_is_thirteen_of_twenty_seven() {
             "unfold",
             "reconcile",
             "realise",
-            "lock migrate",
         ],
         "the verbs marked as writers"
     );
@@ -579,49 +577,4 @@ fn no_internal_unit_tag_reaches_a_help_page() {
             unit_tags(&page)
         );
     }
-}
-
-// ── A refusal may not name a verb spelling the listing does not offer ────────
-
-/// A refusal's teaching half is only worth its line if the verb it names can be
-/// typed. `mrd lock migrate` was `lock-migrate` until U9b renamed it — the help
-/// surface moved and two refusal strings did not, so the tool spent a release
-/// telling users to run a verb that no longer existed. Nothing failed, because
-/// nothing pinned the refusal text.
-///
-/// The gate is deliberately NOT "does not contain `lock-migrate`". It is derived
-/// from the listing, so it holds for the NEXT rename too, and it cannot go stale
-/// the way a hardcoded spelling would.
-#[test]
-fn a_refusal_names_only_verbs_the_listing_offers() {
-    let full = stdout(&mrd(&["--help"]));
-    let lines = verb_lines(&full);
-    let addresses: Vec<Vec<&str>> = lines
-        .iter()
-        .map(|(_, synopsis)| address_of(synopsis))
-        .collect();
-    assert!(
-        addresses.iter().any(|a| a == &vec!["lock", "migrate"]),
-        "control: the listing must offer `lock migrate`, else this test is \
-         asserting against a surface it never reached: {addresses:?}"
-    );
-
-    // Invoke the verb wrong so it refuses, and read the refusal it hands back.
-    let out = mrd(&["lock", "migrate"]);
-    let refusal = format!("{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
-    assert!(
-        !refusal.is_empty(),
-        "control: invoking `lock migrate` with no --vault must produce a refusal"
-    );
-
-    // The hyphenated form is what a word-lexed listing can never address, so a
-    // refusal naming it sends the reader to a verb `--help` cannot even reach.
-    assert!(
-        !refusal.contains("lock-migrate"),
-        "the refusal names a verb spelling the listing does not offer: {refusal}"
-    );
-    assert!(
-        refusal.contains("lock migrate"),
-        "the refusal should name the verb as the listing spells it: {refusal}"
-    );
 }

@@ -45,8 +45,10 @@
 //!
 //! **Keyed by `file::function`, never by line**, which was right the first time
 //! and is unchanged: a line number rots on the next edit and a rotted pin teaches
-//! a reader to ignore the check. *Measured before re-keying: all eight mints sit
-//! in eight DISTINCT functions, so no site needs a line number to be named.*
+//! a reader to ignore the check. *Measured before re-keying: all eight mints sat
+//! in eight DISTINCT functions, so no site needs a line number to be named. The
+//! census is seven since DECISION 26 retired the `lock_migrate` door; the
+//! distinct-function property is unchanged by a deletion.*
 //!
 //! # The partition the key stands on (the second half of F2)
 //!
@@ -147,7 +149,7 @@ enum Door {
 struct DoorPin {
     /// Workspace-relative path of the file carrying the mint.
     file: &'static str,
-    /// **The door** — the function a caller enters. For five of the six
+    /// **The door** — the function a caller enters. For four of the five
     /// `write.rs` doors this is also where the mint and the guard sit; `splice`
     /// is the one that spans three functions, which is why the door and its mint
     /// are separate fields rather than one.
@@ -158,7 +160,7 @@ struct DoorPin {
     mint_fn: &'static str,
     /// **The discharge site** — the function calling `stored_form_guard_lazy` for
     /// THIS door, or `None` for a door outside this unit. `splice` discharges in
-    /// `translate_stored_candidate`; the other four discharge in themselves.
+    /// `translate_stored_candidate`; the other three discharge in themselves.
     guard_fn: Option<&'static str>,
     /// What a reader calls this door. Prose, never matched against the tree.
     label: &'static str,
@@ -168,7 +170,7 @@ struct DoorPin {
 /// **THE DOOR LIST** — every production site minting a `model::CandidateDocument`,
 /// with what U12 does there and where its guard is discharged.
 const DOORS: &[DoorPin] = &[
-    // ---- wire-serve/write.rs — U12's own file, all six guarded ----
+    // ---- wire-serve/write.rs — U12's own file, all five guarded ----
     DoorPin {
         file: WRITE_RS,
         door_fn: "splice",
@@ -191,20 +193,6 @@ const DOORS: &[DoorPin] = &[
         mint_fn: "lock_write",
         guard_fn: Some("lock_write"),
         label: "lock_write",
-        class: Door::Guarded,
-    },
-    // U9b's migration door. Same class as `lock_write` — it lands the engine's
-    // own lock bytes, so there is nothing to translate and the guard says so.
-    // It exists as a SEPARATE door because `lock_write` locates its block through
-    // `lock::find`, which refuses a v1 body by design (P4); a door that must
-    // replace exactly those pages needs the grammar-free `lock::block_spans`
-    // locator, and gets a byte-level `if_block` CAS in exchange for not parsing.
-    DoorPin {
-        file: WRITE_RS,
-        door_fn: "lock_migrate",
-        mint_fn: "lock_migrate",
-        guard_fn: Some("lock_migrate"),
-        label: "lock_migrate (the v1→v2 migration door)",
         class: Door::Guarded,
     },
     DoorPin {
@@ -251,9 +239,9 @@ const DOORS: &[DoorPin] = &[
     // census OF THE TREE: every pin is verified to exist at its file and function,
     // so a pin naming a deleted file is not a record, it is a census that cannot
     // run. The record of the retirement lives in the git history of this file and
-    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 8
-    // (U9b added the `lock_migrate` door; U20b moved one without changing the
-    // count — a relocation is not a retirement).
+    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 7
+    // (U9b added the `lock_migrate` door and DECISION 26 deleted it again; U20b
+    // moved one without changing the count — a relocation is not a retirement).
     // ---- wire-serve/watch.rs — C3's reaction feeder, the first mint that is
     // NOT a door. `external_effects` needs each externally-changed document to
     // carry its own path, because a HOOK matches `paths:` against it; the
@@ -621,12 +609,13 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
 
     assert_eq!(translated, 2, "splice and create carry user-supplied bytes");
     assert_eq!(
-        guarded, 4,
-        "lock_write, lock_migrate, the promotion and commit_batch land \
-         engine-composed bytes. WAS 3: U9b added the v1→v2 lock migration door, \
-         which lands `lock::render` bytes exactly as `lock_write` does — same \
-         class, and it is a SECOND door only because it must locate a block the \
-         live reader refuses to parse (P4)",
+        guarded, 3,
+        "lock_write, the promotion and commit_batch land engine-composed bytes. \
+         WAS 4: U9b's v1→v2 lock migration door lived here too, until DECISION 26 \
+         (ZT 2026-08-04) deleted it with its crate — the two field locks were \
+         hand-migrated, so the door had nothing left to migrate. It was a SECOND \
+         door only because it had to locate a block the live reader refuses to \
+         parse (P4); with it gone `lock_write` is again the only lock door",
     );
     assert_eq!(
         outside, 1,
