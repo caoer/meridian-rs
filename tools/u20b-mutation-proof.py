@@ -93,7 +93,7 @@ MUTATIONS = [
         "the_delta_chain_is_contiguous",
         [(
             "crates/wire-serve/src/watch.rs",
-            "            let mut frame = crate::write::assemble_delta(\n                ring.seq(),",
+            "            let mut frame = crate::write::assemble_delta(\n                ring.allocate_seq(),",
             "            // MUTATION: allocate `seq` from a stale snapshot instead of\n"
             "            // the live ring — the defect a seq source outside the lock has.\n"
             "            let mut frame = crate::write::assemble_delta(\n                0,",
@@ -101,14 +101,82 @@ MUTATIONS = [
         "a seq allocator reading a stale counter — the class the SeqSink rule prevents",
     ),
     (
+        # PIN (a): the allocation is INSIDE the flock. The pin is the COMPILER,
+        # not a test — `seq::allocate` takes the `fs::WriteLock` as a witness, so
+        # a caller that has left the critical section has nothing to pass. This
+        # row exists because a correct counter called at the wrong moment
+        # satisfies every other row here and still collides.
+        "seq-allocated-outside-the-flock",
+        ("wire-serve", "u11_lock_write", "birth_lands_at_eof_and_round_trips"),
+        [(
+            "crates/wire-serve/src/write.rs",
+            "    let mut frame = commit_batch(\n        root,\n        seq,\n        &flock,",
+            "    // MUTATION: release the flock BEFORE the seam that numbers the\n"
+            "    // frame — the lock-scope error, which no assertion about the\n"
+            "    // counter can see. The witness is what turns it into a red.\n"
+            "    drop(flock);\n"
+            "    let mut frame = commit_batch(\n        root,\n        seq,\n        &flock,",
+        )],
+        "the allocation drifting back outside the write flock",
+    ),
+    (
+        # PIN (b): `seq + 1` is gone from the constructor. Restoring it makes
+        # every frame double-count against its allocator.
+        "seq-plus-one-in-the-constructor",
+        ("sidecar", "replay_live", "replay_equals_live_e3_e4_through_the_commit_path"),
+        [(
+            "crates/wire-serve/src/write.rs",
+            "    DeltaFrame {\n        delta: Delta {\n            seq,",
+            "    // MUTATION: re-introduce the single-producer `+ 1` the caller now\n"
+            "    // owns — the convention that double-counts under two producers.\n"
+            "    DeltaFrame {\n        delta: Delta {\n            seq: seq + 1,",
+        )],
+        "the constructor advancing a seq its caller already allocated",
+    ),
+    (
+        # PIN (c), THE CENTREPIECE: the reservation is what makes the race safe.
+        # Ignoring it is exactly the pre-U20b `seq() + 1`, and the point of this
+        # row is the SPLIT it proves — the race pin reddens while the sidecar's
+        # existing ring tests stay green, because the sidecar has one producer
+        # and never needed the reservation. That is the both-hosts control.
+        "reservation-ignored",
+        ("wire-serve", "--lib", "allocation_survives_a_detector_advance_before_the_writers"),
+        [(
+            "crates/wire-serve/src/ring.rs",
+            "        let tip = self.seq();\n        let mut seen = self.reserved.load(Ordering::Relaxed);",
+            "        // MUTATION: number from the TIP alone, the pre-U20b idiom —\n"
+            "        // blind to an allocation whose frame has not landed yet.\n"
+            "        return self.seq() + 1;\n"
+            "        #[expect(unreachable_code, reason = \"mutation\")]\n"
+            "        let tip = self.seq();\n        let mut seen = self.reserved.load(Ordering::Relaxed);",
+        )],
+        "the detector re-issuing a seq the write path is holding under the flock",
+    ),
+    (
+        # PIN (d): the in-process caller passes None and STILL WRITES. The whole
+        # `Option` exists so `mrd`, the run plane, and the tests keep writing
+        # with no ring at all.
+        "in-process-none-still-writes",
+        ("check", "end_to_end", "a_governed_corpus_is_green_on_every_plane_check_still_holds"),
+        [(
+            "crates/wire-serve/src/seq.rs",
+            "    sink.map_or(0, |s| s.allocate(root_before, root_after, files))",
+            "    // MUTATION: require a sink — the in-process write path loses its\n"
+            "    // no-ring door and every ringless caller dies at the write.\n"
+            "    sink.expect(\"a sink is required\")\n"
+            "        .allocate(root_before, root_after, files)",
+        )],
+        "an in-process write refusing because it holds no ring",
+    ),
+    (
         "v2-reserved-effects",
         ("wire-serve", "u20b_v2_notification_shape",
          "a_v2_notification_frame_never_grows_a_post_v2_field"),
         [(
             "crates/wire-serve/src/rev.rs",
-            'pub const V2_RESERVED_FIELDS: &[ReservedField] = &[ReservedField {\n    key: "effects",',
+            'pub const V2_RESERVED_FIELDS: &[ReservedField] = &[\n    ReservedField {\n        key: "effects",',
             '// MUTATION: withdraw the `effects` row from the registry.\n'
-            'pub const V2_RESERVED_FIELDS: &[ReservedField] = &[ReservedField {\n    key: "effects_WITHDRAWN",',
+            'pub const V2_RESERVED_FIELDS: &[ReservedField] = &[\n    ReservedField {\n        key: "effects_WITHDRAWN",',
         )],
         "the measured frozen-v2 leak: a post-v2 field on a v2 subscriber's wire",
     ),
@@ -182,9 +250,13 @@ def run(test: str, package: str = "registry", binary: str = "sub_push") -> int:
     wire-serve pin silently reported DID NOT FAIL while never running.
     """
     log = Path(tempfile.gettempdir()) / f"u20b-mut-{test}.log"
+    # `--lib` selects the crate's own unit tests rather than a tests/ binary: the
+    # seq invariant is pinned beside the type that states it, which is where a
+    # reader looking for the contract will look for its proof.
+    target = ["--lib"] if binary == "--lib" else ["--test", binary]
     with log.open("wb") as fh:
         proc = subprocess.run(
-            ["cargo", "test", "-p", package, "--test", binary, test],
+            ["cargo", "test", "-p", package, *target, test],
             cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, check=False,
         )
     if proc.returncode == 0 and "running 0 tests" in log.read_text(errors="replace"):
@@ -202,6 +274,7 @@ def main() -> int:
         if isinstance(test, tuple):
             package, binary, test = test
         backups = {}
+        stale = None
         try:
             for rel, old, new in edits:
                 path = ROOT / rel
@@ -219,9 +292,17 @@ def main() -> int:
                     backups[path] = backup
                 text = path.read_text()
                 if old not in text:
-                    raise SystemExit(f"{name}: anchor not found in {rel}")
+                    # A STALE ANCHOR IS A ROW FAILURE, NOT A RUN ABORT. This
+                    # used to `raise SystemExit`, which made the harness an
+                    # early-abort instrument reporting a LOWER BOUND: one row
+                    # whose source had been reformatted under it silently
+                    # cancelled every row below, and the run still looked like a
+                    # list of REDDENS. Measured — `v2-reserved-effects` had gone
+                    # stale at HEAD and hid the four rows after it.
+                    stale = rel
+                    break
                 path.write_text(text.replace(old, new, 1))
-            code = run(test, package, binary)
+            code = None if stale else run(test, package, binary)
         finally:
             for path, backup in backups.items():
                 shutil.copy2(backup, path)
@@ -232,9 +313,16 @@ def main() -> int:
                 # made a later mutation report "did not fail" while an unrelated
                 # mutation was still live in the rlib. Stamp it forward.
                 os.utime(path, (time.time(), time.time()))
-        verdict = "REDDENS" if code != 0 else "*** DID NOT FAIL ***"
+        if stale:
+            verdict = "*** ANCHOR STALE ***"
+        else:
+            verdict = "REDDENS" if code != 0 else "*** DID NOT FAIL ***"
         results.append((name, test, code, verdict, recreates))
-        print(f"{verdict:22} {name:16} exit={code}  ({recreates})", flush=True)
+        print(
+            f"{verdict:22} {name:16} exit={code}  "
+            f"({stale + ' no longer contains the anchor' if stale else recreates})",
+            flush=True,
+        )
 
     print("\n--- restored tree: proving the pins are green again ---", flush=True)
     green = run("")
@@ -245,7 +333,9 @@ def main() -> int:
     ).returncode
     print(f"clean v2-shape suite exit={shape}")
     green = green or shape
-    bad = [r for r in results if r[2] == 0] or ([("suite", "", green, "", "")] if green else [])
+    # A stale row (code None) is as much a failure as a row that did not redden:
+    # neither one proved anything about its pin.
+    bad = [r for r in results if r[2] == 0 or r[2] is None] or ([("suite", "", green, "", "")] if green else [])
     return 1 if bad else 0
 
 

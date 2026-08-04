@@ -143,6 +143,16 @@ impl WorkspaceRing {
         self.state().ring.frames_after(delivered)
     }
 
+    /// Record a frame the WRITE path emitted (the detector records its own).
+    ///
+    /// This lands AFTER `splice` has returned and dropped the flock, which is
+    /// the whole reason [`RootRing::allocate_seq`] exists: between the
+    /// allocation inside the flock and this call, a detection cycle can take the
+    /// flock, allocate, and advance ahead of us. Its number cannot be ours.
+    pub fn advance(&self, frame: DeltaFrame) {
+        self.state().ring.advance(frame);
+    }
+
     /// Run one detection cycle, unless another subscriber already ran one within
     /// [`DETECT_CADENCE`]. Returns whether this call actually reconciled.
     ///
@@ -234,5 +244,19 @@ impl WorkspaceRing {
         wire_serve::watch::reconcile(ws_root, ring, watch)?;
         state.last_detect = Some(Instant::now());
         Ok(true)
+    }
+}
+
+/// The write path's allocator: the registry's `seq` comes from the SAME ring the
+/// detector numbers from, which is what makes the two producers one chain.
+///
+/// `&self` through the `Arc`, and the state lock is taken only for the bump — an
+/// allocation never holds the ring across a caller's critical section. The lock
+/// ORDER is flock → ring state on BOTH producers: the write path holds the flock
+/// and allocates through here, and [`WorkspaceRing::cycle`] takes the flock
+/// before it touches state. No path takes them the other way round.
+impl wire_serve::seq::SeqSink for WorkspaceRing {
+    fn allocate(&self, _before: &Root, _after: &Root, _files: &[wire::DeltaFile]) -> u64 {
+        self.state().ring.allocate_seq()
     }
 }

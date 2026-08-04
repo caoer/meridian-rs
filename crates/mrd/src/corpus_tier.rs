@@ -1503,7 +1503,7 @@ fn apply_production_edit(
         plan_edits: Vec::new(),
         pin: None,
     };
-    splice(&root, 0, &args, &[], None).map_err(|error| {
+    splice(&root, None, &args, &[], None).map_err(|error| {
         Fail::tool(format!(
             "production splice refused counterfactual write to {path}: {:?}: {}",
             error.code,

@@ -80,7 +80,7 @@ fn birth_lands_at_eof_and_round_trips() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
     let l = sample_lock(&root);
 
-    let out = lock_write(&root, 0, &args(&root, &l, false)).expect("birth lands");
+    let out = lock_write(&root, None, &args(&root, &l, false)).expect("birth lands");
     assert!(out.created, "no lock existed — this is a birth");
     assert_ne!(
         out.root_before,
@@ -125,7 +125,7 @@ fn birth_lands_at_eof_and_round_trips() {
 fn update_replaces_in_place_exactly_one_block() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
     let mut l = sample_lock(&root);
-    lock_write(&root, 0, &args(&root, &l, false)).expect("birth");
+    lock_write(&root, None, &args(&root, &l, false)).expect("birth");
 
     // A SECOND, distinct claim on the same object: R4's anchor form, a `^id` as
     // the sole path element. `upsert_pin` keys on (object, selector), so this
@@ -136,7 +136,7 @@ fn update_replaces_in_place_exactly_one_block() {
         lock::Selector::Path(vec!["^c1".into()]),
         "fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     ));
-    let out = lock_write(&root, 0, &args(&root, &l, false)).expect("update lands");
+    let out = lock_write(&root, None, &args(&root, &l, false)).expect("update lands");
     assert!(!out.created, "the block existed — replaced in place");
 
     let after = read(&root, "page.md");
@@ -157,10 +157,10 @@ fn update_replaces_in_place_exactly_one_block() {
 fn rewriting_same_lock_is_byte_stable() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
     let l = sample_lock(&root);
-    lock_write(&root, 0, &args(&root, &l, false)).expect("birth");
+    lock_write(&root, None, &args(&root, &l, false)).expect("birth");
     let bytes_1 = read(&root, "page.md");
 
-    let out = lock_write(&root, 0, &args(&root, &l, false)).expect("idempotent rewrite");
+    let out = lock_write(&root, None, &args(&root, &l, false)).expect("idempotent rewrite");
     assert_eq!(read(&root, "page.md"), bytes_1, "byte-stable");
     assert_eq!(
         out.file_rev_before, out.file_rev_after,
@@ -180,7 +180,7 @@ fn cas_drift_refuses_citing_revs() {
     std::fs::write(root.0.join("page.md"), format!("{PAGE}\ndrift\n")).expect("drift");
     let live = file_rev(&root, "page.md");
 
-    let err = lock_write(&root, 0, &stale).expect_err("stale rev must refuse");
+    let err = lock_write(&root, None, &stale).expect_err("stale rev must refuse");
     assert_eq!(err.code, ErrorCode::CasMismatch);
     assert_eq!(err.recovery, Recovery::Refresh);
     assert_eq!(err.expected.as_ref(), Some(&stale.if_file_rev), "rev READ");
@@ -194,7 +194,7 @@ fn cas_drift_refuses_citing_revs() {
 fn dry_writes_nothing() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
     let l = sample_lock(&root);
-    let out = lock_write(&root, 0, &args(&root, &l, true)).expect("dry reports");
+    let out = lock_write(&root, None, &args(&root, &l, true)).expect("dry reports");
     assert!(out.dry && out.created);
     assert!(out.root_after.is_none() && out.committed.is_none());
     assert_ne!(
@@ -212,7 +212,7 @@ fn held_flock_refuses_workspace_busy() {
     let l = sample_lock(&root);
     let a = args(&root, &l, false);
     let _held = fs::WriteLock::acquire(&root).expect("test holds the flock");
-    let err = lock_write(&root, 0, &a).expect_err("must refuse busy");
+    let err = lock_write(&root, None, &a).expect_err("must refuse busy");
     assert_eq!(err.code, ErrorCode::WorkspaceBusy);
     assert_eq!(err.recovery, Recovery::Retry);
     assert_eq!(read(&root, "page.md"), PAGE, "nothing landed");
@@ -237,7 +237,7 @@ fn two_hand_written_blocks_refuse_loud() {
         if_file_rev: file_rev(&root, "page.md"),
         dry: false,
     };
-    let err = lock_write(&root, 0, &a).expect_err("two blocks must refuse");
+    let err = lock_write(&root, None, &a).expect_err("two blocks must refuse");
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(
         err.message
@@ -267,6 +267,6 @@ fn missing_page_is_file_not_found() {
         if_file_rev: NodeRev("deadbeefdeadbeef".into()),
         dry: false,
     };
-    let err = lock_write(&root, 0, &a).expect_err("missing page refuses");
+    let err = lock_write(&root, None, &a).expect_err("missing page refuses");
     assert_eq!(err.code, ErrorCode::FileNotFound);
 }

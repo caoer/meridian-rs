@@ -135,7 +135,7 @@ fn wire_edit_on_existing_content_without_a_guard_is_refused() {
         edits: vec![replace_edit(None)],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::GuardRequired);
     assert_eq!(err.recovery, wire::Recovery::Fix);
@@ -161,7 +161,7 @@ fn wire_edit_with_the_right_if_node_rev_succeeds() {
         edits: vec![replace_edit(Some(rev))],
         ..args(Origin::Wire)
     };
-    splice(&root, 0, &a, &[], None).expect("a guarded wire write lands");
+    splice(&root, None, &a, &[], None).expect("a guarded wire write lands");
     assert!(
         std::fs::read_to_string(root.0.join("memo.md"))
             .expect("read")
@@ -177,7 +177,7 @@ fn wire_edit_with_force_succeeds_and_names_the_bypassed_planes() {
         force: true,
         ..args(Origin::Wire)
     };
-    let out = splice(&root, 0, &a, &[], None).expect("force is the sanctioned bypass");
+    let out = splice(&root, None, &a, &[], None).expect("force is the sanctioned bypass");
 
     let ResponseBody::Splice { verdicts, .. } = &out.body else {
         panic!("not a splice body");
@@ -212,7 +212,7 @@ fn s3_append_on_existing_content_is_guarded() {
         edits: vec![append_edit(None)],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &a, &[], None).expect_err("append is a content change");
+    let err = splice(&root, None, &a, &[], None).expect_err("append is a content change");
     assert_eq!(err.code, ErrorCode::GuardRequired);
 
     // And it lands with its fingerprint, like every other content change.
@@ -221,7 +221,7 @@ fn s3_append_on_existing_content_is_guarded() {
         edits: vec![append_edit(Some(rev))],
         ..args(Origin::Wire)
     };
-    splice(&root, 0, &ok, &[], None).expect("a guarded append lands");
+    splice(&root, None, &ok, &[], None).expect("a guarded append lands");
 }
 
 /// A wire write that stripped the `force` flag AND the rev is not a way in:
@@ -233,7 +233,7 @@ fn a_stale_fingerprint_still_refuses_at_cas() {
         edits: vec![replace_edit(Some(NodeRev("not-this-documents-rev".into())))],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &a, &[], None).expect_err("a stale token refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("a stale token refuses");
     assert_eq!(err.code, ErrorCode::CasMismatch);
 }
 
@@ -247,7 +247,7 @@ fn force_is_wired_to_cas() {
         force: true,
         ..args(Origin::Wire)
     };
-    splice(&root, 0, &a, &[], None)
+    splice(&root, None, &a, &[], None)
         .expect("force bypasses the fingerprint plane, stale token and all");
 }
 
@@ -260,7 +260,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
     let (_d, root) = ws();
     let born = wire_serve::write::create(
         &root,
-        0,
+        None,
         &wire_serve::write::CreateArgs {
             id: None,
             path: WPath("fresh.md".into()),
@@ -276,7 +276,7 @@ fn birth_is_guarded_by_absence_not_fingerprint() {
 
     let clobber = wire_serve::write::create(
         &root,
-        0,
+        None,
         &wire_serve::write::CreateArgs {
             id: None,
             path: WPath("fresh.md".into()),
@@ -305,7 +305,7 @@ fn plan_create_is_guarded_by_absence() {
         }],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &already, &[], None).expect_err("that section is already there");
+    let err = splice(&root, None, &already, &[], None).expect_err("that section is already there");
     assert_eq!(err.code, ErrorCode::CasMismatch);
     let message = err.message.as_deref().expect("a message");
     assert!(
@@ -321,7 +321,8 @@ fn plan_create_is_guarded_by_absence() {
         }],
         ..args(Origin::Wire)
     };
-    splice(&root, 0, &fresh, &[], None).expect("an absent section is born without a fingerprint");
+    splice(&root, None, &fresh, &[], None)
+        .expect("an absent section is born without a fingerprint");
 }
 
 #[test]
@@ -336,7 +337,7 @@ fn set_properties_demands_the_doc_root_token() {
         ..args(Origin::Wire)
     };
     let err =
-        splice(&root, 0, &bare, &[], None).expect_err("frontmatter needs the file-grain token");
+        splice(&root, None, &bare, &[], None).expect_err("frontmatter needs the file-grain token");
     assert_eq!(err.code, ErrorCode::GuardRequired);
     let message = err.message.as_deref().expect("a teaching message");
     assert_guard_contract("set_properties", message, "FILE grain");
@@ -354,7 +355,7 @@ fn set_properties_demands_the_doc_root_token() {
         }],
         ..args(Origin::Wire)
     };
-    splice(&root, 0, &guarded, &[], None).expect("with the doc-root token it lands");
+    splice(&root, None, &guarded, &[], None).expect("with the doc-root token it lands");
     assert!(
         std::fs::read_to_string(root.0.join("memo.md"))
             .expect("read")
@@ -373,7 +374,7 @@ fn set_properties_with_a_stale_doc_root_token_refuses() {
         }],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &stale, &[], None).expect_err("a stale file token refuses");
+    let err = splice(&root, None, &stale, &[], None).expect_err("a stale file token refuses");
     assert_eq!(err.code, ErrorCode::CasMismatch);
 }
 
@@ -383,7 +384,7 @@ fn set_properties_with_a_stale_doc_root_token_refuses() {
 fn an_empty_batch_is_unaffected() {
     let (_d, root) = ws();
     let pin_shaped = args(Origin::Wire);
-    let out = splice(&root, 0, &pin_shaped, &[], None);
+    let out = splice(&root, None, &pin_shaped, &[], None);
     assert!(
         out.is_ok(),
         "an edit-less splice has nothing to guard: {out:?}"
@@ -401,7 +402,7 @@ fn the_in_process_path_is_outside_the_rulings_reach() {
         edits: vec![replace_edit(None)],
         ..args(Origin::InProcess)
     };
-    splice(&root, 0, &a, &[], None).expect("not a wire door — the ruling does not govern it");
+    splice(&root, None, &a, &[], None).expect("not a wire door — the ruling does not govern it");
     assert!(
         std::fs::read_to_string(root.0.join("memo.md"))
             .expect("read")
@@ -426,7 +427,7 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
         }],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &plan_match, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &plan_match, &[], None).expect_err("refuses");
     let message = err.message.as_deref().expect("a message");
     assert_guard_contract("plan match", message, "NODE grain");
     assert!(
@@ -441,7 +442,7 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
         }],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &plan_append, &[], None).expect_err("append is guarded (S3)");
+    let err = splice(&root, None, &plan_append, &[], None).expect_err("append is guarded (S3)");
     let message = err.message.as_deref().expect("a message");
     assert_guard_contract("plan append", message, "NODE grain");
     assert!(
@@ -466,7 +467,7 @@ fn the_field_rename_bypass_is_closed() {
     };
     assert!(native.plan_edits.is_empty(), "this payload is not lowered");
 
-    let err = splice(&root, 0, &native, &[], None).expect_err("the native face is guarded too");
+    let err = splice(&root, None, &native, &[], None).expect_err("the native face is guarded too");
     assert_eq!(
         err.code,
         ErrorCode::GuardRequired,
@@ -522,7 +523,7 @@ fn the_refusal_is_semantic_never_frame_illegality() {
         edits: vec![replace_edit(None)],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &a, &[], None).expect_err("the WRITE is refused");
+    let err = splice(&root, None, &a, &[], None).expect_err("the WRITE is refused");
 
     assert_eq!(err.code, ErrorCode::GuardRequired);
     assert_ne!(
@@ -562,7 +563,7 @@ fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
         }],
         ..args(Origin::Wire)
     };
-    let err = splice(&root, 0, &dangling, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &dangling, &[], None).expect_err("refuses");
     assert_eq!(
         err.code,
         ErrorCode::RefNotFound,
@@ -576,7 +577,7 @@ fn a_target_that_does_not_resolve_is_not_this_rungs_to_answer() {
         ..args(Origin::Wire)
     };
     assert_eq!(
-        splice(&root, 0, &real, &[], None)
+        splice(&root, None, &real, &[], None)
             .expect_err("refuses")
             .code,
         ErrorCode::GuardRequired,

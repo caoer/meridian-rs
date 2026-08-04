@@ -216,7 +216,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         if_root: None,
         dry: false,
     };
-    create(root, 0, &args, &[])
+    create(root, None, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));
 }
 

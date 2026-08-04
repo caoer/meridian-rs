@@ -383,7 +383,9 @@ fn a_pushed_frame_mints_no_read_receipt() {
     let mints = server.registry().read_mints(&canonical);
     for actor in ["agent:subscriber", "", "sub"] {
         assert!(
-            mints.lookup(actor, "plan.md", "Goals").is_none(),
+            mints
+                .lookup(actor, "plan.md", &wire::ReadSel::parse("Goals"))
+                .is_none(),
             "the push path minted a receipt under {actor:?} — a read-only \
              channel must not open a write door"
         );
@@ -399,7 +401,7 @@ fn a_pushed_frame_mints_no_read_receipt() {
     }));
     let read = reader.call(&json!({
         "op": "read", "path": "plan.md", "mode": "sections",
-        "sections": ["Goals"], "actor": "agent:reader",
+        "sections": [{"hpath": [{"h": "Goals"}]}], "actor": "agent:reader",
     }));
     assert_eq!(
         read["ok"],
@@ -407,7 +409,9 @@ fn a_pushed_frame_mints_no_read_receipt() {
         "the control read is served: {read}"
     );
     assert!(
-        mints.lookup("agent:reader", "plan.md", "Goals").is_some(),
+        mints
+            .lookup("agent:reader", "plan.md", &wire::ReadSel::parse("Goals"))
+            .is_some(),
         "control: a real read mints where the push did not"
     );
     server.shutdown();

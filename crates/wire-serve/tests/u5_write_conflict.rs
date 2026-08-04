@@ -69,7 +69,7 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
             std::thread::spawn(move || {
                 let args = racer_args(i);
                 barrier.wait();
-                (i, splice(&root, 0, &args, &[], None).map(|_| ()))
+                (i, splice(&root, None, &args, &[], None).map(|_| ()))
             })
         })
         .collect();

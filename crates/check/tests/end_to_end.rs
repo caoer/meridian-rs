@@ -29,7 +29,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
         if_root: None,
         dry: false,
     };
-    create(root, 0, &args, &[])
+    create(root, None, &args, &[])
         .unwrap_or_else(|e| panic!("production create {path} refused: {e:?}"));
 }
 
@@ -62,7 +62,7 @@ fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, ne
         plan_edits: Vec::new(),
         pin: None,
     };
-    splice(root, 0, &args, &[], None)
+    splice(root, None, &args, &[], None)
         .unwrap_or_else(|e| panic!("production splice on {path} refused: {e:?}"));
 }
 

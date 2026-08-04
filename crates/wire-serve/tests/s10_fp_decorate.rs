@@ -60,7 +60,7 @@ fn mint_pin(root: &fs::WorkspaceRoot) {
             vibe: None,
         }),
     };
-    splice(root, 0, &args, &[], None).expect("the pin commits");
+    splice(root, None, &args, &[], None).expect("the pin commits");
 }
 
 /// Corpus the decoration builder reads (registry shape: every page + linkpath index).
@@ -214,7 +214,7 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         all: true,
         rev: None,
     }];
-    splice(&root, 0, &plan, &[], None).expect("the plan put commits");
+    splice(&root, None, &plan, &[], None).expect("the plan put commits");
 
     let on_disk = read_page(&root, "plan.md");
     assert!(
@@ -245,7 +245,7 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         },
         if_node_rev: None,
     }];
-    splice(&root, 0, &native, &[], None).expect("the native put commits");
+    splice(&root, None, &native, &[], None).expect("the native put commits");
 
     let on_disk = read_page(&root, "plan.md");
     assert!(
@@ -272,7 +272,14 @@ fn a_heading_fragment_at_is_never_touched() {
         - [[guide#^other@green.nothex1]]\n\
         - plain text me@example.com\n\n";
     // put at:end (not content): lock at EOF would be deleted by whole-section rewrite (R25).
-    splice(&root, 0, &put_end("plan.md", "Plan", authored), &[], None).expect("the put commits");
+    splice(
+        &root,
+        None,
+        &put_end("plan.md", "Plan", authored),
+        &[],
+        None,
+    )
+    .expect("the put commits");
 
     let on_disk = read_page(&root, "plan.md");
     for line in authored.lines().filter(|l| l.contains('@')) {
@@ -408,7 +415,7 @@ fn a_malformed_fp_address_refuses_and_writes_nothing() {
     args.edits[0].target = SecRef::Anchor {
         anchor: "leaders-guideline@notafingerprint".into(),
     };
-    let err = splice(&root, 0, &args, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &args, &[], None).expect_err("refuses");
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(
         err.message
@@ -479,7 +486,7 @@ fn a_well_formed_fp_address_strips_and_resolves() {
         at: PutAt::All,
         text: "^leaders-guideline\n".into(),
     };
-    splice(&root, 0, &args, &[], None).expect("the decorated address resolves");
+    splice(&root, None, &args, &[], None).expect("the decorated address resolves");
 
     let on_disk = read_page(&root, "guide.md");
     assert!(
