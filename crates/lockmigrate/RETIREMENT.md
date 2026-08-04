@@ -24,8 +24,8 @@ problem.
 | Site | What |
 |---|---|
 | `crates/lockmigrate/` | the whole crate — `Cargo.toml`, `src/lib.rs`, `src/v1.rs`, `tests/gates.rs`, `tests/field_dryrun.rs`, this file |
-| `crates/mrd/src/lockmigrate_cmd.rs` | the `mrd lock-migrate` verb |
-| `crates/mrd/src/lib.rs` | the `mod lockmigrate_cmd;` decl, the `"lock-migrate"` dispatch arm, and the USAGE block entry |
+| `crates/mrd/src/lockmigrate_cmd.rs` | the `mrd lock migrate` verb |
+| `crates/mrd/src/lib.rs` | the `mod lockmigrate_cmd;` decl, the `"lock"` dispatch arm AND its `dispatch_lock` fn, and the USAGE block entry |
 | `crates/mrd/Cargo.toml` | the `lockmigrate` dep line and its comment |
 | `Cargo.toml` (workspace) | the `crates/lockmigrate` member + the `lockmigrate` dep line; regenerate `Cargo.lock` |
 
@@ -49,8 +49,8 @@ grep -rn --include='*.rs' '  - ref: ' crates/ | grep -v tests/    # → 0 hits
 grep -rn 'SELF-RETIRING' .                                        # → 0 hits
 
 # 3. The verb is gone, and says so.
-mrd lock-migrate --vault /tmp   # → exit 2, "unknown subcommand: lock-migrate"
-mrd --help | grep lock-migrate  # → 0 hits
+mrd lock migrate --vault /tmp   # → exit 2, "unknown subcommand: lock"
+mrd --help | grep 'lock migrate'  # → 0 hits
 
 # 4. The census shrank by exactly one door.
 cargo test -p wire-serve --test u12_door_enumeration              # → green at 7
