@@ -166,7 +166,7 @@ fn a_slash_bearing_heading_is_no_longer_refused_and_the_pin_commits() {
         vibe: None,
     });
 
-    splice(&root, 0, &args, &[], None).unwrap_or_else(|e| {
+    splice(&root, None, &args, &[], None).unwrap_or_else(|e| {
         panic!(
             "the `/`-round-trip refusal was RULED DEAD in U14 (2026-08-03) — an R4 \
              path array carries [\"Guide\", \"A/B\"] unambiguously and no joined echo \
@@ -199,7 +199,7 @@ fn promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical() {
     // Whole-page heading pin (span to EOF) — would move if bare terminator were appended.
     std::fs::write(root.0.join("other.md"), PINNER).expect("second pinning page");
     let first = pin_fact(
-        &splice(&root, 0, &pin_args("other.md", "Guide"), &[], None)
+        &splice(&root, None, &pin_args("other.md", "Guide"), &[], None)
             .expect("the first pin commits")
             .body,
     );
@@ -220,7 +220,7 @@ fn promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical() {
     );
 
     let second = pin_fact(
-        &splice(&root, 0, &pin_args("plan.md", "Guide/Omega"), &[], None)
+        &splice(&root, None, &pin_args("plan.md", "Guide/Omega"), &[], None)
             .expect("the second pin commits")
             .body,
     );
@@ -242,7 +242,7 @@ fn promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical() {
     // Marker at unterminated EOF must still parse as anchor (D15 idempotency).
     let promoted_target = read(&root, "guide.md");
     let again = pin_fact(
-        &splice(&root, 0, &pin_args("plan.md", "Guide/Omega"), &[], None)
+        &splice(&root, None, &pin_args("plan.md", "Guide/Omega"), &[], None)
             .expect("the re-pin commits")
             .body,
     );
@@ -322,7 +322,7 @@ fn the_promotion_is_refused_by_an_armed_rule_on_the_target() {
     let guide_before = read(&root, "guide.md");
     let plan_before = read(&root, "plan.md");
 
-    let err = splice(&root, 0, &pin_args("plan.md", "Guide/Omega"), &[], None)
+    let err = splice(&root, None, &pin_args("plan.md", "Guide/Omega"), &[], None)
         .expect_err("the armed law refuses the change to the target");
     assert!(
         err.message
@@ -350,7 +350,7 @@ fn the_promotion_is_refused_by_an_armed_rule_on_the_target() {
 fn the_same_pin_commits_when_the_target_is_not_armed() {
     let (_dir, root) = workspace(PINNER, "# Guide\n\n## Omega\n\nbody.\n");
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("plan.md", "Guide/Omega"), &[], None)
+        &splice(&root, None, &pin_args("plan.md", "Guide/Omega"), &[], None)
             .expect("an unarmed workspace is a no-op gate")
             .body,
     );
@@ -367,7 +367,7 @@ fn a_dry_pin_rehearses_the_promotions_gate() {
     let mut args = pin_args("plan.md", "Guide/Omega");
     args.dry = true;
 
-    let err = splice(&root, 0, &args, &[], None).expect_err("the rehearsal refuses too");
+    let err = splice(&root, None, &args, &[], None).expect_err("the rehearsal refuses too");
     assert!(
         err.message
             .as_deref()

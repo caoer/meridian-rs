@@ -291,12 +291,31 @@ fn close_args(edits: Vec<Edit>) -> SpliceArgs {
     }
 }
 
+/// A ring to number this test's batch. The assertion below is about
+/// ALLOCATION — one batch consumes exactly one seq — so the test has to supply
+/// an allocator; `None` is the in-process caller that numbers nothing (seq 0)
+/// and would make the claim vacuous rather than true.
+struct RingSink<'a>(&'a wire_serve::ring::RootRing);
+
+impl wire_serve::seq::SeqSink for RingSink<'_> {
+    fn allocate(&self, _b: &wire::Root, _a: &wire::Root, _f: &[wire::DeltaFile]) -> u64 {
+        self.0.allocate_seq()
+    }
+}
+
 #[test]
 fn gate2_n_edit_close_batch_lands_atomically_with_one_rev_mint() {
     let (_d, root) = ws(&[("card.md", CARD)]);
 
-    let outcome =
-        splice(&root, 0, &close_args(close_edits()), &[], None).expect("the close batch commits");
+    let ring = wire_serve::ring::RootRing::new();
+    let outcome = splice(
+        &root,
+        Some(&RingSink(&ring)),
+        &close_args(close_edits()),
+        &[],
+        None,
+    )
+    .expect("the close batch commits");
 
     // One root advance / one delta batch at seq 1.
     let ResponseBody::Splice {
@@ -376,7 +395,7 @@ fn gate2_falsification_one_invalid_edit_refuses_the_whole_batch() {
         if_node_rev: None,
     };
 
-    let result = splice(&root, 0, &close_args(edits), &[], None);
+    let result = splice(&root, None, &close_args(edits), &[], None);
     assert!(result.is_err(), "one invalid edit refuses the whole batch");
 
     let card = read(&root, "card.md");

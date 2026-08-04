@@ -68,7 +68,7 @@ fn busy(e: &wire::ErrorBody) {
 fn splice_retrying(root: &fs::WorkspaceRoot, args: &SpliceArgs) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
-        match splice(root, 0, args, &[], None) {
+        match splice(root, None, args, &[], None) {
             Ok(_) => return,
             Err(e) if e.code == ErrorCode::WorkspaceBusy && Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10));
@@ -91,13 +91,13 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
     let held = fs::WriteLock::acquire(&root).expect("test holds the write lock");
 
     busy(
-        &splice(&root, 0, &splice_args("blocked\n"), &[], None)
+        &splice(&root, None, &splice_args("blocked\n"), &[], None)
             .expect_err("splice must refuse busy"),
     );
     busy(
         &create(
             &root,
-            0,
+            None,
             &CreateArgs {
                 id: None,
                 path: WPath("born.md".into()),
@@ -114,7 +114,7 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
     busy(
         &remove(
             &root,
-            0,
+            None,
             &RemoveArgs {
                 id: None,
                 path: WPath("log.md".into()),
@@ -156,7 +156,7 @@ fn dry_splice_also_refuses_busy() {
         dry: true,
         ..splice_args("dry\n")
     };
-    busy(&splice(&root, 0, &args, &[], None).expect_err("dry splice must refuse busy"));
+    busy(&splice(&root, None, &args, &[], None).expect_err("dry splice must refuse busy"));
 }
 
 /// G2: lock-file I/O failure (here: `.meridian` exists as a regular FILE, so
@@ -169,7 +169,7 @@ fn lock_io_failure_is_typed_io_error() {
     std::fs::write(dir.path().join(".meridian"), "not a dir").expect("squat the lock dir");
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
 
-    let err = splice(&root, 0, &splice_args("x\n"), &[], None)
+    let err = splice(&root, None, &splice_args("x\n"), &[], None)
         .expect_err("an unmakeable lock dir must refuse typed");
     assert_eq!(
         err.code,
@@ -237,7 +237,7 @@ fn cross_process_holder_refuses_busy_then_retry_lands() {
     );
 
     busy(
-        &splice(&root, 0, &splice_args("cross\n"), &[], None)
+        &splice(&root, None, &splice_args("cross\n"), &[], None)
             .expect_err("a cross-process holder must refuse busy"),
     );
 

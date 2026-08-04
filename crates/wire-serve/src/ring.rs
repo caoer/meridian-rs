@@ -28,6 +28,7 @@
 
 use std::collections::VecDeque;
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use wire::{DeltaFrame, Root};
 
@@ -39,9 +40,75 @@ pub const RING_BOUND: usize = 256;
 
 /// One epoch's delta history: contiguous [`DeltaFrame`]s in emission order,
 /// oldest evicted past [`RING_BOUND`].
+///
+/// # THE SEQ INVARIANT (advisor-ruled 2026-08-04, U20b completion)
+///
+/// **A `seq` returned by an allocation can never be re-issued by [`Self::advance`].**
+///
+/// That sentence is the contract. A reservation high-water mark is its
+/// MECHANISM and must never be mistaken for its statement — the invariant is
+/// what a reader has to keep true, the counter is merely how.
+///
+/// ## Why it is not already true
+/// The registry allocates a `seq` INSIDE the workspace write flock (inside
+/// `write::splice`) but ADVANCES this ring AFTER that call returns, with the
+/// flock already dropped. In that window the external-change detector can run a
+/// cycle, find [`Self::tip_root`] still at the OLD root, classify the change as
+/// EXTERNAL, and emit a frame carrying the very `seq` the write path just
+/// allocated. Two frames, one number — which breaks the property the design's
+/// own gate ruled: ONE LOCK, ONE ALLOCATOR, ONE CHAIN.
+///
+/// Closing it RESTORES the ruled design; it does not extend it.
+///
+/// ## Binding conditions on whoever implements it
+/// - **The guarantee lives on this type**, stated as the invariant above.
+/// - **Interior mutability on the RESERVATION ONLY, never on the ring.** An
+///   allocation stays `&self` — an atomic max-bump, or a small mutex around the
+///   reservation counter inside this type. [`Self::advance`] keeps its current
+///   shape. Then the sidecar's single-threaded sink compiles unchanged and the
+///   registry's `Arc<WorkspaceRing>` discipline (a slow read never holds the
+///   map lock) is undisturbed. **Do not thread `&mut` through both hosts for a
+///   twenty-line counter.** If the reservation turns out NOT to be isolable
+///   that way, that is a NEW FACT and it goes back to the leader — it is not
+///   licence to widen.
+/// - **Land it as a TYPE change, not a convention.** The argument is measured:
+///   when U20b changed the `seq` SIGNATURE, two unconverted call sites surfaced
+///   as COMPILE ERRORS. A convention would have surfaced them as production
+///   gaps instead. Make the mistake unrepresentable and the compiler becomes
+///   the census.
+///
+/// ## The proof it owes
+/// Mutation-proof the EXACT RACE SHAPE — allocate, then detector-advance BEFORE
+/// writer-advance — and assert no duplicate `seq` and no gap. **Run it with real
+/// frames on BOTH sides:** a race test over an empty ring is the
+/// fixture-with-one-row defect wearing a concurrency costume, and it would pass
+/// while proving nothing about the seam.
+///
+/// ## As landed
+/// [`Self::allocate_seq`] is the ONE issuing point for both producers, and
+/// `reserved` below is the high-water mark that makes re-issue impossible. The
+/// proof is `allocation_survives_a_detector_advance_before_the_writers`.
 #[derive(Debug, Default)]
 pub struct RootRing {
     entries: VecDeque<DeltaFrame>,
+    /// High-water mark of every seq ever ISSUED this epoch — the OUTSTANDING
+    /// ones specifically. An allocation lands here the instant it is handed out,
+    /// while its frame reaches `entries` only after the writer's flock drops,
+    /// and that gap is the whole race.
+    ///
+    /// It does NOT track recorded frames, and deliberately: [`Self::seq`] reads
+    /// the tip, so a number already in `entries` is covered by the other term of
+    /// [`Self::allocate_seq`]'s max. An earlier draft also bumped this mark
+    /// inside [`Self::advance`] to cover them twice; the mutation harness could
+    /// not construct a case where removing that bump changed any allocation,
+    /// which is the definition of a line no test can defend.
+    ///
+    /// Atomic, and deliberately the ONLY interior mutability in this type: an
+    /// allocation must be callable through a `&self` sink from either host,
+    /// while [`Self::advance`] keeps its `&mut` shape. Widening this to a lock
+    /// around the whole ring would put the registry's `Arc<WorkspaceRing>` reads
+    /// behind a writer's critical section for the sake of a counter.
+    reserved: AtomicU64,
 }
 
 impl RootRing {
@@ -56,6 +123,39 @@ impl RootRing {
     #[must_use]
     pub fn seq(&self) -> u64 {
         self.entries.back().map_or(0, |f| f.delta.seq)
+    }
+
+    /// **Issue the next `seq` — the only place either producer may get one.**
+    ///
+    /// Returns `max(tip, reserved) + 1` and records it, so a number handed out
+    /// here can never be handed out again and can never be reached by a later
+    /// [`Self::advance`]. Both terms are load-bearing: `reserved` covers an
+    /// allocation whose frame has not landed yet, and `tip` covers a frame that
+    /// landed without one (the pre-U20b in-process paths, which pass no sink and
+    /// write `seq` 0, plus any host that advances a frame it did not allocate).
+    ///
+    /// `&self` by ruling — the sidecar's sink borrows the live ring and the
+    /// registry's holds it behind an `Arc`; neither can produce a `&mut` at the
+    /// instant the frame is assembled, which is precisely the instant the number
+    /// has to be decided.
+    pub fn allocate_seq(&self) -> u64 {
+        let tip = self.seq();
+        let mut seen = self.reserved.load(Ordering::Relaxed);
+        loop {
+            let next = seen.max(tip) + 1;
+            // Compare-exchange rather than fetch_add: the bump is to
+            // `max(tip, reserved) + 1`, not `reserved + 1`, so a competing
+            // allocation invalidates the arithmetic and not just the value.
+            match self.reserved.compare_exchange_weak(
+                seen,
+                next,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return next,
+                Err(actual) => seen = actual,
+            }
+        }
     }
 
     /// The oldest retained frame's seq (`None`: empty ring) — the push
@@ -305,6 +405,74 @@ mod tests {
         assert_eq!(
             epoch2.batches_between(&root(5), &root(5), &root(5)),
             Some(vec![])
+        );
+    }
+
+    /// **THE SEQ INVARIANT, at the exact race shape it exists for.**
+    ///
+    /// The order is the point, and it is the order that used to break: the
+    /// writer ALLOCATES under its flock, the detector then allocates AND
+    /// advances a full cycle inside the window, and only afterwards does the
+    /// writer's own frame land. Under `seq() + 1` the detector read a tip that
+    /// could not see the writer's outstanding allocation and re-issued it.
+    ///
+    /// Both sides carry REAL frames: the ring holds four before the race, and
+    /// each producer advances a frame of its own. On an empty ring the two
+    /// allocations would differ for the trivial reason that any counter
+    /// increments, and the test would pass over a seam it never touched.
+    #[test]
+    fn allocation_survives_a_detector_advance_before_the_writers() {
+        let mut ring = RootRing::new();
+        for n in 1..=4 {
+            ring.advance(frame(n));
+        }
+
+        // The writer, under the workspace flock: number decided, frame not yet
+        // recorded. `seq()` still reads 4 for everyone else — that is the window.
+        let writer_seq = ring.allocate_seq();
+        assert_eq!(ring.seq(), 4, "the allocation is outstanding, not recorded");
+
+        // The detector, inside that window: a full cycle of its own.
+        let detector_seq = ring.allocate_seq();
+        ring.advance(DeltaFrame {
+            delta: wire::Delta {
+                seq: detector_seq,
+                root_before: root(4),
+                root_after: root(5),
+                actor: None,
+                now: None,
+                files: vec![],
+            },
+            effects: vec![],
+        });
+
+        // The writer's flock drops and its frame lands last.
+        ring.advance(DeltaFrame {
+            delta: wire::Delta {
+                seq: writer_seq,
+                root_before: root(5),
+                root_after: root(6),
+                actor: None,
+                now: None,
+                files: vec![],
+            },
+            effects: vec![],
+        });
+
+        assert_ne!(
+            writer_seq, detector_seq,
+            "a seq returned by allocate must never be re-issued"
+        );
+
+        let seqs: Vec<u64> = ring.frames_after(0).iter().map(|f| f.delta.seq).collect();
+        let mut sorted = seqs.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seqs.len(), "no duplicate seq");
+        assert_eq!(
+            sorted,
+            (1..=6).collect::<Vec<u64>>(),
+            "no gap: the two producers between them number 1..=6 exactly once"
         );
     }
 

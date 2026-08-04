@@ -127,10 +127,14 @@ pub fn reconcile(
                 .expect("primed: watch.root is Some");
             let delta_files = classify_to_wire(&changes)?;
             // The ONE production DeltaFrame constructor (§7.3), shared with the
-            // commit path in `wire-serve` — `seq` is this epoch ring's current
-            // counter, so the frame carries `seq + 1`; the caller advances.
+            // commit path in `wire-serve`. The caller advances the ring.
+            // The detector allocates through the ring's ONE issuing point:
+            // `assemble_delta` is a pure constructor now (U20b), so the number
+            // is decided here, explicitly. `allocate_seq` rather than `seq() + 1`
+            // is the whole seam — the write path can hold an allocation whose
+            // frame has not landed yet, and the tip cannot see it.
             let mut frame = crate::write::assemble_delta(
-                ring.seq(),
+                ring.allocate_seq(),
                 watch_root.clone(),
                 disk_root.clone(),
                 None, // §7.1: actor ABSENT — never invented

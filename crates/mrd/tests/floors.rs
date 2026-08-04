@@ -175,7 +175,7 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         if_root: None,
         dry: false,
     };
-    let out = create(&root, 0, &args, &[]).expect("the genesis write lands ungated");
+    let out = create(&root, None, &args, &[]).expect("the genesis write lands ungated");
 
     // GREY on the enforcement axis: no green verdict, and no token standing in
     // for one. Grey is what the ABSENCE renders as.

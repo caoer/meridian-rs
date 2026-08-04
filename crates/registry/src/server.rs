@@ -949,7 +949,18 @@ fn dispatch_read(
             // borrow (H1: the ledger is not the engine's, and the pin's own
             // write must not evaporate it).
             let mints = registry.read_mints(ws);
-            wire_serve::write::splice(&ws_root, 0, &args, &[], Some(&mints)).map(|out| out.body)
+            // U20b: the write path is now a NUMBERED producer on this
+            // workspace's ring, taken beside the mints and on the same
+            // create-on-first-use terms. The sink is called INSIDE the flock
+            // `splice` holds; the ring advance below happens after that flock
+            // drops, and the detector may have numbered a frame of its own in
+            // between — which is exactly what the ring's allocator makes safe.
+            let ring = registry.ring(ws);
+            let out = wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))?;
+            if let Some(frame) = out.committed {
+                ring.advance(frame);
+            }
+            Ok(out.body)
         }
         // The BIRTH op — v3-ONLY, the resident twin of the sidecar's arm: the
         // SAME guarded door (`wire_serve::write::create`), the same forwarding
@@ -976,8 +987,14 @@ fn dispatch_read(
                 if_root,
                 dry: dry.unwrap_or(false),
             };
-            wire_serve::write::create(&ws_root, 0, &args, &[])
-                .map(|out| wire_serve::write::create_response(path, &out))
+            // Numbered on the same ring as `splice` above — a birth is a root
+            // advance like any other, so it owes the chain a seq.
+            let ring = registry.ring(ws);
+            let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
+            if let Some(frame) = out.committed.clone() {
+                ring.advance(frame);
+            }
+            Ok(wire_serve::write::create_response(path, &out))
         }
         // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
         // warm engine's doc (read-only: never a write path).

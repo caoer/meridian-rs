@@ -109,7 +109,7 @@ fn rung_one_returns_a_unified_line_diff_for_a_section_body_mismatch() {
     // The caller's own picture of the section: close to current, one line off.
     let pinned = "## Public\n\nalpha\nbravo\ndelta\n";
     let a = args(vec![stale_match(public(), pinned)]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch);
     assert_eq!(err.recovery, wire::Recovery::Refresh);
@@ -160,7 +160,7 @@ fn rung_one_returns_ops_form_for_a_frontmatter_mismatch() {
         },
         "status: published",
     )]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch);
     assert_eq!(err.rung, Some(1));
@@ -198,7 +198,7 @@ fn rung_one_falls_to_rung_two_when_the_diff_exceeds_the_size_cap() {
         writeln!(pinned, "stale line {i}").expect("String write is infallible");
     }
     let a = args(vec![stale_match(public(), &pinned)]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
     assert_eq!(err.rung, Some(2), "over the cap, the ladder falls a rung");
@@ -224,7 +224,7 @@ fn rung_one_falls_to_rung_two_when_the_diff_exceeds_the_size_cap() {
     }
     let close = splice(
         &root,
-        0,
+        None,
         &args(vec![stale_match(public(), &near)]),
         &[],
         None,
@@ -261,7 +261,7 @@ fn rung_one_discloses_nothing_outside_the_callers_targeted_section() {
     let (_d, root) = ws(DOC);
     let pinned = "## Public\n\nalpha\nbravo\ndelta\n";
     let a = args(vec![stale_match(public(), pinned)]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
     assert_eq!(err.rung, Some(1), "the rung under test is the rich one");
@@ -301,7 +301,7 @@ fn rung_two_carries_new_content_and_the_new_fingerprint() {
         },
         if_node_rev: Some(NodeRev(STALE.into())),
     }]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch);
     assert_eq!(err.rung, Some(2));
@@ -342,7 +342,7 @@ fn rung_three_is_the_bare_mismatch_floor() {
         },
         if_node_rev: Some(NodeRev(STALE.into())),
     }]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::CasMismatch);
     assert_eq!(err.recovery, wire::Recovery::Refresh);
@@ -376,7 +376,7 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
     let pinned = "## Public\n\nalpha\nbravo\ndelta\n";
     let rich = splice(
         &root,
-        0,
+        None,
         &args(vec![stale_match(public(), pinned)]),
         &[],
         None,
@@ -390,7 +390,7 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
     // through to the floor it did not need.
     let poorer = splice(
         &root,
-        0,
+        None,
         &args(vec![Edit {
             target: public(),
             edit: EditShape::Put {
@@ -425,7 +425,7 @@ fn guard_required_rung_zero_still_behaves_as_u10_shipped_it() {
         },
         if_node_rev: None,
     }]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
 
     assert_eq!(err.code, ErrorCode::GuardRequired);
     assert_eq!(err.recovery, wire::Recovery::Fix);
@@ -465,7 +465,7 @@ fn a_frozen_v2_session_never_grows_a_field_from_the_ladder() {
     let (_d, root) = ws(DOC);
     let pinned = "## Public\n\nalpha\nbravo\ndelta\n";
     let a = args(vec![stale_match(public(), pinned)]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
     assert_eq!(err.rung, Some(1), "the richest rung was minted");
 
     let v3 = as_response(*err);
@@ -512,7 +512,7 @@ fn demotion_touches_only_ladder_authored_envelopes() {
         },
         if_node_rev: None,
     }]);
-    let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
+    let err = splice(&root, None, &a, &[], None).expect_err("refuses");
     assert_eq!(err.code, ErrorCode::GuardRequired);
     assert!(err.message.is_some() && err.rung.is_none());
 

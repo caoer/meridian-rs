@@ -35,7 +35,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     ));
     let out = lock_write(
         &root,
-        0,
+        None,
         &LockWriteArgs {
             id: None,
             path: WPath("page.md".into()),

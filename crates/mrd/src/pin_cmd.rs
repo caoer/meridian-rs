@@ -91,7 +91,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     };
     // seq 0, like the resident daemon (no epoch ring); no read-mint ledger
     // exists in a CLI process, which is why the gate is bypassed above.
-    let outcome = splice(&root, 0, &splice_args, &[], None).map_err(|e| refusal_with_cause(&e))?;
+    let outcome =
+        splice(&root, None, &splice_args, &[], None).map_err(|e| refusal_with_cause(&e))?;
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
