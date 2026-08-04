@@ -225,6 +225,27 @@ pub struct PinPlane {
     /// Read by `--require-pins` (`mrd check`), which is how a caller that wants
     /// "no coverage ⇒ refuse" says so.
     pub declared: usize,
+    /// **Pins whose blob lives in ANOTHER root's object store — out of this
+    /// read's jurisdiction, skipped and STATED** (ruling 2026-08-04).
+    ///
+    /// The anchoring plane holds ONE git handle by design: the ambient root's.
+    /// A cross-root pin's blob is in a repository this read cannot ask, so it is
+    /// not measured here — and *"outside sight is never verified"* is honoured by
+    /// STATING THE SIGHT LINE, not by pretending the blob was seen. Both the
+    /// human face and `--json` name this population; a silent narrowing would be
+    /// a lie, and this one is spoken.
+    ///
+    /// # Why this is a scoping and not a gap
+    /// Pre-R4 the retrieval plane was the separate `objects:` table, which in
+    /// practice carried no cross-root rows — so ambient-only is what this plane
+    /// has ALWAYS measured. R4 moved the blob hash onto every pin row and thereby
+    /// made the implicit population VISIBLE; it did not widen the jurisdiction.
+    /// Left unscoped, every corpus holding one cross-root pin became ungovernable,
+    /// because the fence refused every commit.
+    ///
+    /// **Only blob-ANCHORING scopes.** The CLAIM half stays cross-root — that is
+    /// U11's proven capability and it is untouched here.
+    pub out_of_jurisdiction: Vec<String>,
 }
 
 impl PinPlane {
@@ -298,6 +319,7 @@ pub fn pin_plane(
         never: 0,
         cannot_ask: None,
         declared: pins.len(),
+        out_of_jurisdiction: Vec::new(),
     };
     for pin in pins {
         match pin.color {
@@ -308,9 +330,11 @@ pub fn pin_plane(
     }
     match objects_in(docs) {
         Err(detail) => plane.cannot_ask = Some(detail),
-        Ok(objects) if objects.is_empty() => {}
-        Ok(objects) => {
-            if let Err(detail) = ask_store(root, &objects, &mut plane) {
+        Ok((objects, outside)) => {
+            plane.out_of_jurisdiction = outside;
+            if !objects.is_empty()
+                && let Err(detail) = ask_store(root, &objects, &mut plane)
+            {
                 plane.cannot_ask = Some(detail);
             }
         }
@@ -344,8 +368,9 @@ struct ObjectRef {
 /// one object — declares the SAME blob twice. They are deduped by `(object,
 /// hash)` here for the reason stated above: two rows naming one blob would ask
 /// git one question twice and report a single orphan as two findings.
-fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, String> {
+fn objects_in(docs: &BTreeMap<String, Document>) -> Result<(Vec<ObjectRef>, Vec<String>), String> {
     let mut out: Vec<ObjectRef> = Vec::new();
+    let mut outside: Vec<String> = Vec::new();
     let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     for (path, doc) in docs {
         let Ok(Some(found)) = lock::find(doc) else {
@@ -353,27 +378,29 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, Strin
         };
         for pin in found.lock.pins {
             let key = pin.object;
-            let oid = pin.hash.to_ascii_lowercase();
-            if !git::is_oid(&oid) {
-                return Err(format!(
-                    "`{path}` pin `{key}` has a hash that is not an object id, so git cannot be \
-                     asked about it"
-                ));
-            }
-            // An object naming ANOTHER root names another object store, and this
-            // read holds one handle: the ambient one. Falling back to it would ask
-            // the WRONG database and answer confidently — a wrong SUCCESS, which
-            // is the one shape a fence's verb must never produce. So it refuses,
-            // and says which root it could not reach.
+            // ── JURISDICTION, decided on STRUCTURE and decided FIRST ──────────
+            //
+            // The discriminator is "is this object's root the ambient one", read
+            // off the ADDRESS — never "did asking the store fail". That ordering
+            // is the whole safety property: a behavioural skip would let a
+            // genuinely broken ambient store hide inside the exemption, which is
+            // a real defect wearing a jurisdiction badge. A broken AMBIENT store
+            // still greys and still fails closed, below.
+            //
+            // An object naming another root names another object store, and this
+            // read holds one handle. It is not measured here and it is not
+            // pretended to be measured: the caller STATES the population
+            // ([`PinPlane::out_of_jurisdiction`]).
+            //
+            // WHO OWNS THE QUESTION INSTEAD: cross-root blob durability is
+            // `u13_per_root_anchoring`'s surface — the per-root anchoring read
+            // that holds the right handle. This scoping narrows THIS plane; it
+            // does not make the question disappear.
             match addr::Addr::parse(&key) {
                 Ok(addr) => {
                     if let Some(name) = addr.root() {
-                        return Err(format!(
-                            "`{path}` pin `{key}` names root `{name}`, whose object store this \
-                             read cannot ask — the anchoring check runs against THAT root's git \
-                             repo, and asking this one would answer a different repository's \
-                             question in its name"
-                        ));
+                        outside.push(format!("`{path}` pin `{key}` (root `{name}`)"));
+                        continue;
                     }
                 }
                 Err(e) => {
@@ -382,6 +409,13 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, Strin
                          unknown: {e}"
                     ));
                 }
+            }
+            let oid = pin.hash.to_ascii_lowercase();
+            if !git::is_oid(&oid) {
+                return Err(format!(
+                    "`{path}` pin `{key}` has a hash that is not an object id, so git cannot be \
+                     asked about it"
+                ));
             }
             if !seen.insert((path.clone(), key.clone(), oid.clone())) {
                 continue;
@@ -393,7 +427,7 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, Strin
             });
         }
     }
-    Ok(out)
+    Ok((out, outside))
 }
 
 /// Ask ONE object store about every entry, in ONE pass, and classify.
@@ -598,6 +632,7 @@ mod tests {
             never: 1,
             cannot_ask: None,
             declared: 3,
+            out_of_jurisdiction: Vec::new(),
         };
         assert_eq!(lifecycle.asked(), 3, "the population is the three states");
         assert!(
@@ -662,22 +697,97 @@ mod tests {
         assert!(plane.is_green(), "and the reading is a true zero");
     }
 
-    /// A key naming ANOTHER root names another object store. This read holds one
-    /// handle — the ambient one — so it REFUSES and says which root it could not
-    /// reach. Falling back to the ambient store would ask the wrong database and
-    /// answer confidently: a wrong SUCCESS, the one shape a fence's verb must
-    /// never produce.
+    /// **A cross-root pin is SKIPPED AND STATED — it is out of this plane's
+    /// jurisdiction, not unknown** (ruling 2026-08-04).
+    ///
+    /// # This test's subject was REPLACED by a ruling, not repaired
+    /// It was `a_rooted_objects_key_refuses_rather_than_asking_the_wrong_store`
+    /// and it asserted a REFUSAL. That refusal was correct on its own terms and
+    /// unchanged since v1 — but R4 made `hash` mandatory on every pin, so what
+    /// used to reach it (cross-root `objects:` rows, which nobody wrote) became
+    /// EVERY cross-root pin. Same rule, different population, inverted outcome:
+    /// the anchoring plane greyed, the commit-gate greyed, and **the fence
+    /// refused every commit in any repo holding one cross-root pin**.
+    ///
+    /// The ruling scoped the plane to the ambient root explicitly, restoring the
+    /// ratified pre-R4 behaviour that `f6_check_sees_the_mount_table`'s
+    /// acceptance criterion has always encoded.
+    ///
+    /// # What is asserted, and why BOTH halves are load-bearing
+    /// Skipping alone would be a SILENT narrowing — the exact false clean this
+    /// plane exists to prevent. So the population is STATED: *"outside sight is
+    /// never verified"* is honoured by naming the sight line, not by pretending
+    /// the blob was seen.
     #[test]
-    fn a_rooted_objects_key_refuses_rather_than_asking_the_wrong_store() {
+    fn a_cross_root_pin_is_skipped_and_stated_never_silently_dropped() {
+        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
         let docs = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
-        let detail = objects_in(&docs).expect_err("a rooted key is not askable from here");
+
+        let (asked, outside) = objects_in(&docs).expect("a cross-root pin is not an error");
         assert!(
-            detail.contains("alpha"),
-            "it names the root whose store it could not ask: {detail}"
+            asked.is_empty(),
+            "the ambient store is never asked about another root's blob: {asked:?}"
         );
+        assert_eq!(outside.len(), 1, "and the skip is counted, not dropped");
         assert!(
-            detail.contains("claim.md"),
-            "and the page that declares it: {detail}"
+            outside[0].contains("alpha") && outside[0].contains("claim.md"),
+            "the statement names the root AND the page that declares it: {outside:?}"
+        );
+
+        // The disclosure reaches the PLANE, which is what the faces render.
+        let plane = pin_plane(&root, &docs, &[]);
+        assert_eq!(
+            plane.out_of_jurisdiction.len(),
+            1,
+            "the plane carries the population the faces must state"
+        );
+        // And the scoping did NOT buy a false clean by greying: nothing was
+        // asked, so nothing is unanswerable.
+        assert!(
+            plane.cannot_ask.is_none(),
+            "out-of-jurisdiction is not the same fact as cannot-ask: {:?}",
+            plane.cannot_ask
+        );
+    }
+
+    /// **The jurisdiction skip keys on STRUCTURE, never on FAILURE** — the
+    /// safety property that keeps the exemption from becoming camouflage.
+    ///
+    /// The discriminator is "is this object's root the ambient one", read off the
+    /// address BEFORE any store is asked. Were it behavioural ("did asking
+    /// fail"), a genuinely broken AMBIENT store could hide inside the
+    /// jurisdiction exemption — a real defect wearing a jurisdiction badge.
+    ///
+    /// Two arms, and they must DIFFER or the discriminator is a decoration: the
+    /// same unaskable `/nonexistent` root, once with an ambient pin and once with
+    /// a cross-root pin.
+    #[test]
+    fn a_broken_ambient_store_still_greys_and_is_not_swallowed_by_the_exemption() {
+        let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
+
+        // ARM 1 — AMBIENT pin, unaskable store: greys. Fails CLOSED.
+        let ambient = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
+        let ambient_plane = pin_plane(&root, &ambient, &[]);
+        assert!(
+            ambient_plane.cannot_ask.is_some(),
+            "a broken AMBIENT store is still grey — the exemption must not cover it"
+        );
+        assert!(ambient_plane.cannot_assess() && !ambient_plane.is_green());
+
+        // ARM 2 — CROSS-ROOT pin, same unaskable store: scoped out, never asked.
+        let cross = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
+        let cross_plane = pin_plane(&root, &cross, &[]);
+        assert!(
+            cross_plane.cannot_ask.is_none(),
+            "the cross-root blob was never this plane's to ask about"
+        );
+
+        // The arms differ. That difference IS the discriminator; if these two
+        // ever agree, the skip has stopped keying on structure.
+        assert_ne!(
+            ambient_plane.cannot_ask.is_some(),
+            cross_plane.cannot_ask.is_some(),
+            "structure decides, not failure"
         );
     }
 
@@ -718,6 +828,7 @@ mod tests {
         assert!(
             objects_in(&docs)
                 .expect("a refusal is not this reader's error")
+                .0
                 .is_empty(),
             "so it declares no askable object here"
         );

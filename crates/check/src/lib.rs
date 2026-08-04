@@ -365,6 +365,7 @@ mod honesty {
             never: 0,
             cannot_ask: None,
             declared: 0,
+            out_of_jurisdiction: Vec::new(),
         };
         let green = CoreReport {
             drifted_claims: Vec::new(),

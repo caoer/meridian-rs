@@ -784,18 +784,36 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     );
 }
 
-/// **The cross-root observation, held as a refusal rather than a guess.** A pin
-/// `object` carrying a `root:` prefix names ANOTHER root's object store. This
-/// read asks the ambient repository and nothing else, so the honest answer is that
-/// it cannot assess that entry — never a fabricated verdict from the wrong store,
-/// which would be a wrong SUCCESS rather than a stale one.
+/// **THE DISCLOSURE PIN — a cross-root pin is SKIPPED AND STATED, and the fence
+/// still passes** (ruling 2026-08-04). End-to-end, through the real binary.
 ///
-/// The assert is the anchoring plane's OWN words (`GREY_CANNOT_ASSESS` plus the
-/// root it could not reach), not the bare exit: under R4 the hash rides the pin,
-/// so an unmounted root's pin necessarily has a colour on the claim plane too, and
-/// only the reason word tells which plane spoke.
+/// # This test's subject was replaced by a ruling, not repaired
+/// It was `check_cannot_ask_another_roots_object_store_and_says_so` and it
+/// asserted the opposite: exit non-zero, `grey(cannot-assess)`. That refusal was
+/// correct on its own terms and unchanged since v1 — but R4 made `hash`
+/// mandatory on every pin, so what used to reach it (cross-root `objects:` rows,
+/// which nobody wrote) became EVERY cross-root pin, and **the fence began
+/// refusing every commit in any repo holding one**. That is the
+/// refuses-every-governed-commit failure S3-R8 exists to prevent, arriving from
+/// a third side.
+///
+/// The anchoring plane holds ONE git handle by design, so ambient-only is what
+/// it has always measured; R4 merely made the population visible. The ruling
+/// scoped it explicitly and restored the ratified pre-R4 behaviour that
+/// `f6_check_sees_the_mount_table`'s acceptance criterion encodes.
+///
+/// # Both halves are load-bearing, and the second is why this test exists
+/// Skipping alone would be a SILENT narrowing — the false clean this plane
+/// exists to prevent. So the population is STATED on both faces: *"outside sight
+/// is never verified"* is honoured by naming the sight line, not by pretending
+/// the blob was seen. **Mutation-proved: suppressing the disclosure line reddens
+/// this test.**
+///
+/// Cross-root blob durability is not retired by the scoping — it belongs to this
+/// file's own per-root surface (`u13_per_root_anchoring`), which holds the right
+/// handle.
 #[test]
-fn check_cannot_ask_another_roots_object_store_and_says_so() {
+fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
     let sb = sandbox();
     let ws = sb.git_workspace("rooted-key");
     write(&ws, "source.md", SOURCE_PINNED);
@@ -813,13 +831,33 @@ fn check_cannot_ask_another_roots_object_store_and_says_so() {
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "a question this read cannot put to git is not a clean bill: {text}"
+
+    // THE DISCLOSURE — the human face names the population it did not measure.
+    assert!(
+        text.contains("anchoring scope:") && text.contains("alpha"),
+        "the sight line is STATED, naming the root outside it: {text}"
     );
     assert!(
-        text.contains(check::GREY_CANNOT_ASSESS) && text.contains("alpha"),
-        "and it names the root whose store it could not ask: {text}"
+        text.contains("NOT measured here"),
+        "and it says plainly that those blobs were not measured: {text}"
+    );
+
+    // AND THE ANCHORING PLANE DID NOT GREY ON IT — the scoping is not a refusal.
+    assert!(
+        !text.contains(check::GREY_CANNOT_ASSESS),
+        "a question outside this gate's jurisdiction is not `cannot-assess`: {text}"
+    );
+
+    // The `--json` face carries the same narrowing, machine-readable.
+    let json_out = sb.run(&ws, &["check", "--json"]);
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout(&json_out)).expect("check --json parses");
+    let scope = &doc["pins"]["anchoring_out_of_jurisdiction"];
+    assert_eq!(scope["count"], 1, "the machine face counts it too: {doc}");
+    assert!(
+        scope["refs"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("alpha") && r.contains("claim.md")),
+        "count alone cannot be acted on — the refs name WHICH pins: {doc}"
     );
 }

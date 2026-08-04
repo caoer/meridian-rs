@@ -175,7 +175,7 @@ registry = { workspace = true }
 model = { workspace = true }
 # build three-doc-chain Document fixtures for the U2.3 walk e2e gate: compute
 # each page's live rev (model::build ∘ syntax::parse — the SAME parse
-# fs::build_corpus runs) so the on-disk `^inputs` pins are byte-correct. A
+# fs::build_corpus runs) so the on-disk R4 lock pins are byte-correct. A
 # dev-only edge; `syntax` is a path crate already in the graph, `cargo deny`
 # unchanged.
 syntax = { workspace = true }

@@ -22,12 +22,27 @@ fn mrd_bin() -> &'static str {
 }
 
 /// The live document-root rev of `raw` — the same parse `fs::build_corpus` runs
-/// inside the binary, so an on-disk page's rev is computed, never guessed.
-fn doc_rev(raw: &str) -> String {
-    model::build(raw.to_string(), syntax::parse(raw))
-        .root
-        .node_rev
-        .0
+/// The live fingerprint token of a page's document root — what a CORRECT R4 pin
+/// holds, minted through the engine's own mint over the same parse the corpus
+/// builder runs.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
+}
+
+/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits —
+/// so these gates depend on the CLI's own READER, never on the writer that made
+/// them. `object` keeps its `root:` prefix: the canonical agent-plane spelling.
+///
+/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
+/// wire protocol version.
+fn lock_block(object: &str, fingerprint: &str) -> String {
+    format!(
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"9ae3f1deadbeef\"\n    path: []\n    fingerprint: \"{fingerprint}\"\n```"
+    )
 }
 
 /// The TRUE target, in the `sessions` root.
@@ -111,12 +126,11 @@ impl Sandbox {
             .expect("spawn mrd")
     }
 
-    /// Write `claim.md` pinning `ref` at `rev`, then `mrd init` the workspace.
+    /// Write `claim.md` pinning `ref` at the fingerprint `rev`, then `mrd init`.
     fn claim(&self, r#ref: &str, rev: &str) {
         let claim = format!(
-            "# Claim\n\ndraws from the sessions root.\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: '{ref}', rev: '{rev}', rev_class: 'content'}}\n```\n",
-            r#ref = r#ref,
-            rev = rev,
+            "# Claim\n\ndraws from the sessions root.\n\n{}\n",
+            lock_block(r#ref, rev)
         );
         std::fs::write(self.ws.join("claim.md"), claim).expect("claim");
         let init = self.run(&["init"]);
@@ -166,7 +180,7 @@ fn stderr(out: &Output) -> String {
 #[test]
 fn the_resolved_bytes_come_from_the_target_root_not_the_ambient_decoy() {
     let sb = sandbox();
-    sb.claim("sessions:notes.md", &doc_rev(TARGET));
+    sb.claim("sessions:notes", &live_fingerprint(TARGET));
 
     // (a) GREEN — the pin matches the TARGET root's bytes.
     let (out, color, reason, _detail, selector) = sb.walk_entry();
@@ -235,7 +249,7 @@ fn the_resolved_bytes_come_from_the_target_root_not_the_ambient_decoy() {
 #[test]
 fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
     let sb = sandbox();
-    sb.claim("sessions:notes.md", &doc_rev(TARGET));
+    sb.claim("sessions:notes", &live_fingerprint(TARGET));
 
     // It is GREEN while mounted — the acceptance half, asserted in the same
     // breath (S3-R8(c)). A build that renders EVERYTHING grey passes the rest of
@@ -316,7 +330,7 @@ fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
 fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
     let sb = sandbox();
     // `sessions` IS mounted; the file it names is not there.
-    sb.claim("sessions:absent.md", &doc_rev(TARGET));
+    sb.claim("sessions:absent", &live_fingerprint(TARGET));
 
     let (out, color, reason, _detail, _s) = sb.walk_entry();
     assert_ne!(
@@ -352,7 +366,7 @@ fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
 fn finding_03s_verbatim_input_peels_and_refuses() {
     let sb = sandbox();
     sb.unmount(); // `sessions` unbound — FINDING 03's exact condition
-    sb.claim("sessions:24-01-retro/notes.md", &doc_rev(DECOY));
+    sb.claim("sessions:24-01-retro/notes", &live_fingerprint(DECOY));
 
     let (out, color, reason, detail, _s) = sb.walk_entry();
     assert_eq!(
@@ -372,7 +386,7 @@ fn finding_03s_verbatim_input_peels_and_refuses() {
     // **C-4 — one address, one answer.** The no-slash spelling is the control
     // that survived the shipped defect by behaving correctly; after U11 the two
     // spellings must CONVERGE, and that convergence is the assert.
-    sb.claim("sessions:notes.md", &doc_rev(DECOY));
+    sb.claim("sessions:notes", &live_fingerprint(DECOY));
     let (_out, color2, reason2, _d, _s) = sb.walk_entry();
     assert_eq!(
         (color.as_str(), reason.as_str()),

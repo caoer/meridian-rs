@@ -243,7 +243,8 @@ impl Corpus {
     /// Write `claim.md` in the ambient workspace pinning `ref` at `rev`.
     fn claim(&self, reference: &str, rev: &str) {
         let claim = format!(
-            "# Claim\n\ndraws from a mounted root.\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: '{reference}', rev: '{rev}', rev_class: 'content'}}\n```\n",
+            "# Claim\n\ndraws from a mounted root.\n\n{}\n",
+            lock_block(reference, rev)
         );
         std::fs::write(self.ws.join("claim.md"), claim).expect("claim");
         let init = self.run(&["init"]);
@@ -285,12 +286,27 @@ fn code(out: &Output) -> i32 {
 }
 
 /// The live document-root rev of `raw` — the same parse the binary runs, so an
-/// on-disk page's rev is computed, never guessed.
-fn doc_rev(raw: &str) -> String {
-    model::build(raw.to_string(), syntax::parse(raw))
-        .root
-        .node_rev
-        .0
+/// The live fingerprint token of a page's document root — what a CORRECT R4 pin
+/// holds, minted through the engine's own mint over the same parse the corpus
+/// builder runs.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
+}
+
+/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits —
+/// so these gates depend on the CLI's own READER, never on the writer that made
+/// them. `object` keeps its `root:` prefix: the canonical agent-plane spelling.
+///
+/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
+/// wire protocol version.
+fn lock_block(object: &str, fingerprint: &str) -> String {
+    format!(
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"9ae3f1deadbeef\"\n    path: []\n    fingerprint: \"{fingerprint}\"\n```"
+    )
 }
 
 /// The `mrd config` human row for `name`, whitespace-collapsed.
@@ -663,7 +679,7 @@ fn criterion_2_the_translation_assertion_is_sensitive_corpus_side() {
 #[test]
 fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_render() {
     let c = corpus();
-    c.claim(&format!("{VAULT_ROOT}:notes.md"), &doc_rev(TARGET));
+    c.claim(&format!("{VAULT_ROOT}:notes"), &live_fingerprint(TARGET));
 
     // ── (a) GREEN — mounted and matching ────────────────────────────────────
     let (out, color, reason, _d, selector) = c.walk_entry();
@@ -724,7 +740,7 @@ fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_ren
 
     // `sessions` is a real root with a real declaration that is NEVER bound.
     std::fs::write(c.sessions.join("notes.md"), TARGET).expect("target in the unmounted root");
-    c.claim("sessions:notes.md", &doc_rev(TARGET));
+    c.claim("sessions:notes", &live_fingerprint(TARGET));
     let (out, color, reason, detail, _s) = c.walk_entry();
     assert_eq!(
         color,
