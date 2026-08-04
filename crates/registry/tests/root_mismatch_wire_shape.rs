@@ -208,16 +208,35 @@ fn the_served_root_mismatch_is_a_real_one_carrying_its_ruled_recovery() {
 /// `changed` that appeared on the wire tomorrow would redden the pin rather
 /// than slip past it.
 ///
-/// **What this control is NOT.** It is not a production mutation. The true
-/// mutation — making `world_guard` set the field — lives in
-/// `crates/wire-serve/src/write.rs`, which is a serialized-car file this worker
-/// is not cleared to touch, so it was not run. This control proves the
-/// ASSERTION distinguishes the two worlds; arm A coming from the real socket is
-/// what proves the pin is wired to the engine. Together they cover what a
-/// production mutation would have shown, minus the proof that `world_guard`
-/// itself is the only producer — which is established by reading instead
-/// (`write.rs::world_guard` and `model::splice_verdict` are the two sites, and
-/// both take two roots and set exactly `expected`/`actual`).
+/// **What this control is NOT, and why that is sufficient here.** It is not a
+/// production mutation. The true mutation — making `world_guard` set the field
+/// — was deliberately not run (leader ruling 2026-08-04), and the reason is
+/// VALUE rather than risk, so a later reader does not have to re-open it:
+///
+/// The three legs already close the loop from both ends.
+/// - The pin reads a REAL daemon over a REAL socket, so its subject is the
+///   engine's own output path, not a value the test built. That is the leg the
+///   frozen hand-built fixture was missing and the whole reason this card
+///   existed.
+/// - This control injects `changed` into THE SERVED FRAME — the injection point
+///   is DOWNSTREAM of the engine — so it proves the assertion reddens when the
+///   wire carries the field.
+/// - The producer set is established by reading: `write.rs::world_guard` and
+///   `model::splice_verdict` are the two sites, and both take two roots and set
+///   exactly `expected`/`actual`.
+///
+/// An engine mutation would prove: IF `world_guard` set the field, the served
+/// frame would carry it and the pin would redden. But the first leg already
+/// establishes that the served frame IS the engine's output, and this control
+/// already establishes that the pin reddens when the frame carries the field.
+/// The only remaining gap is whether `world_guard`'s output reaches that frame
+/// unmodified — which is exactly what the first leg measures. So the mutation
+/// would re-prove a link already covered from both ends, at the cost of a
+/// transient edit to a file with a merge queue on it.
+///
+/// That is the argument, not just the limitation. If it stops holding — if a
+/// projection ever sits between `world_guard` and this frame — the mutation
+/// becomes worth running and this paragraph is what tells you so.
 #[test]
 fn the_pin_can_distinguish_a_changed_field_from_its_absence() {
     let tmp = TempDir::new().unwrap();
