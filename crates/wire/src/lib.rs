@@ -1809,6 +1809,30 @@ pub struct ErrorBody {
     /// targets echoed in the §2.1 grammar (a ref-carrying surface).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Vec<SecRef>>,
+    /// `cas_mismatch` (**v3-additive**, U11 / R1.2): WHICH RUNG of the
+    /// mismatch-recovery ladder this refusal reached — `1` change diff, `2` new
+    /// content + new fingerprint, `3` the bare mismatch floor. The discriminant
+    /// is what lets a caller dispatch on richness without probing which extras
+    /// happen to be present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rung: Option<u32>,
+    /// `cas_mismatch` rung 1: the change from the caller's OWN pinned picture to
+    /// the node's current bytes — a unified line diff for section bodies, ops
+    /// form for frontmatter. Scoped to the target the caller addressed and
+    /// capped by size; a caller applies it and resends WITHOUT a re-read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// `cas_mismatch` rung 2: the targeted node's current bytes, whole. The
+    /// ETag-412-with-body shape — sent when no diff is computable or the diff
+    /// exceeded its cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_content: Option<String>,
+    /// `cas_mismatch` rungs 1–2: the token to resend with. It rides whichever
+    /// rung carries recoverable content, because that is the rung the caller
+    /// resends FROM — a rung that made the read unnecessary must not send them
+    /// back for the token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_fingerprint: Option<NodeRev>,
 }
 
 impl ErrorBody {
@@ -1836,6 +1860,10 @@ impl ErrorBody {
             lost: None,
             cause: None,
             overlap: None,
+            rung: None,
+            diff: None,
+            new_content: None,
+            new_fingerprint: None,
         }
     }
 }
