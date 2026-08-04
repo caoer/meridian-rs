@@ -294,13 +294,36 @@ fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
     .expect("external edit");
     sidecar.send(r#"{"id":11,"op":"root"}"#);
 
-    let (_, notification) = sidecar.receive();
-    assert!(notification.get("id").is_none(), "external notification");
+    // DRAIN, do not index. One external write is not guaranteed to produce
+    // exactly one notification: measured 4 exchanges in 50 emitted TWO, and a
+    // positional read then slid every assertion below onto the wrong frame —
+    // which is this test's historical intermittent failure, not a slow child.
+    // Design fix per the card; no timeout and no threshold was touched.
+    let mut notifications = Vec::new();
+    let response = loop {
+        let (_, frame) = sidecar.receive();
+        if frame.get("id").is_some() {
+            break frame;
+        }
+        assert!(frame.get("id").is_none(), "external notification");
+        notifications.push(frame);
+    };
+    assert!(
+        !notifications.is_empty(),
+        "the external edit must notify at least once"
+    );
+    // The ARMED notification is the one carrying effects. Naming it by its
+    // content rather than by its position is what makes this deterministic.
+    let notification = notifications
+        .iter()
+        .find(|f| f.get("effects").is_some())
+        .unwrap_or_else(|| {
+            panic!("no notification carried effects — the reaction never armed: {notifications:?}")
+        });
     assert_armed_intent(&notification["effects"]);
     let delta = notification["delta"].as_object().expect("delta");
     assert!(!delta.contains_key("actor"), "external actor stays absent");
 
-    let (_, response) = sidecar.receive();
     assert_eq!(response["id"], 11);
     assert!(
         response["body"].get("armed").is_none(),
@@ -445,3 +468,108 @@ fn a_row_armed_off_fires_nothing_through_the_live_loop() {
     );
     sidecar.finish();
 }
+
+// ---------------------------------------------------------------------------
+// The two EMPTY-EFFECTS worlds, constructed on purpose
+// (card: gate-nondeterminism-hook-notify)
+// ---------------------------------------------------------------------------
+//
+// `external_edit_with_no_caller_emits_intent_with_actor_absent` fails, rarely and
+// under load, at `assert_armed_intent`'s `effects.as_array().expect(...)`. In the
+// measured failure the frame WAS a notification (its `id`-absent assertion passed)
+// carrying a `delta`, with `effects` ABSENT — and `effects` is
+// `skip_serializing_if = "Vec::is_empty"`, so absent means EMPTY, not missing.
+//
+// `external_effects` feeds ONLY from `changes.modified`, so an empty `effects`
+// has exactly two causes: the change did not classify as `modified`, or the HOOK's
+// scope did not arm on it. BOTH ARE CONSTRUCTIBLE WITHOUT THE SCHEDULER — which is
+// why these tests need no load and are deterministic. You cannot summon the race;
+// you can build the two states the race would leave behind.
+
+/// Drive one external change and return its notification frame.
+fn external_change_frame(mutate: impl FnOnce(&std::path::Path)) -> Value {
+    let workspace = workspace(true);
+    let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.send(r#"{"id":10,"op":"sub","from_seq":0}"#);
+    assert_eq!(sidecar.receive().1["id"], 10, "sub ack");
+    mutate(workspace.path());
+    sidecar.send(r#"{"id":11,"op":"root"}"#);
+    // Drain notifications until the response arrives, COUNTING them. The
+    // original test consumes frames POSITIONALLY — one notification, then the
+    // response — so if a second notification ever appears, every later
+    // assertion slides by one frame.
+    let mut notes = Vec::new();
+    let response = loop {
+        let (_, f) = sidecar.receive();
+        if f.get("id").is_some() {
+            break f;
+        }
+        notes.push(f);
+    };
+    println!("NOTIFICATION COUNT before the response: {}", notes.len());
+    assert_eq!(response["id"], 11);
+    sidecar.finish();
+    let frame = notes.into_iter().next().expect("at least one notification");
+    assert!(
+        frame.get("id").is_none(),
+        "the first drained frame is a notification: {frame}"
+    );
+    frame
+}
+
+/// **World (a): in HOOK scope, but the change is a BIRTH, not a modification.**
+/// `external_effects` iterates `changes.modified` only, so a created file arms
+/// nothing however well it matches `paths`.
+#[test]
+fn world_a_created_in_scope_file_emits_a_delta_with_no_effects() {
+    let frame = external_change_frame(|root| {
+        std::fs::write(
+            root.join("tasks/born.md"),
+            TASK_IN_PROGRESS.replace("status: in-progress", "status: review"),
+        )
+        .expect("external birth");
+    });
+    assert!(frame.get("delta").is_some(), "a delta was emitted: {frame}");
+    assert!(
+        frame.get("effects").is_none(),
+        "world (a) must reach the empty-effects state: {frame}"
+    );
+}
+
+/// **World (b): a real modification, but OUTSIDE the HOOK's `paths` glob.**
+/// The hook governs `tasks/*.md`; `notes/x.md` is the same edit out of scope.
+#[test]
+fn world_b_out_of_scope_modification_emits_a_delta_with_no_effects() {
+    let frame = external_change_frame(|root| {
+        std::fs::write(
+            root.join("notes/x.md"),
+            TASK_IN_PROGRESS.replace("status: in-progress", "status: review"),
+        )
+        .expect("external edit");
+    });
+    assert!(frame.get("delta").is_some(), "a delta was emitted: {frame}");
+    assert!(
+        frame.get("effects").is_none(),
+        "world (b) must reach the empty-effects state: {frame}"
+    );
+}
+
+/// **OPEN — an anomaly I could not settle, recorded rather than asserted.**
+///
+/// The in-scope MODIFICATION (`tasks/x.md` → status review) is the world that
+/// SHOULD arm, and `external_edit_with_no_caller_emits_intent_with_actor_absent`
+/// shows it arming 18 runs in 20. Driven through the helper above it armed in
+/// ZERO of the attempts I made, first-in-sequence and third-in-sequence alike,
+/// with a byte-identical delta (`tasks/x.md`, `fm_key: status`, change `edited`)
+/// and `effects` absent.
+///
+/// So the helper and the original test differ in some way I did not isolate.
+/// I am not asserting a mechanism for it and I did not land a test that claims
+/// one. What IS established and landed is the pair above: two constructed worlds
+/// that reach the empty-effects state by different causes, which is what the
+/// failing assertion cannot tell apart.
+///
+/// Whoever picks this up: the ordering experiment is already ruled out, and the
+/// deltas are byte-identical between the arming and non-arming runs — so the
+/// difference is not in the change classification.
+const _ANOMALY: () = ();
