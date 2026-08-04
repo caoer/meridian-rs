@@ -37,9 +37,11 @@
 //!
 //! - **pin color** — the armed set's evidence drift: `green` (every armed row's
 //!   live rule PAGE rev still equals the rev the artifact pinned) or
-//!   `red content-drifted` (some armed evidence drifted). The four named greys of
-//!   the full color law are the render's capability (fixtures pin each), and are
-//!   reached only by pinned `^inputs` edges, not the armed set.
+//!   `red content-drifted` (some armed evidence drifted). The named greys of the
+//!   full color law are the render's CAPABILITY — the composed line carries them
+//!   whichever it is handed — and the armed set itself reaches none of them.
+//!   Their enumeration lives in the colors amendment, and which variants exist is
+//!   owned by `view::walk::color_reason`'s exhaustive match, never counted here.
 //! - **lock color** — the `meridian-lock` pins' FINGERPRINT verdicts
 //!   ([`LockAxis`]), rolled up red > grey > green. A different source and a
 //!   different compare from the armed-set `pin` axis, so neither subsumes the
@@ -952,22 +954,25 @@ mod tests {
     use model::selector::GreyReason;
     use serde_json::Value;
 
-    // ── the four-grey render fixtures (U6.2 full color law) ──────────────────
+    // ── the grey render fixtures (U6.2 full color law) ───────────────────────
 
-    /// Each of the four named greys renders through the composed line's pin-color
-    /// axis with its contract label (colors amendment § Colors / D2-F4). The
-    /// render function carries the FULL color law, not just the armed set's
-    /// green/red.
+    /// A grey renders through the composed line's pin-color axis carrying its
+    /// contract label (colors amendment § Colors), not a bare tone. The render
+    /// function carries the FULL color law, not just the armed set's green/red.
+    ///
+    /// **This test asserts no COUNT, and its name must not acquire one.** Whether
+    /// every `GreyReason` variant HAS a label is a different question, and it is
+    /// already owned by the compiler: `view::walk::color_reason` is an exhaustive
+    /// match with no wildcard arm, so a new variant cannot land without breaking
+    /// the build there. A second exhaustive match here would be a COPY of that
+    /// guarantee, which `view::walk`'s own doc comment names as the defect —
+    /// *"two `match`es over one enum is how a board and a walk start
+    /// disagreeing"*. The cases below are a sample of the render path, not a
+    /// census of the enum.
     #[test]
-    fn four_greys_render_each_with_its_contract_label() {
+    fn a_grey_renders_through_the_composed_line_with_its_contract_label() {
         let cases = [
-            (GreyReason::DeclaredUnpinned, "grey declared-unpinned"),
-            (GreyReason::SupersededAlgo, "grey superseded-algo"),
             (GreyReason::ImmutableRoot, "grey immutable-root"),
-            // `Ambiguous` is the code variant for the selector-ambiguity grey; the
-            // contract's fourth named grey `unmanaged` shares the DeclaredUnpinned
-            // variant (labeled `unmanaged` only on the pin surface). The composed
-            // line renders whichever variant it is handed.
             (GreyReason::Ambiguous, "grey ambiguous"),
         ];
         for (reason, expected) in cases {

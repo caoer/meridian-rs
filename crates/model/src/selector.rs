@@ -33,13 +33,11 @@
 //! ambiguity F6b): the live toc's nearest names, a hint an author confirms by
 //! re-pinning — never an auto-repair (the engine holds no rename history).
 //!
-//! # Two compares, ONE color law
+//! # ONE compare, ONE color law
 //! The law splits into an ADDRESS half and a COMPARE half. [`resolve_selector`]
-//! owns the address half; two compares are built on it, and there is no third
+//! owns the address half; ONE compare is built on it, and there is no second
 //! color computer:
 //!
-//! - [`classify_edge`] — the legacy `^inputs` plane: `live node_rev` vs the
-//!   pinned `rev`.
 //! - [`classify_pin`] — the `meridian-lock` plane: the pinned `fp1.…`
 //!   CID-token through [`crate::fingerprint::verify_content_span`], whose five
 //!   arms map onto these same tones (green / red `content-drifted` / grey
@@ -52,7 +50,7 @@
 //! stay grey no matter what their digest says.
 
 use crate::fingerprint::ContentVerdict;
-use crate::{Document, Node, NodeKind, NodeRev, Ref, ResolveError, Target, resolve};
+use crate::{Document, Node, NodeKind, Ref, ResolveError, Target, resolve};
 
 /// The four selector classes (d2 §2.2). Parsed from a ref string by
 /// [`Selector::parse`]; the transcript class is recognized by its `#seq-N`
@@ -129,22 +127,11 @@ pub enum GreyReason {
     /// A `session-id#seq-N` transcript hop — recognized, not verified; the
     /// address class cannot drift by construction (d2 §2.2/§2.3).
     ImmutableRoot,
-    /// `pinned_rev` is NULL — declared in the manifest, never pinned; the first
-    /// pin turns it green (d2 §2.1/§2.3).
-    DeclaredUnpinned,
     /// The pinned selector BECAME ambiguous (a duplicate appeared) — the ledger
     /// cannot say which target the pin meant, so it will not measure drift it
     /// cannot address (d1 § selector ambiguity, point 3: grey — "selector
     /// unresolvable" — red would claim drift nobody measured).
     Ambiguous,
-    /// The lock is pinned under a `hash-algo` this engine does not compute
-    /// (anything but [`crate::NODE_REV_ALGO`]) — readable, unverifiable here.
-    /// A `hash-algo: vN` mismatch is a mechanical re-hash trigger, never
-    /// invalidation, so it renders grey — NEVER red (a false drift the engine
-    /// never measured) and NEVER green (an unverified claim dressed as attested).
-    /// Archived v1 blocks render this forever (d2 §6.3; U0.2/U3.4;
-    /// wire-contract-v2-colors-amendment § Colors).
-    SupersededAlgo,
     /// A `meridian-lock` pin whose fingerprint token PARSES but names a
     /// version / codec / hashfn this build does not implement
     /// ([`crate::fingerprint::ContentVerdict::Unverifiable`]). `unknown` names
@@ -215,6 +202,27 @@ pub enum GreyReason {
     /// projects THIS row instead of zero rows: a corrupt lock must never read
     /// as "no pins". Carries the refusal reason verbatim.
     LockRefused { reason: String },
+    /// **The fail-closed sentinel: a lock row carrying NEITHER a fingerprint NOR
+    /// a refusal.** Such a row names no evidence and reports no failure to read
+    /// it, so no compare on either plane can answer it. Grey, because the ledger
+    /// did not measure the edge — never green, which would be an unmeasured edge
+    /// dressed as attested.
+    ///
+    /// **IF THIS EVER RENDERS, THE RENDER IS ITSELF THE FINDING.** It does not
+    /// report a fact about the pinned target; it reports that something upstream
+    /// produced a row the color law cannot classify. The rendered line says so
+    /// in its own words ([`crate::selector`]'s consumers render the detail), so
+    /// whoever meets it learns that from the output rather than from this doc.
+    ///
+    /// **GUARDED AT ONE POINT — not impossible.** Every R4 pin row carries a
+    /// fingerprint and every refusal carries its reason, so no live input
+    /// reaches here. That invariant is enforced by ONE PARSER RULE with ONE TEST
+    /// on it: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`
+    /// (`crates/lock/src/lib.rs`). It is a single point of failure stated as
+    /// one, and the next reader should inherit "guarded at one point" rather
+    /// than a belief that the case cannot arise. Delete this arm and the
+    /// fall-through becomes green.
+    Uncolourable,
 }
 
 /// Why an edge renders red — the three reasons kept distinct (decision #9).
@@ -250,40 +258,10 @@ pub fn color_tone(color: &Color) -> &'static str {
     }
 }
 
-/// Compute an edge's color from its pinned selector, its pinned rev, and the
-/// live target document (d2 §2.3). `target` is `None` when the target PAGE
-/// itself does not resolve (a moved/deleted page) — the whole address is
-/// unresolved. `pinned_rev` is `None` for a declared-but-unpinned manifest item
-/// (grey).
-///
-/// This is the pure color law: caller-agnostic, computed per run, never stored.
-#[must_use]
-pub fn classify_edge(
-    selector: &Selector,
-    pinned_rev: Option<&NodeRev>,
-    target: Option<&Document>,
-) -> Color {
-    // The transcript class is grey before anything else — it is never resolved
-    // (d2 §2.2), so it outranks even a NULL pinned_rev.
-    if selector.is_immutable_root() {
-        return Color::Grey(GreyReason::ImmutableRoot);
-    }
-    let Some(pinned) = pinned_rev else {
-        return Color::Grey(GreyReason::DeclaredUnpinned);
-    };
-    match resolve_selector(selector, target) {
-        // Resolves — the only question left is content drift (source 2).
-        Ok((_, t)) if &t.node_rev == pinned => Color::Green,
-        Ok(_) => Color::Red(RedReason::Drifted),
-        Err(color) => color,
-    }
-}
-
 /// Resolve a pinned selector against the live target — the ADDRESS half of the
-/// color law, shared by the two compares built on it: the `node_rev` compare
-/// ([`classify_edge`], the legacy `^inputs` plane) and the fingerprint compare
-/// ([`classify_pin`], the `meridian-lock` plane). One owner, so an address
-/// failure can never render one color on one plane and another on the other.
+/// color law, owned here and read by the ONE compare built on it: the
+/// fingerprint compare ([`classify_pin`], the `meridian-lock` plane). One owner,
+/// so an address failure renders one color wherever it is asked.
 ///
 /// `Ok` carries the live document and the resolved [`Target`] (span + rev);
 /// `Err` carries the color the address failure itself dictates:
@@ -343,13 +321,13 @@ pub fn resolve_selector<'a>(
     }
 }
 
-/// Compute a **`meridian-lock` pin's** color: the same address law as
-/// [`classify_edge`] ([`resolve_selector`]), then the FINGERPRINT compare
-/// instead of the `node_rev` compare.
+/// Compute a **`meridian-lock` pin's** color: the address law
+/// ([`resolve_selector`]), then the FINGERPRINT compare.
 ///
 /// `pinned_token` is the lock's `fingerprint` CID-token verbatim. A `fp1.…`
-/// token is not `node_rev`-comparable in either direction, so routing a lock pin
-/// through [`classify_edge`] could only ever produce a false red or a grey; the
+/// token is not `node_rev`-comparable in either direction — which is why the
+/// retired `node_rev` compare could only ever have produced a false red or a
+/// grey for one; the
 /// verdict belongs to [`fingerprint::verify_content_span`], whose four arms map
 /// onto this one color model:
 ///
@@ -409,7 +387,7 @@ pub fn classify_pin(selector: &Selector, pinned_token: &str, target: Option<&Doc
 /// Project a resolvable selector to its mint-plane [`Ref`] — the Heading and
 /// Block classes only. Page compares the document root directly and the
 /// transcript class is grey before resolution, so neither reaches here (both
-/// guarded in [`classify_edge`]); an empty hpath is the inert fallback (it
+/// guarded in [`resolve_selector`]); an empty hpath is the inert fallback (it
 /// resolves `NotFound`), never a live path.
 fn selector_ref(selector: &Selector) -> Ref {
     match selector {
@@ -665,12 +643,6 @@ mod tests {
         build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// The current live rev of a resolvable selector (to pin green, or an old
-    /// value to simulate drift).
-    fn live_rev(d: &Document, sel: &Selector) -> NodeRev {
-        resolve(d, &selector_ref(sel)).expect("resolves").node_rev
-    }
-
     #[test]
     fn parse_classifies_four_selector_classes() {
         assert_eq!(Selector::parse("notes/plan.md"), Selector::Page);
@@ -696,59 +668,38 @@ mod tests {
     fn immutable_root_renders_grey_never_resolved() {
         let sel = Selector::parse("22-01-session#seq-42");
         assert!(sel.is_immutable_root());
-        // Grey even with no target doc and no pinned rev — never resolved (d2 §2.2).
+        // Grey even with no target doc — never resolved (d2 §2.2). The ADDRESS
+        // half owns this, so it outranks whatever compare is built on top.
         assert_eq!(
-            classify_edge(&sel, None, None),
+            resolve_selector(&sel, None).expect_err("the transcript class never resolves"),
             Color::Grey(GreyReason::ImmutableRoot)
         );
     }
 
+    /// The whole-page selector resolves to the DOCUMENT ROOT's rev — it has no
+    /// `Ref` form, so the address half answers it directly.
     #[test]
-    fn declared_unpinned_is_grey() {
+    fn page_selector_resolves_to_the_document_root() {
         let d = doc("# Task\n\n## Objective\n\nbody\n");
-        let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
-        assert_eq!(
-            classify_edge(&sel, None, Some(&d)),
-            Color::Grey(GreyReason::DeclaredUnpinned)
-        );
+        let (_, t) =
+            resolve_selector(&Selector::Page, Some(&d)).expect("the page selector resolves");
+        assert_eq!(t.node_rev, d.root.node_rev);
     }
 
-    #[test]
-    fn green_when_rev_matches() {
-        let d = doc("# Task\n\n## Objective\n\nbody\n");
-        let sel = Selector::Heading(vec!["Task".into(), "Objective".into()]);
-        let pinned = live_rev(&d, &sel);
-        assert_eq!(classify_edge(&sel, Some(&pinned), Some(&d)), Color::Green);
-    }
-
-    /// The whole-page selector greens against the document root rev and drifts
-    /// when it moves — it has no `Ref` form, so it is compared directly.
-    #[test]
-    fn page_selector_greens_and_drifts_against_document_root() {
-        let d = doc("# Task\n\n## Objective\n\nbody\n");
-        let root_rev = d.root.node_rev.clone();
-        assert_eq!(
-            classify_edge(&Selector::Page, Some(&root_rev), Some(&d)),
-            Color::Green
-        );
-        let stale = NodeRev("staaaaaaaaaaaaaa".into());
-        assert_eq!(
-            classify_edge(&Selector::Page, Some(&stale), Some(&d)),
-            Color::Red(RedReason::Drifted)
-        );
-    }
-
-    /// A dangling `^block-id` renders `red(dangling-anchor)` — DISTINCT from
+    /// A dangling `^block-id` is `red(dangling-anchor)` — DISTINCT from
     /// `red(drifted)` — and carries the live toc's nearest block-id candidates
     /// (decision #9; a hint, never auto-repair).
+    ///
+    /// The address half decides this, so it survives the retirement of the
+    /// `node_rev` compare that used to be the vehicle for asserting it.
     #[test]
     fn dangling_anchor_distinct_from_drifted() {
-        // live doc: ^kept exists, ^gone does not; a heading whose content moved.
+        // live doc: ^kept exists, ^gone does not.
         let d = doc("# Task\n\n## Objective\n\nbody ^kept\n\n## Notes\n\nmore\n");
-        let stale = NodeRev("staaaaaaaaaaaaaa".into());
 
         // dangling anchor: pinned ^gone no longer resolves.
-        let dangling = classify_edge(&Selector::Block("gone".into()), Some(&stale), Some(&d));
+        let dangling = resolve_selector(&Selector::Block("gone".into()), Some(&d))
+            .expect_err("a vanished anchor does not resolve");
         let Color::Red(RedReason::DanglingAnchor { candidates }) = &dangling else {
             panic!("a vanished pinned anchor must render red(dangling-anchor): {dangling:?}");
         };
@@ -757,26 +708,28 @@ mod tests {
             "the nearest-candidate hint lists the live toc's block ids: {candidates:?}"
         );
 
-        // drift: the heading resolves, but its rev is stale.
-        let drifted = classify_edge(
-            &Selector::Heading(vec!["Task".into(), "Objective".into()]),
-            Some(&stale),
-            Some(&d),
+        // A heading that RESOLVES is not an address failure at all — whatever
+        // the compare then says about its rev is a different plane's answer.
+        assert!(
+            resolve_selector(
+                &Selector::Heading(vec!["Task".into(), "Objective".into()]),
+                Some(&d)
+            )
+            .is_ok(),
+            "a live heading resolves; drift is the compare's question, not the address's"
         );
-        assert_eq!(drifted, Color::Red(RedReason::Drifted));
 
         // The two reds are DISTINCT enum values — never conflated (decision #9).
-        assert_ne!(dangling, drifted);
+        assert_ne!(dangling, Color::Red(RedReason::Drifted));
     }
 
-    /// A pinned heading that resolves to nothing renders `red(selector-unresolved)`
+    /// A pinned heading that resolves to nothing is `red(selector-unresolved)`
     /// with the live toc's nearest heading candidates — distinct from drift.
     #[test]
     fn selector_unresolved_for_missing_heading() {
         let d = doc("# Task\n\n## Objective\n\nbody\n");
-        let stale = NodeRev("staaaaaaaaaaaaaa".into());
         let sel = Selector::Heading(vec!["Task".into(), "Goalz".into()]);
-        let c = classify_edge(&sel, Some(&stale), Some(&d));
+        let c = resolve_selector(&sel, Some(&d)).expect_err("a missing heading does not resolve");
         let Color::Red(RedReason::SelectorUnresolved { candidates }) = &c else {
             panic!("a missing heading selector must render red(selector-unresolved): {c:?}");
         };

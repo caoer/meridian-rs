@@ -490,8 +490,10 @@ revs-read:
         assert_eq!(render_human(&report()), expected);
     }
 
-    /// A depth bound renders in the header; a grey declared-unpinned entry prints
-    /// `rev=-` and the color reason.
+    /// A depth bound renders in the header; a grey entry carrying no rev prints
+    /// `rev=-` and the color reason. The subject is the RENDER SHAPE, so any
+    /// reason-carrying grey serves — this one is `immutable-root`, whose reason
+    /// word stands alone with no detail to compose.
     #[test]
     fn render_human_bounded_and_grey() {
         let mut r = report();
@@ -500,7 +502,7 @@ revs-read:
         r.entries = vec![WalkEntry {
             selector: "b.md".to_string(),
             rev: None,
-            color: Color::Grey(GreyReason::DeclaredUnpinned),
+            color: Color::Grey(GreyReason::ImmutableRoot),
             depth: 1,
         }];
         r.revs_read = vec![RevCitation {
@@ -509,7 +511,7 @@ revs-read:
         }];
         let expected = "\
 walk down a.md (depth <= 1)
-  depth 1  grey declared-unpinned  b.md  rev=-
+  depth 1  grey immutable-root  b.md  rev=-
 revs-read:
   a.md @ aaaaaaaaaaaaaaaa
 ";
