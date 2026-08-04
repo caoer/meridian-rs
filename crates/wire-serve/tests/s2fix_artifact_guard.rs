@@ -104,25 +104,25 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
 /// retrieval plane. R4 makes `hash` MANDATORY, so there is no pin without one.
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
-/// One R4 pin in the bytes `lock::render` emits. `declared_ref` is the
-/// `page[#A/B]` convenience spelling this fixture speaks, split here into the
-/// `object` wikilink and the `path` ARRAY — R4 admits no joined string on the
-/// row, and no `ref:`.
-fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
-    let (target, fragment) = match declared_ref.split_once('#') {
-        Some((t, f)) => (t, f),
-        None => (declared_ref, ""),
-    };
-    let object = target.strip_suffix(".md").unwrap_or(target);
-    let path = if fragment.is_empty() {
-        String::new()
-    } else {
-        fragment
-            .split('/')
-            .map(|seg| format!("\"{seg}\""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+/// One R4 pin in the bytes `lock::render` emits.
+///
+/// **Takes the path as SEGMENTS, never a joined `page#A/B` spelling.** The
+/// previous form took that spelling and rebuilt the array by splitting the
+/// fragment on `/` — which is the exact thing R1.6 forbids on a machine
+/// surface, re-entering through a fixture. A heading whose own text contains a
+/// `/` (now legal and pinnable: U14 ruled the round-trip refusal dead) would
+/// have been split into TWO array elements, handing these tests a lock row the
+/// engine could never mint. The test would then pass on an impossible subject.
+///
+/// The production path is proved not to do this by
+/// `s7_pin::the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string`;
+/// this helper now holds the same line.
+fn lock_block(object: &str, path: &[&str], fingerprint: &str) -> String {
+    let path = path
+        .iter()
+        .map(|seg| format!("\"{seg}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
          hash: \"{FIXTURE_BLOB}\"\n    path: [{path}]\n    \
@@ -187,7 +187,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
             mallory,
             vec![put_at_end(
                 "Plan",
-                &lock_block("guide.md#Guide/Leader's Guideline", &token),
+                &lock_block("guide", &["Guide", "Leader's Guideline"], &token),
             )],
             None,
         ),
@@ -232,7 +232,7 @@ fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
             None,
             vec![put_at_end(
                 "Plan",
-                &lock_block("guide.md#Guide/Leader's Guideline", &token),
+                &lock_block("guide", &["Guide", "Leader's Guideline"], &token),
             )],
             None,
         ),
@@ -254,7 +254,7 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
     let mut args = args_for("plan.md", Some("agent-mallory"), Vec::new(), None);
     args.plan_edits = vec![PlanEdit::Append {
         hpath: "Plan".into(),
-        body: lock_block("guide.md#Guide/Leader's Guideline", &token),
+        body: lock_block("guide", &["Guide", "Leader's Guideline"], &token),
     }];
     let forged = splice(
         &root,
@@ -286,7 +286,7 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
             path: WPath("forged.md".into()),
             body: format!(
                 "# Forged\n{}",
-                lock_block("guide.md#Guide/Leader's Guideline", &token)
+                lock_block("guide", &["Guide", "Leader's Guideline"], &token)
             ),
             actor: Some("agent-mallory".into()),
             now: None,
