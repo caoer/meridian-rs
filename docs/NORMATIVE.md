@@ -9,11 +9,12 @@ confirm at any revision.
 table.** The MEMBERS row count changes when a row is added to or removed from
 § MEMBERS — which happens when a new self-declared normative document lands
 (§ The merge obligation) or a member is retired. **Measured:** adding a row moves
-MEMBERS 9 → 10 while the file counts stay at 33. A blanket "unaffected by edits
+MEMBERS 13 → 14 while the file counts stay at 37. A blanket "unaffected by edits
 to this file" would be false for exactly this number.
 
-Provenance, not the load-bearing part: the counts were last measured at
-`457141ba`.
+Provenance, not the load-bearing part: the counts were last measured in the
+landing assembly that discharged § The merge obligation; they read `457141ba`
+before it.
 
 > [!NOTE] Why this is an invalidation condition and not a date
 > This header first named a revision, on the principle that a control must be
@@ -74,16 +75,24 @@ which is the same distinction the criterion is about.
 
 | | count |
 |---|---|
-| entries under `docs/` at any depth, any type | **39** |
+| entries under `docs/` at any depth, any type | **43** |
 | directories | 6 |
 | non-`.md` files | 2 |
-| `.md` files | 31 |
-| — of those, top level | 19 |
+| `.md` files | 35 |
+| — of those, top level | 23 |
 | — of those, under subdirectories | 12 |
 | symlinks | 0 |
 
-`6 + 2 + 31 = 39`, which closes against the total. **Every one of the 33 files
+`6 + 2 + 35 = 43`, which closes against the total. **Every one of the 37 files
 appears in a table below**, and the 6 directories are named.
+
+> **Re-measured in the landing assembly, not incremented.** The table above read
+> 39 / 31 / 19 / 33 when `docs-normative` was written. The four amendment
+> documents § The merge obligation listed as in-flight have now landed here, so
+> the top-level `.md` count moves 19 → 23 and every total moves with it. The
+> directory, subdirectory-`.md`, non-`.md` and symlink counts are unchanged —
+> stated because a reader who sees four numbers move is entitled to know which
+> ones did not.
 
 The counts are taken **with this file present**, and this file is classified
 below like any other. A membership list that omits itself is a list with a
@@ -91,10 +100,10 @@ known hole in it, and the hole is the row a reader is standing on.
 
 **Two file counts are both correct and they differ by one — reconciled here so
 the next reader meets the answer rather than the discrepancy.** Counting files
-under `docs/` gives **33**; counting the documents this list classifies *other
-than itself* gives **32**. The difference is this file. A reviewer re-deriving
+under `docs/` gives **37**; counting the documents this list classifies *other
+than itself* gives **36**. The difference is this file. A reviewer re-deriving
 the count from `git ls-files docs/` at a revision before this file existed gets
-32 and is right; a reader running `find docs -type f` today gets 33 and is also
+36 and is right; a reader running `find docs -type f` today gets 37 and is also
 right. Say which side of the self-inclusion you counted from.
 
 **Stated rather than left to be discovered — this enumeration cannot see:**
@@ -102,9 +111,12 @@ right. Say which side of the self-inclusion you counted from.
 - **Documents outside `docs/`.** `CLAUDE.md` is always-loaded project context
   and assigns status to four documents (§ The fourth authority); `decisions/`
   and the llm-wiki carry ratification records this file only points at.
-- **Amendments in flight on other branches.** At the time of measurement two
-  new amendment documents existed untracked on the `u27-keyset` worktree. They
-  are not on `main` and are not listed. A membership list is a snapshot.
+- **Amendments in flight on other branches.** At the time of the original
+  measurement, new amendment documents existed untracked on the `u27-keyset`
+  worktree, unlisted because they were not on `main`. **That limitation has since
+  been discharged, not merely restated:** the landing assembly brought all four
+  in and § MEMBERS carries them. A membership list is still a snapshot — the
+  point survives the instance, which is why this bullet stays.
 - **Authority asserted anywhere but the file's own opening.** Classification
   below reads each document's self-declaration; a ruling that lives only in a
   session transcript is invisible here by construction.
@@ -125,6 +137,10 @@ declaration; where there is none, the row would not be here.
 | `wire-contract-fingerprint-or-force-amendment.md` | **member by criterion 3 — the ruling act.** Decision 18 ordered it into existence and it quotes ZT's ruling verbatim at `:7-13`. Its self-declaration at `:3-5` was added later as clerical restoration; see § The classifier that could not classify itself |
 | `arming-from-zero.md` | `:3` "Status: normative for the floor-convention arming ladder." |
 | `meridian-md-schema.md` | `:10` "Status: normative for the `MERIDIAN.md` parse." |
+| `wire-contract-v2-armed-file-rev-amendment.md` | "Status: normative amendment to `docs/wire-contract-v2.md` §4.4 — the `armed` …". **Landed by the assembly; row owed under § The merge obligation.** |
+| `wire-contract-v2-error-extras-amendment.md` | "Status: normative amendment to `docs/wire-contract-v2.md` §8." **Landed by the assembly; row owed under § The merge obligation.** |
+| `wire-contract-v2-extract-frames-amendment.md` | "Status: normative amendment to `docs/wire-contract-v2.md` §4.3." **Landed by the assembly; row owed under § The merge obligation.** |
+| `wire-contract-v2-cross-root-links-amendment.md` | "Status: normative amendment to `docs/wire-contract-v2.md` §4.6 on the read …". **Landed by the assembly; row owed under § The merge obligation.** |
 
 **Two of these are not amendment files.** `arming-from-zero.md` and
 `meridian-md-schema.md` are self-declared normative on their own surfaces. A
@@ -360,6 +376,18 @@ MEMBERS table:
 
 **Six members become ten**, and the count in § The enumeration moves with them.
 
+> **DISCHARGED — the obligation fired and this is the record of it.** The
+> landing assembly merged `u27-keyset` and `u21-cross-vault-links` (the latter
+> inside `s1-trigger-fix`, which contains it entire). All four documents above
+> are now in `docs/` and all four carry rows in § MEMBERS. The MEMBERS row count
+> moves 9 → 13 and § The enumeration was RE-MEASURED, not incremented.
+>
+> This clause is what made that happen. `docs-normative` was written on a branch
+> that could not see the merge, named the four documents it could not yet
+> classify, and stated the trigger — so the obligation was discharged by reading
+> this file rather than by anyone remembering. Keep the clause: the next landing
+> needs it as much as this one did.
+
 **A modification to an existing member creates NO row obligation** — only a new
 self-declared document does. `u9a-gamma-repair` and `u9b-migration` both edit
 `wire-contract-v2-passenger-registry-amendment.md` and
@@ -430,7 +458,7 @@ git rev-parse --short HEAD                          # state the revision
 
 # MEMBERS rows — SECTION-SCOPED. An unscoped grep over this file counts every
 # table row in it and returns 24.
-awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 9
+awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 13
 
 grep -c -i normative docs/*.md                      # who claims it
 ```
@@ -451,7 +479,7 @@ wrong.
 **Two-arm any line here before trusting it,** including these:
 
 ```sh
-awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 9  — the real file
+awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 13 — the real file
 awk '/^## MEMBERS/,/^## RULED LAW/' docs/laws.md      | grep -c '^| `'   # 0  — a file with no MEMBERS section
 ```
 
