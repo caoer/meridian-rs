@@ -29,12 +29,44 @@
 //!
 //! # THE INSTRUMENT'S OWN CONTROL
 //! These arms need a tree the fence is actively refusing, so anything that lands
-//! landed past a fence that was trying to say no. A scratch workspace with no
-//! receipt journal is that tree: `mrd check --commit-gate` answers
-//! `grey(cannot-assess)` and refuses. **That precondition is ASSERTED, never
-//! assumed** — [`Fixture::refusing`] runs the verb the body runs and fails loudly
-//! if it ever stops refusing, because a green answer would make every refusal arm
-//! below pass for the wrong reason and look exactly like a working fence.
+//! landed past a fence that was trying to say no. **That precondition is ASSERTED,
+//! never assumed** — [`Fixture::refusing`] runs the verb the body runs and fails
+//! loudly if it ever stops refusing, because a green answer would make every
+//! refusal arm below pass for the wrong reason and look exactly like a working
+//! fence.
+//!
+//! # HOW THAT TREE IS BUILT CHANGED — and this is a REAL reduction, recorded
+//! It used to be free. *A scratch workspace with no receipt journal* was already a
+//! refusing tree: with no baseline, `mrd check --commit-gate` answered
+//! `grey(cannot-assess)` and refused. Emptiness itself was the refusal.
+//!
+//! Under ZT's ruling (2026-08-03) the engine keeps no memory, the gate reads the
+//! **pin plane alone**, and a workspace with no pins is vacuously clean — it exits
+//! **0** (U5 corpus row 09). So five arms here began passing a control that had
+//! silently become false: they type-checked perfectly and measured nothing. **That
+//! was the honest signal that enforcement reduced, and the fix is not to weaken the
+//! control.** [`Fixture::refusing`] still asserts a refusal; what changed is that
+//! the fixture must now CONSTRUCT one — [`Fixture::drift_a_pin`] pins real content
+//! and then rewrites it out of band, so the gate refuses for a reason it can
+//! actually see.
+//!
+//! **The accounting entry:** the fence's fail-closed behaviour on a corpus that
+//! claims nothing moved from IMPLICIT (every fresh workspace refused) to OPT-IN
+//! (the caller asks for it with `--require-pins`).
+//!
+//! # WHY THE OPT-IN FLAG IS NOT USED HERE, though it exists
+//! The ruling that restored fail-closed-on-empty as `mrd check --commit-gate
+//! --require-pins` would rebuild this file's original mechanism exactly. It is
+//! deliberately NOT used, for a reason this file already states at
+//! [`Fixture::refusing`]: **the shipped fence body runs bare `mrd check
+//! --commit-gate`** (`crates/mrd/src/skills/hook.md`), and *"a control on a
+//! different invocation than the body runs is a control over a different verdict —
+//! which is how the fence came to ship asking a permanent question in the first
+//! place."* A control passing `--require-pins` would assert a refusal the real
+//! fence never receives, and every `git commit` arm below drives the real fence.
+//! The flag's own coverage lives with the gate, in
+//! `crates/mrd/tests/s4r19_commit_gate.rs`, where the invocation under test IS the
+//! flag.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -88,11 +120,54 @@ impl Fixture {
         );
         git_ok(&fixture.ws, &["config", "user.name", "fence"]);
         fixture.write("plan.md", "# Plan\n\n## Goals\n\nalpha\n");
+        fixture.write("source.md", "# Source\n\n## Guideline\n\nthe pinned body\n");
+        fixture.write("claim.md", "# Claim\n\nwe rely on the guideline.\n");
         let init = fixture.mrd(&["init"]);
         assert!(init.status.success(), "mrd init: {}", said(&init));
         git_ok(&fixture.ws, &["add", "-A"]);
         git_ok(&fixture.ws, &["commit", "-qm", "corpus"]);
+        fixture.drift_a_pin();
         fixture
+    }
+
+    /// **Build the refusing tree the whole file rests on.**
+    ///
+    /// Pin `claim.md` to a section of `source.md` through the shipped CLI, then
+    /// rewrite that section by hand — an out-of-band edit to PINNED content, which
+    /// the surviving pin plane reads as `red content-drifted`. The gate the fence
+    /// runs therefore refuses, and it refuses over a fact about this corpus.
+    ///
+    /// This function is the whole cost of the ruling, in one place. The refusal
+    /// used to require nothing at all; it now requires a corpus that declares a
+    /// claim and a lie told against it. Every arm below is unchanged in subject —
+    /// they measure the FENCE — but none of them can run over an empty workspace
+    /// any more.
+    fn drift_a_pin(&self) {
+        let pin = self.mrd(&["pin", "claim.md", "source.md#Source/Guideline"]);
+        assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
+        git_ok(&self.ws, &["add", "-A"]);
+        git_ok(&self.ws, &["commit", "-qm", "pin"]);
+        self.write("source.md", "# Source\n\n## Guideline\n\nOUT OF BAND\n");
+        git_ok(&self.ws, &["add", "-A"]);
+        assert!(
+            std::fs::read_to_string(self.ws.join("source.md"))
+                .expect("source")
+                .contains("OUT OF BAND"),
+            "R40 — the drift is on disk and staged, so it is in the interval a \
+             commit records"
+        );
+    }
+
+    /// **Undo [`Fixture::drift_a_pin`]** — restore the pinned section to the bytes
+    /// the lock names, and stage that. The corpus becomes one with a real pin and
+    /// no lie told against it.
+    ///
+    /// This exists for [`the_refusing_fixture_is_two_directional`], which is the
+    /// condition on the whole rebuild: a control that only ever refuses has not
+    /// been shown to depend on the thing it guards.
+    fn heal_the_pin(&self) {
+        self.write("source.md", "# Source\n\n## Guideline\n\nthe pinned body\n");
+        git_ok(&self.ws, &["add", "-A"]);
     }
 
     fn hook_path(&self) -> String {
@@ -170,6 +245,13 @@ impl Fixture {
     /// It asks the question THE FENCE ASKS. A control on a different invocation
     /// than the body runs is a control over a different verdict — which is how the
     /// fence came to ship asking a permanent question in the first place.
+    ///
+    /// **This control CAUGHT the reduction it now guards against.** When the gate
+    /// stopped refusing empty workspaces, five arms in this file kept compiling and
+    /// stopped measuring — and it was this assert firing that said so. It is
+    /// unchanged; [`Fixture::drift_a_pin`] changed instead, because the honest fix
+    /// for a control that went false is a fixture that makes it true again, never a
+    /// control that asks less.
     fn refusing(&self) {
         let out = self.mrd(&["check", "--commit-gate"]);
         assert_ne!(
@@ -177,6 +259,13 @@ impl Fixture {
             Some(0),
             "the control failed: this fixture's tree must be one `mrd check --commit-gate` \
              REFUSES, or every arm resting on it measures nothing. Output: {}",
+            said(&out)
+        );
+        assert!(
+            said(&out).contains("content-drifted"),
+            "and it must refuse for the reason this fixture BUILT — a refusal from \
+             somewhere else would mean the drift stopped being the thing under the \
+             fence: {}",
             said(&out)
         );
     }
@@ -231,6 +320,92 @@ fn fence_body(doc: &str) -> String {
         body.push('\n');
     }
     panic!("the fenced block is never closed");
+}
+
+// ── THE FIXTURE'S OWN MUTATION PROOF ─────────────────────────────────────────
+
+/// **THE CONDITION ON THIS FILE'S REBUILD: the control varies with the world.**
+///
+/// Every other arm here rests on [`Fixture::refusing`], and a control that refuses
+/// is worth nothing until it is also shown to PASS when nothing is wrong. That is
+/// not a hypothetical worry — it is the exact defect this file just came out of.
+///
+/// # What the old controls actually were
+/// Before the ruling, `refusing()` passed over a corpus of `plan.md` and nothing
+/// else: no pin, no out-of-band write, **nothing wrong at all**. The refusal came
+/// from the journal being empty, so the gate answered `grey(cannot-assess)`. The
+/// five arms asserted exit 1 for a reason unrelated to what the fence guards.
+/// **They were ACCIDENTALLY-refusing controls** — permanently refusing, and
+/// therefore never varying with their input, which is precisely the property row 22
+/// reports as the shipped fence's defect. They would have kept passing over a fence
+/// that had stopped working.
+///
+/// So this is not a lost default being compensated for. It is an accident being
+/// replaced by the thing the tests meant, and the fence ends up measured more
+/// strictly than it was before.
+///
+/// # Both directions, one run, one fixture
+/// Drifted ⇒ the gate refuses. The SAME fixture healed ⇒ the gate passes. Neither
+/// half alone proves anything: the first is satisfied by a gate wired shut, the
+/// second by a gate wired open, and only the pair shows the control tracks the
+/// world.
+#[test]
+fn the_refusing_fixture_is_two_directional() {
+    let fx = Fixture::new("mutation");
+
+    // REFUSING — the drift `Fixture::new` built, which is what every other arm
+    // rests on.
+    let drifted = fx.mrd(&["check", "--commit-gate"]);
+    assert_eq!(
+        drifted.status.code(),
+        Some(1),
+        "the drifted corpus must refuse, or every arm in this file measures \
+         nothing: {}",
+        said(&drifted)
+    );
+    assert!(
+        said(&drifted).contains("content-drifted"),
+        "and for the GUARDED reason — an out-of-band edit to pinned content, not \
+         an incidental absence of evidence: {}",
+        said(&drifted)
+    );
+
+    // HEALED — the same corpus, the same fixture, the lie removed.
+    fx.heal_the_pin();
+    let healed = fx.mrd(&["check", "--commit-gate"]);
+    assert_eq!(
+        healed.status.code(),
+        Some(0),
+        "THE HALF THE OLD CONTROLS COULD NOT SHOW: with the drift repaired the gate \
+         PASSES, so the refusal above is caused by the drift and not by the \
+         fixture's shape: {}",
+        said(&healed)
+    );
+    assert_ne!(
+        drifted.status.code(),
+        healed.status.code(),
+        "the control VARIES with the world — the one property the old empty-corpus \
+         control never had, because it refused over a workspace with nothing wrong \
+         in it"
+    );
+
+    // AND THE FENCE FOLLOWS THE GATE, end to end through a real `git commit`. The
+    // arms below prove the refusal direction; this proves a healthy world commits,
+    // so the fence is not simply stuck shut.
+    fx.place();
+    let before = fx.head_count();
+    let committed = fx.git(&["commit", "-m", "healthy world"], None);
+    assert!(
+        committed.status.success(),
+        "a corpus with nothing wrong in it must COMMIT through the placed fence — a \
+         fence that refuses everything is not a fence: {}",
+        said(&committed)
+    );
+    assert_eq!(
+        fx.head_count(),
+        before + 1,
+        "R40 — the commit is real, not merely a zero exit"
+    );
 }
 
 // ── ROW 22 — the force value is PARSED, and the force path is RENDERED ───────

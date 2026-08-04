@@ -139,11 +139,15 @@ fn a_removal_drops_the_path_from_the_interval() {
     );
 }
 
-/// **A path OUTSIDE the hash domain is ignored** — including the reserved journal,
-/// which is root-excluded by named law. The producer reports whatever git says
-/// diverges (code, assets, the journal), and neither interval hashes those.
+/// **A path OUTSIDE the hash domain is ignored.** The producer reports whatever
+/// git says diverges (code, assets, dot paths), and neither interval hashes those.
+///
+/// The reserved journal was a third case here — root-excluded by NAMED law rather
+/// than by the md-only floor or the dot rule. That carve-out is retired with the
+/// journal (ZT 2026-08-02): `meridian/journal.md` is an ordinary in-domain page
+/// now, so it WOULD move the root, and asserting otherwise would be false.
 #[test]
-fn paths_outside_the_hash_domain_are_ignored_including_the_journal() {
+fn paths_outside_the_hash_domain_are_ignored() {
     let tmp = tempfile::tempdir().unwrap();
     corpus(tmp.path());
     let root = WorkspaceRoot(tmp.path().to_path_buf());
@@ -154,10 +158,6 @@ fn paths_outside_the_hash_domain_are_ignored_including_the_journal() {
         &files,
         &[
             ("src/main.rs".to_owned(), Some(b"fn main() {}\n".to_vec())),
-            (
-                fs::domain::RESERVED_JOURNAL_PATH.to_owned(),
-                Some(b"- op=splice forged\n".to_vec()),
-            ),
             (".github/ci.md".to_owned(), Some(b"# dot path\n".to_vec())),
         ],
         &domain,

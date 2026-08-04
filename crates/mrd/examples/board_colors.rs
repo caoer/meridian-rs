@@ -34,7 +34,7 @@ fn run(ws: &str) -> Result<(), String> {
 
     // The board off U2.9's locked read face — the same default-face SQL the U5.1
     // gates assert (empty journal: the trace is not exercised by the color leg).
-    let conn = view::read_face::open_board(&docs, &[]).map_err(|e| format!("open_board: {e}"))?;
+    let conn = view::read_face::open_board(&docs).map_err(|e| format!("open_board: {e}"))?;
     let mut stmt = conn
         .prepare(
             "SELECT src_path, to_path, to_sel, color, reason \

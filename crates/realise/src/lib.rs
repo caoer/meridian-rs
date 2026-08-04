@@ -211,11 +211,14 @@ pub enum ClaimState {
     Converged,
     /// Check failed and no apply-capable claim is declared in scope: a human /
     /// agent is needed. One board card was minted (or already present —
-    /// idempotent), its journal anchor carried here when this run minted it.
+    /// idempotent), its PATH carried here when this run minted it.
     PendingAgent {
-        /// The guarded-create journal anchor when THIS run minted the card;
+        /// The born card's workspace-relative path when THIS run minted it;
         /// `None` when the card already existed (idempotent — already
-        /// scheduled).
+        /// scheduled). It carried the guarded-create journal anchor until the
+        /// journal was removed (ZT 2026-08-02); the path is the identifier that
+        /// survives, and the Some/None arity — "did this run mint it" — is the
+        /// fact callers actually read, unchanged.
         card: Option<String>,
     },
     /// Apply was declared but the retry budget was exhausted with the check
@@ -527,9 +530,10 @@ fn applied_of(outcome: TaskOutcome) -> Option<Applied> {
 }
 
 /// Mint one pending-agent board card through the U2.6 guarded create (§5.4
-/// emit): CAS `if_absent`, journaled birth, gate seam (`&[]` ⇒ bare commit).
-/// Idempotent by claim selector — a card that already exists is "already
-/// scheduled", returned as `Ok(None)`, never a second card and never an error.
+/// emit): CAS `if_absent`, gate seam (`&[]` ⇒ bare commit). Returns the born
+/// card's path. Idempotent by claim selector — a card that already exists is
+/// "already scheduled", returned as `Ok(None)`, never a second card and never an
+/// error.
 fn mint_board_card(
     root: &fs::WorkspaceRoot,
     selector: &str,
@@ -556,7 +560,7 @@ fn mint_board_card(
     let body = render_card(selector, rule, detail, spec.now.as_deref());
     let args = wire_serve::write::CreateArgs {
         id: None,
-        path: wire::Path(path),
+        path: wire::Path(path.clone()),
         body,
         actor: Some(spec.actor.clone()),
         now: spec.now.clone(),
@@ -564,7 +568,7 @@ fn mint_board_card(
         dry: false,
     };
     match wire_serve::write::create(root, 0, &args, &[]) {
-        Ok(out) => Ok(out.journal_anchor),
+        Ok(_) => Ok(Some(path)),
         // The card already exists: the guarded create refuses the occupied path
         // with a CAS mismatch — that IS the idempotency (already scheduled).
         Err(e) if is_cas_mismatch(&e) => Ok(None),

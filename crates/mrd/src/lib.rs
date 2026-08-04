@@ -38,7 +38,6 @@ mod history_cmd;
 // the reader of `skill_cmd`'s document; nothing here writes.
 pub mod hook;
 mod init;
-mod journal_cmd;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
@@ -76,8 +75,8 @@ const EXIT_FAIL: u8 = 2;
 /// block, can never be lexed as one.
 const HEADER: &str = "\
 mrd — the meridian workspace CLI
-  `!` in the gutter marks a verb that CHANGES something — files, the drawer, or
-  the journal. Every unmarked verb is a read.
+  `!` in the gutter marks a verb that CHANGES something — files or the drawer.
+  Every unmarked verb is a read.
 ";
 
 /// The verb listing and the options block: the one human-authored source for
@@ -127,8 +126,8 @@ usage:
                            through the production splice choke-point (CAS +
                            armed gate + write flock — never bypassed). --dry:
                            everything except disk. --force: escape an armed
-                           binding-break/block refusal (the skip is journaled
-                           and rendered, never silent). --if-fingerprint: the
+                           binding-break/block refusal (the skip is rendered in
+                           the verdict, never silent). --if-fingerprint: the
                            world-grain guard. Exits: 0 committed (or dry) /
                            1 refused (the engine's message, verbatim) / 2 bad
                            invocation
@@ -198,15 +197,33 @@ usage:
                            alike, each with its own reason word / 2 bad
                            invocation
   mrd check [--core]       the pure READ validity verb (what lies?): layer-0 core
-                           recomputes the receipt journal's chain continuity and
-                           the foreign_edit trace (last-receipt-vs-live) over the
-                           resolved workspace. Writes nothing. When the journal
-                           cannot date the live tree — no rows, or a last receipt
-                           the tree no longer matches — both detectors refuse
-                           grey(cannot-assess) instead of claiming a green they
-                           never read or an out-of-writer edit they cannot
-                           identify. Exits: 0 green / 1 a chain break, or
-                           grey(cannot-assess) — the exit says do-not-proceed, the
+                           observes every claim against the current tree and reads
+                           the pin plane — the CLAIM half (did pinned content
+                           drift) and the RETRIEVAL half (is the pinned blob
+                           durably anchored). Writes nothing.
+                           WRITE HISTORY IS NOT ASSESSED, by design: the engine
+                           keeps no memory — history is pinned to git at lock, and
+                           anything between locks is not history. So chain
+                           continuity and last-receipt-vs-live are not checked at
+                           all (not grey, NOT CHECKED) and both faces say so with
+                           the reason. A green here is NARROWER than the green this
+                           verb once returned: it means the world still matches the
+                           pins, and nothing about how it got that way.
+                           Archaeology is git; attribution is transcript JSONL.
+                           --commit-gate --require-pins REFUSES a corpus that
+                           declares no pin at all. Opt-in, and only with
+                           --commit-gate. By default a pinless corpus PASSES: the
+                           gate asks `does the world still match the pins`, and
+                           over zero pins that is vacuously true, so nothing is
+                           unknown because nothing was asked. A grey pin or an
+                           unaskable object store still fails CLOSED either way —
+                           that is a question that WAS put and could not be
+                           answered, which is a different thing. The flag is for
+                           callers that want no-coverage to mean refuse in the
+                           EXIT CODE, since a shell cannot read a disclosure line.
+                           Exits: 0 green / 1 a
+                           finding, grey(cannot-assess), or no-pin-coverage under
+                           --require-pins — the exit says do-not-proceed, the
                            reason word says why / 2 bad invocation
   mrd skill hook           EMIT the commit-fence contract to stdout, and nothing
                            else: the markdown IS the contract — what to place, at
@@ -247,18 +264,21 @@ usage:
                            0 clean / 1 a mismatch, dead rule, budget finding, or
                            failed quiescence / 2 malformed spec or unreadable corpus
   mrd test --history WORKSPACE --rule PAGE [--spec PAGE]
-                           the history tier: JOIN the receipt journal's rows
-                           against git (the commit that appended each ^r-NNNNNN
-                           row gives the write's before/after bytes), rebuild the
-                           docs, and compare PAGE's CHECK refusals with the golden
-                           list declared in --spec's ```golden fence (a HOOK-only
-                           page refuses zero changes). --spec names a spec page
-                           whose `rule:` reference must resolve to PAGE; omitting
-                           it declares nothing. The report always names the exact
-                           journal span; a would-refuse item absent from that fence
-                           fails, a declared item passes with its reason rendered,
-                           and unreconstructable rows are counted grey, never
-                           guessed. Exits: 0 clean /
+                           the history tier: replay the workspace's OWN git
+                           history (one row per commit-and-path, the commit and
+                           its first parent giving the write's after/before
+                           bytes), rebuild the docs, and compare PAGE's CHECK
+                           refusals with the golden list declared in --spec's
+                           ```golden fence (a HOOK-only page refuses zero
+                           changes). History is git — the engine keeps no memory
+                           of its own, so an item is named <commit>:<path> and
+                           the retired receipt journal names nothing. --spec
+                           names a spec page whose `rule:` reference must resolve
+                           to PAGE; omitting it declares nothing. The report
+                           always names the exact history span; a would-refuse
+                           item absent from that fence fails, a declared item
+                           passes with its reason rendered, and unreconstructable
+                           rows are counted grey, never guessed. Exits: 0 clean /
                            1 an undeclared would-refuse item / 2 tool failure
 ! mrd run <PAGE> [TASK] [-- ARGS]
                            run a task block addressed by the page's frontmatter
@@ -289,22 +309,6 @@ usage:
                            scaffold; undeclared content renders as findings,
                            NEVER a prune. Exits: 0 converged (or dry) / 1 a
                            finding / 2 bad invocation
-! mrd journal genesis --ruling <REF> [--archive PATH] [--dry] [--json]
-                           the GOVERNED reset of the receipt journal (G2): move
-                           every row to a dated archive page, truncate, and open
-                           the new chain with a `op=genesis` row naming that
-                           archive. The write door refuses the reserved journal,
-                           so the only alternative was a hand rewrite — which
-                           teaches that the attested record is editable when it
-                           is inconvenient. --ruling is REQUIRED: the engine
-                           never invents a justification it was not given. The
-                           row attaches to the ARCHIVE (in the hash domain, so
-                           its creation really does move the root); truncating
-                           the journal moves none, by design. Rows are
-                           superseded, never destroyed. NOTE the chain reads
-                           grey(no-baseline) afterwards, not green. Exits: 0
-                           done (or dry) / 1 the plane refused (nothing to
-                           archive, archive exists) / 2 bad invocation
 ! mrd realise <PAGE> [--dry]
                            the reconciliation loop: observe -> check ->
                            apply (only on drift, once) -> re-check over the page's
@@ -468,7 +472,6 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
         "realise" => realise_cmd::run(&args[1..]),
-        "journal" => journal_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
@@ -849,7 +852,6 @@ mod help {
                     vec!["cache", "ls"],
                     vec!["cache", "clean"],
                     vec!["view", "status"],
-                    vec!["journal", "genesis"],
                 ],
                 "the two-word verbs of the listing"
             );
@@ -883,20 +885,22 @@ mod help {
         }
 
         /// The write mark is the gutter, so the classification is countable
-        /// straight off the text. 12 verbs write; the rest read.
+        /// straight off the text. 11 verbs write; the rest read. (It was 12
+        /// until `mrd journal genesis` was retired — the engine keeps no memory,
+        /// so nothing writes a ledger any more.)
         #[test]
-        fn twelve_verbs_are_marked_as_writers() {
+        fn eleven_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                12,
+                11,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 25, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists, so a

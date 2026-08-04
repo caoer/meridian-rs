@@ -265,8 +265,7 @@ fn reserved_paths_are_never_pruned_away() {
         Domain::from_config("version: 1\nignore:\n  - \"meridian/**\"\n  - \"conventions/**\"\n");
     assert!(
         !domain.prunes_dir(Path::new("meridian")),
-        "meridian/ holds the reserved journal, the armed-rules artifact, and the \
-         once-armed marker"
+        "meridian/ holds the armed-rules artifact and the once-armed marker"
     );
 }
 

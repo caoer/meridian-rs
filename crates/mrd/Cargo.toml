@@ -52,13 +52,14 @@ registry = { workspace = true }
 fs = { workspace = true }
 wire = { workspace = true }
 wire-serve = { workspace = true }
-# The `mrd test --history` tier (U1.6): reconstruct historical changes by JOINing
-# the receipt journal's rows against git (the git-anchor JOIN — the commit that
-# appended each `^r-NNNNNN` row gives the write's before/after bytes), build the
+# The `mrd test --history` tier (U1.6): reconstruct historical changes off GIT,
+# which is where history lives by law (ZT 2026-08-03 — the engine keeps no
+# memory). `git::Repo::path_history` enumerates one row per (commit, path) and
+# `git::Repo::blobs_at` recovers both sides' bytes; from there mrd builds the
 # before/after `Document`s through the fixture doc-building path (`syntax::parse` →
 # `model::build`), derive the `rulepack-api@2` change, and run the convention's
-# `check_change` — the SAME loader/evaluator the door uses. `receipt` parses the
-# journal rows; `policy` is the convention loader + `derive_change` + the
+# `check_change` — the SAME loader/evaluator the door uses. `policy` is the
+# convention loader + `derive_change` + the
 # full-`EvalLimits` CHECK evaluator; `model`/`syntax` build the docs. `effects` is
 # still the `mrd test`/`mrd run` eval kernel. All are path crates already in the
 # graph (`policy`/`receipt` via `wire-serve`) — no new external crate enters,
@@ -86,7 +87,8 @@ duckdb = { workspace = true }
 # The git plumbing leaf (S5): `mrd status`'s vibe-debt gauge asks git which
 # lock-referenced blobs are reachable from a commit — ONE `rev-list --objects
 # --all` into a `ReachableSet` plus ONE batched `cat-file --batch-check`, never a
-# call per blob. `git` is a std-only path crate already in the workspace; no new
+# call per blob. The `test --history` walk is the same leaf's other half: ONE
+# `log --name-status` plus ONE `cat-file --batch`, never a call per commit. `git` is a std-only path crate already in the workspace; no new
 # external crate enters and `cargo deny` is unchanged.
 git = { workspace = true }
 # The `mrd test` scenario runner (U1.2): `^put` routes through the PRODUCTION

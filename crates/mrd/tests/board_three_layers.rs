@@ -1,6 +1,6 @@
-//! U5.1 — the three collaboration layers wired end-to-end on ONE scenario
-//! (d2 §5.3): an ungated close (a bare status flip that declares evidence but
-//! freezes no verdict rev) is caught by all three layers at once —
+//! U5.1 — the collaboration layers wired end-to-end on ONE scenario (d2 §5.3):
+//! an ungated close (a bare status flip that declares evidence but freezes no
+//! verdict rev) is caught by every surviving layer at once —
 //!
 //! - **refusal = armed CHECK** — the U4.4 `close-verdict` floor, evaluated through
 //!   `policy::gate()` over the law `policy::resolve_armed_law()` resolved at the
@@ -8,11 +8,28 @@
 //!   REFUSES the bare flip with a `block` violation.
 //! - **colors = board view** — U2.9's locked read face renders the close's
 //!   declared-unpinned `^inputs` edge GREY (never green, never silently clean).
-//! - **traces = default face** — the reserved journal's `co_edit_trace` shows the
-//!   close write convention-free.
 //!
 //! The positive control: a PROPER gated close (a distinct reviewer verdict + a
 //! pinned, matching evidence rev) passes the armed gate AND renders green.
+//!
+//! # THIS FILE WAS THREE LAYERS AND IS NOW TWO — the traces layer is DELETED
+//! **Layer 1 was `co_edit_trace`**: the reserved journal's mechanical write-facts,
+//! which made a co-edit visible convention-free. Every column of that view came
+//! from the `receipt_journal` table. U4 recorded the projection as **deleted with
+//! no replacement** (ZT 2026-08-02, remove-no-replacement), and
+//! `view::read_face`'s own module doc carries the tombstone.
+//!
+//! So the scenario is unchanged and the two surviving layers still catch it — but
+//! **one of the three propositions this file existed to make is gone, not moved.**
+//! The lost claim, stated plainly so it is not rediscovered as a gap: *"the close
+//! write is visible convention-free, without reading the task page's own
+//! semantics."* Nothing projects that now. It is NOT re-pointed at git: git records
+//! commits, and asserting over them would be testing git rather than the engine —
+//! a different claim wearing this test's name (the same reasoning U6 applied to
+//! `floors.rs`'s "Ungated is not UNRECORDED").
+//!
+//! The layer was not weakened into passing. Its subject was removed, and the
+//! removal is recorded here and on the β train's one lost-power accounting.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -22,7 +39,6 @@ use policy::{
     ArmedLaw, ChangeOp, CheckLimits, GateOutcome, GateRefusal, Invocation, PageRef, RuleId,
     RuleIndex, ScopeLayer, derive_change, gate, page_rev, resolve_armed_law,
 };
-use view::facts::JournalRowInput;
 use view::read_face::open_board;
 
 // ── floor rule PAGES on disk, armed through the SAME acts the door reads ──────
@@ -112,25 +128,15 @@ fn bare_flip_after() -> String {
     "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Close\n\n```yaml ^inputs\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', claim: 'ungated — no rev'}\n```\n".to_string()
 }
 
-fn journal_row(anchor: &str, op: &str, path: &str, actor: &str, line_no: u64) -> JournalRowInput {
-    JournalRowInput {
-        anchor: anchor.to_string(),
-        op: op.to_string(),
-        path: path.to_string(),
-        actor: Some(actor.to_string()),
-        now: None,
-        root_before: format!("b3:{}", line_no - 1),
-        root_after: format!("b3:{line_no}"),
-        edits: 1,
-        line_no,
-    }
-}
-
 // ── the end-to-end wiring ─────────────────────────────────────────────────────
 
-/// The ungated close, caught by all three layers at once.
+/// The ungated close, caught by both surviving layers at once.
+///
+/// Renamed from `ungated_close_caught_by_all_three_layers`: the count was the
+/// claim, so keeping the old name over two layers would have been the quietest
+/// possible lie about coverage.
 #[test]
-fn ungated_close_caught_by_all_three_layers() {
+fn ungated_close_caught_by_both_surviving_layers() {
     // Layer 3 — refusal = armed CHECK: the close-verdict floor, armed and run
     // through the REAL gate(), refuses the bare flip.
     let armed = armed_law("close-verdict", Mode::Block, CLOSE_PATH);
@@ -165,9 +171,10 @@ fn ungated_close_caught_by_all_three_layers() {
         "subject.md".to_string(),
         doc("subject.md", "# Subject\n\nbody. ^claim\n"),
     );
-    // Layer 1 — traces: the close write is journaled (source 3), visible convention-free.
-    let journal = [journal_row("r-000001", "splice", CLOSE_PATH, "worker-a", 1)];
-    let conn = open_board(&docs, &journal).expect("open board");
+    // The traces layer stood HERE: a journal row was handed to `open_board` beside
+    // the docs, and the close write was then read back out of `co_edit_trace`. Both
+    // the row type and the view are deleted, so `open_board` takes docs alone.
+    let conn = open_board(&docs).expect("open board");
 
     let (color, reason): (String, String) = conn
         .query_row(
@@ -179,17 +186,16 @@ fn ungated_close_caught_by_all_three_layers() {
     assert_eq!(color, "grey", "an ungated close is grey, never green");
     assert_eq!(reason, "declared-unpinned");
 
-    // Layer 1 — trace visible convention-free: the close write is in the journal.
-    let close_edits: i64 = conn
-        .query_row(
-            "SELECT edits_on_path FROM co_edit_trace WHERE path = ? LIMIT 1",
-            [CLOSE_PATH],
-            |r| r.get(0),
-        )
-        .expect("the close write is traced");
-    assert_eq!(
-        close_edits, 1,
-        "the close write is visible in co_edit_trace"
+    // **THE DELETED LAYER, asserted as deleted.** `co_edit_trace` is gone with the
+    // journal it projected. This is not a repair of the old assert — it is the
+    // opposite assert, and it exists so that anyone who rebuilds the view rebuilds
+    // it deliberately: this line fails the moment the table comes back, and
+    // whoever brings it back has to come here and say why.
+    let trace = conn.prepare("SELECT 1 FROM co_edit_trace LIMIT 1");
+    assert!(
+        trace.is_err(),
+        "the traces layer is DELETED WITH NO REPLACEMENT (U4). A co-edit is no \
+         longer visible convention-free, and this file no longer claims it is."
     );
 }
 
@@ -230,7 +236,7 @@ fn proper_close_passes_gate_and_renders_green() {
     let subject = "# Subject\n\nbody. ^claim\n";
     let mut probe = BTreeMap::new();
     probe.insert("subject.md".to_string(), doc("subject.md", subject));
-    let probe_conn = open_board(&probe, &[]).expect("probe board");
+    let probe_conn = open_board(&probe).expect("probe board");
     let rev: String = probe_conn
         .query_row(
             "SELECT node_rev FROM node WHERE path='subject.md' AND selector='^claim'",
@@ -247,7 +253,7 @@ fn proper_close_passes_gate_and_renders_green() {
         "verdicts/close.md".to_string(),
         doc("verdicts/close.md", &review),
     );
-    let conn = open_board(&docs, &[]).expect("open board");
+    let conn = open_board(&docs).expect("open board");
     let color: String = conn
         .query_row(
             "SELECT color FROM board WHERE src_path='verdicts/close.md'",

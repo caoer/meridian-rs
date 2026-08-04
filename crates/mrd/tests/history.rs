@@ -4,17 +4,17 @@
 //!
 //! The seeded history exercises all three fidelity classes and both golden-list
 //! outcomes:
-//! - **r-000001** create by `agent:bob` — before absent (root commit) ⇒ class **A
+//! - **C0** create by `agent:bob` — before absent (a create) ⇒ class **A
 //!   structural**; reviewer ≠ owner ⇒ passes.
-//! - **r-000002** splice by `agent:alice` (the owner) — both sides recovered ⇒
+//! - **C1** splice by `agent:alice` (the owner) — both sides recovered ⇒
 //!   class **B full-bytes**; actor == owner ⇒ **would-refuse**.
-//! - **r-000003** splice by `agent:bob` — both sides recovered ⇒ class **B**;
+//! - **C2** splice by `agent:bob` — both sides recovered ⇒ class **B**;
 //!   reviewer ≠ owner ⇒ passes.
-//! - **r-000004** splice on `tasks/ghost.md`, which never existed in git ⇒ class
+//! - **C3** a write to `tasks/ghost.md` whose bytes are not UTF-8 ⇒ class
 //!   **C grey**; counted, never run.
 //!
 //! The invariants:
-//! - an UNDECLARED would-refuse item (r-000002 absent from the spec page's
+//! - an UNDECLARED would-refuse item (C1 absent from the spec page's
 //!   `golden` fence) FAILS the run (exit 1);
 //! - once declared there the run passes (exit 0) with the reason rendered;
 //! - the class-C grey count is asserted;
@@ -87,17 +87,33 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
-/// Commit everything in the working tree with `message`.
-fn commit(dir: &Path, message: &str) {
+/// Commit everything in the working tree AS `author` — the acting writer, which
+/// is the commit author now that history is git.
+fn commit_as(dir: &Path, author: &str, message: &str) {
     git(dir, &["add", "-A"]);
-    git(dir, &["commit", "-q", "-m", message]);
+    git(
+        dir,
+        &[
+            "-c",
+            &format!("user.name={author}"),
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+    );
 }
 
-/// A journal row line carrying the tokens `parse_rows` needs (roots + anchor).
-fn row(op: &str, path: &str, actor: &str, seq: u64, rb: &str, ra: &str, extra: &str) -> String {
-    format!(
-        "- op={op} path={path} actor={actor} root_before={rb} root_after={ra} {extra} ^r-{seq:06}"
-    )
+/// The full commit id of `HEAD` — half of an item id (`<commit>:<path>`).
+fn head(dir: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("spawn git");
+    assert!(out.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
 const FIX_OPEN: &str = "\
@@ -135,10 +151,33 @@ The dialect parser drops trailing anchors on the last line.
 Reviewed by agent:bob.
 ";
 
-/// Build the seeded git workspace: four commits, a journal of four rows, and the
-/// fixture rule page written into `rules/reviewer-not-owner.md`.
-/// Returns the tempdir (kept alive by the caller).
-fn seeded_workspace() -> tempfile::TempDir {
+/// The four recorded writes this tier is calibrated over, by item id.
+struct Seeded {
+    dir: tempfile::TempDir,
+    /// C1 — alice closing her own task: the would-refuse item.
+    c1: String,
+    /// C3 — a write whose bytes are not UTF-8: fidelity C grey.
+    c3: String,
+}
+
+impl Seeded {
+    fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn path_str(&self) -> &str {
+        self.dir.path().to_str().expect("utf-8 tmpdir")
+    }
+}
+
+/// Build the seeded git workspace: four AUTHORED commits over one task page, plus
+/// the fixture rule page.
+///
+/// **The actor is the commit author now.** It used to be an `actor=` token this
+/// fixture wrote into a journal row itself — the engine recording its own memory,
+/// which ZT ruled out of existence (2026-08-03). Nothing else about the corpus
+/// changed: the same four writes, the same rule, the same fidelity classes.
+fn seeded_workspace() -> Seeded {
     let dir = tempfile::tempdir().expect("tmpdir");
     let ws = dir.path();
 
@@ -153,86 +192,43 @@ fn seeded_workspace() -> tempfile::TempDir {
         include_str!("corpus/rules/reviewer-not-owner.md"),
     );
 
-    // C0 — create fix-parser (by bob) + journal row r-000001 (create).
+    // C0 — bob creates fix-parser (owner alice). A create has no before side, so
+    // it reconstructs at fidelity A structural.
     write(ws, "tasks/fix-parser.md", FIX_OPEN);
-    let j1 = format!(
-        "# Receipt journal\n\n{}\n",
-        row(
-            "create",
-            "tasks/fix-parser.md",
-            "agent:bob",
-            1,
-            "b3:0",
-            "b3:1",
-            "before=absent after=aaaa edits=0",
-        )
-    );
-    write(ws, "meridian/journal.md", &j1);
-    commit(ws, "C0 create fix-parser by bob");
+    commit_as(ws, "agent:bob", "C0 create fix-parser by bob");
 
-    // C1 — alice (the owner) closes her own task + r-000002 (splice).
+    // C1 — alice (the OWNER) closes her own task. The would-refuse.
     write(ws, "tasks/fix-parser.md", FIX_CLOSED);
-    let j2 = format!(
-        "{}{}\n",
-        j1,
-        row(
-            "splice",
-            "tasks/fix-parser.md",
-            "agent:alice",
-            2,
-            "b3:1",
-            "b3:2",
-            "edits=1 status:put:aaaa->bbbb",
-        )
-    );
-    write(ws, "meridian/journal.md", &j2);
-    commit(ws, "C1 alice closes her own task");
+    commit_as(ws, "agent:alice", "C1 alice closes her own task");
+    let c1 = format!("{}:tasks/fix-parser.md", head(ws));
 
-    // C2 — bob (a reviewer) edits fix-parser + r-000003 (splice).
+    // C2 — bob (a reviewer) edits fix-parser. Passes: reviewer != owner.
     write(ws, "tasks/fix-parser.md", FIX_CLOSED_NOTE);
-    let j3 = format!(
-        "{}{}\n",
-        j2,
-        row(
-            "splice",
-            "tasks/fix-parser.md",
-            "agent:bob",
-            3,
-            "b3:2",
-            "b3:3",
-            "edits=1 Fix parser:put:bbbb->cccc",
-        )
-    );
-    write(ws, "meridian/journal.md", &j3);
-    commit(ws, "C2 bob edits fix-parser");
+    commit_as(ws, "agent:bob", "C2 bob edits fix-parser");
 
-    // C3 — a row for a path that never existed in git (class C grey).
-    let j4 = format!(
-        "{}{}\n",
-        j3,
-        row(
-            "splice",
-            "tasks/ghost.md",
-            "agent:alice",
-            4,
-            "b3:3",
-            "b3:4",
-            "edits=1 Ghost:put:0000->1111",
-        )
-    );
-    write(ws, "meridian/journal.md", &j4);
-    commit(ws, "C3 ghost row for a path absent from git");
+    // C3 — a write whose bytes are NOT UTF-8: fidelity C grey.
+    //
+    // Grey's antecedent narrowed with the enumerator, and this is the honest new
+    // one. It used to be "a journal row whose path is in no commit" — a row the
+    // engine had written about a write git never saw. Enumerating FROM git makes
+    // that state unreachable by construction: every row now comes from a commit
+    // that recorded it. What remains is bytes the tier cannot read as a document,
+    // which is the same fact the class always named — neither side recovered, so
+    // counted and rendered, never run.
+    std::fs::write(ws.join("tasks/ghost.md"), [0xff_u8, 0xfe, 0x00, 0x01]).expect("write ghost");
+    commit_as(ws, "agent:alice", "C3 a write whose bytes are not UTF-8");
+    let c3 = format!("{}:tasks/ghost.md", head(ws));
 
-    dir
+    Seeded { dir, c1, c3 }
 }
 
-/// The undeclared would-refuse item (r-000002) fails the run; the report shows it
-/// failing, names the journal span, counts every fidelity class, and the grey
-/// count is asserted.
+/// The undeclared would-refuse item (C1, alice's self-close) fails the run; the
+/// report shows it failing, names the history span, counts every fidelity class,
+/// and the grey count is asserted.
 #[test]
 fn undeclared_would_refuse_fails_the_run() {
-    let dir = seeded_workspace();
-    let ws = dir.path().to_str().unwrap();
+    let seeded = seeded_workspace();
+    let ws = seeded.path_str();
 
     let out = mrd(&["test", "--history", ws, "--rule", CHECK_RULE_PAGE]);
     let so = stdout(&out);
@@ -244,8 +240,12 @@ fn undeclared_would_refuse_fails_the_run() {
         stderr(&out)
     );
 
-    // The would-refuse item is shown failing, cited by anchor, and teaches the rule.
-    assert!(so.contains("r-000002"), "the firing item is named:\n{so}");
+    // The would-refuse item is shown failing, cited by ITEM ID, and teaches the
+    // rule.
+    assert!(
+        so.contains(&seeded.c1),
+        "the firing item is named by <commit>:<path>:\n{so}"
+    );
     assert!(
         so.contains("UNDECLARED would-refuse"),
         "the item is shown failing:\n{so}"
@@ -255,10 +255,10 @@ fn undeclared_would_refuse_fails_the_run() {
         "the refusal message is rendered:\n{so}"
     );
 
-    // The report names its journal span.
+    // The report names its history span, first item id .. last.
     assert!(
-        so.contains("journal span: ^r-000001..^r-000004"),
-        "the report names its journal span:\n{so}"
+        so.contains("history span:") && so.contains(&seeded.c3),
+        "the report names its history span, ending at the last recorded write:\n{so}"
     );
 
     // Every fidelity class is counted; the class-C grey count is asserted.
@@ -280,12 +280,13 @@ fn undeclared_would_refuse_fails_the_run() {
 /// the finding into a pass, with the declared reason rendered.
 #[test]
 fn declared_item_passes_with_reason_rendered() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
-    let wss = ws.to_str().unwrap();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
+    let wss = seeded.path_str();
 
     // Triage: add the exception row to the spec's golden fence (an ordinary
     // in-tree edit through the write door).
+    let item = &seeded.c1;
     let golden = format!(
         "\
 ---
@@ -295,7 +296,7 @@ rule: {CHECK_SPEC_RULE_REF}
 # Golden list — reviewer-not-owner
 
 ```golden
-- item=r-000002 reason=\"legacy self-close predates the reviewer-not-owner rule\"
+- item={item} reason=\"legacy self-close predates the reviewer-not-owner rule\"
 ```
 "
     );
@@ -345,8 +346,8 @@ rule: {CHECK_SPEC_RULE_REF}
 /// `--json` alongside the human table).
 #[test]
 fn json_surface_carries_fidelity_and_verdicts() {
-    let dir = seeded_workspace();
-    let ws = dir.path().to_str().unwrap();
+    let seeded = seeded_workspace();
+    let ws = seeded.path_str();
 
     let out = mrd(&["test", "--history", ws, "--rule", CHECK_RULE_PAGE, "--json"]);
     let so = stdout(&out);
@@ -356,16 +357,15 @@ fn json_surface_carries_fidelity_and_verdicts() {
     assert_eq!(v["fidelity"]["structural"], 1);
     assert_eq!(v["fidelity"]["grey"], 1);
     assert_eq!(v["summary"]["undeclared"], 1);
-    assert_eq!(v["journal_span"]["first"], "r-000001");
-    assert_eq!(v["journal_span"]["last"], "r-000004");
+    assert_eq!(v["history_span"]["last"], serde_json::json!(seeded.c3));
 }
 
 /// A golden exception row with no declared reason is a malformed golden list — a
 /// declared exception must state why (exit 2, loud).
 #[test]
 fn hook_history_reports_zero_undeclared_over_an_exact_span() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
     write(
         ws,
         HOOK_RULE_PAGE,
@@ -389,8 +389,7 @@ fn hook_history_reports_zero_undeclared_over_an_exact_span() {
         stderr(&out)
     );
     assert_eq!(report["summary"]["undeclared"], 0);
-    assert_eq!(report["journal_span"]["first"], "r-000001");
-    assert_eq!(report["journal_span"]["last"], "r-000004");
+    assert_eq!(report["history_span"]["last"], serde_json::json!(seeded.c3));
     assert_eq!(report["rule"], "task-status-notify");
     assert_eq!(report["rule_page"], HOOK_RULE_PAGE);
 
@@ -404,7 +403,7 @@ fn hook_history_reports_zero_undeclared_over_an_exact_span() {
     let human_stdout = stdout(&human);
     assert_eq!(code(&human), 0, "HOOK history human report passes");
     assert!(
-        human_stdout.contains("journal span: ^r-000001..^r-000004"),
+        human_stdout.contains("history span:") && human_stdout.contains(&seeded.c3),
         "the report names the exact span: {human_stdout}"
     );
     assert!(
@@ -415,8 +414,8 @@ fn hook_history_reports_zero_undeclared_over_an_exact_span() {
 
 #[test]
 fn golden_exception_without_a_reason_is_refused() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
     let wss = ws.to_str().unwrap();
     write(
         ws,
@@ -490,8 +489,8 @@ fn mrd_rules_replay_no_longer_parses() {
 /// never named is exactly the silent-excuse shape this tier exists to prevent.
 #[test]
 fn a_spec_naming_another_rule_is_refused() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
     let wss = ws.to_str().unwrap();
 
     // A well-formed spec, with a real exception row — but it names the HOOK page
@@ -532,8 +531,8 @@ fn a_spec_naming_another_rule_is_refused() {
 /// unattributed golden list would excuse findings for a law it never named.
 #[test]
 fn a_spec_with_no_rule_reference_is_refused() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
     let wss = ws.to_str().unwrap();
 
     write(
@@ -568,8 +567,8 @@ fn a_spec_with_no_rule_reference_is_refused() {
 /// the tier is usable before anyone writes a spec page.
 #[test]
 fn without_a_spec_nothing_is_declared() {
-    let dir = seeded_workspace();
-    let ws = dir.path();
+    let seeded = seeded_workspace();
+    let ws = seeded.path();
     let wss = ws.to_str().unwrap();
 
     let out = mrd(&[

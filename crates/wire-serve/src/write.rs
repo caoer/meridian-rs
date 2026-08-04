@@ -61,7 +61,8 @@ pub struct SpliceArgs {
     /// Dry run — everything except disk (no receipt, no root advance, no Delta).
     pub dry: bool,
     /// U4.3 `--force`: escape an armed binding-break / block refusal. The skip is
-    /// journaled (a permanent force-row) AND rendered (a forced verdict). The
+    /// RENDERED — a `forced:`-marked verdict naming the bypassed rule (P15; the
+    /// permanent force-row it also used to write died with the journal). The
     /// INDEX-integrity floor is NOT escaped (security F2). Ordinary writes: false.
     pub force: bool,
     /// The requested edits, 1:1 with the armed edits in the response.
@@ -132,14 +133,6 @@ pub fn splice(
     rulesets: &[policy::CompiledRuleset],
     mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<SpliceOutcome, Box<ErrorBody>> {
-    // Journal write restriction (d2 §2.1 A3/A9; F4): the reserved receipt
-    // journal is writable ONLY by the receipt engine (a receipt append rides
-    // `args.receipt`, engine-rendered from armed facts). An ORDINARY splice
-    // whose content target IS the reserved path is a forge attempt — refuse it,
-    // dry or real. This restriction, plus the git witness, is what detects a
-    // root-preserving forged row that chain continuity cannot (named residual,
-    // `receipt::journal`). A `bad_request` teaching refusal (no new taxonomy
-    // reason minted — U2.1 carries no U4.1 dependency).
     // U11 — WORKSPACE-ROOT CONFINEMENT, the guard this door has never had.
     // `create`, `remove`, `lock_write` and `mint_pin` all call `path_confined`;
     // `splice` — the PRIMARY write op — did not. `fs::load` joins the caller's
@@ -157,17 +150,9 @@ pub fn splice(
     // on having already touched the path it refuses.
     path_confined(&args.path)?;
 
-    if fs::domain::is_reserved_journal(FsPath::new(&args.path.0)) {
-        return Err(bad_request(format!(
-            "refused: {} is the reserved receipt journal — writable only by the \
-             receipt engine (d2 §2.1); an ordinary splice targeting it is a forged-row attempt",
-            args.path.0
-        )));
-    }
-
     // D9 (xproc-race fix): the cross-process write flock, held across the
     // WHOLE critical section — read#1 below, validate, gate, the commit's
-    // read#2 → verify → renames, and the journal appends — so cooperating
+    // read#2 → verify → renames — so cooperating
     // meridian writers (sidecar, resident daemon, mrd) serialize instead of
     // interleaving read→rename. Dry runs take it too: a rehearsal refuses
     // `workspace_busy` exactly where the real write would. Released on drop.
@@ -175,13 +160,6 @@ pub fn splice(
 
     let mut doc = load_doc(root, &args.path)?;
     let mut root_before = ambient_root(root)?;
-    // U32: the root before ANY byte of this splice landed. `root_before` below is
-    // deliberately re-read after a pin's promotion (that write is this splice's
-    // own, and re-guarding the batch on the pre-promotion token would self-refuse),
-    // so it is the wrong `root_before` for the journal: the promotion's advance
-    // would fall in the gap between two rows and break the chain. The journal
-    // records the splice as ONE guarded write — promotion and batch together.
-    let journal_root_before = root_before.clone();
 
     // §5.1 order: the world guard FIRST — checked here so a stale plan
     // refuses before any per-target resolution can answer for it, and (S7)
@@ -205,7 +183,7 @@ pub fn splice(
     // The promotion's own gate ran at mint time — it must refuse before any byte
     // is written, and on the dry path too (§4.4: a rehearsal refuses exactly
     // where the real write does). Its advisory findings and forced skips ride
-    // this response and this journal, merged below with the batch's own.
+    // this response, merged below with the batch's own.
     let mut pin_gate = pin
         .as_mut()
         .map(|p| std::mem::take(&mut p.gate))
@@ -385,8 +363,8 @@ pub fn splice(
     // U4.2/U4.3: the armed-plane GATE — after CAS, before bytes land, both writer
     // paths. Reads the workspace's OWN armed law (never caller packs) and REFUSES
     // here (`?`) before the dry short-circuit; never-armed is a no-op. U4.3:
-    // `args.force` escapes a binding-break / block refusal (the skip is journaled
-    // below on a REAL commit + rendered here); the INDEX-integrity floor never
+    // `args.force` escapes a binding-break / block refusal (the skip is rendered
+    // here as a `forced:`-marked verdict, P15); the INDEX-integrity floor never
     // escapes.
     let gate_pass = crate::gate::gate_write(
         root,
@@ -531,64 +509,6 @@ pub fn splice(
     // The receipt FACT from the true post-state (host-block-leaf grain).
     let receipt_fact = resolve_receipt_fact(root, args.receipt.as_ref())?;
 
-    // U32 — THE SPLICE'S OWN JOURNAL ROW. A splice advances the tree root, so it
-    // owes the ledger a row exactly as a birth or a death does; without one,
-    // `check`'s layer-0 detectors have nothing to date the tree against on a
-    // pin/put-only workspace (the false green) and a baseline that goes stale the
-    // instant any splice lands (the false red, which never healed because the next
-    // write's `root_before` no longer continued the prior `root_after`).
-    //
-    // ONE row per guarded write: `journal_root_before` is the root before the pin
-    // promotion too, so promotion + batch are recorded as the single advance they
-    // are. Node-grain transitions ride `edits` (the `create`/`remove` whole-file
-    // token is theirs, not a splice's — `receipt::journal::JournalRow::file`).
-    // Written before the force rows so a crash between the two still leaves the
-    // chain link that dates the tree.
-    journal_write(
-        root,
-        "splice",
-        &args.path,
-        args.actor.as_deref(),
-        args.now.as_deref(),
-        &journal_root_before,
-        &frame.delta.root_after,
-        None,
-        effective_edits
-            .iter()
-            .zip(&armed_edits)
-            .map(|(req, armed)| receipt::EditFact {
-                target: &req.target,
-                shape: &req.edit,
-                before: &armed.node_rev_before,
-                after: &armed.node_rev_after,
-            })
-            .collect(),
-    )?;
-
-    // U4.3: journal every `--force`-escaped skip — a permanent force-row per
-    // bypassed rule (the render carries the same detail). The reserved journal is
-    // root-EXCLUDED, so appending it never perturbs the root the splice advanced.
-    // Both gates' skips, in one journal pass: a promotion forced past the armed
-    // law is as permanent a record as a batch edit forced past it.
-    //
-    // U32: a force row ANNOTATES the write the row above already recorded — it
-    // moves nothing of its own, so it carries the post-write root on both sides
-    // and continues the chain. It used to carry the splice's `root_before` and
-    // `root_after`, which was a second claim to the same advance: two forced skips
-    // on one splice already broke `check_chain` before this unit, and adding the
-    // splice's own row would have broken it at one.
-    let mut forced_skips = gate_pass.forced_skips;
-    forced_skips.extend(pin_gate.forced_skips);
-    force_journal_write(
-        root,
-        &args.path,
-        args.actor.as_deref(),
-        args.now.as_deref(),
-        &frame.delta.root_after,
-        &frame.delta.root_after,
-        &forced_skips,
-    )?;
-
     Ok(SpliceOutcome {
         body: ResponseBody::Splice {
             armed: Armed {
@@ -627,8 +547,7 @@ pub fn splice(
 // Birth and death join the strict writer as core write OPS inside the one write
 // shape (design §2.5, §3): `create` under CAS `if_absent` + workspace-root;
 // `remove` under CAS on the file's read rev (remove-what-you-read) +
-// workspace-root. Both are journaled (write-mechanics only, A5 bound: op, path,
-// actor, now, BOTH roots, the whole-file rev transition) and both expose the
+// workspace-root. Both expose the
 // change surface a gate evaluates at birth/death — `before = absent` (create) /
 // `after = absent` (remove). This unit builds the OPS and that seam; the
 // callers (put-class clients, the effects-domain workflow, `realise`'s apply
@@ -651,12 +570,12 @@ pub struct CreateArgs {
     pub now: Option<String>,
     /// The optional §5.1 world guard: refuse if the ambient root differs.
     pub if_root: Option<Root>,
-    /// Dry run — everything except disk (no file, no journal row, no root advance).
+    /// Dry run — everything except disk (no file, no root advance).
     pub dry: bool,
 }
 
-/// The outcome of a guarded `create` (birth). `committed`/`root_after`/
-/// `journal_anchor` are absent on a dry run — nothing landed. `verdicts` is the
+/// The outcome of a guarded `create` (birth). `committed`/`root_after` are absent
+/// on a dry run — nothing landed. `verdicts` is the
 /// gate seam's output over the birth's after-state: empty for the BARE commit,
 /// inhabited once U4.2 mounts `gate()` at this site.
 #[derive(Debug)]
@@ -667,8 +586,6 @@ pub struct CreateOutcome {
     /// The born file's whole-file rev — computed from the body, so present even
     /// on a dry run (a fact about the spec, not the disk).
     pub file_rev_after: NodeRev,
-    /// The appended journal row's anchor (`r-NNNNNN`); `None` on a dry run.
-    pub journal_anchor: Option<String>,
     /// The birth Delta (`created`, `file_rev_before` absent); `None` on dry.
     pub committed: Option<DeltaFrame>,
     pub verdicts: Vec<Verdict>,
@@ -680,7 +597,7 @@ pub struct CreateOutcome {
 /// cannot drift between the per-workspace sidecar and the resident daemon.
 ///
 /// `seq` rides from the emitted Delta, so it is absent on a dry run for the same
-/// reason `root_after` and `journal_anchor` are: a rehearsal emits no Delta.
+/// reason `root_after` is: a rehearsal emits no Delta.
 /// `dry` is `Some(true)` only on a rehearsal — an ordinary birth serializes no
 /// `dry` key, exactly like `splice`.
 #[must_use]
@@ -692,7 +609,6 @@ pub fn create_response(path: Path, out: &CreateOutcome) -> ResponseBody {
         root_after: out.root_after.clone(),
         seq: out.committed.as_ref().map(|frame| frame.delta.seq),
         dry: out.dry.then_some(true),
-        journal_anchor: out.journal_anchor.clone(),
         verdicts: out.verdicts.clone(),
     }
 }
@@ -720,7 +636,6 @@ pub struct RemoveOutcome {
     pub root_after: Option<Root>,
     /// The removed file's whole-file rev (the read rev, re-confirmed live).
     pub file_rev_before: NodeRev,
-    pub journal_anchor: Option<String>,
     /// The death Delta (`deleted`, `file_rev_after` absent); `None` on dry.
     pub committed: Option<DeltaFrame>,
     pub verdicts: Vec<Verdict>,
@@ -728,19 +643,19 @@ pub struct RemoveOutcome {
 }
 
 /// **Guarded `create`** (d2 §2.5 C3): birth one file under CAS `if_absent` +
-/// workspace-root, journal the birth, and emit the `created` change surface.
+/// workspace-root, and emit the `created` change surface.
 ///
-/// Order: path confinement → reserved-journal guard → world guard (§5.1) → the
+/// Order: path confinement → world guard (§5.1) → the
 /// gate seam over the birth's after-state → the `if_absent` CAS at the disk edge
 /// ([`fs::create_file`], the single source of the guard) → root advance → birth
-/// Delta → journal row (`before=absent`). `dry: true` runs everything except
+/// Delta. `dry: true` runs everything except
 /// disk and still refuses a would-be clobber.
 ///
 /// # Errors
-/// `bad_path` (escapes the workspace), `bad_request` (targets the reserved
-/// journal), `root_mismatch` (stale world guard), `cas_mismatch` (the path is
+/// `bad_path` (escapes the workspace), `root_mismatch` (stale world guard),
+/// `cas_mismatch` (the path is
 /// occupied — taxonomy row 13, recovery `refresh`), or an I/O failure. In every
-/// error case nothing was created and no journal row was written.
+/// error case nothing was created.
 pub fn create(
     root: &fs::WorkspaceRoot,
     seq: u64,
@@ -749,7 +664,6 @@ pub fn create(
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
-    reserved_journal_guard(fs_path)?;
 
     // D9: births serialize on the same write flock as every meridian writer —
     // this also closes the `if_absent` check→rename window for cooperators.
@@ -833,7 +747,6 @@ pub fn create(
             root_before,
             root_after: None,
             file_rev_after,
-            journal_anchor: None,
             committed: None,
             verdicts,
             dry: true,
@@ -863,26 +776,10 @@ pub fn create(
         args.now.clone(),
         model::delta::file_delta(None, Some(after_doc.document())).as_ref(),
     );
-    let journal_anchor = journal_write(
-        root,
-        "create",
-        &args.path,
-        args.actor.as_deref(),
-        args.now.as_deref(),
-        &root_before,
-        &root_after,
-        Some(receipt::journal::FileTransition {
-            before: None,
-            after: Some(&file_rev_after.0),
-        }),
-        Vec::new(),
-    )?;
-
     Ok(CreateOutcome {
         root_before,
         root_after: Some(root_after),
         file_rev_after,
-        journal_anchor: Some(journal_anchor),
         committed: Some(committed),
         verdicts,
         dry: false,
@@ -890,20 +787,19 @@ pub fn create(
 }
 
 /// **Guarded `remove`** (d2 §2.5 C3): death of one file under CAS
-/// remove-what-you-read + workspace-root, journal the death, and emit the
-/// `deleted` change surface.
+/// remove-what-you-read + workspace-root, and emit the `deleted` change surface.
 ///
-/// Order: path confinement → reserved-journal guard → world guard (§5.1) → load
+/// Order: path confinement → world guard (§5.1) → load
 /// the live file (absent ⇒ `file_not_found`) → the remove-what-you-read CAS
 /// (the live rev must equal `if_file_rev`, else refuse citing rev read vs found)
 /// → the gate seam over the death's before-state → unlink → root advance →
-/// death Delta → journal row (`after=absent`).
+/// death Delta.
 ///
 /// # Errors
-/// `bad_path`, `bad_request` (reserved journal), `root_mismatch`,
+/// `bad_path`, `root_mismatch`,
 /// `file_not_found` (nothing to remove), `cas_mismatch` (the file drifted from
 /// the read rev — taxonomy row 14, recovery `refresh`), or an I/O failure. In
-/// every error case nothing was removed and no journal row was written.
+/// every error case nothing was removed.
 pub fn remove(
     root: &fs::WorkspaceRoot,
     seq: u64,
@@ -912,7 +808,6 @@ pub fn remove(
 ) -> Result<RemoveOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
-    reserved_journal_guard(fs_path)?;
 
     // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
     // a critical section like any other write).
@@ -958,7 +853,6 @@ pub fn remove(
             root_before,
             root_after: None,
             file_rev_before: current,
-            journal_anchor: None,
             committed: None,
             verdicts,
             dry: true,
@@ -977,26 +871,10 @@ pub fn remove(
         args.now.clone(),
         model::delta::file_delta(Some(&before_doc), None).as_ref(),
     );
-    let journal_anchor = journal_write(
-        root,
-        "remove",
-        &args.path,
-        args.actor.as_deref(),
-        args.now.as_deref(),
-        &root_before,
-        &root_after,
-        Some(receipt::journal::FileTransition {
-            before: Some(&current.0),
-            after: None,
-        }),
-        Vec::new(),
-    )?;
-
     Ok(RemoveOutcome {
         root_before,
         root_after: Some(root_after),
         file_rev_before: current,
-        journal_anchor: Some(journal_anchor),
         committed: Some(committed),
         verdicts,
         dry: false,
@@ -1043,12 +921,12 @@ pub struct LockWriteArgs {
     pub if_root: Option<Root>,
     /// The page's whole-file rev the caller read — write-what-you-read CAS.
     pub if_file_rev: NodeRev,
-    /// Dry run — everything except disk (no bytes, no journal row, no advance).
+    /// Dry run — everything except disk (no bytes, no advance).
     pub dry: bool,
 }
 
 /// The outcome of a guarded lock write. Absences mirror [`CreateOutcome`]:
-/// `root_after`/`journal_anchor`/`committed` are `None` on a dry run.
+/// `root_after`/`committed` are `None` on a dry run.
 #[derive(Debug)]
 pub struct LockWriteOutcome {
     pub root_before: Root,
@@ -1058,7 +936,6 @@ pub struct LockWriteOutcome {
     /// The page's whole-file rev after the lock landed (computed on dry too —
     /// a fact about the spec, not the disk).
     pub file_rev_after: NodeRev,
-    pub journal_anchor: Option<String>,
     pub committed: Option<DeltaFrame>,
     /// `true` when the write BIRTHED the block (EOF append — no lock existed);
     /// `false` when it replaced the existing block in place.
@@ -1068,17 +945,16 @@ pub struct LockWriteOutcome {
 
 /// **Guarded `meridian-lock` write** (U11, decision #8): land the page's one
 /// lock block — replace it in place when present, birth it at EOF when absent
-/// — under CAS write-what-you-read + workspace-root + the D9 write flock,
-/// journal ONE `op=lock` row (whole-file transition, chain-continuous), and
+/// — under CAS write-what-you-read + workspace-root + the D9 write flock, and
 /// emit the `modified` change surface.
 ///
-/// Order: path confinement → reserved-journal guard → the write flock (D9) →
+/// Order: path confinement → the write flock (D9) →
 /// load the page → world guard (§5.1) → the write-what-you-read CAS → locate
 /// the block (`lock::find` — MULTIPLE blocks refuse loud: sole-writer mints
 /// exactly one, two is a hand-edit/corruption signal) → render via
 /// `lock::render` (canonical bytes; terminators are THIS path's) → in-memory
 /// splice → [`fs::replace_file`] (atomic; lock-is-content — one commit) →
-/// root advance → Delta → journal row. `dry: true` runs everything except
+/// root advance → Delta. `dry: true` runs everything except
 /// disk.
 ///
 /// # Placement law (fresh lock)
@@ -1087,11 +963,11 @@ pub struct LockWriteOutcome {
 /// one terminator. A replaced block keeps its exact span (fence-to-fence).
 ///
 /// # Errors
-/// `bad_path`, `bad_request` (reserved journal, or a malformed/duplicated
+/// `bad_path`, `bad_request` (a malformed/duplicated
 /// existing lock block — surfaced, never silently adopted), `workspace_busy`
 /// (D9), `file_not_found` (the page must exist — a lock pins content),
 /// `root_mismatch`, `cas_mismatch`, or an I/O failure. In every error case
-/// nothing was written and no journal row was appended.
+/// nothing was written.
 pub fn lock_write(
     root: &fs::WorkspaceRoot,
     seq: u64,
@@ -1099,7 +975,6 @@ pub fn lock_write(
 ) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
-    reserved_journal_guard(fs_path)?;
 
     // D9: the lock write serializes on the same write flock as every writer.
     let _write_lock = acquire_write_lock(root)?;
@@ -1143,7 +1018,6 @@ pub fn lock_write(
             root_after: None,
             file_rev_before,
             file_rev_after,
-            journal_anchor: None,
             committed: None,
             created,
             dry: true,
@@ -1164,30 +1038,11 @@ pub fn lock_write(
         args.now.clone(),
         files,
     );
-    // ONE `op=lock` journal row: whole-file rev transition (the lock is
-    // content — the page moved), both roots, edits=0. The create/remove row
-    // shape, not pin's fake-anchor edit row.
-    let journal_anchor = journal_write(
-        root,
-        "lock",
-        &args.path,
-        args.actor.as_deref(),
-        args.now.as_deref(),
-        &root_before,
-        &root_after,
-        Some(receipt::journal::FileTransition {
-            before: Some(&file_rev_before.0),
-            after: Some(&file_rev_after.0),
-        }),
-        Vec::new(),
-    )?;
-
     Ok(LockWriteOutcome {
         root_before,
         root_after: Some(root_after),
         file_rev_before,
         file_rev_after,
-        journal_anchor: Some(journal_anchor),
         committed: Some(committed),
         created,
         dry: false,
@@ -1281,8 +1136,8 @@ struct PendingPromotion {
 ///   pending.
 ///
 /// # Errors
-/// `bad_path` / `bad_request` (the target escapes the workspace, is the reserved
-/// journal, or its slug id is taken), `pin_target_missing` (no such page or
+/// `bad_path` / `bad_request` (the target escapes the workspace, or its slug id
+/// is taken), `pin_target_missing` (no such page or
 /// selector), `read_mint_required` (D16 — a session actor pinning unread
 /// content), `write_conflict` (the receipt's rev is stale), a
 /// `convention_fault` / `armed_drift` / `index_integrity` gate refusal on the
@@ -1295,7 +1150,6 @@ fn mint_pin(
     mints: Option<&receipt::read_mint::ReadMintStore>,
 ) -> Result<PinMint, Box<ErrorBody>> {
     path_confined(&spec.target)?;
-    reserved_journal_guard(FsPath::new(&spec.target.0))?;
 
     let mut target_doc = load_doc(root, &spec.target).map_err(|e| {
         if e.code == ErrorCode::FileNotFound {
@@ -2039,21 +1893,6 @@ fn path_confined(path: &Path) -> Result<(), Box<ErrorBody>> {
     Ok(())
 }
 
-/// The reserved receipt journal is writable ONLY by the receipt engine (d2
-/// §2.1) — a guarded `create`/`remove` targeting it is a tamper attempt,
-/// refused with a teaching `bad_request` (the same restriction `splice` makes,
-/// shared via `fs::domain::is_reserved_journal` so the two cannot drift).
-fn reserved_journal_guard(path: &FsPath) -> Result<(), Box<ErrorBody>> {
-    if fs::domain::is_reserved_journal(path) {
-        return Err(bad_request(format!(
-            "refused: {} is the reserved receipt journal — writable only by the \
-             receipt engine (d2 §2.1); a guarded create/remove targeting it is a tamper attempt",
-            fs::domain::RESERVED_JOURNAL_PATH
-        )));
-    }
-    Ok(())
-}
-
 /// The §5.1 world guard, shared by `create`/`remove`: refuse `root_mismatch` if
 /// a supplied `if_root` no longer matches the ambient root (the plan is stale).
 fn world_guard(if_root: Option<&Root>, root_before: &Root) -> Result<(), Box<ErrorBody>> {
@@ -2166,9 +2005,8 @@ fn conformance_target(root: &fs::WorkspaceRoot, path: &Path) -> String {
 
 /// Map an I4 conformance refusal onto its wire envelope: a `bad_request`
 /// teaching frame (recovery `fix`) carrying the ladder's `CODE: message —
-/// remedy` render verbatim, plus the refused path. Same closed-taxonomy
-/// discipline as the reserved-journal refusal at the top of [`splice`] — no new
-/// §8 reason is minted, so the frozen v2 error surface keeps its shape.
+/// remedy` render verbatim, plus the refused path. Closed-taxonomy discipline —
+/// no new §8 reason is minted, so the frozen v2 error surface keeps its shape.
 fn conformance_to_wire(refusal: &policy::defs::BodyError, path: &Path) -> Box<ErrorBody> {
     let mut e = bad_request(refusal.render());
     e.path = Some(path.clone());
@@ -2210,114 +2048,6 @@ fn birth_death_delta(
         now,
         files,
     )
-}
-
-/// Journal one guarded write: render the row through `receipt::journal` (BOTH
-/// roots plus the grain the op records — a whole-file transition for a
-/// `create`/`remove` birth/death, the node-grain `edits` for a `splice`) and
-/// append it to the reserved root-EXCLUDED journal page via the receipt-engine
-/// append (`fs::append_line`). The next `seq` is derived from the page itself
-/// (the journal is the only durable home of its own counter). Returns the anchor.
-///
-/// **U32: every guarded write that advances the tree root journals here.** A
-/// splice used to advance the root and write nothing, which left `check`'s
-/// layer-0 detectors with no baseline on a pin/put-only workspace (the false
-/// green) and a baseline that went stale the instant any splice landed (the false
-/// red, permanent — the next write's `root_before` no longer continued the prior
-/// `root_after`). The row IS the baseline; a write door that skips it is a write
-/// `check` cannot date.
-#[allow(clippy::too_many_arguments)]
-fn journal_write(
-    root: &fs::WorkspaceRoot,
-    op: &str,
-    path: &Path,
-    actor: Option<&str>,
-    now: Option<&str>,
-    root_before: &Root,
-    root_after: &Root,
-    file: Option<receipt::journal::FileTransition<'_>>,
-    edits: Vec<receipt::EditFact<'_>>,
-) -> Result<String, Box<ErrorBody>> {
-    let seq = next_journal_seq(root)?;
-    let line = receipt::journal::render_row(&receipt::journal::JournalRow {
-        seq,
-        op,
-        path: &path.0,
-        actor,
-        now,
-        root_before: &root_before.0,
-        root_after: &root_after.0,
-        file,
-        edits,
-    });
-    fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
-        .map_err(|e| io_to_wire(&e))?;
-    Ok(receipt::anchor(seq))
-}
-
-/// Journal every `--force`-escaped skip (U4.3, decision #6): one `op=force`
-/// row per bypassed rule, appended to the reserved root-EXCLUDED journal, naming
-/// the bypassed rule via a `forced_rule=` token that `parse_rows` reads as an
-/// extra (the render carries the full teaching). Empty `skips` is a no-op (an
-/// ordinary non-forced write journals nothing here).
-///
-/// **U32: a force row annotates a write, it does not record one.** The splice's
-/// own row (`op=splice`) carries the root advance, so the caller passes the
-/// post-write root on BOTH sides here and every force row continues the chain
-/// where that row left it. Carrying the advance again — once per skip — was a
-/// chain break at two skips even before the splice row existed.
-fn force_journal_write(
-    root: &fs::WorkspaceRoot,
-    path: &Path,
-    actor: Option<&str>,
-    now: Option<&str>,
-    root_before: &Root,
-    root_after: &Root,
-    skips: &[crate::gate::ForcedSkip],
-) -> Result<(), Box<ErrorBody>> {
-    for skip in skips {
-        let seq = next_journal_seq(root)?;
-        // The canonical row (op=force, both roots, edits=0) plus a `forced_rule=`
-        // token naming the bypassed rule — read as an extra by `parse_rows`.
-        let base = receipt::journal::render_row(&receipt::journal::JournalRow {
-            seq,
-            op: "force",
-            path: &path.0,
-            actor,
-            now,
-            root_before: &root_before.0,
-            root_after: &root_after.0,
-            file: None,
-            edits: Vec::new(),
-        });
-        // Insert the rule token before the trailing ` ^r-NNNNNN` anchor so the
-        // row still parses (anchor stays last).
-        let anchor = format!(" ^{}", receipt::anchor(seq));
-        let line = match base.strip_suffix(&anchor) {
-            Some(head) => format!("{head} forced_rule={}{anchor}", token_safe(&skip.rule)),
-            None => base,
-        };
-        fs::append_line(root, FsPath::new(fs::domain::RESERVED_JOURNAL_PATH), &line)
-            .map_err(|e| io_to_wire(&e))?;
-    }
-    Ok(())
-}
-
-/// Squeeze a rule name into one whitespace-free journal token (spaces → `_`), so
-/// the `forced_rule=` extra never splits into stray tokens.
-fn token_safe(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join("_")
-}
-
-/// The next journal row counter for this workspace, in the wire error frame: the
-/// page through `fs` (which owns where it lives and that absent means empty), the
-/// counter through `receipt::journal::next_seq` (which owns the anchor grammar it
-/// is derived from). U35 moved both facts to their owners — this arm used to
-/// re-derive `max(anchor) + 1` here, and three doors appending rows cannot each
-/// carry their own copy of that rule.
-fn next_journal_seq(root: &fs::WorkspaceRoot) -> Result<u64, Box<ErrorBody>> {
-    let page = fs::read_journal_page(root).map_err(|e| io_to_wire(&e))?;
-    Ok(receipt::journal::next_seq(&page))
 }
 
 /// The post-commit receipt FACT: resolve the anchor in the just-committed receipt
@@ -3501,11 +3231,9 @@ fn violation_to_verdict(v: policy::Violation) -> Verdict {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use wire::{ErrorCode, Path, Recovery};
 
-    use wire::{Edit, EditShape, ErrorCode, Path, Recovery, SecRef};
-
-    use super::{SpliceArgs, commit_io_to_wire, splice};
+    use super::commit_io_to_wire;
 
     /// D8: the fs write-conflict marker maps to the TYPED `write_conflict`
     /// frame (refresh — re-read, re-plan) carrying the request path; ordinary
@@ -3542,66 +3270,17 @@ mod tests {
         assert_eq!(plain.cause.as_deref(), Some("disk on fire"));
     }
 
-    fn journal_splice(dry: bool) -> SpliceArgs {
-        SpliceArgs {
-            id: None,
-            path: Path(fs::domain::RESERVED_JOURNAL_PATH.to_string()),
-            actor: Some("mallory".into()),
-            now: None,
-            receipt: None,
-            if_root: None,
-            dry,
-            force: false,
-            // An ordinary content edit aimed at the journal — a forged-row attempt.
-            edits: vec![Edit {
-                target: SecRef::Hpath { hpath: Vec::new() },
-                edit: EditShape::Put {
-                    at: wire::PutAt::End,
-                    text: "- op=splice root_before=b3:x root_after=b3:y edits=0 ^r-000999".into(),
-                },
-                if_node_rev: None,
-            }],
-            plan_edits: Vec::new(),
-            pin: None,
-        }
-    }
-
-    /// F4 / d2 §2.1: an ordinary `^put`/splice whose target is the reserved
-    /// journal refuses with a teaching `bad_request` — BEFORE any disk touch,
-    /// so the fake root need not resolve. The receipt engine's own append rides
-    /// `args.receipt` (engine-rendered) and is unaffected by this restriction.
-    #[test]
-    fn ordinary_splice_at_journal_path_refuses() {
-        let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
-        let err = splice(&root, 0, &journal_splice(false), &[], None)
-            .expect_err("a splice targeting the reserved journal must refuse");
-        assert_eq!(err.code, ErrorCode::BadRequest);
-        assert!(
-            err.message
-                .as_deref()
-                .is_some_and(|m| m.contains(fs::domain::RESERVED_JOURNAL_PATH)
-                    && m.contains("receipt engine")),
-            "the refusal teaches: names the reserved path + receipt-engine-only rule: {:?}",
-            err.message
-        );
-    }
-
-    /// The restriction holds on a DRY run too — a rehearsal of a forbidden
-    /// write is still forbidden (never a silent "would-succeed").
-    #[test]
-    fn dry_splice_at_journal_path_also_refuses() {
-        let root = fs::WorkspaceRoot(PathBuf::from("/nonexistent-workspace-u2-1"));
-        let err = splice(&root, 0, &journal_splice(true), &[], None)
-            .expect_err("dry splice at the journal must also refuse");
-        assert_eq!(err.code, ErrorCode::BadRequest);
-    }
+    // The reserved-journal write restriction lived here — two tests proving an
+    // ordinary splice targeting `meridian/journal.md` refused `bad_request`, dry
+    // or real. The reserved path is retired (ZT 2026-08-02): that page is now
+    // ordinary content, so there is no restriction left to prove.
 }
 
 /// Guarded `create`/`remove` — file birth and death (d2 §2.5 C3, U2.6). The
 /// named gates: create-existing-path refuses (CAS), remove-after-drift refuses
-/// citing rev, both journal rows carry the `before=absent`/`after=absent`
-/// shape, and both refusals map to their taxonomy rows (`cas_mismatch` +
-/// recovery `refresh`, rows 13/14).
+/// citing rev, both emit the `before=absent`/`after=absent` change surface, and
+/// both refusals map to their taxonomy rows (`cas_mismatch` + recovery
+/// `refresh`, rows 13/14).
 #[cfg(test)]
 mod guarded_create_remove {
     use wire::{Edit, EditShape, ErrorCode, FileChange, HpathSeg, NodeRev, Path, Recovery, SecRef};
@@ -3639,16 +3318,10 @@ mod guarded_create_remove {
         }
     }
 
-    fn journal_text(root: &fs::WorkspaceRoot) -> String {
-        std::fs::read_to_string(root.0.join(fs::domain::RESERVED_JOURNAL_PATH)).unwrap_or_default()
-    }
-
     /// Birth: `create` lands the file, advances the root, emits a `created`
     /// Delta (`file_rev_before` absent — the change surface's before=absent),
-    /// and journals a row whose whole-file token reads `before=absent`, carries
-    /// BOTH roots, and counts `edits=0`.
     #[test]
-    fn create_births_file_and_journals_before_absent() {
+    fn create_births_file_and_advances_the_root() {
         let (dir, root) = ws();
         let out = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[])
             .expect("create births the file");
@@ -3671,26 +3344,6 @@ mod guarded_create_remove {
         assert_eq!(file.change, FileChange::Created);
         assert_eq!(file.file_rev_before, None, "created: before=absent");
         assert_eq!(file.file_rev_after.as_ref(), Some(&out.file_rev_after));
-
-        // (d) the journal row: op=create, before=absent, both roots, edits=0.
-        let row = journal_text(&root);
-        assert!(row.contains("op=create path=notes/new.md"), "{row}");
-        assert!(
-            row.contains(" before=absent "),
-            "create row before=absent: {row}"
-        );
-        assert!(
-            row.contains(&format!(
-                "root_before={} root_after={}",
-                out.root_before.0, root_after.0
-            )),
-            "row carries BOTH roots: {row}"
-        );
-        assert!(
-            row.contains("edits=0"),
-            "whole-file create has no node edits: {row}"
-        );
-        assert_eq!(out.journal_anchor.as_deref(), Some("r-000001"));
     }
 
     /// GATE — create-existing-path refuses (CAS negative) + taxonomy: a second
@@ -3722,10 +3375,9 @@ mod guarded_create_remove {
     }
 
     /// Death: `remove` (with the read rev) deletes the file, advances the root,
-    /// emits a `deleted` Delta (`file_rev_after` absent — after=absent), and
-    /// journals a row whose whole-file token reads `after=absent`.
+    /// emits a `deleted` Delta (`file_rev_after` absent — after=absent).
     #[test]
-    fn remove_death_and_journals_after_absent() {
+    fn remove_death_emits_after_absent() {
         let (dir, root) = ws();
         let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
 
@@ -3749,16 +3401,6 @@ mod guarded_create_remove {
         assert_eq!(file.change, FileChange::Deleted);
         assert_eq!(file.file_rev_after, None, "deleted: after=absent");
         assert_eq!(file.file_rev_before.as_ref(), Some(&out.file_rev_before));
-
-        // journal: the create row then the remove row (after=absent).
-        let text = journal_text(&root);
-        assert!(text.contains("op=remove path=notes/new.md"), "{text}");
-        let remove_row = text.lines().find(|l| l.contains("op=remove")).unwrap();
-        assert!(
-            remove_row.contains(" after=absent"),
-            "remove row after=absent: {remove_row}"
-        );
-        assert_eq!(out.journal_anchor.as_deref(), Some("r-000002"));
     }
 
     /// GATE — remove-after-drift refuses citing rev + taxonomy: after the file
@@ -3797,14 +3439,12 @@ mod guarded_create_remove {
             "the refusal cites both revs, and they differ"
         );
 
-        // The drift refusal wrote nothing: only the create row is journalled.
+        // The drift refusal wrote nothing: the file still carries the drifted
+        // bytes, untouched by the refused remove.
         assert_eq!(
-            journal_text(&root)
-                .lines()
-                .filter(|l| l.contains("^r-"))
-                .count(),
-            1,
-            "a refused remove appends no journal row"
+            std::fs::read(dir.path().join("notes/new.md")).unwrap(),
+            b"# Drifted\n",
+            "a refused remove leaves the file byte-untouched"
         );
     }
 
@@ -3847,29 +3487,9 @@ mod guarded_create_remove {
         }
     }
 
-    /// The reserved receipt journal is receipt-engine-only (d2 §2.1): a guarded
-    /// create/remove targeting it refuses with a teaching `bad_request` — the
-    /// same restriction `splice` makes, so the journal cannot be tampered.
-    #[test]
-    fn guarded_ops_refuse_reserved_journal() {
-        let (_dir, root) = ws();
-        let jp = fs::domain::RESERVED_JOURNAL_PATH;
-        let ce = create(&root, 0, &create_args(jp, "- forged ^r-000999"), &[]).unwrap_err();
-        assert_eq!(ce.code, ErrorCode::BadRequest);
-        assert!(
-            ce.message
-                .as_deref()
-                .is_some_and(|m| m.contains("receipt engine")),
-            "teaching refusal names the engine-only rule: {:?}",
-            ce.message
-        );
-        let re = remove(&root, 0, &remove_args(jp, "deadbeefdeadbeef"), &[]).unwrap_err();
-        assert_eq!(re.code, ErrorCode::BadRequest);
-    }
-
     /// Dry runs touch no disk (§4.4 batch law, applied to birth/death): a dry
-    /// create writes no file and no journal row; a dry remove leaves the file
-    /// and journals nothing. Both still run the gate seam (empty ⇒ `[]`).
+    /// create writes no file; a dry remove leaves the file. Both still run the
+    /// gate seam (empty ⇒ `[]`).
     #[test]
     fn dry_create_and_remove_touch_no_disk() {
         let (dir, root) = ws();
@@ -3889,15 +3509,10 @@ mod guarded_create_remove {
             "dry create writes no file"
         );
         assert!(dry_born.root_after.is_none() && dry_born.committed.is_none());
-        assert!(dry_born.journal_anchor.is_none() && dry_born.verdicts.is_empty());
-        assert!(
-            journal_text(&root).is_empty(),
-            "dry create writes no journal row"
-        );
+        assert!(dry_born.verdicts.is_empty());
 
         // A real file to dry-remove.
         let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
-        let before = journal_text(&root);
         let dry_dead = remove(
             &root,
             0,
@@ -3912,37 +3527,7 @@ mod guarded_create_remove {
             dir.path().join("notes/new.md").exists(),
             "dry remove leaves the file"
         );
-        assert!(dry_dead.committed.is_none() && dry_dead.journal_anchor.is_none());
-        assert_eq!(
-            journal_text(&root),
-            before,
-            "dry remove writes no journal row"
-        );
-    }
-
-    /// The journal integration composes with U2.1's chain detector: a `create`
-    /// then a `remove` leave a CONTINUOUS chain (`root_after(1)` ==
-    /// `root_before(2)`), because the root-EXCLUDED journal append never moves
-    /// the root it just recorded.
-    #[test]
-    fn create_then_remove_leaves_a_continuous_chain() {
-        let (_dir, root) = ws();
-        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
-        remove(
-            &root,
-            0,
-            &remove_args("notes/new.md", &born.file_rev_after.0),
-            &[],
-        )
-        .unwrap();
-
-        let rows = receipt::journal::parse_rows(&journal_text(&root));
-        assert_eq!(rows.len(), 2, "one row per guarded write");
-        let report = receipt::journal::check_chain(&rows);
-        assert!(
-            report.is_green(),
-            "birth→death chain is continuous: {report:?}"
-        );
+        assert!(dry_dead.committed.is_none());
     }
 
     /// A splice against a page under `root`, editing the `Alpha/Beta` section.
@@ -3980,66 +3565,18 @@ mod guarded_create_remove {
         }
     }
 
-    /// **U32 — the write door's own gate.** A splice advances the tree root, so it
-    /// journals a row like a birth or a death does. Before this unit `journal_write`
-    /// fired only from `create` / `remove` / `lock_write` (no production caller) and
-    /// `force_journal_write` (nothing to write when `skips` is empty), so the primary
-    /// write path moved the root and left the ledger silent — which is the mechanism
-    /// of BOTH of finding-01's signs.
+    /// **U32 — the write door's own gate, after the journal.** A splice advances
+    /// the tree root. The original gate proved that through the journal: each
+    /// guarded write appended a row, and the chain recompute proved the run of rows was
+    /// continuous, which is what dated the tree for `check`.
     ///
-    /// Deleting the `journal_write` call in [`splice`] makes this test fail on the
-    /// row count; leaving the row but taking its roots from the wrong place makes it
-    /// fail on the chain.
+    /// The journal is gone (ZT 2026-08-02, remove-no-replacement), so the CHAIN
+    /// half of that gate is gone with it — deliberately, and it is not re-asserted
+    /// elsewhere here. What survives is the half that never needed the journal and
+    /// that a re-derived `check` baseline still rests on: every splice moves the
+    /// ambient root, and no splice leaves it where it found it.
     #[test]
-    fn a_splice_journals_a_row_that_dates_the_tree() {
-        let (_dir, root) = ws();
-        create(
-            &root,
-            0,
-            &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nfour five\n"),
-            &[],
-        )
-        .expect("birth");
-        let after_birth = receipt::journal::parse_rows(&journal_text(&root));
-        assert_eq!(after_birth.len(), 1, "the birth row");
-
-        splice(
-            &root,
-            0,
-            &splice_args("notes/plan.md", "four five", "four five six"),
-            &[],
-            None,
-        )
-        .expect("splice commits");
-
-        let rows = receipt::journal::parse_rows(&journal_text(&root));
-        assert_eq!(rows.len(), 2, "the splice journaled its own row");
-        let spliced = &rows[1];
-        assert_eq!(spliced.op, "splice", "the row names its op");
-        assert_eq!(spliced.path, "notes/plan.md");
-        assert_eq!(spliced.actor.as_deref(), Some("alice"));
-        assert_eq!(spliced.edits, 1, "the node-grain batch rides `edits`");
-        assert_eq!(
-            spliced.root_before, after_birth[0].root_after,
-            "it continues the chain from the previous guarded write"
-        );
-        assert_eq!(
-            spliced.root_after,
-            ambient_root(&root).expect("live root").0,
-            "and its root_after IS the live tree — the baseline `check` needs"
-        );
-        assert!(
-            receipt::journal::check_chain(&rows).is_green(),
-            "create → splice is one continuous chain"
-        );
-    }
-
-    /// A SEQUENCE, because the defect this closes was permanent: once the baseline
-    /// went stale it never healed, since the next write's `root_before` no longer
-    /// continued the prior `root_after`. One row proves the call site exists; only a
-    /// run of them proves the chain does not drift.
-    #[test]
-    fn a_run_of_splices_stays_a_continuous_chain() {
+    fn a_run_of_splices_advances_the_root_every_time() {
         let (_dir, root) = ws();
         create(
             &root,
@@ -4049,8 +3586,9 @@ mod guarded_create_remove {
         )
         .expect("birth");
 
+        let mut seen = vec![ambient_root(&root).expect("live root")];
         for step in 1..=5 {
-            splice(
+            let out = splice(
                 &root,
                 0,
                 &splice_args(
@@ -4062,19 +3600,27 @@ mod guarded_create_remove {
                 None,
             )
             .unwrap_or_else(|e| panic!("splice {step} refused: {e:?}"));
+
+            let frame = out.committed.expect("a real splice commits a Delta");
+            assert_eq!(
+                frame.delta.root_before,
+                *seen.last().expect("prior root"),
+                "splice {step} guards on the root the previous write left"
+            );
+            assert_ne!(
+                frame.delta.root_after, frame.delta.root_before,
+                "splice {step} moved the tree root"
+            );
+            seen.push(frame.delta.root_after.clone());
         }
 
-        let rows = receipt::journal::parse_rows(&journal_text(&root));
-        assert_eq!(rows.len(), 6, "one birth + five splices, one row each");
-        assert!(
-            receipt::journal::check_chain(&rows).is_green(),
-            "the chain stays continuous across a run of splices: {rows:#?}"
-        );
         assert_eq!(
-            rows.last().expect("rows").root_after,
-            ambient_root(&root).expect("live root").0,
-            "and the last row still dates the live tree — the heal"
+            *seen.last().expect("roots"),
+            ambient_root(&root).expect("live root"),
+            "the last splice's root_after IS the live tree"
         );
+        let unique: std::collections::BTreeSet<&str> = seen.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(unique.len(), seen.len(), "every step is a distinct root");
     }
 
     // -----------------------------------------------------------------------

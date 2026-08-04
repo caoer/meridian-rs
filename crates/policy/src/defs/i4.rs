@@ -93,7 +93,7 @@ pub fn conformance(req: &ConformanceRequest<'_>) -> ConformanceResult {
                     message: format!(
                         "the {kind} def failed to load, so this write cannot be validated: {err}"
                     ),
-                    remedy: "fix the def file (fail closed), or re-submit with force to override — forced writes are journaled and surface in the def census".to_string(),
+                    remedy: "fix the def file (fail closed), or re-submit with force to override — forced writes render a `forced:` verdict and surface in the def census".to_string(),
                     context: vec![
                         ("kind".to_string(), kind.clone()),
                         ("rule".to_string(), "def/malformed".to_string()),
@@ -134,7 +134,7 @@ pub fn conformance(req: &ConformanceRequest<'_>) -> ConformanceResult {
                 &kind,
                 req.target,
                 &new_warns,
-                "fix the content, or re-submit with force to override — forced warnings are journaled and surface in the def census (R-force)",
+                "fix the content, or re-submit with force to override — forced warnings render a `forced:` verdict and surface in the def census (R-force)",
             )),
             ..Default::default()
         };

@@ -4,7 +4,13 @@
 //! **Owns:** the operational blob-sha path (`git hash-object`, and the eager
 //! `-w` write), the object-reachability probe (`git rev-list --objects --all`
 //! computed ONCE into a [`ReachableSet`]), and object presence/size lookups
-//! (one batched `git cat-file --batch-check`). Every call runs against a
+//! (one batched `git cat-file --batch-check`), and **the write history** — the
+//! first-parent `git log --name-status` walk ([`Repo::path_history`]) plus the
+//! batched blob read that recovers each side's bytes ([`Repo::blobs_at`], one
+//! `git cat-file --batch`). History is git's by law (ZT 2026-08-03: the engine
+//! keeps no memory), so the question is asked HERE, in the one auditable
+//! shell-out leaf, and never by a caller spawning git per commit. Every call
+//! runs against a
 //! [`Repo`] handle — a path plus the git program to run — so a later per-root
 //! world constructs one handle per root and nothing here changes.
 //!
@@ -313,6 +319,138 @@ impl Repo {
             .object_info(&[oid])?
             .first()
             .is_some_and(Option::is_some))
+    }
+
+    // -----------------------------------------------------------------------
+    // the write HISTORY — what git recorded, path by path
+    // -----------------------------------------------------------------------
+
+    /// **Every recorded write, oldest first** — one [`PathChange`] per (commit,
+    /// path) pair on the first-parent walk.
+    ///
+    /// This is the engine's ONLY history. The engine keeps no memory of its own
+    /// (ZT 2026-08-03: *"Engine does not have memory. It should not have. History
+    /// is pin to git when we lock. Anything between locks is not history."*), so
+    /// archaeology is a git question and this is where it is asked.
+    ///
+    /// `pathspec` narrows the walk the way `git log -- <path>…` does; an empty
+    /// slice walks the whole tree.
+    ///
+    /// **ONE process for the whole walk.** `--name-status -z` is not optional:
+    /// without `-z` git quotes unusual paths and a quoted path matches nothing on
+    /// disk (the `nul_paths` lesson, held here too).
+    ///
+    /// A rename or copy reports the DESTINATION path — that is the path whose
+    /// bytes the commit recorded, and the only one a reader can ask about at that
+    /// commit.
+    ///
+    /// # Errors
+    /// As [`Repo::blob_oid`]; a repository with no commits yet answers empty
+    /// rather than failing, because "nothing recorded" is a history, not a fault.
+    pub fn path_history(&self, pathspec: &[&str]) -> Result<Vec<PathChange>, GitFail> {
+        self.require_repo()?;
+        if !self.head_exists()? {
+            return Ok(Vec::new());
+        }
+
+        let mut cmd = self.command();
+        cmd.args([
+            "log",
+            "--reverse",
+            "--first-parent",
+            "--name-status",
+            "-z",
+            "--format=%x01%H%x02%an%x02%aI",
+        ]);
+        if !pathspec.is_empty() {
+            cmd.arg("--");
+            cmd.args(pathspec);
+        }
+        let stdout = self.run(cmd, "log --name-status")?;
+        let text = String::from_utf8_lossy(&stdout);
+
+        let mut out = Vec::new();
+        let mut head: Option<(String, String, String)> = None;
+        // `--format` terminates with a newline that `-z` does not swallow, so a
+        // status token arrives as "\nM" and a header as "\n\u{1}<sha>…". Trimming
+        // it is what makes the token classifiable at all — without this every
+        // status reads as "not A, not D" and the whole walk renders as splices.
+        let mut fields = text
+            .split('\0')
+            .map(|f| f.trim_matches('\n'))
+            .filter(|f| !f.is_empty());
+        while let Some(field) = fields.next() {
+            if let Some(rest) = field.strip_prefix('\u{1}') {
+                let mut parts = rest.splitn(3, '\u{2}');
+                let commit = parts.next().unwrap_or_default().to_owned();
+                let author = parts.next().unwrap_or_default().to_owned();
+                let now = parts.next().unwrap_or_default().to_owned();
+                head = Some((commit, author, now));
+                continue;
+            }
+            let Some((commit, author, now)) = head.clone() else {
+                // A status token before any commit header cannot be attributed,
+                // and an unattributed write is not a fact — skip it rather than
+                // inventing the commit it belongs to.
+                continue;
+            };
+            let status = ChangeStatus::of(field);
+            // A rename or copy carries the source path first; the destination is
+            // the path this commit recorded.
+            let path = if field.starts_with('R') || field.starts_with('C') {
+                fields.next();
+                fields.next()
+            } else {
+                fields.next()
+            };
+            let Some(path) = path else { break };
+            out.push(PathChange {
+                commit,
+                author,
+                now,
+                path: path.to_owned(),
+                status,
+            });
+        }
+        Ok(out)
+    }
+
+    /// **The bytes at each `<rev>:<path>` spec, in input order** — `None` where
+    /// the spec resolves to nothing (the path is absent from that tree, the rev
+    /// does not exist, or the object is not a blob).
+    ///
+    /// ONE `git cat-file --batch` answers the whole slice, the way
+    /// [`Repo::object_info`] does for `--batch-check`: a history walk over N
+    /// writes asks for 2N sides and spawns git once, not 2N times.
+    ///
+    /// # Errors
+    /// As [`Repo::blob_oid`]; [`GitFail::Unexpected`] when the stream ends
+    /// mid-object or answers a different number of specs than were asked.
+    pub fn blobs_at(&self, specs: &[&str]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
+        if specs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = String::new();
+        for spec in specs {
+            query.push_str(spec);
+            query.push('\n');
+        }
+
+        let mut cmd = self.command();
+        cmd.args(["cat-file", "--batch"]);
+        let stdout = self.run_with_stdin(cmd, "cat-file --batch", query.into_bytes())?;
+        let answers = parse_batch_stream(&stdout)?;
+        if answers.len() != specs.len() {
+            return Err(GitFail::Unexpected {
+                what: "cat-file --batch".to_owned(),
+                detail: format!(
+                    "asked about {} specs, got {} answers",
+                    specs.len(),
+                    answers.len()
+                ),
+            });
+        }
+        Ok(answers)
     }
 
     // -----------------------------------------------------------------------
@@ -774,6 +912,69 @@ pub struct ObjectInfo {
     pub size: u64,
 }
 
+/// What one commit did to one path — the unit of recorded history.
+///
+/// Every field is git's own answer, quoted rather than derived: the engine does
+/// not date a write, attribute one, or decide what changed. It asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathChange {
+    /// The full commit id that recorded this write.
+    pub commit: String,
+    /// The commit's author NAME, as git spells it — deliberately without the
+    /// email.
+    ///
+    /// The name is the field that can equal an identity a page declares (a
+    /// task's `owner:`, a reviewer handle). `Name <email>` never equals one, so
+    /// carrying the email would leave every actor-vs-owner rule structurally
+    /// unable to fire — a whole class of law silently disabled, which is worse
+    /// than a coarse answer. The engine holds no email-to-handle mapping and does
+    /// not invent one.
+    pub author: String,
+    /// The author date, ISO-8601 with offset (git's `%aI`).
+    pub now: String,
+    /// The repo-relative path this commit recorded. For a rename or a copy this
+    /// is the DESTINATION — the path whose bytes exist at this commit.
+    pub path: String,
+    /// What the commit did to the path.
+    pub status: ChangeStatus,
+}
+
+/// What a commit did to a path, collapsed to the three states a reader can act
+/// on. Git's fuller alphabet (`R`, `C`, `T`, `U`, `X`) all land on
+/// [`ChangeStatus::Modified`]: each leaves bytes at the destination path, which
+/// is the fact a caller reading those bytes needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeStatus {
+    /// The path did not exist before this commit (`A`).
+    Added,
+    /// The path existed before and after (`M`, and every other letter).
+    Modified,
+    /// The path existed before and not after (`D`).
+    Deleted,
+}
+
+impl ChangeStatus {
+    /// Read git's `--name-status` letter. The score suffix on `R100` / `C75` is
+    /// ignored — similarity is not one of the three states.
+    fn of(token: &str) -> ChangeStatus {
+        match token.as_bytes().first() {
+            Some(b'A') => ChangeStatus::Added,
+            Some(b'D') => ChangeStatus::Deleted,
+            _ => ChangeStatus::Modified,
+        }
+    }
+
+    /// The word this status is spelled with on a rendered surface.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeStatus::Added => "create",
+            ChangeStatus::Modified => "splice",
+            ChangeStatus::Deleted => "remove",
+        }
+    }
+}
+
 /// A git call that did not produce an answer. Every variant is an honest
 /// degradation: the caller learns what failed and never receives a sha the
 /// engine made up.
@@ -884,6 +1085,52 @@ fn parse_batch_line(line: &str) -> Result<Option<ObjectInfo>, GitFail> {
         kind: second.to_owned(),
         size,
     }))
+}
+
+/// The whole `cat-file --batch` stream: one answer per spec, in order. An
+/// answer is `<oid> <type> <size>\n<size bytes>\n`, or a one-line
+/// `<spec> missing` / `<spec> ambiguous` — which is a real answer ("that spec
+/// resolves to nothing"), never a failure.
+///
+/// The size header is what makes this parseable at all: content can carry
+/// newlines and NULs, so the byte count is read first and the contents are taken
+/// by length, never scanned for a terminator.
+fn parse_batch_stream(stream: &[u8]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
+    let unexpected = |detail: String| GitFail::Unexpected {
+        what: "cat-file --batch".to_owned(),
+        detail,
+    };
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at < stream.len() {
+        let end = stream[at..]
+            .iter()
+            .position(|b| *b == b'\n')
+            .ok_or_else(|| unexpected("stream ends mid-header".to_owned()))?
+            + at;
+        let header = String::from_utf8_lossy(&stream[at..end]).into_owned();
+        at = end + 1;
+
+        let mut parts = header.rsplitn(3, ' ');
+        let (Some(size), Some(kind)) = (parts.next(), parts.next()) else {
+            return Err(unexpected(format!("unparseable header: {header:?}")));
+        };
+        if kind == "missing" || kind == "ambiguous" || size == "missing" || size == "ambiguous" {
+            out.push(None);
+            continue;
+        }
+        let size: usize = size
+            .parse()
+            .map_err(|_| unexpected(format!("header carries no size: {header:?}")))?;
+        let stop = at
+            .checked_add(size)
+            .filter(|stop| *stop <= stream.len())
+            .ok_or_else(|| unexpected(format!("stream ends mid-object: {header:?}")))?;
+        out.push(Some(stream[at..stop].to_vec()));
+        // git writes one newline after the contents.
+        at = stop + 1;
+    }
+    Ok(out)
 }
 
 /// Whether `text` is a hex object id — sha1 (40) or sha256 (64), the two

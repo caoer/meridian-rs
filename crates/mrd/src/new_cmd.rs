@@ -63,9 +63,6 @@ fn print_human(outcome: &NewOutcome) {
             let state = if report.dry { "would-birth" } else { "born" };
             println!("new {} [{state}]", report.target);
             println!("  rev: {}", report.rev);
-            if let Some(r) = &report.receipt {
-                println!("  birth receipt: ^{r}");
-            }
         }
         NewOutcome::Refused(refusal) => {
             println!("new {} [refused]", refusal.target);

@@ -67,8 +67,6 @@
 
 use std::time::Duration;
 
-use crate::journal::ParsedRow;
-
 /// The mechanical tip position: the object id of local `HEAD` versus the local
 /// remote-tracking ref `origin/<branch>` (a source-2 rev comparison).
 ///
@@ -201,10 +199,10 @@ impl AnchorState {
 pub const AGELESS_NUDGE: &str = "anchor as-known but undated — an out-of-engine `git fetch` cannot be dated; \
      run the fetch through the engine (realise fetch observe-claim) to mint a dated observation";
 
-/// The one journal `op` a fetch observe-claim receipt records (the seam the
-/// realise fetch-claim path writes through the strict writer, and that
-/// [`last_observation`] reads back). Kept as one named constant so the observe
-/// row and the anchor's reader never drift.
+/// The one `op` a fetch observe-claim receipt records. Its journal-row READER
+/// (`last_observation`) died with the journal (ZT 2026-08-02); the constant stays
+/// because the op is the realise fetch-claim path's, not the journal's, and a
+/// re-derived dater must name the same op the claim writes.
 pub const OBSERVE_OP: &str = "observe";
 
 /// Render the anchor-qualified tip axis (d2 §2.3 v3, the sole renderer).
@@ -239,18 +237,13 @@ pub fn nudge_hint(anchor: &AnchorState) -> Option<&'static str> {
     }
 }
 
-/// Find the `now` token of the most recent journaled fetch observe-claim
-/// receipt (`op == OBSERVE_OP`) in page-ordered journal rows — the anchor's
-/// dater. Composes [`crate::journal::parse_rows`] output; it never reparses the
-/// page. Returns `None` when the journal carries no observation (the anchor is
-/// then as-known-ageless or unverified per [`AnchorFacts::origin_ref_present`]).
-#[must_use]
-pub fn last_observation(rows: &[ParsedRow]) -> Option<&str> {
-    rows.iter()
-        .rev()
-        .find(|r| r.op == OBSERVE_OP)
-        .and_then(|r| r.now.as_deref())
-}
+// `last_observation(&[ParsedRow])` lived here — it scanned page-ordered journal
+// rows for the last `op=observe` receipt and returned its `now` token, the value
+// that dates an as-known anchor. It read the journal, so it died with the journal
+// (ZT 2026-08-02, remove-no-replacement). [`AnchorFacts::last_observation`] is
+// untouched: the FIELD is a plain dated token, and only its journal-row EXTRACTOR
+// was journal-shaped. A caller that can date an observation from another source
+// still classifies through [`classify`] unchanged.
 
 /// A compact, honest (`~`-prefixed at the call site) age: whole units, coarsest
 /// that fits. Sub-minute reads in seconds; then minutes, hours, days. Never
@@ -522,7 +515,6 @@ impl TwoBadge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::{JournalRow, render_row};
 
     /// A day, in seconds — the age unit the restore-replay scenario grows by.
     const DAY: i64 = 86_400;
@@ -681,14 +673,14 @@ mod tests {
         assert!(nudge_hint(&state).is_none());
     }
 
-    /// A journaled observation dates the anchor even when the run did not
+    /// A dated observation dates the anchor even when the run did not
     /// observe — and it wins over the mere presence of the origin ref
     /// (as-known-aged, never ageless).
     #[test]
     // The age is the arithmetic `160 - 100 = 60` seconds — seconds are the unit
     // under test, so the second-grained `Duration` is the readable form here.
     #[allow(clippy::duration_suboptimal_units)]
-    fn journaled_observation_beats_bare_ref_presence() {
+    fn dated_observation_beats_bare_ref_presence() {
         let facts = AnchorFacts {
             run_observed: false,
             last_observation: Some(observed("2026-07-23T00:00:00Z", 100)),
@@ -718,54 +710,6 @@ mod tests {
             panic!("as-known-aged");
         };
         assert_eq!(age, Duration::ZERO);
-    }
-
-    /// [`last_observation`] reads the LAST observe-op `now` from parsed journal
-    /// rows, composing the journal parser — never reparsing the page, and
-    /// skipping ordinary write rows.
-    #[test]
-    fn last_observation_reads_last_observe_row() {
-        use crate::journal::parse_rows;
-        let splice = render_row(&JournalRow {
-            seq: 1,
-            op: "splice",
-            path: "notes/plan.md",
-            actor: Some("alice"),
-            now: Some("2026-07-20T00:00:00Z"),
-            root_before: "b3:0",
-            root_after: "b3:1",
-            edits: Vec::new(),
-            file: None,
-        });
-        let observe_old = render_row(&JournalRow {
-            seq: 2,
-            op: OBSERVE_OP,
-            path: "origin/main",
-            actor: None,
-            now: Some("2026-07-21T00:00:00Z"),
-            root_before: "b3:1",
-            root_after: "b3:2",
-            edits: Vec::new(),
-            file: None,
-        });
-        let observe_new = render_row(&JournalRow {
-            seq: 3,
-            op: OBSERVE_OP,
-            path: "origin/main",
-            actor: None,
-            now: Some("2026-07-23T00:00:00Z"),
-            root_before: "b3:2",
-            root_after: "b3:3",
-            edits: Vec::new(),
-            file: None,
-        });
-        let page = format!("# journal\n{splice}\n{observe_old}\n{observe_new}\n");
-        let rows = parse_rows(&page);
-        assert_eq!(last_observation(&rows), Some("2026-07-23T00:00:00Z"));
-
-        // No observe rows ⇒ None (the anchor is ageless or unverified).
-        let only_splice = format!("# journal\n{splice}\n");
-        assert_eq!(last_observation(&parse_rows(&only_splice)), None);
     }
 
     /// `human_age` picks the coarsest whole unit that fits.

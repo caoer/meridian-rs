@@ -1,6 +1,5 @@
-//! The d2 §2.1 fact-table surface — the four fact tables (`node`, `edge`,
-//! `claim`, `receipt_journal`) as `DuckDB` **projections over parse, never a
-//! second store**.
+//! The d2 §2.1 fact-table surface — the fact tables (`node`, `edge`, `claim`)
+//! as `DuckDB` **projections over parse, never a second store**.
 //!
 //! # The admission test, encoded as columns
 //! Every column carries its derivation-source class — the admission-test
@@ -14,11 +13,11 @@
 //! Each column comment below is tagged `[1]`/`[2]`/`[3]`.
 //!
 //! # These are projections, not a store
-//! `node` is projected from the parsed corpus; `receipt_journal` is projected
-//! from the ONE reserved journal page (parsed upstream by
-//! `receipt::journal::parse_rows`, handed in as rows — this crate never depends
-//! on `receipt`, keeping Law 3: only `wire-map`/`sidecar` see both wire and
-//! model). `edge` and `claim` are defined here as the contract; their
+//! `node` is projected from the parsed corpus. A fourth table, `receipt_journal`,
+//! projected the ONE reserved journal page here until the journal was removed
+//! (ZT 2026-08-02, remove-no-replacement); it is gone, not emptied — a table that
+//! can never have a row is not a contract. `edge` and `claim` are defined here as
+//! the contract; their
 //! projections are populated by the units that own their source facts — `edge`
 //! by the pin/lock manifest reader, `claim` by the run plane — and are left
 //! empty here rather than half-projected (honest, stated).
@@ -27,7 +26,7 @@ use duckdb::Connection;
 use duckdb::types::Value;
 use model::{Document, Node, NodeKind};
 
-/// The d2 §2.1 fact-table DDL: `node` · `edge` · `claim` · `receipt_journal`.
+/// The d2 §2.1 fact-table DDL: `node` · `edge` · `claim`.
 /// A separate schema from the frozen round-1 view schema ([`crate::schema`]) —
 /// additive, never an edit to what ships. Every column tags its source class.
 pub const FACTS_SCHEMA_SQL: &str = r"
@@ -68,43 +67,13 @@ CREATE TABLE claim (
     last_receipt TEXT               -- [3] anchor of the last realise receipt
 );
 
--- receipt_journal — one row per guarded write, projected from the ONE reserved
--- root-EXCLUDED journal page. Every column is a source-3 fact (A5 bound).
-CREATE TABLE receipt_journal (
-    anchor      TEXT     NOT NULL,  -- [3] the row block anchor 'r-NNNNNN'
-    op          TEXT     NOT NULL,  -- [3] guarded op: splice|create|remove
-    path        TEXT     NOT NULL,  -- [3] the content target the write landed on
-    actor       TEXT,               -- [3] recorded actor (nullable — never invented)
-    now         TEXT,               -- [3] recorded timestamp (nullable — never invented)
-    root_before TEXT     NOT NULL,  -- [3] workspace tree merkle BEFORE the write
-    root_after  TEXT     NOT NULL,  -- [3] workspace tree merkle AFTER the write (recordable: journal is root-excluded)
-    edits       UBIGINT  NOT NULL,  -- [3] edit count in the write
-    line_no     UBIGINT  NOT NULL,  -- [3] 1-based position in the journal (chain/citation coordinate)
-    PRIMARY KEY (anchor)
-);
 ";
 
 /// The facts-schema version. A reader whose version differs treats the facts
 /// projection as ABSENT (delete-don't-migrate, mirroring [`crate::schema`]).
 pub const FACTS_SCHEMA_VERSION: i32 = 1;
 
-/// One receipt-journal row's scalar facts — the projection input. A plain
-/// struct so this crate stays free of `receipt` (Law 3): the caller parses the
-/// journal page with `receipt::journal::parse_rows` and maps each row here.
-#[derive(Debug, Clone)]
-pub struct JournalRowInput {
-    pub anchor: String,
-    pub op: String,
-    pub path: String,
-    pub actor: Option<String>,
-    pub now: Option<String>,
-    pub root_before: String,
-    pub root_after: String,
-    pub edits: u64,
-    pub line_no: u64,
-}
-
-/// Create the four fact tables against `conn`.
+/// Create the fact tables against `conn`.
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from executing the DDL batch.
@@ -112,22 +81,19 @@ pub fn create_facts_schema(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch(FACTS_SCHEMA_SQL)
 }
 
-/// Build an in-memory fact-table projection over `docs` + `journal_rows`: the
-/// `node` table from the parsed corpus and `receipt_journal` from the supplied
-/// journal rows. `edge`/`claim` exist (the contract) but are not populated here
-/// (owned by later units — stated in the module docs).
+/// Build an in-memory fact-table projection over `docs`: the `node` table from
+/// the parsed corpus. `edge`/`claim` exist (the contract) but are not populated
+/// here (owned by later units — stated in the module docs).
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from opening the database, creating the schema,
 /// or inserting the projected rows.
 pub fn build_facts_memory(
     docs: &std::collections::BTreeMap<String, Document>,
-    journal_rows: &[JournalRowInput],
 ) -> duckdb::Result<Connection> {
     let conn = Connection::open_in_memory()?;
     create_facts_schema(&conn)?;
     project_nodes(&conn, docs)?;
-    project_journal(&conn, journal_rows)?;
     Ok(conn)
 }
 
@@ -185,34 +151,6 @@ fn collect_nodes(node: &Node, path: &str, doc_rev: &str, rows: &mut Vec<Vec<Valu
     }
 }
 
-/// Project the supplied journal rows into `receipt_journal` (page order).
-/// `pub(crate)` for the same reason as [`project_nodes`]: the read face mounts
-/// the `^receipt` projection alongside `node` in one connection.
-pub(crate) fn project_journal(conn: &Connection, rows: &[JournalRowInput]) -> duckdb::Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO receipt_journal \
-         (anchor, op, path, actor, now, root_before, root_after, edits, line_no) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )?;
-    for r in rows {
-        stmt.execute(duckdb::params_from_iter(
-            [
-                Value::Text(r.anchor.clone()),
-                Value::Text(r.op.clone()),
-                Value::Text(r.path.clone()),
-                r.actor.clone().map_or(Value::Null, Value::Text),
-                r.now.clone().map_or(Value::Null, Value::Text),
-                Value::Text(r.root_before.clone()),
-                Value::Text(r.root_after.clone()),
-                Value::UBigInt(r.edits),
-                Value::UBigInt(r.line_no),
-            ]
-            .iter(),
-        ))?;
-    }
-    Ok(())
-}
-
 /// `usize` → `u64`, saturating (never truncates on a 32-bit target).
 fn u64c(x: usize) -> u64 {
     u64::try_from(x).unwrap_or(u64::MAX)
@@ -237,10 +175,10 @@ mod tests {
             "notes/plan.md".to_string(),
             doc("---\ntitle: Plan\n---\n# Goals\n\ntext\n\n## Q3\n\nship\n"),
         );
-        let conn = build_facts_memory(&docs, &[]).expect("facts build");
+        let conn = build_facts_memory(&docs).expect("facts build");
 
-        // all four fact tables exist (the contract).
-        for t in ["node", "edge", "claim", "receipt_journal"] {
+        // the fact tables exist (the contract).
+        for t in ["node", "edge", "claim"] {
             let n: i64 = conn
                 .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
                 .expect("table exists");
@@ -259,50 +197,5 @@ mod tests {
         assert!(kinds.contains(&"document".to_string()));
         assert!(kinds.contains(&"frontmatter".to_string()));
         assert_eq!(kinds.iter().filter(|k| *k == "section").count(), 2);
-    }
-
-    /// `receipt_journal` is a projection over supplied journal rows; a nullable
-    /// actor projects as SQL NULL (never invented).
-    #[test]
-    fn receipt_journal_projects_supplied_rows() {
-        let rows = vec![
-            JournalRowInput {
-                anchor: "r-000001".into(),
-                op: "splice".into(),
-                path: "notes/plan.md".into(),
-                actor: Some("alice".into()),
-                now: Some("2026-07-23T12:00:00Z".into()),
-                root_before: "b3:0".into(),
-                root_after: "b3:1".into(),
-                edits: 1,
-                line_no: 2,
-            },
-            JournalRowInput {
-                anchor: "r-000002".into(),
-                op: "create".into(),
-                path: "notes/new.md".into(),
-                actor: None,
-                now: None,
-                root_before: "b3:1".into(),
-                root_after: "b3:2".into(),
-                edits: 0,
-                line_no: 3,
-            },
-        ];
-        let docs = BTreeMap::new();
-        let conn = build_facts_memory(&docs, &rows).expect("facts build");
-
-        let n: i64 = conn
-            .query_row("SELECT count(*) FROM receipt_journal", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 2);
-        let null_actors: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM receipt_journal WHERE actor IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(null_actors, 1, "an absent actor projects as SQL NULL");
     }
 }

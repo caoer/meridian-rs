@@ -117,11 +117,6 @@ fn binding(page: &str, task: &str) -> ApplyBinding {
     }
 }
 
-fn journal_text(root: &fs::WorkspaceRoot) -> String {
-    let path = root.0.join(fs::domain::RESERVED_JOURNAL_PATH);
-    std::fs::read_to_string(path).unwrap_or_default()
-}
-
 fn receipt_run_lines(root: &fs::WorkspaceRoot) -> usize {
     let path = root.0.join("receipts/realise.md");
     std::fs::read_to_string(path)
@@ -155,7 +150,11 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
     let ClaimState::PendingAgent { card } = &report.claims[0].state else {
         panic!("expected pending-agent, got {:?}", report.claims[0].state);
     };
-    assert!(card.is_some(), "the card mint returns its journal anchor");
+    assert_eq!(
+        card.as_deref(),
+        Some("board/status-must-be-done.md"),
+        "the card mint returns the born card's path"
+    );
     assert_eq!(
         report.claims[0].applies, 0,
         "no apply ran for pending-agent"
@@ -191,17 +190,6 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         .expect("the card stamps a created:");
     assert!(wire::now_is_rfc3339(created), "created={created:?}");
 
-    // The card was born through the guarded create: a before=absent journal row.
-    let journal = journal_text(&root);
-    assert!(
-        journal.contains("op=create path=board/status-must-be-done.md"),
-        "{journal}"
-    );
-    assert!(
-        journal.contains(" before=absent "),
-        "guarded birth: {journal}"
-    );
-
     // Idempotent by claim selector: a second realise mints no second card and
     // does not error — the guarded create's if_absent CAS is the idempotency.
     let claim2 = Claim {
@@ -216,8 +204,6 @@ fn failing_check_no_apply_mints_pending_agent_and_board_card() {
         panic!("still pending-agent on re-run");
     };
     assert!(card2.is_none(), "already scheduled — no second card minted");
-    let create_rows = journal_text(&root).matches("op=create").count();
-    assert_eq!(create_rows, 1, "exactly one card birth across both runs");
 }
 
 // ---------------------------------------------------------------------------
