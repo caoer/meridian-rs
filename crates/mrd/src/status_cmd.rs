@@ -620,7 +620,7 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
     for object in view::walk::lock_objects(docs) {
         let oid = object.blob_sha.to_ascii_lowercase();
         if !git::is_oid(&oid) {
-            malformed.push(format!("{} objects.{}", object.src_path, object.key));
+            malformed.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
         }
         // `Addr::parse` REFUSES a malformed root rather than reading it as a
@@ -629,7 +629,7 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
         // answer confidently — a wrong SUCCESS, which is the one shape this
         // gauge must never produce.
         let Ok(addr) = addr::Addr::parse(&object.key) else {
-            unaddressable.push(format!("{} objects.{}", object.src_path, object.key));
+            unaddressable.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
         };
         let store: StoreKey = addr.root().cloned();
