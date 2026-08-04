@@ -96,12 +96,41 @@ fn drifted_fingerprint() -> String {
 /// The canonical `meridian-lock` fence for `pins`, written by hand so the gate
 /// depends on the CLI's own reader, never on the writer that produced the bytes.
 fn lock_block(pins: &[(&str, &str)]) -> String {
+    lock_block_with_hashes(
+        &pins
+            .iter()
+            .map(|(r, f)| (*r, "9ae3f1deadbeef", *f))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// [`lock_block`] with each pin's blob `hash` spelled out — for the gates that
+/// measure the RETRIEVAL plane, which R4 moved onto the pin row.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` here. That is the LOCK
+/// FILE schema version, not the wire protocol version.
+fn lock_block_with_hashes(pins: &[(&str, &str, &str)]) -> String {
     use std::fmt::Write as _;
-    let mut out = String::from("```meridian-lock\nversion: 1\npins:\n");
-    for (declared_ref, fingerprint) in pins {
+    let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
+    for (declared_ref, hash, fingerprint) in pins {
+        let (target, fragment) = match declared_ref.split_once('#') {
+            Some((t, f)) => (t, f),
+            None => (*declared_ref, ""),
+        };
+        let object = target.strip_suffix(".md").unwrap_or(target);
+        let path = if fragment.is_empty() {
+            String::new()
+        } else {
+            fragment
+                .split('/')
+                .map(|seg| format!("\"{seg}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let _ = writeln!(
             out,
-            "  - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\""
+            "  - object: \"[[{object}]]\"\n    hash: \"{hash}\"\n    path: [{path}]\n    \
+             fingerprint: \"{fingerprint}\""
         );
     }
     out.push_str("```");
@@ -193,48 +222,19 @@ fn walk_renders_the_red_pin_that_shares_a_ref_with_a_green_one() {
 
 // ── finding 17 — one pin, one row, one verdict ──────────────────────────────
 
-/// F17 GATE — a `meridian-lock` fence followed by an `^inputs` block anchor is
-/// ONE pin and projects exactly ONE row.
-///
-/// The trailing anchor is the form-2 chain-block marker, so the form-2 reader
-/// used to re-read the engine's own lock block: `status` counted `[2 pins]` for
-/// one declared pin and the extra row carried a grey `declared-unpinned` verdict
-/// the page never declared — grey is above green in the worst-of roll-up, so one
-/// pin's green rendered grey.
-///
-/// The claim is the assert: the row COUNT is 1 and the verdict is the pin's own.
-#[test]
-fn a_lock_fence_trailed_by_an_inputs_anchor_is_one_pin_one_row() {
-    let sb = sandbox();
-    let ws = sb.workspace("form3anchor");
-    std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
-
-    let target = "# Target\n\nbody v1\n";
-    std::fs::write(ws.join("sources/target.md"), target).expect("write target");
-    std::fs::write(
-        ws.join("claim.md"),
-        format!(
-            "# Claim\n\ndraws from it\n\n{}\n\n^inputs\n",
-            lock_block(&[("sources/target.md", &live_fingerprint(target))])
-        ),
-    )
-    .expect("write claim");
-
-    let status = stdout(&sb.run(&ws, &["status"]));
-    assert!(
-        status.contains("lock green [1 pin]"),
-        "one declared pin is one row, and it carries the pin's OWN verdict: {status}"
-    );
-
-    let walk = sb.run(&ws, &["walk", "claim.md"]);
-    let listing = stdout(&walk);
-    assert_eq!(
-        walk_rows(&listing).len(),
-        1,
-        "the walk lists the same one pin, not a second row for the same fence: {listing}"
-    );
-    assert_eq!(code(&walk), 0, "no red edge: {}", stderr(&walk));
-}
+// ── finding 17 — RETIRED WITH ITS SUBJECT ──────────────────────────────────
+//
+// `a_lock_fence_trailed_by_an_inputs_anchor_is_one_pin_one_row` asserted that a
+// `meridian-lock` fence trailed by an `^inputs` block anchor projects ONE row,
+// not two. The defect it guarded was the form-2 chain-block reader re-reading
+// the engine's own lock block: `status` counted `[2 pins]` for one declared pin
+// and the extra row carried a grey `declared-unpinned` verdict the page never
+// declared.
+//
+// R1.3 deleted that reader. The double-read is now UNREPRESENTABLE — one form,
+// one pass — so the gate could no longer fail, and a trailing `^inputs` line is
+// inert markdown. It was deleted rather than left passing for a reason
+// unrelated to its name, which is worse than failing.
 
 // ── finding 26 — a malformed `objects:` sha is unknown, never zero ──────────
 
@@ -251,7 +251,14 @@ fn a_malformed_objects_sha_is_counted_unknown_not_dropped_to_zero() {
     let ws = sb.workspace("badsha");
     std::fs::write(
         ws.join("effect.md"),
-        "# Effect\n\n```meridian-lock\nversion: 1\nobjects:\n  \"payload\": \"not-a-sha\"\n```\n",
+        format!(
+            "# Effect\n\n{}\n",
+            lock_block_with_hashes(&[(
+                "payload",
+                "not-a-sha",
+                &format!("fp1.span2.b3.{}", "0".repeat(64))
+            )])
+        ),
     )
     .expect("write effect");
 

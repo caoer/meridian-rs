@@ -669,10 +669,7 @@ mod tests {
     /// never produce.
     #[test]
     fn a_rooted_objects_key_refuses_rather_than_asking_the_wrong_store() {
-        let docs = corpus(
-            "claim.md",
-            &pin_page("alpha:source", &"a".repeat(40)),
-        );
+        let docs = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
         let detail = objects_in(&docs).expect_err("a rooted key is not askable from here");
         assert!(
             detail.contains("alpha"),

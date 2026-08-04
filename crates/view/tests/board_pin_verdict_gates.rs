@@ -324,7 +324,10 @@ fn gate_exactly_one_board_row_per_lock_row_across_both_planes() {
     let conn = open_board(&docs).expect("open board");
 
     let locks = scalar_i64(&conn, "SELECT count(*) FROM input_lock");
-    assert_eq!(locks, 6, "six lock rows — one form per page, no legacy plane");
+    assert_eq!(
+        locks, 6,
+        "six lock rows — one form per page, no legacy plane"
+    );
     assert_eq!(
         scalar_i64(&conn, "SELECT count(*) FROM board"),
         locks,

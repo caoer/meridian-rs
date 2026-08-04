@@ -5,9 +5,10 @@
 //! ([`crate::facts`]) — never a fork of that contract:
 //!
 //! 1. **The pin projection** — a pure parse (source 1) of each page's declared
-//!    pins into [`input_lock`](READ_FACE_SCHEMA_SQL) rows, across all THREE
-//!    forms the corpus carries (the legacy `^inputs` form-1/form-2 and the
-//!    engine's own `meridian-lock` block, form-3 — see [`page_lock_items`]).
+//!    pins into [`input_lock`](READ_FACE_SCHEMA_SQL) rows. ONE form: the
+//!    engine's own `meridian-lock` block (see [`page_lock_items`]). The two
+//!    legacy `^inputs` serializations were retired with the vocabulary (R1.3,
+//!    amending 9.6).
 //!    Every row records the containing page's `doc_rev` (`src_doc_rev`), the
 //!    rev-compare invalidation key: the projection cache self-invalidates by
 //!    `doc_rev`, so no stored second truth exists (§2.1, §8).
@@ -31,10 +32,14 @@
 //! blocked-`ATTACH` guard still holds with it loaded):
 //!
 //! - **`board`** — the colors layer: exactly one `green`/`red`/`grey` row per
-//!   `^inputs` edge. `grey` = declared-unpinned (an ungated close, never green);
-//!   `red` = drift or unresolved (a doctored verdict); `green` = the frozen pin
-//!   still equals live. "Verdicts freeze at close" is the `pinned_rev` compare —
-//!   the board reads the frozen pin, it never recomputes the verdict.
+//!   lock edge. Under R4 every row carries the color plane's verdict, so the
+//!   board reads that verdict; the `node_rev` compare arms below it are
+//!   unreachable and are the next unit's to collapse.
+//!
+//!   "An ungated close renders grey, never green" (d2 §5.3) still holds, and now
+//!   holds BY CONSTRUCTION rather than by detection: green is COMPUTED from a
+//!   fingerprint recomputed against live content, never granted by a row
+//!   existing, so no row shape earns green without the content matching.
 //!
 //! A second view, `co_edit_trace`, carried the traces layer over the reserved
 //! journal's mechanical write-facts. It died with the journal (ZT 2026-08-02,
@@ -53,7 +58,7 @@ use crate::ViewError;
 use crate::facts;
 use crate::walk;
 
-/// The additive read-face DDL: the `^inputs` parse projection + the board-red
+/// The additive read-face DDL: the lock-pin parse projection + the board-red
 /// views. A separate schema from the frozen [`crate::facts`] contract —
 /// additive, never an edit to what U2.1 shipped.
 ///
@@ -66,6 +71,14 @@ use crate::walk;
 /// computer, and not a stored verdict: the whole read face is built per query
 /// from the same `docs` snapshot and thrown away with the connection.
 pub const READ_FACE_SCHEMA_SQL: &str = r"
+-- NOTE (R1.3): the legacy `^inputs` plane is retired, so every projected row now
+-- carries a verdict and the arms below fenced by `verdict_color IS NULL` — the
+-- node_rev compare, board_drift, board_unresolved, and the green /
+-- superseded-algo / declared-unpinned board arms — are UNREACHABLE. They are
+-- left standing here deliberately: collapsing them changes what the board
+-- SURFACE means, which is a separate unit's call, not a consequence of retiring
+-- a parser. The comments below still describe the SQL as written.
+--
 -- input_lock — the parse projection of each page's `^inputs` lock block. One row
 -- per lock item, exactly as written in the vault bytes (source 1). Distinct from
 -- `edge` (owned by pin: the manifest LEFT-joined with live resolution). Every
@@ -241,7 +254,7 @@ pub fn lock_read_face(conn: &Connection) -> duckdb::Result<()> {
 }
 
 /// Build a locked, board-ready read face over `docs`: project `node` (via
-/// [`crate::facts`]), project the `^inputs` lock blocks into `input_lock`, create
+/// [`crate::facts`]), project the lock blocks into `input_lock`, create
 /// the board-red views, then LOCK the face. The returned connection serves the
 /// default-face board queries and **refuses `ATTACH`/`COPY`/external access**
 /// (the C1 read-face capability).
@@ -287,7 +300,7 @@ pub fn stale_paths(
 }
 
 // ---------------------------------------------------------------------------
-// the `^inputs` parse projection
+// the lock-pin parse projection
 // ---------------------------------------------------------------------------
 
 /// A `meridian-lock` row's identity — the page it is declared on, its ref
@@ -311,13 +324,11 @@ fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
         .collect()
 }
 
-/// Project every page's `^inputs` lock items into `input_lock`. The lock block
-/// is a fenced code block whose info string carries the `^inputs` anchor
-/// (`` ```yaml ^inputs ``) — parsed here from the vault bytes alone (source 1) —
-/// or the engine's own `meridian-lock` block, whose rows additionally carry the
-/// color plane's verdict ([`pin_verdicts`]).
+/// Project every page's lock pins into `input_lock` — the `pins:` plane of the
+/// page's own `meridian-lock` block, parsed from the vault bytes alone
+/// (source 1), each row carrying the color plane's verdict ([`pin_verdicts`]).
 ///
-/// The lock-REFUSAL row projects too. It is a PAGE-level fact, not an `^inputs`
+/// The lock-REFUSAL row projects too. It is a PAGE-level fact, not a pin
 /// edge — no ref, no target, no pinned rev — and before the `verdict_*` columns
 /// existed the table could only spell it as a declared-unpinned EDGE, the wrong
 /// reason on a row that declares no edge; so it was held back to the color plane
@@ -340,8 +351,9 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
             .enumerate()
         {
             // Look the verdict up for exactly the rows the color plane colors —
-            // a legacy `^inputs` row carries neither a fingerprint nor a refusal
-            // and is answered by the board's node_rev compare instead.
+            // Every R4 row carries a fingerprint or a refusal, so the guard is
+            // now a belt-and-braces read rather than a partition; the arms it
+            // used to fence off are the next unit's to collapse.
             let verdict = (item.fingerprint.is_some() || item.lock_refusal.is_some())
                 .then(|| {
                     verdicts.get(&(
@@ -379,12 +391,12 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
     Ok(())
 }
 
-/// One parsed `^inputs` lock item (source 1). Passengers the engine ignores
+/// One parsed lock item (source 1). Passengers the engine ignores
 /// (`claim`, `at:`) are not carried — only the columns board reds and the walk
 /// plane compute on.
 ///
 /// Public because the walk plane ([`crate::walk`]) consumes the SAME parser this
-/// board projection uses: one owner for the `^inputs` lock grammar (design "one
+/// board projection uses: one owner for the lock grammar (design "one
 /// owner per fact"), never a second reader that could drift.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockItem {
@@ -512,7 +524,7 @@ pub fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     index
 }
 
-/// Parse `doc`'s `^inputs` lock items, then RESOLVE each item's `to_path` against
+/// Parse `doc`'s lock items, then RESOLVE each item's `to_path` against
 /// the corpus (the U3.4 wikilink wiring). A form-2 ref is a `[[wikilink]]`-by-NAME
 /// (`llm-wiki-skill-compilation`), not a vault path, so the raw `to_path` matches
 /// no `node.path` and the board/walk cannot find the target. This maps the name to
@@ -647,7 +659,7 @@ const FP_ALGO_UNKNOWN: &str = "fp-unknown";
 /// Append the `meridian-lock` `pins:` of `doc` to `out` (block order).
 ///
 /// Form-3 is the ENGINE's own lockfile (`crates/lock`, decision #8), and it
-/// shares nothing with the legacy `^inputs` forms: no `^inputs` anchor, no
+/// shared nothing with the retired `^inputs` forms: no `^inputs` anchor, no
 /// `hash-algo:` header, and its pinned value is a full `fp1.…` CID-token
 /// (`docs/norm-v2-spec.md` §2), never a `node_rev`. Before this reader a real
 /// meridian-lock pin was a SILENT absence here — the page projected zero rows
@@ -956,9 +968,7 @@ mod tests {
         assert_eq!(items.len(), 1, "the refusal is visible, not absent");
         assert_eq!(
             items[0].lock_refusal.as_deref(),
-            Some(
-                "malformed at line 3: unrecognized line (canonical order: version, pins)"
-            ),
+            Some("malformed at line 3: unrecognized line (canonical order: version, pins)"),
             "the row carries WHY the lock is unreadable",
         );
         assert_eq!(items[0].declared_ref, "", "a refusal declares no ref");
@@ -1029,8 +1039,7 @@ mod tests {
         assert_eq!(to_path, "", "a refusal names no target — never a self-edge");
         assert_eq!((color.as_str(), reason.as_str()), ("grey", "lock-refused"));
         assert_eq!(
-            detail,
-            "malformed at line 3: unrecognized line (canonical order: version, pins)",
+            detail, "malformed at line 3: unrecognized line (canonical order: version, pins)",
             "the board carries WHY, the same words the walk plane prints",
         );
 

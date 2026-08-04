@@ -1006,6 +1006,70 @@ mod tests {
         find_fm(&doc(raw).root).expect("the fixture has frontmatter")
     }
 
+    /// **The carrier of d2 §5.3, after the board arm that used to carry it.**
+    ///
+    /// "An ungated close renders grey, never green" was enforced by a board
+    /// detection arm — a declared-but-unpinned edge coloured grey. R1.3 retired
+    /// the `^inputs` plane that was the only way to reach it, and under R4 the
+    /// state that arm described is not merely unobserved but UNREPRESENTABLE:
+    /// the pin row IS the declaration, so there is no "declared without a minted
+    /// pin" to detect. The law did not retire; its enforcement changed category,
+    /// from board detection to SCHEMA REFUSAL.
+    ///
+    /// So the grammar is what holds the line, and this is the test that watches
+    /// it. It is mutation-provable in BOTH directions by construction: the
+    /// complete row parses, and dropping either mandatory field from that SAME
+    /// row makes it refuse. If the schema ever grows an optional-fingerprint or
+    /// optional-hash arm, this screams — which is exactly when the law would
+    /// need re-ruling rather than silently lapsing.
+    ///
+    /// `hash` is mandatory because *"if hash is missing, we lost the explicit
+    /// target meaning"* (R4); `fingerprint` is mandatory because it is the
+    /// claim — a row without one asserts nothing and could only ever be granted
+    /// a colour, never compute one.
+    #[test]
+    fn a_pin_row_missing_a_mandatory_field_refuses_at_parse() {
+        let complete = format!(
+            "```meridian-lock\n\
+             version: 2\n\
+             pins:\n\
+             \x20 - object: \"[[notes]]\"\n\
+             \x20   hash: \"13c3550f41b5796dd0\"\n\
+             \x20   path: [\"Findings\"]\n\
+             \x20   fingerprint: \"{}\"\n\
+             ```",
+            fp("ab")
+        );
+
+        // The positive control: the complete row parses, and to ONE pin.
+        let ok = parse(&complete).expect("the complete R4 row is legal");
+        assert_eq!(ok.pins.len(), 1, "the control row parses to one pin");
+
+        // Drop `fingerprint` from that same row — it must refuse, not default.
+        let no_fingerprint = complete
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("fingerprint:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            parse(&no_fingerprint).is_err(),
+            "a pin row without a fingerprint asserts nothing and must refuse, \
+             never parse to a row a reader could colour: {no_fingerprint}"
+        );
+
+        // Drop `hash` from that same row — it must refuse too.
+        let no_hash = complete
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("hash:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            parse(&no_hash).is_err(),
+            "\"if hash is missing, we lost the explicit target meaning\" — the \
+             grammar refuses rather than pinning a target it cannot name: {no_hash}"
+        );
+    }
+
     /// The canonical byte form, pinned literal — R4's v2 shape.
     #[test]
     fn render_canonical_bytes() {
