@@ -307,7 +307,10 @@ both wikilink and `path#fragment` ingress, and named it a candidate row rather
 than an act.
 
 **This row is a POINTER, not a claim about this tree.** The row's owner is U14,
-and U14 fills in the detail when it lands.
+which HAS landed — the detail it filled in is `refuse_unrepresentable_heading`,
+named in the correction below. (This sentence read *"U14 fills in the detail
+when it lands"* — a sunset the next paragraph already reports as fired.
+Corrected under DECISION 22, ZT 2026-08-04.)
 
 > **Corrected in the landing assembly:** the sentence that stood here said U14
 > was not merged and `lock_ref_fragment` was still the name. That was true when
