@@ -17,10 +17,25 @@ const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from [[guide#^lea
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
+/// Git-initialised, because [`mint_pin`] goes through the production pin door
+/// and an R4 pin row carries a `hash` that only git can answer for.
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), TARGET).expect("target");
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "s10@example.invalid"],
+        vec!["config", "user.name", "s10"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .expect("git runs in the test environment");
+        assert!(status.success(), "git {args:?}");
+    }
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     (dir, root)
 }
