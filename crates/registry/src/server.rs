@@ -474,7 +474,11 @@ fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> S
         }
         serde_json::to_string(&v).expect("wire response serializes")
     } else {
-        serde_json::to_string(response).expect("wire response serializes")
+        // A frozen v2 session never grows a field: U11's v3-additive ladder
+        // extras are dropped here, not withheld at mint time.
+        let demoted = wire_serve::rev::demote_v2(response);
+        serde_json::to_string(demoted.as_ref().unwrap_or(response))
+            .expect("wire response serializes")
     };
     out.push('\n');
     out
