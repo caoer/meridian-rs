@@ -46,6 +46,7 @@ mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
+mod retire_cmd;
 mod rules_cmd;
 /// The rules walk (registration rework): the disk edge that enumerates the scope
 /// ladder's roots and offers every page in their hash domain to tag-indexed
@@ -145,6 +146,24 @@ usage:
                            retrievable before any commit references it. Exits:
                            0 pinned (or dry) / 1 refused (the engine's message,
                            verbatim) / 2 bad invocation
+! mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
+                           the type-2 retirement DSL: sweep markdown `~~`
+                           markers over the terms declared in meridian-retire
+                           blocks, then run over those markers and report. A
+                           marker is `~~term~~ replacer (retired: ID)` —
+                           visible, non-destructive, and carrying an opaque KEY,
+                           never an address; the ruled array-hpath link to the
+                           holding section lives once, in the block. mark is
+                           idempotent by construction: a second run writes
+                           nothing, leaves the fingerprint byte-identical, and
+                           still prints its count. mark REQUIRES --expect-root
+                           (a file-set-grain world guard, chained across the
+                           sweep) unless --dry-run; quiesce the fleet and commit
+                           the vault first — the guard catches their violation,
+                           it does not replace them. The report labels every
+                           number measured or declared and never inspects a
+                           test. Exits: 0 clean / 1 a refusal or an open
+                           retirement / 2 bad invocation
   mrd walk <PAGE> [--down] [--depth N]
                            the context-assembly listing over the ^inputs pin
                            graph: up (default) = what PAGE draws from, --down =
@@ -462,6 +481,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             let p = Parsed::parse(&args[1..], NO_PATH, NO_ALL)?;
             config_cmd::run(p.format())
         }
+        "retire" => retire_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "status" => status_cmd::run(&args[1..]),
@@ -885,22 +905,23 @@ mod help {
         }
 
         /// The write mark is the gutter, so the classification is countable
-        /// straight off the text. 11 verbs write; the rest read. (It was 12
-        /// until `mrd journal genesis` was retired — the engine keeps no memory,
-        /// so nothing writes a ledger any more.)
+        /// straight off the text. 12 verbs write; the rest read. (It was 12,
+        /// then 11 when `mrd journal genesis` was retired — the engine keeps no
+        /// memory, so nothing writes a ledger any more — and 12 again with
+        /// `mrd retire mark`, U23's type-2 marker sweep.)
         #[test]
-        fn eleven_verbs_are_marked_as_writers() {
+        fn twelve_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                11,
+                12,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 25, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists, so a
