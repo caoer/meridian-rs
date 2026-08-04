@@ -18,17 +18,18 @@ fn seg(h: &str) -> wire::HpathSeg {
 // gate 2 — hpath dual-serialization + deviation row
 // ---------------------------------------------------------------------------
 
-/// v2 §2.1: `{"h":"Goals"}` ≡ the v1 bare string on the way IN; the object
-/// form is the only form on the way OUT.
+/// v2 §2.1 AS AMENDED (requirements decision 20, ZT — personal freeze
+/// authority per §18): the object form is the only form in BOTH directions.
+/// W2-AMEND's dual-in bridge for the v1 bare string was transitional and is
+/// retired; the bare form is now refused loud, with its message asserted so a
+/// future restoration of the tolerance BREAKS this test rather than passing
+/// silently.
 #[test]
-fn hpath_dual_deserialization_both_forms_one_value() {
-    let v1_form: Vec<wire::HpathSeg> = serde_json::from_value(json!(["Goals", "Q3"])).unwrap();
+fn hpath_object_form_only_both_directions_v1_bare_string_refused() {
+    // IN: the object form, with and without the occurrence index (1-based).
     let v2_form: Vec<wire::HpathSeg> =
         serde_json::from_value(json!([{"h":"Goals"}, {"h":"Q3"}])).unwrap();
-    assert_eq!(v1_form, v2_form);
-    assert_eq!(v1_form, vec![seg("Goals"), seg("Q3")]);
-
-    // the occurrence index rides only the object form (v2 §2.1, 1-based)
+    assert_eq!(v2_form, vec![seg("Goals"), seg("Q3")]);
     let with_n: Vec<wire::HpathSeg> = serde_json::from_value(json!([{"h":"Beta","n":2}])).unwrap();
     assert_eq!(
         with_n,
@@ -38,9 +39,25 @@ fn hpath_dual_deserialization_both_forms_one_value() {
         }]
     );
 
-    // serialization is the object form, and ONLY the object form
+    // IN: the v1 bare string is REFUSED — the tripwire, message text asserted.
+    let e = serde_json::from_value::<Vec<wire::HpathSeg>>(json!(["Goals", "Q3"]))
+        .expect_err("the retired v1 bare-string segment must be refused");
+    assert!(
+        e.to_string().contains(wire::HPATH_SEG_V1_REFUSAL),
+        "refusal must name the retired v1 form, got: {e}"
+    );
+
+    // the incompleteness that decided it: the bare form cannot carry `n` at
+    // all, so the dual grammar was strictly less expressive, never a free
+    // convenience.
+    assert!(
+        serde_json::from_value::<Vec<wire::HpathSeg>>(json!(["Beta"])).is_err(),
+        "no bare spelling of {{h:Beta,n:2}} exists — that is why the dual grammar died"
+    );
+
+    // OUT: serialization is the object form, and ONLY the object form.
     assert_eq!(
-        serde_json::to_value(&v1_form).unwrap(),
+        serde_json::to_value(&v2_form).unwrap(),
         json!([{"h":"Goals"}, {"h":"Q3"}])
     );
 }

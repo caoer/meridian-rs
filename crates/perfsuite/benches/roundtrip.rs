@@ -50,7 +50,7 @@ fn frames(n: usize) -> Vec<Message> {
                 let nodes: Vec<serde_json::Value> = (0..16)
                     .map(|k| {
                         json!({
-                            "hpath": ["section", format!("h{k}")],
+                            "hpath": [{"h": "section"}, {"h": format!("h{k}")}],
                             "span": [k * 128, (k + 1) * 128],
                             "kind": "section",
                             "node_rev": format!("{:016x}", rng.next_u64()),
