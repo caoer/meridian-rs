@@ -23,12 +23,16 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     // the lock through the guarded U11 path.
     let doc0 = fs::load(&root, std::path::Path::new("page.md")).expect("load");
     let mut l = lock::Lock::new();
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("page.md#^c1").expect("a fixture ref is an address"),
-        fingerprint: model::fingerprint::fingerprint(&doc0, &doc0.root)
+    l.upsert_pin(lock::PinEntry::new(
+        "page",
+        "9ae3f1deadbeef",
+        // R4's anchor pin: a `^id` as the SOLE path element — block grain, never
+        // widened to the host section.
+        lock::Selector::Path(vec!["^c1".to_string()]),
+        &model::fingerprint::fingerprint(&doc0, &doc0.root)
             .expect("fixture target has content")
             .into_string(),
-    });
+    ));
     let out = lock_write(
         &root,
         0,

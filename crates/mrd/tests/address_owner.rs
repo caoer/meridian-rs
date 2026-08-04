@@ -45,7 +45,8 @@ fn corpus() -> (BTreeMap<String, Document>, String) {
     // GREEN on `a/b.md`, and a plane that answers `b.md` measures drift instead.
     let fingerprint = live_fingerprint(&docs, "a/b.md", "Page/Section");
     let src = format!(
-        "# Src\n\ndraws from [[a/b#^section]]\n\n```meridian-lock\nversion: 1\npins:\n  - ref: \"a/b#Page/Section\"\n    fingerprint: \"{fingerprint}\"\n```\n"
+        "# Src\n\ndraws from [[a/b#^section]]\n\n{}\n",
+        lock_block("a/b#Page/Section", &fingerprint)
     );
     docs.insert("src.md".to_string(), doc(&src));
     (docs, fingerprint)
@@ -66,6 +67,37 @@ fn the_fixture_can_tell_the_two_documents_apart() {
 
 fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
+}
+
+/// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render`
+/// emits, so this gate depends on the readers' own parser and not on the writer
+/// that produced the row. The `page[#A/B]` convenience spelling is split into the
+/// `object` wiki link and the `path` ARRAY here — R4 admits no joined string on a
+/// row — and the blob `hash` is the fixture constant, because nothing in this file
+/// measures the retrieval plane.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
+/// schema version, not the wire protocol version.
+fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
+    let (target, fragment) = match declared_ref.split_once('#') {
+        Some((t, f)) => (t, f),
+        None => (declared_ref, ""),
+    };
+    let object = target.strip_suffix(".md").unwrap_or(target);
+    let path = if fragment.is_empty() {
+        String::new()
+    } else {
+        fragment
+            .split('/')
+            .map(|seg| format!("\"{seg}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"9ae3f1deadbeef\"\n    path: [{path}]\n    \
+         fingerprint: \"{fingerprint}\"\n```"
+    )
 }
 
 /// The live fingerprint of one selector in one corpus page — the same resolve +

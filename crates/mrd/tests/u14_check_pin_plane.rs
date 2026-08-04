@@ -217,15 +217,39 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 const SOURCE_PINNED: &str = "# Source\n\n## Guideline\n\nthe pinned body\n";
 const CLAIM: &str = "# Claim\n\nwe rely on the guideline.\n";
 
-/// A `meridian-lock` block carrying ONE `objects:` entry and no pins — the
-/// RETRIEVAL plane on its own, in the canonical bytes the engine itself mints
-/// (quoted scalars, `version: 1`). The oid is well-formed and names nothing, so
-/// the question put to git is real and its answer is the fixture's subject.
-fn objects_lock(key: &str) -> String {
+/// A `meridian-lock` block carrying ONE pin, in the canonical R4 bytes the engine
+/// itself mints (quoted scalars, `version: 2`).
+///
+/// R4 retired the top-level `objects:` table and moved the blob hash onto the pin
+/// row, so the RETRIEVAL plane can no longer be put in front of `check` on its
+/// own — a hash arrives only as some pin's `hash`. The oid is well-formed and
+/// names nothing, so the question put to git is real and its answer is still the
+/// fixture's subject; the caller supplies the `fingerprint` so the CLAIM plane
+/// beside it is a state the caller chose rather than an accident of the schema
+/// change.
+///
+/// `object` is the wiki-link inner text — the target's vault path minus `.md`,
+/// which is exactly what [`wire_serve::write`]'s `pin_row` mints.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
+/// schema version, not the wire protocol version.
+fn objects_lock(object: &str, fingerprint: &str) -> String {
     format!(
-        "```meridian-lock\nversion: 1\nobjects:\n  \"{key}\": \"{}\"\n```\n",
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"{}\"\n    path: []\n    fingerprint: \"{fingerprint}\"\n```\n",
         "a".repeat(40)
     )
+}
+
+/// The LIVE whole-page fingerprint of `raw` — what a CORRECT whole-page pin
+/// holds, minted through the engine's own hasher over the same parse
+/// `fs::build_corpus` runs, so a fixture cannot pin a token the reader would not
+/// recompute.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
 }
 
 /// The pinned corpus every gate below starts from: `source.md` + `claim.md`
@@ -723,13 +747,18 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     write(&ws, "claim.md", CLAIM);
     let root = root_of(&ws);
 
-    // A pin lands even without git (`blob_oid` degrades honestly and the
-    // `objects:` entry is simply absent), so to put a blob sha in front of a
-    // missing repository the retrieval plane is written by hand.
+    // R4 makes a pin's `hash` mandatory, so `mrd pin` REFUSES outright where git
+    // cannot answer — which is exactly here. To put a blob sha in front of a
+    // missing repository the lock is therefore written by hand, with the CLAIM
+    // plane held GREEN (the live whole-page token) so the only thing left for
+    // `check` to be unhappy about is the store it cannot ask.
     write(
         &ws,
         "claim.md",
-        &format!("{CLAIM}\n{}", objects_lock("source.md")),
+        &format!(
+            "{CLAIM}\n{}",
+            objects_lock("source", &live_fingerprint(SOURCE_PINNED))
+        ),
     );
     produce(&root, "note.md", "# Note\n\ngoverned birth\n");
     assert!(
@@ -755,11 +784,16 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     );
 }
 
-/// **The cross-root observation, held as a refusal rather than a guess.** An
-/// `objects:` key carrying a `root:` prefix names ANOTHER root's object store. This
+/// **The cross-root observation, held as a refusal rather than a guess.** A pin
+/// `object` carrying a `root:` prefix names ANOTHER root's object store. This
 /// read asks the ambient repository and nothing else, so the honest answer is that
 /// it cannot assess that entry — never a fabricated verdict from the wrong store,
 /// which would be a wrong SUCCESS rather than a stale one.
+///
+/// The assert is the anchoring plane's OWN words (`GREY_CANNOT_ASSESS` plus the
+/// root it could not reach), not the bare exit: under R4 the hash rides the pin,
+/// so an unmounted root's pin necessarily has a colour on the claim plane too, and
+/// only the reason word tells which plane spoke.
 #[test]
 fn check_cannot_ask_another_roots_object_store_and_says_so() {
     let sb = sandbox();
@@ -768,7 +802,10 @@ fn check_cannot_ask_another_roots_object_store_and_says_so() {
     write(
         &ws,
         "claim.md",
-        &format!("{CLAIM}\n{}", objects_lock("alpha:source.md")),
+        &format!(
+            "{CLAIM}\n{}",
+            objects_lock("alpha:source", &live_fingerprint(SOURCE_PINNED))
+        ),
     );
     commit_all(&ws, "init");
     let root = root_of(&ws);
