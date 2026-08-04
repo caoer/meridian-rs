@@ -174,6 +174,34 @@ MUTATIONS = [
         "a fix clause that describes the problem's inverse instead of naming a "
         "runnable command",
     ),
+    # IRREDUCIBLE BY CONSTRUCTION — MEASURED, NOT ARGUED (all-hands #16 lie 4).
+    #
+    # One row one edit is the rule, and this row has five. The defence was that
+    # the five are compile-necessity rather than a conjunction of defects: you
+    # cannot add an enum variant without also giving it a word, an ALL entry, a
+    # length, and a tripwire arm. That was an ARGUMENT. All-hands #18 exists
+    # because an argument everyone would have defended got measured anyway and
+    # the measurement was the point, so this one was measured too.
+    #
+    #   edit 1 alone (the variant)          -> DOES NOT COMPILE
+    #       error[E0004]: non-exhaustive patterns:
+    #       `retire_cmd::Reason::NinthProbe` not covered, at retire_cmd.rs:138
+    #   edit 2 alone (the array length, the
+    #     only edit naming no new variant)  -> DOES NOT COMPILE
+    #       error[E0308]: mismatched types, at retire_cmd.rs:123
+    #
+    # Edits 3, 4 and 5 each name `Reason::NinthProbe`, which does not exist
+    # without edit 1, so none of them can stand alone either.
+    #
+    # So there is NO single-edit form of this row that builds, and lie 4 cannot
+    # apply: a row that cannot be reduced cannot redden for an edit you did not
+    # name, because it has no separable edits to redden for. The red is
+    # attributable to the whole — which here IS the defect, "a ninth reason word
+    # exists and has no fixture".
+    #
+    # The finding this row proves is independently covered by the unit test
+    # `all_is_a_bijection_onto_the_reason_variants`, which is why measuring was
+    # cheap. That is exactly when skipping it is most expensive.
     (
         "ninth-reason-word-uncovered",
         "every_reason_word_carries_the_four_property_contract",
