@@ -120,6 +120,61 @@ alternative is unrecorded cannot be re-examined.
 stale clause is struck because its referent was deleted, which is not the same as
 answering it.
 
+#### Tier ruling on THIS act — BRONZE, and the interpretive extension it needs
+
+The elevation question was put and **ruled BRONZE**, on three conditions attached
+to this record. They are discharged here.
+
+**(a) THE CHOKE-POINT PROOF, CITED.** The proof that the subtracted classes are
+unreachable is ONE PARSER RULE, and it is stated at the site in
+`crates/view/src/walk.rs` § THE FAIL-CLOSED TAIL: *"Every R4 pin row carries a
+fingerprint and every refusal carries its reason, which is what makes this
+unreachable from live input. That invariant is ONE PARSER RULE with ONE TEST on
+it: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`"*
+(`crates/lock/src/lib.rs`). The mechanism, stated so it can be checked: **arm 3
+returns on `fingerprint.is_some()`**, so the subtracted `SupersededAlgo` arm was
+reachable ONLY on a row whose `fingerprint` is `None` — and that row **refuses at
+parse**, before any colour is computed. **This is the same proof that refuted the
+"renderable today" counter at source**, which is why the counter is recorded above
+rather than merely answered.
+
+**And the proof's own honest limit, carried rather than dropped:** the site says
+the zero live population answers *"can a row reach here TODAY"*, **NOT** *"is the
+tail unreachable in principle"* — two of `edge_color`'s three callers do not
+filter, so the tail arm is structurally reachable and **must not be deleted as
+dead code.** A guarantee held at one parser rule is a single point of failure
+stated as one, never a claim of impossibility.
+
+**(b) THE COUNTER-READING STAYS, UNSOFTENED.** It is the paragraph above
+beginning *"On the competing reading"*, kept verbatim and **not** rewritten by this
+ruling. Under that reading the two rows are open and this act is wrong. It stays
+because a ruling whose alternative is unrecorded cannot be re-examined.
+
+**(c) THIS ACT'S OWN INVALIDATION CONDITION.** **If any subtracted class ever
+becomes reachable, this act is VOID and its row comes back.** The test, run bare
+with no file-type filter: `grep -rn 'SupersededAlgo\|DeclaredUnpinned' .
+--exclude-dir=target --exclude-dir=.git`. At `04387a65` every hit is in this
+document, recording the variants' death. **Any hit under `crates/` falsifies this
+act.** Equally: should the parser rule above stop refusing a row missing a
+mandatory field, the unreachability premise is gone and this record is void
+whether or not a variant returns.
+
+**THE INTERPRETIVE EXTENSION, PUBLISHED BY NAME AS RULED-AND-CHALLENGEABLE.** The
+bronze condition was framed for ADDITIONS. This act SUBTRACTS rows, so it needs a
+step that has not been ratified before:
+
+> **"Bronze covers SUBTRACTIONS when the subtracted class carries a cited
+> unreachability proof."**
+
+**That is a reading, not a settled rule**, and it is registered for U25 challenge
+**beside the `"site" = a reachable rendering path` interpretation it leans on** —
+the extension is worthless if that one falls. Grounds accepted for it: direction
+does not change the authority question, and an unreachable class is not a site
+under the interpretation already registered. **Grounds against it, recorded:** a
+subtraction removes a reader's only notice that a class ever existed, which an
+addition never does — which is exactly why the three subtracted rows were
+QUALIFIED IN PLACE as tombstones rather than deleted.
+
 ### Correction record (stage-2, tier BRONZE)
 
 This section previously asserted the enumeration was EXACTLY FOUR classes and

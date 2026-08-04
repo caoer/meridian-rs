@@ -147,7 +147,7 @@ ATTACK-034 scoping is unambiguous:
 
 | Render | Kind | Unit | Why it does not refuse |
 |--------|------|------|------------------------|
-| `superseded-algo` | grey | U0.2, U3.4 | an un-recomputable hash-algo renders grey, never red/green |
+| `superseded-algo` | grey | U0.2, U3.4 | an un-recomputable hash-algo renders grey, never red/green. **NO RENDERING SITE in the shipped engine — THE SUBJECT MOVED PLANES, it was not dropped, and the non-refusal law it carried is UNCHANGED on its destination.** Under R4 every pin row carries a mandatory self-describing `fp1.…` token and NO `hash-algo:` header, so "pinned under a `hash_algo` this engine does not compute" is unrepresentable; the case is answered by the FINGERPRINT plane and spelled `unverifiable-fingerprint`, which also renders grey and also never refuses. Recorded, not retired — see § Amendment record below for the per-row citation chain |
 | `immutable-root` (`session-id#seq-N`) | grey | U2.2 | transcript-plane refs are read-only; grey, never a refusal |
 | `red(drifted)` | red (finding) | U2.2, U2.5 | a drifted pin renders red but **never refuses** (U2.5) — realise converges it |
 | `foreign_edit` | red (finding) | U2.10 | an out-of-writer edit renders red convention-free; a check finding, not a door refusal |
@@ -163,3 +163,95 @@ ATTACK-034 scoping is unambiguous:
   `gate()` seam, carrying the same ATTACK-034 scoping.
 - **`gate()`** (U4.2) is the runtime seam that mints these codes at
   `wire-serve/src/write.rs` — this table is the closed vocabulary it draws from.
+
+## Amendment record — the `superseded-algo` row, tier BRONZE, GOVERNING NOT SETTLED
+
+**Challengeable at U25.** This record and the reading under it are a READING, not
+a fact, and are recorded as one so U25 can reject them without reconstructing
+what was decided.
+
+**What changed.** The `superseded-algo` row in § Non-refusing renders carried an
+UNQUALIFIED PRESENT-TENSE claim that an un-recomputable hash-algo renders grey.
+The class has no rendering site in the shipped engine. The row is QUALIFIED, not
+struck: the non-refusal law it records is still true of the case, on the plane the
+case moved to. **The row's `Unit` column is left as `U0.2, U3.4`** — those are the
+acts that MINTED the row, and rewriting them would erase why it exists.
+
+**Why this is record-catch-up and not a change to what the law binds.** Nothing
+here alters a refusal code, a byte, or whether any case refuses. The case still
+renders grey and still never blocks a write; only its NAME and its PLANE moved.
+`GreyReason` lives in `crates/model/src/selector.rs` and has zero presence in
+`crates/wire`, so no ratified byte contract moves.
+
+### The citation chain — per row, and it is the condition this act was authorized on
+
+The authorization required this act to cite, per row, the specific ruling acts
+that made the row false, and to STOP and escalate if the chain of authority
+bottomed out anywhere neither ZT-ruled nor already registered
+ruled-and-challengeable. **It was written first and it did not bottom out.**
+
+1. **What made the row false: R4 schema v2 removed the trigger condition.** R4's
+   identity is recorded at `docs/wire-contract-v2-passenger-registry-amendment.md`
+   § Provenance — *"R4 schema and the `objects:` removal — session `86449b4e`
+   (08-01) and its 17:20 ruling"* — and identically at
+   `docs/wire-contract-v3-amendment.md` § D12.
+2. **R4's authority bottoms out at ZT, ratified explicitly.** Session
+   `86449b4e`, `results/design-pin-lock-redesign.md` — *"The pin / lock redesign
+   — ZT's rulings, live at step B6"*, `status: ZT-directed during live dogfood;
+   ratified points marked`, and *"Marked `RATIFIED` where ZT said so explicitly."*
+   Its § 1 **The target lock shape** is marked **RATIFIED**, and the ratified
+   shape carries `fingerprint: "fp1.span2.b3.…"` on EVERY pin row with **no
+   `hash-algo:` header anywhere in it**. Its field table makes `fingerprint`
+   authoritative for *"the attestation itself"*. ZT verbatim: *"the value is the
+   lock between hash + path + fingerprint."* **That is why the row's trigger
+   condition is unrepresentable rather than merely unused** — a pin cannot declare
+   a foreign algo, because the field it would declare it in does not exist.
+3. **The act that removed the variant: `006b8ad7`**, the U9c bronze
+   `Uncolourable` act — *"edge_color arms 4 and 5 collapse into one fail-closed
+   arm"* — which killed `GreyReason::SupersededAlgo`,
+   `GreyReason::DeclaredUnpinned` and `model::selector::classify_edge`. Registered
+   ruled-and-challengeable at `docs/wire-contract-v2-colors-amendment.md`
+   § Amendment record — U9c, tier BRONZE, GOVERNING NOT SETTLED, **Challengeable
+   at U25.**
+4. **The interpretation that act leans on**, cited because this row inherits it:
+   *"SITE in this section means A REACHABLE RENDERING PATH"* — advisor-ruled,
+   recorded at `docs/wire-contract-v2-colors-amendment.md` § THE INTERPRETIVE
+   STEP **together with the competing reading it was ruled against.**
+5. **The destination, which says so in its own words.**
+   `crates/model/src/selector.rs`'s `GreyReason::UnverifiableFingerprint` doc
+   comment calls itself *"The fingerprint plane's `superseded-algo`"*. That
+   variant is produced by `classify_pin` and is a separate ratified class in
+   § Colors, so the law was inherited, not lost.
+6. **Evidence, explicitly NOT authority — the negative gates.**
+   `crates/view/tests/board_pin_verdict_gates.rs` asserts the class is gone,
+   including the SQL arm `WHERE il.verdict_color IS NOT NULL AND b.reason =
+   'superseded-algo'` under the reason *"a judged pin never renders
+   `superseded-algo` — that was the two-plane divergence"*. **A test is evidence
+   that a decision shipped; it is never the decision.** Cited in that position
+   only.
+7. **This authorization itself** is registered ruled-and-challengeable by name for
+   U25, alongside the item it authorizes.
+
+**No link in that chain rests on an unregistered ruling.** Had step 2 bottomed
+out at direction rather than ratification, this act would have escalated as
+amendment-class instead of landing — and that outcome was the equal of this one.
+
+### What this act did NOT decide
+
+The **six malformed-refusal spellings** stay NAMED-UNSWEPT; no conclusion is
+drawn from outside the opened sites. The **`unmanaged` open question stays open**.
+And the **eight remaining present-tense `superseded-algo` claims** measured
+elsewhere in the tree — one further normative member (`docs/norm-v2-spec.md`,
+hedged as *"family"*) and six `.rs` doc comments — are **out of this act's scope
+and remain open**: this act is doc-only on this file, and code comments are not
+this row's to move.
+
+### Invalidation condition
+
+**This act is void and the unqualified row returns if the class becomes
+producible again** — that is, if any engine path can render `superseded-algo`, or
+if a pin row can again declare a `hash-algo` this engine does not compute. The
+test: `grep -rn 'SupersededAlgo' . --exclude-dir=target --exclude-dir=.git` run
+bare, with no file-type filter. At `04387a65` it returns **one** line, in
+`docs/wire-contract-v2-colors-amendment.md`, recording the variant's death. **Any
+hit in `crates/` falsifies this record.**

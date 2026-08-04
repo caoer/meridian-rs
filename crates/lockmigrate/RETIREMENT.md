@@ -4,7 +4,7 @@
 > **The conditions below are NOT rewritten and NOT false.** They were never met,
 > and the event that would have met them is no longer scheduled on this docket.
 >
-> **The authority.** ZT ruled the field sweep aborted: *"MANUAL ONE-TIME CUTOVER
+> **The authority — ruling `#663`.** ZT ruled the field sweep aborted: *"MANUAL ONE-TIME CUTOVER
 > FOR THE TWO REAL LOCKS. ABORT THE FLEET VAULT-WINDOW OPS"* — the cost and risk
 > of a fleet campaign exceeding its value at n=2. The ruling **unschedules the
 > FIELD RUN for this docket and explicitly does not unbuild anything**:
