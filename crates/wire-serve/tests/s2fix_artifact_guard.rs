@@ -100,9 +100,33 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
         .into_string()
 }
 
+/// The R4 blob hash a fixture pin carries when the test is not measuring the
+/// retrieval plane. R4 makes `hash` MANDATORY, so there is no pin without one.
+const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
+
+/// One R4 pin in the bytes `lock::render` emits. `declared_ref` is the
+/// `page[#A/B]` convenience spelling this fixture speaks, split here into the
+/// `object` wikilink and the `path` ARRAY — R4 admits no joined string on the
+/// row, and no `ref:`.
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
+    let (target, fragment) = match declared_ref.split_once('#') {
+        Some((t, f)) => (t, f),
+        None => (declared_ref, ""),
+    };
+    let object = target.strip_suffix(".md").unwrap_or(target);
+    let path = if fragment.is_empty() {
+        String::new()
+    } else {
+        fragment
+            .split('/')
+            .map(|seg| format!("\"{seg}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
-        "\n```meridian-lock\nversion: 1\npins:\n  - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\"\n```\n"
+        "\n```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"{FIXTURE_BLOB}\"\n    path: [{path}]\n    \
+         fingerprint: \"{fingerprint}\"\n```\n"
     )
 }
 

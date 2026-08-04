@@ -19,7 +19,7 @@
 //!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
 //!   O(objects) plus at most TWO git calls PER OBJECT STORE (one `rev-list`, one
 //!   batched `cat-file`) — never O(corpus) and never a call per blob, so the
-//!   3k-corpus wall-time stays sub-second. A corpus whose `objects:` keys are
+//!   3k-corpus wall-time stays sub-second. A corpus whose pinned objects are
 //!   all ambient has exactly ONE store and so exactly the two calls it always
 //!   had; a key naming a root adds that root's store, because the anchoring
 //!   check runs against THAT root's git repo (U13, ratified cross-root
@@ -569,13 +569,13 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
 }
 
-/// Which object store one lock `objects:` entry's blob belongs to: the ambient
+/// Which object store one pinned blob belongs to: the ambient
 /// workspace (`None`), or a named root (`Some`).
 ///
 /// **U13 — per-root anchoring, ratified `2026-07-24-cross-root-addressing.md`
 /// §4:** *"the blob-anchoring check runs against THAT root's git repo — six
-/// roots, six object stores, one law."* The `objects:` key is an agent-plane
-/// address (§2: lock `ref:` and `objects:` keys use the canonical `root:` form),
+/// roots, six object stores, one law."* The pin's `object` is an agent-plane
+/// address (§2: lock addresses use the canonical `root:` form),
 /// so its root names the repository whose object database holds the blob. The
 /// write path already carries the prefix through untouched (`wire-serve`'s
 /// `set_object` — "the key is the target's path spelling VERBATIM … so a later
@@ -620,7 +620,7 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
     for object in view::walk::lock_objects(docs) {
         let oid = object.blob_sha.to_ascii_lowercase();
         if !git::is_oid(&oid) {
-            malformed.push(format!("{} objects.{}", object.src_path, object.key));
+            malformed.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
         }
         // `Addr::parse` REFUSES a malformed root rather than reading it as a
@@ -629,7 +629,7 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
         // answer confidently — a wrong SUCCESS, which is the one shape this
         // gauge must never produce.
         let Ok(addr) = addr::Addr::parse(&object.key) else {
-            unaddressable.push(format!("{} objects.{}", object.src_path, object.key));
+            unaddressable.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
         };
         let store: StoreKey = addr.root().cloned();
@@ -772,7 +772,7 @@ fn store_fail(store: &StoreKey, fail: &git::GitFail) -> String {
     }
 }
 
-/// The `unknown` detail for `objects:` entries git cannot be asked about — the
+/// The `unknown` detail for pinned blobs git cannot be asked about — the
 /// count, the reason clause, and the first offender's page and key, so the
 /// reading names WHERE the retrieval plane is damaged instead of just refusing
 /// to answer. `None` when there are no offenders.
@@ -785,7 +785,7 @@ fn cannot_ask_detail(offenders: &[String], because: &str) -> Option<String> {
     let first = offenders.first()?;
     let n = offenders.len();
     let unit = if n == 1 { "entry" } else { "entries" };
-    Some(format!("{n} `objects:` {unit} {because} (first: {first})"))
+    Some(format!("{n} pinned {unit} {because} (first: {first})"))
 }
 
 /// One armed row read from the artifact: which PAGE was attested, at which rev,

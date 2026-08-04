@@ -25,12 +25,12 @@ fn build(raw: &str) -> (model::Document, Vec<ReadFact>) {
 /// A populated lock in the canonical engine-written byte form.
 fn lock_block() -> String {
     let mut l = lock::Lock::new();
-    l.set_object("corpus/meridian-block.md", "9ae3f1deadbeef");
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("corpus/other.md#Design")
-            .expect("a fixture ref is an address"),
-        fingerprint: format!("fp1.span2.b3.{}", "ab".repeat(32)),
-    });
+    l.upsert_pin(lock::PinEntry::new(
+        "corpus/other",
+        "9ae3f1deadbeef",
+        lock::Selector::Path(vec!["Design".to_string()]),
+        &format!("fp1.span2.b3.{}", "ab".repeat(32)),
+    ));
     lock::render(&l)
 }
 

@@ -8,14 +8,17 @@
 //! numbers.** Two object ids each appear under TWO roots, and each is
 //! `pending-anchor` in one of them and absent from the other:
 //!
-//! | `objects:` key | oid | store asked | state | debt |
+//! | pin `object` | `hash` | store asked | state | debt |
 //! |---|---|---|---|---|
-//! | `alpha:anchored.md` | A | alpha | anchored | — |
-//! | `alpha:pending.md` | B | alpha | pending-anchor | **+B** |
-//! | `alpha:not-here.md` | C | alpha | never-anchored | — |
-//! | `beta:pending.md` | C | beta | pending-anchor | **+C** |
-//! | `beta:not-here.md` | B | beta | never-anchored | — |
-//! | `local.md` | D | ambient workspace | pending-anchor | **+D** |
+//! | `alpha:anchored` | A | alpha | anchored | — |
+//! | `alpha:pending` | B | alpha | pending-anchor | **+B** |
+//! | `alpha:not-here` | C | alpha | never-anchored | — |
+//! | `beta:pending` | C | beta | pending-anchor | **+C** |
+//! | `beta:not-here` | B | beta | never-anchored | — |
+//! | `local` | D | ambient workspace | pending-anchor | **+D** |
+//!
+//! R4 retired the top-level `objects:` table; the blob hash rides the pin row it
+//! was minted for, so the six entries above are six PINS carrying six hashes.
 //!
 //! So the gauge reads **3 blobs**, and its byte sum is exactly `B + C + D`.
 //! Asking one store for all six entries cannot land there whatever it does with
@@ -24,9 +27,9 @@
 //! is.**
 //!
 //! Both arms of S3-R8(c) ride in that one reading: anchoring **succeeds** in the
-//! correct store (`alpha:anchored.md` is found anchored, and `alpha:pending.md`
+//! correct store (`alpha:anchored` is found anchored, and `alpha:pending`
 //! is found owed) **and degrades honestly** when the blob is absent from the
-//! store asked (`alpha:not-here.md` / `beta:not-here.md` classify
+//! store asked (`alpha:not-here` / `beta:not-here` classify
 //! `never-anchored` rather than borrowing the other root's answer).
 //!
 //! The remaining gates ride their own fixtures: a mounted root that is **not a
@@ -121,13 +124,33 @@ fn mount_block(name: &str, path: &Path, kind: &str) -> String {
     )
 }
 
-/// A hand-written `meridian-lock` `objects:` plane — the gate depends on the
-/// CLI's own reader, never on the writer that produced the bytes.
+/// A hand-written R4 (`version: 2`) `meridian-lock` retrieval plane — the gate
+/// depends on the CLI's own reader, never on the writer that produced the bytes.
+///
+/// R4 retired the shared top-level `objects:` table and moved the git blob hash
+/// onto the PIN ROW that needs it, so there is no successor table: each former
+/// `objects:` entry is now a whole-page pin (`path: []`) whose `hash` is that
+/// blob. `object` is the wiki-link inner text and is carried VERBATIM by the
+/// parser, so it is spelled here exactly as the key it replaces named the target
+/// — that spelling is what says WHICH root's object store is being asked, and it
+/// is this file's whole subject.
+///
+/// The `fingerprint` is a well-formed token that matches nothing: every gate here
+/// reads `composed.vibe_debt`, and a pin's CLAIM colour is a different plane that
+/// neither the gauge nor the exit triad reads (R12).
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
+/// schema version, not the wire protocol version.
 fn lock_page(objects: &[(&str, &str)]) -> String {
     use std::fmt::Write as _;
-    let mut out = String::from("# Effect\n\n```meridian-lock\nversion: 1\nobjects:\n");
-    for (key, sha) in objects {
-        let _ = writeln!(out, "  \"{key}\": \"{sha}\"");
+    let token = format!("fp1.span2.b3.{}", "0".repeat(64));
+    let mut out = String::from("# Effect\n\n```meridian-lock\nversion: 2\npins:\n");
+    for (object, sha) in objects {
+        let _ = writeln!(
+            out,
+            "  - object: \"[[{object}]]\"\n    hash: \"{sha}\"\n    path: []\n    \
+             fingerprint: \"{token}\""
+        );
     }
     out.push_str("```\n");
     out
@@ -262,7 +285,7 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     // BASELINE — the ambient arm ALONE, so the instrument is shown reading a
     // measured value before the rooted keys are added. Without this, the reading
     // below could not be told from a gauge that only ever reports one number.
-    std::fs::write(sb.ws.join("effect.md"), lock_page(&[("local.md", &oid_d)])).expect("write");
+    std::fs::write(sb.ws.join("effect.md"), lock_page(&[("local", &oid_d)])).expect("write");
     let (ambient, code) = sb.gauge();
     assert_eq!(code, 0, "the exit triad is unchanged by any gauge reading");
     assert_eq!(ambient["unknown"], Value::Null, "measured: {ambient}");
@@ -277,12 +300,12 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     std::fs::write(
         sb.ws.join("effect.md"),
         lock_page(&[
-            ("alpha:anchored.md", &oid_a),
-            ("alpha:pending.md", &oid_b),
-            ("alpha:not-here.md", &oid_c),
-            ("beta:pending.md", &oid_c),
-            ("beta:not-here.md", &oid_b),
-            ("local.md", &oid_d),
+            ("alpha:anchored", &oid_a),
+            ("alpha:pending", &oid_b),
+            ("alpha:not-here", &oid_c),
+            ("beta:pending", &oid_c),
+            ("beta:not-here", &oid_b),
+            ("local", &oid_d),
         ]),
     )
     .expect("write");
@@ -338,7 +361,7 @@ fn a_mounted_root_that_is_not_a_git_repo_degrades_honestly() {
     let oid = git_in(&sb.ws, &["hash-object", "--", "local-only.md"]);
     std::fs::write(
         sb.ws.join("effect.md"),
-        lock_page(&[("plain:payload.md", &oid)]),
+        lock_page(&[("plain:payload", &oid)]),
     )
     .expect("write");
 
@@ -381,7 +404,7 @@ fn an_unbound_root_is_unmeasurable_never_silently_ambient() {
     let oid = eager_blob(&sb.ws, "payload.md", PENDING_IN_PROJECT);
     std::fs::write(
         sb.ws.join("effect.md"),
-        lock_page(&[("ghost:payload.md", &oid)]),
+        lock_page(&[("ghost:payload", &oid)]),
     )
     .expect("write");
 
@@ -412,7 +435,10 @@ fn a_key_that_names_no_store_is_unknown_not_ambient() {
     let sb = sandbox(&[]);
     let oid = eager_blob(&sb.ws, "payload.md", PENDING_IN_PROJECT);
     // Two colons in the head — refused by the address grammar, never
-    // reinterpreted.
+    // reinterpreted. The `.md` is kept ON PURPOSE where every other object in
+    // this file drops it: the subject here is a spelling that is NOT an address,
+    // so there is no vault path to canonicalize, and the parser carries the
+    // object's inner text verbatim — the reading must name it exactly as written.
     std::fs::write(
         sb.ws.join("effect.md"),
         lock_page(&[("a:b:payload.md", &oid)]),

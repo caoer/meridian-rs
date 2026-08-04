@@ -4,7 +4,7 @@
 //! - [`claims_realised`] — observe each claim against the current tree and report
 //!   the drifted ones (the realise engine's pure detection, run read-only here);
 //! - [`pin_plane`] — the CLAIM plane (`pins:` — did the content drift?) and the
-//!   RETRIEVAL plane (`objects:` — is the blob durably anchored?).
+//!   RETRIEVAL plane (each pin's `hash` — is the blob durably anchored?).
 //!
 //! # Why this layer holds no write-history plane — the LAW, not a gap
 //! ZT, ruling 2026-08-03, verbatim: *"Engine does not have memory. It should not
@@ -22,7 +22,7 @@
 //! engine tolerates. A detector for it would be this layer reaching back into
 //! memory it is ruled not to keep.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fs::WorkspaceRoot;
 use model::Document;
@@ -123,7 +123,7 @@ pub struct PinRow {
     pub label: String,
 }
 
-/// One `objects:` entry whose blob is **ORPHANED**: no ref reaches it, and the
+/// One pinned blob that is **ORPHANED**: no ref reaches it, and the
 /// file it is the blob OF no longer hashes to it — so no commit of that file will
 /// ever anchor it either. The pin's evidence is held by nothing and is on its way
 /// to nothing.
@@ -158,7 +158,7 @@ pub struct PinRow {
 pub struct OrphanedBlob {
     /// The page whose `meridian-lock` block declares this object.
     pub src_path: String,
-    /// The `objects:` key, verbatim (what the blob is FOR).
+    /// The pin's `object`, verbatim (what the blob is FOR).
     pub key: String,
     /// The blob sha, verbatim — an object id in git's world, not the engine's.
     pub blob_sha: String,
@@ -187,7 +187,7 @@ pub struct PinPlane {
     /// Pins whose colour is GREY — outside sight, each carrying its own reason
     /// word (S3-R6: one vocabulary, distinct words for distinct causes).
     pub grey: Vec<PinRow>,
-    /// `objects:` entries whose blob nothing holds and nothing will — the
+    /// Pinned blobs nothing holds and nothing will — the
     /// anchoring FINDING. See [`OrphanedBlob`] for why the refusal is this pair
     /// and not a bare state.
     pub orphaned: Vec<OrphanedBlob>,
@@ -243,7 +243,7 @@ impl PinPlane {
         !self.red.is_empty() || !self.orphaned.is_empty()
     }
 
-    /// How many `objects:` entries git was asked about — the population behind the
+    /// How many pinned blobs git was asked about — the population behind the
     /// three-state reading (S3-R23(5)).
     #[must_use]
     pub fn asked(&self) -> usize {
@@ -267,14 +267,14 @@ impl PinPlane {
 }
 
 /// Read the pin plane over `docs`: sort the caller's pin colours, then ask THIS
-/// root's object store about every `objects:` entry the corpus declares.
+/// root's object store about every blob the corpus pins.
 ///
 /// `docs` must be the SAME corpus build the pin colours came from — a second
 /// build would let the two halves describe two different corpora, which is the
 /// trap `mrd status`'s two axes are explicitly built to avoid.
 ///
 /// # It asks nothing it does not have to
-/// A corpus that declares no `objects:` entry asks git nothing: nothing is
+/// A corpus that pins no blob asks git nothing: nothing is
 /// referenced, so nothing can be owed, and a workspace outside a repository stays
 /// green rather than being refused for a question nobody asked.
 ///
@@ -318,7 +318,8 @@ pub fn pin_plane(
     plane
 }
 
-/// One `objects:` entry located in the corpus.
+/// One pinned blob located in the corpus — the R4 per-pin `hash` and the target
+/// it is the blob OF.
 #[derive(Debug)]
 struct ObjectRef {
     src_path: String,
@@ -326,39 +327,49 @@ struct ObjectRef {
     blob_sha: String,
 }
 
-/// Every `objects:` entry the corpus declares, or the reason the plane is unread.
+/// Every pinned blob the corpus declares, or the reason the plane is unread.
 ///
 /// [`lock::find`] is the parser — the SAME owner `view::walk::lock_objects` uses,
-/// so a page's objects can never be read here by a second reader that disagrees
-/// with the listing surfaces about what the page declares.
+/// so a page's pinned blobs can never be read here by a second reader that
+/// disagrees with the listing surfaces about what the page declares.
 ///
-/// A page whose lock REFUSED contributes no objects, exactly as it contributes
+/// A page whose lock REFUSED contributes nothing, exactly as it contributes
 /// none to the listing planes: its damage is already named by the grey
 /// `lock-refused` PIN row the same page projects, and naming one defect twice is
 /// how a reader comes to believe there are two.
+///
+/// # One blob, one question (R4)
+/// R4 retired the shared `objects:` table and moved the git blob hash onto the
+/// pin row itself, so the whole-file lock — `path: []` and `properties: []` on
+/// one object — declares the SAME blob twice. They are deduped by `(object,
+/// hash)` here for the reason stated above: two rows naming one blob would ask
+/// git one question twice and report a single orphan as two findings.
 fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, String> {
-    let mut out = Vec::new();
+    let mut out: Vec<ObjectRef> = Vec::new();
+    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     for (path, doc) in docs {
         let Ok(Some(found)) = lock::find(doc) else {
             continue;
         };
-        for (key, blob_sha) in found.lock.objects {
-            let oid = blob_sha.to_ascii_lowercase();
+        for pin in found.lock.pins {
+            let key = pin.object;
+            let oid = pin.hash.to_ascii_lowercase();
             if !git::is_oid(&oid) {
                 return Err(format!(
-                    "`{path}` objects.{key} is not an object id, so git cannot be asked about it"
+                    "`{path}` pin `{key}` has a hash that is not an object id, so git cannot be \
+                     asked about it"
                 ));
             }
-            // A key naming ANOTHER root names another object store, and this read
-            // holds one handle: the ambient one. Falling back to it would ask the
-            // WRONG database and answer confidently — a wrong SUCCESS, which is
-            // the one shape a fence's verb must never produce. So it refuses, and
-            // says which root it could not reach.
+            // An object naming ANOTHER root names another object store, and this
+            // read holds one handle: the ambient one. Falling back to it would ask
+            // the WRONG database and answer confidently — a wrong SUCCESS, which
+            // is the one shape a fence's verb must never produce. So it refuses,
+            // and says which root it could not reach.
             match addr::Addr::parse(&key) {
                 Ok(addr) => {
                     if let Some(name) = addr.root() {
                         return Err(format!(
-                            "`{path}` objects.{key} names root `{name}`, whose object store this \
+                            "`{path}` pin `{key}` names root `{name}`, whose object store this \
                              read cannot ask — the anchoring check runs against THAT root's git \
                              repo, and asking this one would answer a different repository's \
                              question in its name"
@@ -367,10 +378,13 @@ fn objects_in(docs: &BTreeMap<String, Document>) -> Result<Vec<ObjectRef>, Strin
                 }
                 Err(e) => {
                     return Err(format!(
-                        "`{path}` objects.{key} is not an address, so WHICH git to ask is \
+                        "`{path}` pin `{key}` is not an address, so WHICH git to ask is \
                          unknown: {e}"
                     ));
                 }
+            }
+            if !seen.insert((path.clone(), key.clone(), oid.clone())) {
+                continue;
             }
             out.push(ObjectRef {
                 src_path: path.clone(),
@@ -435,7 +449,10 @@ fn ask_store(
         // Does the file still hash to this blob? If it does, committing the file
         // anchors it and this is a lifecycle moment, not a defect. If it does not,
         // nothing holds the blob and nothing will.
-        let live = match repo.blob_oid(&root.0.join(&object.key)) {
+        // R4's `object` is the target's wiki-link inner text — the vault path
+        // WITHOUT `.md` (the spelling U8's `pin_row` mints). The blob is the blob
+        // of the FILE, so the extension goes back on before git is asked.
+        let live = match repo.blob_oid(&root.0.join(format!("{}.md", object.key))) {
             Ok(oid) if oid.eq_ignore_ascii_case(&object.blob_sha) => continue,
             Ok(oid) => oid,
             Err(e) => format!("the file could not be hashed ({e})"),
@@ -502,10 +519,23 @@ mod tests {
         BTreeMap::from([(path.to_string(), doc)])
     }
 
-    /// A `meridian-lock` block carrying one `objects:` entry, in the canonical
-    /// bytes the engine mints.
-    fn objects_page(key: &str, sha: &str) -> String {
-        format!("# P\n\n```meridian-lock\nversion: 1\nobjects:\n  \"{key}\": \"{sha}\"\n```\n")
+    /// A `meridian-lock` block carrying one R4 pin, in the canonical bytes the
+    /// engine mints.
+    ///
+    /// Rendered through [`lock::render`] rather than hand-written: the pre-R4
+    /// fixtures here were hand-written `objects:` tables, and a hand-written
+    /// fixture is exactly what let a retired schema keep compiling after the type
+    /// it described was gone. `object` is the wiki-link inner text — the target's
+    /// vault path WITHOUT `.md`.
+    fn pin_page(object: &str, sha: &str) -> String {
+        let mut lock = lock::Lock::new();
+        lock.upsert_pin(lock::PinEntry::new(
+            object,
+            sha,
+            lock::Selector::Path(vec!["S".to_string()]),
+            "fp1.span2.b3.a8222f5a",
+        ));
+        format!("# P\n\n{}\n", lock::render(&lock))
     }
 
     fn pin(color: Color) -> PinRow {
@@ -601,7 +631,7 @@ mod tests {
     #[test]
     fn an_unaskable_object_store_is_grey_never_an_empty_clean_reading() {
         let root = WorkspaceRoot(std::path::PathBuf::from("/nonexistent"));
-        let docs = corpus("claim.md", &objects_page("source.md", &"a".repeat(40)));
+        let docs = corpus("claim.md", &pin_page("source", &"a".repeat(40)));
         let plane = pin_plane(&root, &docs, &[]);
         assert!(
             plane.cannot_ask.is_some(),
@@ -616,7 +646,7 @@ mod tests {
         );
     }
 
-    /// A corpus declaring no `objects:` entry asks git NOTHING: nothing is
+    /// A corpus pinning no blob asks git NOTHING: nothing is
     /// referenced, so nothing can be owed. Without this arm every workspace
     /// outside a repository would refuse, and a guard that blocks everything is
     /// indistinguishable from one that guards nothing (S3-R8(c)).
@@ -639,10 +669,7 @@ mod tests {
     /// never produce.
     #[test]
     fn a_rooted_objects_key_refuses_rather_than_asking_the_wrong_store() {
-        let docs = corpus(
-            "claim.md",
-            &objects_page("alpha:source.md", &"a".repeat(40)),
-        );
+        let docs = corpus("claim.md", &pin_page("alpha:source", &"a".repeat(40)));
         let detail = objects_in(&docs).expect_err("a rooted key is not askable from here");
         assert!(
             detail.contains("alpha"),
@@ -659,7 +686,7 @@ mod tests {
     /// it would report a corrupt retrieval plane as a true zero.
     #[test]
     fn a_value_that_is_not_an_object_id_is_reported_never_skipped() {
-        let docs = corpus("claim.md", &objects_page("source.md", "not-an-oid"));
+        let docs = corpus("claim.md", &pin_page("source", "not-an-oid"));
         let detail = objects_in(&docs).expect_err("git cannot be asked about a non-oid");
         assert!(
             detail.contains("not an object id"),
@@ -673,12 +700,17 @@ mod tests {
     /// twice is how a reader comes to believe there are two.
     #[test]
     fn a_refused_lock_contributes_no_objects_because_its_pin_row_already_names_it() {
-        let two_blocks = format!(
-            "# P\n\n```meridian-lock\nversion: 1\n```\n\n```meridian-lock\nversion: 1\nobjects:\n  \
-             \"source.md\": \"{}\"\n```\n",
-            "a".repeat(40)
-        );
-        let docs = corpus("claim.md", &two_blocks);
+        // BOTH blocks are valid R4 — so the refusal under test is the
+        // two-blocks-on-one-page rule and nothing else. The pre-R4 fixture here
+        // was a `version: 1` `objects:` table, which this reader would have
+        // refused on the VERSION first: a test that passed for a reason other
+        // than its own subject.
+        let one = pin_page("source", &"a".repeat(40));
+        let block = one
+            .split_once("\n\n")
+            .expect("the fixture is a heading then the block")
+            .1;
+        let docs = corpus("claim.md", &format!("# P\n\n{block}\n{block}"));
         assert!(
             lock::find(docs.get("claim.md").expect("page")).is_err(),
             "the fixture is a REFUSED lock — two blocks on one page"
