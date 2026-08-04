@@ -82,6 +82,24 @@ pub struct Options {
     pub actor: Option<String>,
     /// The recorded timestamp (§9: recorded exactly as given, never invented).
     pub now: Option<String>,
+    /// **The §5.1 WORLD GUARD, armed** (`mrd lock migrate --expect-root`).
+    ///
+    /// The ambient Merkle root the operator states the vault is at. Every
+    /// per-page rewrite carries it, and the door REFUSES with `root_mismatch`
+    /// if the vault's ambient root is anything else.
+    ///
+    /// # Why a sweep needs it and a single write does not
+    /// A sweep is many writes over one quiesced vault. The per-page CAS already
+    /// proves each PAGE did not move, but it cannot notice that the VAULT is
+    /// not the world the operator inspected — a dry run read on one tree and a
+    /// real run landing on another passes every per-page check, because each
+    /// page is individually consistent. This is the guard that makes the
+    /// operator's *"I looked at this vault"* mean the vault they looked at.
+    ///
+    /// `None` leaves it UNARMED, which is what this tool shipped with (U9b) and
+    /// what the runbook wrongly described as armed — the flag exists so the
+    /// claim and the code agree.
+    pub expect_root: Option<wire::Root>,
 }
 
 /// A tool failure — the migration could not run to a verdict. Distinct from a
@@ -647,7 +665,7 @@ pub fn sweep(root: &fs::WorkspaceRoot, opts: &Options) -> Result<MigrationReport
             lock: converted.clone(),
             actor: opts.actor.clone(),
             now: opts.now.clone(),
-            if_root: None,
+            if_root: opts.expect_root.clone(),
             if_file_rev: wire::NodeRev(doc.root.node_rev.0.clone()),
             dry: opts.dry,
         };
