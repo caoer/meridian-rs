@@ -743,9 +743,11 @@ pub enum Op {
     /// frozen v2 `caps`, so a v2 session answers `unknown_op` (§3.2 discovery
     /// honesty); the v3 hello projection advertises it.
     ///
-    /// `mode` is `"toc"` (default) or `"sections"`; `frag` scopes to one
-    /// section subtree; `sections` selects by sanitized hpath, dewey ordinal,
-    /// or `^anchor`; `display_path` is the caller's path spelling for the
+    /// `sections` selects by sanitized hpath, dewey ordinal, or `^anchor` and
+    /// IS the mode: present → a sections read, absent → the toc read (A5
+    /// retired the `mode` vocabulary at both ends; an explicit `mode` on the
+    /// wire is now an unknown field the strict decode refuses). `frag` scopes
+    /// to one section subtree; `display_path` is the caller's path spelling for the
     /// rendered header line (defaults to `path`) — the engine renders the
     /// string the consumer expects, it never invents host paths.
     ///
@@ -757,8 +759,6 @@ pub enum Op {
     /// minted in M1.
     Read {
         path: Path,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mode: Option<String>,
         /// The whole-call subtree scope, as SEGMENTS (U14): the section itself
         /// plus its descendants, matched per-segment. It was a sanitized
         /// joined string tested with `starts_with("{frag}/")`, which made

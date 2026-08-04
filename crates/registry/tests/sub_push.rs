@@ -413,7 +413,7 @@ fn a_pushed_frame_mints_no_read_receipt() {
         "workspace": ws.to_str().unwrap(),
     }));
     let read = reader.call(&json!({
-        "op": "read", "path": "plan.md", "mode": "sections",
+        "op": "read", "path": "plan.md",
         "sections": [{"hpath": [{"h": "Goals"}]}], "actor": "agent:reader",
     }));
     assert_eq!(

@@ -50,7 +50,6 @@ pub(crate) fn dispatch(
         // caps; §3.2: an op is in `caps` or answers `unknown_op`).
         Op::Read {
             path,
-            mode,
             frag,
             sections,
             display_path,
@@ -66,7 +65,6 @@ pub(crate) fn dispatch(
                 &path,
                 &ambient,
                 &wire_serve::read::ReadParams {
-                    mode,
                     frag,
                     sections,
                     display_path,

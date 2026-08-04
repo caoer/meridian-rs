@@ -1,14 +1,15 @@
 //! `mrd read` — the composed read verb (M1 U1, ratified read/put naming).
 //!
 //! ```text
-//! mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL] [--json]
+//! mrd read <PATH>[#FRAG] [--section SEL] [--json]
 //! ```
 //!
 //! One exchange over the U4a2 composed read op (decision D6): addressing +
-//! content + render at ONE engine snapshot. Default mode `toc` answers the
-//! section map (dewey ordinal, depth, title, hpath, words, `sec_rev`) plus the
-//! rendered text projection; `--section` (repeatable — a heading path, a dewey
-//! ordinal, or a `^anchor`) selects sections and implies mode `sections`.
+//! content + render at ONE engine snapshot. With no `--section` the read
+//! answers the section map (dewey ordinal, depth, title, hpath, words,
+//! `sec_rev`) plus the rendered text projection; `--section` (repeatable — a
+//! heading path, a dewey ordinal, or a `^anchor`) IS the section read (A5
+//! retired the `--mode` word: the selector says which face you want).
 //!
 //! Answered by the resident daemon (auto-spawned, the [`crate::engine`]
 //! watchman model) or the in-process degrade — BOTH run the same
@@ -31,7 +32,7 @@ use wire::Path as WirePath;
 use crate::engine::{self, EngineSource};
 use crate::{Fail, Format, current_dir};
 
-/// Run `mrd read <PATH>[#FRAG] [--mode M] [--section SEL] [--json]`.
+/// Run `mrd read <PATH>[#FRAG] [--section SEL] [--json]`.
 ///
 /// # Errors
 /// [`Fail`] — exit 2 on a bad invocation or a `bad_request` refusal; exit 1 on
@@ -74,9 +75,7 @@ struct Read {
     path: String,
     /// The `#FRAG` tail, when given.
     frag: Option<String>,
-    /// `--mode`, as given (the engine gates the value).
-    mode: Option<String>,
-    /// `--section` selectors, in order.
+    /// `--section` selectors, in order — non-empty IS the section read (A5).
     sections: Vec<String>,
     format: Format,
 }
@@ -84,19 +83,12 @@ struct Read {
 impl Read {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut positional: Option<String> = None;
-        let mut mode: Option<String> = None;
         let mut sections: Vec<String> = Vec::new();
         let mut json = false;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--json" => json = true,
-                "--mode" => {
-                    let value = it
-                        .next()
-                        .ok_or_else(|| Fail::tool("--mode needs a value".to_owned()))?;
-                    mode = Some(value.clone());
-                }
                 "--section" => {
                     let value = it
                         .next()
@@ -113,18 +105,6 @@ impl Read {
         let Some(full) = positional else {
             return Err(Fail::tool("read needs a PATH".to_owned()));
         };
-        // Loud, not silent: the wire would ignore `sections` under mode toc —
-        // a human face refuses the contradiction instead (stricter than the Go
-        // MCP face, deliberately; this CLI has no byte-parity gate).
-        if mode.as_deref() == Some("toc") && !sections.is_empty() {
-            return Err(Fail::tool(
-                "--section conflicts with --mode toc (sections are a sections-mode selector)"
-                    .to_owned(),
-            ));
-        }
-        if mode.is_none() && !sections.is_empty() {
-            mode = Some("sections".to_owned());
-        }
         let (path, frag) = match full.split_once('#') {
             Some((p, f)) => (p.to_owned(), Some(f.to_owned())),
             None => (full, None),
@@ -132,7 +112,6 @@ impl Read {
         Ok(Read {
             path,
             frag,
-            mode,
             sections,
             format: if json { Format::Json } else { Format::Human },
         })
@@ -206,9 +185,6 @@ impl Read {
             "path": self.path,
             "display_path": self.path,
         });
-        if let Some(mode) = &self.mode {
-            req["mode"] = json!(mode);
-        }
         // **The human/wire ingress door (U14, U7's ruled direction).** Both
         // selector fields are STRUCTURED on the wire, and this is where a
         // typed string becomes structure — once, at the edge, so nothing
@@ -243,7 +219,6 @@ fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let doc = wire_serve::load_doc(&root, &wpath).map_err(|e| engine::refusal_fail(&e))?;
     let ambient = wire_serve::ambient_root(&root).map_err(|e| engine::refusal_fail(&e))?;
     let params = wire_serve::read::ReadParams {
-        mode: r.mode.clone(),
         // The SAME conversion the wire request does — one door, two transports,
         // so warm and degrade cannot diverge on what a selector means.
         frag: r.frag.as_deref().map(frag_segments),

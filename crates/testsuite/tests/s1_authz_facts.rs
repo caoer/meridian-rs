@@ -144,8 +144,7 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
         let mut requests: Vec<Value> = Vec::new();
         for rel in &files {
             requests.push(json!({"id": requests.len() + 1, "op": "toc", "path": rel}));
-            requests
-                .push(json!({"id": requests.len() + 1, "op": "read", "path": rel, "mode": "toc"}));
+            requests.push(json!({"id": requests.len() + 1, "op": "read", "path": rel}));
         }
         let frames = serve(&root_dir, &requests);
         assert_eq!(
@@ -378,10 +377,7 @@ fn extended_rows_carry_the_authz_facts_on_every_row() {
     for doc in ["basic", "duplicate-headings", "level-jumps", "trailing-ws"] {
         let root_dir = testsuite::parity_dir().join("corpus").join(doc);
         let rel = format!("corpus/{doc}.md");
-        let frames = serve(
-            &root_dir,
-            &[json!({"id": 1, "op": "read", "path": rel, "mode": "toc"})],
-        );
+        let frames = serve(&root_dir, &[json!({"id": 1, "op": "read", "path": rel})]);
         let frame = &frames[1];
         assert_eq!(frame["ok"], json!(true), "{doc}: ok frame: {frame}");
         for row in frame["body"]["toc"]
@@ -421,8 +417,8 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     let frames = serve(
         &root_dir,
         &[
-            json!({"id": 1, "op": "read", "path": rel, "mode": "toc", "frag": [{"h": "Anchor Zone"}]}),
-            json!({"id": 2, "op": "read", "path": rel, "mode": "toc", "frag": [{"h": "Padded Title"}]}),
+            json!({"id": 1, "op": "read", "path": rel, "frag": [{"h": "Anchor Zone"}]}),
+            json!({"id": 2, "op": "read", "path": rel, "frag": [{"h": "Padded Title"}]}),
         ],
     );
     let headings = |frame: &Value| -> Vec<String> {
@@ -472,27 +468,29 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     );
 }
 
-/// s1c: `anchors[]` rides a SECTIONS-mode read too, scoped by the same frag —
-/// the field is a property of the response, never of the mode, so no caller
-/// has to know which mode serves it.
+/// s1c: `anchors[]` rides a SECTION read too — the field is a property of the
+/// response, never of the face, so no caller has to know which one serves it.
+///
+/// A5 narrowed the second half of this gate out of existence: `frag` and
+/// `sections[]` cannot ride one call, and `sections[]`'s presence is now the
+/// only thing that selects a section read — so a frag-scoped section read is
+/// unreachable and "a frag scopes a section read's anchor plane" is no longer
+/// a fact this surface can state. The frag-scoping rule itself stays gated on
+/// the toc face, one test above.
 #[test]
-fn sections_mode_carries_the_anchor_plane_too() {
+fn section_read_carries_the_anchor_plane_too() {
     let root_dir = testsuite::parity_dir().join("corpus").join("trailing-ws");
     let rel = "corpus/trailing-ws.md";
     let frames = serve(
         &root_dir,
-        &[
-            json!({"id": 1, "op": "read", "path": rel, "mode": "sections",
-                   "sections": [{"hpath": [{"h": "Anchor Zone"}]}]}),
-            json!({"id": 2, "op": "read", "path": rel, "mode": "sections",
-                   "frag": [{"h": "Padded Title"}]}),
-        ],
+        &[json!({"id": 1, "op": "read", "path": rel,
+                   "sections": [{"hpath": [{"h": "Anchor Zone"}]}]})],
     );
     let anchors = |frame: &Value| -> Vec<String> {
         assert_eq!(frame["ok"], json!(true), "ok frame: {frame}");
         assert!(
             frame["body"]["toc"].is_null(),
-            "sections mode serves no heading table: {frame}"
+            "a section read serves no heading table: {frame}"
         );
         frame["body"]["anchors"]
             .as_array()
@@ -505,9 +503,5 @@ fn sections_mode_carries_the_anchor_plane_too() {
         anchors(&frames[1]),
         vec!["anc1", "anc2"],
         "unscoped (no frag): the whole document's anchor plane"
-    );
-    assert!(
-        anchors(&frames[2]).is_empty(),
-        "a frag scopes the whole call, anchor plane included"
     );
 }

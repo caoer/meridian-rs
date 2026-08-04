@@ -99,7 +99,7 @@ fn toc_face_over_a_nested_document() {
     let text = render_face(
         "nested.md",
         NESTED,
-        &json!({"id": 1, "op": "read", "path": "corpus/nested.md", "mode": "toc"}),
+        &json!({"id": 1, "op": "read", "path": "corpus/nested.md"}),
     );
     assert_golden("toc-nested", &text);
 }
@@ -112,7 +112,7 @@ fn toc_face_over_a_document_with_no_headings() {
     let text = render_face(
         "flat.md",
         "just prose, no headings at all\n",
-        &json!({"id": 1, "op": "read", "path": "corpus/flat.md", "mode": "toc"}),
+        &json!({"id": 1, "op": "read", "path": "corpus/flat.md"}),
     );
     assert_golden("toc-empty", &text);
 }
@@ -125,7 +125,7 @@ fn sections_face_over_one_section() {
         "nested.md",
         NESTED,
         &json!({
-            "id": 1, "op": "read", "path": "corpus/nested.md", "mode": "sections",
+            "id": 1, "op": "read", "path": "corpus/nested.md",
             "sections": [{"hpath": [{"h": "Notes"}]}]
         }),
     );
@@ -140,7 +140,7 @@ fn sections_face_carries_the_partial_read_notice_as_a_field() {
         "nested.md",
         NESTED,
         &json!({
-            "id": 1, "op": "read", "path": "corpus/nested.md", "mode": "sections",
+            "id": 1, "op": "read", "path": "corpus/nested.md",
             "sections": [{"hpath": [{"h": "Notes"}]}, {"hpath": [{"h": "Ghost"}]}]
         }),
     );
@@ -160,7 +160,7 @@ fn prose_may_spell_a_marker_without_forging_a_boundary() {
         "lookalike.md",
         "# Notes\n\nthe face writes a line like\n\n== Notes ==\n\nand this section is ABOUT that line\n",
         &json!({
-            "id": 1, "op": "read", "path": "corpus/lookalike.md", "mode": "sections",
+            "id": 1, "op": "read", "path": "corpus/lookalike.md",
             "sections": [{"hpath": [{"h": "Notes"}]}]
         }),
     );
@@ -180,7 +180,7 @@ fn sections_face_elides_engine_emitted_blocks() {
         "locked.md",
         "# Pins\n\nbefore the lock\n\n```meridian-lock\nv: 1\n```\n\nafter the lock\n",
         &json!({
-            "id": 1, "op": "read", "path": "corpus/locked.md", "mode": "sections",
+            "id": 1, "op": "read", "path": "corpus/locked.md",
             "sections": [{"hpath": [{"h": "Pins"}]}]
         }),
     );

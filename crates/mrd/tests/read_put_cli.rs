@@ -154,7 +154,7 @@ fn read_json_carries_the_v3_projected_body() {
     );
 }
 
-/// Gate — `--section` implies sections mode and answers the selected
+/// Gate — `--section` IS the section read and answers the selected
 /// section's content.
 #[test]
 fn read_section_selects_and_serves_content() {
@@ -198,19 +198,21 @@ fn read_frag_miss_is_the_engines_verbatim_refusal() {
     );
 }
 
-/// Gate — `--mode toc` + `--section` is a LOUD client-side contradiction
-/// (exit 2), never the wire's silent ignore.
+/// Gate — A5: `--mode` is RETIRED, so it is an unknown flag (exit 2), not a
+/// quietly-accepted word. The selector alone says which face the caller wants,
+/// and a stale invocation learns that here rather than getting a toc it did
+/// not ask for.
 #[test]
-fn read_toc_mode_with_section_refuses_loudly() {
+fn read_mode_flag_is_retired_and_unknown() {
     let sb = sandbox();
     let ws = sb.workspace();
     let out = sb.run(
         &ws,
         &["read", "doc.md", "--mode", "toc", "--section", "Alpha"],
     );
-    assert_eq!(code(&out), 2, "contradiction is a tool failure");
+    assert_eq!(code(&out), 2, "a retired flag is a tool failure");
     assert!(
-        stderr(&out).contains("--section conflicts with --mode toc"),
+        stderr(&out).contains("unknown flag: --mode"),
         "{}",
         stderr(&out)
     );
@@ -651,6 +653,117 @@ fn put_dry_lands_nothing() {
         "a dry run writes nothing"
     );
     assert!(stdout(&out).contains("nothing written"), "{}", stdout(&out));
+}
+
+/// Gate — D3: `--dry` SHOWS the change. The unified diff runs from the file's
+/// current bytes to the candidate the rehearsal built, so a caller decides
+/// from what WOULD land rather than from a count of edits.
+#[test]
+fn put_dry_shows_the_diff() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--dry"],
+        &beta_match("four five", "four FIVE six"),
+    );
+    assert_eq!(code(&out), 0, "dry put: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("--- current") && text.contains("+++ candidate"),
+        "the sides are named for what they ARE — never a/ and b/ files: {text}"
+    );
+    assert!(
+        text.contains("-four five") && text.contains("+four FIVE six"),
+        "both sides of the change ride: {text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        DOC,
+        "showing the diff is still a rehearsal — nothing lands"
+    );
+}
+
+/// Gate — D3: `--dry --json` carries the same diff as a FIELD, so a machine
+/// caller reads it out of the frame instead of scraping stdout.
+#[test]
+fn put_dry_json_carries_the_diff_as_a_field() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--dry", "--json"],
+        &beta_match("four five", "four FIVE six"),
+    );
+    assert_eq!(code(&out), 0, "dry put --json: {}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let diff = v["diff"].as_str().expect("diff field");
+    assert!(
+        diff.contains("+four FIVE six"),
+        "the diff is the field's value: {diff}"
+    );
+}
+
+/// Gate — D3: `--validate` is the SILENT check. A rehearsal that passes says
+/// NOTHING and answers with exit 0 alone; a line of reassurance is what would
+/// stop it being a silent check.
+#[test]
+fn put_validate_is_silent_on_a_pass() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--validate"],
+        &beta_match("four five", "changed"),
+    );
+    assert_eq!(code(&out), 0, "validate: {}", stderr(&out));
+    assert_eq!(stdout(&out), "", "a passing check says nothing");
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        DOC,
+        "--validate is a rehearsal: nothing lands"
+    );
+}
+
+/// Gate — D3: a finding under `--validate` is NOT silent. The engine's
+/// verbatim refusal rides stderr at exit 1, the same body `--dry` would get —
+/// the two faces differ on a PASS and nowhere else.
+#[test]
+fn put_validate_findings_exit_nonzero_with_the_refusal_body() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--validate"],
+        &beta_match("nothing matches this", "x"),
+    );
+    assert_eq!(code(&out), 1, "a finding is the findings leg");
+    assert_eq!(stdout(&out), "", "the refusal rides stderr, not stdout");
+    assert!(
+        stderr(&out).contains("no_match") || stderr(&out).contains("occurrence"),
+        "the engine's verbatim refusal: {}",
+        stderr(&out)
+    );
+}
+
+/// Gate — D3: `--dry` and `--validate` are the two faces of ONE rehearsal, so
+/// asking for both is a contradiction (exit 2), never a silent precedence rule
+/// a caller has to learn.
+#[test]
+fn put_dry_and_validate_together_refuse_loudly() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--dry", "--validate"],
+        &beta_match("four five", "changed"),
+    );
+    assert_eq!(code(&out), 2, "contradiction is a tool failure");
+    assert!(
+        stderr(&out).contains("--dry and --validate"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// Gate — `--json` carries the v3-projected splice body (`fingerprint_before`

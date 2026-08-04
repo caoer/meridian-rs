@@ -1,9 +1,18 @@
 //! `mrd put` — the batch write verb (M1 U1, ratified read/put naming).
 //!
 //! ```text
-//! mrd put <PATH> [--dry] [--force] [--actor A] [--now T]
+//! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
 //!         [--if-fingerprint FP] [--receipt PATH#ANCHOR] [--json]  < edits.json
 //! ```
+//!
+//! **The two rehearsals are ONE run and TWO faces (D3).** Both send
+//! `dry: true` through the same choke-point, so neither can validate anything
+//! the other would not. `--dry` SHOWS the change — a unified diff from the
+//! file's current bytes to the candidate the rehearsal built. `--validate` is
+//! the SILENT check: nothing on stdout and exit 0 when the rehearsal passes,
+//! the engine's verbatim refusal at exit 1 when it does not. Passing both is a
+//! contradiction (exit 2): one invocation cannot be both the loud and the
+//! quiet face.
 //!
 //! The edits ride STDIN in the wire §4.4 grammar VERBATIM — a JSON array of
 //! `{target, edit, if_node_rev?}` where `target` is `{"hpath":[…]}` /
@@ -18,7 +27,7 @@
 //! degrade path exists that could bypass them. Rule packs are the empty set —
 //! exactly the production sidecar face (`verdicts` stay `[]`).
 //!
-//! Exit triad: 0 committed (or `--dry` validated) / 1 refused (`no_match`,
+//! Exit triad: 0 committed (or a rehearsal that passed) / 1 refused (`no_match`,
 //! `not_unique`, `cas_mismatch`, `root_mismatch`, `workspace_busy`, an armed
 //! gate refusal — the engine's verbatim message) / 2 bad invocation.
 
@@ -62,7 +71,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         now: parsed.now.clone(),
         receipt: parsed.receipt.clone(),
         if_root: parsed.if_fingerprint.clone().map(Root),
-        dry: parsed.dry,
+        dry: parsed.rehearsal(),
         force: parsed.force,
         edits,
         plan_edits: Vec::new(),
@@ -73,6 +82,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // has no subscriber here, so it is dropped with the outcome.
     let outcome =
         splice(&root, None, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
+
+    // D3: the rehearsal preview, rendered from the candidate the choke-point
+    // ALREADY built (§4.4 one-reparse law) rather than re-derived here — the
+    // CLI holds no second implementation of what a batch does to a document.
+    let diff = if parsed.dry {
+        rehearsal_diff(&root, &parsed.path, outcome.candidate.as_deref())?
+    } else {
+        None
+    };
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
@@ -85,30 +103,83 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .and_then(|obj| obj.remove("body"))
         .unwrap_or(Value::Null);
 
+    // The findings leg of the silent check: a passing rehearsal says nothing,
+    // so anything the engine DID find has to leave through a non-zero exit or
+    // it is lost. Rule packs are empty on this face, so an unforced rehearsal
+    // carries no verdicts and this is the quiet path by construction.
+    if parsed.validate {
+        let verdicts = body
+            .get("verdicts")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if verdicts > 0 {
+            return Err(Fail::findings(format!(
+                "validate: {} finding(s) on {}, nothing written:\n{}",
+                verdicts,
+                parsed.path,
+                serde_json::to_string_pretty(&body["verdicts"]).expect("json")
+            )));
+        }
+    }
+
     match parsed.format {
         Format::Json => {
-            let value = json!({
+            let mut value = json!({
                 "workspace": resolved.workspace.display().to_string(),
                 "put": body,
             });
+            if let Some(diff) = &diff {
+                value["diff"] = json!(diff);
+            }
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
-        Format::Human => print_human(&parsed, &body),
+        // `--validate` passed, so it says NOTHING (D3): the exit code is the
+        // whole answer, and a line of reassurance is what makes a silent check
+        // stop being one.
+        Format::Human if parsed.validate => {}
+        Format::Human => print_human(&parsed, &body, diff.as_deref()),
     }
     Ok(())
 }
 
+/// The `--dry` diff: the file's CURRENT bytes → the candidate the rehearsal
+/// built, through the one line-diff renderer in the tree
+/// ([`wire_serve::ladder::unified_diff`], U11's primitive). `None` when the
+/// batch changes no line — a rehearsal that would write the same bytes has no
+/// change to show, and saying so is the honest answer.
+fn rehearsal_diff(
+    root: &fs::WorkspaceRoot,
+    path: &str,
+    candidate: Option<&str>,
+) -> Result<Option<String>, Fail> {
+    let Some(candidate) = candidate else {
+        return Ok(None);
+    };
+    let doc = wire_serve::load_doc(root, &WirePath(path.to_owned()))
+        .map_err(|e| engine::refusal_fail(&e))?;
+    Ok(wire_serve::ladder::unified_diff(
+        "current",
+        "candidate",
+        &doc.raw,
+        candidate,
+    ))
+}
+
 /// The human summary: what landed (or was rehearsed), at which fingerprint.
-fn print_human(parsed: &Put, body: &Value) {
+fn print_human(parsed: &Put, body: &Value, diff: Option<&str>) {
     let edits = body
         .pointer("/armed/edits")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
     if parsed.dry {
         println!(
-            "dry run: {} validated ({edits} edit(s)), nothing written",
+            "dry run: {} ({edits} edit(s)), nothing written",
             parsed.path
         );
+        match diff {
+            Some(diff) => print!("{diff}"),
+            None => println!("no change: the candidate is byte-identical"),
+        }
         return;
     }
     let after = body
@@ -133,9 +204,19 @@ struct Put {
     now: Option<String>,
     receipt: Option<ReceiptAddr>,
     if_fingerprint: Option<String>,
+    /// `--dry`: rehearse and SHOW the diff.
     dry: bool,
+    /// `--validate`: rehearse and say nothing (D3).
+    validate: bool,
     force: bool,
     format: Format,
+}
+
+impl Put {
+    /// Either face means the same run: everything except disk.
+    fn rehearsal(&self) -> bool {
+        self.dry || self.validate
+    }
 }
 
 impl Put {
@@ -146,6 +227,7 @@ impl Put {
         let mut receipt: Option<ReceiptAddr> = None;
         let mut if_fingerprint: Option<String> = None;
         let mut dry = false;
+        let mut validate = false;
         let mut force = false;
         let mut json = false;
         let mut it = args.iter();
@@ -153,6 +235,7 @@ impl Put {
             match arg.as_str() {
                 "--json" => json = true,
                 "--dry" => dry = true,
+                "--validate" => validate = true,
                 "--force" => force = true,
                 "--actor" => {
                     let value = it
@@ -209,6 +292,13 @@ impl Put {
         let Some(path) = positional else {
             return Err(Fail::tool("put needs a PATH".to_owned()));
         };
+        if dry && validate {
+            return Err(Fail::tool(
+                "--dry and --validate are the two faces of ONE rehearsal: --dry shows the \
+                 diff, --validate says nothing. Pass one."
+                    .to_owned(),
+            ));
+        }
         Ok(Put {
             path,
             actor,
@@ -216,6 +306,7 @@ impl Put {
             receipt,
             if_fingerprint,
             dry,
+            validate,
             force,
             format: if json { Format::Json } else { Format::Human },
         })

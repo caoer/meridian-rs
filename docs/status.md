@@ -55,7 +55,7 @@ Stage 2 (2026-07-25) adds, all v3-only and additive
   and nothing else. This is what let ccc-statusd delete its markdown mirror,
 - the **read-is-the-mint receipt** — the composed read's `actor` slot, unread in
   M1, now mints `{actor, path, selector, sec_rev}` into daemon session memory.
-  Sections mode only; a blank or absent actor mints nothing,
+  Section reads only; a blank or absent actor mints nothing,
 - **`splice.pin`** — one optional sibling field lowering a pin through the
   existing `commit_batch` two-file-under-one-flock primitive. No `Op::Pin`, no
   `pin.actor` field; advertised in `caps` as `splice.pin` **by the v3 projection
@@ -78,11 +78,11 @@ mrd resolve [PATH]       report how a path resolves — the tier that answered a
                          the root it named (read-only; writes nothing)
 mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                          answered by the daemon (auto-spawned) or in-process
-mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
+mrd read <PATH>[#FRAG] [--section SEL]
                          the composed read: addressing + content + render at
                          ONE engine snapshot (daemon or in-process; human
                          output is the rendered text verbatim)
-mrd put <PATH> [--dry] [--force] [--actor A] [--now T]
+mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
         [--if-fingerprint FP] [--receipt PATH#ANCHOR]
                          the batch write: edits JSON on stdin (wire §4.4
                          grammar), through the production splice choke-point
