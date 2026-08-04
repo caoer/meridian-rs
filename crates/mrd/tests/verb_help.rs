@@ -99,7 +99,10 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
+    // 27 in the landing assembly: U9b's `lock migrate` and U23's `retire` each
+    // added one, on branches that could not see each other. Both members
+    // correctly read 26 alone.
+    assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
