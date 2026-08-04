@@ -34,13 +34,23 @@
 //! catches a field added to the struct even when no live path populates it yet,
 //! which this file cannot see. Neither half subsumes the other.
 //!
-//! # Deviations found and NOT pinned as correct
+//! # Where the live key set and the printed frame disagree
 //!
-//! Where the live key set disagrees with the frozen contract, the pin records
-//! what the wire does (so the shape cannot drift further unseen) and a paired
-//! `#[ignore]`d test states what the CONTRACT says, so nothing here converts a
-//! defect into a regression lock. See `armed_key_set_*` and
-//! `root_mismatch_key_set_*` below.
+//! Two shapes disagreed with `docs/wire-contract-v2.md` when this suite was
+//! minted, and they were dispositioned in opposite directions:
+//!
+//! - `armed.file_rev_after` — RATIFIED on v2 (requirements decision 21, ZT,
+//!   2026-08-04): the prose was stale, the fixtures were right. Pinned as
+//!   served; see [`armed_key_set_as_served_on_v2`].
+//! - `root_mismatch.changed` — specified in §5.1 and the §18 ledger, asserted
+//!   by an exhaustive fixture that hand-builds an `ErrorBody`, and never
+//!   served by the engine. Pinned as served, with the contract's answer kept
+//!   `#[ignore]`d beside it so the shape cannot be quietly ratified by a
+//!   passing test.
+//!
+//! The rule the pair encodes: a pin records what the wire does, and a defect
+//! is never converted into a regression lock by a green test that agrees with
+//! it. Whether the doc or the wire is wrong is a ruling, not a test's call.
 
 use serde_json::Value;
 use std::io::Write as _;
@@ -393,50 +403,34 @@ fn splice_body_receipt_and_edit_key_sets_are_frozen() {
     pin_keys(&edits[0]["target"], &["hpath"], "splice armed edit target");
 }
 
-/// **BOTH armed pins are WITHHELD — the oracle contradicts itself here.**
+/// **`armed` — v2 §4.4 AS AMENDED (requirements decision 21, ZT, 2026-08-04;
+/// personal freeze authority per v2 §18).**
 ///
-/// The two halves of the frozen-v2 oracle disagree on exactly one field:
+/// The printed §4.4 frame shows `armed` as `{path, edits}`; the field arrived
+/// in ZT's own commit `9365455a` (2026-07-21, W-5) and was reflected in the
+/// fixtures, not the prose. Decision 21 ratifies it ON V2 — intentional law,
+/// never a leak. ZT's semantics, recorded verbatim-grade:
 ///
-/// - `docs/wire-contract-v2.md` §4.4 prints `armed` as `{path, edits}`.
-/// - `crates/sidecar/tests/splice_e2e.rs` asserts frozen frames that INCLUDE
-///   `armed.file_rev_after`, by exact-frame `assert_eq!`, on sessions that send
-///   no `hello` — i.e. v2 sessions.
+/// > `body.armed.file_rev_after` is the whole-file rev AFTER a committed
+/// > splice, so a client learns the new file rev WITHOUT A FOLLOW-UP TOC.
+/// > Latency only; correctness stays fingerprint and `root_after`. ABSENT ON
+/// > DRY, because nothing was written. Same family as
+/// > `DeltaFile.file_rev_after` and a subsequent `toc` `file_rev`.
 ///
-/// Which half is authoritative is above this unit's line: it is escalated to
-/// the advisor (found by C3 / worker `0d110aa0`; the field arrived in commit
-/// `9365455a`, ZT-authored, touching no `.md`). Minting EITHER pin now decides
-/// the question by fiat — pinning the served shape would convert a possible
-/// fourth leak into a permanent regression lock, and pinning the doc shape
-/// would red-flag a field ZT may have amended in deliberately.
+/// The "absent on dry" half is executable next door:
+/// [`splice_dry_body_key_set_is_frozen`] pins the dry `armed` at
+/// `{edits, path}`. Together the two pins are the whole ruling — the field
+/// rides a committed write and only a committed write.
 ///
-/// So both arms are landed `#[ignore]`d and neither is deleted: whichever way
-/// the ruling goes, the pin that survives is already written and one attribute
-/// away from live. Every OTHER shape in this file is minted normally — this is
-/// the only contested one.
+/// Not demoted, not v3-split, no reserved-registry row: v2 law now.
 #[test]
-#[ignore = "U27 — armed shape BLOCKED by Leader 160c2d32: doc §4.4 and splice_e2e frozen frames disagree on `file_rev_after`; advisor ruling pending"]
-fn armed_key_set_as_served_on_v2_today() {
+fn armed_key_set_as_served_on_v2() {
     let (_d, root) = s0();
     let got = one(&root, &e3_splice());
     pin_keys(
         &got["body"]["armed"],
         &["edits", "file_rev_after", "path"],
-        "splice armed (as served)",
-    );
-}
-
-/// **The DOC half's answer for `armed`** — frozen §4.4 prints `{path, edits}`,
-/// no `file_rev_after`. The other arm of the withheld pair above; see that
-/// doc comment for why neither is live.
-#[test]
-#[ignore = "U27 — armed shape BLOCKED by Leader 160c2d32: this arm asserts the doc half of a self-contradicting oracle; advisor ruling pending"]
-fn contract_armed_key_set_is_path_and_edits_only() {
-    let (_d, root) = s0();
-    let got = one(&root, &e3_splice());
-    pin_keys(
-        &got["body"]["armed"],
-        &["edits", "path"],
-        "splice armed (frozen §4.4)",
+        "splice armed (§4.4 as amended, decision 21)",
     );
 }
 
