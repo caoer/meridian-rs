@@ -951,41 +951,63 @@ mod superset_probe {
     //! spellings whose LINK-PLANE answer depends on the address plane?
     use super::*;
 
-    /// The lexical question, asked through the SHARED function — never a local
-    /// re-spelling, or this probe would certify a copy while the degrade used
-    /// the original.
-    use addr::head_carries_root_separator as head_has_colon;
+    // The predicate is imported UNDER ITS OWN NAME. It was aliased here as
+    // `head_has_colon`, and a second NAME for one predicate is the cheapest way
+    // to lose the sharing this probe exists to protect: the whole finding is
+    // that nothing TESTS the sharing, so a reader who meets two names concludes
+    // there are two functions. One question, one predicate, one name.
 
     #[test]
     fn may_carry_admits_every_spelling_whose_answer_depends_on_the_address_plane() {
+        // `answerable` is a HAND-AUTHORED ORACLE: does the address plane have
+        // anything to say about this spelling — a resolution OR a refusal?
+        //
+        // **It must never be computed by the function under test.** It was:
+        // both `lexical_gate` and `answerable` called the same predicate, so
+        // `answerable && !lexical_gate` and `!answerable && lexical_gate` were
+        // false BY CONSTRUCTION and neither list could ever be populated. The
+        // acceptance half — the assertion that this gate is not an
+        // admit-everything gate — therefore could not fail. A test comparing a
+        // function against itself passes for the same reason a test that never
+        // runs passes.
         let cases = [
             (
                 "sessions:notes.md",
+                true,
                 "well-formed rooted — the ordinary case",
             ),
-            ("sessions:24-01/notes.md", "rooted with subdirs"),
+            ("sessions:24-01/notes.md", true, "rooted with subdirs"),
             (
                 "Sessions:notes.md",
+                true,
                 "UPPERCASE root — Addr::parse REFUSES (BadMountName)",
             ),
             (
                 "My Notes:draft.md",
+                true,
                 "space in root — Addr::parse REFUSES (BadMountName)",
             ),
-            ("a:b:c.md", "two head colons — REFUSES (AmbiguousColon)"),
-            (":notes.md", "empty root — REFUSES (EmptyMountName)"),
-            ("sessions:", "empty path — REFUSES (EmptyPath)"),
-            ("ambient.md", "no root at all — must NOT be admitted"),
-            ("dir/a:b.md", "colon after the first slash — a path byte"),
+            (
+                "a:b:c.md",
+                true,
+                "two head colons — REFUSES (AmbiguousColon)",
+            ),
+            (":notes.md", true, "empty root — REFUSES (EmptyMountName)"),
+            ("sessions:", true, "empty path — REFUSES (EmptyPath)"),
+            ("ambient.md", false, "no root at all — must NOT be admitted"),
+            (
+                "dir/a:b.md",
+                false,
+                "colon after the first slash — a path byte",
+            ),
         ];
         let mut translate_slips = Vec::new();
         let mut lexical_slips = Vec::new();
         let mut lexical_overadmits = Vec::new();
-        for (target, why) in cases {
+        for (target, answerable, why) in cases {
             let raw = format!("# P\n\n[[{target}]]\n");
             let translate_gate = may_carry_cross_root(&raw);
-            let lexical_gate = head_has_colon(target);
-            let answerable = head_has_colon(target);
+            let lexical_gate = addr::head_carries_root_separator(target);
             println!(
                 "may_carry={translate_gate:<5} lexical={lexical_gate:<5} \
                  answerable={answerable:<5} {target:<24} {why}"
