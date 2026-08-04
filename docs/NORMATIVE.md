@@ -1,8 +1,22 @@
 # Which documents in `docs/` are law
 
-**Measured at `2d466dd7` (`main`).** A membership list is a claim about a
-directory at a revision; the directory moves. Re-derive rather than trust this
-prose if the tree has advanced — § How to re-derive states the commands.
+**Every count in this file was measured at `457141ba`** — the parent of the
+commit carrying this line, since a file cannot cite its own sha. That commit
+edits this prose and adds no file, so the counts hold at both revisions. Branched
+from `main` at `2d466dd7`.
+
+A membership list is a claim about a directory at a revision, and the directory
+moves — re-derive rather than trust this prose if the tree has advanced;
+§ How to re-derive states the commands.
+
+> [!NOTE] The revision is stated because a control goes stale by its author's own hand
+> This header first read *"measured at `2d466dd7`"* — the base the branch started
+> from. The counts were then re-run twice as this file grew, and the stated
+> revision was not moved with them. The numbers happened not to change, so
+> nothing would have caught it. **A control is the thing you check other numbers
+> with, so it is the one measurement with no measurement behind it** — and the
+> sentence nobody re-reads is the one that goes quietly wrong. State the control
+> at its revision, in the same breath as the claim it supports.
 
 This file **classifies; it does not ratify.** Listing a document here changes
 nothing about its authority. Where a document's status could not be determined
