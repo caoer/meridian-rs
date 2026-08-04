@@ -40,25 +40,31 @@ ROOT = Path(__file__).resolve().parent.parent
 LIVE = ("sidecar", "u27_v2_key_set_pins")
 TYPE = ("wire", "u27_frozen_key_sets")
 
-INJECTOR = '''
-/// U27 MUTATION ARM: inject a v3-additive key into EVERY object of a frame.
-fn u27_leak(v: &mut serde_json::Value) {
-    match v {
-        serde_json::Value::Object(o) => {
-            for (_k, child) in o.iter_mut() {
-                u27_leak(child);
-            }
-            o.insert("v3_leak".to_string(), serde_json::json!(1));
-        }
-        serde_json::Value::Array(a) => {
-            for child in a.iter_mut() {
-                u27_leak(child);
-            }
-        }
-        _ => {}
-    }
-}
-'''
+def injector(indent: str) -> str:
+    """A self-contained recursive key injector, defined AT the mutation site.
+
+    It is inlined into each edit rather than shared, so every arm below is ONE
+    edit at ONE site (All-Hands #16, lie 4: a multi-edit row can redden for an
+    edit you did not name, and you cannot attribute the red). Every line carries
+    the `MUTATION:` marker so the fleet arm-D audit
+    (`git grep -n "MUTATION:" HEAD`) can see this harness's residue — a marker
+    only this harness recognises would be invisible to it (All-Hands #15).
+    """
+    body = [
+        "fn u27_leak(v: &mut serde_json::Value) { // MUTATION:",
+        "    match v { // MUTATION:",
+        "        serde_json::Value::Object(o) => { // MUTATION:",
+        "            for (_k, child) in o.iter_mut() { u27_leak(child); } // MUTATION:",
+        '            o.insert("v3_leak".to_string(), serde_json::json!(1)); // MUTATION:',
+        "        } // MUTATION:",
+        "        serde_json::Value::Array(a) => { // MUTATION:",
+        "            for child in a.iter_mut() { u27_leak(child); } // MUTATION:",
+        "        } // MUTATION:",
+        "        _ => {} // MUTATION:",
+        "    } // MUTATION:",
+        "} // MUTATION:",
+    ]
+    return "".join(f"{indent}{line}\n" for line in body)
 
 DEMOTE_ANCHOR = (
     "        let demoted = rev::demote_v2(response);\n"
@@ -78,7 +84,7 @@ ARMS = [
         [(
             "crates/sidecar/src/lib.rs",
             DEMOTE_ANCHOR,
-            "        let demoted: Option<wire::Response> = None; // U27 ARM\n"
+            "        let demoted: Option<wire::Response> = None; // MUTATION:\n"
             "        serde_json::to_writer(&mut *output, demoted.as_ref().unwrap_or(response))?;",
         )],
         {
@@ -90,31 +96,42 @@ ARMS = [
         "cas_mismatch. Live-only by construction — the TYPE plane cannot see it.",
     ),
     (
-        "leak-every-object",
-        [
-            (
-                "crates/sidecar/src/lib.rs",
-                DEMOTE_ANCHOR,
-                "        let demoted = rev::demote_v2(response);\n"
-                "        let mut v = serde_json::to_value(demoted.as_ref().unwrap_or(response))?;\n"
-                "        u27_leak(&mut v);\n"
-                "        serde_json::to_writer(&mut *output, &v)?;",
-            ),
-            (
-                "crates/sidecar/src/lib.rs",
-                NOTIFY_ANCHOR,
-                "            } else {\n"
-                "                let mut v = serde_json::to_value(&frame)?;\n"
-                "                u27_leak(&mut v);\n"
-                "                serde_json::to_writer(&mut *output, &v)?;\n"
-                "            }",
-            ),
-            ("crates/sidecar/src/lib.rs", "fn flush_subs(", INJECTOR + "\nfn flush_subs("),
-        ],
-        {LIVE: "ALL", TYPE: set()},
-        "one v3-additive key on EVERY object of every v2 frame — response, "
-        "error, notification, and every nested row. Proves each pin "
-        "distinguishes an added key AT ITS OWN GRAIN, not just at body level.",
+        "leak-response-objects",
+        [(
+            "crates/sidecar/src/lib.rs",
+            DEMOTE_ANCHOR,
+            "        let demoted = rev::demote_v2(response);\n"
+            + injector("        ")
+            + "        let mut v = serde_json::to_value(demoted.as_ref().unwrap_or(response))?;\n"
+            "        u27_leak(&mut v); // MUTATION:\n"
+            "        serde_json::to_writer(&mut *output, &v)?;",
+        )],
+        {LIVE: "ALL_BUT_NOTIFICATION", TYPE: set()},
+        "one v3-additive key on EVERY object of every v2 RESPONSE frame — body, "
+        "error, and every nested row. Proves each response pin distinguishes an "
+        "added key AT ITS OWN GRAIN, not merely at body level. The notification "
+        "pin must stay GREEN here: it reads a frame this site never writes, and "
+        "that separation is what makes the next arm's red attributable.",
+    ),
+    (
+        "leak-notification-objects",
+        [(
+            "crates/sidecar/src/lib.rs",
+            NOTIFY_ANCHOR,
+            "            } else {\n"
+            + injector("                ")
+            + "                let mut v = serde_json::to_value(&frame)?;\n"
+            "                u27_leak(&mut v); // MUTATION:\n"
+            "                serde_json::to_writer(&mut *output, &v)?;\n"
+            "            }",
+        )],
+        {
+            LIVE: {"delta_notification_key_sets_are_frozen"},
+            TYPE: set(),
+        },
+        "the same leak on the NOTIFICATION path, which `flush_subs` writes — a "
+        "different code path from every response. Exactly one pin reads that "
+        "frame, so this red is attributable to this edit alone.",
     ),
     (
         "content-span-population-flip",
@@ -217,6 +234,8 @@ def main() -> int:
                 code, failed, ran = run_binary(pkg, binary)
                 if want == "ALL":
                     want = ran
+                elif want == "ALL_BUT_NOTIFICATION":
+                    want = ran - {"delta_notification_key_sets_are_frozen"}
                 verdict = "OK" if failed == want else "*** PROOF FAILED ***"
                 if failed != want:
                     bad.append(f"{name}/{binary}: reddened {sorted(failed)}, expected {sorted(want)}")
@@ -231,12 +250,37 @@ def main() -> int:
         finally:
             restore(backups)
 
-    print("\n=== restored tree: the pins must be GREEN again ===", flush=True)
+    # REDDENS is a claim about the TEST; the two checks below are the claim
+    # about the SOURCE (All-Hands #16). They are different claims and a run
+    # that reads only the first is checking its tests while its source rots.
+    print("\n=== restored tree, claim 1 of 2: the pins must be GREEN again ===", flush=True)
     for pkg, binary in (LIVE, TYPE):
         code, failed, ran = run_binary(pkg, binary)
         print(f"  {pkg}/{binary}: exit={code} ran={len(ran)} failed={sorted(failed)}")
         if code != 0:
             bad.append(f"post-restore {pkg}/{binary} is not green")
+
+    print("\n=== restored tree, claim 2 of 2: NO mutation residue in source ===", flush=True)
+    # Two scopes, because each is blind to the other (All-Hands #14/#15):
+    # the working tree cannot see committed residue, and HEAD cannot see
+    # uncommitted residue. Neither sees residue below HEAD in history.
+    dirty = subprocess.run(
+        ["git", "status", "--short"], cwd=ROOT, capture_output=True, text=True, check=False
+    ).stdout.strip()
+    print(f"  working tree: {dirty or '(clean)'}")
+    for scope in (["git", "grep", "-n", "MUTATION:", "--", "*.rs"],
+                  ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]):
+        hits = [
+            h for h in subprocess.run(
+                scope, cwd=ROOT, capture_output=True, text=True, check=False
+            ).stdout.splitlines()
+            if "u27-mutation-proof" not in h
+        ]
+        label = "HEAD" if "HEAD" in scope else "working tree"
+        print(f"  MUTATION: in {label}: {len(hits)} hit(s)")
+        for h in hits:
+            print(f"      {h}")
+            bad.append(f"mutation residue in {label}: {h}")
 
     if bad:
         print("\nPROOF INCOMPLETE:")
