@@ -86,7 +86,7 @@ pub use layer1::{ArmedFinding, ArmedReport, evaluate};
 pub struct CoreReport {
     /// The claims whose observation drifted (not realised) — empty ⇔ all realised.
     pub drifted_claims: Vec<ClaimFinding>,
-    /// The pin plane: red/grey pins, and the `objects:` blobs no ref reaches.
+    /// The pin plane: red/grey pins, and the pinned blobs no ref reaches.
     pub pins: PinPlane,
     /// The run plane: pre-exec receipts with no completion (G3).
     ///
