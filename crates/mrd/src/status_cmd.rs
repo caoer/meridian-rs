@@ -196,7 +196,7 @@ const FORCED_NOT_TRACKED: &str = "not-tracked";
 /// Why it is not tracked, in the words of the law that made it so. Rendered, not
 /// implied: a reader meeting a missing axis needs the reason in front of them,
 /// not in a changelog.
-const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — a forced write between two locks is      not history; look in git";
+const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — a forced write between two locks is not history; look in git";
 
 /// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of.
 ///
