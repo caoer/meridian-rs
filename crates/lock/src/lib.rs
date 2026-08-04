@@ -603,13 +603,31 @@ fn name_the_file(err: LockError, doc: &Document) -> LockError {
 /// not the verb).
 #[must_use]
 pub fn block_texts(doc: &Document) -> Vec<&str> {
+    block_spans(doc)
+        .into_iter()
+        .filter_map(|span| doc.raw.get(span))
+        .collect()
+}
+
+/// Every `meridian-lock` block's fence-to-fence SPAN, in document order.
+///
+/// The locating half of [`block_texts`], and it parses nothing — the spans come
+/// from the fence info string alone. That is the whole point: a page carrying a
+/// **v1** lock cannot be located through [`find`], because `find` reads the
+/// grammar and a v1 body is [`LockError::UnsupportedVersion`] BY DESIGN (P4).
+/// The migration door needs the span of a block it is not allowed to
+/// understand, and this is how it gets one without a v1 read path existing
+/// anywhere in the engine.
+///
+/// **This is not a parser and must never become one.** It answers *"which bytes
+/// are a lock block"*, never *"what does the lock say"* — the second question
+/// has exactly one answer-giver, [`parse`], and it speaks v2 only.
+#[must_use]
+pub fn block_spans(doc: &Document) -> Vec<ByteSpan> {
     let mut spans: Vec<ByteSpan> = Vec::new();
     collect_lock_spans(&doc.root, &mut spans);
     spans.sort_by_key(|s| s.start);
     spans
-        .into_iter()
-        .filter_map(|span| doc.raw.get(span))
-        .collect()
 }
 
 fn collect_lock_spans(node: &Node, out: &mut Vec<ByteSpan>) {

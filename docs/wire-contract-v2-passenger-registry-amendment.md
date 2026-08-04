@@ -1,120 +1,82 @@
-# Wire contract v2 amendment — the lock-item passenger registry
+# RETIRED — Wire contract v2 amendment: the lock-item passenger registry
 
-Status: normative amendment to `docs/wire-contract-v2.md` §16 (the above-wire
-`pin` / `attest` effects layer) and to the 23-07 ZT-ratified `check:` ruling
-(`results/round2/zt-rules-plane-rulings.md`). `docs/wire-contract-v2.md` is
-FROZEN and unedited; this file is the sole normative text for the lock-item
-passenger grammar. Law: D2-X1; decision #15; ZT amendment 23-07.
+> [!WARNING] This amendment is retired (U9b, 2026-08-03). It governs a lock row
+> that no longer exists.
+> The normative lock-item grammar is **R4 schema v2** — `crates/lock`'s module
+> documentation is its implementation home, and the ratified basis is session
+> `86449b4e` (08-01), including the 17:20 ruling that removed the top-level
+> `objects:` table.
 
-## What this amends
+This file is kept as a **knowledge-preserving deletion** (13.5): the prose is
+gone, the knowledge is not. What follows is what this amendment established, and
+what became of each piece — because a reader arriving from an old citation needs
+to know which parts were superseded and which are still law wearing a new name.
 
-The **lock item** — one row of the `^inputs` lock a `pin` writes — has a fixed
-engine core and an open passenger set. Contract v2 places `pin` / `attest` above
-the wire (§16) and never spells the lock-item grammar; the 23-07 ruling added
-`check:` / `check_rev` to that row. Passenger keys were therefore about to
-accrete with no single owner. This amendment makes THIS file the owner: one
-append-only registry anchor enumerates every passenger, so a new passenger is one
-appended row, never a reopening of contract prose (decision #15).
+## What it governed, and why that row is gone
 
-## Why an amendment, not a new negotiated rev
+The amendment described one row of the **`^inputs` lock** that `mrd pin` wrote:
+an engine core of `{ref, to, rev, rev_class}` plus editor-declared keys riding
+alongside. R4 replaced that row wholesale. `inputs` is dead as vocabulary **and**
+as a storage key (R1.3), and the row is now
+`{object, hash, path | properties, fingerprint}` plus free-form extras.
 
-A passenger is a frontmatter key on an in-vault lock, above the wire (§16). It
-never rides a frame, so it forces no `hello` negotiation and no rev bump. The v3
-precedent bumped the rev because a rename forbade dual-emit — an old client would
-misread a new frame; this does not. A consumer that has never heard of a
-passenger reads the lock row and ignores the extra key, exactly as before. So
-this rides the frozen v2 rev. Per the v3 and refusal-amendment precedent, this
-separate amendment doc is its own normative record, not a new §18 waiver row
-(which would require editing the frozen v2).
+## What SURVIVED, renamed
 
-## The lock item — engine core vs passengers
+**The engine-core / passenger split is still the law of the row** — it is simply
+spelled differently. R4 states it as reserved fields versus free-form extra keys:
 
-`mrd pin` resolves each declared `inputs:` ref and writes one lock row through the
-strict writer. The row's ENGINE CORE is fixed and engine-authored:
+| this amendment said | R4 says |
+|---|---|
+| engine core `{ref, to, rev, rev_class}` | reserved keys `{object, hash, path, properties, fingerprint}` (`lock::PinEntry::RESERVED_KEYS`) |
+| **engine-ignored passenger** | **free-form extra key** — stored, rendered, carried VERBATIM, never gates a write, never colors a pin |
+| a passenger may not shadow the core | an extra key may not shadow a reserved key — refused |
 
-`{ref, to, rev, rev_class}` — selector, resolved address (`path#(hpath | ^block-id)`),
-composed rev, and rev class.
+The property the split protects is unchanged and is worth restating plainly:
+**the engine carries what it does not understand, byte for byte.** That is why
+the v1→v2 migration refuses to drop an unknown legacy key
+(`crates/lockmigrate`), and it is the one rule from this file with live
+consequences today.
 
-Every other key on the row is a **passenger**: a key the pinning editor declares
-and the engine carries verbatim. Passengers split into two classes, and the split
-is normative:
+## What was SUPERSEDED, and by whom
 
-- **engine-ignored** — the engine stores and renders the value but never decides
-  on it: it never gates a write and never colors a pin. The append-only registry
-  below enumerates these. They are the passengers proper.
-- **engine-read** — the engine evaluates the value and may refuse on it. These
-  are NOT ordinary passengers; §_engine-read fields_ lists them apart so the
-  boundary is never blurred.
+**The append-only registry law is gone, by ZT's ruling of 2026-08-03**, verbatim:
+*"user can or can not use claim, its free to use anything"*.
 
-## The passenger registry (append-only)
+This amendment required a key to land a row in the `^passengers` table **before**
+it could ship, so that the set of legal passengers was enumerated and closed.
+R4 opens it: any extra key is legal, unregistered, engine-ignored. There is no
+registry to append to, and pre-registration is no longer a gate on anything.
 
-Append-only law, binding on this anchor: a passenger is only ADDED to the
-`^passengers` table below — never renamed, never removed (one name per thing,
-contract-wide). Growth appends a row; it never reopens the prose above or beside
-it. A lock-item key absent from this table is not a passenger: the engine treats
-no unknown lock-item key as load-bearing, and a second passenger MUST land its
-row here before it ships (D2-X1).
+Consequences for the two registered passengers:
 
-| passenger | writes it | reads it | semantics |
-|---|---|---|---|
-| `claim` | any editor (declared in `inputs:`); `pin` carries it verbatim | humans; `status` / board render | free-text assertion of WHY the ref is drawn from. Engine-ignored — never gates a write, never colors a pin. Its optional machine twin is the engine-read `check:` field (§ engine-read fields), which is a distinct key, not this passenger. |
-| `at:` | `pin`, when it can name the tree it read | `status` (cosmetic-change tag, D3) | optional observation stamping the commit / tree the pinned bytes came from. Engine-ignored, best-effort: `status` norm-compares pinned vs live bytes to tag a red edge `cosmetic`; a missing `at:` degrades to an untagged red, never a wrong verdict. Distinct from the `put{at}` write-slot selector (§4.4) — same spelling, unrelated grammar. |
+- **`claim`** — survives as an ordinary free-form extra key. No special status,
+  no registry row, engine-ignored exactly as before. `crates/lock`'s round-trip
+  test still pins it by name.
+- **`at:`** — retired with the row shape that carried it. Its purpose was to
+  stamp the commit or tree the pinned bytes came from so `status` could tag a red
+  edge `cosmetic`. R4 puts the git blob `hash` on every pin row unconditionally
+  ("if hash is missing, we lost the explicit target meaning"), which is a
+  stronger fact than the best-effort observation `at:` carried.
 
-^passengers
+## What this file does NOT rule on
 
-## Engine-read fields (NOT passengers) — `check:` / `check_rev`
+**`check:` / `check_rev`** were recorded here as *engine-read* fields — the
+engine evaluates them and may refuse on them — explicitly governed by the 23-07
+ruling rather than by this registry's append-only law. **Their fate under R4 is
+not settled by this retirement**, and U9b does not settle it: this unit owns the
+migration door, the tool, the runbook and these doc amendments, and inventing a
+ruling for an engine-read field would be widening past the card
+(Amendment-3, ask-don't-widen).
 
-`check:` / `check_rev` ride the same lock row, but the engine READS them. They are
-recorded here so the passenger boundary is explicit; they are governed by the
-23-07 ruling, not by this registry's append-only law.
+Stated so the next reader inherits the question rather than a silence: under R4
+an unrecognised key is engine-IGNORED by definition, so an engine-read field must
+be a reserved key or it is not engine-read at all. `check:` is neither today.
+Whoever owns the rules plane owns that decision.
 
-- **`check:`** — declared beside `claim:` (any editor). An ordinary selector
-  naming a starlark `def check_claim(t)` predicate that asserts the claim over the
-  pinned content at the pinned revs. In-tree only (dot-dirs sit outside the hash
-  domain — existing law).
-- **`check_rev`** — recorded by `mrd pin` beside `check:` when it resolves the
-  predicate target: the rev at which the predicate text was pinned. The predicate
-  is one more pinned edge under the three-question color derivation; editing the
-  predicate text renders `red check-drifted`, and re-pin resolves.
+## Citations
 
-Evaluation sites (23-07 ruling, unchanged): `pin` — the predicate runs over the
-content being pinned before the splice; a false claim refuses the whole pin
-atomically, and `dry` reports `would_refuse` naming the failed assert. `attest` —
-inherits pin's evaluation; the refuse predicate gains class (c): a false
-`check_claim` refuses (a false claim is not staleness — re-pinning cannot fix it,
-so it is refuse-class, never record-class). `check` / sweep — speculative on
-`content-drifted` only, annotating `claim-holds` (re-pin candidate) vs
-`claim-broken` (genuine re-review); a candidate, never auto-green. Bare
-`mrd status` never evaluates a predicate (the <1s budget holds).
-
-The refusal code `check_claim{assert}` and its recovery class live in
-`wire-contract-v2-refusal-amendment.md` (row 4). This file owns the passenger and
-field GRAMMAR; that file owns the refusal CODE.
-
-## The worked lock item (verbatim, 23-07 ruling)
-
-Declared in frontmatter by any editor:
-
-```yaml
-# declared (frontmatter, any editor)
-inputs:
-  - ref: "B#Anchor-law"
-    claim: "freshness law this section builds on"
-    check: "A#^claim-anchor"
-```
-
-Pinned into the `^inputs` lock by the strict writer, engine core + passengers +
-engine-read fields on one row:
-
-```yaml
-# pinned (^inputs lock, strict writer)
-items:
-  - {ref: 'B#Anchor-law', to: 'B#Anchor-law', rev: 'b49f62b1…', rev_class: content,
-     claim: 'freshness law this section builds on',
-     check: 'A#^claim-anchor', check_rev: '7c01d4e2…'}
-```
-
-`ref` / `to` / `rev` / `rev_class` are the engine core; `claim` is a registered
-passenger (engine-ignored); `check` / `check_rev` are engine-read fields, not
-passengers. An `at:` observation, when `pin` can name the tree it read, rides the
-same row as the second registered passenger.
+- R4 schema and the `objects:` removal — session `86449b4e` (08-01) and its 17:20 ruling.
+- The free-form ruling — ZT, 2026-08-03.
+- The row's implementation and its round-trip proof — `crates/lock`.
+- The v1→v2 field migration that depends on verbatim carriage — `crates/lockmigrate`.
+- The original 23-07 `check:` ruling — `results/round2/zt-rules-plane-rulings.md`.

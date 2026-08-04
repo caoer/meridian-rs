@@ -486,9 +486,23 @@ forbids (stage-2 criterion 7). It is named here rather than silently left:
 
 4 + 3 + 1 + 2 = **10 = |`SPLICE_V3_FIELDS`|.** The enumeration closes.
 
-**D12:** `pin.target` is carried VERBATIM into the lock's `ref` and `objects:`
-key. Nothing on this path parses it, so a later `root:` prefix rides through
-untouched.
+**D12:** `pin.target` is carried VERBATIM into the lock's address key. Nothing
+on this path parses it, so a later `root:` prefix rides through untouched.
+
+> [!NOTE] D12 re-worded for R4 schema v2 (U9b)
+> This sentence used to read *"carried VERBATIM into the lock's `ref` and
+> `objects:` key"*. **Both names are gone**; the property they described is not.
+>
+> R4 (session `86449b4e`, 08-01, plus the 17:20 ruling) collapsed the lock's two
+> planes into one. The top-level **`objects:` table was removed** — the blob hash
+> rides the pin row as `hash`, so it can never outlive the claim it was written
+> for — and **`ref` became `object`**, a wiki link whose inner text is carried
+> verbatim, with the selector moved to the sibling `path` / `properties` array.
+>
+> So there is now exactly ONE address key per row instead of two, and *"carried
+> verbatim, parsed by nothing on this path"* is still exactly true of it. Naming
+> two dead keys would have made a live rule unreadable — the rule is about
+> non-interference, never about how many keys happen to carry the target.
 
 #### The lock ARTIFACT is guarded, not just the pin verb (advisor R25)
 
