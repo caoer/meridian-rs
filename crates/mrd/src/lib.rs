@@ -47,6 +47,15 @@ mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
 mod resolve;
+// The type-2 retirement DSL. It is PUBLIC for one reason, the `hook` precedent
+// above: the U23 coverage census asserts that the set of reason words its
+// fixtures exercise IS the set `Reason::ALL` declares. That is a claim about two
+// artifacts agreeing, so the integration test has to be able to name both — and
+// a census that instead compared its fixture table against a hand-written copy
+// of the reason words would agree with itself forever and catch nothing. Only
+// `Reason`, `Reason::word` and `Reason::ALL` are `pub`; everything else in the
+// module stays crate-private.
+pub mod retire_cmd;
 mod rules_cmd;
 /// The rules walk (registration rework): the disk edge that enumerates the scope
 /// ladder's roots and offers every page in their hash domain to tag-indexed
@@ -146,6 +155,24 @@ usage:
                            retrievable before any commit references it. Exits:
                            0 pinned (or dry) / 1 refused (the engine's message,
                            verbatim) / 2 bad invocation
+! mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
+                           the type-2 retirement DSL: sweep markdown `~~`
+                           markers over the terms declared in meridian-retire
+                           blocks, then run over those markers and report. A
+                           marker is `~~term~~ replacer (retired: ID)` —
+                           visible, non-destructive, and carrying an opaque KEY,
+                           never an address; the ruled array-hpath link to the
+                           holding section lives once, in the block. mark is
+                           idempotent by construction: a second run writes
+                           nothing, leaves the fingerprint byte-identical, and
+                           still prints its count. mark REQUIRES --expect-root
+                           (a file-set-grain world guard, chained across the
+                           sweep) unless --dry-run; quiesce the fleet and commit
+                           the vault first — the guard catches their violation,
+                           it does not replace them. The report labels every
+                           number measured or declared and never inspects a
+                           test. Exits: 0 clean / 1 a refusal or an open
+                           retirement / 2 bad invocation
   mrd walk <PAGE> [--down] [--depth N]
                            the context-assembly listing over the ^inputs pin
                            graph: up (default) = what PAGE draws from, --down =
@@ -473,6 +500,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
             let p = Parsed::parse(&args[1..], NO_PATH, NO_ALL)?;
             config_cmd::run(p.format())
         }
+        "retire" => retire_cmd::dispatch(&args[1..]),
         "cache" => dispatch_cache(&args[1..]),
         "sql" => sql::run(&args[1..]),
         "status" => status_cmd::run(&args[1..]),
@@ -924,26 +952,30 @@ mod help {
         }
 
         /// The write mark is the gutter, so the classification is countable
-        /// straight off the text. 12 verbs write; the rest read. (It was 12
-        /// until `mrd journal genesis` was retired — the engine keeps no memory,
-        /// so nothing writes a ledger any more — and it is 12 again because U9b
-        /// added `mrd lock migrate`, which REWRITES `meridian-lock` blocks in a
-        /// live vault through a governed byte-landing door. A verb whose whole
-        /// purpose is rewriting the user's files is a writer; `--dry` does not
-        /// exempt it, exactly as it does not exempt `pin` or `realise`.)
+        /// straight off the text. 13 verbs write; the rest read. It was 12,
+        /// then 11 when `mrd journal genesis` was retired — the engine keeps no
+        /// memory, so nothing writes a ledger any more. Two units then added a
+        /// writer each, independently: U9b's `mrd lock migrate`, which REWRITES
+        /// `meridian-lock` blocks in a live vault through a governed
+        /// byte-landing door, and U23's `mrd retire mark`, the type-2 marker
+        /// sweep. Both are writers and the reason is not their flag set — a
+        /// verb whose whole purpose is rewriting the user's files is a writer;
+        /// `--dry` does not exempt it, exactly as it does not exempt `pin` or
+        /// `realise`. Neither branch could see the other, so 13 is a fact only
+        /// the assembly can state.
         #[test]
-        fn twelve_verbs_are_marked_as_writers() {
+        fn thirteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                12,
+                13,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 27, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists, so a

@@ -2144,6 +2144,7 @@ dependencies = [
  "fs",
  "git",
  "libc",
+ "lock",
  "lockmigrate",
  "model",
  "policy",
