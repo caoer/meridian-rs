@@ -14,6 +14,21 @@ fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoo
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), pinner).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), target).expect("target");
+    // Git-initialised: these pins go through the production door, and an R4 pin
+    // row carries a `hash` only git can answer for.
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "s2fix@example.invalid"],
+        vec!["config", "user.name", "s2fix"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .expect("git runs in the test environment");
+        assert!(status.success(), "git {args:?}");
+    }
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     (dir, root)
 }

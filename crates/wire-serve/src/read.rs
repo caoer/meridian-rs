@@ -388,23 +388,41 @@ pub fn page_decorations(
     let mut links: Vec<(&String, &String)> = Vec::new();
     collect_links(&doc.root, &mut links);
     for pin in &found.lock.pins {
-        if !pin.declared_ref.has_selector() {
-            continue; // a whole-page pin has no block handle to decorate
-        }
-        let page = pin.declared_ref.target();
-        let Some(target_path) = resolve_page(index, docs, &page, path) else {
+        // R4 arms, and what each can honestly decorate. `path` segments map
+        // STRAIGHT across to `Selector::Heading` — array to array, nothing
+        // joined and nothing re-parsed, which is the whole point of the machine
+        // surface carrying structure.
+        let lock::Selector::Path(segments) = &pin.selector else {
+            // The `properties` arm claims frontmatter keys. `Selector` has no
+            // member for that, and frontmatter carries no `[[page#^block]]`
+            // link to decorate either — so there is nothing here to colour, not
+            // a mapping left undone.
             continue;
         };
-        let selector = model::selector::Selector::parse(&pin.declared_ref.to_string());
+        if segments.is_empty() {
+            continue; // `path: []` is the whole body — no block handle to decorate
+        }
+        let Some(target_path) = resolve_page(index, docs, &pin.object, path) else {
+            continue;
+        };
+        // R4's anchor form: a path array whose SOLE element is a `^id`. Decoded
+        // here exactly as `write::pin_row` encodes it, and the sole-element rule
+        // is what keeps the two planes apart — a mixed array is refused at the
+        // write door, so a `^`-leading element inside a longer chain never
+        // reaches this face to be read as either grain.
+        let selector = match segments.as_slice() {
+            [only] if only.starts_with('^') => {
+                model::selector::Selector::Block(only[1..].to_string())
+            }
+            _ => model::selector::Selector::Heading(segments.clone()),
+        };
         // The handle a pin's target carries: for a section pin, the D15 slug
         // S7's promotion mints from the heading title — computed by the SAME
-        // owner, so a decoration keys on the id promotion actually wrote.
+        // owner, so a decoration keys on the id promotion actually wrote. An
+        // anchor pin IS its own handle and needs no promotion.
         let handle = match &selector {
-            model::selector::Selector::Heading(segs) => {
-                segs.last().and_then(|h| crate::write::slug_id(h).ok())
-            }
             model::selector::Selector::Block(id) => Some(id.clone()),
-            _ => None,
+            _ => segments.last().and_then(|h| crate::write::slug_id(h).ok()),
         };
         let Some(handle) = handle else {
             continue;

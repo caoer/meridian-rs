@@ -41,15 +41,17 @@ fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
         .into_string()
 }
 
-/// One lock object for the tests: one `objects:` entry + one pin carrying a
-/// REAL minted `fp1.span2.b3.<64hex>` token.
+/// One lock for the tests: a single R4 pin — object wikilink, per-pin `hash`,
+/// the whole-body `path: []` arm — carrying a REAL minted
+/// `fp1.span2.b3.<64hex>` token.
 fn sample_lock(root: &fs::WorkspaceRoot) -> lock::Lock {
     let mut l = lock::Lock::new();
-    l.set_object("page.md", "9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0");
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("page.md").expect("a fixture ref is an address"),
-        fingerprint: minted_fingerprint(root),
-    });
+    l.upsert_pin(lock::PinEntry::new(
+        "page",
+        "9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0",
+        lock::Selector::Path(Vec::new()),
+        &minted_fingerprint(root),
+    ));
     l
 }
 
@@ -125,11 +127,15 @@ fn update_replaces_in_place_exactly_one_block() {
     let mut l = sample_lock(&root);
     lock_write(&root, 0, &args(&root, &l, false)).expect("birth");
 
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("page.md#^c1").expect("a fixture ref is an address"),
-        fingerprint:
-            "fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-    });
+    // A SECOND, distinct claim on the same object: R4's anchor form, a `^id` as
+    // the sole path element. `upsert_pin` keys on (object, selector), so this
+    // appends beside the whole-body pin rather than replacing it.
+    l.upsert_pin(lock::PinEntry::new(
+        "page",
+        "9ae3f1c0deadbeef9ae3f1c0deadbeef9ae3f1c0",
+        lock::Selector::Path(vec!["^c1".into()]),
+        "fp1.span2.b3.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ));
     let out = lock_write(&root, 0, &args(&root, &l, false)).expect("update lands");
     assert!(!out.created, "the block existed — replaced in place");
 

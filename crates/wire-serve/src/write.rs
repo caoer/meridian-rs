@@ -1100,12 +1100,46 @@ pub fn lock_write(
 // edit would read as green. The slug is the STABLE HANDLE (D15) a claim link
 // decorates and a later rename-heal relocates by, minted beside the claim.
 
+/// The R4 lock row a pin will land, in the schema's own types — the STRUCTURE
+/// half of a mint, minted beside the wire fact and never derived from it.
+///
+/// R4's three non-fingerprint fields, and the one rule each carries:
+///
+/// - `object` — the wiki link's INNER text. R4 demands the link resolve
+///   *"EXACTLY as Obsidian does — 100% match or it is a critical trust
+///   failure"*, so the engine writes the one spelling that always does: the
+///   target's vault-relative path with its `.md` suffix removed. That is the
+///   form `model::CorpusIndex::resolve_ref` matches by whole subpath suffix, so
+///   it cannot collide with a same-named file in another folder the way a bare
+///   basename can. Nothing here shortens the link for looks — a pin is a
+///   machine claim, and the short form's ambiguity is exactly the trust failure
+///   R4 names.
+/// - `hash` — the target file's git blob oid, **never optional**. R4: *"if hash
+///   is missing, we lost the explicit target meaning"*.
+/// - `selector` — `path` XOR `properties`, arrays only.
+#[derive(Debug)]
+struct PinRow {
+    object: String,
+    hash: String,
+    selector: lock::Selector,
+}
+
 /// What a pin minted, plus what it still OWES to disk. Nothing here has been
 /// written: the prologue computes, the caller lands (see [`PendingPromotion`]).
 #[derive(Debug)]
 struct PinMint {
     /// The wire fact returned to the client.
     fact: wire::PinFact,
+    /// The R4 lock row's own two structural fields, minted HERE and carried
+    /// whole — never re-derived by splitting [`wire::PinFact::declared_ref`].
+    ///
+    /// `declared_ref` is the HUMAN/wire spelling and stays a `String` (criterion
+    /// 7 freezes v2 byte-identity). R1.6 gives the machine surface arrays and no
+    /// string address form, so the two are minted side by side from one source —
+    /// the target's own read facts — and the joined form is never an input to
+    /// the structural one. That is the whole reason this field exists rather
+    /// than a `parse(&fact.declared_ref)` at the lock door.
+    row: PinRow,
     /// The pinned selector's span in the target — the exact bytes the
     /// fingerprint covers, in the POST-promotion document (the promotion widens
     /// the selector's node by the marker line).
@@ -1215,6 +1249,11 @@ fn mint_pin(
     // slug derives from.
     let fact_anchor = fact.anchor.clone();
     let title = fact.title.clone();
+    // The RAW segment array — the pre-image `hpath` above is a lossy projection
+    // of (`sanitize_heading` is many-to-one). The lock's `path` array is built
+    // from THESE segments and never by re-splitting the joined string, so the
+    // machine surface carries what round-trips (R1.6).
+    let fact_hpath_raw = fact.hpath_raw.clone();
 
     // D16: the gate, and its rev-recheck against the bytes on disk RIGHT NOW —
     // a receipt answers "was it read", never "is it current".
@@ -1249,23 +1288,10 @@ fn mint_pin(
     };
     let pinned_doc: &model::Document = promoted.as_ref().map_or(&target_doc, |c| c.document());
 
-    // Re-resolve the span against the bytes the fingerprint will cover: a
-    // promotion widens the selector's node by the marker line, so the
-    // pre-promotion span would hash bytes that are no longer the selector's.
-    let (span, promoted_sec_rev) = if promote {
-        let facts = wire_map::facts::read_facts(
-            &wire_map::project_toc(pinned_doc),
-            pinned_doc.raw.as_bytes(),
-        );
-        let Some(fresh) = wire_map::facts::resolve_selector(&facts, &selector) else {
-            return Err(pin_target_missing(
-                &spec.target,
-                format!("\"{selector}\" no longer resolves after promotion"),
-            ));
-        };
-        (span_range(fresh.span), fresh.sec_rev.clone())
+    let (span, promoted_sec_rev, hpath_raw) = if promote {
+        post_promotion_facts(pinned_doc, &spec.target, &selector)?
     } else {
-        (fact_span, String::new())
+        (fact_span, String::new(), fact_hpath_raw)
     };
 
     let fingerprint = mint_fingerprint(pinned_doc, &span, &spec.target, &selector)?;
@@ -1280,6 +1306,12 @@ fn mint_pin(
         spec.target.0,
         lock_ref_fragment(pinned_doc, &span, fact_anchor.as_deref(), &selector)?
     );
+    let row = pin_row(
+        &spec.target,
+        fact_anchor.as_deref(),
+        &hpath_raw,
+        blob.as_deref(),
+    )?;
 
     Ok(PinMint {
         fact: wire::PinFact {
@@ -1291,6 +1323,7 @@ fn mint_pin(
             anchor,
             promoted: promote,
         },
+        row,
         span,
         promotion: promoted.map(|candidate| PendingPromotion {
             target: spec.target.clone(),
@@ -1299,6 +1332,133 @@ fn mint_pin(
         }),
         gate,
     })
+}
+
+/// Re-resolve the pinned selector against the POST-promotion bytes: the span the
+/// fingerprint will cover, the promoted section's `sec_rev`, and the raw segment
+/// array. A promotion widens the selector's node by the marker line, so the
+/// pre-promotion span would hash bytes that are no longer the selector's.
+///
+/// All three come from ONE fact deliberately. The array is heading-text-neutral
+/// under a promotion and so equals its pre-promotion value, but "the lock row
+/// describes the bytes that were hashed" is a property worth holding by
+/// construction rather than re-arguing each time the promotion changes.
+///
+/// # Errors
+/// `pin_target_missing` when the selector no longer resolves after promotion.
+fn post_promotion_facts(
+    pinned_doc: &model::Document,
+    target: &Path,
+    selector: &str,
+) -> Result<(std::ops::Range<usize>, String, Vec<HpathSeg>), Box<ErrorBody>> {
+    let facts = wire_map::facts::read_facts(
+        &wire_map::project_toc(pinned_doc),
+        pinned_doc.raw.as_bytes(),
+    );
+    let Some(fresh) = wire_map::facts::resolve_selector(&facts, selector) else {
+        return Err(pin_target_missing(
+            target,
+            format!("\"{selector}\" no longer resolves after promotion"),
+        ));
+    };
+    Ok((
+        span_range(fresh.span),
+        fresh.sec_rev.clone(),
+        fresh.hpath_raw.clone(),
+    ))
+}
+
+/// Mint the R4 lock row's structural fields — **the one-time conversion door**.
+///
+/// Everything the lock plane needs is derived HERE, from the target's own read
+/// facts, and travels onward as [`PinRow`]. No later stage re-derives an address
+/// by splitting [`wire::PinFact::declared_ref`]: that string is the human/wire
+/// spelling, `sanitize_heading` is many-to-one, and `/` is a legal character in
+/// a heading — so a split is a guess wearing a parse's clothing (R1.6: arrays
+/// for machines, no string address forms on a machine surface).
+///
+/// **The anchor arm is the `path` arm.** R4 spells a block-anchor pin as a path
+/// array whose SOLE element is the `^id` (`path: ["^findings"]` — ZT's own typed
+/// blocks, [[86449b4e]] 17:07). It is a block-grain claim and is NEVER widened to
+/// the host section: that widening would silently promote what the caller
+/// claimed from one block to a whole section, and would surface only much later
+/// as a drift verdict over bytes nobody pinned.
+///
+/// # Errors
+/// - `bad_request` — **a MIXED array**: heading segments and a `^id` element
+///   together. That form appears nowhere in the ratified trace, so its grain is
+///   unruled — refused loudly rather than assigned a meaning here. Reachable two
+///   ways: an anchor fact arriving with a heading chain, and a heading whose RAW
+///   text literally begins with `^` (which would be indistinguishable from an
+///   anchor element once written).
+/// - `io_error` — no blob oid. R4 admits no pin without one: *"if hash is
+///   missing, we lost the explicit target meaning"*. [`blob_oid`] still degrades
+///   to `None` when git cannot answer, and under v1 that dropped the `objects:`
+///   entry while the claim landed anyway. Under R4 the hash IS a field of the
+///   claim, so the same condition now refuses the pin instead of shipping a row
+///   that cannot mean what the schema says it means.
+fn pin_row(
+    target: &Path,
+    fact_anchor: Option<&str>,
+    hpath_raw: &[HpathSeg],
+    blob: Option<&str>,
+) -> Result<PinRow, Box<ErrorBody>> {
+    let elements = match fact_anchor {
+        // Block grain, sole element, no promotion — R4's anchor form verbatim.
+        Some(id) if hpath_raw.is_empty() => vec![format!("^{id}")],
+        Some(id) => {
+            return Err(bad_request(format!(
+                "refused: the anchor ^{id} resolved with a heading chain as well, \
+                 and R4 spells an anchor pin as a path array whose SOLE element is \
+                 the ^id. A mixed array — headings AND an anchor — has no ruled \
+                 meaning, so the engine will not invent one. Nothing was written."
+            )));
+        }
+        None => hpath_raw.iter().map(|s| s.h.clone()).collect(),
+    };
+    if fact_anchor.is_none()
+        && let Some(bad) = elements.iter().find(|h| h.starts_with('^'))
+    {
+        return Err(bad_request(format!(
+            "refused: the heading \"{bad}\" begins with `^`, so writing it into a \
+             path array would be indistinguishable from R4's anchor form (a sole \
+             ^id element) and the pin's GRAIN would become unreadable — block or \
+             section, with no way to tell. Nothing was written. Give that section \
+             its own ^id and pin that instead."
+        )));
+    }
+    let Some(hash) = blob else {
+        return Err(io_refusal(format!(
+            "refused: git could not give a blob oid for {}, and an R4 pin has no \
+             form without one — the hash IS the target's explicit meaning, so a \
+             row missing it would claim less than it appears to. Nothing was \
+             written. Run this inside a git work tree with git on PATH.",
+            target.0
+        )));
+    };
+    Ok(PinRow {
+        // The vault-relative path minus `.md` — the link spelling
+        // `model::CorpusIndex::resolve_ref` matches by whole subpath suffix, so
+        // it addresses THIS file and not a same-named file in another folder.
+        object: target.0.trim_end_matches(".md").to_string(),
+        hash: hash.to_string(),
+        // Segments, verbatim. `HpathSeg::n` is deliberately dropped: R4's array
+        // is plain strings, and `model::selector::Selector::Heading` resolves
+        // with `n: None`, which DEMANDS uniqueness. So an address that turns
+        // ambiguous later starts refusing loudly instead of silently landing on
+        // whichever sibling the ordinal now points at — the same law the read
+        // face's minimal addresses hold (`wire_map::facts::raw_addresses`).
+        selector: lock::Selector::Path(elements),
+    })
+}
+
+/// An `io_error` refusal carrying its cause — the shape [`blob_oid`]'s `--vibe`
+/// arm already refuses with, reused so the two git-cannot-answer doors speak
+/// with one voice.
+fn io_refusal(cause: String) -> Box<ErrorBody> {
+    let mut err = ErrorBody::new(ErrorCode::IoError);
+    err.cause = Some(cause);
+    Box::new(err)
 }
 
 /// The lock `ref`'s fragment — the spelling that must RESOLVE, which is not the
@@ -1704,7 +1864,7 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
     out
 }
 
-/// The target file's git blob oid for the lock's `objects:` plane (D5: git owns
+/// The target file's git blob oid — R4's per-pin `hash` (D5: git owns
 /// content-addressing, so shell out). `vibe` additionally WRITES the blob into
 /// the object store, so the pin is retrievable before any commit references it.
 ///
@@ -1713,10 +1873,12 @@ fn promote_anchor(raw: &str, slot: usize, id: &str) -> String {
 /// will carry, so those bytes are hashed as if they were already there. `None`
 /// asks about the file on disk, which is the same thing when nothing is pending.
 ///
-/// A normal pin degrades honestly when git cannot answer (no repo, no git on
-/// PATH): the `objects:` entry is simply absent and the claim plane still lands
-/// — a fabricated sha would be worse than no sha. `--vibe` REFUSES instead: its
-/// entire purpose is the eager write, so silently not writing would be a lie.
+/// `None` when git cannot answer (no repo, no git on PATH) — a fabricated sha
+/// would be worse than no sha, so this function never invents one. Under v1 that
+/// `None` merely dropped an `objects:` row and the claim still landed; under R4
+/// the hash is a FIELD of the claim, so [`pin_row`] turns the same `None` into a
+/// refusal. `--vibe` refuses here regardless: its entire purpose is the eager
+/// write, so silently not writing would be a lie.
 ///
 /// # Errors
 /// `io_error{cause}` when `vibe` was asked for and git could not do it.
@@ -1748,8 +1910,8 @@ fn blob_oid(
 
 /// Compose the pinning page's `meridian-lock` block as the batch's one
 /// engine-minted span edit: union the pin into the page's existing lock
-/// (`upsert_pin`/`set_object` — position-preserving, so a re-pin never drops or
-/// reorders a sibling claim), render the canonical bytes, and hand back the span
+/// (`upsert_pin` — position-preserving, so a re-pin never drops or reorders a
+/// sibling claim), render the canonical bytes, and hand back the span
 /// they replace plus THE MINTED BLOCK ITSELF — the one byte form
 /// [`lock_artifact_guard`] admits as a lock change (R25).
 ///
@@ -1766,27 +1928,19 @@ fn lock_engine_edit(
     let mut lock = found
         .as_ref()
         .map_or_else(lock::Lock::new, |f| f.lock.clone());
-    // INGRESS: the wire boundary. `wire::PinFact.declared_ref` is a plain
-    // `String` — `crates/wire` deps are serde only and criterion 7 freezes v2
-    // byte-identity, so the address is constructed BY HAND here. This is the
-    // one place ingress class 3 meets a typed destination, and the retype DID
-    // force it: a malformed ref refuses at the write door instead of being
-    // minted into a lock nothing can read back.
-    let declared_ref = addr::Addr::parse(&pin.fact.declared_ref).map_err(|err| {
-        bad_request(format!(
-            "refused: the pin ref \"{}\" is not an address — {err}",
-            pin.fact.declared_ref
-        ))
-    })?;
-    lock.upsert_pin(lock::PinEntry {
-        declared_ref,
-        fingerprint: pin.fact.fingerprint.clone(),
-    });
-    if let Some(blob) = &pin.fact.blob {
-        // D12: the key is the target's path spelling VERBATIM — nothing here
-        // parses it, so a later `root:` prefix rides through untouched.
-        lock.set_object(&pin.fact.target.0, blob);
-    }
+    // NO INGRESS HERE. The R4 row arrived already structural: `mint_pin` built
+    // it from the target's read facts ([`pin_row`]), so this door parses
+    // nothing, splits nothing, and cannot mint a row that fails to read back.
+    // Under v1 this site re-parsed `declared_ref` into an `addr::Addr` and
+    // separately keyed a shared `objects:` table by the target's path spelling;
+    // R4 has neither — the hash rides the pin row it was minted for, so it can
+    // no longer outlive the claim.
+    lock.upsert_pin(lock::PinEntry::new(
+        &pin.row.object,
+        &pin.row.hash,
+        pin.row.selector.clone(),
+        &pin.fact.fingerprint,
+    ));
     let edit = lock_block_splice(doc, found.map(|f| f.span), &lock).0;
     // LOCK-IS-CONTENT (#8 §5): the block sits inside the page's own span, so a
     // page pinning a section of ITSELF that would CONTAIN the block is pinning
