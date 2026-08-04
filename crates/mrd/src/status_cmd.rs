@@ -13,8 +13,8 @@
 //! - **pure-local** — no daemon, no network, no fetch (cap-free);
 //! - **O(armed) + O(pins) + O(objects)** — it reads ONE index file
 //!   (`conventions/INDEX.md`) for the armed set, re-hashes each armed
-//!   convention's `CHECK.md` (O(armed) small reads), scans the bounded receipt
-//!   and reads the git refs. The `meridian-lock` planes add ONE corpus
+//!   convention's `CHECK.md` (O(armed) small reads), and reads the git refs.
+//!   The `meridian-lock` planes add ONE corpus
 //!   build (the lock lives in the corpus's pages, so nothing smaller can see
 //!   it), shared by both: the pin colors are O(pins) and the vibe-debt gauge is
 //!   O(objects) plus at most TWO git calls PER OBJECT STORE (one `rev-list`, one
@@ -196,7 +196,8 @@ const FORCED_NOT_TRACKED: &str = "not-tracked";
 /// Why it is not tracked, in the words of the law that made it so. Rendered, not
 /// implied: a reader meeting a missing axis needs the reason in front of them,
 /// not in a changelog.
-const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — a forced write between two locks is not history; look in git";
+const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — \
+                                      a forced write between two locks is not history; look in git";
 
 /// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of.
 ///
@@ -1279,6 +1280,38 @@ mod tests {
     }
 
     // ── the forced-since-realise DISCLOSURE (ZT 2026-08-03) ──────────────────
+
+    /// **The disclosure constants are WELL-FORMED PROSE, asserted.** They ship
+    /// verbatim to both faces, so a stray run of whitespace is not cosmetic — it
+    /// is malformed output on the one line the advisor ruled mandatory, and it
+    /// reads as carelessness about exactly the claim being made carefully.
+    ///
+    /// This exists because it happened: the `why` constant shipped with a
+    /// six-space run in the middle of a sentence, in both the human line and the
+    /// JSON value, and neither a compiler, `-D warnings`, nor a reviewer reading
+    /// the source caught it — a broken string LOOKS fine in source and only
+    /// shows up rendered.
+    #[test]
+    fn the_disclosure_constants_are_well_formed() {
+        for (name, text) in [
+            ("FORCED_NOT_TRACKED", FORCED_NOT_TRACKED),
+            ("FORCED_NOT_TRACKED_WHY", FORCED_NOT_TRACKED_WHY),
+        ] {
+            assert!(
+                !text.contains("  "),
+                "{name} carries a run of whitespace and ships to both faces: {text:?}"
+            );
+            assert_eq!(
+                text.trim(),
+                text,
+                "{name} has stray edge whitespace: {text:?}"
+            );
+            assert!(
+                !text.contains('\n'),
+                "{name} is a single rendered line: {text:?}"
+            );
+        }
+    }
 
     /// The human line states the axis is not tracked AND why. A reader who used
     /// to read a count must not be able to read this line as a clean zero.
