@@ -63,6 +63,14 @@ The counts are taken **with this file present**, and this file is classified
 below like any other. A membership list that omits itself is a list with a
 known hole in it, and the hole is the row a reader is standing on.
 
+**Two file counts are both correct and they differ by one — reconciled here so
+the next reader meets the answer rather than the discrepancy.** Counting files
+under `docs/` gives **33**; counting the documents this list classifies *other
+than itself* gives **32**. The difference is this file. A reviewer re-deriving
+the count from `git ls-files docs/` at a revision before this file existed gets
+32 and is right; a reader running `find docs -type f` today gets 33 and is also
+right. Say which side of the self-inclusion you counted from.
+
 **Stated rather than left to be discovered — this enumeration cannot see:**
 
 - **Documents outside `docs/`.** `CLAUDE.md` is always-loaded project context
