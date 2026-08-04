@@ -1,16 +1,19 @@
 //! The COMPILED-IN render plane (M1 U4a1, decision D-Render-min): the
-//! [`Renderer`] trait with ONE production impl ([`TextRenderer`]) and the
+//! [`Renderer`] trait with ONE production impl ([`ToonRenderer`]) and the
 //! node-grain walker ([`walk`]) — no pack API, no `Manifest`, no load gate;
 //! fixtures are ordinary golden tests.
 //!
 //! # Charter
-//! **Owns:** the token-efficient TEXT projection of a read — the `readText`
-//! byte format ccc-statusd rendered host-side (`read.go:118`), reproduced
-//! byte-for-byte against the U0 captured goldens — and the two decoration
-//! hook points the marathon decisions reserve (seam now, behavior later):
+//! **Owns:** the token-efficient projection of a read — the TOON-compact face
+//! (U15, DECISION 27 · requirements D1 / decision 14 / R1.6), encoded by
+//! [`toon`] and pinned by the reviewed fixtures under
+//! `crates/testsuite/data/toon-goldens/` — and the two
+//! decoration hook points the marathon decisions reserve (seam now, behavior
+//! later):
 //! block elision by fenced-language tag (#8) at the walker — BUILT in U4b,
-//! opt-in via [`TextRenderer::with_meridian_elision`] (the render-face
-//! production configuration; `default()` stays inert for the U0 goldens) —
+//! opt-in via [`ToonRenderer::with_meridian_elision`] (the render-face
+//! production configuration; `default()` stays inert, which is the elision
+//! law: render-face only, and never on by accident) —
 //! and the `Link/Wikilink` visitor point (#6), NO-OP passthrough in M1
 //! (A-K1: stored bytes and the raw read/cat face never change — byte pin
 //! #4: `meridian-*` blocks ride the raw face VERBATIM, elision is
@@ -29,6 +32,7 @@ use std::collections::BTreeMap;
 use wire_map::facts::ReadFact;
 use wire_map::gotext::fields_count;
 
+pub mod toon;
 pub mod walk;
 
 /// One claim-link address **as written in the body**: the link's target
@@ -178,7 +182,7 @@ pub struct Rendered {
 }
 
 /// The render seam — ONE compiled-in impl in M1 (no `dyn`, no registry):
-/// callers hold a [`TextRenderer`] directly; the trait names the seam a
+/// callers hold a [`ToonRenderer`] directly; the trait names the seam a
 /// later pack tier extends.
 pub trait Renderer {
     /// Render one job to its text projection.
@@ -188,13 +192,14 @@ pub trait Renderer {
     fn render(&self, doc: &model::Document, job: &RenderJob<'_>) -> Result<Rendered, RenderFailed>;
 }
 
-/// The production text renderer: `readText` byte format, with the block
-/// elision predicate as the U4b hook. `default()` is INERT (elide nothing)
-/// — the U0 goldens pin Go-parity bytes and the golden gates construct it;
-/// the render-face production configuration is
-/// [`TextRenderer::with_meridian_elision`].
+/// The production renderer: the TOON-compact face (U15), with the block
+/// elision predicate as the U4b hook. `default()` is INERT (elide nothing) —
+/// the gates construct both configurations and pin the contrast, which is what
+/// keeps "elision is opt-in and render-face only" a tested claim rather than a
+/// remembered one. The production configuration is
+/// [`ToonRenderer::with_meridian_elision`].
 #[derive(Debug, Clone, Copy, Default)]
-pub struct TextRenderer {
+pub struct ToonRenderer {
     /// The block-elision hook (#8 seam): a fenced block whose info-string
     /// matches is dropped from RENDERED section content — never from the
     /// raw read/cat face. `None` = emit everything (the golden-pinned
@@ -202,7 +207,7 @@ pub struct TextRenderer {
     pub elide_lang: Option<ElideBy>,
 }
 
-impl TextRenderer {
+impl ToonRenderer {
     /// The render-face production configuration (U4b): blocks THE ENGINE
     /// EMITS are elided from rendered section content. The raw read/cat face
     /// never routes through render and stays verbatim (byte pin #4).
@@ -213,7 +218,7 @@ impl TextRenderer {
     /// selects is [`ElideBy::EngineEmitted`].
     #[must_use]
     pub fn with_meridian_elision() -> Self {
-        TextRenderer {
+        ToonRenderer {
             elide_lang: Some(ElideBy::EngineEmitted),
         }
     }
@@ -243,11 +248,11 @@ impl ElideBy {
     }
 }
 
-impl Renderer for TextRenderer {
+impl Renderer for ToonRenderer {
     fn render(&self, doc: &model::Document, job: &RenderJob<'_>) -> Result<Rendered, RenderFailed> {
         match job {
             RenderJob::Toc { header, rows } => Ok(Rendered {
-                text: toc_text(header, rows),
+                text: toc_toon(header, rows),
                 sections: Vec::new(),
             }),
             RenderJob::Sections {
@@ -267,7 +272,7 @@ impl Renderer for TextRenderer {
                     });
                 }
                 Ok(Rendered {
-                    text: sections_text(header, &sections, *notice),
+                    text: sections_toon(header, &sections, *notice),
                     sections,
                 })
             }
@@ -275,60 +280,117 @@ impl Renderer for TextRenderer {
     }
 }
 
-/// `readText` toc mode, byte-for-byte (`read.go:120-130`): header line, then
-/// `%-6s %s%s  words:%d  rev:%s` rows (dewey padded to 6, two-space indent
-/// per depth-1), all trailing newlines trimmed. Marks never render in M1 —
-/// the sidecar-backed host face never populated them.
-#[must_use]
-pub fn toc_text(header: &Header<'_>, rows: &[&ReadFact]) -> String {
-    use std::fmt::Write as _;
-    let mut b = header_line(header);
-    for row in rows {
-        let indent = "  ".repeat(row.depth.saturating_sub(1) as usize);
-        let _ = writeln!(
-            b,
-            "{:<6} {}{}  words:{}  rev:{}",
-            row.n,
-            indent,
-            address_text(row),
-            row.words,
-            row.sec_rev
-        );
-    }
-    b.truncate(b.trim_end_matches('\n').len());
-    b
+/// The read's header facts, as the TOON document's leading scalars. Shared by
+/// both modes so the two faces cannot drift into two spellings of one header.
+fn header_fields(header: &Header<'_>) -> Vec<(String, toon::Value)> {
+    vec![
+        ("path".to_string(), toon::Value::str(header.display_path)),
+        ("file_rev".to_string(), toon::Value::str(header.file_rev)),
+        ("words".to_string(), toon::Value::Uint(header.words_total)),
+    ]
 }
 
-/// `readText` sections mode, byte-for-byte (`read.go:132-138`): header line,
-/// one `\n== hpath (rev:.. words:..) ==\ncontent\n` block per section, the
-/// NOTICE line when present, all trailing newlines trimmed.
+/// The toc face: one TOON document — the header scalars, then the section map
+/// as the tabular array the format exists for.
+///
+/// The dewey `n` is a STRING (`2.1` is an ordinal, not a float) and the
+/// encoder quotes it for exactly that reason. `depth` carries what the retired
+/// text face carried as leading indentation: a table cannot indent, and
+/// dropping the depth would lose the tree shape a toc is read for.
 #[must_use]
-pub fn sections_text(
+pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
+    let mut fields = header_fields(header);
+    let toc: Vec<toon::Value> = rows
+        .iter()
+        .map(|row| {
+            toon::Value::obj([
+                ("n", toon::Value::str(&row.n)),
+                ("depth", toon::Value::Uint(u64::from(row.depth))),
+                ("address", toon::Value::str(address_text(row))),
+                ("words", toon::Value::Uint(row.words)),
+                ("rev", toon::Value::str(&row.sec_rev)),
+            ])
+        })
+        .collect();
+    fields.push(("toc".to_string(), toon::Value::Arr(toc)));
+    toon::encode(&toon::Value::Obj(fields))
+}
+
+/// The marker that opens one section's body in the sections face.
+fn body_marker(hpath: &str) -> String {
+    format!("== {hpath} ==")
+}
+
+/// The sections face: a TOON HEAD carrying the fixed-shape facts, then the
+/// section BODIES verbatim, one per row, each opened by its `== hpath ==`
+/// marker.
+///
+/// **Why the bodies are not TOON.** The format has no block scalar (spec §7.1:
+/// a newline inside a string is the `\n` escape, and that is the only
+/// mechanism offered). Encoding a markdown section as a quoted TOON scalar
+/// would be perfectly machine-legible and unreadable to a person — the exact
+/// inverse of R1.6's *arrays for machines, TOON for humans*, on the one face
+/// whose whole job is delivering prose to a reader. So the FACTS about the
+/// sections are the TOON document and the sections themselves stay prose: the
+/// head is a valid TOON document a machine parses to know what follows, and
+/// the bodies are the bytes the read exists to serve.
+///
+/// `notice` rides the head too, so a partial read is a FIELD a reader can look
+/// up rather than a sentence to notice at the bottom.
+///
+/// **The marker is not the boundary.** A `== hpath ==` line is ordinary text
+/// and any section's prose may contain one — a document ABOUT this face
+/// certainly does. So the head carries each body's `bytes` (its UTF-8 length),
+/// and that is where a body ends: a reader takes the bodies in the head's
+/// order, each running exactly its declared length after its marker line. The
+/// marker is for the human eye, and content cannot forge a boundary because no
+/// boundary is ever found by scanning for one. The alternative — escaping or
+/// fencing the prose so the marker becomes unspellable — would edit the bytes
+/// the read exists to serve verbatim, which is the A-K1 class.
+#[must_use]
+pub fn sections_toon(
     header: &Header<'_>,
     sections: &[RenderedSection],
     notice: Option<&str>,
 ) -> String {
     use std::fmt::Write as _;
-    let mut b = header_line(header);
+    let mut b = sections_head(header, sections, notice);
     for s in sections {
-        let _ = write!(
-            b,
-            "\n== {} (rev:{} words:{}) ==\n{}\n",
-            s.hpath, s.sec_rev, s.words, s.content
-        );
-    }
-    if let Some(notice) = notice {
-        let _ = write!(b, "\nNOTICE: {notice}\n");
+        let _ = write!(b, "\n\n{}\n{}", body_marker(&s.hpath), s.content);
     }
     b.truncate(b.trim_end_matches('\n').len());
     b
 }
 
-fn header_line(header: &Header<'_>) -> String {
-    format!(
-        "{}  file_rev:{}  words:{}\n",
-        header.display_path, header.file_rev, header.words_total
-    )
+/// The sections face's HEAD, alone: the TOON document that declares what
+/// bodies follow and how long each one is.
+///
+/// Split out so the head is one expression with one owner — the gate that
+/// asserts the head is valid TOON encodes it through this same function, and a
+/// head that only existed inline could be asserted about but never re-derived.
+#[must_use]
+pub fn sections_head(
+    header: &Header<'_>,
+    sections: &[RenderedSection],
+    notice: Option<&str>,
+) -> String {
+    let mut fields = header_fields(header);
+    let rows: Vec<toon::Value> = sections
+        .iter()
+        .map(|s| {
+            toon::Value::obj([
+                ("hpath", toon::Value::str(&s.hpath)),
+                ("rev", toon::Value::str(&s.sec_rev)),
+                ("words", toon::Value::Uint(s.words)),
+                ("bytes", toon::Value::Uint(s.content.len() as u64)),
+            ])
+        })
+        .collect();
+    fields.push(("sections".to_string(), toon::Value::Arr(rows)));
+    if let Some(notice) = notice {
+        fields.push(("notice".to_string(), toon::Value::str(notice)));
+    }
+    toon::encode(&toon::Value::Obj(fields))
 }
 
 #[cfg(test)]
@@ -349,10 +411,11 @@ mod tests {
 
     const RAW: &str = "---\ntype: note\n---\n\n# Todo\n\n- [ ] first item\n\n# Notes\n\nseed note line one\n\n## Slash/Title Here\n\ndeep content\n";
 
-    /// The toc text face: `%-6s` dewey padding, depth indent, trailing
-    /// newline trimmed — the readText shape on a representative doc.
+    /// The toc face is ONE TOON document: header scalars, then the section map
+    /// as a tabular array. The dewey ordinals arrive quoted because they are
+    /// strings — `2.1` bare would decode as a float.
     #[test]
-    fn toc_text_matches_readtext_shape() {
+    fn the_toc_face_is_one_toon_document() {
         let (doc, facts) = doc_and_facts(RAW);
         let rows = toc_rows(&facts, &[]);
         let words_total: u64 = facts.iter().map(|f| f.words).sum();
@@ -362,62 +425,148 @@ mod tests {
             words_total,
             decorations: &NO_DECORATIONS,
         };
-        let text = toc_text(&header, &rows);
+        let text = toc_toon(&header, &rows);
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(
-            lines[0],
-            format!(
-                "$S/x.md  file_rev:{}  words:{words_total}",
-                doc.root.node_rev.0
-            )
-        );
-        assert!(lines[1].starts_with("1      Todo  words:"), "{}", lines[1]);
-        assert!(lines[2].starts_with("2      Notes  words:"), "{}", lines[2]);
+        assert_eq!(lines[0], "path: $S/x.md");
+        assert_eq!(lines[1], format!("file_rev: {}", doc.root.node_rev.0));
+        assert_eq!(lines[2], format!("words: {words_total}"));
+        assert_eq!(lines[3], "toc[3]{n,depth,address,words,rev}:");
+        assert!(lines[4].starts_with("  \"1\",1,Todo,"), "{}", lines[4]);
+        assert!(lines[5].starts_with("  \"2\",1,Notes,"), "{}", lines[5]);
         assert!(
-            lines[3].starts_with("2.1      Notes/Slash-Title-Here  words:"),
-            "pad-6 then two-space indent: {}",
-            lines[3]
+            lines[6].starts_with("  \"2.1\",2,Notes/Slash-Title-Here,"),
+            "the depth is a COLUMN — a table cannot indent: {}",
+            lines[6]
         );
-        assert!(!text.ends_with('\n'), "TrimRight newline");
+        assert!(!text.ends_with('\n'), "no trailing newline");
     }
 
-    /// The sections text face incl. the NOTICE line and the `\n==` seam.
+    /// A document with no headings renders `toc: []` — never the retired
+    /// `toc[0]:` header, and never a bare missing field.
     #[test]
-    fn sections_text_matches_readtext_shape() {
+    fn an_empty_toc_renders_as_an_empty_array() {
+        let (doc, facts) = doc_and_facts("just prose, no headings\n");
+        let rows = toc_rows(&facts, &[]);
+        let header = Header {
+            display_path: "p",
+            file_rev: &doc.root.node_rev.0,
+            words_total: 0,
+            decorations: &NO_DECORATIONS,
+        };
+        assert!(rows.is_empty(), "the fixture really has no heading rows");
+        assert!(toc_toon(&header, &rows).ends_with("\ntoc: []"));
+    }
+
+    /// The sections face is a TOON HEAD then verbatim bodies (advisor-ruled
+    /// 2026-08-04, U15). Two claims, and the first is the one that makes the
+    /// hybrid honest: the head is not merely TOON-*shaped*, it IS the document
+    /// [`sections_head`] encodes — asserted by re-deriving it, so a head that
+    /// drifted from the encoder would redden here.
+    #[test]
+    fn the_sections_face_is_a_toon_head_then_verbatim_bodies() {
         let (doc, facts) = doc_and_facts(RAW);
         let fact = resolve_selector(&facts, &sel("Notes")).expect("resolves");
         let rows = [SectionRow {
             sel: &sel("Notes"),
             fact,
         }];
+        let notice = "unresolved selectors (no rev minted): Ghost";
         let header = Header {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
             words_total: 0,
             decorations: &NO_DECORATIONS,
         };
-        let out = TextRenderer::default()
+        let out = ToonRenderer::default()
             .render(
                 &doc,
                 &RenderJob::Sections {
-                    header,
+                    header: header.clone(),
                     rows: &rows,
-                    notice: Some("unresolved selectors (no rev minted): Ghost"),
+                    notice: Some(notice),
                 },
             )
             .expect("renders");
+
+        let head = sections_head(&header, &out.sections, Some(notice));
         assert!(
-            out.text
-                .contains(&format!("\n== Notes (rev:{} words:", fact.sec_rev)),
-            "{}",
+            out.text.starts_with(&head),
+            "the face opens with exactly the encoded head:\n{head}\n---\n{}",
             out.text
         );
-        assert!(
-            out.text
-                .ends_with("\nNOTICE: unresolved selectors (no rev minted): Ghost")
+        assert_eq!(
+            head.lines().next(),
+            Some("path: $S/x.md"),
+            "and the head is a TOON document, not a prose header"
         );
-        // section content is the RAW face (subtree-inclusive)
+        assert!(
+            head.contains("sections[1]{hpath,rev,words,bytes}:"),
+            "the head declares the bodies AND their lengths: {head}"
+        );
+        assert!(
+            head.contains(&format!("notice: \"{notice}\"")),
+            "the notice is a head FIELD, not a trailing sentence: {head}"
+        );
+
+        // The body follows its marker, verbatim and subtree-inclusive.
+        let body = out
+            .text
+            .split("\n\n== Notes ==\n")
+            .nth(1)
+            .expect("one body");
+        assert_eq!(body, out.sections[0].content.trim_end_matches('\n'));
         assert!(out.sections[0].content.contains("## Slash/Title Here"));
+    }
+
+    /// The positive control the advisor's ruling asks for: a body whose PROSE
+    /// contains a line spelled exactly like a boundary marker.
+    ///
+    /// The marker is not the boundary — the head's `bytes` is — so the
+    /// lookalike is served verbatim and changes nothing about where the body
+    /// ends. This is the claim stated as a test rather than as a comment,
+    /// because "content cannot forge a boundary" is precisely the kind of
+    /// assertion that rots silently.
+    #[test]
+    fn prose_that_spells_a_marker_does_not_move_the_boundary() {
+        let raw = "# Notes\n\nthe face writes a line like\n\n== Notes ==\n\nand this section is ABOUT that line\n";
+        let (doc, facts) = doc_and_facts(raw);
+        let fact = resolve_selector(&facts, &sel("Notes")).expect("resolves");
+        let rows = [SectionRow {
+            sel: &sel("Notes"),
+            fact,
+        }];
+        let header = Header {
+            display_path: "p",
+            file_rev: "r",
+            words_total: 0,
+            decorations: &NO_DECORATIONS,
+        };
+        let out = ToonRenderer::default()
+            .render(
+                &doc,
+                &RenderJob::Sections {
+                    header: header.clone(),
+                    rows: &rows,
+                    notice: None,
+                },
+            )
+            .expect("renders");
+
+        let content = &out.sections[0].content;
+        assert!(
+            content.contains("\n== Notes ==\n"),
+            "the fixture really carries a lookalike marker: {content}"
+        );
+        // ONE section was read, so the head declares ONE row — the second
+        // `== Notes ==` in the face is prose, and the head knows nothing of it.
+        let head = sections_head(&header, &out.sections, None);
+        assert!(head.contains("sections[1]{"), "{head}");
+        assert!(
+            head.contains(&format!(",{}", content.len())),
+            "the declared length is the body's real byte length: {head}"
+        );
+        // And the body reached the reader byte-identically, lookalike included.
+        assert_eq!(out.text.matches("== Notes ==").count(), 2);
     }
 
     /// The U4b hook is INERT by default: a `meridian-*` fenced block renders
@@ -445,14 +594,14 @@ mod tests {
             notice: None,
         };
 
-        let inert = TextRenderer::default().render(&doc, &job).expect("renders");
+        let inert = ToonRenderer::default().render(&doc, &job).expect("renders");
         assert!(
             inert.sections[0].content.contains("```meridian-lock"),
             "default elides NOTHING (U0 Go-parity): {}",
             inert.sections[0].content
         );
 
-        let out = TextRenderer::with_meridian_elision()
+        let out = ToonRenderer::with_meridian_elision()
             .render(&doc, &job)
             .expect("renders");
         assert!(
@@ -479,7 +628,7 @@ mod tests {
             fact,
         }];
 
-        let inert = TextRenderer::default()
+        let inert = ToonRenderer::default()
             .render(
                 &doc,
                 &RenderJob::Sections {
@@ -509,7 +658,7 @@ mod tests {
             },
             "@green.b3af12cd".into(),
         );
-        let out = TextRenderer::default()
+        let out = ToonRenderer::default()
             .render(
                 &doc,
                 &RenderJob::Sections {
@@ -575,7 +724,7 @@ mod tests {
             decorations,
         };
         let render = |decorations| {
-            TextRenderer::default()
+            ToonRenderer::default()
                 .render(
                     &doc,
                     &RenderJob::Sections {

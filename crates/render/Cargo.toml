@@ -1,6 +1,6 @@
 [package]
 name = "render"
-description = "The compiled-in render plane: Renderer trait + tree-walker producing the token-efficient text projection (readText parity), with the block-elision and link-decoration hook points"
+description = "The compiled-in render plane: Renderer trait + tree-walker producing the token-efficient TOON-compact projection (U15), with its own TOON encoder and the block-elision and link-decoration hook points"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
