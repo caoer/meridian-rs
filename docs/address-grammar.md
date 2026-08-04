@@ -493,8 +493,8 @@ lock and break the ratified stored form.
 | P2 | `` `root:page.md` `` inside a code span or fenced block | **untouched** | — (the document law calls it a code sample) |
 | P3 | wikilink `[[sessions:notes.md#Design]]` | translated to the `obsidian://` stored form carrying the **vault name** | — |
 | P4 | markdown link `[x](sessions:notes.md)` | translated to the `obsidian://` stored form | — |
-| P5 | lock `ref: 'sessions:notes.md#Design'` | **kept in canonical `root:` form — identity** (A-4) | — |
-| P6 | lock `objects:` key `sessions:assets/logo.png` | **kept in canonical `root:` form — identity** (A-4) | — |
+| P5 | lock `object: "[[sessions:notes.md]]"` | **kept in canonical `root:` form — identity** (A-4) | — |
+| ~~P6~~ | ~~lock `objects:` key `sessions:assets/logo.png`~~ | **POSITION RETIRED (U9b)** — see below | — |
 | P7 | an address the transform cannot attribute to one payload | **REFUSED** | `bad_request`, the `strip_fp_candidate` shape |
 | P8 | an `@fp` token reaching a stored URI or a display field | **REFUSED** | criterion-4 machinery, reused at the candidate |
 | P9 | a hand-edited, malformed `obsidian://` URI on read-back | **fails loudly**, never guesses | reverse-translation refusal |
@@ -502,7 +502,23 @@ lock and break the ratified stored form.
 **Acceptance half:** P3 and P4 must TRANSLATE, and the agent-plane form must round-trip through the
 stored form byte-identically. **Round-trip identity alone is satisfied by never translating at all**
 — an identity function round-trips perfectly and ships nothing — so P3/P4's positive assertion and
-P1/P2/P5/P6's untouched assertion are one gate, not two.
+P1/P2/P5's untouched assertion are one gate, not two.
+
+> [!WARNING] P6 is RETIRED, and P5 is re-spelled (U9b, R4 schema v2)
+> **P6's position no longer exists.** R4 removed the lock's top-level `objects:` table (session
+> `86449b4e`, the 17:20 ruling): the blob hash moved ONTO the pin row, so there is no `objects:`
+> key for the transform to leave alone. A row asserting an outcome for a position that cannot
+> occur is not a conservative extra check — it is a law about nothing, and the next reader spends
+> real time deciding whether the transform is missing a case.
+>
+> **P5 survives as a POSITION and changed only its SPELLING.** The lock's address key is now
+> `object: "[[sessions:notes.md]]"` — a wiki link whose inner text is carried verbatim — where v1
+> wrote `ref: 'sessions:notes.md#Design'`. The A-4 ruling is untouched: the lock's address stays in
+> the canonical `root:` form and the translation there is the IDENTITY. Only the key's name and the
+> selector's home moved (the selector is now the sibling `path` / `properties` array).
+>
+> This is a spelling correction inside a surviving row, not a new ruling — no position gained or
+> lost an outcome. The retirement of P6 is the only change of law here.
 
 ---
 

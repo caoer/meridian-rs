@@ -1076,6 +1076,199 @@ pub fn lock_write(
 }
 
 // ---------------------------------------------------------------------------
+// The LOCK MIGRATION door (U9b, plan decision P4)
+// ---------------------------------------------------------------------------
+
+/// One guarded lock-MIGRATION request (U9b): replace a page's ONE
+/// `meridian-lock` block — whose current bytes this door cannot parse — with a
+/// typed v2 [`lock::Lock`].
+///
+/// # Why this is not [`lock_write`]
+/// [`lock_write`] locates the block through `lock::find`, which READS the
+/// grammar and therefore refuses a v1 body loud (`UnsupportedVersion`, P4). A
+/// door that must replace exactly those pages cannot use a locator that refuses
+/// them. So this door locates by SPAN only (`lock::block_spans` — fence info
+/// string, no grammar) and never learns what the old bytes meant.
+///
+/// **The v1 grammar is not here, and must never arrive here.** The engine reads
+/// v2 only; the quarantined v1 parser lives in the migration tool
+/// (`crates/lockmigrate`) and dies with it. This door's contract is
+/// byte-in/typed-v2-out: the caller states the exact bytes it parsed, and the
+/// door swaps them for canonical v2 bytes it rendered itself.
+#[derive(Debug, Clone)]
+pub struct LockMigrateArgs {
+    /// Frame correlation token — recorded only.
+    pub id: Option<u64>,
+    /// The page whose `meridian-lock` block is being migrated.
+    pub path: Path,
+    /// **The migration CAS**: the exact fence-to-fence bytes the caller read and
+    /// parsed. The door refuses unless the page still carries precisely these
+    /// bytes at its one lock block.
+    ///
+    /// The whole-file [`Self::if_file_rev`] already catches drift, so this is
+    /// belt-and-braces on purpose — it is the assertion that the value in
+    /// [`Self::lock`] was DERIVED FROM these bytes. A whole-file rev proves the
+    /// page did not move; only this proves the door is replacing the same block
+    /// the tool converted.
+    pub if_block: String,
+    /// The typed v2 lock to land — the SOLE input form (engine-sole-writer #8
+    /// §3: raw block bytes never cross this seam in the write direction;
+    /// rendering is `lock::render`'s).
+    pub lock: lock::Lock,
+    pub actor: Option<String>,
+    pub now: Option<String>,
+    /// The optional §5.1 world guard: refuse if the ambient root differs.
+    pub if_root: Option<Root>,
+    /// The page's whole-file rev the caller read — write-what-you-read CAS.
+    pub if_file_rev: NodeRev,
+    /// Dry run — everything except disk (no bytes, no advance).
+    pub dry: bool,
+}
+
+/// The outcome of a guarded lock migration. Mirrors [`LockWriteOutcome`] minus
+/// `created` — a migration always REPLACES; there is nothing to birth.
+#[derive(Debug)]
+pub struct LockMigrateOutcome {
+    pub root_before: Root,
+    pub root_after: Option<Root>,
+    /// The page's whole-file rev before the migration (the CAS-confirmed rev).
+    pub file_rev_before: NodeRev,
+    /// The page's whole-file rev after the v2 block landed.
+    ///
+    /// **This moves, always, and that is the expected drift** (security finding
+    /// S7): lock-is-content (#8 §5) puts the block inside the page's own span,
+    /// so rewriting the block moves the page fingerprint. Every full-body (`[]`)
+    /// pin that names this page drifts once, by construction. Naming it in the
+    /// migration report IN ADVANCE is what keeps a predicted drift wave from
+    /// reading as corruption.
+    pub file_rev_after: NodeRev,
+    pub committed: Option<DeltaFrame>,
+    pub dry: bool,
+}
+
+/// **Guarded `meridian-lock` MIGRATION** (U9b, plan decision P4): replace a
+/// page's one lock block with canonical v2 bytes, under the same guards every
+/// other byte-landing door owes — CAS write-what-you-read, the §5.1 world
+/// guard, the D9 write flock, and the stored-form artifact guard.
+///
+/// Order: path confinement → the write flock (D9) → load the page → world guard
+/// (§5.1) → whole-file CAS → locate the ONE block by span (`lock::block_spans`;
+/// zero or two or more blocks refuse loud) → the `if_block` byte CAS → render
+/// via `lock::render` → in-memory splice → the artifact guard →
+/// [`fs::replace_file`] (atomic) → root advance → Delta. `dry: true` runs
+/// everything except disk.
+///
+/// # Errors
+/// `bad_path`, `bad_request` (no lock block, MULTIPLE lock blocks, or the
+/// `if_block` bytes no longer match), `workspace_busy` (D9), `file_not_found`,
+/// `root_mismatch`, `cas_mismatch`, or an I/O failure. In every error case
+/// nothing was written.
+pub fn lock_migrate(
+    root: &fs::WorkspaceRoot,
+    seq: u64,
+    args: &LockMigrateArgs,
+) -> Result<LockMigrateOutcome, Box<ErrorBody>> {
+    let fs_path = FsPath::new(&args.path.0);
+    path_confined(&args.path)?;
+
+    // D9: the migration serializes on the same write flock as every writer.
+    let _write_lock = acquire_write_lock(root)?;
+
+    let before_doc = load_doc(root, &args.path)?;
+    let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
+
+    let root_before = ambient_root(root)?;
+    world_guard(args.if_root.as_ref(), &root_before)?;
+
+    if args.if_file_rev != file_rev_before {
+        return Err(cas_mismatch(&args.if_file_rev, &file_rev_before));
+    }
+
+    // Locate the ONE block by SPAN. `lock::find` would refuse here — the body is
+    // exactly the version this engine does not read — so the migration door uses
+    // the grammar-free locator and enforces the sole-writer arity itself.
+    let span = match lock::block_spans(&before_doc).as_slice() {
+        [span] => span.clone(),
+        [] => {
+            return Err(bad_request(format!(
+                "`{}` carries no meridian-lock block — nothing to migrate",
+                args.path.0
+            )));
+        }
+        many => {
+            return Err(bad_request(format!(
+                "`{}` carries {} meridian-lock blocks — the engine is the sole writer \
+                 (#8 §3) and mints exactly one; refusing to guess which is the page's lock",
+                args.path.0,
+                many.len()
+            )));
+        }
+    };
+
+    // The migration CAS: the bytes the caller parsed must still BE the bytes on
+    // the page. Without this the door would land a v2 lock derived from some
+    // other block's content.
+    let found = before_doc
+        .raw
+        .get(span.clone())
+        .ok_or_else(|| bad_request("lock span out of bounds".to_string()))?;
+    if found != args.if_block {
+        return Err(bad_request(format!(
+            "`{}`'s meridian-lock block is not the block the migration read — \
+             refusing to land a lock derived from different bytes",
+            args.path.0
+        )));
+    }
+
+    let raw = &before_doc.raw;
+    let block = lock::render(&args.lock);
+    let mut new_raw = String::with_capacity(raw.len() + block.len());
+    new_raw.push_str(&raw[..span.start]);
+    new_raw.push_str(&block);
+    new_raw.push_str(&raw[span.end..]);
+    let after_doc = model::candidate_of_body(&args.path.0, new_raw);
+    // THE ARTIFACT GUARD (D9) at the migration door, on the same terms as
+    // `lock_write`: engine-composed lock bytes introduce no agent-plane address
+    // into positions 1 or 2.
+    stored_form_guard_lazy(Some(&before_doc), &after_doc, &args.path)?;
+    let file_rev_after = NodeRev(after_doc.document().root.node_rev.0.clone());
+
+    if args.dry {
+        return Ok(LockMigrateOutcome {
+            root_before,
+            root_after: None,
+            file_rev_before,
+            file_rev_after,
+            committed: None,
+            dry: true,
+        });
+    }
+
+    fs::replace_file(root, fs_path, &after_doc).map_err(|e| io_to_wire(&e))?;
+    let root_after = ambient_root(root)?;
+
+    let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
+        .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
+        .unwrap_or_default();
+    let committed = assemble_delta(
+        seq,
+        root_before.clone(),
+        root_after.clone(),
+        args.actor.clone(),
+        args.now.clone(),
+        files,
+    );
+    Ok(LockMigrateOutcome {
+        root_before,
+        root_after: Some(root_after),
+        file_rev_before,
+        file_rev_after,
+        committed: Some(committed),
+        dry: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // The PIN prologue (stage-2 S7, D7/D13/D14/D15/D16)
 // ---------------------------------------------------------------------------
 //
