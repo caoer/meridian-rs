@@ -253,6 +253,66 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
     );
 }
 
+/// **KEY-SET PIN over the serialized `PinFact` (all-hands #1).**
+///
+/// `Option` + `skip_serializing_if` is not a version gate: it skips on the
+/// VALUE being none, never on the SESSION being v2. So what a field means for
+/// the wire is decided by whether anything POPULATES it — and U8 changed
+/// exactly that for `blob`.
+///
+/// Before U8, a pin outside git minted `blob: None` and the key serialized
+/// AWAY, so `PinFact`'s key set varied with the environment. Under R4 the hash
+/// is mandatory: a pin either carries one or refuses, so `blob` is now ALWAYS
+/// present wherever a `PinFact` exists at all. That is a key-set change, and it
+/// is the class value-pinning sweeps are blind to — they pin worked values
+/// (spans, revs, roots), not the presence of a key.
+///
+/// This test is the detector for that class on this body. `PinFact` rides
+/// `splice.pin`, which is v3-only at decode, so nothing here should reach a v2
+/// frame — this pins the key set so a later change to that reachability is
+/// caught HERE, loudly, instead of shipping green.
+///
+/// **What this test alone does NOT prove.** Its workspace is git-initialised, so
+/// it cannot witness the absent-`blob` case directly. The invariant "a `PinFact`
+/// exists ⟹ `blob` is present" is established by this test TOGETHER with
+/// [`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
+/// covers the other branch: no git, no `PinFact` at all. Neither half is
+/// sufficient alone, and a future edit that softened the refusal back to honest
+/// degradation would break that second test, not this one.
+#[test]
+fn the_pin_fact_key_set_is_pinned_and_blob_is_now_always_present() {
+    let (_dir, root) = workspace();
+    let out =
+        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+    let fact = pin_fact(&out.body);
+
+    let serde_json::Value::Object(map) = serde_json::to_value(&fact).expect("PinFact serializes")
+    else {
+        panic!("a PinFact serializes to an object");
+    };
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "anchor",
+            "blob",
+            "declared_ref",
+            "fingerprint",
+            "promoted",
+            "selector",
+            "target",
+        ],
+        "the EXACT key set — a new key here is a wire change, and an ABSENT \
+         `blob` means something started minting hashless pins again"
+    );
+    assert!(
+        map["blob"].as_str().is_some_and(|b| b.len() == 40),
+        "and the key carries a real oid, not null: {:?}",
+        map["blob"]
+    );
+}
+
 /// GATE 4a: promotion is rev-neutral (D14 honesty — cannot move pinned fingerprint).
 #[test]
 fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
