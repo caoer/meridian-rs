@@ -1,6 +1,6 @@
 [package]
 name = "lock"
-description = "The meridian-lock fenced block: versioned root object, objects/pins planes, engine-sole-writer canonical format (decision 2026-07-24-meridian-lock-block; pin fingerprints are norm-v2-spec CID-tokens)"
+description = "The meridian-lock fenced block: the R4 v2 schema (pins only; object wiki link + blob hash + path XOR properties + fingerprint, free-form keys engine-ignored), engine-sole-writer canonical format, v2-only fail-loud reader (decision 2026-07-24-meridian-lock-block; pin fingerprints are norm-v2-spec CID-tokens)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,8 +11,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-# the address grammar — a `ref` is an ADDRESS, parsed once at the leaf (U10)
-addr = { workspace = true }
+# R4 dropped the `ref` field: a pin names its target by WIKI LINK, resolved as
+# Obsidian resolves it (the walk plane's index), not by the `addr` grammar. The
+# U10 `declared_ref: String → addr::Addr` retype therefore has no site left
+# here, and the dependency goes with it.
 model = { workspace = true }
 # The engine-emits property's collector (#8 §1, U36): a canonical writer
 # declares its own language via `engine_emits!`, and the linker assembles the
