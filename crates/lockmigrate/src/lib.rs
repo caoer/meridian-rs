@@ -499,6 +499,91 @@ fn section(s: &mut String, title: &str, rows: Vec<String>) {
     s.push('\n');
 }
 
+/// **Is the lock block at `span_start` ENCLOSED by an outer code fence?**
+///
+/// A fence-opener sitting inside a longer fence is the CONTENT of a code
+/// sample, not a block — `CommonMark` says so, and the parser agrees today by
+/// refusing to emit a node for it. **This predicate exists so that the
+/// protection does not depend on the parser continuing to agree.**
+///
+/// It reads the raw bytes and tracks fence state: a fence opens on a line whose
+/// first non-blockquote, non-space token is three-or-more backticks WITH an info
+/// string, and closes on a fence of at least that many backticks with NO info
+/// string. If a fence is still open when we reach `span_start`, the block is
+/// enclosed.
+///
+/// # Why bytes and not the tree
+/// The tree cannot answer it: today the parser emits NO node for an enclosed
+/// fence, so there is nothing to ask about ancestry. The question only becomes
+/// askable in the world where the parser HAS changed — which is exactly the
+/// world this predicate is written for.
+fn enclosed_by_code_fence(raw: &str, span_start: usize) -> bool {
+    let mut open: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in raw.lines() {
+        // Stop before the line that CONTAINS `span_start`, not merely before
+        // `span_start` itself. A block whose span begins mid-line — a
+        // blockquoted fence starts after its `> ` marker — would otherwise have
+        // its OWN opener counted as its enclosure, which is the right answer
+        // for the wrong reason.
+        if offset + line.len() >= span_start {
+            break;
+        }
+        let bare = line
+            .trim_start()
+            .trim_start_matches(['>', ' '])
+            .trim_start();
+        let ticks = bare.chars().take_while(|c| *c == '`').count();
+        if ticks >= 3 {
+            let info = bare[ticks..].trim();
+            match open {
+                // A fence of at least the opener's width, carrying NO info
+                // string, closes it. Any other fence INSIDE an open one is
+                // ordinary content and changes nothing.
+                Some(width) if ticks >= width && info.is_empty() => open = None,
+                // Outside a fence, a fence WITH an info string opens one. A
+                // bare ``` outside a fence closes nothing and opens nothing
+                // this predicate cares about.
+                None if !info.is_empty() => open = Some(ticks),
+                _ => {}
+            }
+        }
+        offset += line.len() + 1; // the newline
+    }
+    open.is_some()
+}
+
+/// **Does this lock block's fence start at column 0?**
+///
+/// The engine mints a lock block by appending it at EOF, unindented and
+/// unquoted, so its fence always OPENS a line. A fence that starts mid-line sits
+/// inside a CONTAINER — a blockquote (`> ```meridian-lock`), a list item — and
+/// the engine has never written one there.
+///
+/// A second, independent reason a block is not engine-placed, and it is STATED
+/// rather than inherited from where a span boundary happened to fall.
+fn fence_starts_the_line(raw: &str, span_start: usize) -> bool {
+    raw[..span_start]
+        .rfind('\n')
+        .map_or(span_start == 0, |nl| nl + 1 == span_start)
+}
+
+/// Test-visible shim for [`fence_starts_the_line`].
+#[doc(hidden)]
+#[must_use]
+pub fn fence_starts_the_line_for_test(raw: &str, span_start: usize) -> bool {
+    fence_starts_the_line(raw, span_start)
+}
+
+/// Test-visible shim for [`enclosed_by_code_fence`] — the rule is unreachable
+/// through `sweep` today (the parser emits no span for an enclosed fence), so a
+/// gate must be able to ask the predicate directly.
+#[doc(hidden)]
+#[must_use]
+pub fn enclosed_by_code_fence_for_test(raw: &str, span_start: usize) -> bool {
+    enclosed_by_code_fence(raw, span_start)
+}
+
 /// What the discrimination rule says about one page, before any grammar is read.
 enum Candidate {
     /// The page carries no `meridian-lock` block at all — out of scope.
@@ -527,6 +612,22 @@ fn classify(doc: &model::Document) -> Candidate {
         return Candidate::NoLock;
     };
     let blocks = spans.len();
+
+    // RULE 0 — ENCLOSURE, and it is a RULE precisely because today it is
+    // unreachable. The parser does not currently emit a node for a lock fence
+    // nested inside a longer fence, so these bytes are protected by the
+    // parser's REACH — a mechanism nobody chose for this purpose and nothing
+    // was watching. If that reach ever changes, this rule keeps the outcome the
+    // same BY DECISION. See `parser_blindness.rs` for the tripwire that fires
+    // when the reach does change.
+    if spans.iter().all(|s| {
+        enclosed_by_code_fence(&doc.raw, s.start) || !fence_starts_the_line(&doc.raw, s.start)
+    }) {
+        return Candidate::Verdict(Box::new(move |path| PageVerdict::NotEnginePlaced {
+            path,
+            blocks,
+        }));
+    }
 
     // Rule 1 — PLACEMENT.
     if !doc.raw[last.end..].trim().is_empty() {
