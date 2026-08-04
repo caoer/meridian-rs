@@ -108,7 +108,11 @@ fn session(root: &fs::WorkspaceRoot) -> String {
         format!(r#"{{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000042"}},"if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{q3}"}}]}}"#),
         format!(r#"{{"id":57,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000043"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"put":{{"at":"end","text":"- new item\n"}}}},"if_node_rev":"{q4}"}}]}}"#),
         format!(r#"{{"id":88,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by September","new":"ship by October"}}}},"if_node_rev":"{q3}"}}]}}"#),
-        format!(r#"{{"id":89,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by October"}}}},"if_node_rev":"41f643f034e5681f"}}]}}"#),
+        // The one companion whose rev is NOT the live pre-image: this frame
+        // deliberately pins Q3's POST-E3 rev to exercise the §5.2 stale-CAS
+        // split, so it is a literal rather than a derived value.
+        r#"{"id":89,"op":"splice","path":"notes/plan.md","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by October"}},"if_node_rev":"41f643f034e5681f"}]}"#
+            .to_owned(),
         format!(r#"{{"id":91,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"match":{{"old":"item","new":"entry"}}}},"if_node_rev":"{q4_after}"}}]}}"#),
         format!(r#"{{"id":60,"op":"splice","path":"notes/plan.md","dry":true,"edits":[{{"target":{{"fm_key":"title"}},"edit":{{"match":{{"old":"Plan","new":"Plan v2"}}}},"if_node_rev":"{title}"}}]}}"#),
         r#"{"id":80,"op":"links","path":"notes/plan.md"}"#.to_owned(),
