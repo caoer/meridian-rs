@@ -427,6 +427,27 @@ impl Repo {
     /// As [`Repo::blob_oid`]; [`GitFail::Unexpected`] when the stream ends
     /// mid-object or answers a different number of specs than were asked.
     pub fn blobs_at(&self, specs: &[&str]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
+        Ok(self
+            .blobs_with_oids_at(specs)?
+            .into_iter()
+            .map(|answer| answer.map(|blob| blob.bytes))
+            .collect())
+    }
+
+    /// **The oid AND the bytes at each `<rev>:<path>` spec, in input order** —
+    /// [`Repo::blobs_at`] without discarding the identity git already printed.
+    ///
+    /// `cat-file --batch` heads every answer with `<oid> <type> <size>`, so the
+    /// object's id arrives in the SAME stream as its content. A caller that needs
+    /// both — a history walk that recovers content and must then name the durable
+    /// object carrying it — reads them from one pipe rather than re-deriving the
+    /// oid with a second spawn per hit. Re-deriving is also not the same question:
+    /// `hash-object --path` applies the clean filter, so a filtered repository
+    /// would mint an id that is not the one history holds.
+    ///
+    /// # Errors
+    /// As [`Repo::blobs_at`].
+    pub fn blobs_with_oids_at(&self, specs: &[&str]) -> Result<Vec<Option<BlobAt>>, GitFail> {
         if specs.is_empty() {
             return Ok(Vec::new());
         }
@@ -912,6 +933,22 @@ pub struct ObjectInfo {
     pub size: u64,
 }
 
+/// One answered `<rev>:<path>` spec — the object's id AND its bytes, both taken
+/// from the ONE `cat-file --batch` stream that answered the query
+/// ([`Repo::blobs_with_oids_at`]).
+///
+/// The pair is one value because the two halves answer one question that
+/// separates badly: a caller that recovers content from history and must then
+/// name the durable object carrying it needs git's id for THESE bytes, and
+/// re-hashing them locally asks a filtered question instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobAt {
+    /// The object id git printed for this spec, verbatim.
+    pub oid: String,
+    /// The object's bytes, exactly as git stores them.
+    pub bytes: Vec<u8>,
+}
+
 /// What one commit did to one path — the unit of recorded history.
 ///
 /// Every field is git's own answer, quoted rather than derived: the engine does
@@ -1095,7 +1132,7 @@ fn parse_batch_line(line: &str) -> Result<Option<ObjectInfo>, GitFail> {
 /// The size header is what makes this parseable at all: content can carry
 /// newlines and NULs, so the byte count is read first and the contents are taken
 /// by length, never scanned for a terminator.
-fn parse_batch_stream(stream: &[u8]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
+fn parse_batch_stream(stream: &[u8]) -> Result<Vec<Option<BlobAt>>, GitFail> {
     let unexpected = |detail: String| GitFail::Unexpected {
         what: "cat-file --batch".to_owned(),
         detail,
@@ -1112,7 +1149,7 @@ fn parse_batch_stream(stream: &[u8]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
         at = end + 1;
 
         let mut parts = header.rsplitn(3, ' ');
-        let (Some(size), Some(kind)) = (parts.next(), parts.next()) else {
+        let (Some(size), Some(kind), oid) = (parts.next(), parts.next(), parts.next()) else {
             return Err(unexpected(format!("unparseable header: {header:?}")));
         };
         if kind == "missing" || kind == "ambiguous" || size == "missing" || size == "ambiguous" {
@@ -1126,7 +1163,15 @@ fn parse_batch_stream(stream: &[u8]) -> Result<Vec<Option<Vec<u8>>>, GitFail> {
             .checked_add(size)
             .filter(|stop| *stop <= stream.len())
             .ok_or_else(|| unexpected(format!("stream ends mid-object: {header:?}")))?;
-        out.push(Some(stream[at..stop].to_vec()));
+        // The oid is git's own answer for this spec, taken from the header it
+        // already printed — never re-derived (`Repo::blobs_with_oids_at` says why).
+        let oid = oid
+            .ok_or_else(|| unexpected(format!("header carries no oid: {header:?}")))?
+            .to_owned();
+        out.push(Some(BlobAt {
+            oid,
+            bytes: stream[at..stop].to_vec(),
+        }));
         // git writes one newline after the contents.
         at = stop + 1;
     }

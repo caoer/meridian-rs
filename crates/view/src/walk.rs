@@ -690,7 +690,15 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
 /// `seq-160`, and a transcript pin would classify as an unresolved HEADING —
 /// **grey turning into red**, a false finding on a ref the engine is ruled never
 /// to resolve. The object carries the session id, so the arm needs both halves.
-fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
+/// # Why this is PUBLIC (U22)
+/// The lost-pin repair asks the colour question of HISTORICAL bytes rather than
+/// live ones, and it asks it through the same [`model::selector::classify_pin`]
+/// this file's [`edge_color`] calls. That compare takes a `model` selector, so a
+/// second caller needs a lock-row-to-selector projection — and a second COPY of
+/// this one would be a second reading of R4's array grammar, with the transcript
+/// and anchor arms above free to drift apart. One definition, two call sites.
+#[must_use]
+pub fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
     let lock::Selector::Path(segments) = selector else {
         return Selector::Page;
     };

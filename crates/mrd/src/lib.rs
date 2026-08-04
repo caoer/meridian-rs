@@ -45,6 +45,7 @@ mod put_cmd;
 mod read_cmd;
 mod realise_cmd;
 mod reconcile_cmd;
+mod repair_cmd;
 mod resolve;
 // The type-2 retirement DSL. It is PUBLIC for one reason, the `hook` precedent
 // above: the U23 coverage census asserts that the set of reason words its
@@ -157,6 +158,27 @@ usage:
                            retrievable before any commit references it. Exits:
                            0 pinned (or dry) / 1 refused (the engine's message,
                            verbatim) / 2 bad invocation
+! mrd repair [PAGE] [--dry]
+                           lost-pin repair by git-history walk. A pin is LOST
+                           when BOTH planes are dark: the live target no longer
+                           verifies the fingerprint AND git no longer holds the
+                           recorded blob — a red pin whose blob is still held is
+                           ordinary drift and is not touched. ONE git log plus
+                           ONE cat-file --batch recover every recorded version of
+                           the lost targets; a version whose content the pin's
+                           own fingerprint verifies IS the pinned content, and
+                           the repair rewrites that pin's hash to that version's
+                           blob — object, selector and fingerprint are NEVER
+                           rewritten, so a genuinely drifted target stays red
+                           after a repair. No matching version anywhere in the
+                           history is a TRUE LOSS: reported, never auto-fixed,
+                           nothing invented. Pins naming another root are outside
+                           this handle's jurisdiction and their count is stated.
+                           --dry is the skip-the-final-write rehearsal (the walk
+                           runs, the lock write does not), never a diff face.
+                           Progress counts go to stderr, so --json stays clean.
+                           Exits: 0 nothing lost or all repaired (or dry) / 1 a
+                           TRUE LOSS / 2 bad invocation
 ! mrd retire <report|mark> [--id ID] [--dry-run] [--expect-root ROOT]
                            the type-2 retirement DSL: sweep markdown `~~`
                            markers over the terms declared in meridian-retire
@@ -484,6 +506,7 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "read" => read_cmd::dispatch(&args[1..]),
         "put" => put_cmd::dispatch(&args[1..]),
         "pin" => pin_cmd::dispatch(&args[1..]),
+        "repair" => repair_cmd::dispatch(&args[1..]),
         "walk" => walk_cmd::dispatch(&args[1..]),
         "rules" => rules_cmd::dispatch(&args[1..]),
         "check" => check_cmd::dispatch(&args[1..]),
@@ -926,20 +949,24 @@ mod help {
         /// the count returns to 12.** `retire mark` remains a writer and the
         /// reason is not its flag set — a verb whose whole purpose is rewriting
         /// the user's files is a writer; `--dry` does not exempt it, exactly as
-        /// it does not exempt `pin` or `realise`.
+        /// it does not exempt `pin` or `realise`. **U22 adds `mrd repair`, the
+        /// lost-pin repair — 13.** It rewrites a pin's `hash` in the user's
+        /// page through the guarded lock door, so it is a writer by the same
+        /// reading, and its `--dry` exempts it no more than `retire mark`'s
+        /// does.
         #[test]
-        fn twelve_verbs_are_marked_as_writers() {
+        fn thirteen_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                12,
+                13,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 27, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists, so a

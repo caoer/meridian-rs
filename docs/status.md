@@ -91,6 +91,14 @@ mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
                          mint a meridian-lock pin: PAGE records the claim,
                          TARGET#SELECTOR is the content being attested
                          (sanitized heading path, `^id`, or dewey ordinal)
+mrd repair [PAGE] [--dry] [--json]
+                         lost-pin repair: walk the repository's own history for
+                         the content of pins whose evidence is gone (both planes
+                         dark — the live target no longer verifies the
+                         fingerprint AND git no longer holds the recorded blob),
+                         and repoint each recovered pin's hash at the durable
+                         blob carrying it. No match anywhere in history is a TRUE
+                         LOSS, reported and never auto-fixed
 mrd walk <PAGE> [--down] [--depth N]
                          the context-assembly listing over the pin graph;
                          every answer cites the revs it read
@@ -126,6 +134,41 @@ mrd daemon               run the registry daemon in the foreground
 
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb
 exit codes live there.
+
+### `mrd repair` — lost-pin repair (U22 / H1)
+
+A pin carries two planes that fail independently: the CLAIM plane (its `fp1.…`
+fingerprint, verified against the live target) and the RETRIEVAL plane (its
+`hash`, a git blob sha). **A pin is LOST when both are dark** — the live target
+no longer verifies the fingerprint AND git no longer holds the recorded blob, so
+nothing in the workspace can answer *what did this pin cover?*. A red pin whose
+blob is still held is ordinary drift with its evidence intact, and this verb does
+not touch it.
+
+- **The walk** is ONE `git log` plus ONE `cat-file --batch` for the whole run,
+  never a spawn per pin or per commit. Each recorded version of a lost target is
+  rebuilt and put to the SAME `classify_pin` the walk, `status` and `check`
+  colour with; a green answer means those bytes are the pinned content.
+- **Recovery is possible because the grain differs.** The `hash` is the blob of
+  the whole FILE while the fingerprint covers ONE SECTION, so a commit whose
+  file bytes differ elsewhere can still carry the pinned section — which is what
+  the walk finds.
+- **The forgery invariant.** Repair rewrites the pin's `hash` and nothing else;
+  `object`, `selector` and `fingerprint` are never touched. A target that
+  genuinely drifted is STILL RED after a successful repair, and that is the
+  correct outcome — rewriting the claim to fit what history held would be forgery
+  wearing a repair.
+- **TRUE LOSS** — no version in that path's history carries the pinned content —
+  is reported and never auto-fixed. The engine invents no evidence.
+- **Jurisdiction:** the ambient root only. A pin naming another root names
+  another object store; those pins are skipped and their count is stated.
+- **`--dry`** is the skip-the-final-write rehearsal (the walk runs, the lock
+  write does not), never a diff face. Progress counts ride stderr, so `--json`
+  on stdout stays machine-clean.
+- **The write** goes through the existing guarded `lock_write` door, so the U12
+  byte-landing door census is unchanged.
+- **Exit triad:** 0 nothing lost or all repaired (or `--dry` rehearsed) / 1 at
+  least one TRUE LOSS / 2 bad invocation or a tool failure.
 
 ### `mrd pin` — the attestation verb
 

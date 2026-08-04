@@ -518,3 +518,73 @@ fn a_non_repository_returns_not_a_repo_rather_than_an_empty_answer() {
         "a directory that is not a repository has no index to compare"
     );
 }
+
+/// **Gate (U22) — the batch stream carries the OID beside the bytes, and the two
+/// halves belong to the same object.**
+///
+/// The lost-pin repair recovers content from history and must then name the
+/// durable object carrying it. Re-hashing the recovered bytes locally would ask
+/// a different question (`hash-object --path` applies the clean filter), so the
+/// id has to be git's own — read from the header git already printed. This gate
+/// holds it against `rev-parse`, the independent answer.
+#[test]
+fn the_batch_stream_answers_with_gits_own_oid_for_the_bytes_it_returns() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    let repo = Repo::at(root);
+
+    write(root, "page.md", "first\n");
+    commit(root, "one");
+    let first = git_in(root, &["rev-parse", "HEAD"]);
+    write(root, "page.md", "second\n");
+    commit(root, "two");
+    let second = git_in(root, &["rev-parse", "HEAD"]);
+
+    let specs = [
+        format!("{first}:page.md"),
+        format!("{second}:page.md"),
+        format!("{second}:absent.md"),
+    ];
+    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    let answers = repo.blobs_with_oids_at(&refs).expect("batch");
+
+    assert_eq!(answers.len(), 3, "one answer per spec, in input order");
+    let one = answers[0].as_ref().expect("the first version is readable");
+    let two = answers[1].as_ref().expect("the second version is readable");
+    assert_eq!(one.bytes, b"first\n", "the bytes are the recorded ones");
+    assert_eq!(two.bytes, b"second\n");
+    assert_eq!(
+        one.oid,
+        git_in(root, &["rev-parse", &format!("{first}:page.md")]),
+        "the oid is git's own answer for that spec"
+    );
+    assert_eq!(
+        two.oid,
+        git_in(root, &["rev-parse", &format!("{second}:page.md")])
+    );
+    assert_ne!(one.oid, two.oid, "and it varies with the object");
+    assert!(
+        answers[2].is_none(),
+        "a spec that resolves to nothing is a real answer, not a failure"
+    );
+}
+
+/// **Gate (U22) — `blobs_at` and `blobs_with_oids_at` are ONE read.** The bytes
+/// half is a projection of the pair, so the two entry points cannot drift into
+/// answering differently about one spec.
+#[test]
+fn the_bytes_face_is_a_projection_of_the_oid_bearing_one() {
+    let repo_dir = empty_repo();
+    let root = repo_dir.path();
+    let repo = Repo::at(root);
+    write(root, "page.md", "body\n");
+    commit(root, "one");
+    let head = git_in(root, &["rev-parse", "HEAD"]);
+
+    let specs = [format!("{head}:page.md"), format!("{head}:absent.md")];
+    let refs: Vec<&str> = specs.iter().map(String::as_str).collect();
+    let bytes = repo.blobs_at(&refs).expect("bytes");
+    let pairs = repo.blobs_with_oids_at(&refs).expect("pairs");
+    let projected: Vec<Option<Vec<u8>>> = pairs.into_iter().map(|p| p.map(|b| b.bytes)).collect();
+    assert_eq!(bytes, projected);
+}
