@@ -130,7 +130,7 @@ realise = { workspace = true }
 # `model` (already in the graph); no new external crate enters, `cargo deny`
 # unchanged.
 config = { workspace = true }
-# `mrd lock-migrate` (U9b, SELF-RETIRING): the v1 -> R4 v2 field migration of
+# `mrd lock migrate` (U9b, SELF-RETIRING): the v1 -> R4 v2 field migration of
 # `meridian-lock` blocks. A local CLIENT of the `lockmigrate` engine -- it carries
 # the ONE quarantined v1 parser and lands every rewrite through the governed
 # `wire_serve::write::lock_migrate` door (already in the graph). This dep line

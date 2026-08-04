@@ -1,4 +1,4 @@
-//! `mrd lock-migrate --vault <path> [--dry] [--json]` (U9b, SELF-RETIRING) —
+//! `mrd lock migrate --vault <path> [--dry] [--json]` (U9b, SELF-RETIRING) —
 //! the one-shot field migration of `meridian-lock` blocks from v1 to R4 v2.
 //!
 //! A local CLIENT of `lockmigrate::sweep`: mrd names the vault, dials the tool,
@@ -25,7 +25,7 @@ use serde_json::json;
 
 use crate::{Fail, Format};
 
-/// Run `mrd lock-migrate --vault <path> [--dry] [--json]`.
+/// Run `mrd lock migrate --vault <path> [--dry] [--json]`.
 ///
 /// # Errors
 /// A tool failure (exit 2), or a findings exit (1) when any page was refused.

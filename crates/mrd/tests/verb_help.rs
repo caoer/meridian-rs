@@ -99,7 +99,7 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 25, "verbs in the listing:\n{listing}");
+    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -345,16 +345,28 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned. Eleven verbs change files or the drawer;
+/// The classification itself, pinned. Twelve verbs change files or the drawer;
 /// the other fourteen are reads. This is the list a reviewer argues with — if it
 /// changes, it changes here, deliberately.
 ///
-/// **Was twelve of twenty-six, and `journal genesis` was the twelfth.** The verb
-/// is retired with the ledger it reset (U6): nothing is being reset any more, so
-/// the write it performed has no subject. The count is in the test NAME on purpose
-/// — a classification whose total can drift silently is one nobody reviews.
+/// **Was twelve of twenty-six, then eleven of twenty-five when `journal genesis`
+/// was retired with the ledger it reset (U6) — nothing is being reset any more,
+/// so the write it performed had no subject.** It is twelve of twenty-six again
+/// because U9b added `mrd lock migrate`.
+///
+/// **That verb is a WRITER, and the reason is not its flag set.** It rewrites
+/// `meridian-lock` blocks in a LIVE VAULT through a governed byte-landing door
+/// (`wire_serve::write::lock_migrate` → `fs::replace_file`). It is in fact the
+/// most write-ish verb here — the only one that rewrites content across a whole
+/// vault in one invocation. `--dry` does not exempt it any more than it exempts
+/// `pin`, `realise`, `reconcile`, `new` or `unfold`, all of which carry the same
+/// flag and are marked. Contrast `mrd test`, which is unmarked because it writes
+/// only into temporary directories — the distinction the sibling test pins.
+///
+/// The count is in the test NAME on purpose — a classification whose total can
+/// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_eleven_of_twenty_five() {
+fn the_write_classification_is_twelve_of_twenty_six() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -381,6 +393,7 @@ fn the_write_classification_is_eleven_of_twenty_five() {
             "unfold",
             "reconcile",
             "realise",
+            "lock migrate",
         ],
         "the verbs marked as writers"
     );
