@@ -52,14 +52,14 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
 
     if report.refusals() > 0 {
         return Err(Fail::findings(format!(
-            "lock-migrate: {} page(s) REFUSED — the migration is not complete",
+            "lock migrate: {} page(s) REFUSED — the migration is not complete",
             report.refusals()
         )));
     }
     Ok(())
 }
 
-/// The parsed `lock-migrate` tail.
+/// The parsed `mrd lock migrate` tail.
 struct Parsed {
     vault: String,
     dry: bool,
@@ -87,7 +87,7 @@ impl Parsed {
         }
         let vault = vault.ok_or_else(|| {
             Fail::tool(
-                "lock-migrate needs --vault <path> — this verb rewrites a live vault and \
+                "lock migrate needs --vault <path> — this verb rewrites a live vault and \
                  will not guess which one"
                     .to_owned(),
             )
