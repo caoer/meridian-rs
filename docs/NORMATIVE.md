@@ -20,6 +20,30 @@ labels *"the unit's design note"*
 carrying ruled law because the advisor did, and flagged that as a judgement it
 made rather than a fact it found. That flag is why this file exists.
 
+## The criterion — ruled, not derived here
+
+**A document is normative if and only if one of these holds:**
+
+1. it is a **frozen base**; or
+2. it carries a **self-declaration of normative ownership** — the house pattern
+   is *"this file is the sole normative text for X"*; or
+3. a **ZT ruling act names it** so.
+
+**Nothing else** — regardless of quality, accuracy, or how often it is cited.
+
+The governing principle is ZT's scope-of-assent doctrine (DX-01, recorded in
+`CLAUDE.md`): elaboration under or beside ratified content is not itself
+ratified. **A document does not become law by containing true sentences.**
+
+**A load-bearing but unlabelled document is a FINDING, never a silent
+promotion.** It has exactly two exits:
+
+- **(a)** it gains its declaration through a recorded act; or
+- **(b)** its content is restated into a document that is already a member.
+
+This criterion was ruled by the advisor. It is applied here, not invented here —
+which is the same distinction the criterion is about.
+
 ## The enumeration, and what it could not have seen
 
 | | count |
@@ -51,9 +75,10 @@ known hole in it, and the hole is the row a reader is standing on.
   below reads each document's self-declaration; a ruling that lives only in a
   session transcript is invisible here by construction.
 
-## NORMATIVE — the document is law for its surface
+## MEMBERS — normative
 
-Each declares this in its own opening. The quoted phrase is the declaration.
+Each satisfies criterion 1 or 2. The quoted phrase is the qualifying
+declaration; where there is none, the row would not be here.
 
 | document | declares |
 |---|---|
@@ -63,6 +88,7 @@ Each declares this in its own opening. The quoted phrase is the declaration.
 | `wire-contract-v2-passenger-registry-amendment.md` | `:2` "Status: normative amendment … this file is the sole normative text for the lock-item passenger grammar." |
 | `wire-contract-v2-refusal-amendment.md` | `:2` "Status: normative amendment … this file is the sole normative text for the block-is-a-feature semantics and for the refusal codes this module mints." |
 | `wire-contract-v3-amendment.md` | `:4` "this file is the sole normative text for the v3 rev." |
+| `wire-contract-fingerprint-or-force-amendment.md` | **member by criterion 3 — the ruling act.** Decision 18 ordered it into existence and it quotes ZT's ruling verbatim at `:7-13`. Its self-declaration at `:3-5` was added later as clerical restoration; see § The classifier that could not classify itself |
 | `arming-from-zero.md` | `:3` "Status: normative for the floor-convention arming ladder." |
 | `meridian-md-schema.md` | `:10` "Status: normative for the `MERIDIAN.md` parse." |
 
@@ -93,9 +119,23 @@ normative document depends on, while being labelled something else.
   what it is, and **neither file uses the word "normative" anywhere** — measured,
   0 occurrences in each.
 
-**No second instance was confirmed.** Two candidates were considered and are in
-§ Undetermined instead, because promoting them here would have been the
-assignment this card forbids.
+**Under the criterion, `fingerprint-or-force.md` is NOT normative.** It carries
+no self-declaration (0 occurrences of the word, measured), it is not a frozen
+base, and no ruling act names it. It remains the exemplar of this category, and
+its exit is now stateable rather than open:
+
+- **(a)** a recorded act gives it the declaration the five other amendment
+  documents carry; or
+- **(b)** the four-property contract at `:60-66` is restated into
+  `wire-contract-fingerprint-or-force-amendment.md`, which is where a reader
+  already goes for this surface.
+
+**Until one of those happens, `assert_guard_contract` enforces a contract whose
+only written home is a non-member.** That is the finding, stated plainly.
+
+**No second instance was confirmed.** Candidates are in § Findings, not promoted
+here — the criterion classifies them out of membership, which is a different act
+from promoting them into category 2.
 
 ## SPEC — states a law, ships no engine code
 
@@ -175,59 +215,91 @@ documents:
 > `docs/wire-contract-v3-amendment.md` (the client seam),
 > `docs/node-rev-merkle-spec.md` (**rev/hash law**), `docs/status.md` (mrd CLI).
 
-So a de-facto pointer list already exists, it covers **5 of 18** top-level
+So a de-facto pointer list already exists, it covers **5 of 19** top-level
 documents, and it calls `node-rev-merkle-spec.md` *law* while that file's own
-frontmatter says `status: spec`. Recorded as a fact, not resolved here.
+frontmatter says `status: spec`.
 
-## Undetermined — escalate, do not assign
+**`CLAUDE.md` is NOT a membership authority.** It is not a frozen base, its
+prose is not a ruling act, and naming a document does not confer normative
+ownership on it — criterion 3 requires a ruling act, and a pointer list is
+elaboration. So `node-rev-merkle-spec.md` is a **spec**, and the word "law" at
+`CLAUDE.md:34` is a **discrepancy on record**, not a competing classification.
+Recorded as a fact; it needs no ruling to be resolved, only a wording fix if
+anyone wants one.
 
-**This is the valuable output of this card.** Each entry states what makes it
-ambiguous and what would settle it. None is a failure to look.
+## Findings — what the criterion classified, and what survives it
 
-1. **`laws.md` — normative in practice, declares nothing.** It has no status
-   line and no frontmatter. Yet "Law 3" is cited as binding in unit designs, and
-   `CLAUDE.md` names it. Its own claim is stronger than a convention — *"breaking
-   it is a compile error, not a review comment"* (`docs/laws.md:4`). **Settles
-   it:** a ruling on whether an architectural law enforced by dependency edges is
-   normative doc-plane text, or a description of enforcement that lives in
-   `Cargo.toml`.
+The criterion resolves membership for four of the six documents whose status was
+previously undetermined. **Resolving membership is not the same as leaving no
+finding:** a document can be cleanly non-normative and still be load-bearing,
+and that is a finding with the two exits named.
 
-2. **`wire-contract-fingerprint-or-force-amendment.md` — an amendment that never
-   claims to be normative.** Measured: **0 occurrences of "normative"** in the
-   file. The other five amendments each declare themselves "the sole normative
-   text" for their surface; this one says only *"Amends the wire contract's
-   write plane"* (`:3`). It is treated as normative by naming convention and by
-   carrying ZT's verbatim ratification act. **This is the amendment for the very
-   unit whose design note is category 2**, so the ambiguity sits on both halves
-   of the same surface. **Settles it:** the author adding the declaration
-   sentence the other five carry — or a ruling that the ratification act is
-   itself sufficient and the sentence is decoration.
+### The classifier that could not classify itself — RESOLVED
 
-3. **`address-grammar.md` — "the law" and "spec only" in one sentence.**
-   `:3` reads *"**Status: the law U10, U11 and U12 implement.** This document is
-   spec only."* It then says *"Where it rules, the implementer has no design
-   decision left"* — normative force — while disclaiming that it ships code,
-   which no document does. **Settles it:** whether "spec only" scopes authority
-   or merely scopes deliverables.
+`wire-contract-fingerprint-or-force-amendment.md` is the document whose `:73`
+classifies `fingerprint-or-force.md` as a design note. It was measured as the
+**only one of the six `*-amendment.md` files never to use the word "normative"**
+— 0 occurrences, where the other five each declare themselves the sole normative
+text. So the classifying document appeared to be unclassified itself.
 
-4. **`node-rev-merkle-spec.md` — `status: spec` in the file, "law" in
-   `CLAUDE.md`.** Two authorities, two words, and the file is the definition of
-   `node_rev` and `root` that every crate hashes against. **Settles it:** one of
-   the two changing, deliberately.
+**It resolved by the criterion's own mechanism, with no exception carved.**
+Criterion 3 is satisfied: **decision 18 ordered this document into existence**,
+and the ruling act is quoted verbatim in its own text at `:7-13`. The credential
+was always real; **what was missing was the label.** That is the criterion's
+exit (a) — a recorded act — discharged clerically rather than by re-ratification.
 
-5. **`preset-session-birth.md` — a "design element" that overrides the code.**
-   *"Where the code and this element disagree, the element wins and the code is
-   rebuilt"* (`:10`). Supremacy over implementation is normative force under
-   another name. It may be a second instance of category 2; it is here rather
-   than there because promoting it would be the assignment this card forbids.
-   **Settles it:** a ruling on whether a design element that wins against code is
-   normative for its plane.
+The self-declaration now stands at `:3-5`, with a note saying why it was added
+late, so **membership-by-act is written down at grant time** and the next auditor
+does not re-run this recursion.
 
-6. **`gate-byte-landing.md` — "enforcement doc" that states a law it cites
-   elsewhere.** *"This page states a law and describes an instrument"* (`:5`),
-   while `Law:` points at the plan and the refusal amendment (`:3`). Whether it
-   restates law owned elsewhere or carries any itself is not determinable from
-   the file. **Settles it:** the same ruling as 5, most likely.
+> [!IMPORTANT] The closed half stands on every branch
+> The natural reading of this finding is that everything downstream wobbles. **It
+> does not.** `fingerprint-or-force.md` has no credential under *any* reading —
+> no self-declaration and no ruling act names it — so its status as a non-member
+> would be unchanged even if the amendment's own membership had been dirty. The
+> recursion cleaned the root; **it never reached the fruit.** The `guard_required`
+> conclusion that rests on `:73` stands on every branch of this check.
+
+**Why this was worth the round trip:** a classification scheme that cannot
+classify its own classifier fails. This one classified its own classifier, by its
+own two-exit rule, without an exception. It surfaced only because six files named
+`*-amendment.md` were measured one at a time instead of trusted as six of a kind.
+
+### Findings that survive the criterion
+
+**`address-grammar.md` — a self-declaration that contradicts itself.** `:3`
+reads *"**Status: the law U10, U11 and U12 implement.** This document is spec
+only."* It declares itself law and disclaims in the same sentence. It is not
+merely unlabelled, which the criterion handles; it is **doubly labelled**, which
+the criterion does not reach. Exit (a) or (b), and until then it is filed under
+SPEC on the strength of "spec only" — the half a reader is more likely to act on.
+
+**`laws.md` — load-bearing, unlabelled.** No status line, no frontmatter, no
+ruling act. Under the criterion it is **not normative**, however often Law 3 is
+cited as binding. Its own sentence — *"breaking it is a compile error, not a
+review comment"* (`:4`) — is precisely the claim the criterion refuses to accept
+as self-conferring. Exit (a) or (b). Worth noting exit (b) may already be
+satisfied in substance: the laws are enforced by `Cargo.toml` dependency edges,
+so the enforcement lives in the tree whether or not the prose is a member.
+
+**`preset-session-birth.md` — supremacy over code, no declaration.** *"Where the
+code and this element disagree, the element wins and the code is rebuilt"*
+(`:10`). Under the criterion: **not normative**, because winning against code is
+not a normative-ownership declaration. It is load-bearing by its own sentence,
+so exit (a) or (b) applies.
+
+### Resolved by the criterion — no longer open
+
+- **`fingerprint-or-force.md`** — not normative. Category 2 exemplar; exits
+  stated in that section.
+- **`node-rev-merkle-spec.md`** — a **spec**. `CLAUDE.md:34` calling it "law" is
+  a discrepancy on record, not a competing classification, because `CLAUDE.md`
+  is not a membership authority.
+- **`gate-byte-landing.md`** — not normative. It states a law whose home it
+  cites at `:3`; restating law owned elsewhere is not carrying it, so this is
+  not a category-2 case.
+- **`arming-from-zero.md`** and **`meridian-md-schema.md`** — **members**, by
+  criterion 2, on their own surfaces. Both are in the MEMBERS table.
 
 ## The rule for future documents
 
