@@ -1,5 +1,20 @@
-//! The root-history ring (v2 §7.3): sidecar-held process state, RAM-only,
-//! bound 256 — one ring per daemon EPOCH.
+//! The root-history ring (v2 §7.3): host-held process state, RAM-only,
+//! bound 256 — one ring per EPOCH.
+//!
+//! **Shared by both hosts (U20b).** The sidecar holds one ring per serve
+//! lifetime; the registry holds one per WORKSPACE, born at first use and dropped
+//! on the `read_mints` horizon (`Registry::reap` — "session memory does not
+//! outlive the registration"). The two hosts differ in what an epoch IS and in
+//! what drives detection; the retention law below is identical for both, which
+//! is why it lives here and not in either host.
+//!
+//! **Ratified as TRANSPORT, not memory (advisor, U20a Q2, 2026-08-03):** this is
+//! a bounded in-flight buffer for a live channel. It reconstructs no history, it
+//! answers a gap with `root_unknown` → resync, and nothing in it survives a
+//! restart — so ZT's decision 19 ("the engine does not have memory … history is
+//! pin to git when we lock") is not engaged. **Binding constraint on future
+//! work:** any replay-what-you-missed BEYOND this in-flight window is a memory
+//! claim and goes to ZT, never to an implementer.
 //!
 //! The §7.1 late law, encoded structurally: `seq` is per-daemon-epoch — the
 //! ring lives inside one `serve` lifetime and no counter survives on disk
@@ -12,8 +27,11 @@
 //! T5-SUB reads the same entries for the push path.
 
 use std::collections::VecDeque;
+use std::io::{self, Write};
 
 use wire::{DeltaFrame, Root};
+
+use crate::rev::Position;
 
 /// §7.3: history retention bound (i harvest) — a range outside it degrades
 /// to re-derive (`root_unknown` → full resync), never to wrong data.
@@ -66,6 +84,33 @@ impl RootRing {
             .collect()
     }
 
+    /// **The subscribe anchor law (§7.1 late law).** Can a subscription start at
+    /// `from_seq` — i.e. can this ring deliver a contiguous stream from there?
+    ///
+    /// Two anchorable positions, and only two: `current` (live-only, nothing
+    /// replayed) and any position the retained window can still replay from.
+    /// Everything else — evicted, ahead of the tip, or a PREVIOUS EPOCH's
+    /// counter — is unanchorable, and the caller answers `root_unknown` →
+    /// resync by diff-by-root, the only restart-durable handle. Never a
+    /// cross-epoch seq comparison: the old counter died with its ring.
+    ///
+    /// Shared by both hosts (U20b) because it is the retention law's own
+    /// predicate — a host that spelled it differently would be a second
+    /// retention law wearing the first one's vocabulary.
+    #[must_use]
+    pub fn can_anchor(&self, from_seq: u64) -> bool {
+        let current = self.seq();
+        // `oldest - 1` is the seq a client holds when it has consumed nothing
+        // from the retained window: the position the oldest frame advances FROM.
+        // Saturating because a ring whose oldest frame is seq 0 has no earlier
+        // position to name (frames are numbered from 1).
+        from_seq == current
+            || (from_seq < current
+                && self
+                    .oldest_seq()
+                    .is_some_and(|oldest| from_seq >= oldest.saturating_sub(1)))
+    }
+
     /// Record one emitted batch (D4 write path / F5 external detection).
     /// Contiguity is the caller's: `frame.delta.root_before` extends the
     /// chain, `frame.delta.seq` is this epoch's next seq.
@@ -104,6 +149,53 @@ impl RootRing {
         }
         Some(self.entries.iter().skip(i).take(j - i).cloned().collect())
     }
+}
+
+/// Write one Notification frame — **the ONE push serializer, both hosts.**
+///
+/// The frame is the STORED ring object serialized directly (`{"delta":{…}}`, no
+/// `id` key — §3.1 classification), so the d4 single-constructor law extends to
+/// the push path by construction: there is no second place a Delta becomes
+/// bytes. Under a v3 session each frame is re-shaped `root_before/after` →
+/// `fingerprint_*` before write.
+///
+/// # The v2 demotion, and why it is TYPED rather than a `Value` pass
+/// A v2 session must never receive a field that postdates its contract, and
+/// `#[serde(skip_serializing_if)]` does not provide that: it skips on an empty
+/// VALUE, never on a v2 SESSION. So the v2 branch strips every key
+/// [`crate::rev::is_reserved`] names at [`Position::NotificationRoot`] — today
+/// exactly `effects`, the C3 reaction sibling.
+///
+/// It strips on the TYPED value, and that is load-bearing. `serde_json::Map` is
+/// a `BTreeMap` here (`preserve_order` is not enabled), so routing a frame
+/// through `Value` ALPHABETIZES its keys — the v2 wire prints struct order
+/// (`seq`, `root_before`, `root_after`, `files`), and alphabetizing it would be
+/// a byte-level break of the frozen contract committed while trying to protect
+/// it. Worse, a key-SET pin compares sets and cannot see order, so it would ship
+/// green. `u20b_v2_notification_shape.rs` pins the ORDER for exactly this
+/// reason; a future `ResponseRoot` row owes the same typed treatment.
+///
+/// # Errors
+/// I/O failure on the output stream — never a content condition.
+pub fn write_frame(output: &mut impl Write, frame: &DeltaFrame, v3: bool) -> io::Result<()> {
+    if v3 {
+        let mut v = serde_json::to_value(frame)?;
+        crate::rev::project_delta_frame(&mut v);
+        serde_json::to_writer(&mut *output, &v)?;
+    } else if crate::rev::is_reserved("effects", Position::NotificationRoot)
+        && !frame.effects.is_empty()
+    {
+        // Demoted COPY: the ring keeps the full frame, because a v3 subscriber
+        // on the same workspace is entitled to the reaction plane.
+        let demoted = DeltaFrame {
+            delta: frame.delta.clone(),
+            effects: Vec::new(),
+        };
+        serde_json::to_writer(&mut *output, &demoted)?;
+    } else {
+        serde_json::to_writer(&mut *output, frame)?;
+    }
+    output.write_all(b"\n")
 }
 
 #[cfg(test)]

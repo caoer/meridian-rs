@@ -5,6 +5,11 @@
 //! [`write::splice`] (W1 choke-point both hosts commit through). Read arms never own corpus
 //! or disk; callers supply state. Write is stateful (disk/reparse/receipt/policy) but still
 //! one shared impl. `root`/`diff` stay with each host (different cursor/history plumbing).
+//!
+//! [`ring`] and [`watch`] are the DELTA plane, lifted here by U20b so the two hosts share one
+//! retention law and one external-change classifier. They were the sidecar's until a second
+//! host needed them; what stays per-host is the DRIVER (the sidecar reconciles at its serve-loop
+//! line boundary, the registry at a subscription's detection cycle), never the classification.
 
 pub mod armed_disk;
 pub mod check_write;
@@ -17,6 +22,8 @@ pub(crate) mod positions;
 pub mod reaction;
 pub mod read;
 pub mod rev;
+pub mod ring;
+pub mod watch;
 pub mod write;
 
 use wire::{ErrorBody, ErrorCode, Path, Root};

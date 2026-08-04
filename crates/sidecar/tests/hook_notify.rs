@@ -183,6 +183,24 @@ impl LiveSidecar {
         }
     }
 
+    /// Negotiate v3 — **the contract the reaction plane belongs to.**
+    ///
+    /// `effects` postdates frozen v2, so a v2 session is DEMOTED past it
+    /// (`wire_serve::rev::V2_RESERVED_FIELDS`). A reaction test left on the
+    /// default v2 session therefore asserts the v2 WIRE SHAPE while its name
+    /// claims it covers ARMING — and the "no reaction" half goes vacuous, since
+    /// a v2 notification never carries `effects` whether or not one was armed.
+    /// Moving the fixture onto v3 is what keeps these tests pointed at their own
+    /// subject.
+    fn negotiate_v3(&mut self, id: u64) {
+        self.send(&format!(
+            r#"{{"id":{id},"op":"hello","proto":1,"contract":"v3"}}"#
+        ));
+        let (_, hello) = self.receive();
+        assert_eq!(hello["id"], id, "hello is answered: {hello}");
+        assert_eq!(hello["ok"], true, "v3 negotiated: {hello}");
+    }
+
     fn send(&mut self, line: &str) {
         let stdin = self.stdin.as_mut().expect("live stdin");
         writeln!(stdin, "{line}").expect("write request");
@@ -239,6 +257,7 @@ fn assert_armed_intent(effects: &Value) {
 fn splice_response_arms_before_live_notification_delivery() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(100);
     sidecar.send(r#"{"id":1,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 1);
 
@@ -264,6 +283,7 @@ fn splice_response_arms_before_live_notification_delivery() {
 fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(110);
     sidecar.send(r#"{"id":10,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 10);
 
@@ -293,6 +313,7 @@ fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
 fn refused_and_out_of_scope_writes_emit_no_reaction() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(120);
     sidecar.send(r#"{"id":20,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 20);
 
@@ -320,7 +341,9 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
     assert!(notification.get("id").is_none());
     assert!(
         notification.get("effects").is_none(),
-        "out-of-scope Delta keeps pre-effects bytes"
+        "out-of-scope Delta keeps pre-effects bytes — and on a v3 session this \
+         can actually FAIL: v3 carries `effects` whenever one is armed, so the \
+         absence here means no reaction was armed, not that the wire hid it"
     );
     sidecar.finish();
 }

@@ -98,10 +98,20 @@ pub struct Registry {
     /// state file — and dropped alongside the registration on the ONE idle-reap
     /// horizon.
     read_mints: Mutex<HashMap<PathBuf, Arc<receipt::read_mint::ReadMintStore>>>,
+    /// U20b the delta plane, one ring per workspace — keyed, created and reaped
+    /// EXACTLY like [`Self::read_mints`], and for the same reason: it is session
+    /// memory that must survive a corpus rebuild but must not outlive the
+    /// registration.
+    ///
+    /// **S6 — one ring per workspace, never one global ring.** The key is the
+    /// canonical workspace path, so two spellings of one workspace share a ring
+    /// and two workspaces can never see each other's frames. A global ring here
+    /// would leak every path, hpath and rev of every workspace to every
+    /// subscriber.
+    rings: Mutex<HashMap<PathBuf, Arc<crate::ring::WorkspaceRing>>>,
     /// This daemon instance's epoch token — the `built_epoch` half of a
     /// published stamp (pairs with `seq`). A per-instance value (a restart mints
-    /// a new one); the resident daemon holds no delta ring, so `seq` is `0`
-    /// until subscriptions land (round-2).
+    /// a new one).
     epoch: String,
     state: StateStore,
     cache_root: PathBuf,
@@ -128,6 +138,10 @@ impl Registry {
             refresh_state: RwLock::new(HashMap::new()),
             // Session memory starts empty: a cold daemon has minted nothing.
             read_mints: Mutex::new(HashMap::new()),
+            // Nor is anyone subscribed: a cold daemon's every ring is unborn,
+            // so every pre-restart `from_seq` is outside retained history and
+            // answers `root_unknown` → resync (§7.1 late law).
+            rings: Mutex::new(HashMap::new()),
             // A per-instance epoch stamp: restart mints a new one, so a stale
             // cross-restart `built_epoch` never reads as current.
             epoch: now_secs().to_string(),
@@ -480,6 +494,28 @@ impl Registry {
         )
     }
 
+    /// The workspace's delta ring (U20b), created on first use — the in-flight
+    /// buffer a subscription reads and the detector feeds.
+    ///
+    /// `workspace` must already be the CANONICAL path, exactly as
+    /// [`Self::read_mints`] requires and for a sharper reason: this key IS the
+    /// S6 isolation boundary. The `hello` bind supplies it
+    /// ([`Self::pin_declared`] → `workspace::canonicalize`), so two spellings of
+    /// one workspace — a symlink, a `.`-relative path, a case variant — resolve
+    /// to ONE ring, and no spelling can reach a ring that is not its own.
+    ///
+    /// The returned handle is an [`Arc`] so a parked subscriber never holds this
+    /// map's lock; the ring has its own interior lock.
+    #[must_use]
+    pub fn ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
+        let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(rings.entry(workspace.to_path_buf()).or_insert_with(|| {
+            Arc::new(crate::ring::WorkspaceRing::new(&fs::WorkspaceRoot(
+                workspace.to_path_buf(),
+            )))
+        }))
+    }
+
     /// The workspace's read-is-the-mint ledger (stage-2 S6), created on first
     /// use — the daemon-session layer a composed read mints into and a pin gate
     /// reads back.
@@ -729,11 +765,28 @@ impl Registry {
     /// it outside the warm engine.
     pub fn reap(&self, now: u64, threshold_secs: u64) -> Vec<PathBuf> {
         let cutoff = now.saturating_sub(threshold_secs);
+        // U20b — **a live subscription is USE.** A subscribed connection is
+        // push-only by design: it sends no requests, so it makes no `last_use`
+        // touch and idles straight past the cutoff.
+        //
+        // What reaping it costs, measured rather than assumed: NOT a dead
+        // stream. The subscriber holds an `Arc` to its ring, so it keeps
+        // detecting and delivering perfectly well. The cost is a FORK — the map
+        // entry is gone, so the next `sub` on this workspace mints a SECOND ring
+        // with its own epoch and counter, and `seq` stops being the monotone
+        // per-workspace counter §4.7 defines. The orphan also folds the corpus
+        // for as long as its holder lives, invisible to this reaper because it
+        // is no longer in the map to be found.
+        //
+        // Subscribers are read before taking the `inner` write lock and the
+        // removal happens under it, so the exemption cannot be computed from a
+        // set that a concurrent `sub` has already invalidated.
+        let subscribed = self.subscribed_workspaces();
         let reaped: Vec<PathBuf> = {
             let mut map = self.inner.write().unwrap_or_else(PoisonError::into_inner);
             let reaped: Vec<PathBuf> = map
                 .iter()
-                .filter(|(_, entry)| entry.last_use <= cutoff)
+                .filter(|(key, entry)| entry.last_use <= cutoff && !subscribed.contains(*key))
                 .map(|(key, _)| key.clone())
                 .collect();
             for key in &reaped {
@@ -757,8 +810,30 @@ impl Registry {
             for key in &reaped {
                 mints.remove(key);
             }
+            drop(mints);
+            // The ring dies on the SAME horizon (U20b, advisor-ratified): the
+            // ring is transport, not memory, and session transport does not
+            // outlive the registration any more than session receipts do. A
+            // later `sub` on this workspace gets a fresh epoch whose every
+            // pre-reap `from_seq` answers `root_unknown` → resync.
+            let mut rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+            for key in &reaped {
+                rings.remove(key);
+            }
         }
         reaped
+    }
+
+    /// Workspaces with at least one live subscription — the reaper's exemption
+    /// set. Rings with no subscribers are ordinary reap candidates: an unwatched
+    /// ring is holding bytes nobody will ever read.
+    fn subscribed_workspaces(&self) -> std::collections::HashSet<PathBuf> {
+        let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        rings
+            .iter()
+            .filter(|(_, ring)| ring.has_subscribers())
+            .map(|(key, _)| key.clone())
+            .collect()
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
