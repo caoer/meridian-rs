@@ -389,16 +389,60 @@ outcome; the expensive one is the reader who cannot tell and guesses.
 
 ## How to re-derive
 
-```
-cd <repo>
-git rev-parse --short HEAD                         # state the revision
-/usr/bin/find docs -mindepth 1 | wc -l             # total entries
-/usr/bin/find docs -mindepth 1 -type d             # directories
-/usr/bin/find docs -type f ! -name '*.md'          # non-md files
-/usr/bin/find docs -type f -name '*.md' | wc -l    # md files
-grep -c -i normative docs/*.md                     # who claims it
+**The publisher owes the command, not only the number.** A number without its
+revision goes stale silently (§ header). A number without its command makes the
+next reader build an instrument that is not this one, and then compare two
+different measurements as though they were one. Both halves, or the number is
+not really published.
+
+That is not hypothetical: a reviewer re-counting the MEMBERS rows from intent
+rather than from this command got **24**, because the rebuilt query was unscoped
+over a file with many tables. The scoped count is 9. Nothing had changed but the
+instrument.
+
+Expected values are given so each line is its own control. Run them at a stated
+revision; measured here at `457141ba`.
+
+```sh
+git rev-parse --short HEAD                          # state the revision
+
+/usr/bin/find docs -mindepth 1 | wc -l              # 39  total entries
+/usr/bin/find docs -mindepth 1 -type d | wc -l      #  6  directories
+/usr/bin/find docs -type f ! -name '*.md' | wc -l   #  2  non-md files
+/usr/bin/find docs -type f -name '*.md' | wc -l     # 31  md files
+/usr/bin/find docs -maxdepth 1 -type f -name '*.md' | wc -l   # 19  md, top level
+/usr/bin/find docs -type f | wc -l                  # 33  files (32 + this list)
+
+# MEMBERS rows — SECTION-SCOPED. An unscoped grep over this file counts every
+# table row in it and returns 24.
+awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 9
+
+grep -c -i normative docs/*.md                      # who claims it
 ```
 
-The counts must close: `directories + non-md + md == total`. If they do not,
-the enumeration missed a file type — say which, rather than reporting the
-subtotal as coverage.
+**`/usr/bin/find` is deliberate, not pedantry.** The interactive `find` here is a
+shell wrapper that injects excludes; a search whose target is on its ignore list
+returns empty output **with exit 0** — a silent false negative indistinguishable
+from "not found". Absolute path, always.
+
+**Single quotes around the MEMBERS pattern are load-bearing.** The trailing
+backtick inside double quotes opens a command substitution. Measured: the
+double-quoted form emits `zsh:1: unmatched "` on **stderr and exits 0**, so a
+scripted loop with `2>/dev/null` prints a clean zero and reports the table empty.
+The remedy and the defect emit the same bytes — which is the failure this whole
+file is a response to, reproduced inside its own instructions if the quoting is
+wrong.
+
+**Two-arm any line here before trusting it,** including these:
+
+```sh
+awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 9  — the real file
+awk '/^## MEMBERS/,/^## RULED LAW/' docs/laws.md      | grep -c '^| `'   # 0  — a file with no MEMBERS section
+```
+
+If both arms return the same number, the instrument is not reading what you
+think it is.
+
+The counts must close: `directories + non-md + md == total`. If they do not, the
+enumeration missed a file type — say which, rather than reporting the subtotal
+as coverage.
