@@ -200,19 +200,58 @@ fn rung_one_falls_to_rung_two_when_the_diff_exceeds_the_size_cap() {
     let a = args(vec![stale_match(public(), &pinned)]);
     let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
 
+    assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
     assert_eq!(err.rung, Some(2), "over the cap, the ladder falls a rung");
     assert_eq!(err.diff, None, "no diff ships past the cap");
     let content = err.new_content.as_deref().expect("rung 2 carries content");
     assert!(content.contains("current line 0") && content.contains("current line 199"));
+    assert_ladder_contract("cap fallback", err.message.as_deref().expect("message"));
 
-    // The cap is a real threshold, not a formality: the diff this suppressed
-    // would have been over it.
+    // THE DISCRIMINATOR. Without it this test proves only that SOMETHING sent
+    // rung 2 — a missing baseline would do it just as well, and the test would
+    // read green while exercising a path it does not name. Same document, same
+    // target, same edit shape: only the picture's DISTANCE changes. A near
+    // picture must come back rung 1, which leaves the cap as the sole cause of
+    // the fallback above.
+    let mut near = String::from("## Public\n\n");
+    for i in 0..200 {
+        let line = if i == 100 {
+            "current line ONE HUNDRED".to_owned()
+        } else {
+            format!("current line {i}")
+        };
+        writeln!(near, "{line}").expect("String write is infallible");
+    }
+    let close = splice(
+        &root,
+        0,
+        &args(vec![stale_match(public(), &near)]),
+        &[],
+        None,
+    )
+    .expect_err("refuses");
+    assert_eq!(
+        close.rung,
+        Some(1),
+        "a NEAR picture of the same node diffs — so the cap, not the shape, \
+         caused the fallback above"
+    );
+    let diff = close.diff.as_deref().expect("the near picture diffs");
     assert!(
-        content.len() > DIFF_CAP_BYTES,
-        "the fixture must actually exceed the cap ({} bytes vs {DIFF_CAP_BYTES})",
+        diff.len() <= DIFF_CAP_BYTES && diff.len() < content.len(),
+        "and bounded context makes rung 1 genuinely CHEAPER than rung 2 \
+         ({} diff bytes vs {} content bytes)",
+        diff.len(),
         content.len()
     );
-    assert_ladder_contract("cap fallback", err.message.as_deref().expect("message"));
+    assert!(
+        diff.contains("-current line ONE HUNDRED") && diff.contains("+current line 100"),
+        "the hunk names the one line that moved: {diff}"
+    );
+    assert!(
+        !diff.contains("current line 0") && !diff.contains("current line 199"),
+        "and carries only its context window, not the whole node: {diff}"
+    );
 }
 
 // ── S4 — scope is a security rule ──────────────────────────────────────────
@@ -224,6 +263,7 @@ fn rung_one_discloses_nothing_outside_the_callers_targeted_section() {
     let a = args(vec![stale_match(public(), pinned)]);
     let err = splice(&root, 0, &a, &[], None).expect_err("refuses");
 
+    assert_eq!(err.code, ErrorCode::CasMismatch, "the named refusal fired");
     assert_eq!(err.rung, Some(1), "the rung under test is the rich one");
 
     // The WHOLE envelope, as it goes on the wire — not just the diff field, so
@@ -342,6 +382,7 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
         None,
     )
     .expect_err("refuses");
+    assert_eq!(rich.code, ErrorCode::CasMismatch, "the named refusal fired");
     assert_eq!(rich.rung, Some(1));
     assert!(rich.diff.is_some() && rich.new_content.is_none());
 
@@ -362,6 +403,11 @@ fn the_builder_picks_the_richest_computable_rung_not_the_first_that_works() {
         None,
     )
     .expect_err("refuses");
+    assert_eq!(
+        poorer.code,
+        ErrorCode::CasMismatch,
+        "the named refusal fired"
+    );
     assert_eq!(poorer.rung, Some(2));
     assert!(poorer.new_content.is_some());
 }
