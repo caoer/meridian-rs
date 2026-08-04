@@ -13,7 +13,19 @@ const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
+/// A pinnable workspace — **git-initialised**, because R4 gives every pin row a
+/// `hash` and admits no row without one. A bare directory is no longer a
+/// workspace a pin can land in; that case is its own test
+/// ([`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
+/// builds its fixture with [`bare_workspace`] directly).
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
+    let (dir, root) = bare_workspace();
+    git_init(dir.path());
+    (dir, root)
+}
+
+/// The same fixture WITHOUT a repo — only the no-git refusal wants this.
+fn bare_workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), TARGET).expect("target");
@@ -85,8 +97,7 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
 /// Bare CLI pin (no actor, D16): lock block + slug promotion + green fingerprint.
 #[test]
 fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
-    let (dir, root) = workspace();
-    git_init(dir.path());
+    let (_dir, root) = workspace();
 
     let out =
         splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
@@ -117,11 +128,11 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let pinner = read_page(&root, "plan.md");
     let expected_block = format!(
         "```meridian-lock\n\
-         version: 1\n\
-         objects:\n\
-         \x20 \"guide.md\": \"{blob}\"\n\
+         version: 2\n\
          pins:\n\
-         \x20 - ref: \"guide.md#Guide/Leader's Guideline\"\n\
+         \x20 - object: \"[[guide]]\"\n\
+         \x20   hash: \"{blob}\"\n\
+         \x20   path: [\"Guide\", \"Leader's Guideline\"]\n\
          \x20   fingerprint: \"{}\"\n\
          ```\n",
         fact.fingerprint
@@ -150,7 +161,156 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
     let found = lock::find(&doc).expect("parses").expect("present");
     assert_eq!(found.lock.pins.len(), 1);
-    assert_eq!(found.lock.objects, vec![("guide.md".into(), blob)]);
+    assert_eq!(
+        found.lock.pins[0].hash, blob,
+        "R4: the blob oid rides the pin row it was minted for, not a shared table"
+    );
+    assert_eq!(
+        found.lock.pins[0].object, "guide",
+        "the object is the wiki link's INNER text — the target path minus `.md`"
+    );
+}
+
+/// **The path array is built from `hpath_raw` SEGMENTS, never by splitting a
+/// joined string** (R1.6 — arrays for machines, no string address forms).
+///
+/// The discriminator is `sanitize_heading`, which is MANY-TO-ONE: it rewrites
+/// every space to `-`. The fixture heading is `Leader's Guideline` (a SPACE),
+/// and the two candidate derivations disagree on exactly that byte:
+///
+/// - **From `hpath_raw` segments** → `["Guide", "Leader's Guideline"]`. The
+///   space survives, because the raw pre-image is what was carried.
+/// - **From the joined string** — `fact.selector` (`Guide/Leader's-Guideline`)
+///   or `declared_ref`, split on `/` → `["Guide", "Leader's-Guideline"]`. A
+///   HYPHEN. That address resolves to nothing, and the pin would read
+///   red-dangling forever.
+///
+/// So a hyphen in the second element is proof the joined string was the input.
+/// The assert is on the space, and it cannot pass by accident: no sanitized
+/// spelling of this heading contains one.
+#[test]
+fn the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string() {
+    let (_dir, root) = workspace();
+    let out =
+        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+    let fact = pin_fact(&out.body);
+    assert_eq!(
+        fact.selector, "Guide/Leader's-Guideline",
+        "the human address is SANITIZED — the space is already gone here, which \
+         is what makes it useless as a source for the array"
+    );
+
+    let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
+    let found = lock::find(&doc).expect("parses").expect("present");
+    assert_eq!(
+        found.lock.pins[0].selector,
+        lock::Selector::Path(vec!["Guide".into(), "Leader's Guideline".into()]),
+        "raw segments: the SPACE survives. Splitting either joined spelling on \
+         `/` would have put a hyphen here"
+    );
+
+    // The canonical bytes say it too — the array is the stored form, so no
+    // reader downstream is handed a delimiter to re-split either.
+    assert!(
+        read_page(&root, "plan.md").contains("path: [\"Guide\", \"Leader's Guideline\"]"),
+        "the stored form is the array, carrying the raw text verbatim"
+    );
+}
+
+/// A heading whose RAW text begins with `^` is REFUSED, not written.
+///
+/// R4 spells an anchor pin as a path array whose sole element is a `^id`, so an
+/// element like `^looks-like-an-anchor` sitting among heading segments would
+/// make the row's GRAIN unreadable — block or section, with nothing in the bytes
+/// to tell them apart. Mixed arrays appear nowhere in the ratified trace, so the
+/// engine refuses rather than assigning one a meaning.
+#[test]
+fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_array() {
+    let (dir, root) = workspace();
+    // A SPACE after the caret, deliberately: `^Alpha-Beta` would parse as a real
+    // block anchor on the heading line and refuse one rung earlier (slug
+    // collision), which would test the wrong thing. `^Alpha Beta` is plain
+    // heading text — the case that actually reaches the array builder.
+    std::fs::write(
+        dir.path().join("guide.md"),
+        "# Guide\n\n## ^Alpha Beta\n\nbody text.\n",
+    )
+    .expect("a heading whose raw text opens with a caret");
+
+    let err = splice(&root, 0, &pin_args("Guide/^Alpha-Beta"), &[], None)
+        .expect_err("an ambiguous path array must refuse");
+
+    assert_eq!(err.code, ErrorCode::BadRequest);
+    let message = err.message.clone().unwrap_or_default();
+    assert!(
+        message.contains("begins with `^`") && message.contains("Nothing was written"),
+        "the refusal names the ambiguity and says nothing landed: {message}"
+    );
+    assert_eq!(
+        read_page(&root, "plan.md"),
+        PINNER,
+        "a refused pin leaves the pinning page byte-untouched"
+    );
+}
+
+/// **KEY-SET PIN over the serialized `PinFact` (all-hands #1).**
+///
+/// `Option` + `skip_serializing_if` is not a version gate: it skips on the
+/// VALUE being none, never on the SESSION being v2. So what a field means for
+/// the wire is decided by whether anything POPULATES it — and U8 changed
+/// exactly that for `blob`.
+///
+/// Before U8, a pin outside git minted `blob: None` and the key serialized
+/// AWAY, so `PinFact`'s key set varied with the environment. Under R4 the hash
+/// is mandatory: a pin either carries one or refuses, so `blob` is now ALWAYS
+/// present wherever a `PinFact` exists at all. That is a key-set change, and it
+/// is the class value-pinning sweeps are blind to — they pin worked values
+/// (spans, revs, roots), not the presence of a key.
+///
+/// This test is the detector for that class on this body. `PinFact` rides
+/// `splice.pin`, which is v3-only at decode, so nothing here should reach a v2
+/// frame — this pins the key set so a later change to that reachability is
+/// caught HERE, loudly, instead of shipping green.
+///
+/// **What this test alone does NOT prove.** Its workspace is git-initialised, so
+/// it cannot witness the absent-`blob` case directly. The invariant "a `PinFact`
+/// exists ⟹ `blob` is present" is established by this test TOGETHER with
+/// [`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
+/// covers the other branch: no git, no `PinFact` at all. Neither half is
+/// sufficient alone, and a future edit that softened the refusal back to honest
+/// degradation would break that second test, not this one.
+#[test]
+fn the_pin_fact_key_set_is_pinned_and_blob_is_now_always_present() {
+    let (_dir, root) = workspace();
+    let out =
+        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+    let fact = pin_fact(&out.body);
+
+    let serde_json::Value::Object(map) = serde_json::to_value(&fact).expect("PinFact serializes")
+    else {
+        panic!("a PinFact serializes to an object");
+    };
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "anchor",
+            "blob",
+            "declared_ref",
+            "fingerprint",
+            "promoted",
+            "selector",
+            "target",
+        ],
+        "the EXACT key set — a new key here is a wire change, and an ABSENT \
+         `blob` means something started minting hashless pins again"
+    );
+    assert!(
+        map["blob"].as_str().is_some_and(|b| b.len() == 40),
+        "and the key carries a real oid, not null: {:?}",
+        map["blob"]
+    );
 }
 
 /// GATE 4a: promotion is rev-neutral (D14 honesty — cannot move pinned fingerprint).
@@ -496,6 +656,16 @@ fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
         live_fingerprint(&root, "guide.md#^claim"),
         "and the block-grain token is what the verify plane recomputes"
     );
+
+    // R4's anchor form: the PATH arm with the `^id` as its SOLE element. There
+    // is no third selector arm, and the array is never widened to the host
+    // section — that would silently turn a block claim into a section claim.
+    let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
+    let found = lock::find(&doc).expect("parses").expect("present");
+    assert_eq!(
+        found.lock.pins[0].selector,
+        lock::Selector::Path(vec!["^claim".into()]),
+    );
 }
 
 /// Missing page/selector → `pin_target_missing` (not a permanently-red claim).
@@ -528,7 +698,6 @@ fn a_missing_target_or_selector_refuses_pin_target_missing() {
 #[test]
 fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     let (dir, root) = workspace();
-    git_init(dir.path());
     let repo = git::Repo::at(dir.path().to_path_buf());
 
     let normal = pin_fact(
@@ -552,23 +721,27 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     );
 }
 
-/// Outside git: claim plane lands; retrieval plane absent (D5, no fabricated sha).
+/// Outside git: the pin REFUSES. Under v1 the claim plane landed and the
+/// `objects:` entry was simply absent — two planes, one optional. R4 folded the
+/// hash INTO the claim ("if hash is missing, we lost the explicit target
+/// meaning"), so the same condition now has no legal row to write. Still no
+/// fabricated sha (D5); the honesty just moved from omission to refusal.
 #[test]
-fn without_git_the_pin_lands_with_no_objects_entry() {
-    let (_dir, root) = workspace();
-    let fact = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Other"), &[], None)
-            .unwrap()
-            .body,
-    );
-    assert!(fact.blob.is_none(), "no repo, no oid");
+fn without_git_the_pin_refuses_because_r4_admits_no_hashless_row() {
+    let (_dir, root) = bare_workspace();
+    let err = splice(&root, 0, &pin_args("Guide/Other"), &[], None)
+        .expect_err("no repo, no oid, no legal R4 pin");
 
-    let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
-    let found = lock::find(&doc).expect("parses").expect("present");
-    assert_eq!(found.lock.pins.len(), 1, "the claim plane landed");
+    assert_eq!(err.code, ErrorCode::IoError);
+    let cause = err.cause.clone().unwrap_or_default();
     assert!(
-        found.lock.objects.is_empty(),
-        "the retrieval plane is absent"
+        cause.contains("blob oid") && cause.contains("Nothing was written"),
+        "the refusal names the missing hash and says nothing landed: {cause}"
+    );
+    assert_eq!(
+        read_page(&root, "plan.md"),
+        PINNER,
+        "a refused pin leaves the pinning page byte-untouched"
     );
 }
 
@@ -610,14 +783,15 @@ fn a_second_pin_unions_into_the_existing_lock_block() {
     let found = lock::find(&doc).expect("parses").expect("present");
     assert_eq!(found.lock.pins.len(), 2, "both claims are held");
     assert_eq!(
-        found.lock.pins[0].declared_ref.to_string(),
-        first.declared_ref
+        found.lock.pins[0].selector,
+        lock::Selector::Path(vec!["Guide".into(), "Leader's Guideline".into()]),
     );
     assert_eq!(found.lock.pins[0].fingerprint, first.fingerprint);
     assert_eq!(
-        found.lock.pins[1].declared_ref.to_string(),
-        second.declared_ref
+        found.lock.pins[1].selector,
+        lock::Selector::Path(vec!["Guide".into(), "Other".into()]),
     );
+    assert_eq!(found.lock.pins[1].fingerprint, second.fingerprint);
     assert_eq!(
         doc.raw.matches("```meridian-lock").count(),
         1,

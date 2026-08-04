@@ -30,10 +30,25 @@ const TARGET: &str = "# Guide\n\n## Leader's Guideline\n\nreview before you clos
 /// fixture's fingerprints are real (see `fingerprints_in_this_fixture_differ`).
 const DECOY: &str = "# Guide\n\n## Leader's Guideline\n\nship it without reading.\n";
 
+/// Git-initialised: these tests mint pins through the production door, and an
+/// R4 pin row carries a `hash` only git can answer for.
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), TARGET).expect("target");
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "s2fix@example.invalid"],
+        vec!["config", "user.name", "s2fix"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(&args)
+            .status()
+            .expect("git runs in the test environment");
+        assert!(status.success(), "git {args:?}");
+    }
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     (dir, root)
 }
