@@ -899,3 +899,93 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod superset_probe {
+    //! GATE 1 probe (U21): is `may_carry_cross_root` a TRUE SUPERSET of the
+    //! spellings whose LINK-PLANE answer depends on the address plane?
+    use super::*;
+
+    /// The lexical question, asked through the SHARED function — never a local
+    /// re-spelling, or this probe would certify a copy while the degrade used
+    /// the original.
+    use addr::head_carries_root_separator as head_has_colon;
+
+    #[test]
+    fn may_carry_admits_every_spelling_whose_answer_depends_on_the_address_plane() {
+        let cases = [
+            (
+                "sessions:notes.md",
+                "well-formed rooted — the ordinary case",
+            ),
+            ("sessions:24-01/notes.md", "rooted with subdirs"),
+            (
+                "Sessions:notes.md",
+                "UPPERCASE root — Addr::parse REFUSES (BadMountName)",
+            ),
+            (
+                "My Notes:draft.md",
+                "space in root — Addr::parse REFUSES (BadMountName)",
+            ),
+            ("a:b:c.md", "two head colons — REFUSES (AmbiguousColon)"),
+            (":notes.md", "empty root — REFUSES (EmptyMountName)"),
+            ("sessions:", "empty path — REFUSES (EmptyPath)"),
+            ("ambient.md", "no root at all — must NOT be admitted"),
+            ("dir/a:b.md", "colon after the first slash — a path byte"),
+        ];
+        let mut translate_slips = Vec::new();
+        let mut lexical_slips = Vec::new();
+        let mut lexical_overadmits = Vec::new();
+        for (target, why) in cases {
+            let raw = format!("# P\n\n[[{target}]]\n");
+            let translate_gate = may_carry_cross_root(&raw);
+            let lexical_gate = head_has_colon(target);
+            let answerable = head_has_colon(target);
+            println!(
+                "may_carry={translate_gate:<5} lexical={lexical_gate:<5} \
+                 answerable={answerable:<5} {target:<24} {why}"
+            );
+            if answerable && !translate_gate {
+                translate_slips.push(target);
+            }
+            if answerable && !lexical_gate {
+                lexical_slips.push(target);
+            }
+            if !answerable && lexical_gate {
+                lexical_overadmits.push(target);
+            }
+        }
+
+        // MEASURED, and this is the gate-1 finding: `may_carry_cross_root` is a
+        // superset of WELL-FORMED rooted spellings only. A malformed rooted
+        // spelling has an address-plane answer — a REFUSAL — and this gate does
+        // not admit it.
+        assert_eq!(
+            translate_slips,
+            [
+                "Sessions:notes.md",
+                "My Notes:draft.md",
+                "a:b:c.md",
+                ":notes.md",
+                "sessions:"
+            ],
+            "the translation gate's measured blind spot must not drift silently",
+        );
+
+        // THE CORRECTED GATE. Lexical, so it admits the refusals too — a TRUE
+        // superset, and it is the SAME predicate `resolve_linkpath`'s own C-3
+        // guard uses (`model/src/lib.rs:1692`), which is the guard whose `None`
+        // the degrade exists to compensate for. One question, one predicate.
+        assert!(
+            lexical_slips.is_empty(),
+            "the lexical gate must admit every address-plane answer: {lexical_slips:?}"
+        );
+        // ACCEPTANCE HALF — a gate that admits everything is not a gate. An
+        // ambient link and a colon-after-slash path must both stay OUT, or the
+        // degrade fires on the whole ordinary corpus.
+        assert!(
+            lexical_overadmits.is_empty(),
+            "the lexical gate must NOT admit an ambient spelling: {lexical_overadmits:?}"
+        );
+    }
+}

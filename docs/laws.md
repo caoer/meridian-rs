@@ -129,6 +129,103 @@ out-of-band mutation (an offline pre-push git rewrite, a root-preserving forged
 journal row) is caught by the git witness plus the receipt-engine-only write
 restriction, or it is a named residual — it is never rendered green by refusal.
 
+## Named residues and candidate rows
+
+A **named residue** is a construction this engine's own law disapproves, whose
+BEHAVIOUR is correct today, deliberately left in place with its reason recorded.
+A **candidate row** is a change nobody has ordered yet, named so a future docket
+inherits it as a decision rather than rediscovering it as a defect.
+
+Both exist for one reason: an undocumented compromise becomes the architecture
+by forgetting. Neither is a TODO — a row here has been ruled, and the ruling is
+that it waits.
+
+| # | Row | Kind | Status |
+|---|---|---|---|
+| R1.6-a | The stored→agent re-join/re-parse in `wire-serve::positions` | residue | recorded by U21, deferred |
+| C-1 | The link plane resolves cross-vault refs IN-PROCESS, not in the daemon | residue | U21's degrade — **successor named below** |
+| H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **owed by U14** — see below |
+
+### R1.6-a — the stored→agent re-join, and why it stays
+
+`stored_occupants` (`crates/wire-serve/src/positions.rs:511`) decodes a stored
+URI into its parts, then **re-joins them into one string and re-parses it**:
+
+```rust
+// crates/wire-serve/src/positions.rs:539-545
+let address = match &parsed.selector {
+    Some(sel) => format!("{name}:{}#{sel}", parsed.path),
+    None => format!("{name}:{}", parsed.path),
+};
+let occupant = Occupant {
+    addr: Addr::parse(&address)…
+```
+
+The parts were already separated; they are joined only to be split again. That
+is a joined string address on a machine surface, which **ZT decision 14 / R1.6
+disapproves** — *"Arrays for machines, TOON for humans. No string address forms
+in machine surfaces."*
+
+**It is not producing a wrong answer.** The join and the split agree, and the
+round trip is asserted byte-identically
+(`positions.rs::tests::the_agent_plane_form_round_trips_byte_identically`).
+**Only the CONSTRUCTION is disapproved, not the behaviour** — and that is what
+separates this row from the `PinSpec.selector` case U14 settled, where a refusal
+had been lifted while the capability was still missing: a half-delivered
+capability blocking an ordered proof had to be finished, and this does not.
+
+**Why it waits.** The fix requires `Addr` to gain a parts constructor, and
+`Addr` has **no `from_parts` by deliberate invariant**:
+
+> *"there is no `from_parts` a caller can use to smuggle an unparsed root prefix
+> into the `Addr::path` field"* — `crates/addr/src/lib.rs:10-15`
+
+That invariant is what makes every downstream guard checkable. Redesigning it is
+its own considered act with its own gate, not a rider slipped into another
+unit's train. **The successor act is: give `Addr` a fallible parts constructor
+running the same checks `parse` runs, then delete the join.**
+
+### C-1 — the link plane's in-process degrade, and its NAMED SUCCESSOR
+
+The daemon's warm state is one workspace's corpus, keyed by that workspace's own
+canonical path and invalidated by its own fingerprint
+(`crates/registry/src/registry.rs:317-321`, `warm_or_build`). **It holds no
+mounted-root corpora**, so the link arm serves ambient state only
+(`crates/registry/src/server.rs:782-789`). U21 therefore resolves a cross-vault
+link by DEGRADING that one op to in-process, where the mounted corpora can be
+loaded the way the walk plane already loads them
+(`crates/mrd/src/walk_cmd.rs:146`).
+
+**The asymmetry is a documented contract, not a bug awaiting discovery:** for
+this one op the daemon is knowingly less capable than the in-process path, and a
+page carrying a cross-vault link pays a cold corpus build. Stated here rather
+than smoothed, on the same discipline as the exit-code asymmetry in
+`docs/address-grammar.md`.
+
+> **THE NAMED SUCCESSOR — option (A): the daemon holds mounted corpora.** That
+> is the correct end state and it was deferred DELIBERATELY, not overlooked. It
+> needs per-root fingerprint invalidation, residency and reap — a designed
+> subsystem, which this docket handles design-first with its own element and
+> gate (P8/P10), exactly as U20a exists for the push channel. Building it as an
+> implementation detail of a link-plane fix would repeat the
+> F3-as-a-port mistake.
+
+**A degrade with a named successor is a decision; a degrade without one becomes
+the architecture by forgetting.** That is why this row exists.
+
+### H-1 — owed by U14, recorded here so it is not lost
+
+U14 found that the `#` refusal must SURVIVE, because `#` is a live delimiter in
+both wikilink and `path#fragment` ingress, and named it a candidate row rather
+than an act.
+
+**This row is a POINTER, not a claim about this tree.** U14 is not merged at the
+time of writing — `lock_ref_fragment` is still the name here
+(`crates/wire-serve/src/write.rs:1319`) and U14's rename does not exist on main.
+The row's owner is U14, and U14 fills in the detail when it lands. Writing its
+shapes here now would assert a tree that this tree contradicts, which is the
+defect this whole section exists to prevent.
+
 ## Amendment — capabilities do not apply to bash
 
 Law: ZT ruling, made verbally, re-litigated in code, and ruled again live

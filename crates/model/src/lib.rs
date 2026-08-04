@@ -1688,8 +1688,13 @@ impl CorpusIndex {
         // path, and rejecting (say) a `..` spelling here would refuse inputs
         // this seam answers correctly today. An instrument that cries wolf is
         // deleted by the next person it inconveniences (S3-R23(1)).
-        let trimmed = linkpath.trim();
-        if trimmed.split('/').next().unwrap_or(trimmed).contains(':') {
+        // The predicate is `addr`'s, not a local re-spelling. The link plane's
+        // in-process degrade asks the SAME question — *could the address plane
+        // have something to say about this spelling?* — and a degrade gate that
+        // merely AGREED with this guard would drift the moment either was
+        // edited, letting a spelling this guard refuses reach a path that never
+        // degraded. One question, one function, one edit site.
+        if addr::head_carries_root_separator(linkpath) {
             return None;
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
