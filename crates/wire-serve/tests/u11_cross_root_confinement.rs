@@ -83,7 +83,7 @@ fn args_for(path: &str) -> SpliceArgs {
 fn splice_refuses_a_dot_dot_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
 
-    let err = splice(&root, 0, &args_for("../victim.md"), &[], None)
+    let err = splice(&root, None, &args_for("../victim.md"), &[], None)
         .expect_err("a `..` splice path escapes the workspace and must be refused");
     assert_eq!(
         err.code,
@@ -105,7 +105,7 @@ fn splice_refuses_an_absolute_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
     let absolute = victim.display().to_string();
 
-    let err = splice(&root, 0, &args_for(&absolute), &[], None)
+    let err = splice(&root, None, &args_for(&absolute), &[], None)
         .expect_err("an absolute splice path discards the workspace root and must be refused");
     assert_eq!(err.code, ErrorCode::BadPath);
     assert_eq!(
@@ -127,7 +127,7 @@ fn splice_still_commits_an_ordinary_in_workspace_path() {
         new: "kept.".into(),
     };
 
-    splice(&root, 0, &args, &[], None).expect("an ordinary confined splice still commits");
+    splice(&root, None, &args, &[], None).expect("an ordinary confined splice still commits");
     assert!(
         std::fs::read_to_string(root.0.join("page.md"))
             .expect("page readable")
@@ -143,7 +143,7 @@ fn splice_still_commits_an_ordinary_in_workspace_path() {
 fn splice_refuses_a_root_prefixed_path() {
     let (_outer, root, _victim) = workspace();
 
-    let err = splice(&root, 0, &args_for("sessions:page.md"), &[], None)
+    let err = splice(&root, None, &args_for("sessions:page.md"), &[], None)
         .expect_err("a `root:`-bearing path is not a corpus key — the write door refuses it");
     assert_eq!(
         err.code,

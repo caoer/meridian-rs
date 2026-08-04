@@ -1561,10 +1561,19 @@ pub enum Severity {
 /// exactly this shape, byte-identical to the live emission (§7.3 replay ≡
 /// live).
 ///
-/// The reaction plane is an additive sibling of the frozen [`Delta`]: no
-/// effects serializes the pre-amendment frame byte-for-byte. Each envelope owns
-/// reaction outputs at one evaluation boundary, so a later schedule consumer
-/// can add `wake_at` beside `intents` without reshaping the slice-1 field.
+/// The reaction plane is an additive sibling of the frozen [`Delta`]. Each
+/// envelope owns reaction outputs at one evaluation boundary, so a later
+/// schedule consumer can add `wake_at` beside `intents` without reshaping the
+/// slice-1 field.
+///
+/// **`effects` postdates frozen v2 and is stripped for a v2 session by the
+/// PROJECTION, not by `skip_serializing_if`.** This doc previously claimed that
+/// "no effects serializes the pre-amendment frame byte-for-byte" — true, but a
+/// COINCIDENCE rather than a guarantee: `skip_serializing_if` skips on an empty
+/// VALUE, never on a v2 SESSION, so a fired HOOK put the field on a v2 wire.
+/// The guarantee is `wire_serve::rev::V2_RESERVED_FIELDS`, the shared
+/// append-only table both hosts consult before writing a v2 frame. A new
+/// v3-additive field here ships with its row in the same commit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeltaFrame {
     pub delta: Delta,

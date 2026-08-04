@@ -183,6 +183,24 @@ impl LiveSidecar {
         }
     }
 
+    /// Negotiate v3 — **the contract the reaction plane belongs to.**
+    ///
+    /// `effects` postdates frozen v2, so a v2 session is DEMOTED past it
+    /// (`wire_serve::rev::V2_RESERVED_FIELDS`). A reaction test left on the
+    /// default v2 session therefore asserts the v2 WIRE SHAPE while its name
+    /// claims it covers ARMING — and the "no reaction" half goes vacuous, since
+    /// a v2 notification never carries `effects` whether or not one was armed.
+    /// Moving the fixture onto v3 is what keeps these tests pointed at their own
+    /// subject.
+    fn negotiate_v3(&mut self, id: u64) {
+        self.send(&format!(
+            r#"{{"id":{id},"op":"hello","proto":1,"contract":"v3"}}"#
+        ));
+        let (_, hello) = self.receive();
+        assert_eq!(hello["id"], id, "hello is answered: {hello}");
+        assert_eq!(hello["ok"], true, "v3 negotiated: {hello}");
+    }
+
     fn send(&mut self, line: &str) {
         let stdin = self.stdin.as_mut().expect("live stdin");
         writeln!(stdin, "{line}").expect("write request");
@@ -239,6 +257,7 @@ fn assert_armed_intent(effects: &Value) {
 fn splice_response_arms_before_live_notification_delivery() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(100);
     sidecar.send(r#"{"id":1,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 1);
 
@@ -264,6 +283,7 @@ fn splice_response_arms_before_live_notification_delivery() {
 fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(110);
     sidecar.send(r#"{"id":10,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 10);
 
@@ -293,6 +313,7 @@ fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
 fn refused_and_out_of_scope_writes_emit_no_reaction() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    sidecar.negotiate_v3(120);
     sidecar.send(r#"{"id":20,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 20);
 
@@ -320,7 +341,9 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
     assert!(notification.get("id").is_none());
     assert!(
         notification.get("effects").is_none(),
-        "out-of-scope Delta keeps pre-effects bytes"
+        "out-of-scope Delta keeps pre-effects bytes — and on a v3 session this \
+         can actually FAIL: v3 carries `effects` whenever one is armed, so the \
+         absence here means no reaction was armed, not that the wire hid it"
     );
     sidecar.finish();
 }
@@ -329,16 +352,28 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
 fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    // The subject here is ARMED FEEDBACK and ring behaviour with no subscriber,
+    // not the v2 wire shape — and `effects` is v3 vocabulary on BOTH exits it
+    // asserts (the splice response's `body.armed.effects` and the `diff`
+    // batches). Left on the default v2 session this would assert the demotion
+    // instead of the arming, which is the wrong subject.
+    sidecar.negotiate_v3(130);
     let rev = fm_rev(&mut sidecar, 930, "tasks/x.md");
     sidecar.send(&splice(30, "tasks/x.md", "review", &rev));
     let (_, response) = sidecar.receive();
     let armed = response["body"]["armed"]["effects"].clone();
     assert_armed_intent(&armed);
 
-    let from = response["body"]["root_before"]
+    // v3 spellings: the root->fingerprint re-key is the RULED vocabulary
+    // projection, not a leak — unlike `effects`, which is a field that should
+    // never have crossed. The request below still sends the v2 spellings, which
+    // a v3 session accepts by input leniency.
+    let from = response["body"]["fingerprint_before"]
         .as_str()
-        .expect("root before");
-    let to = response["body"]["root_after"].as_str().expect("root after");
+        .expect("fingerprint before");
+    let to = response["body"]["fingerprint_after"]
+        .as_str()
+        .expect("fingerprint after");
     sidecar.send(&json!({"id":31,"op":"diff","from_root":from,"to_root":to}).to_string());
     let (_, diff) = sidecar.receive();
     let batches = diff["body"]["batches"].as_array().expect("ring batches");
@@ -351,6 +386,11 @@ fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
 fn never_armed_process_output_omits_reaction_fields() {
     let workspace = workspace(false);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
+    // v3, and for the same reason as its neighbours: on a v2 session the
+    // demotion strips `effects` unconditionally, so "the never-armed response
+    // carries no reaction fields" would pass whether or not anything armed —
+    // vacuous, and pointed at the wire shape instead of at arming.
+    sidecar.negotiate_v3(140);
     let rev = fm_rev(&mut sidecar, 940, "tasks/x.md");
     sidecar.send(&splice(40, "tasks/x.md", "review", &rev));
     let (raw, response) = sidecar.receive();
@@ -359,10 +399,16 @@ fn never_armed_process_output_omits_reaction_fields() {
         "never-armed response bytes: {raw}"
     );
 
-    let from = response["body"]["root_before"]
+    // v3 spellings: the root->fingerprint re-key is the RULED vocabulary
+    // projection, not a leak — unlike `effects`, which is a field that should
+    // never have crossed. The request below still sends the v2 spellings, which
+    // a v3 session accepts by input leniency.
+    let from = response["body"]["fingerprint_before"]
         .as_str()
-        .expect("root before");
-    let to = response["body"]["root_after"].as_str().expect("root after");
+        .expect("fingerprint before");
+    let to = response["body"]["fingerprint_after"]
+        .as_str()
+        .expect("fingerprint after");
     sidecar.send(&json!({"id":41,"op":"diff","from_root":from,"to_root":to}).to_string());
     let (raw, _) = sidecar.receive();
     assert!(

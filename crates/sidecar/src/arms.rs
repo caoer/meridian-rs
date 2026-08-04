@@ -7,6 +7,20 @@
 
 use std::io::ErrorKind;
 
+/// The sidecar's `seq` allocator: one ring, one thread, allocation read from the
+/// LIVE ring at the moment the write path asks — not captured before the call.
+///
+/// The sidecar has exactly one producer, so this cannot race; the sink exists so
+/// both hosts allocate through one seam rather than because this host needs the
+/// protection. The immutable borrow ends before the caller advances the ring.
+struct EpochSink<'a>(&'a wire_serve::ring::RootRing);
+
+impl wire_serve::seq::SeqSink for EpochSink<'_> {
+    fn allocate(&self, _before: &Root, _after: &Root, _files: &[wire::DeltaFile]) -> u64 {
+        self.0.allocate_seq()
+    }
+}
+
 use wire::{ErrorBody, ErrorCode, Op, Path, ResponseBody, Root, SecRef};
 use wire_serve::{ambient_root, domain_snapshot, load_doc};
 
@@ -130,7 +144,7 @@ pub(crate) fn dispatch(
         } => {
             let out = wire_serve::write::splice(
                 root,
-                epoch.seq(),
+                Some(&EpochSink(epoch)),
                 &wire_serve::write::SpliceArgs {
                     id,
                     // U10: the per-process sidecar serves DECODED WIRE FRAMES,
@@ -179,9 +193,10 @@ pub(crate) fn dispatch(
             if !v3 {
                 return Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)));
             }
+            let sink = EpochSink(epoch);
             let out = wire_serve::write::create(
                 root,
-                epoch.seq(),
+                Some(&sink),
                 &wire_serve::write::CreateArgs {
                     id,
                     path: path.clone(),

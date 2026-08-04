@@ -69,7 +69,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
     let (da, ra) = ws(&[("card.md", DOC)]);
     let out_a = splice(
         &ra,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![
@@ -100,7 +100,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
     let (db, rb) = ws(&[("card.md", DOC)]);
     let out_b = splice(
         &rb,
-        0,
+        None,
         &native_args(
             "card.md",
             vec![
@@ -185,7 +185,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
 
     splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
@@ -212,7 +212,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
     let fresh = model::resolve(&doc, &target).expect("resolves").node_rev.0;
     splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
@@ -240,7 +240,7 @@ fn plan_rev_threads_into_the_native_cas_guard() {
     let (dir, root) = ws(&[("card.md", DOC)]);
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
@@ -273,7 +273,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     // fires — before the fix this landed a literal `injected:pwned` FM line.
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::SetProperty {
@@ -298,7 +298,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     // single-quoted YAML scalar cannot escape the raw newline — same refusal.
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::SetProperty {
@@ -316,7 +316,7 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     // A refused batch REFUSES WHOLE: the legal sibling edit lands nothing.
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![
@@ -380,7 +380,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     let (dir, root) = ws(&[("plan.md", SEED)]);
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "plan.md",
             vec![PlanEdit::SetProperty {
@@ -404,7 +404,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     // A refused batch REFUSES WHOLE: the legal sibling lands nothing either.
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "plan.md",
             vec![
@@ -436,7 +436,7 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     // still commits, so the guard cannot pass by refusing everything.
     splice(
         &root,
-        0,
+        None,
         &plan_args(
             "plan.md",
             vec![PlanEdit::SetProperty {
@@ -464,7 +464,7 @@ fn golden_target_class_refusals_fire_engine_side() {
 
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
@@ -490,7 +490,7 @@ fn golden_target_class_refusals_fire_engine_side() {
 
     let err = splice(
         &root,
-        0,
+        None,
         &plan_args(
             "card.md",
             vec![PlanEdit::Create {

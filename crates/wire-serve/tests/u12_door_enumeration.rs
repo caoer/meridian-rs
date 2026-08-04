@@ -251,15 +251,22 @@ const DOORS: &[DoorPin] = &[
     // census OF THE TREE: every pin is verified to exist at its file and function,
     // so a pin naming a deleted file is not a record, it is a census that cannot
     // run. The record of the retirement lives in the git history of this file and
-    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 8 (U9b added the
-    // lock_migrate door).
-    // ---- sidecar/watch.rs — C3's reaction feeder, the first mint that is NOT
-    // a door. `external_effects` needs each externally-changed document to carry
-    // its own path, because a HOOK matches `paths:` against it; the watcher's
-    // other mint (`doc_of`) leaves the path empty. The candidate is read by
-    // `feed_landed_change` and dropped — no `fs` primitive ever sees it.
+    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 8
+    // (U9b added the `lock_migrate` door; U20b moved one without changing the
+    // count — a relocation is not a retirement).
+    // ---- wire-serve/watch.rs — C3's reaction feeder, the first mint that is
+    // NOT a door. `external_effects` needs each externally-changed document to
+    // carry its own path, because a HOOK matches `paths:` against it; the
+    // watcher's other mint (`doc_of`) leaves the path empty. The candidate is
+    // read by `feed_landed_change` and dropped — no `fs` primitive ever sees it.
+    //
+    // MOVED by U20b (`crates/sidecar` → `crates/wire-serve`), when the registry
+    // became a second host of the classifier. The door itself is byte-identical;
+    // only its address changed. This census caught the move on its own, which is
+    // the behaviour it exists for — a door that relocates silently is a door
+    // nobody is enumerating any more.
     DoorPin {
-        file: "crates/sidecar/src/watch.rs",
+        file: "crates/wire-serve/src/watch.rs",
         door_fn: "external_effects",
         mint_fn: "doc_at",
         guard_fn: None,

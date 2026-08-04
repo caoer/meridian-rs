@@ -891,7 +891,7 @@ fn prune_file(
         if_root: None,
         dry: opts.dry,
     };
-    match wire_serve::write::remove(root, 0, &args, &[]) {
+    match wire_serve::write::remove(root, None, &args, &[]) {
         Ok(_) => Ok(PruneOutcome::Removed {
             path: path.to_owned(),
         }),
@@ -1131,7 +1131,7 @@ fn birth(
         if_root: None,
         dry: opts.dry,
     };
-    match wire_serve::write::create(root, 0, &args, &[]) {
+    match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(BirthResult::Born),
         Err(e) if is_cas_mismatch(&e) => {
             Ok(BirthResult::Occupied(RefusalReason::cas_mismatch(path)))

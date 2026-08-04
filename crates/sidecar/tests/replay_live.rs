@@ -13,6 +13,30 @@
 use serde_json::{Value, json};
 use std::io::Write as _;
 
+/// The epoch ring as an allocator, exactly as `sidecar::arms` wires it in
+/// production — this test drives the REAL commit path, so it must number frames
+/// the real way rather than hand a literal to the seam.
+struct EpochSink<'a>(&'a sidecar::ring::RootRing);
+
+impl wire_serve::seq::SeqSink for EpochSink<'_> {
+    fn allocate(
+        &self,
+        _before: &wire::Root,
+        _after: &wire::Root,
+        _files: &[wire::DeltaFile],
+    ) -> u64 {
+        self.0.allocate_seq()
+    }
+}
+
+/// The flock `commit_batch` now demands as its allocation witness. A direct
+/// caller took no lock before this seam existed; it takes one here for the same
+/// reason `splice` does — and the acquire itself is a real serialization, not a
+/// formality, so it must outlive the call it witnesses.
+fn flock(root: &fs::WorkspaceRoot) -> fs::WriteLock {
+    fs::WriteLock::acquire(root).expect("the test workspace's write lock is free")
+}
+
 const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
 const R2: &str = "b3:83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";
 
@@ -166,11 +190,14 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
     // LIVE: two batches through validate → apply_batch → emit. `commit_batch`
     // returns the frame (seq = the passed ring seq + 1); the CALLER advances its
     // epoch ring — the seam holds no ring, so the daemon commits without one.
-    let live_e3 = wire_serve::write::commit_batch(&root, ring.seq(), &e3_request())
-        .expect("E3 commits: frozen worked request against committed S0 bytes");
+    let lock = flock(&root);
+    let live_e3 =
+        wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &lock, &e3_request())
+            .expect("E3 commits: frozen worked request against committed S0 bytes");
     ring.advance(live_e3.clone());
-    let live_e4 = wire_serve::write::commit_batch(&root, ring.seq(), &e4_request())
-        .expect("E4 commits: frozen worked request against derived S1");
+    let live_e4 =
+        wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &lock, &e4_request())
+            .expect("E4 commits: frozen worked request against derived S1");
     ring.advance(live_e4.clone());
 
     // Gate 1a (Flag-A): the DERIVED frames equal the printed §7.1 frames
@@ -219,7 +246,8 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
 fn receipt_node_rides_its_files_delta_entry_computed() {
     let (_d, root) = s0();
     // A fresh epoch's seq is 0; this test inspects the returned frame only.
-    let live = wire_serve::write::commit_batch(&root, 0, &e3_request()).expect("E3");
+    let live =
+        wire_serve::write::commit_batch(&root, None, &flock(&root), &e3_request()).expect("E3");
     let receipts_entry = live
         .delta
         .files
@@ -250,7 +278,8 @@ fn receipt_node_rides_its_files_delta_entry_computed() {
 #[test]
 fn deepest_changed_node_never_duplicates_ancestors() {
     let (_d, root) = s0();
-    let live = wire_serve::write::commit_batch(&root, 0, &e3_request()).expect("E3");
+    let live =
+        wire_serve::write::commit_batch(&root, None, &flock(&root), &e3_request()).expect("E3");
     let plan_entry = live
         .delta
         .files
@@ -278,7 +307,7 @@ fn refused_batch_emits_no_delta() {
     let ring = sidecar::ring::RootRing::new();
     let mut req = e3_request();
     req.batch.if_root = Some(model::MerkleRoot(R2.into())); // wrong world
-    let err = wire_serve::write::commit_batch(&root, ring.seq(), &req);
+    let err = wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &flock(&root), &req);
     assert!(
         matches!(
             err,

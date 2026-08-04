@@ -89,7 +89,7 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nbody\n");
     splice(
         &root,
-        0,
+        None,
         &args(
             Vec::new(),
             vec![PlanEdit::Create {
@@ -121,7 +121,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nold line\n\n## Sub\n\nsub body\n");
     splice(
         &root,
-        0,
+        None,
         &args(
             Vec::new(),
             vec![PlanEdit::Append {
@@ -141,7 +141,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     // whole-section rewrite is its own splice.
     splice(
         &root,
-        0,
+        None,
         &args(
             Vec::new(),
             vec![PlanEdit::ReplaceSection {
@@ -163,7 +163,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     // the decorated render face must still find its line.
     splice(
         &root,
-        0,
+        None,
         &args(
             vec![Edit {
                 target: hpath("Plan/Sub"),
@@ -194,7 +194,7 @@ fn a_token_landing_inside_a_fence_survives_r22() {
     let (dir, root) = ws("# Plan\n\n```text\nsample: PLACEHOLDER\n```\n");
     splice(
         &root,
-        0,
+        None,
         &args(
             vec![Edit {
                 target: hpath("Plan"),
@@ -228,7 +228,7 @@ fn a_token_composed_out_of_retained_bytes_refuses() {
     let before = on_disk(&dir);
     let composed = splice(
         &root,
-        0,
+        None,
         &args(
             vec![Edit {
                 target: hpath("Plan"),
@@ -269,7 +269,7 @@ fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
     let (dir, root) = ws(seed);
     splice(
         &root,
-        0,
+        None,
         &args(
             vec![
                 Edit {
@@ -320,7 +320,7 @@ fn a_pre_existing_token_is_left_exactly_as_found() {
     let (dir, root) = ws(&seed);
     splice(
         &root,
-        0,
+        None,
         &args(
             vec![Edit {
                 target: hpath("Plan/Sub"),
@@ -363,7 +363,7 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
     );
     wire_serve::write::create(
         &root,
-        0,
+        None,
         &CreateArgs {
             id: None,
             path: WPath("born.md".into()),
@@ -450,7 +450,7 @@ fn check_write_and_splice_agree_on_a_decorated_address() {
 
     splice(
         &root,
-        0,
+        None,
         &args(
             vec![Edit {
                 target: SecRef::Anchor {

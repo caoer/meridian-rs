@@ -34,9 +34,14 @@ use transport::{IdScan, scan_id};
 use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 
 mod arms;
+mod demand;
 mod policy_bridge;
-pub mod ring;
-mod watch;
+/// The delta plane, lifted to `wire-serve` by U20b so the registry shares one
+/// retention law and one classifier. Re-exported at the old path: this crate's
+/// ring is still a per-serve-lifetime epoch and every existing caller reads the
+/// same.
+pub use wire_serve::ring;
+use wire_serve::watch;
 
 // The v3 vocabulary projection lives in `wire-serve`, the shared typed-edge home
 // both hosts project through (arch map A6: "lift, don't duplicate"). Imported as
@@ -123,7 +128,7 @@ pub fn serve(
         }
         // Decode BEFORE the reconcile — the loop cannot know what this line
         // costs until it knows which op it holds (the demand law,
-        // `watch::observes_ring`). A line answered at the frame layer runs no
+        // `demand::observes_ring`). A line answered at the frame layer runs no
         // arm, so it observes nothing and owes no fold at all.
         let decoded = decode_line(&mut rev, &line);
         // F5-WATCH reconcile BEFORE dispatch, ON DEMAND: an external change is
@@ -165,11 +170,8 @@ struct SubState {
 }
 
 /// Write every undelivered ring frame to each subscription, in emission
-/// order — the frames are the STORED ring objects serialized directly
-/// (`{"delta":{…}}`, no `id` key — §3.1 classification): the d4
-/// single-constructor law extends to the push path by construction. Under a
-/// v3 session each frame is re-shaped `root_before/after` → `fingerprint_*`
-/// before write; v2 serializes the ring object directly (byte-identical).
+/// order, through the ONE shared push serializer (`ring::write_frame` — U20b
+/// lifted it so both hosts emit the same bytes from the same code).
 fn flush_subs(
     output: &mut impl Write,
     epoch: &ring::RootRing,
@@ -178,14 +180,7 @@ fn flush_subs(
 ) -> io::Result<()> {
     for sub in subs.iter_mut() {
         for frame in epoch.frames_after(sub.delivered) {
-            if rev == rev::Rev::V3 {
-                let mut v = serde_json::to_value(&frame)?;
-                rev::project_delta_frame(&mut v);
-                serde_json::to_writer(&mut *output, &v)?;
-            } else {
-                serde_json::to_writer(&mut *output, &frame)?;
-            }
-            output.write_all(b"\n")?;
+            ring::write_frame(output, &frame, rev == rev::Rev::V3)?;
             sub.delivered = frame.delta.seq;
         }
     }
@@ -236,9 +231,7 @@ fn subscribe(
     from_seq: u64,
 ) -> Result<wire::ResponseBody, Box<ErrorBody>> {
     let current = epoch.seq();
-    let anchored = from_seq == current
-        || (from_seq < current && epoch.oldest_seq().is_some_and(|o| from_seq >= o - 1));
-    if !anchored {
+    if !epoch.can_anchor(from_seq) {
         let mut e = ErrorBody::new(ErrorCode::RootUnknown);
         e.message = Some(
             "from_seq outside this epoch's retained history — catch up by diff-by-root (§7.1)"
@@ -273,11 +266,11 @@ enum Decoded {
 
 impl Decoded {
     fn observes_ring(&self) -> bool {
-        matches!(self, Decoded::Op(_, op) if watch::observes_ring(op))
+        matches!(self, Decoded::Op(_, op) if demand::observes_ring(op))
     }
 
     fn advances_ring(&self) -> bool {
-        matches!(self, Decoded::Op(_, op) if watch::advances_ring(op))
+        matches!(self, Decoded::Op(_, op) if demand::advances_ring(op))
     }
 }
 

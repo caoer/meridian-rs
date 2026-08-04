@@ -72,7 +72,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // seq 0, like the resident daemon (no epoch ring); the emitted DeltaFrame
     // has no subscriber here, so it is dropped with the outcome.
     let outcome =
-        splice(&root, 0, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
+        splice(&root, None, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
 
     let body = serde_json::to_value(&outcome.body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;

@@ -108,9 +108,10 @@ pub struct SpliceOutcome {
 /// shape, `root_after: null`, no receipt written, no ring frame, no mkdir (zero
 /// disk effects means zero).
 ///
-/// `seq` is the caller's current epoch seq — the emitted frame's `seq` is
-/// `seq + 1` (the sidecar passes its ring's `seq()`; the resident daemon passes
-/// `0`, having no ring). `rulesets` are the admitted packs whose §11.1 findings
+/// `seq` is a [`crate::seq::SeqSink`], not a number: it is CALLED inside this
+/// function's write flock, at the instant the frame is assembled, so the
+/// allocation cannot race a second producer. `None` is the in-process caller
+/// (no ring, no subscribers, `seq` stays `0`). `rulesets` are the admitted packs whose §11.1 findings
 /// ride the `verdicts` field; `&[]` ⇒ `verdicts: []` (the BARE commit).
 ///
 /// The production `apply_batch` caller obligations (F4 seam memo) live HERE:
@@ -134,7 +135,7 @@ pub struct SpliceOutcome {
 #[allow(clippy::too_many_lines)]
 pub fn splice(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
     args: &SpliceArgs,
     rulesets: &[policy::CompiledRuleset],
     mints: Option<&receipt::read_mint::ReadMintStore>,
@@ -162,7 +163,7 @@ pub fn splice(
     // meridian writers (sidecar, resident daemon, mrd) serialize instead of
     // interleaving read→rename. Dry runs take it too: a rehearsal refuses
     // `workspace_busy` exactly where the real write would. Released on drop.
-    let _write_lock = acquire_write_lock(root)?;
+    let flock = acquire_write_lock(root)?;
 
     let mut doc = load_doc(root, &args.path)?;
     let mut root_before = ambient_root(root)?;
@@ -494,6 +495,7 @@ pub fn splice(
     let mut frame = commit_batch(
         root,
         seq,
+        &flock,
         &CommitRequest {
             content_path: args.path.0.clone(),
             batch,
@@ -684,7 +686,7 @@ pub struct RemoveOutcome {
 /// error case nothing was created.
 pub fn create(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
     args: &CreateArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<CreateOutcome, Box<ErrorBody>> {
@@ -693,7 +695,7 @@ pub fn create(
 
     // D9: births serialize on the same write flock as every meridian writer —
     // this also closes the `if_absent` check→rename window for cooperators.
-    let _write_lock = acquire_write_lock(root)?;
+    let flock = acquire_write_lock(root)?;
 
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
@@ -795,6 +797,7 @@ pub fn create(
 
     let committed = birth_death_delta(
         seq,
+        &flock,
         &args.path,
         &root_before,
         &root_after,
@@ -828,7 +831,7 @@ pub fn create(
 /// every error case nothing was removed.
 pub fn remove(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
     args: &RemoveArgs,
     rulesets: &[policy::CompiledRuleset],
 ) -> Result<RemoveOutcome, Box<ErrorBody>> {
@@ -837,7 +840,7 @@ pub fn remove(
 
     // D9: deaths serialize on the same write flock (read-rev CAS → unlink is
     // a critical section like any other write).
-    let _write_lock = acquire_write_lock(root)?;
+    let flock = acquire_write_lock(root)?;
 
     let root_before = ambient_root(root)?;
     world_guard(args.if_root.as_ref(), &root_before)?;
@@ -890,6 +893,7 @@ pub fn remove(
 
     let committed = birth_death_delta(
         seq,
+        &flock,
         &args.path,
         &root_before,
         &root_after,
@@ -996,14 +1000,14 @@ pub struct LockWriteOutcome {
 /// nothing was written.
 pub fn lock_write(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
     args: &LockWriteArgs,
 ) -> Result<LockWriteOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
 
     // D9: the lock write serializes on the same write flock as every writer.
-    let _write_lock = acquire_write_lock(root)?;
+    let flock = acquire_write_lock(root)?;
 
     let before_doc = load_doc(root, &args.path)?;
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
@@ -1056,6 +1060,9 @@ pub fn lock_write(
     let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
         .unwrap_or_default();
+    // ALLOCATE HERE, inside the flock this fn already holds — not at the caller
+    // before it. See `crate::seq`.
+    let seq = crate::seq::allocate(seq, &flock, &root_before, &root_after, &files);
     let committed = assemble_delta(
         seq,
         root_before.clone(),
@@ -1165,14 +1172,14 @@ pub struct LockMigrateOutcome {
 /// nothing was written.
 pub fn lock_migrate(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
     args: &LockMigrateArgs,
 ) -> Result<LockMigrateOutcome, Box<ErrorBody>> {
     let fs_path = FsPath::new(&args.path.0);
     path_confined(&args.path)?;
 
     // D9: the migration serializes on the same write flock as every writer.
-    let _write_lock = acquire_write_lock(root)?;
+    let flock = acquire_write_lock(root)?;
 
     let before_doc = load_doc(root, &args.path)?;
     let file_rev_before = NodeRev(before_doc.root.node_rev.0.clone());
@@ -1250,6 +1257,9 @@ pub fn lock_migrate(
     let files = model::delta::file_delta(Some(&before_doc), Some(after_doc.document()))
         .map(|fd| vec![wire_map::project_file_delta(&args.path.0, &fd)])
         .unwrap_or_default();
+    // ALLOCATE HERE, inside the flock this fn already holds — not at the caller
+    // before it. See `crate::seq`.
+    let seq = crate::seq::allocate(seq, &flock, &root_before, &root_after, &files);
     let committed = assemble_delta(
         seq,
         root_before.clone(),
@@ -2445,8 +2455,18 @@ fn io_to_wire(e: &std::io::Error) -> Box<ErrorBody> {
 /// ([`assemble_delta`]): a `created`/`deleted` file (absent-tense per §7.1 — no
 /// `file_rev_before` on birth, no `file_rev_after` on death). `fd` is `None`
 /// only if nothing changed, which a real create/remove never is.
+/// `flock` is the caller's write lock, carried purely as the
+/// [`crate::seq::allocate`] witness: `create` and `remove` hold it across this
+/// call, and the parameter is what makes that a compile fact here.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the 8th is the flock witness; bundling it into a struct would let a caller \
+              build the struct without holding the lock, which is the one thing this \
+              parameter exists to prevent"
+)]
 fn birth_death_delta(
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    flock: &fs::WriteLock,
     path: &Path,
     root_before: &Root,
     root_after: &Root,
@@ -2457,6 +2477,7 @@ fn birth_death_delta(
     let files = fd
         .map(|fd| vec![wire_map::project_file_delta(&path.0, fd)])
         .unwrap_or_default();
+    let seq = crate::seq::allocate(seq, flock, root_before, root_after, &files);
     assemble_delta(
         seq,
         root_before.clone(),
@@ -3459,13 +3480,19 @@ pub enum CommitError {
 }
 
 /// Commit one batch and return its Delta (§7.1: one Delta = one batch = one
-/// root advance). The frame's `seq` is `seq + 1` — the CALLER'S epoch seq
-/// advanced by one; the caller advances its own ring with the returned frame
-/// (this seam holds no ring, so the resident daemon can commit without one).
+/// root advance). The frame's `seq` comes from the [`crate::seq::SeqSink`],
+/// allocated HERE — after `root_after` is folded and while the caller's write
+/// flock is still held — so the number and the frame are decided in one act.
+/// The caller advances its own ring with the returned frame (this seam holds no
+/// ring, so the resident daemon can commit without one).
 ///
-/// LOCK-FREE primitive (D9): the write flock is the CALLER's — `splice`
-/// acquires it around this whole call. A direct caller outside the choke-point
-/// (tests) runs unserialized; the D8 pre-image verify still refuses drift.
+/// The write flock is the CALLER's (D9) — `splice` acquires it around this whole
+/// call — and `flock` is now the PROOF of that rather than a sentence about it.
+/// The seam still acquires nothing itself; what changed is that a caller who has
+/// dropped the lock (or never took one) can no longer reach the allocation
+/// inside, because it has no witness to hand over. A direct caller outside the
+/// choke-point must therefore take the lock it was previously only assumed to
+/// hold; the D8 pre-image verify still refuses drift on top of that.
 ///
 /// # Errors
 /// [`CommitError`] — validation refusal, environment failure, or I/O; in
@@ -3473,7 +3500,8 @@ pub enum CommitError {
 /// actually committed).
 pub fn commit_batch(
     root: &fs::WorkspaceRoot,
-    seq: u64,
+    seq: Option<&dyn crate::seq::SeqSink>,
+    flock: &fs::WriteLock,
     req: &CommitRequest,
 ) -> Result<DeltaFrame, CommitError> {
     // Pre-state: the documents the batch validates against + the world root.
@@ -3552,6 +3580,7 @@ pub fn commit_batch(
 
     // Assemble at the one production site and return the frame — the caller
     // advances its ring (or, on the resident daemon, discards it).
+    let seq = crate::seq::allocate(seq, flock, &root_before, &root_after, &files);
     Ok(assemble_delta(
         seq,
         root_before,
@@ -3564,10 +3593,14 @@ pub fn commit_batch(
 
 /// **The ONE production `DeltaFrame` construction site** (§7.3
 /// single-constructor law): the commit path and the watcher's external path
-/// (F5-WATCH) both assemble here — `seq` is the caller's current epoch seq, so
-/// the emitted frame carries `seq + 1` (§7.1 late law, nothing persisted),
-/// envelope facts exactly as given (§9: external deltas pass `None`/`None` —
-/// absent stays absent, never invented).
+/// (F5-WATCH) both assemble here. **`seq` is the FINAL number, not a base to
+/// advance:** the `+1` this constructor used to apply was a single-producer
+/// convention, and it is exactly where a second producer double-counts. Each
+/// caller now allocates before it builds — the write path through its
+/// `SeqSink` under the flock, the watcher through its own ring — so the
+/// mistake is unwriteable here rather than forbidden by comment. Envelope facts
+/// exactly as given (§9: external deltas pass `None`/`None` — absent stays
+/// absent, never invented).
 #[must_use]
 pub fn assemble_delta(
     seq: u64,
@@ -3579,7 +3612,7 @@ pub fn assemble_delta(
 ) -> DeltaFrame {
     DeltaFrame {
         delta: Delta {
-            seq: seq + 1,
+            seq,
             root_before,
             root_after,
             actor,
@@ -3744,7 +3777,7 @@ mod guarded_create_remove {
     #[test]
     fn create_births_file_and_advances_the_root() {
         let (dir, root) = ws();
-        let out = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[])
+        let out = create(&root, None, &create_args("notes/new.md", "# New\n"), &[])
             .expect("create births the file");
 
         // (a) the file is on disk with exactly the body bytes.
@@ -3773,9 +3806,9 @@ mod guarded_create_remove {
     #[test]
     fn create_existing_path_refuses_cas() {
         let (dir, root) = ws();
-        create(&root, 0, &create_args("notes/new.md", "# First\n"), &[]).expect("first create");
+        create(&root, None, &create_args("notes/new.md", "# First\n"), &[]).expect("first create");
 
-        let err = create(&root, 0, &create_args("notes/new.md", "# Second\n"), &[])
+        let err = create(&root, None, &create_args("notes/new.md", "# Second\n"), &[])
             .expect_err("create on an existing path must refuse");
         assert_eq!(
             err.code,
@@ -3800,11 +3833,11 @@ mod guarded_create_remove {
     #[test]
     fn remove_death_emits_after_absent() {
         let (dir, root) = ws();
-        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        let born = create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
 
         let out = remove(
             &root,
-            0,
+            None,
             &remove_args("notes/new.md", &born.file_rev_after.0),
             &[],
         )
@@ -3831,7 +3864,7 @@ mod guarded_create_remove {
     #[test]
     fn remove_after_drift_refuses_citing_rev() {
         let (dir, root) = ws();
-        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        let born = create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
         let read_rev = born.file_rev_after.clone();
 
         // The file drifts under the plan (a later edit / foreign write).
@@ -3841,7 +3874,7 @@ mod guarded_create_remove {
             .unwrap();
         assert_ne!(read_rev, live_rev, "the fixture actually drifted");
 
-        let err = remove(&root, 0, &remove_args("notes/new.md", &read_rev.0), &[])
+        let err = remove(&root, None, &remove_args("notes/new.md", &read_rev.0), &[])
             .expect_err("remove after drift must refuse");
         assert_eq!(
             err.code,
@@ -3876,7 +3909,7 @@ mod guarded_create_remove {
         let (_dir, root) = ws();
         let err = remove(
             &root,
-            0,
+            None,
             &remove_args("notes/ghost.md", "deadbeefdeadbeef"),
             &[],
         )
@@ -3892,14 +3925,14 @@ mod guarded_create_remove {
         let (_dir, root) = ws();
         for bad in ["../outside.md", "/etc/passwd", "notes/../../escape.md"] {
             assert_eq!(
-                create(&root, 0, &create_args(bad, "x"), &[])
+                create(&root, None, &create_args(bad, "x"), &[])
                     .unwrap_err()
                     .code,
                 ErrorCode::BadPath,
                 "create confined: {bad}"
             );
             assert_eq!(
-                remove(&root, 0, &remove_args(bad, "deadbeefdeadbeef"), &[])
+                remove(&root, None, &remove_args(bad, "deadbeefdeadbeef"), &[])
                     .unwrap_err()
                     .code,
                 ErrorCode::BadPath,
@@ -3917,7 +3950,7 @@ mod guarded_create_remove {
 
         let dry_born = create(
             &root,
-            0,
+            None,
             &CreateArgs {
                 dry: true,
                 ..create_args("notes/new.md", "# New\n")
@@ -3933,10 +3966,10 @@ mod guarded_create_remove {
         assert!(dry_born.verdicts.is_empty());
 
         // A real file to dry-remove.
-        let born = create(&root, 0, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
+        let born = create(&root, None, &create_args("notes/new.md", "# New\n"), &[]).unwrap();
         let dry_dead = remove(
             &root,
-            0,
+            None,
             &RemoveArgs {
                 dry: true,
                 ..remove_args("notes/new.md", &born.file_rev_after.0)
@@ -4002,7 +4035,7 @@ mod guarded_create_remove {
         let (_dir, root) = ws();
         create(
             &root,
-            0,
+            None,
             &create_args("notes/plan.md", "# Alpha\n\n## Beta\n\nw0\n"),
             &[],
         )
@@ -4012,7 +4045,7 @@ mod guarded_create_remove {
         for step in 1..=5 {
             let out = splice(
                 &root,
-                0,
+                None,
                 &splice_args(
                     "notes/plan.md",
                     &format!("w{}", step - 1),
