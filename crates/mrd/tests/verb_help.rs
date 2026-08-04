@@ -71,7 +71,7 @@ fn verb_lines(listing: &str) -> Vec<(bool, String)> {
 /// The synopsis half of a verb line: the head when the description column is
 /// there, the whole line when the synopsis overflows it. Same rule the CLI
 /// lexes by — and without it, `mrd daemon   run the registry daemon…` reads as
-/// eight verb words, and `mrd journal genesis --ruling <REF> …` loses its flags.
+/// eight verb words, and `mrd cache clean --all …` loses its flags.
 fn head_of(synopsis: &str) -> &str {
     if synopsis.as_bytes().get(SYNOPSIS_WIDTH - 1) == Some(&b' ') {
         synopsis.get(..SYNOPSIS_WIDTH).unwrap_or(synopsis)
@@ -99,7 +99,7 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
+    assert_eq!(verbs.len(), 25, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -279,7 +279,6 @@ fn dry_is_explained_under_every_verb_that_takes_it() {
         vec!["new"],
         vec!["unfold"],
         vec!["reconcile"],
-        vec!["journal", "genesis"],
         vec!["realise"],
         vec!["run"],
     ] {
@@ -346,11 +345,16 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned. Twelve verbs change files, the drawer, or
-/// the journal; the other fourteen are reads. This is the list a reviewer
-/// argues with — if it changes, it changes here, deliberately.
+/// The classification itself, pinned. Eleven verbs change files or the drawer;
+/// the other fourteen are reads. This is the list a reviewer argues with — if it
+/// changes, it changes here, deliberately.
+///
+/// **Was twelve of twenty-six, and `journal genesis` was the twelfth.** The verb
+/// is retired with the ledger it reset (U6): nothing is being reset any more, so
+/// the write it performed has no subject. The count is in the test NAME on purpose
+/// — a classification whose total can drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_twelve_of_twenty_six() {
+fn the_write_classification_is_eleven_of_twenty_five() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -376,7 +380,6 @@ fn the_write_classification_is_twelve_of_twenty_six() {
             "new",
             "unfold",
             "reconcile",
-            "journal genesis",
             "realise",
         ],
         "the verbs marked as writers"

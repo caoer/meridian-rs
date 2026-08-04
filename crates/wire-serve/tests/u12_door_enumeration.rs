@@ -226,27 +226,18 @@ const DOORS: &[DoorPin] = &[
         label: "the run plane's candidate (run::fp::candidate)",
         class: Door::OutsideThisUnit,
     },
-    // ---- mrd/journal_cmd.rs — G2's genesis, two mints in two functions ----
-    // Both land the ENGINE's own bytes on a CLI path, the same shape as the
-    // realise doors above: outside `write.rs`/`read.rs`, so outside this unit
-    // and stated rather than absorbed. Neither carries agent-plane addresses —
-    // one is a header the verb composes, the other is the empty string.
-    DoorPin {
-        file: "crates/mrd/src/journal_cmd.rs",
-        door_fn: "genesis",
-        mint_fn: "write_archive",
-        guard_fn: None,
-        label: "journal genesis: the archive page the reset moves rows into",
-        class: Door::OutsideThisUnit,
-    },
-    DoorPin {
-        file: "crates/mrd/src/journal_cmd.rs",
-        door_fn: "genesis",
-        mint_fn: "truncate_journal",
-        guard_fn: None,
-        label: "journal genesis: emptying the live journal after the archive is durable",
-        class: Door::OutsideThisUnit,
-    },
+    // ---- mrd/journal_cmd.rs — TWO DOORS RETIRED, and the census shrank with them
+    // `journal genesis` pinned two mints here: `write_archive` (the archive page
+    // the reset moved rows into) and `truncate_journal` (emptying the live journal
+    // once the archive was durable). Both landed the ENGINE's own bytes on a CLI
+    // path, and both are DELETED with the verb and the ledger it reset — nothing
+    // is being reset any more (U6).
+    //
+    // Removed rather than kept as a tombstone entry, because this census is a
+    // census OF THE TREE: every pin is verified to exist at its file and function,
+    // so a pin naming a deleted file is not a record, it is a census that cannot
+    // run. The record of the retirement lives in the git history of this file and
+    // in U6's seam note; the DOOR COUNT is what this file is for, and it is now 7.
     // ---- sidecar/watch.rs — C3's reaction feeder, the first mint that is NOT
     // a door. `external_effects` needs each externally-changed document to carry
     // its own path, because a HOOK matches `paths:` against it; the watcher's
@@ -612,10 +603,12 @@ fn the_arithmetic_closes_and_no_class_is_empty() {
         "lock_write, the promotion and commit_batch land engine-composed bytes",
     );
     assert_eq!(
-        outside, 3,
-        "the run plane and G2's two genesis mints — stated, not absorbed. The two \
-         `realise --truth` doors left this count with the flag itself (registration \
-         cutover); the redesigned convergence owes its own pins when it lands",
+        outside, 1,
+        "the run plane's candidate — stated, not absorbed. WAS 3: G2's two genesis \
+         mints left this count with the verb and the ledger it reset (journal \
+         retirement, U6), the same way the two `realise --truth` doors left it with \
+         the flag itself (registration cutover). The redesigned convergence owes its \
+         own pins when it lands; the journal owes none, because nothing replaces it",
     );
     assert_eq!(
         read_only, 1,
