@@ -4,7 +4,7 @@
 //! - [`claims_realised`] — observe each claim against the current tree and report
 //!   the drifted ones (the realise engine's pure detection, run read-only here);
 //! - [`pin_plane`] — the CLAIM plane (`pins:` — did the content drift?) and the
-//!   RETRIEVAL plane (`objects:` — is the blob durably anchored?).
+//!   RETRIEVAL plane (each pin's `hash` — is the blob durably anchored?).
 //!
 //! # Why this layer holds no write-history plane — the LAW, not a gap
 //! ZT, ruling 2026-08-03, verbatim: *"Engine does not have memory. It should not
@@ -123,7 +123,7 @@ pub struct PinRow {
     pub label: String,
 }
 
-/// One `objects:` entry whose blob is **ORPHANED**: no ref reaches it, and the
+/// One pinned blob that is **ORPHANED**: no ref reaches it, and the
 /// file it is the blob OF no longer hashes to it — so no commit of that file will
 /// ever anchor it either. The pin's evidence is held by nothing and is on its way
 /// to nothing.
@@ -158,7 +158,7 @@ pub struct PinRow {
 pub struct OrphanedBlob {
     /// The page whose `meridian-lock` block declares this object.
     pub src_path: String,
-    /// The `objects:` key, verbatim (what the blob is FOR).
+    /// The pin's `object`, verbatim (what the blob is FOR).
     pub key: String,
     /// The blob sha, verbatim — an object id in git's world, not the engine's.
     pub blob_sha: String,
@@ -187,7 +187,7 @@ pub struct PinPlane {
     /// Pins whose colour is GREY — outside sight, each carrying its own reason
     /// word (S3-R6: one vocabulary, distinct words for distinct causes).
     pub grey: Vec<PinRow>,
-    /// `objects:` entries whose blob nothing holds and nothing will — the
+    /// Pinned blobs nothing holds and nothing will — the
     /// anchoring FINDING. See [`OrphanedBlob`] for why the refusal is this pair
     /// and not a bare state.
     pub orphaned: Vec<OrphanedBlob>,
@@ -243,7 +243,7 @@ impl PinPlane {
         !self.red.is_empty() || !self.orphaned.is_empty()
     }
 
-    /// How many `objects:` entries git was asked about — the population behind the
+    /// How many pinned blobs git was asked about — the population behind the
     /// three-state reading (S3-R23(5)).
     #[must_use]
     pub fn asked(&self) -> usize {
@@ -267,14 +267,14 @@ impl PinPlane {
 }
 
 /// Read the pin plane over `docs`: sort the caller's pin colours, then ask THIS
-/// root's object store about every `objects:` entry the corpus declares.
+/// root's object store about every blob the corpus pins.
 ///
 /// `docs` must be the SAME corpus build the pin colours came from — a second
 /// build would let the two halves describe two different corpora, which is the
 /// trap `mrd status`'s two axes are explicitly built to avoid.
 ///
 /// # It asks nothing it does not have to
-/// A corpus that declares no `objects:` entry asks git nothing: nothing is
+/// A corpus that pins no blob asks git nothing: nothing is
 /// referenced, so nothing can be owed, and a workspace outside a repository stays
 /// green rather than being refused for a question nobody asked.
 ///
@@ -646,7 +646,7 @@ mod tests {
         );
     }
 
-    /// A corpus declaring no `objects:` entry asks git NOTHING: nothing is
+    /// A corpus pinning no blob asks git NOTHING: nothing is
     /// referenced, so nothing can be owed. Without this arm every workspace
     /// outside a repository would refuse, and a guard that blocks everything is
     /// indistinguishable from one that guards nothing (S3-R8(c)).
