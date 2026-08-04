@@ -392,7 +392,20 @@ pub enum PlanEdit {
     /// reproduced engine-side (NOT native `at:upsert`: model's upsert inserts
     /// absent keys at FIRST-key position; the Go dance inserts after the LAST
     /// key — divergent bytes).
-    SetProperty { key: String, value: String },
+    SetProperty {
+        key: String,
+        value: String,
+        /// U10 (plan decision P3): the FILE-grain guard — the doc-root token
+        /// this property write is decided against. Frontmatter semantics are
+        /// file-scoped, so a key-line rev would guard the wrong grain; this
+        /// carries the document's `file_rev`.
+        ///
+        /// v3-ADDITIVE on a v3-only shape: `plan_edits` never existed under
+        /// frozen v2, so admitting an optional field here changes no v2 byte
+        /// (serialization skips it when absent).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1647,6 +1660,15 @@ pub enum ErrorCode {
     /// `red(dangling)`; refusing at mint time is the honest door. Additive by
     /// the tolerant-code law.
     PinTargetMissing,
+    /// U10 (requirements decision 12 / R1.1): a WIRE-ORIGIN write that changes
+    /// existing content carried no fingerprint and no `force`. Extras: `path`
+    /// (the file) + `message` — a TEACHING message that names the subject, the
+    /// grain the guard is demanded at, and the runnable command that mints the
+    /// token, so the caller proceeds without a second guess. Fix class — change
+    /// the request (send the token, or `force`). The CLI in-process door is
+    /// exempt (local-operator trust) and never raises it. Additive by the
+    /// tolerant-code law: an unknown code dispatches on `recovery` alone.
+    GuardRequired,
 }
 
 impl ErrorCode {
@@ -1669,7 +1691,8 @@ impl ErrorCode {
             | ErrorCode::BindingBreak
             | ErrorCode::IndexIntegrity
             | ErrorCode::ReadMintRequired
-            | ErrorCode::PinTargetMissing => Recovery::Fix,
+            | ErrorCode::PinTargetMissing
+            | ErrorCode::GuardRequired => Recovery::Fix,
             ErrorCode::FileNotFound
             | ErrorCode::IoError
             | ErrorCode::InvalidUtf8

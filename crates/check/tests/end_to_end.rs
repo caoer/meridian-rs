@@ -38,6 +38,7 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 fn splice_through_the_write_path(root: &WorkspaceRoot, path: &str, old: &str, new: &str) {
     let args = SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WirePath(path.to_string()),
         actor: Some("agent:alice".to_string()),
         now: None,

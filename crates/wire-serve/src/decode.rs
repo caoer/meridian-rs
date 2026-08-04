@@ -381,10 +381,14 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
                 }
             }
             "set_property" => {
-                plan_fields(b, "set_property", &["key", "value"])?;
+                plan_fields(b, "set_property", &["key", "value", "rev"])?;
                 PlanEdit::SetProperty {
                     key: req_str(b, "set_property", "key")?,
                     value: req_str(b, "set_property", "value")?,
+                    // U10/P3: the FILE-grain doc-root token. Optional at the
+                    // wall (the shape stays decodable without it); the U10
+                    // guard is what DEMANDS it on a wire-origin write.
+                    rev: opt_str(b, "set_property", "rev")?,
                 }
             }
             other => {

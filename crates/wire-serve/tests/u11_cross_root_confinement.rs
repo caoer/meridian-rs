@@ -43,6 +43,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot, std::path::PathBuf) {
 fn args_for(path: &str) -> SpliceArgs {
     SpliceArgs {
         id: None,
+        origin: wire_serve::guard::Origin::InProcess,
         path: WPath(path.into()),
         actor: Some("alice".into()),
         now: None,

@@ -837,6 +837,10 @@ fn dispatch_read(
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
                 id,
+                // U10: a wire door — so it enforces fingerprint-or-force, as
+                // EVERY wire door does. Not because of who is behind it: MCP is
+                // the main agent client, never a trust plane of its own.
+                origin: wire_serve::guard::Origin::Wire,
                 path,
                 actor,
                 now,

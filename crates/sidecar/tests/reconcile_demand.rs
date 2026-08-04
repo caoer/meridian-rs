@@ -32,6 +32,35 @@ const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a76382
 /// The E3 splice, guarded on R0 (`splice_e2e`'s frozen request, verbatim).
 const E3_AT_R0: &str = r#"{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}}}],"if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9"}"#;
 
+/// U10: a wire-origin content change carries the target node's fingerprint.
+/// Returns `frame` with `edits[0].if_node_rev` set to Goals/Q3's LIVE rev — read
+/// from the same pre-image the write will validate against, which is what a
+/// caller does. The stale-root case below deliberately does NOT use this: the
+/// world guard answers before the fingerprint guard is reached, so that probe
+/// still exercises `root_mismatch`.
+fn with_node_rev(frame: &str, root: &fs::WorkspaceRoot) -> String {
+    let doc = fs::load(root, std::path::Path::new("notes/plan.md")).expect("load");
+    let sec = wire::SecRef::Hpath {
+        hpath: vec![
+            wire::HpathSeg {
+                h: "Goals".into(),
+                n: None,
+            },
+            wire::HpathSeg {
+                h: "Q3".into(),
+                n: None,
+            },
+        ],
+    };
+    let rev = match wire_serve::read::cat(&doc, Some(sec)).expect("cat") {
+        wire::ResponseBody::Cat { node_rev, .. } => node_rev.0,
+        other => panic!("cat returned {other:?}"),
+    };
+    let mut v: Value = serde_json::from_str(frame).expect("frame JSON");
+    v["edits"][0]["if_node_rev"] = Value::String(rev);
+    v.to_string()
+}
+
 /// `fs::fold_count` is process-global, so EVERY test in this file takes this
 /// guard — the counting gates measure differences, and a freshness gate folding
 /// on another thread lands inside that difference. One process per
@@ -449,7 +478,7 @@ fn splice_root_guard_still_folds_fresh_after_ring_blind_lines() {
         vec![
             line(r#"{"id":1,"op":"cat","path":"notes/plan.md"}"#),
             Step::Mutate(external_new_file(&root2)),
-            line(&E3_AT_R0.replace(R0, &live)),
+            line(&with_node_rev(&E3_AT_R0.replace(R0, &live), &root2)),
         ],
     );
     assert_eq!(

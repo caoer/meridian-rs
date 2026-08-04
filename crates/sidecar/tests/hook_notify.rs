@@ -107,7 +107,10 @@ fn arm_hook(root: &std::path::Path, mode: Mode) {
     std::fs::write(marker_path, "").expect("once-armed marker");
 }
 
-fn splice(id: u64, path: &str, status: &str) -> String {
+/// U10: `status` already exists on these fixtures, so an upsert of it is a
+/// content change and a wire-origin write must carry the key node's fingerprint.
+/// `rev` comes from a `cat` of that very key — read first, write what you read.
+fn splice(id: u64, path: &str, status: &str, rev: &str) -> String {
     json!({
         "id": id,
         "op": "splice",
@@ -115,10 +118,30 @@ fn splice(id: u64, path: &str, status: &str) -> String {
         "actor": "agent:worker",
         "edits": [{
             "target": {"fm_key": "status"},
-            "edit": {"put": {"at": "upsert", "text": status}}
+            "edit": {"put": {"at": "upsert", "text": status}},
+            "if_node_rev": rev
         }]
     })
     .to_string()
+}
+
+/// The live `node_rev` of one frontmatter key, over the wire the test already
+/// speaks: `cat` that key, keep its token.
+fn fm_rev(sidecar: &mut LiveSidecar, id: u64, path: &str) -> String {
+    sidecar.send(
+        &json!({
+            "id": id,
+            "op": "cat",
+            "path": path,
+            "sec": {"fm_key": "status"}
+        })
+        .to_string(),
+    );
+    let (_, frame) = sidecar.receive();
+    frame["body"]["node_rev"]
+        .as_str()
+        .unwrap_or_else(|| panic!("cat serves the key's node_rev: {frame}"))
+        .to_string()
 }
 
 fn refused_splice(id: u64) -> String {
@@ -219,7 +242,8 @@ fn splice_response_arms_before_live_notification_delivery() {
     sidecar.send(r#"{"id":1,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 1);
 
-    sidecar.send(&splice(2, "tasks/x.md", "review"));
+    let rev = fm_rev(&mut sidecar, 900, "tasks/x.md");
+    sidecar.send(&splice(2, "tasks/x.md", "review", &rev));
     let (response_raw, response) = sidecar.receive();
     assert_eq!(response["id"], 2, "the caller response arrives first");
     let armed = &response["body"]["armed"]["effects"];
@@ -281,7 +305,8 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
         "no armed response on refusal"
     );
 
-    sidecar.send(&splice(22, "notes/x.md", "review"));
+    let rev = fm_rev(&mut sidecar, 922, "notes/x.md");
+    sidecar.send(&splice(22, "notes/x.md", "review", &rev));
     let (_, out_of_scope) = sidecar.receive();
     assert_eq!(
         out_of_scope["id"], 22,
@@ -304,7 +329,8 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
 fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
-    sidecar.send(&splice(30, "tasks/x.md", "review"));
+    let rev = fm_rev(&mut sidecar, 930, "tasks/x.md");
+    sidecar.send(&splice(30, "tasks/x.md", "review", &rev));
     let (_, response) = sidecar.receive();
     let armed = response["body"]["armed"]["effects"].clone();
     assert_armed_intent(&armed);
@@ -325,7 +351,8 @@ fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
 fn never_armed_process_output_omits_reaction_fields() {
     let workspace = workspace(false);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
-    sidecar.send(&splice(40, "tasks/x.md", "review"));
+    let rev = fm_rev(&mut sidecar, 940, "tasks/x.md");
+    sidecar.send(&splice(40, "tasks/x.md", "review", &rev));
     let (raw, response) = sidecar.receive();
     assert!(
         !raw.contains("\"effects\""),
@@ -355,7 +382,8 @@ fn a_row_armed_off_fires_nothing_through_the_live_loop() {
     sidecar.send(r#"{"id":50,"op":"sub","from_seq":0}"#);
     assert_eq!(sidecar.receive().1["id"], 50);
 
-    sidecar.send(&splice(51, "tasks/x.md", "review"));
+    let rev = fm_rev(&mut sidecar, 951, "tasks/x.md");
+    sidecar.send(&splice(51, "tasks/x.md", "review", &rev));
     let (raw, response) = sidecar.receive();
     assert_eq!(response["id"], 51, "the write still lands");
     assert!(

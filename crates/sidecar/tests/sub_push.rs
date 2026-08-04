@@ -51,7 +51,12 @@ fn serve_raw(root: &fs::WorkspaceRoot, input: &str) -> Vec<(String, Value)> {
 }
 
 const E3_REQ: &str = r#"{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000042"},"if_root":"b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9","edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q3"}]},"edit":{"match":{"old":"ship by August","new":"ship by September"}},"if_node_rev":"33d5b0e1b27cb48b"}]}"#;
-const E4_REQ: &str = r#"{"id":57,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000043"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- new item\n"}}}]}"#;
+// U10 (decision 18): E4 mutates existing content, so it carries Q4's
+// fingerprint the way E3 already carried Q3's. The value is the before-rev the
+// §6.3 receipt line for this very edit records (`Goals>Q4 put:end
+// 4b8bc385a58da0e0->…`) — E3 above touches Q3 only, so Q4 still stands at its
+// s0 rev when this frame arrives.
+const E4_REQ: &str = r#"{"id":57,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{"path":"receipts/2026-07-18.md","anchor":"r-000043"},"edits":[{"target":{"hpath":[{"h":"Goals"},{"h":"Q4"}]},"edit":{"put":{"at":"end","text":"- new item\n"}},"if_node_rev":"4b8bc385a58da0e0"}]}"#;
 
 /// A frame is a Notification iff it carries NO `id` key (§3.1
 /// classification) — here that means the `{"delta":{…}}` push frames.

@@ -147,10 +147,23 @@ fn blurb_pack() -> policy::CompiledRuleset {
 /// A single batch splice that takes `s0` → `s2`: the frozen Q3 match + Q4 append,
 /// disjoint targets in ONE batch, so the touched doc's post-batch state is `s2`
 /// byte-identically. `{DRY}` is replaced by `"dry":true,` or nothing.
-fn s0_to_s2_splice(dry: bool) -> String {
+/// U10 (decision 18): both edits mutate existing content, so the wire frame
+/// carries each target's fingerprint. The revs are DERIVED from the pre-splice
+/// document, never typed.
+fn s0_to_s2_splice(root: &fs::WorkspaceRoot, dry: bool) -> String {
     let dry_field = if dry { r#""dry":true,"# } else { "" };
+    let rev = |sec: Value| -> String {
+        let doc = fs::load(root, std::path::Path::new("notes/plan.md")).expect("load");
+        let sec: wire::SecRef = serde_json::from_value(sec).expect("selector decodes");
+        match wire_serve::read::cat(&doc, Some(sec)).expect("cat") {
+            wire::ResponseBody::Cat { node_rev, .. } => node_rev.0,
+            other => panic!("cat returned {other:?}"),
+        }
+    };
+    let q3 = rev(json!({"hpath": [{"h": "Goals"}, {"h": "Q3"}]}));
+    let q4 = rev(json!({"hpath": [{"h": "Goals"}, {"h": "Q4"}]}));
     format!(
-        r#"{{"id":1,"op":"splice",{dry_field}"path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000099"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}}}},{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"put":{{"at":"end","text":"- new item\n"}}}}}}]}}"#
+        r#"{{"id":1,"op":"splice",{dry_field}"path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:33:41Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000099"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{q3}"}},{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q4"}}]}},"edit":{{"put":{{"at":"end","text":"- new item\n"}}}},"if_node_rev":"{q4}"}}]}}"#
     )
 }
 
@@ -178,7 +191,7 @@ fn gate1_verdict_rides_real_splice() {
     let frames = serve(
         &root,
         &[blurb_pack()],
-        &format!("{}\n", s0_to_s2_splice(false)),
+        &format!("{}\n", s0_to_s2_splice(&root, false)),
     );
     assert_eq!(frames.len(), 1, "one response");
     let body = &frames[0]["body"];
@@ -200,7 +213,7 @@ fn gate1_verdict_rides_dry_splice() {
     let frames = serve(
         &root,
         &[blurb_pack()],
-        &format!("{}\n", s0_to_s2_splice(true)),
+        &format!("{}\n", s0_to_s2_splice(&root, true)),
     );
     assert_eq!(frames.len(), 1, "one response");
     let body = &frames[0]["body"];
@@ -231,14 +244,14 @@ fn ruling2_dry_verdicts_equal_real_verdicts_byte_identical() {
     let dry = serve(
         &root_dry,
         &[blurb_pack()],
-        &format!("{}\n", s0_to_s2_splice(true)),
+        &format!("{}\n", s0_to_s2_splice(&root_dry, true)),
     );
 
     let (_d2, root_real) = s0();
     let real = serve(
         &root_real,
         &[blurb_pack()],
-        &format!("{}\n", s0_to_s2_splice(false)),
+        &format!("{}\n", s0_to_s2_splice(&root_real, false)),
     );
 
     // Serialize each verdict array to canonical JSON bytes and compare — the
@@ -297,7 +310,7 @@ rules: [rules/link-check.md]
 #[test]
 fn gate4_no_pack_still_carries_empty_verdicts() {
     let (_d, root) = s0();
-    let frames = serve(&root, &[], &format!("{}\n", s0_to_s2_splice(false)));
+    let frames = serve(&root, &[], &format!("{}\n", s0_to_s2_splice(&root, false)));
     assert_eq!(
         frames[0]["body"]["verdicts"],
         json!([]),
