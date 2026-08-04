@@ -12,12 +12,14 @@
 //!    Every row records the containing page's `doc_rev` (`src_doc_rev`), the
 //!    rev-compare invalidation key: the projection cache self-invalidates by
 //!    `doc_rev`, so no stored second truth exists (§2.1, §8).
-//! 2. **The board-red views** — `board_drift` (a pinned lock item whose LIVE
-//!    target rev ≠ its `pinned_rev`) and `board_unresolved` (a pinned item whose
-//!    `to` selector resolves to no node), unioned as `board_red`. Board reds are
+//! 2. **The board-red surface** — `board_red`, the ONE red view, reading the
+//!    colour plane's reds straight off the projected verdict. Board reds are
 //!    computable in the DEFAULT read face with **no optional pack** (checklist
 //!    24; §4.2 "live-rev ≠ armed-rev is ordinary red drift in the default face";
-//!    §5.3 "a doctored verdict … verdicts freeze at close").
+//!    §5.3 "a doctored verdict … verdicts freeze at close"). The `board_drift`
+//!    and `board_unresolved` views it used to union were the legacy `node_rev`
+//!    compare and are RETIRED (R1.3 / U9c) — R4 leaves no row for them to
+//!    answer.
 //! 3. **The locked read face** — [`lock_read_face`]: `enable_external_access =
 //!    false` + `lock_configuration = true`, so an SQL view pack running over
 //!    this connection **physically has no write path** — no `ATTACH`, no `COPY`,
@@ -33,8 +35,13 @@
 //!
 //! - **`board`** — the colors layer: exactly one `green`/`red`/`grey` row per
 //!   lock edge. Under R4 every row carries the color plane's verdict, so the
-//!   board reads that verdict; the `node_rev` compare arms below it are
-//!   unreachable and are the next unit's to collapse.
+//!   board READS that verdict and computes none of its own — two arms, not five.
+//! - **`board_residue`** — every row `board` cannot colour. The collapse above
+//!   means a verdict-less row matches NO arm and would leave the surface
+//!   silently; this view is its only trace, and the count is disclosed beside
+//!   every board answer so absence never has to be inferred. It sits at ZERO,
+//!   with a test proving it can move — a counter that cannot move is a
+//!   decoration.
 //!
 //!   "An ungated close renders grey, never green" (d2 §5.3) still holds, and now
 //!   holds BY CONSTRUCTION rather than by detection: green is COMPUTED from a
@@ -71,13 +78,21 @@ use crate::walk;
 /// computer, and not a stored verdict: the whole read face is built per query
 /// from the same `docs` snapshot and thrown away with the connection.
 pub const READ_FACE_SCHEMA_SQL: &str = r"
--- NOTE (R1.3): the legacy `^inputs` plane is retired, so every projected row now
--- carries a verdict and the arms below fenced by `verdict_color IS NULL` — the
--- node_rev compare, board_drift, board_unresolved, and the green /
--- superseded-algo / declared-unpinned board arms — are UNREACHABLE. They are
--- left standing here deliberately: collapsing them changes what the board
--- SURFACE means, which is a separate unit's call, not a consequence of retiring
--- a parser. The comments below still describe the SQL as written.
+-- NOTE (R1.3 / U9c): the legacy `^inputs` plane is retired, and the arms that
+-- were fenced by `verdict_color IS NULL` — the node_rev compare, board_drift,
+-- board_unresolved, and the green / superseded-algo / declared-unpinned board
+-- arms — ARE NOW COLLAPSED. Every projected row carries a verdict, so the board
+-- reads the colour plane's answer and computes none of its own.
+--
+-- **THE COLLAPSE OPENED A HOLE AND `board_residue` IS WHAT CLOSES IT.** Deleting
+-- those arms means a row with no verdict matches NO arm of `board` and would
+-- VANISH from the surface rather than render — absence reading as
+-- nothing-to-report, which is the same fail-open the walk plane's `uncolourable`
+-- arm exists to prevent, arriving through a different door. A projection cannot
+-- match-exhaustively the way a Rust enum can, so the compiler cannot guard this;
+-- the substitute is a RESIDUE QUERY whose count is disclosed beside every board
+-- answer and pinned by a named test. Nothing can vanish without moving a
+-- disclosed counter that a test owns.
 --
 -- input_lock — the parse projection of each page's `meridian-lock` block. One row
 -- per lock item, exactly as written in the vault bytes (source 1). Distinct from
@@ -96,128 +111,78 @@ CREATE TABLE input_lock (
     rev_class    TEXT,                -- [1] 'content' | 'object' (NULL = unstated)
     hash_algo    TEXT,                -- [1] the algo the pinned value was minted under (NULL = absent): the block's `hash-algo:` header for the legacy forms, the fingerprint token's own version field for a meridian-lock pin; != 'node-rev' -> grey superseded-algo
     src_doc_rev  TEXT     NOT NULL,   -- [1] containing doc_rev — the rev-compare invalidation key
-    verdict_color  TEXT,              -- [color plane] a meridian-lock row's verdict tone ('green'|'red'|'grey'); NULL on EVERY legacy ^inputs row, which the board colors by the node_rev compare below
+    verdict_color  TEXT,              -- [color plane] the row's verdict tone ('green'|'red'|'grey'). NULL is the RESIDUE case: no arm of `board` matches it, so `board_residue` counts it and the count is disclosed. Two doors reach NULL — a row failing `LockItem::is_colourable`, and a colourable row whose verdict lookup missed
     verdict_reason TEXT,              -- [color plane] the verdict's stable reason word ('content-drifted', 'dangling-anchor', 'unverifiable-fingerprint', 'malformed-fingerprint', 'lock-refused', …); NULL for green
     verdict_detail TEXT,              -- [color plane] the reason's own detail — WHICH fingerprint-triple member is unknown, or WHY the lock refused; NULL when the reason word says it all
     PRIMARY KEY (src_path, seq)
 );
 
--- board_drift — RED in the default face: a pinned NATIVE-algo lock item whose
--- live target content rev differs from the pinned rev (§2.3 red; the
--- doctored-verdict trace, §5.3). A foreign-algo lock (hash_algo not in the
--- engine-native set {node-rev, v2}) cannot drift — the engine never computed its
--- rev — so it is excluded here and renders superseded-algo grey (U3.4). The
--- v1→v2 supersede keeps the node-rev value under the `v2` label, so a `v2` pin
--- drifts/greens through the SAME node_rev compare. Computed per query by joining
--- the parse projection against live nodes.
+-- board_red — the ONE red surface: the colour plane's reds, carrying the plane's
+-- own reason word (`content-drifted` / `dangling-anchor` / `selector-unresolved`,
+-- never conflated). A reader renders red iff a row is present, in the DEFAULT
+-- face, no pack — so a pin the colour plane measured as drift MUST be present
+-- here. Absent, a reader asking `board_red` whether anything is red would be
+-- told no while `board` and `mrd walk` both say red: the under-report, on the
+-- surface most likely to be glanced at rather than read.
 --
--- `verdict_color IS NULL` fences this compare to the LEGACY rows: a row that
--- already carries the color plane's verdict is answered there and here, and the
--- two answers could disagree. The partition is structural, not a convention.
-CREATE VIEW board_drift AS
-    SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
-           il.pinned_rev, n.node_rev AS live_rev, 'content-drifted' AS reason
-    FROM input_lock il
-    JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.verdict_color IS NULL
-      AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
-      AND n.node_rev <> il.pinned_rev;
-
--- board_unresolved — RED in the default face: a pinned NATIVE-algo lock item
--- whose `to` selector resolves to no live node (rename / delete / rewrite; §2.3,
--- §2.5). Foreign-algo locks (not in {node-rev, v2}) render superseded-algo grey,
--- never red — excluded.
-CREATE VIEW board_unresolved AS
-    SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
-           il.pinned_rev
-    FROM input_lock il
-    LEFT JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-    WHERE il.verdict_color IS NULL
-      AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
-      AND n.path IS NULL;
-
--- board_red — the union board-red surface: drift + unresolved + the fingerprint
--- plane's reds. Grey (declared-only, pinned_rev NULL) never appears here; green
--- never appears here. A reader renders red iff a row is present, in the DEFAULT
--- face, no pack — so this is the ONE red surface, and a `meridian-lock` pin the
--- color plane measured as drift must be present here too. Absent, a reader
--- asking `board_red` whether anything is red would be told no while `board` and
--- `mrd walk` both say red: the under-report, on the surface most likely to be
--- glanced at rather than read.
+-- The `board_drift` and `board_unresolved` views this used to union were the
+-- legacy `node_rev` compare, fenced to rows the colour plane had not answered.
+-- R4 left no such rows, so they computed a second verdict for a population that
+-- cannot exist. Deleted whole rather than left standing: a second compare that
+-- can never run is not a safety net, it is a divergence waiting for an edit.
 CREATE VIEW board_red AS
-    SELECT src_path, seq, to_path, to_sel, pinned_rev, live_rev, reason
-        FROM board_drift
-    UNION ALL
-    SELECT src_path, seq, to_path, to_sel, pinned_rev,
-           NULL AS live_rev, 'selector-unresolved' AS reason
-        FROM board_unresolved
-    UNION ALL
-    -- the fingerprint plane's reds, carrying the color plane's own reason word
-    -- (`content-drifted` / `dangling-anchor` / `selector-unresolved`, never
-    -- conflated). No `live_rev`: a fingerprint pin has no node_rev to compare.
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            NULL AS live_rev, verdict_reason AS reason
         FROM input_lock
         WHERE verdict_color = 'red';
 
--- board — U5.1's colors layer (d2 §5.3 'colors = board view'; wire-contract-v2
--- colors-amendment § Colors). Exactly ONE color row per lock edge, in the
--- DEFAULT face, no pack. The color is 'traces read through workflow vocabulary':
---   green  — the pinned rev the verdict FROZE AT CLOSE still equals the live rev
---            (nothing drifted since the close);
---   red    — the pinned rev no longer equals live (a DOCTORED VERDICT: edited
---            after close), OR the pinned target resolves to no live node;
---   grey   — declared-unpinned (pinned_rev NULL): an UNGATED close (a bare flip
---            that never froze a verdict rev). The ledger cannot verify it — grey,
---            NEVER green, never silently clean.
--- Verdicts-freeze-at-close: the pin (`pinned_rev`) IS the verdict frozen at
--- close; the board compares the LIVE rev against that frozen rev, it never
--- recomputes the verdict. A closed card color is a reading of the frozen pin.
+-- board_residue — THE DISCLOSURE, and the reason the collapse above is safe.
 --
--- The arms partition `input_lock` on `verdict_color`: a row WITHOUT a verdict is
--- a legacy `^inputs` row, colored by the four node_rev arms below exactly as
--- U5.1 shipped; a row WITH one is a `meridian-lock` row, colored by the ONE
--- color plane. Still exactly one row per lock item, and no item can be colored
--- twice by two compares.
-CREATE VIEW board AS
-    -- green: pinned NATIVE-algo ({node-rev, v2}) + live rev still equals the
-    -- frozen pinned rev. The v1→v2 supersede keeps the node-rev value under the
-    -- `v2` label, so it greens through the SAME node_rev compare.
-    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
-           n.node_rev AS live_rev, 'green' AS color, 'attested' AS reason
+-- Every row `board` cannot colour. `board`'s two arms partition `input_lock` on
+-- `verdict_color IS NOT NULL`, so a NULL-verdict row matches neither and would
+-- silently LEAVE THE SURFACE. This view is that row's only trace, and the count
+-- is disclosed beside every board answer — absence never has to be inferred.
+--
+-- **IT SITS AT ZERO TODAY AND THAT IS THE POINT.** A NULL verdict is unreachable
+-- at this revision by two DIFFERENT guarantees, and only one is the R4 parser
+-- invariant: a row failing `LockItem::is_colourable` is closed by the parser
+-- rule carried by `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`;
+-- a COLOURABLE row whose verdict lookup missed is closed only by
+-- `declared_ref` and `fingerprint` being minted once in `collect_lock_pins` and
+-- never reassigned. That second guarantee has no parser and no ratified law
+-- behind it — it holds because two functions currently agree.
+--
+-- A counter that has never moved and CANNOT move is a decoration. A counter at
+-- zero with a test proving it can move is a detector. `board_residue_*` are that
+-- test.
+-- **IT NAMES NO CAUSE, DELIBERATELY.** The two doors leave IDENTICAL evidence in
+-- this table: `input_lock` carries neither the fingerprint slot nor the refusal
+-- slot as its own column, so SQL here cannot tell an uncolourable row from a
+-- colourable row whose lookup missed. Labelling each row with a guessed cause
+-- would attach a category the instrument never measured. The count is the
+-- finding; the cause is the reader's next question, answered in Rust where the
+-- evidence lives.
+CREATE VIEW board_residue AS
+    SELECT il.src_path, il.seq, il.declared_ref, il.to_path, il.to_sel,
+           il.pinned_rev, il.src_doc_rev
         FROM input_lock il
-        JOIN node n ON n.path = il.to_path AND n.selector = il.to_sel
-        WHERE il.verdict_color IS NULL
-          AND il.pinned_rev IS NOT NULL AND (il.hash_algo IS NULL OR il.hash_algo IN ('node-rev', 'v2'))
-          AND n.node_rev = il.pinned_rev
-    UNION ALL
-    -- red: drift (doctored verdict) + unresolved (rename/delete of the pinned
-    -- target) + the fingerprint plane's reds — all through the ONE red surface.
+        WHERE il.verdict_color IS NULL;
+
+-- board — U5.1's colours layer (d2 §5.3 'colors = board view'; wire-contract-v2
+-- colors-amendment § Colors). Exactly ONE colour row per lock edge, in the
+-- DEFAULT face, no pack. The colour is 'traces read through workflow vocabulary'.
+--
+-- **The board computes NO verdict of its own.** Both arms read `verdict_color`,
+-- which the colour plane already answered, so the board and `mrd walk` cannot
+-- disagree about one pin — there is one compare, not two. Reds ride `board_red`;
+-- everything else rides the projected verdict. No row is coloured twice, and a
+-- row with no verdict is coloured ZERO times — which is what `board_residue`
+-- exists to disclose rather than let pass as silence.
+CREATE VIEW board AS
     SELECT src_path, seq, to_path, to_sel, pinned_rev,
            live_rev, 'red' AS color, reason
         FROM board_red
     UNION ALL
-    -- grey superseded-algo: pinned under a hash-algo this engine does not compute
-    -- (v1/merkle-v1/foreign — anything outside the native {node-rev, v2} set).
-    -- Readable, unverifiable here — never red, never green; an archived v1 block
-    -- renders this forever (d2 §6.3; U0.2/U3.4).
-    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
-           NULL AS live_rev, 'grey' AS color, 'superseded-algo' AS reason
-        FROM input_lock il
-        WHERE il.verdict_color IS NULL
-          AND il.pinned_rev IS NOT NULL AND il.hash_algo IS NOT NULL AND il.hash_algo NOT IN ('node-rev', 'v2')
-    UNION ALL
-    -- grey: declared-unpinned — the ungated close, never green.
-    SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
-           NULL AS live_rev, 'grey' AS color, 'declared-unpinned' AS reason
-        FROM input_lock il
-        WHERE il.verdict_color IS NULL AND il.pinned_rev IS NULL
-    UNION ALL
-    -- the fingerprint plane, NON-red arms: a `meridian-lock` row's green and its
-    -- greys (unverifiable-fingerprint / malformed-fingerprint / lock-refused),
-    -- read straight off the projected verdict. The reds ride `board_red` above,
-    -- so no row is colored twice. Green carries the board's own `attested`
-    -- reason word, as every other green row does.
     SELECT il.src_path, il.seq, il.to_path, il.to_sel, il.pinned_rev,
            NULL AS live_rev, il.verdict_color AS color,
            COALESCE(il.verdict_reason, 'attested') AS reason
@@ -350,11 +315,20 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
             .into_iter()
             .enumerate()
         {
-            // Look the verdict up for exactly the rows the color plane colors —
-            // Every R4 row carries a fingerprint or a refusal, so the guard is
-            // now a belt-and-braces read rather than a partition; the arms it
-            // used to fence off are the next unit's to collapse.
-            let verdict = (item.fingerprint.is_some() || item.lock_refusal.is_some())
+            // Look the verdict up for exactly the rows the colour plane colours,
+            // through the ONE shared predicate ([`LockItem::is_colourable`]) the
+            // walk's roll-up also reads — never a local re-spelling of it.
+            //
+            // **`.flatten()` IS THE SECOND DOOR TO A NULL VERDICT, and it is not
+            // the same door as the guard.** A row that PASSES the guard still
+            // lands NULL if the lookup MISSES, and no parser invariant touches
+            // that case: the key `(src_path, declared_ref, fingerprint)` matches
+            // only because those two fields are minted ONCE in
+            // [`collect_lock_pins`] and neither resolution wrapper reassigns
+            // them. That is a real guarantee with no test on it, which is why
+            // `board_residue` counts what falls out here rather than trusting it.
+            let verdict = item
+                .is_colourable()
                 .then(|| {
                     verdicts.get(&(
                         path.clone(),
@@ -486,6 +460,33 @@ pub struct LockItem {
     /// Distinct from [`LockItem::lock_refusal`]: a refused lock is unreadable
     /// HERE, an unresolvable root is unreachable FROM here.
     pub root_refusal: Option<model::selector::GreyReason>,
+}
+
+impl LockItem {
+    /// **Can the colour law answer this row at all?** True when the row carries
+    /// evidence to verify ([`LockItem::fingerprint`]) or a stated failure to read
+    /// it ([`LockItem::lock_refusal`]). A row with NEITHER names no evidence and
+    /// reports no failure, so no compare on either plane has anything to answer
+    /// with — that is the `uncolourable` class the walk plane renders.
+    ///
+    /// **ONE DEFINITION, deliberately, and this is the whole point of it.** Two
+    /// projections read this predicate: the walk's colour roll-up
+    /// ([`crate::walk::lock_pin_colors_rooted`], which SKIPS a row that fails
+    /// it) and the board projection ([`project_input_locks`], which writes a
+    /// NULL verdict for one). They must agree, because the board's residue
+    /// disclosure counts exactly the rows the walk skipped.
+    ///
+    /// It was previously written TWICE, once in each file, as exact negations of
+    /// each other — which is why the duplication survived so long: **negated
+    /// copies do not look like copies**. Nothing tested that the two agreed. If
+    /// they ever disagreed, a well-formed row would take a verdict on one plane
+    /// and a NULL on the other, nothing would fail, and the row would simply stop
+    /// being counted. One definition is cheaper than the test that would have
+    /// caught the divergence, and it cannot be forgotten.
+    #[must_use]
+    pub fn is_colourable(&self) -> bool {
+        self.fingerprint.is_some() || self.lock_refusal.is_some()
+    }
 }
 
 /// Parse every lock pin declared in `doc`, document order (source 1). The SHARED

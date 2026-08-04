@@ -295,11 +295,17 @@ pub fn lock_pin_colors_rooted(
     let mut out = Vec::new();
     for (path, doc) in docs {
         for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
-            if item.fingerprint.is_none() && item.lock_refusal.is_none() {
+            if !item.is_colourable() {
                 // Unreachable under R4 — every pin row carries a fingerprint and
                 // every refusal carries its reason. Kept as a fail-CLOSED guard:
-                // a row that somehow carried neither would be uncolourable, and
+                // a row that somehow carried neither is uncolourable, and
                 // skipping it is the honest answer, not colouring it green.
+                //
+                // The predicate is [`LockItem::is_colourable`] and NOT a local
+                // spelling of it: the board projection reads the SAME one to
+                // decide which rows get a verdict, and its residue disclosure
+                // counts exactly the rows skipped here. Two copies of this
+                // condition could drift with nothing failing.
                 continue;
             }
             out.push(PinColor {
