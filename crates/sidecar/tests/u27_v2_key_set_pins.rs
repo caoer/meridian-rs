@@ -990,3 +990,39 @@ fn toc_rev(root: &fs::WorkspaceRoot, sec: &str) -> String {
         .expect("rev")
         .to_string()
 }
+
+// ---------------------------------------------------------------------------
+// The pin primitive's own control (All-Hands #43)
+// ---------------------------------------------------------------------------
+
+/// **`pin_keys` exists twice — here and in `crates/wire/tests/u27_frozen_key_sets.rs`
+/// — and this test is why that is safe.**
+///
+/// The two copies cannot be merged into one: this one takes a `&Value` already
+/// off the wire, the other takes any `Serialize` and serializes it first, and a
+/// shared signature would be a lowest common denominator of both. So they are
+/// two definitions of one predicate, which is the shape that drifts silently
+/// (#43: a duplicate is dangerous exactly in proportion to how little it looks
+/// like one — differing signatures in different crates hide this one well).
+///
+/// Rather than share the code, each copy is ANCHORED TO ITS OWN MEASUREMENT:
+/// this test proves the helper REJECTS a superset, so if anyone weakens it to a
+/// subset or `contains` check — the one edit that would quietly disarm every pin
+/// in this file — this fails. The twin test in the other file does the same for
+/// its copy. Two definitions, each independently held to the contract, instead
+/// of two definitions that merely agree today.
+#[test]
+fn the_pin_primitive_rejects_a_superset() {
+    let one_extra = serde_json::json!({"a": 1, "b": 2});
+    let caught = std::panic::catch_unwind(|| {
+        pin_keys(&one_extra, &["a"], "pin-primitive self-control");
+    });
+    assert!(
+        caught.is_err(),
+        "pin_keys accepted a key set with an EXTRA key — it is no longer \
+         exhaustive, and every pin in this file is now a decoration"
+    );
+    // And it accepts the exact set, so the control can tell the two worlds
+    // apart rather than only proving that something panics.
+    pin_keys(&one_extra, &["a", "b"], "pin-primitive self-control");
+}

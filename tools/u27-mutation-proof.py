@@ -149,6 +149,39 @@ ARMS = [
         "frame, so this red is attributable to this edit alone.",
     ),
     (
+        "pin-primitive-weakened-live",
+        [(
+            "crates/sidecar/tests/u27_v2_key_set_pins.rs",
+            "    assert_eq!(\n        keys, expected,",
+            "    assert!( // MUTATION:\n"
+            "        expected.iter().all(|e| keys.contains(e)), // MUTATION:",
+        )],
+        {
+            LIVE: {"the_pin_primitive_rejects_a_superset"},
+            TYPE: set(),
+        },
+        "the ONE edit that would quietly disarm every pin in the live file: "
+        "exhaustive assert_eq! weakened to a subset check. Every existing pin "
+        "still PASSES under it — expected == served — which is exactly why the "
+        "primitive needs its own control rather than trusting the suite to notice.",
+    ),
+    (
+        "pin-primitive-weakened-type",
+        [(
+            "crates/wire/tests/u27_frozen_key_sets.rs",
+            "    assert_eq!(\n        keys, expected,",
+            "    assert!( // MUTATION:\n"
+            "        expected.iter().all(|e| keys.contains(e)), // MUTATION:",
+        )],
+        {
+            LIVE: set(),
+            TYPE: {"the_pin_primitive_rejects_a_superset"},
+        },
+        "the same weakening on the TYPE plane's own copy of the primitive. Two "
+        "definitions of one predicate (All-Hands #43), each held to the contract "
+        "by its own arm, so a drift in either is attributable to that file.",
+    ),
+    (
         "content-span-population-flip",
         [(
             "crates/wire/src/lib.rs",
@@ -250,7 +283,15 @@ def main() -> int:
                 if want == "ALL":
                     want = ran
                 elif want == "ALL_BUT_NOTIFICATION":
-                    want = ran - {"delta_notification_key_sets_are_frozen"}
+                    # Excluded because neither reads a RESPONSE frame: the
+                    # notification pin reads a frame this site never writes,
+                    # and the pin-primitive control asserts on a hand-built
+                    # value by design — it is a control on the assertion, not
+                    # a pin on the wire.
+                    want = ran - {
+                        "delta_notification_key_sets_are_frozen",
+                        "the_pin_primitive_rejects_a_superset",
+                    }
                 verdict = "OK" if failed == want else "*** PROOF FAILED ***"
                 if failed != want:
                     bad.append(f"{name}/{binary}: reddened {sorted(failed)}, expected {sorted(want)}")
@@ -320,7 +361,9 @@ def main() -> int:
     # count changes, a human looks at why — the same key-set-pin logic this
     # whole unit is built on, pointed at its own instrument.
     SELF = "tools/u27-mutation-proof.py"
-    SELF_EXPECTED = 21  # 15 payload strings + 4 search patterns + 2 prose lines
+    # Re-pinned deliberately, not adjusted to match: the four added hits were
+    # opened and are the weakened-assert payload of the two pin-primitive arms.
+    SELF_EXPECTED = 25  # 19 payload strings + 4 search patterns + 2 prose lines
 
     for label, cmd in scopes:
         out = subprocess.run(
