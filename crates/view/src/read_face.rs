@@ -960,9 +960,22 @@ mod tests {
     #[test]
     fn refused_lock_block_projects_one_refusal_row_not_silence() {
         let malformed = "# A\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
+        // The precondition names WHICH refusal. `is_err()` could not tell the
+        // MALFORMED rule from the version gate — and a pre-R4 `version: 1`
+        // fixture refuses on VERSION, which is exactly the drift that would
+        // leave the assertion below measuring a refusal it never named.
+        //
+        // The reason STRING is deliberately not repeated here: the assertion
+        // immediately below already pins it in full, and a second spelling is a
+        // second thing to drift. This pins the variant and the LINE.
         assert!(
-            lock::find(&doc(malformed)).is_err(),
-            "precondition: the format refuses these bytes",
+            matches!(
+                lock::find(&doc(malformed)),
+                Err(lock::LockError::Malformed { line: 3, .. })
+            ),
+            "precondition: the fixture must reach the MALFORMED rule at line 3, \
+             not the version gate — got {:?}",
+            lock::find(&doc(malformed)),
         );
         let items = page_lock_items(&doc(malformed));
         assert_eq!(items.len(), 1, "the refusal is visible, not absent");
