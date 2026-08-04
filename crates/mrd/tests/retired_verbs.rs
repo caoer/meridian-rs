@@ -1,5 +1,5 @@
 //! U12 retirement gates — the superseded pin/attest impl is DELETED, not
-//! shimmed (plan D-Remove; the migrate-kit self-retirement discipline).
+//! shimmed (plan D-Remove).
 //!
 //! # Stage-2 S7 amends the `pin` half of this gate — deliberately
 //! M1 deleted the OLD `pin`/`attest` implementation (`^inputs` + `pin_lock`) and

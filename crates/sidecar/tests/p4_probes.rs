@@ -6,9 +6,16 @@
 //! at rung 2; MP-5..7 are `splice` probes — they answered `unknown_op` while
 //! splice was unarmed and are BOUND since D4-SPLICE: MP-5 (raw linktext as a
 //! write target — W2 kill), MP-6 (client span field — decision-007 kill)
-//! refuse at the strict decode; MP-7 (guardless splice, "state s0") must
-//! SUCCEED at the wire — served against the wsfix S0 workspace the probe
-//! assumes. MP-9 is a GT-provenance check, not a wire frame. MP-8's recorded
+//! refuse at the strict decode; MP-7 (guardless splice, "state s0") is served
+//! against the wsfix S0 workspace the probe assumes and is REFUSED there —
+//! `guard_required`, a semantic write refusal, decision 007 AMENDED by
+//! requirements decision 18 (U10's fingerprint-or-force door). Its frame stays
+//! LEGAL, which is 007's surviving schema half; the probe pack's recorded
+//! `expect.ok:true` is the superseded behavioural half and the deviation stays
+//! loud in the provenance, exactly as MP-8's does. **This sentence said MP-7
+//! "must SUCCEED at the wire" while `assert_mp7_007_plus_write` below asserted
+//! the refusal — corrected under DECISION 22 (ZT, 2026-08-04).** MP-9 is a
+//! GT-provenance check, not a wire frame. MP-8's recorded
 //! `expect.ok:true` predates the frozen D-C5 law — the runner asserts the
 //! TEXT-lawful answer (`bad_request{unknown_kinds:["block_anchor"]}`; the
 //! closed §4.3 enum spells the kind `anchor`) and the deviation stays loud
