@@ -555,7 +555,6 @@ fn session_read(
 ) {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
-        mode: Some("sections".into()),
         sections: Some(vec![wire::ReadSel::parse(selector)]),
         actor: Some(actor.to_owned()),
         ..Default::default()

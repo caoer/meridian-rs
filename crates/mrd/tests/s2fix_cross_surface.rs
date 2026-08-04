@@ -681,7 +681,6 @@ fn session_read(
 ) {
     let doc = fs::load(root, Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
-        mode: Some("sections".into()),
         sections: Some(vec![wire::ReadSel::parse(selector)]),
         actor: Some(actor.to_owned()),
         ..Default::default()
@@ -930,7 +929,6 @@ fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> Stri
     let decorations = wire_serve::read::page_decorations(&index, &docs, rel);
     let doc = docs.get(rel).expect("the page is in the corpus");
     let params = wire_serve::read::ReadParams {
-        mode: Some("sections".into()),
         sections: Some(vec![wire::ReadSel::parse(section)]),
         ..Default::default()
     };

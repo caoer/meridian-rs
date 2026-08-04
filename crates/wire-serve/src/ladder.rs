@@ -258,8 +258,25 @@ const DIFF_CONTEXT_LINES: usize = 3;
 /// no change to teach, so rung 1 has nothing to say and the caller is better
 /// served by rung 2's bytes.
 fn unified_line_diff(pinned: &str, current: &str) -> Option<String> {
-    let before: Vec<&str> = pinned.lines().collect();
-    let after: Vec<&str> = current.lines().collect();
+    unified_diff("pinned", "current", pinned, current)
+}
+
+/// The same renderer with the two side names spelled by the caller — ONE line
+/// diff in the tree, so a rehearsal preview (`mrd put --dry`, D3) and a
+/// `cas_mismatch` rung 1 cannot drift into two diff dialects. The labels are
+/// the only thing that differs: a rehearsal's sides are `current`/`candidate`,
+/// a mismatch's are `pinned`/`current`, and neither pair is `a/`-`b/` files.
+///
+/// `None` when the two sides have no line-level difference at all.
+#[must_use]
+pub fn unified_diff(
+    before_label: &str,
+    after_label: &str,
+    before_text: &str,
+    after_text: &str,
+) -> Option<String> {
+    let before: Vec<&str> = before_text.lines().collect();
+    let after: Vec<&str> = after_text.lines().collect();
     let lines = numbered(lcs_ops(&before, &after));
     let changed: Vec<usize> = lines
         .iter()
@@ -269,7 +286,7 @@ fn unified_line_diff(pinned: &str, current: &str) -> Option<String> {
         .collect();
     let first = *changed.first()?;
 
-    let mut out = String::from("--- pinned\n+++ current\n");
+    let mut out = format!("--- {before_label}\n+++ {after_label}\n");
     // Group changed runs into hunks: two runs share a hunk when the gap between
     // them is small enough that their context windows would touch, which is the
     // rule that keeps neighbouring edits from printing the same lines twice.

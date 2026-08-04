@@ -155,9 +155,13 @@ Request (all beyond `path` optional):
 
 ```
 {"id":7,"op":"read","path":"notes/plan.md",
- "mode":"toc"|"sections",          // default "toc"
  "frag":"Goals",                   // scope to one section subtree
- "sections":["Goals/Q3","^b1","2"],// selectors: sanitized hpath | dewey | ^anchor
+ "sections":["Goals/Q3","^b1","2"],// selectors: sanitized hpath | dewey | ^anchor.
+                                   // PRESENCE is the mode (A5): present = a
+                                   // section read, absent = the toc read. The
+                                   // `mode` word is retired at both ends, so an
+                                   // explicit `"mode"` is now an unknown field
+                                   // the strict decode refuses.
  "display_path":"$SESSION/notes/plan.md", // header spelling; defaults to path
  "actor":"agent:b0864fb2"}         // §9 read provenance (D-Actor/B): the
                                    // DAEMON-derived actor, never
@@ -166,7 +170,7 @@ Request (all beyond `path` optional):
                                    // (no receipt is minted in M1)
 ```
 
-Response body (`mode` decides `toc` XOR `sections`):
+Response body (`sections`'s presence decides `toc` XOR `sections`):
 
 ```
 {"path":…,"file_rev":…,"fingerprint":…,"words_total":N,
@@ -547,8 +551,8 @@ Two behaviors follow and are stated rather than discovered:
 
 | Code | Recovery | When it fires | What the caller does |
 |---|---|---|---|
-| `read_mint_required` | `fix` | A pin on the agent path whose actor holds no read receipt for that exact `(path, selector)` — or a host with no receipt ledger at all (the per-request sidecar) | Read the selector first, in mode `sections`, with that exact spelling; then pin. Against a sidecar, pin through the resident daemon or the local CLI instead |
-| `pin_target_missing` | `fix` | The pin target page does not exist, its selector addresses no section, or the selector stopped resolving after anchor promotion | Re-read the target with mode `toc` to list its section paths, then pin an address that exists. The drift surface renders the same condition as `red(dangling)`, never silent green |
+| `read_mint_required` | `fix` | A pin on the agent path whose actor holds no read receipt for that exact `(path, selector)` — or a host with no receipt ledger at all (the per-request sidecar) | Read the selector first as a section read (`--section` / `sections[]`), with that exact spelling; then pin. Against a sidecar, pin through the resident daemon or the local CLI instead |
+| `pin_target_missing` | `fix` | The pin target page does not exist, its selector addresses no section, or the selector stopped resolving after anchor promotion | Re-read the target with no selector to list its section paths, then pin an address that exists. The drift surface renders the same condition as `red(dangling)`, never silent green |
 | `write_conflict` | `refresh` | Two sites: the pin's rev-recheck finds the receipt covers one rev and the section now carries another; and the splice choke-point's pre-rename verify detects a concurrent external change | Re-read the one node (re-reading also re-mints the receipt), then retry. `expected` and `actual` carry the two revs |
 | `workspace_busy` | `retry` | Another cooperating writer holds `.meridian/write.lock`. The flock is non-reentrant, so this also fires if a caller composes two flocked writes | Retry the same request; it is transient. Never compose two flocked calls — a pin rides ONE |
 

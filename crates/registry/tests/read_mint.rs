@@ -91,7 +91,6 @@ impl Conn {
         let mut frame = json!({
             "op": "read",
             "path": path,
-            "mode": "sections",
             // U14: the wire takes TAGGED selectors. The helper keeps its
             // ergonomic &[&str] and converts at its own door — which is
             // exactly the ingress discipline the wire now enforces.
@@ -357,7 +356,7 @@ fn a_toc_mode_read_mints_nothing_it_served_no_content() {
     conn.hello(&ws);
 
     let toc = conn.call(&json!({
-        "op": "read", "path": "plan.md", "mode": "toc", "actor": "agent-7",
+        "op": "read", "path": "plan.md", "actor": "agent-7",
     }));
     assert_eq!(toc["ok"], json!(true), "toc read ok: {toc}");
     assert!(

@@ -117,29 +117,32 @@ usage:
                            and the root it named (read-only, writes nothing)
   mrd links [PATH]         the corpus edge map (whole corpus, or one file),
                            answered by the daemon (auto-spawned) or in-process
-  mrd read <PATH>[#FRAG] [--mode toc|sections] [--section SEL]
+  mrd read <PATH>[#FRAG] [--section SEL]
                            the composed read: addressing + content + render at
                            ONE engine snapshot, answered by the daemon (auto
-                           -spawned) or in-process. Default mode toc = the
+                           -spawned) or in-process. No --section = the
                            section map (dewey ordinal, depth, title, hpath,
                            words, sec_rev) + the rendered text; --section
                            (repeatable: a heading path, dewey ordinal, or
-                           ^anchor) selects sections and implies mode sections.
+                           ^anchor) IS the section read.
                            Human output is the rendered text verbatim. Exits:
                            0 served / 1 the engine refused (its message,
                            verbatim) / 2 bad invocation
-! mrd put <PATH> [--dry] [--force] [--actor A] [--now T]
+! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--receipt PATH#ANCHOR]
                            the batch write: edits JSON on STDIN (the wire §4.4
                            grammar, [{target, edit, if_node_rev?}]), routed
                            through the production splice choke-point (CAS +
-                           armed gate + write flock — never bypassed). --dry:
-                           everything except disk. --force: escape an armed
+                           armed gate + write flock — never bypassed). --dry
+                           and --validate are ONE rehearsal (everything except
+                           disk) with two faces: --dry SHOWS the unified diff
+                           current -> candidate, --validate says nothing and
+                           answers with the exit code alone. --force: escape an armed
                            binding-break/block refusal (the skip is rendered in
                            the verdict, never silent). --if-fingerprint: the
-                           world-grain guard. Exits: 0 committed (or dry) /
-                           1 refused (the engine's message, verbatim) / 2 bad
-                           invocation
+                           world-grain guard. Exits: 0 committed (or a rehearsal
+                           that passed) / 1 refused (the engine's message,
+                           verbatim) / 2 bad invocation
 ! mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry]
                            the attestation verb: record in PAGE's meridian-lock
                            block that it draws from TARGET#SELECTOR at that

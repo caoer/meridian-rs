@@ -145,10 +145,11 @@ pub fn extract(
 /// op — the host face's read-tool vocabulary, engine-side.
 #[derive(Debug, Clone, Default)]
 pub struct ReadParams {
-    pub mode: Option<String>,
     /// The whole-call subtree scope, as SEGMENTS (U14).
     pub frag: Option<Vec<wire::HpathSeg>>,
-    /// Document-absolute selectors in the tagged read grammar (U14).
+    /// Document-absolute selectors in the tagged read grammar (U14) — and the
+    /// mode itself (A5): non-empty selects sections, absent/empty answers the
+    /// toc. The `mode` word is retired at both ends; nothing else picks the arm.
     pub sections: Option<Vec<wire::ReadSel>>,
     pub display_path: Option<String>,
     /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
@@ -194,10 +195,9 @@ pub(crate) fn mint_actor(actor: Option<&str>) -> Option<&str> {
 /// write is the A-K1 data-loss class.
 ///
 /// # Errors
-/// `bad_request` (fix): `frag` and `sections` both present; sections mode
-/// with no selectors; an unknown `mode` (decode already gates it — this is
-/// the belt). `ref_not_found` (fix): a toc `frag` naming no section; ALL
-/// sections-mode selectors missing. `internal` carrying the typed
+/// `bad_request` (fix): `frag` and `sections` both present; a section read
+/// with no selectors. `ref_not_found` (fix): a toc `frag` naming no section;
+/// ALL section selectors missing. `internal` carrying the typed
 /// `render_failed` spelling (G1) when the walker refuses.
 pub fn composed_read(
     doc: &model::Document,
@@ -212,7 +212,11 @@ pub fn composed_read(
     let words_total: u64 = facts.iter().map(|f| f.words).sum();
     let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
     let frag: &[wire::HpathSeg] = params.frag.as_deref().unwrap_or(&[]);
-    let has_sections = params.sections.as_ref().is_some_and(|s| !s.is_empty());
+    // A5: `sections`'s PRESENCE is the mode. Absent → the toc read; present →
+    // a section read, empty included, so `sections: []` still meets the
+    // "a section read needs a selector" refusal instead of silently answering
+    // a toc the caller did not ask for.
+    let has_sections = params.sections.is_some();
     if !frag.is_empty() && has_sections {
         return Err(bad_request(format!(
             "read: pass either a #fragment on ref or sections[], not both, for {display} — \
@@ -238,91 +242,80 @@ pub fn composed_read(
         .filter_map(|f| read_anchor(f))
         .collect();
 
-    match params.mode.as_deref().unwrap_or("toc") {
-        "toc" => {
-            let rows = wire_map::facts::toc_rows(&facts, frag);
-            if !frag.is_empty() && rows.is_empty() {
-                let asked = wire::ReadSel::Hpath {
-                    hpath: frag.to_vec(),
-                }
-                .display();
-                let mut e = ErrorBody::new(ErrorCode::RefNotFound);
-                e.message = Some(format!(
-                    "read: no section at \"{asked}\" in {display}. Nothing was read and no \
-                     rev was minted. {}",
-                    crate::section_recovery(&asked, Some(display))
-                ));
-                return Err(Box::new(e));
+    if has_sections {
+        let sels: Vec<wire::ReadSel> = params.sections.clone().unwrap_or_default();
+        let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
+        // S6 read-IS-the-mint (D9): one receipt per section this call
+        // actually served — actor, canonical selector, `sec_rev`.
+        //
+        // SECTION READS only, and off the RAW rows: `rendered_sections`
+        // are the `sections[].content` rows whose bytes the caller
+        // received verbatim, so each receipt is a true "this was in your
+        // context" fact. Two things follow deliberately. A toc read
+        // mints NOTHING — it serves the section map, not content, so it
+        // must never gate an attestation over bytes nobody saw. And the
+        // rev bound is the raw face's `sec_rev`, never anything derived
+        // from the elided `rendered_text` — a read-elided view must never
+        // be what a write is authorized against (the A-K1 data-loss
+        // class).
+        //
+        // Unresolved selectors are absent from these rows (they carry the
+        // PARTIAL-read notice instead), so a miss mints nothing.
+        if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
+            // U14: the receipt is keyed on the row's own TAGGED selector,
+            // the same structure the pin gate looks up — so the two sides
+            // of this coupling cannot drift into two spellings of one
+            // address, and a heading named `1.2` can no longer open the
+            // gate for the dewey row of that name.
+            for row in &rendered_sections {
+                store.mint(actor, path.0.as_str(), &row.sel, &row.sec_rev.0);
             }
-            // ONE row set for the heading plane: `rendered_text` renders these
-            // rows and `toc` carries these rows, so the captured Go toc bytes
-            // stay frozen and the structured face never diverges from the
-            // rendered one. The authz facts (`span`, `content_span`) ride the
-            // same rows; the anchor plane is `anchors`.
-            let rendered_text = agent_plane_face(render::toc_toon(&header, &rows))?;
-            Ok(ResponseBody::Read {
-                path: path.clone(),
-                file_rev: NodeRev(file_rev),
-                root: ambient.clone(),
-                words_total,
-                toc: Some(rows.iter().map(|f| read_row(f)).collect()),
-                anchors,
-                sections: None,
-                truncated: None,
-                notice: None,
-                rendered_text,
-            })
         }
-        "sections" => {
-            let sels: Vec<wire::ReadSel> = if frag.is_empty() {
-                params.sections.clone().unwrap_or_default()
-            } else {
-                vec![wire::ReadSel::Hpath {
-                    hpath: frag.to_vec(),
-                }]
-            };
-            let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
-            // S6 read-IS-the-mint (D9): one receipt per section this call
-            // actually served — actor, canonical selector, `sec_rev`.
-            //
-            // SECTIONS mode only, and off the RAW rows: `rendered_sections`
-            // are the `sections[].content` rows whose bytes the caller
-            // received verbatim, so each receipt is a true "this was in your
-            // context" fact. Two things follow deliberately. A toc-mode read
-            // mints NOTHING — it serves the section map, not content, so it
-            // must never gate an attestation over bytes nobody saw. And the
-            // rev bound is the raw face's `sec_rev`, never anything derived
-            // from the elided `rendered_text` — a read-elided view must never
-            // be what a write is authorized against (the A-K1 data-loss
-            // class).
-            //
-            // Unresolved selectors are absent from these rows (they carry the
-            // PARTIAL-read notice instead), so a miss mints nothing.
-            if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
-                // U14: the receipt is keyed on the row's own TAGGED selector,
-                // the same structure the pin gate looks up — so the two sides
-                // of this coupling cannot drift into two spellings of one
-                // address, and a heading named `1.2` can no longer open the
-                // gate for the dewey row of that name.
-                for row in &rendered_sections {
-                    store.mint(actor, path.0.as_str(), &row.sel, &row.sec_rev.0);
-                }
-            }
-            Ok(ResponseBody::Read {
-                path: path.clone(),
-                file_rev: NodeRev(file_rev),
-                root: ambient.clone(),
-                words_total,
-                toc: None,
-                anchors,
-                sections: Some(rendered_sections),
-                truncated: body.notice.is_some().then_some(true),
-                notice: body.notice,
-                rendered_text: agent_plane_face(body.text)?,
-            })
-        }
-        other => Err(bad_request(format!("read: invalid mode \"{other}\""))),
+        return Ok(ResponseBody::Read {
+            path: path.clone(),
+            file_rev: NodeRev(file_rev),
+            root: ambient.clone(),
+            words_total,
+            toc: None,
+            anchors,
+            sections: Some(rendered_sections),
+            truncated: body.notice.is_some().then_some(true),
+            notice: body.notice,
+            rendered_text: agent_plane_face(body.text)?,
+        });
     }
+    let rows = wire_map::facts::toc_rows(&facts, frag);
+    if !frag.is_empty() && rows.is_empty() {
+        let asked = wire::ReadSel::Hpath {
+            hpath: frag.to_vec(),
+        }
+        .display();
+        let mut e = ErrorBody::new(ErrorCode::RefNotFound);
+        e.message = Some(format!(
+            "read: no section at \"{asked}\" in {display}. Nothing was read and no \
+             rev was minted. {}",
+            crate::section_recovery(&asked, Some(display))
+        ));
+        return Err(Box::new(e));
+    }
+    // ONE row set for the heading plane: `rendered_text` renders these
+    // rows and `toc` carries these rows, so the captured Go toc bytes
+    // stay frozen and the structured face never diverges from the
+    // rendered one. The authz facts (`span`, `content_span`) ride the
+    // same rows; the anchor plane is `anchors`.
+    let rendered_text = agent_plane_face(render::toc_toon(&header, &rows))?;
+    Ok(ResponseBody::Read {
+        path: path.clone(),
+        file_rev: NodeRev(file_rev),
+        root: ambient.clone(),
+        words_total,
+        toc: Some(rows.iter().map(|f| read_row(f)).collect()),
+        anchors,
+        sections: None,
+        truncated: None,
+        notice: None,
+        rendered_text,
+    })
 }
 
 /// One heading fact → one wire composed-read row: the M1 addressing facts

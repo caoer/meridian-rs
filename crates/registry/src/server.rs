@@ -838,7 +838,6 @@ fn dispatch_read(
         // snapshot (D6 atomicity: file_rev + root from the same borrow).
         Op::Read {
             path,
-            mode,
             frag,
             sections,
             display_path,
@@ -848,7 +847,6 @@ fn dispatch_read(
             ws,
             &path,
             &wire_serve::read::ReadParams {
-                mode,
                 frag,
                 sections,
                 display_path,

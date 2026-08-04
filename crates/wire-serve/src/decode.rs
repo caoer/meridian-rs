@@ -148,17 +148,8 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     check_fields(
         obj,
         op,
-        &["path", "mode", "frag", "sections", "display_path", "actor"],
+        &["path", "frag", "sections", "display_path", "actor"],
     )?;
-    let mode = opt_str(obj, op, "mode")?;
-    if let Some(m) = &mode
-        && m != "toc"
-        && m != "sections"
-    {
-        return Err(bad_request(format!(
-            "`mode` must be `toc` or `sections` on `read`: `{m}`"
-        )));
-    }
     // U14 (decision 14): `sections` and `frag` are STRUCTURED on the wire. They
     // were arrays of joined strings, and a string address on a machine surface
     // is exactly what this docket row removes — the caller states the plane it
@@ -204,7 +195,6 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
     };
     Ok(Op::Read {
         path: req_path(obj, op, "path")?,
-        mode,
         frag,
         sections,
         display_path: opt_str(obj, op, "display_path")?,

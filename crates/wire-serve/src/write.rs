@@ -97,6 +97,15 @@ pub struct SpliceOutcome {
     pub body: ResponseBody,
     /// The emitted delta, present only on a real commit (absent on dry).
     pub committed: Option<DeltaFrame>,
+    /// **Rehearsal only (D3).** The candidate document's whole bytes — the
+    /// post-batch state this choke-point already built under the §4.4
+    /// one-reparse law, handed to the in-process caller so a `--dry` preview
+    /// diffs against the bytes the real commit WOULD write instead of
+    /// re-deriving them. `None` on a real commit (the bytes are on disk) and
+    /// on every non-splice outcome. It is a Rust-side field and never a wire
+    /// field: no response shape changes, and no remote caller gains a way to
+    /// pull a whole document out of a rehearsal.
+    pub candidate: Option<String>,
 }
 
 /// **THE single `splice → commit` choke-point** (decision 0002 W1): the whole
@@ -409,7 +418,9 @@ pub fn splice(
     // Dry short-circuit (§4.4 batch law): everything except disk — and
     // therefore no receipt, no root advance, no Delta, no mkdir.
     if args.dry {
+        let candidate = after_doc.document().raw.clone();
         return Ok(SpliceOutcome {
+            candidate: Some(candidate),
             body: ResponseBody::Splice {
                 armed: Armed {
                     path: args.path.clone(),
@@ -567,6 +578,7 @@ pub fn splice(
             pin: pin.map(|p| Box::new(p.fact)),
         },
         committed: Some(frame),
+        candidate: None,
     })
 }
 

@@ -87,7 +87,6 @@ fn read_decorated(root: &fs::WorkspaceRoot, rel: &str, sel: &str) -> ResponseBod
         &WPath(rel.into()),
         &wire::Root("r".into()),
         &ReadParams {
-            mode: Some("sections".into()),
             sections: Some(vec![wire::ReadSel::parse(sel)]),
             ..ReadParams::default()
         },
