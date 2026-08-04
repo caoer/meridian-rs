@@ -47,7 +47,7 @@ use std::collections::BTreeMap;
 use duckdb::Connection;
 use duckdb::types::Value;
 use model::selector::Color;
-use model::{CorpusIndex, Document, Node, NodeKind};
+use model::{CorpusIndex, Document};
 
 use crate::ViewError;
 use crate::facts;
@@ -418,11 +418,30 @@ pub struct LockItem {
     /// A form-3 (`meridian-lock`) pin writes no header — the label is derived
     /// from its self-describing token ([`fingerprint_algo`]).
     pub hash_algo: Option<String>,
-    /// The `meridian-lock` `fingerprint` — a full `fp1.…` CID-token, verbatim
-    /// (`None` for the legacy `^inputs` forms, which pin a `node_rev`). The
-    /// typed slot a verdict computer reads: `model::fingerprint::verify_content`
-    /// consumes THIS, never a re-parse of the lock block.
+    /// The `meridian-lock` `fingerprint` — a full `fp1.…` CID-token, verbatim.
+    /// The typed slot a verdict computer reads:
+    /// `model::fingerprint::verify_content` consumes THIS, never a re-parse of
+    /// the lock block.
     pub fingerprint: Option<String>,
+    /// **R4's structural selector — `path` XOR `properties`, verbatim.**
+    ///
+    /// This is the STRUCTURAL owner of the claim's address, and it exists because
+    /// [`LockItem::to_sel`] cannot be one. `to_sel` is the `/`-joined display
+    /// spelling, and joining is LOSSY in exactly the case R4's array was chosen
+    /// to carry: a heading whose own text contains `/` (`["A/B", "leaf"]`) joins
+    /// to `A/B/leaf` and re-splits into three segments naming a section that does
+    /// not exist. Every verdict computer reads THIS and re-splits nothing.
+    ///
+    /// `None` only on a [`LockItem::lock_refusal`] row, which declares no claim.
+    pub selector: Option<lock::Selector>,
+    /// R4's `object` — the wiki-link inner text, verbatim, the target's vault
+    /// path WITHOUT `.md`. Empty on a [`LockItem::lock_refusal`] row.
+    ///
+    /// Carried beside [`LockItem::to_path`] rather than re-derived from it
+    /// because the transcript class needs it: a `session#seq-N` ref's session id
+    /// is the OBJECT, and re-deriving it by stripping `.md` from `to_path` is the
+    /// string surgery R4's structure exists to end.
+    pub object: String,
     /// Set on the ONE row a page projects when its `meridian-lock` block
     /// REFUSED to parse ([`lock::LockError`], verbatim): malformed, or more than
     /// one block on the page. Every other field is the empty/absent case — this
@@ -457,32 +476,25 @@ pub struct LockItem {
     pub root_refusal: Option<model::selector::GreyReason>,
 }
 
-/// Parse every `^inputs` lock item declared in `doc`, document order (source 1).
-/// The SHARED reader for the board projection ([`project_input_locks`]) and the
-/// walk plane ([`crate::walk`]) — one owner for the lock grammar.
+/// Parse every lock pin declared in `doc`, document order (source 1). The SHARED
+/// reader for the board projection ([`project_input_locks`]) and the walk plane
+/// ([`crate::walk`]) — one owner for the lock grammar.
 ///
-/// Reads all THREE serializations a corpus page can carry:
-/// - **form-1** (legacy, mrd native) — the `^inputs` token is in the fence info
-///   (`` ```yaml ^inputs ``), body is `items:` + flow-mappings
-///   ([`collect_lock_items`]);
-/// - **form-2** (legacy, ratified SCHEMA.md effect-receipt) — a plain
-///   `` ```yaml `` block whose TRAILING block-anchor line is `^inputs`, body a
-///   block-SEQUENCE of `- ref:/hash:` items plus a bare `hash-algo:` header
-///   ([`collect_form2_lock_items`]);
-/// - **form-3** (`meridian-lock`, the engine's own lockfile) — the `pins:` plane
-///   of the page's ` ```meridian-lock ` block ([`collect_lock_pins`]).
+/// **One form, not three.** A page's pins are the `pins:` plane of its
+/// ` ```meridian-lock ` block ([`collect_lock_pins`]) and nothing else. The two
+/// legacy `^inputs` serializations this reader also carried — form-1 (the
+/// `^inputs` fence-info token, `items:` + flow-mappings) and form-2 (a plain
+/// yaml block trailed by an `^inputs` block-anchor, `- ref:`/`hash:` rows under a
+/// `hash-algo:` header) — are **retired**: R1.3 kills `inputs` as vocabulary AND
+/// as storage key, amending 9.6's storage-key clause.
 ///
-/// The three forms are disjoint because each pass EXCLUDES the others by fence
-/// info, so nothing is double-counted: the form-2 pass skips any block whose
-/// info already carries `^inputs` (form-1's), and it skips any engine block
-/// (`meridian-*`, form-3's) whatever anchor trails it — a `meridian-lock` fence
-/// followed by `^inputs` otherwise projected the SAME pin twice, once per pass,
-/// with two different verdicts.
+/// With one form there is no disjointness to maintain. The double-count the old
+/// reader guarded against — a `meridian-lock` fence trailed by an `^inputs`
+/// anchor, projected once per pass with two different verdicts — is not fixed
+/// here, it is unrepresentable: only one pass remains.
 #[must_use]
 pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     let mut out = Vec::new();
-    collect_lock_items(&doc.root, &doc.raw, &mut out);
-    collect_form2_lock_items(doc, &mut out);
     collect_lock_pins(doc, &mut out);
     out
 }
@@ -623,225 +635,6 @@ pub fn resolve_to_path_rooted(
         .map_or_else(|| to_path.to_string(), str::to_owned)
 }
 
-/// Walk the node tree, parsing the lock items of every `^inputs` code block into
-/// `out` (document order — one lock block per page in practice, but any number
-/// projects deterministically by walk order).
-fn collect_lock_items(node: &Node, raw: &str, out: &mut Vec<LockItem>) {
-    if let NodeKind::CodeBlock { lang, .. } = &node.kind
-        && is_inputs_lang(lang)
-        && let Some(body) = raw.get(node.span.clone())
-    {
-        parse_lock_body(body, out);
-    }
-    for child in &node.children {
-        collect_lock_items(child, raw, out);
-    }
-}
-
-/// Whether a fence info string addresses the `^inputs` lock — its whitespace
-/// tokens include the `^inputs` anchor (`` ```yaml ^inputs `` → `["yaml",
-/// "^inputs"]`). The anchor, not the language, is the marker.
-fn is_inputs_lang(lang: &str) -> bool {
-    lang.split_whitespace().any(|tok| tok == "^inputs")
-}
-
-/// Parse a fenced `^inputs` block body into lock items. Each `- {…}` flow
-/// mapping is one item; fence-delimiter lines and scalar header lines
-/// (`hash-algo:`, `items:`) are skipped. Deliberately narrow: the lock format is
-/// engine-written and regular, so a bounded flow-mapping parse beats a full YAML
-/// dependency (keeps `view` a dependency-light leaf).
-fn parse_lock_body(body: &str, out: &mut Vec<LockItem>) {
-    let hash_algo = block_hash_algo(body);
-    for line in body.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix('-') else {
-            continue;
-        };
-        let rest = rest.trim();
-        let Some(inner) = rest.strip_prefix('{').and_then(|s| s.strip_suffix('}')) else {
-            continue;
-        };
-        if let Some(mut item) = lock_item_from_flow(inner) {
-            item.hash_algo.clone_from(&hash_algo);
-            out.push(item);
-        }
-    }
-}
-
-/// The block's `hash-algo:` header value (the scalar after the first bare
-/// `hash-algo:` line), or `None` when the block omits it. A trailing `# comment`
-/// is stripped (the corpus carries `hash-algo: v1  # spec version …`). The
-/// engine writes exactly one header, before `items:`; item lines start with `-`
-/// and are never matched here.
-fn block_hash_algo(body: &str) -> Option<String> {
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('-') {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix("hash-algo:") {
-            let value = value.split('#').next().unwrap_or(value).trim();
-            if !value.is_empty() {
-                return Some(unquote(value));
-            }
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// form-2 — the ratified SCHEMA.md effect-receipt chain block (U3.4 compat reader)
-// ---------------------------------------------------------------------------
-
-/// Append the form-2 chain-block lock items of `doc` to `out` (document order).
-///
-/// Form-2 is INVISIBLE to the form-1 reader ([`collect_lock_items`]): its
-/// `^inputs` token is a TRAILING block-anchor line (a sibling [`NodeKind::Anchor`]
-/// with `name == "inputs"`), not a fence-info token, and its body is a
-/// block-SEQUENCE (`- ref:` / `claim:` / `hash:`) plus a bare `hash-algo:` header.
-///
-/// Detection walks `doc.root` collecting every [`NodeKind::CodeBlock`] and every
-/// `^inputs` anchor. A plain `` ```yaml `` block is a form-2 chain block iff an
-/// `^inputs` anchor IMMEDIATELY FOLLOWS it — the bytes between the block's end and
-/// the anchor's start are whitespace-only. A block whose fence info already
-/// carries `^inputs` is a form-1 block ([`is_inputs_lang`]) and is left to the
-/// form-1 pass, so no item is double-counted. Detection is via the block+anchor
-/// alone — never the frontmatter `inputs: '[[#^inputs]]'` discriminator (this is a
-/// READER; the U3.4 ruling licenses no schema conversion, no write).
-///
-/// An ENGINE block ([`lock::is_meridian_lang`] — `meridian-lock` and any future
-/// `meridian-*`) is owned by its own reader and skipped here whatever follows
-/// it. Without that skip, a `meridian-lock` fence with a trailing `^inputs`
-/// anchor was read TWICE: once by [`collect_lock_pins`] as the pin it is, and
-/// once here as a form-2 block, so ONE pin projected TWO rows carrying two
-/// different verdicts (the form-3 fingerprint compare, and a grey
-/// `declared-unpinned` row the page never declared). One pin, one row.
-fn collect_form2_lock_items(doc: &Document, out: &mut Vec<LockItem>) {
-    let mut blocks: Vec<&Node> = Vec::new();
-    let mut anchors: Vec<&Node> = Vec::new();
-    collect_blocks_and_inputs_anchors(&doc.root, &mut blocks, &mut anchors);
-    for block in blocks {
-        let NodeKind::CodeBlock { lang, .. } = &block.kind else {
-            continue;
-        };
-        // A form-1 block (its fence info carries `^inputs`) is owned by the form-1
-        // pass — never re-read here (no double-count for a page in either form).
-        if is_inputs_lang(lang) {
-            continue;
-        }
-        // An engine block is form-3's (or a later engine reader's), never a
-        // form-2 chain block — the namespace law is `lock`'s, one owner.
-        if lock::is_meridian_lang(lang) {
-            continue;
-        }
-        if !inputs_anchor_immediately_follows(&doc.raw, block, &anchors) {
-            continue;
-        }
-        if let Some(body) = doc.raw.get(block.span.clone()) {
-            parse_form2_body(body, out);
-        }
-    }
-}
-
-/// Collect (into `blocks`) every [`NodeKind::CodeBlock`] node and (into `anchors`)
-/// every `^inputs` [`NodeKind::Anchor`] node reachable from `node`, pre-order.
-fn collect_blocks_and_inputs_anchors<'a>(
-    node: &'a Node,
-    blocks: &mut Vec<&'a Node>,
-    anchors: &mut Vec<&'a Node>,
-) {
-    match &node.kind {
-        NodeKind::CodeBlock { .. } => blocks.push(node),
-        NodeKind::Anchor { name } if name == "inputs" => anchors.push(node),
-        _ => {}
-    }
-    for child in &node.children {
-        collect_blocks_and_inputs_anchors(child, blocks, anchors);
-    }
-}
-
-/// Whether any `^inputs` anchor immediately follows `block` — its span starts at
-/// or after the block's end with only whitespace between (the form-2 marker). The
-/// anchor's model span is its host line (`^inputs`); the gap is the blank line(s)
-/// the writer leaves between the fenced block and the trailing anchor.
-fn inputs_anchor_immediately_follows(raw: &str, block: &Node, anchors: &[&Node]) -> bool {
-    anchors.iter().any(|anchor| {
-        anchor.span.start >= block.span.end
-            && raw
-                .get(block.span.end..anchor.span.start)
-                .is_some_and(|gap| gap.chars().all(char::is_whitespace))
-    })
-}
-
-/// Parse a form-2 chain-block body into lock items, appended to `out`. The body
-/// (the whole fenced block, fences included) is a block-SEQUENCE:
-/// - a `- ref: <value>` line starts a NEW item — `declared_ref` is the unquoted
-///   value with a surrounding `[[ ]]` wikilink stripped, its trailing `#sel` split
-///   into `to_path` / `to_sel` (no `#` ⇒ `to_sel = ""`);
-/// - a `hash: <value>` continuation line sets the current item's `pinned_rev`
-///   verbatim (any `merkle-v1:` prefix kept — it is the pinned rev as written);
-/// - `claim:` is an ignored passenger, `rev_class` stays `None`.
-///
-/// Every item's `hash_algo` is the block's bare `hash-algo:` header
-/// ([`block_hash_algo`], e.g. `v1`) — a NAMED non-`node-rev` algo, so the read
-/// face renders these grey `superseded-algo` (U3.4).
-fn parse_form2_body(body: &str, out: &mut Vec<LockItem>) {
-    let hash_algo = block_hash_algo(body);
-    let mut current: Option<usize> = None;
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(after_dash) = trimmed.strip_prefix('-') {
-            // A block-sequence item start; its first key must be `ref:`.
-            if let Some(value) = after_dash.trim_start().strip_prefix("ref:") {
-                // INGRESS: raw page bytes (FINDING 02, A2). The retype makes
-                // this door discharge the address grammar instead of splitting
-                // a string and handing the unpeeled root on.
-                let declared_ref = strip_wikilink(&unquote(value.trim()));
-                let declared_addr = addr::Addr::parse(&declared_ref).ok();
-                let (to_path, to_sel) = split_address(declared_addr.as_ref(), &declared_ref);
-                out.push(LockItem {
-                    declared_ref,
-                    declared_addr,
-                    to_path,
-                    to_sel,
-                    pinned_rev: None,
-                    rev_class: None,
-                    hash_algo: hash_algo.clone(),
-                    fingerprint: None, // a legacy form pins a rev, never a CID-token
-                    lock_refusal: None, // only form-3 has a lock block to refuse
-                    // Set by resolution, never by the parser: a DECLARED ref carries
-                    // its root in the spelling, and which root it RESOLVED into is a
-                    // mount-table fact this seam has not consulted yet.
-                    to_root: None,
-                    root_refusal: None,
-                });
-                current = Some(out.len() - 1);
-            }
-        } else if let Some(value) = trimmed.strip_prefix("hash:")
-            && let Some(i) = current
-        {
-            out[i].pinned_rev = Some(unquote(value.trim()));
-        }
-    }
-}
-
-/// Strip a surrounding `[[ ]]` wikilink from a ref value, best-effort
-/// (`[[llm-wiki-skill-compilation]]` → `llm-wiki-skill-compilation`); a value with
-/// no brackets is returned unchanged. An Obsidian display alias (`[[target|show]]`)
-/// is dropped — only the LINK TARGET addresses a node, the `|show` text is render
-/// sugar — so `[[usage|meridian usage]]` resolves as `usage` (a `#section`
-/// survives for [`split_selector`]).
-fn strip_wikilink(value: &str) -> String {
-    let inner = value
-        .strip_prefix("[[")
-        .and_then(|s| s.strip_suffix("]]"))
-        .unwrap_or(value);
-    inner
-        .split_once('|')
-        .map_or(inner, |(target, _alias)| target)
-        .to_string()
-}
-
 // ---------------------------------------------------------------------------
 // form-3 — the `meridian-lock` block (the engine's own lockfile)
 // ---------------------------------------------------------------------------
@@ -884,6 +677,8 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 rev_class: None,
                 hash_algo: None,
                 fingerprint: None,
+                selector: None,
+                object: String::new(),
                 lock_refusal: Some(refusal.to_string()),
                 // Set by resolution, never by the parser: a DECLARED ref carries
                 // its root in the spelling, and which root it RESOLVED into is a
@@ -895,23 +690,34 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
         }
     };
     for pin in found.lock.pins {
-        // `lock` already discharged the grammar (`LockError::BadRef`), so a pin
-        // reaching here IS an address — no second parse, no second answer.
-        let to_path = pin.declared_ref.target();
-        let to_sel = pin.declared_ref.selector().to_string();
+        // **The one-time conversion door, read side.** R4 carries STRUCTURE —
+        // `object` plus a selector ARRAY — and the joined `page#A/B` spelling
+        // exists only for humans and the wire echo. So the joined form is minted
+        // HERE, once, for display and for the address-grammar consumers that
+        // still need it; every verdict computer reads `selector` instead and
+        // re-splits nothing. This is U8's `pin_row` seam in reverse.
+        let to_path = format!("{}.md", pin.object);
+        let to_sel = display_selector(&pin.selector);
+        let declared_ref = if to_sel.is_empty() {
+            to_path.clone()
+        } else {
+            format!("{to_path}#{to_sel}")
+        };
         out.push(LockItem {
-            declared_ref: pin.declared_ref.to_string(),
-            declared_addr: Some(pin.declared_ref),
+            declared_addr: addr::Addr::parse(&declared_ref).ok(),
+            declared_ref,
             to_path,
             to_sel,
-            // The pinned value AS WRITTEN — for form-3 that is the token; the
-            // typed slot below is what a verdict computer reads.
+            // The pinned value AS WRITTEN — the token; the typed slot below is
+            // what a verdict computer reads.
             pinned_rev: Some(pin.fingerprint.clone()),
-            // Structural, not a written field: `pins:` IS the claim plane and
-            // `objects:` is the object plane (#8 §2), so a pin is content-class.
+            // Structural, not a written field: `pins:` IS the claim plane, so a
+            // pin is content-class.
             rev_class: Some("content".to_string()),
             hash_algo: Some(fingerprint_algo(&pin.fingerprint)),
             fingerprint: Some(pin.fingerprint),
+            selector: Some(pin.selector),
+            object: pin.object,
             lock_refusal: None, // this lock parsed — the refusal row is the Err arm
             // Set by resolution, never by the parser: a DECLARED ref carries
             // its root in the spelling, and which root it RESOLVED into is a
@@ -919,6 +725,24 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             to_root: None,
             root_refusal: None,
         });
+    }
+}
+
+/// The `/`-joined DISPLAY spelling of an R4 selector — the human plane only.
+///
+/// `Path([])` is the whole body and spells empty (the page root), `Path(["^id"])`
+/// spells the anchor, and a heading array joins on `/`. A `properties` selector
+/// has no fragment spelling in the address grammar at all — the frontmatter is
+/// not a body node — so it spells empty too, and the projection's `to_path`
+/// carries the whole claim.
+///
+/// **This is lossy on purpose and must never be re-split.** A heading containing
+/// `/` joins ambiguously here; [`LockItem::selector`] is the structural answer
+/// and is what every verdict computer reads.
+fn display_selector(selector: &lock::Selector) -> String {
+    match selector {
+        lock::Selector::Path(segments) => segments.join("/"),
+        lock::Selector::Properties(_) => String::new(),
     }
 }
 
@@ -945,132 +769,6 @@ fn fingerprint_algo(token: &str) -> String {
     }
 }
 
-/// Project a parsed address into the two projection columns `(to_path, to_sel)`.
-///
-/// **This replaces `split_lock_ref`, and the replacement is the U10 correction.**
-/// That function was documented as the SINGLE owner of the ref grammar, to be
-/// taught to peel a root later — but FINDING 02 measured sixteen sites splitting
-/// the same string, and a peeled root had nowhere to go: `LockItem` carried no
-/// root. The address is now a TYPE, parsed once at ingress, and this function
-/// only projects it.
-///
-/// `to_path` is [`addr::Addr::target`] — `[root:]path`, the root kept ON the
-/// spelling. Peeling it here, before the corpus lookup is root-aware, is exactly
-/// the discard that made a cross-root wikilink resolve to the ambient root's
-/// same-basename file (FINDING 03). U11 owns the root-keyed lookup; this stays
-/// byte-identical until it lands.
-///
-/// A spelling the grammar refuses has no address, so it projects verbatim and
-/// joins nothing — an unresolved row, never a wrong resolution.
-fn split_address(parsed: Option<&addr::Addr>, spelling: &str) -> (String, String) {
-    match parsed {
-        Some(addr) => (addr.target(), addr.selector().to_string()),
-        None => split_selector(spelling),
-    }
-}
-
-/// Parse one flow-mapping body (`ref: 'a.md', to: 'a.md#^c', rev: 'r1'`) into a
-/// [`LockItem`]. A row without a `ref` is not a lock item (skipped). `to`
-/// defaults to `ref`; the selector is the text after the first `#` (`` `` for a
-/// bare page ref), matching `node.selector` (`^block-id` verbatim, heading hpath).
-fn lock_item_from_flow(inner: &str) -> Option<LockItem> {
-    let mut declared_ref: Option<String> = None;
-    let mut to: Option<String> = None;
-    let mut pinned_rev: Option<String> = None;
-    let mut rev_class: Option<String> = None;
-    for field in split_top_level_commas(inner) {
-        let Some((key, value)) = field.split_once(':') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = unquote(value.trim());
-        match key {
-            "ref" => declared_ref = Some(value),
-            "to" => to = Some(value),
-            "rev" => pinned_rev = Some(value),
-            "rev_class" => rev_class = Some(value),
-            _ => {} // engine-ignored passengers (claim, at, hash-algo, …)
-        }
-    }
-    let declared_ref = declared_ref?;
-    // INGRESS: raw page bytes (FINDING 02, A1). `to` addresses the target when
-    // present, so the address parsed for the projection is `to`'s — while
-    // `declared_addr` stays the structural reading of the declared `ref`.
-    let target = to.as_deref().unwrap_or(&declared_ref);
-    let declared_addr = addr::Addr::parse(&declared_ref).ok();
-    let (to_path, to_sel) = split_address(addr::Addr::parse(target).ok().as_ref(), target);
-    Some(LockItem {
-        declared_ref,
-        declared_addr,
-        to_path,
-        to_sel,
-        pinned_rev,
-        rev_class,
-        hash_algo: None,    // stamped per-block by parse_lock_body
-        fingerprint: None,  // a legacy form pins a rev, never a CID-token
-        lock_refusal: None, // only form-3 has a lock block to refuse
-        // Set by resolution, never by the parser: a DECLARED ref carries
-        // its root in the spelling, and which root it RESOLVED into is a
-        // mount-table fact this seam has not consulted yet.
-        to_root: None,
-        root_refusal: None,
-    })
-}
-
-/// Split a flow-mapping body on TOP-LEVEL commas only — a comma inside single or
-/// double quotes stays with its field (a rev or claim may contain one).
-fn split_top_level_commas(inner: &str) -> Vec<String> {
-    let mut fields = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    for ch in inner.chars() {
-        match quote {
-            Some(q) => {
-                cur.push(ch);
-                if ch == q {
-                    quote = None;
-                }
-            }
-            None => match ch {
-                '\'' | '"' => {
-                    quote = Some(ch);
-                    cur.push(ch);
-                }
-                ',' => {
-                    fields.push(std::mem::take(&mut cur));
-                }
-                _ => cur.push(ch),
-            },
-        }
-    }
-    if !cur.trim().is_empty() {
-        fields.push(cur);
-    }
-    fields
-}
-
-/// Strip one layer of surrounding single or double quotes from a scalar value.
-fn unquote(value: &str) -> String {
-    let bytes = value.as_bytes();
-    if bytes.len() >= 2 {
-        let first = bytes[0];
-        if (first == b'\'' || first == b'"') && bytes[bytes.len() - 1] == first {
-            return value[1..value.len() - 1].to_string();
-        }
-    }
-    value.to_string()
-}
-
-/// Split a `page#selector` target into `(path, selector)`. No `#` ⇒ the page
-/// root (`selector = ""`). The selector is kept verbatim so a `^block-id`
-/// carries its caret, matching the `node.selector` the projection stores.
-fn split_selector(target: &str) -> (String, String) {
-    match target.split_once('#') {
-        Some((path, sel)) => (path.to_string(), sel.to_string()),
-        None => (target.to_string(), String::new()),
-    }
-}
-
 /// `usize` → `u64`, saturating (never truncates on a 32-bit target).
 fn u64c(x: usize) -> u64 {
     u64::try_from(x).unwrap_or(u64::MAX)
@@ -1080,194 +778,41 @@ fn u64c(x: usize) -> u64 {
 mod tests {
     use super::*;
 
-    /// A fixture address. Every fixture spelling here is a legal address, so a
-    /// panic is a fixture bug, never a grammar surprise.
-    fn a(spelling: &str) -> addr::Addr {
-        addr::Addr::parse(spelling).expect("a fixture ref is a well-formed address")
-    }
-
     fn doc(raw: &str) -> Document {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
-    #[test]
-    fn is_inputs_lang_matches_the_anchor_token_only() {
-        assert!(is_inputs_lang("yaml ^inputs"));
-        assert!(is_inputs_lang("^inputs"));
-        assert!(!is_inputs_lang("yaml"));
-        assert!(!is_inputs_lang("yaml ^outputs"));
-    }
+    /// The R4 blob hash every fixture pin carries. R4 makes `hash` MANDATORY —
+    /// *"if hash is missing, we lost the explicit target meaning"* — so there is
+    /// no fixture pin without one, and the retired `objects:` table these
+    /// fixtures used to set has no successor to set.
+    const FIXTURE_HASH: &str = "9ae3f1deadbeef";
 
-    #[test]
-    fn flow_mapping_parses_ref_to_rev_and_class() {
-        let item =
-            lock_item_from_flow("ref: 'a.md', to: 'a.md#^claim', rev: 'r1', rev_class: 'content'")
-                .expect("an item with a ref");
-        assert_eq!(item.declared_ref, "a.md");
-        assert_eq!(item.to_path, "a.md");
-        assert_eq!(item.to_sel, "^claim");
-        assert_eq!(item.pinned_rev.as_deref(), Some("r1"));
-        assert_eq!(item.rev_class.as_deref(), Some("content"));
-    }
-
-    #[test]
-    fn flow_mapping_without_to_falls_back_to_ref() {
-        let item = lock_item_from_flow("ref: 'b.md', rev: 'r2'").expect("item");
-        assert_eq!(item.to_path, "b.md");
-        assert_eq!(item.to_sel, ""); // page root
-        assert_eq!(item.pinned_rev.as_deref(), Some("r2"));
-        assert!(item.rev_class.is_none());
-    }
-
-    #[test]
-    fn declared_only_item_has_no_pinned_rev() {
-        let item =
-            lock_item_from_flow("ref: 'wiki/page.md', claim: 'declared-only, grey'").expect("item");
-        assert!(item.pinned_rev.is_none(), "no rev -> declared-only -> grey");
-    }
-
-    #[test]
-    fn top_level_comma_split_respects_quotes() {
-        let fields = split_top_level_commas("ref: 'a,b.md', claim: 'x, y, z'");
-        assert_eq!(fields.len(), 2, "a quoted comma does not split a field");
-    }
-
-    #[test]
-    fn project_reads_the_inputs_block_from_parse() {
-        let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', to: 'a.md#^c', rev: 'deadbeef', rev_class: 'content'}\n  - {ref: 'b.md', claim: 'declared-only'}\n```\n";
-        let mut docs = BTreeMap::new();
-        docs.insert("review.md".to_string(), doc(raw));
-        let conn = open_board(&docs).expect("open board");
-        let n: i64 = conn
-            .query_row("SELECT count(*) FROM input_lock", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 2, "two lock items project");
-        let pinned: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM input_lock WHERE pinned_rev IS NOT NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            pinned, 1,
-            "only the item with a rev is pinned; the other is grey"
-        );
-        let doc_revs: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM input_lock WHERE src_doc_rev = '' OR src_doc_rev IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            doc_revs, 0,
-            "every projected row records its source doc_rev"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // form-2 — the ratified SCHEMA.md effect-receipt chain block (U3.4)
-    // -----------------------------------------------------------------------
-
-    /// The real effect-page form: a plain `` ```yaml `` block, block-SEQUENCE body
-    /// (`- ref:` / `claim:` / `hash:`), a bare `hash-algo: v1` header, and a
-    /// TRAILING `^inputs` anchor line. `page_lock_items` now SEES it (pre-U3.4:
-    /// zero items). `declared_ref` is dewikilinked, `pinned_rev` is the `hash:`
-    /// value verbatim (`merkle-v1:` kept), and `hash_algo` is the block header.
-    #[test]
-    fn form2_chain_block_parses_ref_hash_and_algo() {
-        let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
-        let items = page_lock_items(&doc(raw));
-        assert_eq!(
-            items.len(),
-            1,
-            "form-2 chain parses (pre-U3.4: zero — blind)"
-        );
-        let item = &items[0];
-        assert_eq!(item.declared_ref, "llm-wiki-skill-compilation");
-        assert_eq!(item.to_path, "llm-wiki-skill-compilation");
-        assert_eq!(item.to_sel, "");
-        assert_eq!(
-            item.pinned_rev.as_deref(),
-            Some("merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d"),
-        );
-        assert_eq!(item.rev_class, None);
-        assert_eq!(item.hash_algo.as_deref(), Some("v1"));
-    }
-
-    /// A form-2 ref with an Obsidian display alias (`[[target|show]]`) resolves as
-    /// the TARGET, dropping the `|show` render text — `[[usage|meridian usage]]`
-    /// declares `usage`, not `usage|meridian usage` (which resolves to nothing).
-    #[test]
-    fn form2_ref_drops_display_alias() {
-        let raw = "## Chain\n\n```yaml\n- ref: '[[usage|meridian usage]]'\n  hash: 'merkle-v1:abcd'\nhash-algo: v1\n```\n\n^inputs\n";
-        let items = page_lock_items(&doc(raw));
-        assert_eq!(items.len(), 1);
-        assert_eq!(
-            items[0].declared_ref, "usage",
-            "the `|meridian usage` display alias is dropped — only `usage` addresses a node",
-        );
-        assert_eq!(items[0].to_path, "usage");
-    }
-
-    /// A form-2 block with MULTIPLE `- ref:` items parses ALL of them, in order,
-    /// each with its own `hash:` and the shared block `hash-algo:` header. A `#sel`
-    /// on a ref splits into `to_path` / `to_sel`.
-    #[test]
-    fn form2_multiple_refs_all_parse() {
-        let raw = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta.md#^claim]]'\n  claim:\n  hash: 'merkle-v1:bbbb'\n- ref: 'gamma.md'\n  hash: 'merkle-v1:cccc'\nhash-algo: v1\n```\n\n^inputs\n";
-        let items = page_lock_items(&doc(raw));
-        assert_eq!(items.len(), 3, "all three block-sequence items parse");
-        assert_eq!(
-            items
-                .iter()
-                .map(|i| i.declared_ref.as_str())
-                .collect::<Vec<_>>(),
-            vec!["alpha", "beta.md#^claim", "gamma.md"],
-        );
-        // The middle ref's `#^claim` splits into to_path / to_sel.
-        assert_eq!(items[1].to_path, "beta.md");
-        assert_eq!(items[1].to_sel, "^claim");
-        assert_eq!(items[2].pinned_rev.as_deref(), Some("merkle-v1:cccc"));
-        assert!(items.iter().all(|i| i.hash_algo.as_deref() == Some("v1")));
-    }
-
-    /// A `` ```yaml `` block NOT followed by an `^inputs` anchor (e.g. the sibling
-    /// `## Receipt` block, trailing anchor `^receipt`) is NOT a form-2 chain — it
-    /// projects zero lock items. Only the `^inputs`-anchored block is read.
-    #[test]
-    fn form2_non_inputs_anchored_block_is_ignored() {
-        // A receipt-shaped block: plain yaml, trailing `^receipt` (not `^inputs`).
-        let raw = "## Receipt\n\n```yaml\ncommit: abc123\nverdict: 'x'\n```\n\n^receipt\n";
-        assert!(
-            page_lock_items(&doc(raw)).is_empty(),
-            "a `^receipt`-anchored block is not an `^inputs` chain",
-        );
-    }
-
-    /// A form-1 page (the `^inputs` token in the fence info) is read by the form-1
-    /// pass ONLY — the form-2 pass skips it, so items are never double-counted.
-    #[test]
-    fn form1_page_is_not_double_counted_by_form2_pass() {
-        let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', rev: 'deadbeef'}\n```\n";
-        assert_eq!(page_lock_items(&doc(raw)).len(), 1, "one item, read once");
-    }
-
-    // -----------------------------------------------------------------------
-    // form-3 — the `meridian-lock` block (S3: the silent absence, closed)
-    // -----------------------------------------------------------------------
-
-    /// A page carrying a `meridian-lock` block, rendered by the format's own
-    /// sole writer (`lock::render`) so the fixture is the real byte form.
+    /// A lock page carrying one R4 pin per `(ref-spelling, fingerprint)` pair.
+    ///
+    /// The spelling is a CONVENIENCE for the fixture only — it is split into the
+    /// `object` and the selector ARRAY here, at the fixture's own door, exactly
+    /// as the production read door mints the joined form. Nothing downstream sees
+    /// a joined string.
     fn lock_page(pins: &[(&str, &str)]) -> String {
         let mut l = lock::Lock::new();
-        l.set_object("sources/target-page.md", "9ae3f1deadbeef");
-        for (declared_ref, fingerprint) in pins {
-            l.upsert_pin(lock::PinEntry {
-                declared_ref: a(declared_ref),
-                fingerprint: (*fingerprint).to_string(),
-            });
+        for (spelling, fingerprint) in pins {
+            let (target, fragment) = match spelling.split_once('#') {
+                Some((t, f)) => (t, f),
+                None => (*spelling, ""),
+            };
+            let object = target.strip_suffix(".md").unwrap_or(target);
+            let selector = if fragment.is_empty() {
+                lock::Selector::Path(Vec::new())
+            } else {
+                lock::Selector::Path(fragment.split('/').map(str::to_string).collect())
+            };
+            l.upsert_pin(lock::PinEntry::new(
+                object,
+                FIXTURE_HASH,
+                selector,
+                fingerprint,
+            ));
         }
         format!(
             "# Effect\n\ndraws from the target\n\n{}\n",
@@ -1400,51 +945,9 @@ mod tests {
         assert_eq!(greds, 0, "a verifying pin is never a board red");
     }
 
-    /// The three forms stay separated: a legacy row never grows a fingerprint,
-    /// and a lock page never grows a legacy `rev` from thin air. A page carrying
-    /// BOTH a legacy block and a lock block projects each exactly once.
-    #[test]
-    fn legacy_and_lock_forms_do_not_bleed_into_each_other() {
-        let legacy = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', rev: 'deadbeef'}\n```\n";
-        let legacy_items = page_lock_items(&doc(legacy));
-        assert_eq!(legacy_items.len(), 1);
-        assert!(
-            legacy_items[0].fingerprint.is_none(),
-            "a legacy `^inputs` row pins a rev, never a CID-token",
-        );
-        assert_eq!(legacy_items[0].pinned_rev.as_deref(), Some("deadbeef"));
-
-        let both = format!(
-            "{legacy}\n{}\n",
-            lock::render(&{
-                let mut l = lock::Lock::new();
-                l.upsert_pin(lock::PinEntry {
-                    declared_ref: a("b.md"),
-                    fingerprint: fp("ef"),
-                });
-                l
-            })
-        );
-        let items = page_lock_items(&doc(&both));
-        assert_eq!(items.len(), 2, "one legacy item + one lock pin, each once");
-        assert_eq!(items[0].declared_ref, "a.md");
-        assert!(items[0].fingerprint.is_none());
-        assert_eq!(items[1].declared_ref, "b.md");
-        assert_eq!(items[1].fingerprint.as_deref(), Some(fp("ef").as_str()));
-    }
-
-    /// A lock block the format REFUSES (malformed, or two blocks on one page)
-    /// projects ONE row carrying the refusal — never a pin guessed out of
-    /// damage, and never NOTHING. `lock::find` stays the one parser and the one
-    /// judge of the bytes; this face only reports its verdict.
-    ///
-    /// SUPERSEDES S3's `refused_lock_block_projects_no_pin_rows`: projecting
-    /// zero rows made a CORRUPT lock byte-identical, to every reader, to a page
-    /// that never pinned anything. The row exists so damage is visible; it
-    /// carries no ref, no target and no rev, so it can never be read as an edge.
     #[test]
     fn refused_lock_block_projects_one_refusal_row_not_silence() {
-        let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let malformed = "# A\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
         assert!(
             lock::find(&doc(malformed)).is_err(),
             "precondition: the format refuses these bytes",
@@ -1454,7 +957,7 @@ mod tests {
         assert_eq!(
             items[0].lock_refusal.as_deref(),
             Some(
-                "malformed at line 3: unrecognized line (canonical order: version, objects, pins)"
+                "malformed at line 3: unrecognized line (canonical order: version, pins)"
             ),
             "the row carries WHY the lock is unreadable",
         );
@@ -1464,10 +967,12 @@ mod tests {
 
         let block = lock::render(&{
             let mut l = lock::Lock::new();
-            l.upsert_pin(lock::PinEntry {
-                declared_ref: a("b.md"),
-                fingerprint: fp("12"),
-            });
+            l.upsert_pin(lock::PinEntry::new(
+                "b",
+                FIXTURE_HASH,
+                lock::Selector::Path(Vec::new()),
+                &fp("12"),
+            ));
             l
         });
         let two = format!("# A\n\n{block}\n\n{block}\n");
@@ -1501,7 +1006,7 @@ mod tests {
     /// lock byte-identical, on the board, to a page that never pinned anything.
     #[test]
     fn refusal_row_projects_one_grey_lock_refused_row() {
-        let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let malformed = "# A\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("a.md".to_string(), doc(malformed));
         let conn = open_board(&docs).expect("board");
@@ -1525,7 +1030,7 @@ mod tests {
         assert_eq!((color.as_str(), reason.as_str()), ("grey", "lock-refused"));
         assert_eq!(
             detail,
-            "malformed at line 3: unrecognized line (canonical order: version, objects, pins)",
+            "malformed at line 3: unrecognized line (canonical order: version, pins)",
             "the board carries WHY, the same words the walk plane prints",
         );
 
@@ -1582,18 +1087,19 @@ mod tests {
     /// produced. The claim is exactly the size of its proof.
     #[test]
     fn a_lock_ref_is_a_parsed_address_and_the_projection_is_byte_identical() {
-        // The projection of a parsed address — what `split_lock_ref` used to do
-        // by string surgery, now a read of the type.
+        // The projection columns, minted from R4's STRUCTURE at the read door —
+        // what `split_address` used to do by string surgery over a joined
+        // spelling that no longer exists on the pin row.
         for (spelling, want_path, want_sel) in [
             ("wiki/page.md", "wiki/page.md", ""),
             ("wiki/page.md#Design", "wiki/page.md", "Design"),
             // A block-id keeps its caret — it is the `node.selector` verbatim.
             ("wiki/page.md#^claim-1", "wiki/page.md", "^claim-1"),
         ] {
-            let parsed = addr::Addr::parse(spelling).expect("a well-formed address");
+            let items = page_lock_items(&doc(&lock_page(&[(spelling, &fp("34"))])));
             assert_eq!(
-                split_address(Some(&parsed), spelling),
-                (want_path.to_string(), want_sel.to_string()),
+                (items[0].to_path.as_str(), items[0].to_sel.as_str()),
+                (want_path, want_sel),
                 "{spelling}",
             );
         }

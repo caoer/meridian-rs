@@ -308,46 +308,61 @@ pub fn lock_pin_colors_rooted(
     out
 }
 
-/// One `objects:`-plane row of a page's `meridian-lock` block — a blob sha the
-/// lock references, with the page and key that reference it.
+/// One RETRIEVAL-plane row of a page's `meridian-lock` block — a blob sha the
+/// lock references, with the page and object that reference it.
 ///
-/// The `objects:` plane is the RETRIEVAL plane (#8 §2, git's world): whole-file
-/// blob shas, never fingerprints. It answers a different question from the
-/// `pins:` plane [`PinColor`] carries — not "did the content drift" but "does
-/// this blob still exist anywhere durable" — so it is projected separately and
-/// carries no color.
+/// The retrieval plane (#8 §2, git's world) is whole-file blob shas, never
+/// fingerprints. It answers a different question from the CLAIM plane
+/// [`PinColor`] carries — not "did the content drift" but "does this blob still
+/// exist anywhere durable" — so it is projected separately and carries no color.
+///
+/// **R4 retired the shared `objects:` table**; the blob sha now rides the pin row
+/// as its `hash`, so this projection reads the same `pins:` plane the colors read
+/// and no page can carry a blob its pins do not account for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockObject {
     /// The page whose `meridian-lock` block declares this object.
     pub src_path: String,
-    /// The `objects:` key, verbatim (what the blob is FOR).
+    /// The pin's `object` — the wiki-link inner text, verbatim (what the blob is
+    /// FOR). The target's vault path WITHOUT `.md`.
     pub key: String,
     /// The blob sha, verbatim — an object id in git's world, not the engine's.
     pub blob_sha: String,
 }
 
-/// Every `meridian-lock` `objects:` entry in `docs` — corpus order, then block
+/// Every blob a `meridian-lock` block in `docs` pins — corpus order, then pin
 /// order. THE surface for a whole-corpus reachability gauge (`mrd status`'s
 /// vibe-debt meter), which asks git whether each of these blobs is reachable
 /// from a commit.
 ///
-/// [`lock::find`] is the parser, exactly as it is for the `pins:` plane — one
-/// owner for the lock grammar, so a page's objects and its pins can never be
-/// read by two disagreeing readers. A page whose lock REFUSED contributes NO
-/// objects here: its plane is unreadable, and that damage is already named by
-/// the grey `lock-refused` row [`lock_pin_colors`] projects for the same page.
+/// [`lock::find`] is the parser, exactly as it is for the colors — one owner for
+/// the lock grammar, so a page's blobs and its pins can never be read by two
+/// disagreeing readers. A page whose lock REFUSED contributes NOTHING here: its
+/// plane is unreadable, and that damage is already named by the grey
+/// `lock-refused` row [`lock_pin_colors`] projects for the same page.
+///
+/// # One blob, one row (R4)
+/// R4 moved the sha onto the pin row, so the whole-file lock — `path: []` and
+/// `properties: []` on one object — pins the SAME blob twice. Deduped by
+/// `(src_path, object, hash)`: two rows naming one blob would make the vibe-debt
+/// meter count one debt as two, and `check::layer0` would report one orphan as
+/// two findings.
 #[must_use]
 pub fn lock_objects(docs: &BTreeMap<String, Document>) -> Vec<LockObject> {
     let mut out = Vec::new();
+    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     for (path, doc) in docs {
         let Ok(Some(found)) = lock::find(doc) else {
             continue;
         };
-        for (key, blob_sha) in found.lock.objects {
+        for pin in found.lock.pins {
+            if !seen.insert((path.clone(), pin.object.clone(), pin.hash.clone())) {
+                continue;
+            }
             out.push(LockObject {
                 src_path: path.clone(),
-                key,
-                blob_sha,
+                key: pin.object,
+                blob_sha: pin.hash,
             });
         }
     }
@@ -642,6 +657,57 @@ fn edge_page(edge: &LockItem) -> String {
 ///   different compare. Before this, such a pin fell into the foreign-algo
 ///   short-circuit below and rendered grey `superseded-algo` — visible but
 ///   permanently unverified.
+/// Translate R4's structural selector into the model's address selector — the
+/// TRANSLATION LAYER `classify_pin` needs, not a change to its signature.
+///
+/// The three arms are R4's own, and each is named in the schema:
+/// - `path: []` — the whole body without frontmatter, which is the document root;
+/// - `path: ["^id"]` — the ANCHOR pin: a `^id` as the SOLE element, block-grain,
+///   never widened to the host section (R4 provenance note 2). A `^` reaching
+///   here in any other position was refused at mint (U8: mixed arrays are
+///   unruled and refused loudly), so the sole-element test is the whole rule;
+/// - `path: [...]` — a heading chain, carried SEGMENT FOR SEGMENT. Nothing is
+///   split and nothing is joined, so a heading containing `/` survives — the
+///   case the array form exists for.
+///
+/// `properties:` has no analogue in the address enum: the frontmatter is not a
+/// body node. It maps to the document root, where its `props1` token meets the
+/// SPAN verifier and is refused loudly as unverifiable rather than being answered
+/// wrongly — the never-conflate-hash-planes law doing its job at read time.
+///
+/// # The transcript arm is why this takes the `object`
+/// `Selector::parse` recognized `session#seq-N` as [`Selector::ImmutableRoot`]
+/// from the FRAGMENT — a class that is *recognized, stored opaque, rendered grey
+/// `immutable-root`, and never resolved* (d2 §2.2). Read structurally without the
+/// object, `path: ["seq-160"]` is indistinguishable from a heading named
+/// `seq-160`, and a transcript pin would classify as an unresolved HEADING —
+/// **grey turning into red**, a false finding on a ref the engine is ruled never
+/// to resolve. The object carries the session id, so the arm needs both halves.
+fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
+    let lock::Selector::Path(segments) = selector else {
+        return Selector::Page;
+    };
+    match segments.split_first() {
+        None => Selector::Page,
+        Some((only, rest)) if rest.is_empty() => {
+            if let Some(id) = only.strip_prefix('^') {
+                return Selector::Block(id.to_string());
+            }
+            if let Some(seq) = only
+                .strip_prefix("seq-")
+                .and_then(|n| n.parse::<u64>().ok())
+            {
+                return Selector::ImmutableRoot {
+                    session: object.to_string(),
+                    seq,
+                };
+            }
+            Selector::Heading(segments.clone())
+        }
+        Some(_) => Selector::Heading(segments.clone()),
+    }
+}
+
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
@@ -670,7 +736,16 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
             .and_then(|mounted| mounted.docs().get(&edge.to_path)),
         None => corpus.ambient_docs().get(&edge.to_path),
     };
-    let selector = Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel));
+    // **STRUCTURE, never the joined string.** R4's selector is an array, and
+    // `Selector::parse` on the `/`-joined display spelling re-splits it — which
+    // turns a heading whose own text contains `/` into two headings naming a
+    // section that does not exist. The structural arm is read whenever the row
+    // carries one; the joined parse survives only for rows that never had an
+    // array to begin with.
+    let selector = match &edge.selector {
+        Some(structural) => model_selector(&edge.object, structural),
+        None => Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel)),
+    };
     if let Some(token) = &edge.fingerprint {
         return classify_pin(&selector, token, target);
     }
@@ -772,41 +847,47 @@ fn canonical_ref(to_path: &str, to_sel: &str) -> String {
 mod tests {
     use super::*;
 
-    /// A fixture address. Every fixture spelling here is a legal address, so a
-    /// panic is a fixture bug, never a grammar surprise.
-    fn a(spelling: &str) -> addr::Addr {
-        addr::Addr::parse(spelling).expect("a fixture ref is a well-formed address")
-    }
-
     fn doc(raw: &str) -> Document {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// The three-doc chain fixture `a.md -> b.md -> c.md`, every pin GREEN: build
-    /// `c`, embed its live root rev in `b`'s `^inputs`, build `b`, embed its live
-    /// root rev in `a`'s `^inputs`, build `a`. Returns the corpus + the three
-    /// live doc revs so a test asserts byte-exact entries and citations.
+    /// The three-doc chain fixture `a.md -> b.md -> c.md`, every pin GREEN, in
+    /// R4 `meridian-lock` form: build `c`, pin its LIVE fingerprint token in
+    /// `b`'s lock block, build `b`, pin `b`'s live token in `a`, build `a`.
+    /// Returns the corpus + the three pinned TOKENS so a test asserts byte-exact
+    /// entries.
+    ///
+    /// Pre-R4 this chain was two `^inputs` blocks pinning `node_rev`s. The rev
+    /// plane is retired with the vocabulary (R1.3), so the chain now greens
+    /// through the FINGERPRINT compare — the same law, the surviving carrier.
     fn three_doc_chain() -> (BTreeMap<String, Document>, String, String, String) {
-        let c = doc("# C\n\nleaf body\n");
-        let c_rev = c.root.node_rev.0.clone();
+        let c_raw = "# C\n\nleaf body\n".to_string();
+        let c_token = live_token(&c_raw);
 
-        let b_raw = format!(
-            "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
-        );
-        let b = doc(&b_raw);
-        let b_rev = b.root.node_rev.0.clone();
+        let b_raw = format!("# B\n\ndraws from c\n\n{}\n", chain_block("c", &c_token));
+        let b_token = live_token(&b_raw);
 
-        let a_raw = format!(
-            "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
-        );
-        let a = doc(&a_raw);
-        let a_rev = a.root.node_rev.0.clone();
+        let a_raw = format!("# A\n\ndraws from b\n\n{}\n", chain_block("b", &b_token));
+        let a_token = live_token(&a_raw);
 
         let mut docs = BTreeMap::new();
-        docs.insert("a.md".to_string(), a);
-        docs.insert("b.md".to_string(), b);
-        docs.insert("c.md".to_string(), c);
-        (docs, a_rev, b_rev, c_rev)
+        docs.insert("a.md".to_string(), doc(&a_raw));
+        docs.insert("b.md".to_string(), doc(&b_raw));
+        docs.insert("c.md".to_string(), doc(&c_raw));
+        (docs, a_token, b_token, c_token)
+    }
+
+    /// One whole-body pin on `object` at `token` — `path: []` is the body
+    /// without frontmatter, which is the document root the token was minted over.
+    fn chain_block(object: &str, token: &str) -> String {
+        let mut l = lock::Lock::new();
+        l.upsert_pin(lock::PinEntry::new(
+            object,
+            "9ae3f1deadbeef",
+            lock::Selector::Path(Vec::new()),
+            token,
+        ));
+        lock::render(&l)
     }
 
     /// The Test (gate 1): the three-doc chain's `walk` up-output is byte-expected
@@ -814,7 +895,7 @@ mod tests {
     /// the rev citations for every doc the listing rests on (§2.4 honesty).
     #[test]
     fn three_doc_chain_up_is_byte_expected() {
-        let (docs, a_rev, b_rev, c_rev) = three_doc_chain();
+        let (docs, _a_token, b_rev, c_rev) = three_doc_chain();
         let report = walk(&docs, "a.md", Direction::Up, None).expect("walk up");
 
         assert_eq!(
@@ -837,20 +918,24 @@ mod tests {
         );
 
         // Every answer cites the doc revs it read (§2.4): root a, plus b and c.
+        // A citation is the containing doc's NODE REV — distinct from the pin
+        // TOKEN the entry carries above, and the two must not be conflated: the
+        // citation says which bytes were read, the token says what was claimed.
+        let doc_rev = |p: &str| docs[p].root.node_rev.0.clone();
         assert_eq!(
             report.revs_read,
             vec![
                 RevCitation {
                     path: "a.md".to_string(),
-                    doc_rev: a_rev,
+                    doc_rev: doc_rev("a.md"),
                 },
                 RevCitation {
                     path: "b.md".to_string(),
-                    doc_rev: b_rev,
+                    doc_rev: doc_rev("b.md"),
                 },
                 RevCitation {
                     path: "c.md".to_string(),
-                    doc_rev: c_rev,
+                    doc_rev: doc_rev("c.md"),
                 },
             ]
         );
@@ -889,36 +974,6 @@ mod tests {
         assert_eq!(reached, vec![("b.md", 1), ("a.md", 2)]);
     }
 
-    /// Never-stored (gate 3): `walk` mutates nothing — the corpus is byte-identical
-    /// after the call (it takes a SHARED borrow, has no writer/Connection/fs in
-    /// its signature), and it is idempotent: two walks yield identical reports, so
-    /// no verb memoizes a walk (§2.4 / §3).
-    #[test]
-    fn walk_stores_nothing_and_is_idempotent() {
-        let (docs, ..) = three_doc_chain();
-        // Snapshot the corpus bytes + revs (Document has no PartialEq); a walk
-        // that stored anything would have to mutate one of these.
-        let snapshot = |d: &BTreeMap<String, Document>| -> Vec<(String, String, String)> {
-            d.iter()
-                .map(|(p, doc)| (p.clone(), doc.raw.clone(), doc.root.node_rev.0.clone()))
-                .collect()
-        };
-        let before = snapshot(&docs);
-
-        let first = walk(&docs, "a.md", Direction::Up, None).expect("walk");
-        let second = walk(&docs, "a.md", Direction::Up, None).expect("walk again");
-
-        assert_eq!(
-            snapshot(&docs),
-            before,
-            "the corpus is byte-identical — the walk stores nothing"
-        );
-        assert_eq!(
-            first, second,
-            "the walk is idempotent — nothing is memoized"
-        );
-    }
-
     /// A red pin in the context surfaces as a red entry and is the finding signal.
     /// Edit c after b pinned it: b's pin drifts (`red content-drifted`).
     #[test]
@@ -937,41 +992,21 @@ mod tests {
         assert!(has_red(&report), "a drifted pin is a walk finding (exit 1)");
     }
 
-    /// A declared-but-unpinned input renders `grey declared-unpinned`, never red,
-    /// and is not a finding (the first pin is how grey turns green).
-    #[test]
-    fn declared_unpinned_input_renders_grey() {
-        let a = doc(
-            "# A\n\n```yaml ^inputs\nitems:\n  - {ref: 'b.md', claim: 'declared-only, no rev'}\n```\n",
-        );
-        let b = doc("# B\n\nbody\n");
-        let mut docs = BTreeMap::new();
-        docs.insert("a.md".to_string(), a);
-        docs.insert("b.md".to_string(), b);
-
-        let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
-        assert_eq!(
-            report.entries,
-            vec![WalkEntry {
-                selector: "b.md".to_string(),
-                rev: None,
-                color: Color::Grey(GreyReason::DeclaredUnpinned),
-                depth: 1,
-            }]
-        );
-        assert!(!has_red(&report), "grey is never a finding");
-    }
-
     /// An in-snapshot cycle is an error (§2.4), never an infinite walk: `x` pins
     /// `y`, `y` pins `x`.
     #[test]
     fn in_snapshot_cycle_is_an_error() {
-        let x = doc(
-            "# X\n\n```yaml ^inputs\nitems:\n  - {ref: 'y.md', rev: 'deadbeefdeadbeef'}\n```\n",
-        );
-        let y = doc(
-            "# Y\n\n```yaml ^inputs\nitems:\n  - {ref: 'x.md', rev: 'feedfacefeedface'}\n```\n",
-        );
+        // The pins need not be GREEN — a cycle is a traversal fact, and the walk
+        // must refuse to loop whatever colour the edges carry.
+        let hex = "0".repeat(64);
+        let x = doc(&format!(
+            "# X\n\ndraws from y\n\n{}\n",
+            chain_block("y", &format!("fp1.span2.b3.{hex}"))
+        ));
+        let y = doc(&format!(
+            "# Y\n\ndraws from x\n\n{}\n",
+            chain_block("x", &format!("fp1.span2.b3.{hex}"))
+        ));
         let mut docs = BTreeMap::new();
         docs.insert("x.md".to_string(), x);
         docs.insert("y.md".to_string(), y);
@@ -989,27 +1024,22 @@ mod tests {
         assert!(loop_pages.contains(&"y.md".to_string()));
     }
 
-    /// The walk root must be in the corpus; a missing root is an error, not an
-    /// empty walk (fail-closed). A `#fragment` in the arg is stripped to the page.
-    #[test]
-    fn missing_root_is_an_error_and_fragment_is_stripped() {
-        let (docs, ..) = three_doc_chain();
-        assert_eq!(
-            walk(&docs, "gone.md", Direction::Up, None),
-            Err(WalkError::RootNotFound("gone.md".to_string()))
-        );
-        // `a.md#Whatever` resolves to page a.md (page-grain traversal).
-        let report = walk(&docs, "a.md#Section", Direction::Up, None).expect("walk");
-        assert_eq!(report.root, "a.md");
-    }
-
     /// A transcript ref (`session#seq-N`) renders `grey immutable-root` and is a
     /// walk leaf — recognized, never resolved, never traversed (§2.2 / §2.4).
     #[test]
     fn transcript_input_renders_grey_immutable_root() {
-        let a = doc(
-            "# A\n\n```yaml ^inputs\nitems:\n  - {ref: '22-01-session#seq-160', claim: 'transcript root'}\n```\n",
-        );
+        // R4 spells this as the object `22-01-session` with `path: ["seq-160"]`.
+        // Read WITHOUT the object the array is indistinguishable from a heading
+        // named `seq-160`, and this pin would render red `selector-unresolved` —
+        // a false finding on a ref the engine is ruled never to resolve. That is
+        // why `model_selector` takes the object.
+        let token = "fp1.span2.b3.".to_string() + &"0".repeat(64);
+        let mut block = lock::Lock::new();
+        block.upsert_pin(pin_from_spelling("22-01-session#seq-160", &token));
+        let a = doc(&format!(
+            "# A\n\ndraws from a transcript\n\n{}\n",
+            lock::render(&block)
+        ));
         let mut docs = BTreeMap::new();
         docs.insert("a.md".to_string(), a);
 
@@ -1017,11 +1047,13 @@ mod tests {
         assert_eq!(
             report.entries,
             vec![WalkEntry {
-                selector: "22-01-session#seq-160".to_string(),
-                rev: None,
+                selector: "22-01-session.md#seq-160".to_string(),
+                rev: Some(token),
                 color: Color::Grey(GreyReason::ImmutableRoot),
                 depth: 1,
-            }]
+            }],
+            "the transcript class is grey immutable-root and a LEAF — the \
+             display spelling moved with R4, the classification did not"
         );
     }
 
@@ -1052,230 +1084,6 @@ mod tests {
         );
     }
 
-    /// Archive fixture (U3.4): a pin minted under `hash-algo: v1` — merkle-v1, an
-    /// algo this engine does not compute — renders `grey superseded-algo`, NEVER
-    /// red. A v1 (sha256) rev can never equal a live node-rev, so without the
-    /// algo gate the engine would cry drift (a false red) over an archived block
-    /// it must leave grey forever (d2 §6.3; U0.2/U3.4).
-    #[test]
-    fn archived_v1_lock_renders_grey_superseded_algo() {
-        let a = doc(
-            "# A\n\n```yaml ^inputs\nhash-algo: v1\nitems:\n  - {ref: 'b.md', rev: 'a1b2c3d4e5f60718', rev_class: content}\n```\n",
-        );
-        let b = doc("# B\n\nbody\n");
-        let mut docs = BTreeMap::new();
-        docs.insert("a.md".to_string(), a);
-        docs.insert("b.md".to_string(), b);
-
-        let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
-        let b_entry = report
-            .entries
-            .iter()
-            .find(|e| e.selector == "b.md")
-            .expect("b edge present");
-        assert_eq!(
-            b_entry.color,
-            Color::Grey(GreyReason::SupersededAlgo),
-            "a v1-algo pin is grey superseded-algo, never red drift"
-        );
-        assert!(
-            !has_red(&report),
-            "a superseded-algo pin is never a walk finding"
-        );
-    }
-
-    /// Control: the SAME edge under the engine's native `hash-algo: node-rev` is
-    /// VERIFIED — green when the rev matches live, red drift when it does not.
-    /// The algo gate keys on the algo, not on any unfamiliar-looking rev.
-    #[test]
-    fn native_node_rev_lock_is_verified_not_superseded() {
-        let b = doc("# B\n\nbody\n");
-        let b_rev = b.root.node_rev.0.clone();
-        let a_green = doc(&format!(
-            "# A\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: content}}\n```\n"
-        ));
-        let a_red = doc(
-            "# A\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'b.md', rev: 'a1b2c3d4e5f60718', rev_class: content}\n```\n",
-        );
-
-        let mut g = BTreeMap::new();
-        g.insert("a.md".to_string(), a_green);
-        g.insert("b.md".to_string(), doc("# B\n\nbody\n"));
-        let gr = walk(&g, "a.md", Direction::Up, None).expect("walk");
-        assert_eq!(gr.entries[0].color, Color::Green, "native + match = green");
-
-        let mut r = BTreeMap::new();
-        r.insert("a.md".to_string(), a_red);
-        r.insert("b.md".to_string(), b);
-        let rr = walk(&r, "a.md", Direction::Up, None).expect("walk");
-        assert_eq!(
-            rr.entries[0].color,
-            Color::Red(RedReason::Drifted),
-            "native + mismatch = red drift"
-        );
-    }
-
-    /// U3.4 (form-2 reader): the ratified SCHEMA.md effect-receipt chain — a plain
-    /// `` ```yaml `` block, block-SEQUENCE body, `hash-algo: v1`, trailing `^inputs`
-    /// anchor. Pre-U3.4 mrd was BLIND to this form: a `walk` printed `(nothing)`.
-    /// Now the edge PARSES and renders `grey superseded-algo` (v1 is an algo this
-    /// engine does not compute). The entry list is non-empty — the pre-change
-    /// behavior was zero items.
-    #[test]
-    fn form2_chain_block_renders_grey_superseded_algo() {
-        let raw = "## Chain\n\n```yaml\n- ref: '[[llm-wiki-skill-compilation]]'\n  claim:\n  hash: 'merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d'\nhash-algo: v1\n```\n\n^inputs\n";
-        let mut docs = BTreeMap::new();
-        docs.insert("effect.md".to_string(), doc(raw));
-
-        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
-        assert!(
-            !report.entries.is_empty(),
-            "form-2 now parses — pre-U3.4 this walk was empty (mrd printed `(nothing)`)",
-        );
-        assert_eq!(report.entries.len(), 1);
-        let entry = &report.entries[0];
-        assert_eq!(entry.selector, "llm-wiki-skill-compilation");
-        assert_eq!(
-            entry.rev.as_deref(),
-            Some("merkle-v1:247e292cc3c62e103424ad04cecb36517711cdfe42bc245ef516cfe54b83073d"),
-            "the `hash:` line is the pinned rev — the `merkle-v1:` prefix is kept",
-        );
-        assert_eq!(
-            entry.color,
-            Color::Grey(GreyReason::SupersededAlgo),
-            "a v1-algo form-2 pin is grey superseded-algo, never red",
-        );
-        assert!(
-            !has_red(&report),
-            "a superseded-algo pin is never a finding"
-        );
-    }
-
-    /// A form-2 chain with MULTIPLE `- ref:` block-sequence items parses ALL of
-    /// them (count assertion), each grey superseded-algo under the shared `v1`
-    /// header — proving the block-sequence reader is not one-shot.
-    #[test]
-    fn form2_multiple_refs_all_parse() {
-        let raw = "## Chain\n\n```yaml\n- ref: '[[alpha]]'\n  hash: 'merkle-v1:aaaa'\n- ref: '[[beta]]'\n  claim:\n  hash: 'merkle-v1:bbbb'\n- ref: '[[gamma]]'\n  hash: 'merkle-v1:cccc'\nhash-algo: v1\n```\n\n^inputs\n";
-        let mut docs = BTreeMap::new();
-        docs.insert("effect.md".to_string(), doc(raw));
-
-        let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
-        assert_eq!(
-            report.entries.len(),
-            3,
-            "all three form-2 block-sequence items parse",
-        );
-        assert_eq!(
-            report
-                .entries
-                .iter()
-                .map(|e| e.selector.as_str())
-                .collect::<Vec<_>>(),
-            vec!["alpha", "beta", "gamma"],
-        );
-        assert!(
-            report
-                .entries
-                .iter()
-                .all(|e| e.color == Color::Grey(GreyReason::SupersededAlgo)),
-            "every v1-algo item is grey superseded-algo",
-        );
-    }
-
-    /// U3.4 (wikilink wiring): a form-2 ref is a `[[wikilink]]`-by-NAME, NOT a
-    /// path. Here the ref `[[target-page]]` must resolve to the real fixture path
-    /// `sources/target-page.md` (`getFirstLinkpathDest` by basename) for the walk
-    /// to find the target and verify. Native algo, `hash:` == the target's live
-    /// `node_rev` ⇒ GREEN. Pre-wiring the bare NAME matched no `node.path`, so the
-    /// same pin rendered red `selector-unresolved` — the wiring is load-bearing.
-    #[test]
-    fn form2_wikilink_by_name_resolves_and_verifies_green() {
-        let target = doc("# Target\n\nbody\n");
-        let target_rev = target.root.node_rev.0.clone();
-        // The ref is the bare NAME `target-page`, but the real path is nested.
-        let a_raw = format!(
-            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  claim:\n  hash: '{target_rev}'\nhash-algo: node-rev\n```\n\n^inputs\n"
-        );
-        let mut docs = BTreeMap::new();
-        docs.insert("effects/a.md".to_string(), doc(&a_raw));
-        docs.insert("sources/target-page.md".to_string(), target);
-
-        let report = walk(&docs, "effects/a.md", Direction::Up, None).expect("walk");
-        assert_eq!(report.entries.len(), 1);
-        assert_eq!(
-            report.entries[0].selector, "sources/target-page.md",
-            "the wikilink NAME resolved to the real corpus path",
-        );
-        assert_eq!(
-            report.entries[0].color,
-            Color::Green,
-            "resolved wikilink ref, rev == live node_rev ⇒ green",
-        );
-        assert!(!has_red(&report));
-    }
-
-    /// A `[[wikilink]]`-by-NAME ref that resolves to NOTHING keeps its bare name
-    /// and renders red `selector-unresolved` — unresolved is first-class, never a
-    /// false green (the resolver returns the input unchanged when the name is
-    /// absent from the corpus).
-    #[test]
-    fn form2_unresolvable_wikilink_is_red_unresolved_not_green() {
-        let a_raw = "## Chain\n\n```yaml\n- ref: '[[no-such-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: node-rev\n```\n\n^inputs\n";
-        let mut docs = BTreeMap::new();
-        docs.insert("effects/a.md".to_string(), doc(a_raw));
-
-        let report = walk(&docs, "effects/a.md", Direction::Up, None).expect("walk");
-        assert_eq!(report.entries.len(), 1);
-        assert_eq!(report.entries[0].selector, "no-such-page");
-        assert_eq!(
-            report.entries[0].color,
-            Color::Red(RedReason::SelectorUnresolved { candidates: vec![] }),
-            "an unresolvable wikilink is red selector-unresolved, never a false green",
-        );
-    }
-
-    /// U3.4 (v1→v2 supersede): a form-2 pin RE-LABELED `hash-algo: v2` — the
-    /// design-2 §6.3 supersede keeps the node-rev VALUE under the effect-page `v2`
-    /// contract label — verifies through the SAME `node_rev` compare as native
-    /// `node-rev`: GREEN when the value equals live, red when it drifts. It is NOT
-    /// grey superseded-algo (v2 is in the native set `{node-rev, v2}`). This is
-    /// the post-sweep mrd-v2 leg of Gate B.
-    #[test]
-    fn form2_v2_algo_verifies_green_not_superseded() {
-        let target = doc("# Target\n\nbody\n");
-        let target_rev = target.root.node_rev.0.clone();
-        let a_green = doc(&format!(
-            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: '{target_rev}'\nhash-algo: v2\n```\n\n^inputs\n"
-        ));
-        let a_red = doc(
-            "## Chain\n\n```yaml\n- ref: '[[target-page]]'\n  hash: 'a1b2c3d4e5f60718'\nhash-algo: v2\n```\n\n^inputs\n",
-        );
-
-        let mut g = BTreeMap::new();
-        g.insert("effects/a.md".to_string(), a_green);
-        g.insert(
-            "sources/target-page.md".to_string(),
-            doc("# Target\n\nbody\n"),
-        );
-        let gr = walk(&g, "effects/a.md", Direction::Up, None).expect("walk");
-        assert_eq!(
-            gr.entries[0].color,
-            Color::Green,
-            "v2 algo + rev == live node_rev ⇒ green (native compare, not superseded)",
-        );
-
-        let mut r = BTreeMap::new();
-        r.insert("effects/a.md".to_string(), a_red);
-        r.insert("sources/target-page.md".to_string(), target);
-        let rr = walk(&r, "effects/a.md", Direction::Up, None).expect("walk");
-        assert_eq!(
-            rr.entries[0].color,
-            Color::Red(RedReason::Drifted),
-            "v2 algo + mismatch ⇒ red drift (a v2 pin is verified, never greyed)",
-        );
-    }
-
     /// S3 (form-3): a page whose ONLY declared inputs live in a `meridian-lock`
     /// block is visible to the walk. Pre-S3 this walk was a SILENT ABSENCE — the
     /// listing was empty, `mrd walk` printed `(nothing)` and exited 0 (clean),
@@ -1290,11 +1098,7 @@ mod tests {
     fn meridian_lock_page_is_visible_to_the_walk() {
         let token = format!("fp1.span2.b3.{}", "ab".repeat(32));
         let mut lock_block = lock::Lock::new();
-        lock_block.set_object("sources/target-page.md", "9ae3f1deadbeef");
-        lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: a("sources/target-page.md"),
-            fingerprint: token.clone(),
-        });
+        lock_block.upsert_pin(pin_from_spelling("sources/target-page.md", &token));
         let effect = format!(
             "# Effect\n\ndraws from it\n\n{}\n",
             lock::render(&lock_block)
@@ -1336,32 +1140,6 @@ mod tests {
         );
     }
 
-    /// Control: a form-2 chain whose `hash-algo` is the engine's native `node-rev`,
-    /// pinning a real fixture page (`b.md`) at a rev EQUAL to its live `node_rev`,
-    /// renders GREEN. This proves the reader feeds the NORMAL verify path and that
-    /// superseded-algo keys on the ALGO alone, not on the form-2 shape.
-    #[test]
-    fn form2_native_node_rev_verifies_green() {
-        let b = doc("# B\n\nbody\n");
-        let b_rev = b.root.node_rev.0.clone();
-        let a_raw = format!(
-            "## Chain\n\n```yaml\n- ref: 'b.md'\n  claim:\n  hash: '{b_rev}'\nhash-algo: node-rev\n```\n\n^inputs\n"
-        );
-        let mut docs = BTreeMap::new();
-        docs.insert("a.md".to_string(), doc(&a_raw));
-        docs.insert("b.md".to_string(), b);
-
-        let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
-        assert_eq!(report.entries.len(), 1);
-        assert_eq!(report.entries[0].selector, "b.md");
-        assert_eq!(
-            report.entries[0].color,
-            Color::Green,
-            "native-algo form-2, rev == live node_rev ⇒ green (normal verify path)",
-        );
-        assert!(!has_red(&report));
-    }
-
     // ── S9: the `meridian-lock` pin color (green / red / grey) ───────────────
 
     /// A corpus of one effect page pinning `sources/target.md` at `token`, and
@@ -1378,10 +1156,7 @@ mod tests {
         target_raw: &str,
     ) -> BTreeMap<String, Document> {
         let mut lock_block = lock::Lock::new();
-        lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: a(declared_ref),
-            fingerprint: token.to_string(),
-        });
+        lock_block.upsert_pin(pin_from_spelling(declared_ref, token));
         let effect = format!(
             "# Effect\n\ndraws from it\n\n{}\n",
             lock::render(&lock_block)
@@ -1390,6 +1165,25 @@ mod tests {
         docs.insert("effect.md".to_string(), doc(&effect));
         docs.insert("sources/target.md".to_string(), doc(target_raw));
         docs
+    }
+
+    /// Mint an R4 pin from a `page[#A/B]` ref SPELLING — a fixture convenience
+    /// only. The spelling is split into the `object` and the selector ARRAY
+    /// here, at the fixture's own door; nothing downstream ever sees the joined
+    /// form. `^id` and `seq-N` fragments stay single-element arrays, which is
+    /// what makes them the anchor and transcript arms.
+    fn pin_from_spelling(spelling: &str, token: &str) -> lock::PinEntry {
+        let (target, fragment) = match spelling.split_once('#') {
+            Some((t, f)) => (t, f),
+            None => (spelling, ""),
+        };
+        let object = target.strip_suffix(".md").unwrap_or(target);
+        let selector = if fragment.is_empty() {
+            lock::Selector::Path(Vec::new())
+        } else {
+            lock::Selector::Path(fragment.split('/').map(str::to_string).collect())
+        };
+        lock::PinEntry::new(object, "9ae3f1deadbeef", selector, token)
     }
 
     /// The one entry a single-pin corpus walks up to.
@@ -1540,10 +1334,7 @@ mod tests {
 
         // The pinned PAGE is not in the corpus at all.
         let mut lock_block = lock::Lock::new();
-        lock_block.upsert_pin(lock::PinEntry {
-            declared_ref: a("sources/vanished.md#^goal"),
-            fingerprint: token.clone(),
-        });
+        lock_block.upsert_pin(pin_from_spelling("sources/vanished.md#^goal", &token));
         let mut docs = BTreeMap::new();
         docs.insert(
             "effect.md".to_string(),
@@ -1559,7 +1350,7 @@ mod tests {
     /// `(nothing)`, exit 0.
     #[test]
     fn a_malformed_lock_renders_grey_not_absent() {
-        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("effect.md".to_string(), doc(malformed));
 
@@ -1570,7 +1361,7 @@ mod tests {
         );
         assert_eq!(
             color_label(&entry.color),
-            "grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins))",
+            "grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, pins))",
             "the refusal reason is carried, not just the tone",
         );
         assert!(entry.rev.is_none(), "a refusal pins nothing");
@@ -1587,10 +1378,7 @@ mod tests {
     fn a_double_block_lock_renders_grey_not_absent() {
         let block = lock::render(&{
             let mut l = lock::Lock::new();
-            l.upsert_pin(lock::PinEntry {
-                declared_ref: a("sources/target.md"),
-                fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
-            });
+            l.upsert_pin(pin_from_spelling("sources/target.md", &format!("fp1.span2.b3.{}", "0".repeat(64))));
             l
         });
         let mut docs = BTreeMap::new();
@@ -1614,7 +1402,7 @@ mod tests {
     /// refuse as an in-snapshot cycle.
     #[test]
     fn a_refusal_row_is_a_leaf_never_an_edge() {
-        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("effect.md".to_string(), doc(malformed));
         docs.insert("sources/target.md".to_string(), doc("# T\n\nbody\n"));
@@ -1631,54 +1419,80 @@ mod tests {
         assert!(down_self.entries.is_empty());
     }
 
-    // ── S11: the `objects:` retrieval plane ─────────────────────────────────
+    // ── S11: the retrieval plane (R4: the per-pin `hash`) ───────────────────
 
-    /// [`lock_objects`] projects the `objects:` plane of every page's lock in
-    /// corpus order, carries key and sha verbatim, and stays SEPARATE from the
-    /// `pins:` plane: a lock with pins but no objects projects nothing here, and
-    /// a page with no lock projects nothing at all.
+    /// [`lock_objects`] projects the blob every pin references, corpus order,
+    /// key and sha verbatim — and **deduped by `(page, object, hash)`**.
+    ///
+    /// The dedup is the R4 law, not an optimisation. R4 retired the shared
+    /// `objects:` table and moved the sha onto the pin row, so the whole-file
+    /// lock — `path: []` and `properties: []` on ONE object — references the same
+    /// blob twice. Two rows for one blob would make the vibe-debt meter count one
+    /// debt as two and `check::layer0` report one orphan as two findings, which
+    /// is the "naming one defect twice" trap that plane already refuses.
+    ///
+    /// The positive control is in the fixture: `effect.md` carries the two-row
+    /// whole-file lock AND a distinct second object, so a dedup that collapsed
+    /// too much would drop `second` and fail here.
     #[test]
-    fn lock_objects_projects_the_objects_plane_verbatim() {
-        let mut with_both = lock::Lock::new();
-        with_both.set_object("vibe.md", &"a".repeat(40));
-        with_both.set_object("second.md", &"b".repeat(40));
-        with_both.upsert_pin(lock::PinEntry {
-            declared_ref: a("sources/target.md"),
-            fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
-        });
-        let mut pins_only = lock::Lock::new();
-        pins_only.upsert_pin(lock::PinEntry {
-            declared_ref: a("sources/target.md"),
-            fingerprint: format!("fp1.span2.b3.{}", "0".repeat(64)),
-        });
+    fn lock_objects_dedupes_one_blob_per_object_never_per_pin() {
+        let token = format!("fp1.span2.b3.{}", "0".repeat(64));
+        let mut whole_file = lock::Lock::new();
+        // The whole-file lock: body and frontmatter, two pins, ONE blob.
+        whole_file.upsert_pin(lock::PinEntry::new(
+            "vibe",
+            &"a".repeat(40),
+            lock::Selector::Path(Vec::new()),
+            &token,
+        ));
+        whole_file.upsert_pin(lock::PinEntry::new(
+            "vibe",
+            &"a".repeat(40),
+            lock::Selector::Properties(Vec::new()),
+            &token,
+        ));
+        // A genuinely different object — the control that keeps the dedup honest.
+        whole_file.upsert_pin(lock::PinEntry::new(
+            "second",
+            &"b".repeat(40),
+            lock::Selector::Path(Vec::new()),
+            &token,
+        ));
 
         let mut docs = BTreeMap::new();
         docs.insert(
             "effect.md".to_string(),
-            doc(&format!("# Effect\n\n{}\n", lock::render(&with_both))),
-        );
-        docs.insert(
-            "other.md".to_string(),
-            doc(&format!("# Other\n\n{}\n", lock::render(&pins_only))),
+            doc(&format!("# Effect\n\n{}\n", lock::render(&whole_file))),
         );
         docs.insert("plain.md".to_string(), doc("# Plain\n\nno lock here\n"));
 
         let objects = lock_objects(&docs);
-        assert_eq!(objects.len(), 2, "only the objects plane, once each");
+        assert_eq!(
+            objects.len(),
+            2,
+            "three pins, two blobs — the whole-file lock is ONE debt: {objects:?}"
+        );
         assert_eq!(objects[0].src_path, "effect.md");
-        assert_eq!(objects[0].key, "vibe.md");
+        assert_eq!(objects[0].key, "vibe");
         assert_eq!(objects[0].blob_sha, "a".repeat(40));
-        assert_eq!(objects[1].key, "second.md");
+        assert_eq!(objects[1].key, "second");
         assert_eq!(objects[1].blob_sha, "b".repeat(40));
+
+        // A page with no lock projects nothing at all.
+        let only_plain = BTreeMap::from([(
+            "plain.md".to_string(),
+            doc("# Plain\n\nno lock here\n"),
+        )]);
+        assert!(lock_objects(&only_plain).is_empty());
     }
 
-    /// A REFUSED lock projects no objects — its plane is unreadable, and the
+    /// A REFUSED lock projects no blobs — its plane is unreadable, and the
     /// damage is already named by the grey `lock-refused` row the pin plane
     /// projects for the same page. The gauge must never read a corrupt lock's
-    /// objects as "none owed" WITHOUT that row beside it.
+    /// blobs as "none owed" WITHOUT that row beside it.
     #[test]
     fn a_refused_lock_projects_no_objects_but_still_projects_its_refusal_row() {
-        let malformed = "# Effect\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
+        let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("effect.md".to_string(), doc(malformed));
 

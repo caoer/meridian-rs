@@ -20,9 +20,11 @@
 //! 2. **The board renders that verdict** — `red content-drifted` on the board
 //!    where the walk says `red content-drifted`, and so on for the other five.
 //! 3. **No double color** — exactly one board row per `input_lock` row with
-//!    legacy and lock rows side by side.
-//! 4. **Additive for the legacy plane** — every legacy `^inputs` row carries a
-//!    NULL verdict and keeps the color U5.1 gave it.
+//!    every lock row on both planes.
+//! 4. *(Gate 4 retired with the legacy `^inputs` plane — R1.3. It asserted that
+//!    a legacy row carries a NULL verdict and keeps its U5.1 color; with one
+//!    form left there is no second plane for the verdict column to be additive
+//!    to.)*
 
 use std::collections::BTreeMap;
 
@@ -47,17 +49,28 @@ fn live_token(raw: &str) -> String {
 /// An effect page whose `meridian-lock` block pins `declared_ref` at `token`,
 /// rendered by the format's own sole writer so the fixture is the real byte form.
 fn effect_page(declared_ref: &str, token: &str) -> String {
+    let (target, fragment) = match declared_ref.split_once('#') {
+        Some((t, f)) => (t, f),
+        None => (declared_ref, ""),
+    };
+    let object = target.strip_suffix(".md").unwrap_or(target);
+    let selector = if fragment.is_empty() {
+        lock::Selector::Path(Vec::new())
+    } else {
+        lock::Selector::Path(fragment.split('/').map(str::to_string).collect())
+    };
     let mut l = lock::Lock::new();
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse(declared_ref).expect("a fixture ref is an address"),
-        fingerprint: token.to_string(),
-    });
+    l.upsert_pin(lock::PinEntry::new(
+        object,
+        "9ae3f1deadbeef",
+        selector,
+        token,
+    ));
     format!("# Effect\n\ndraws from it\n\n{}\n", lock::render(&l))
 }
 
 /// The SIX-state corpus: one effect page per outcome, each pinning a target that
-/// makes exactly that outcome true, plus a legacy form-1 page as the control
-/// that the `node_rev` plane is untouched.
+/// makes exactly that outcome true.
 ///
 /// Every page carries exactly ONE lock row, so `src_path` keys a row on both
 /// planes and the two listings compare directly.
@@ -106,16 +119,7 @@ fn six_state_corpus() -> BTreeMap<String, Document> {
     // grey lock-refused — the whole block is unreadable.
     docs.insert(
         "refused.md".to_string(),
-        doc("# Refused\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n"),
-    );
-    // The legacy control: a form-1 `^inputs` pin at the target's live node_rev,
-    // which the board's node_rev compare must still green on its own.
-    let target_rev = doc(body).root.node_rev.0.clone();
-    docs.insert(
-        "legacy.md".to_string(),
-        doc(&format!(
-            "# Legacy\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'sources/target.md', rev: '{target_rev}', rev_class: 'content'}}\n```\n"
-        )),
+        doc("# Refused\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n"),
     );
     docs
 }
@@ -133,20 +137,6 @@ fn board_rows(conn: &duckdb::Connection) -> Vec<(String, String, String)> {
 
 fn scalar_i64(conn: &duckdb::Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect("scalar")
-}
-
-/// The live `node_rev` of one addressable selector — the rev a legacy pin would
-/// record (read off the same `node` table the board joins).
-fn live_node_rev(path: &str, raw: &str, selector: &str) -> String {
-    let mut docs = BTreeMap::new();
-    docs.insert(path.to_string(), doc(raw));
-    let conn = open_board(&docs).expect("open board");
-    conn.query_row(
-        "SELECT node_rev FROM node WHERE path = ? AND selector = ?",
-        [path, selector],
-        |r| r.get::<_, String>(0),
-    )
-    .unwrap_or_else(|e| panic!("no node row for {path}#{selector}: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +222,7 @@ fn gate_projected_verdict_equals_the_color_planes_answer() {
             ),
             (
                 "refused.md".to_string(),
-                "grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, objects, pins))".to_string()
+                "grey lock-refused (malformed at line 3: unrecognized line (canonical order: version, pins))".to_string()
             ),
             (
                 "unverifiable.md".to_string(),
@@ -248,8 +238,8 @@ fn gate_projected_verdict_equals_the_color_planes_answer() {
 // ---------------------------------------------------------------------------
 
 /// The `board` view — the colors layer a reader actually queries — renders the
-/// same verdict for each of the six outcomes, and the legacy control keeps the
-/// color U5.1 gave it. This is the criterion-3 claim in one assertion: board
+/// same verdict for each of the six outcomes. This is the criterion-3 claim in
+/// one assertion: board
 /// says `red content-drifted` exactly where the walk says `red content-drifted`.
 #[test]
 fn gate_board_renders_the_same_verdict_the_walk_renders() {
@@ -271,11 +261,6 @@ fn gate_board_renders_the_same_verdict_the_walk_renders() {
             ),
             (
                 "green.md".to_string(),
-                "green".to_string(),
-                "attested".to_string()
-            ),
-            (
-                "legacy.md".to_string(),
                 "green".to_string(),
                 "attested".to_string()
             ),
@@ -330,7 +315,7 @@ fn gate_board_renders_the_same_verdict_the_walk_renders() {
 // ---------------------------------------------------------------------------
 
 /// The composed-legend invariant survives the new arm: the board emits EXACTLY
-/// one row per `input_lock` row, with legacy `^inputs` rows and `meridian-lock`
+/// one row per `input_lock` row, with every `meridian-lock`
 /// rows side by side. The arms partition on `verdict_color`, so a lock row can
 /// never be colored both by the `node_rev` compare and by its verdict.
 #[test]
@@ -339,7 +324,7 @@ fn gate_exactly_one_board_row_per_lock_row_across_both_planes() {
     let conn = open_board(&docs).expect("open board");
 
     let locks = scalar_i64(&conn, "SELECT count(*) FROM input_lock");
-    assert_eq!(locks, 7, "six lock rows + one legacy row");
+    assert_eq!(locks, 6, "six lock rows — one form per page, no legacy plane");
     assert_eq!(
         scalar_i64(&conn, "SELECT count(*) FROM board"),
         locks,
@@ -353,81 +338,5 @@ fn gate_exactly_one_board_row_per_lock_row_across_both_planes() {
         ),
         0,
         "no (src_path, seq) is colored twice",
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Gate 4 — additive for the legacy plane (the frozen-DDL question)
-// ---------------------------------------------------------------------------
-
-/// The addition is additive for the READER, not only the writer: every legacy
-/// `^inputs` row carries a NULL verdict, so all four U5.1 arms see exactly the
-/// rows they saw before, and each legacy color is unchanged — green (matched
-/// pin), red (drift), grey (superseded-algo), grey (declared-unpinned).
-#[test]
-fn gate_legacy_inputs_rows_are_untouched_by_the_verdict_column() {
-    let subject_v1 = "# Subject\n\nbody one. ^claim\n";
-    let subject_v2 = "# Subject\n\nbody two (drifted). ^claim\n";
-    let claim_rev = live_node_rev("subject.md", subject_v1, "^claim");
-
-    let mut docs = BTreeMap::new();
-    docs.insert("subject.md".to_string(), doc(subject_v1));
-    docs.insert(
-        "green.md".to_string(),
-        doc(&format!(
-            "# G\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'subject.md', to: 'subject.md#^claim', rev: '{claim_rev}'}}\n```\n"
-        )),
-    );
-    docs.insert(
-        "v1.md".to_string(),
-        doc("# V1\n\n```yaml ^inputs\nhash-algo: v1\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', rev: 'a1b2c3d4e5f60718'}\n```\n"),
-    );
-    docs.insert(
-        "unpinned.md".to_string(),
-        doc("# U\n\n```yaml ^inputs\nitems:\n  - {ref: 'subject.md', claim: 'declared-only'}\n```\n"),
-    );
-
-    let conn = open_board(&docs).expect("open board");
-    assert_eq!(
-        scalar_i64(
-            &conn,
-            "SELECT count(*) FROM input_lock WHERE verdict_color IS NOT NULL",
-        ),
-        0,
-        "a legacy `^inputs` row carries NO verdict — the node_rev plane still owns it",
-    );
-    assert_eq!(
-        board_rows(&conn),
-        vec![
-            (
-                "green.md".to_string(),
-                "green".to_string(),
-                "attested".to_string()
-            ),
-            (
-                "unpinned.md".to_string(),
-                "grey".to_string(),
-                "declared-unpinned".to_string()
-            ),
-            (
-                "v1.md".to_string(),
-                "grey".to_string(),
-                "superseded-algo".to_string()
-            ),
-        ],
-        "the three legacy colors are exactly what U5.1 rendered",
-    );
-
-    // And the legacy drift arm still fires: edit the subject after the pin.
-    let mut drifted = docs;
-    drifted.insert("subject.md".to_string(), doc(subject_v2));
-    let conn2 = open_board(&drifted).expect("open board drifted");
-    assert_eq!(
-        scalar_i64(
-            &conn2,
-            "SELECT count(*) FROM board WHERE src_path='green.md' AND color='red' AND reason='content-drifted'",
-        ),
-        1,
-        "the legacy node_rev drift compare is untouched by the verdict guard",
     );
 }
