@@ -1,22 +1,34 @@
 # Which documents in `docs/` are law
 
-**Every count in this file was measured at `457141ba`** — the parent of the
-commit carrying this line, since a file cannot cite its own sha. That commit
-edits this prose and adds no file, so the counts hold at both revisions. Branched
-from `main` at `2d466dd7`.
+**These counts change only when a file is added to or removed from `docs/`.**
+They are unaffected by edits to this file or to any other — including the commit
+that carries this line. Re-run the published commands (§ How to re-derive) to
+confirm at any revision.
 
-A membership list is a claim about a directory at a revision, and the directory
-moves — re-derive rather than trust this prose if the tree has advanced;
-§ How to re-derive states the commands.
+**One count has a different condition, and it is the one in this file's own
+table.** The MEMBERS row count changes when a row is added to or removed from
+§ MEMBERS — which happens when a new self-declared normative document lands
+(§ The merge obligation) or a member is retired. **Measured:** adding a row moves
+MEMBERS 9 → 10 while the file counts stay at 33. A blanket "unaffected by edits
+to this file" would be false for exactly this number.
 
-> [!NOTE] The revision is stated because a control goes stale by its author's own hand
-> This header first read *"measured at `2d466dd7`"* — the base the branch started
-> from. The counts were then re-run twice as this file grew, and the stated
-> revision was not moved with them. The numbers happened not to change, so
-> nothing would have caught it. **A control is the thing you check other numbers
-> with, so it is the one measurement with no measurement behind it** — and the
-> sentence nobody re-reads is the one that goes quietly wrong. State the control
-> at its revision, in the same breath as the claim it supports.
+Provenance, not the load-bearing part: the counts were last measured at
+`457141ba`.
+
+> [!NOTE] Why this is an invalidation condition and not a date
+> This header first named a revision, on the principle that a control must be
+> dated. In a **self-describing** file that cannot converge: a file cannot cite
+> its own sha, so a self-dated document goes stale on every subsequent commit,
+> and each fix requires another commit that re-stales it. **Where a claim cannot
+> be dated, state its invalidation condition instead.** The condition above is
+> true at every revision, including revisions that do not exist yet — which is
+> stronger than a date, not weaker, because it names exactly what would make the
+> claim false. A date is a crude proxy for that.
+>
+> Three legs, and a number with all three needs no maintenance: **the revision**
+> (so it cannot go stale silently), **the command** (so it cannot be re-derived
+> with a different instrument), and **the invalidation condition** (so it does
+> not need re-dating to stay true).
 
 This file **classifies; it does not ratify.** Listing a document here changes
 nothing about its authority. Where a document's status could not be determined
@@ -400,8 +412,11 @@ rather than from this command got **24**, because the rebuilt query was unscoped
 over a file with many tables. The scoped count is 9. Nothing had changed but the
 instrument.
 
-Expected values are given so each line is its own control. Run them at a stated
-revision; measured here at `457141ba`.
+Expected values are given so each line is its own control, and they carry their
+own invalidation conditions: **the file counts move only on a file added to or
+removed from `docs/`; the MEMBERS count moves only on a row added to or removed
+from § MEMBERS.** Neither is invalidated by the commit you are reading. Last
+measured at `457141ba` — provenance, not the load-bearing part.
 
 ```sh
 git rev-parse --short HEAD                          # state the revision
