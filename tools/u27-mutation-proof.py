@@ -310,17 +310,35 @@ def main() -> int:
         ("plain grep -rn, BARE (index-free, no type filter)",
          ["grep", "-rn", "MUTATION:", ".", "--exclude-dir=target", "--exclude-dir=.git"]),
     ]
+    # This file legitimately CONTAINS the marker — it is the injection payload,
+    # the search pattern, and the prose describing both. A nonzero bare count is
+    # therefore correct, not a failure (All-Hands #42).
+    #
+    # But the hits are SPLIT and COUNTED rather than excluded by filename.
+    # Exempting a harness BY NAME misses real residue sitting in the same file,
+    # because a name is not a measurement. The count is: if this file's marker
+    # count changes, a human looks at why — the same key-set-pin logic this
+    # whole unit is built on, pointed at its own instrument.
+    SELF = "tools/u27-mutation-proof.py"
+    SELF_EXPECTED = 21  # 15 payload strings + 4 search patterns + 2 prose lines
+
     for label, cmd in scopes:
-        hits = [
-            h for h in subprocess.run(
-                cmd, cwd=ROOT, capture_output=True, text=True, check=False
-            ).stdout.splitlines()
-            if "u27-mutation-proof" not in h
-        ]
-        print(f"  MUTATION: via {label}: {len(hits)} hit(s)")
-        for h in hits:
-            print(f"      {h}")
+        out = subprocess.run(
+            cmd, cwd=ROOT, capture_output=True, text=True, check=False
+        ).stdout.splitlines()
+        mine = [h for h in out if SELF in h]
+        other = [h for h in out if SELF not in h]
+        print(f"  MUTATION: via {label}: {len(other)} in source, {len(mine)} in the harness itself")
+        for h in other:
+            print(f"      RESIDUE: {h}")
             bad.append(f"mutation residue via {label}: {h}")
+        # Only the index-free arm can see this file at all (it is not *.rs).
+        if "BARE" in label and len(mine) != SELF_EXPECTED:
+            print(f"      harness marker count moved: {len(mine)} != {SELF_EXPECTED}")
+            bad.append(
+                f"harness self-count moved ({len(mine)} != {SELF_EXPECTED}) — open the "
+                f"hits and re-pin deliberately; do not adjust the number to match"
+            )
 
     if bad:
         print("\nPROOF INCOMPLETE:")
