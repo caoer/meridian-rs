@@ -113,6 +113,35 @@ MUTATIONS = [
         "the measured frozen-v2 leak: a post-v2 field on a v2 subscriber's wire",
     ),
     (
+        "v2-reserved-ladder-vintage",
+        ("wire-serve", "u20b_v2_notification_shape",
+         "a_post_v2_field_is_demoted_even_with_no_authorship_mark"),
+        [(
+            "crates/wire-serve/src/rev.rs",
+            '        key: "new_fingerprint",\n        position: Position::ErrorPayload,',
+            '        // MUTATION: withdraw the vintage row for a ladder extra.\n'
+            '        key: "new_fingerprint_WITHDRAWN",\n        position: Position::ErrorPayload,',
+        )],
+        "a post-v2 ladder field reaching a v2 session because vintage was keyed on authorship",
+    ),
+    (
+        "v2-provenance-not-vintage",
+        ("wire-serve", "u20b_v2_notification_shape",
+         "a_non_ladder_refusal_keeps_its_v2_legal_message_and_path"),
+        [(
+            "crates/wire-serve/src/rev.rs",
+            "        if ladder_authored {\n            error.message = None;\n            error.path = None;\n        }",
+            "        // MUTATION: treat the v2-LEGAL slots as vintage — the\n"
+            "        // regression the \"migrate all six\" order would have shipped.\n"
+            "        error.message = None;\n        error.path = None;",
+        ), (
+            "crates/wire-serve/src/rev.rs",
+            "    if !ladder_authored && !post_v2 {",
+            "    if false && !ladder_authored && !post_v2 {",
+        )],
+        "stripping a legitimate v2 message from a non-ladder refusal",
+    ),
+    (
         "reap-exemption",
         "a_live_subscription_survives_the_reaper",
         [(

@@ -161,3 +161,82 @@ fn a_v3_session_still_receives_effects() {
         "v3 is entitled to the reaction plane: {value}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The vintage/provenance split in `demote_v2` (leader ruling, 2026-08-04)
+// ---------------------------------------------------------------------------
+
+fn cas_error() -> wire::ErrorBody {
+    wire::ErrorBody::new(wire::ErrorCode::CasMismatch)
+}
+
+fn error_response(error: wire::ErrorBody) -> wire::Response {
+    wire::Response {
+        id: Some(1),
+        ok: false,
+        payload: wire::ResponsePayload::Error { error },
+    }
+}
+
+/// **VINTAGE holds without a rung.** The four ladder extras postdate frozen v2,
+/// so a v2 session must not see them whoever wrote the value — the registry
+/// answers a schema question, not an authorship one.
+///
+/// Unreachable through production today (`ladder::enrich` is the sole author of
+/// all six slots and always sets `rung`), which is exactly why it is pinned
+/// directly: the factoring exists so the vintage half keeps holding if a later
+/// unit sets one of these without a rung, and only a constructed envelope can
+/// prove that now.
+#[test]
+fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
+    let mut error = cas_error();
+    error.new_fingerprint = Some(wire::NodeRev("beef000000000000".into()));
+    let demoted = wire_serve::rev::demote_v2(&error_response(error))
+        .expect("a post-v2 field is demoted on its vintage alone");
+    let wire::ResponsePayload::Error { error } = &demoted.payload else {
+        panic!("still an error payload");
+    };
+    assert!(
+        error.new_fingerprint.is_none(),
+        "vintage is a schema fact, not a question about who wrote the value"
+    );
+}
+
+/// **PROVENANCE protects the v2-LEGAL fields.** `message` and `path` are legal
+/// v2 vocabulary, so an ordinary refusal keeps them. Only the ladder's own are
+/// stripped, and `rung` is what proves the ladder wrote them.
+///
+/// This is the assertion that a registry row for `message` would break — the
+/// regression that the "migrate all six to the table" order would have shipped.
+#[test]
+fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
+    let mut error = cas_error();
+    error.message = Some("plain refusal wording".into());
+    error.path = Some(wire::Path("plan.md".into()));
+    assert!(
+        wire_serve::rev::demote_v2(&error_response(error)).is_none(),
+        "a refusal with no post-v2 field and no ladder mark is not demoted at all"
+    );
+}
+
+/// The ladder's own `message`/`path` still go, so a demoted v2 `cas_mismatch`
+/// prints exactly what it always printed. The control for the test above: it
+/// proves the provenance path can still fire, so "keeps its message" is not
+/// passing because nothing ever strips one.
+#[test]
+fn the_ladders_own_message_and_path_are_still_stripped() {
+    let mut error = cas_error();
+    error.rung = Some(2);
+    error.message = Some("ladder teaching text".into());
+    error.path = Some(wire::Path("plan.md".into()));
+    let demoted =
+        wire_serve::rev::demote_v2(&error_response(error)).expect("a ladder envelope demotes");
+    let wire::ResponsePayload::Error { error } = &demoted.payload else {
+        panic!("still an error payload");
+    };
+    assert!(error.rung.is_none(), "the rung is post-v2");
+    assert!(
+        error.message.is_none() && error.path.is_none(),
+        "the ladder's own teaching slots go with it"
+    );
+}
