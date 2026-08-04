@@ -1150,6 +1150,26 @@ fn render_report(report: &CoreReport) -> String {
     // it (S3-R23(5)): the same empty orphan list means one thing over fifty pinned
     // blobs and something else entirely over none, and a reading that cannot tell
     // them apart is how coverage disappears with nothing failing.
+    // THE SIGHT LINE, stated before the reading it bounds (ruling 2026-08-04).
+    // The anchoring plane holds ONE git handle — the ambient root's — so a
+    // cross-root pin's blob is out of its jurisdiction and is not measured. That
+    // narrowing is SPOKEN, never silent: a skipped population nobody names is the
+    // false clean this plane exists to prevent. Cross-root blob durability is
+    // `u13_per_root_anchoring`'s surface; scoping this plane does not retire the
+    // question.
+    if !pins.out_of_jurisdiction.is_empty() {
+        let _ = writeln!(
+            out,
+            "  anchoring scope: {} pin{} outside this root's object store, NOT measured here — {}",
+            pins.out_of_jurisdiction.len(),
+            if pins.out_of_jurisdiction.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            pins.out_of_jurisdiction.join(" · ")
+        );
+    }
     if let Some(detail) = &pins.cannot_ask {
         let _ = writeln!(out, "  anchoring: {GREY_CANNOT_ASSESS} — {detail}");
     } else if pins.asked() == 0 {
@@ -1363,6 +1383,16 @@ fn pins_json(report: &CoreReport) -> Value {
             Some(detail) => json!({ "reason": GREY_CANNOT_ASSESS, "detail": detail }),
             None => Value::Null,
         },
+        // The SIGHT LINE (ruling 2026-08-04) — the population this plane did NOT
+        // measure, because those blobs live in another root's object store. Count
+        // AND refs: a bare count cannot be acted on, and a silent skip is the
+        // false clean. Present on BOTH faces because a machine reader must be able
+        // to see the same narrowing a human does.
+        "anchoring_out_of_jurisdiction": json!({
+            "count": pins.out_of_jurisdiction.len(),
+            "refs": pins.out_of_jurisdiction,
+            "owner": "u13_per_root_anchoring",
+        }),
     })
 }
 
@@ -1433,6 +1463,7 @@ mod tests {
             never: 0,
             cannot_ask: None,
             declared: 1,
+            out_of_jurisdiction: Vec::new(),
         }
     }
 

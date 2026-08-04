@@ -58,6 +58,31 @@ fn config_raw(path: &Path) -> String {
 }
 
 /// `declared_at` is written into `MERIDIAN.md`; `create_it` decides whether that
+/// One R4 pin per `(object, fingerprint)`, hand-written in the exact bytes
+/// `lock::render` emits — so these gates depend on the CLI's own READER, never
+/// on the writer that produced the bytes.
+///
+/// These fixtures pin CROSS-ROOT targets whose roots are unreadable on purpose;
+/// the pins are never green and the fingerprints are deliberately fake, because
+/// the subject is the ROOT grey, not the content compare.
+///
+/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
+/// wire protocol version.
+fn lock_block(objects: &[&str]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
+    for object in objects {
+        let _ = write!(
+            out,
+            "  - object: \"[[{object}]]\"\n    hash: \"9ae3f1deadbeef\"\n    \
+             path: []\n    fingerprint: \"fp1.span2.b3.{}\"\n",
+            "0".repeat(64)
+        );
+    }
+    out.push_str("```");
+    out
+}
+
 /// directory actually exists. The DECLARATION is identical either way — which is
 /// what makes the pair a controlled comparison.
 fn sandbox(create_it: bool) -> Sandbox {
@@ -106,8 +131,7 @@ impl Sandbox {
     fn claim(&self) {
         std::fs::write(
             self.ws.join("claim.md"),
-            "# Claim\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  \
-             - {ref: 'sessions:notes.md', rev: 'deadbeefdeadbeef', rev_class: 'content'}\n```\n",
+            format!("# Claim\n\n{}\n", lock_block(&["sessions:notes"])),
         )
         .expect("claim");
         let init = self.run(&["init"]);
@@ -265,9 +289,10 @@ fn both_root_greys_are_distinct_in_one_run_and_both_refuse() {
     let sb = sandbox(false); // `sessions` declared, path absent; `assets` undeclared
     std::fs::write(
         sb.ws.join("claim.md"),
-        "# Claim\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  \
-         - {ref: 'sessions:notes.md', rev: 'deadbeefdeadbeef', rev_class: 'content'}\n  \
-         - {ref: 'assets:logo.md', rev: 'deadbeefdeadbeef', rev_class: 'content'}\n```\n",
+        format!(
+            "# Claim\n\n{}\n",
+            lock_block(&["sessions:notes", "assets:logo"])
+        ),
     )
     .expect("claim");
     assert!(sb.run(&["init"]).status.success());
@@ -338,8 +363,7 @@ fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
     let sb = sandbox(false);
     std::fs::write(
         sb.ws.join("claim.md"),
-        "# Claim\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  \
-         - {ref: 'assets:logo.md', rev: 'deadbeefdeadbeef', rev_class: 'content'}\n```\n",
+        format!("# Claim\n\n{}\n", lock_block(&["assets:logo"])),
     )
     .expect("claim");
     assert!(sb.run(&["init"]).status.success());
