@@ -101,7 +101,7 @@ which laws it carries. In one line each:
 > **The trigger above is not rewritten and is not false.** It was never met, and
 > the event that would have met it is no longer scheduled on this docket.
 >
-> **The authority.** ZT ruled the field sweep aborted — *"MANUAL ONE-TIME CUTOVER
+> **The authority — ruling `#663`.** ZT ruled the field sweep aborted — *"MANUAL ONE-TIME CUTOVER
 > FOR THE TWO REAL LOCKS. ABORT THE FLEET VAULT-WINDOW OPS"* — at a measured
 > field size of two real page locks. The ruling unschedules the FIELD RUN for
 > this docket and explicitly does not unbuild anything:
