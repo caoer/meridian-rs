@@ -20,7 +20,7 @@
 //! migration is not complete), 2 = a tool failure (bad usage, an unreadable
 //! vault, a vault with no git and therefore no restore point, a refused write).
 
-use lockmigrate::{MigrationReport, Options, sweep};
+use lockmigrate::{Options, sweep};
 use serde_json::json;
 
 use crate::{Fail, Format};
