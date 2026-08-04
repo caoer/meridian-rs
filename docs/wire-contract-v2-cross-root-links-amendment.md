@@ -86,3 +86,14 @@ exactly as the colors amendment does.
 frozen-v2 guarantee above is pinned by a KEY-SET assertion in
 `crates/wire/tests/contract_v2.rs` rather than by the worked-value sweep, which
 would pass either way.
+
+## The cross-root destination columns are ambient-only in the drawer
+
+The cross-root destination columns are AMBIENT-ONLY in the published drawer, by
+construction. `view::publish` is called from one production site — the resident
+daemon (`registry.rs:597`) — which holds no mount authority at all
+(`MountSet`/`RootedCorpus`: zero occurrences in the crate). An empty `dest_root`
+in `view.duckdb` therefore means "this plane never asked", never "no cross-root
+destination". The rooted answer lives on the in-process path
+(`build_memory_rooted`, `mrd sql`). This is `docs/laws.md` C-1 seen from the
+drawer; it is not a second residue, and it lifts when C-1 named successor lands.

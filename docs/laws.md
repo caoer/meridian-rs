@@ -305,10 +305,15 @@ U14 found that the `#` refusal must SURVIVE, because `#` is a live delimiter in
 both wikilink and `path#fragment` ingress, and named it a candidate row rather
 than an act.
 
-**This row is a POINTER, not a claim about this tree.** U14 is not merged at the
-time of writing — `lock_ref_fragment` is still the name here
-(`crates/wire-serve/src/write.rs:1319`) and U14's rename does not exist on main.
-The row's owner is U14, and U14 fills in the detail when it lands. Writing its
+**This row is a POINTER, not a claim about this tree.** The row's owner is U14,
+and U14 fills in the detail when it lands.
+
+> **Corrected in the landing assembly:** the sentence that stood here said U14
+> was not merged and `lock_ref_fragment` was still the name. That was true when
+> written on `u21-cross-vault-links`; it is false in this tree. U14 IS merged and
+> `refuse_unrepresentable_heading` exists. The careful half — that the row is a
+> pointer rather than a claim — is what survives, and it is why the parenthetical
+> was the only false part. Writing its
 shapes here now would assert a tree that this tree contradicts, which is the
 defect this whole section exists to prevent.
 
