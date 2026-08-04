@@ -24,6 +24,14 @@ Each arm also declares the EXACT set of tests it must redden. An arm that
 reddens more or fewer than declared fails the proof, so an over-broad mutation
 cannot be mistaken for a precise detector.
 
+The residue check at the end runs THREE scopes, not two. `git grep` is an index
+instrument: it searches TRACKED PATHS whatever revision you point it at, so it
+is blind to untracked files — which are exactly the files a new unit is most
+likely to leave residue in (All-Hands #39). The plain `grep -rn` arm has no
+index and covers what the other two cannot; the untracked-file count is printed
+whether or not it is zero, because a clean git-grep result only means something
+once you know that count.
+
 Usage: python3 tools/u27-mutation-proof.py [arm-name]
 """
 
@@ -261,26 +269,45 @@ def main() -> int:
             bad.append(f"post-restore {pkg}/{binary} is not green")
 
     print("\n=== restored tree, claim 2 of 2: NO mutation residue in source ===", flush=True)
-    # Two scopes, because each is blind to the other (All-Hands #14/#15):
-    # the working tree cannot see committed residue, and HEAD cannot see
-    # uncommitted residue. Neither sees residue below HEAD in history.
+    # THREE scopes, because each is blind to something the others see:
+    #   git grep (working tree) — misses UNTRACKED files (All-Hands #39)
+    #   git grep HEAD          — misses untracked AND uncommitted (#14/#15, #39)
+    #   plain grep -rn         — sees everything on disk, index-free
+    # git grep searches TRACKED PATHS whatever revision you point it at, so the
+    # working-tree form is NOT "the safe one" — it is blind to exactly the new
+    # files a unit is most likely to leave residue in. None of the three sees
+    # residue below HEAD in history.
     dirty = subprocess.run(
         ["git", "status", "--short"], cwd=ROOT, capture_output=True, text=True, check=False
     ).stdout.strip()
     print(f"  working tree: {dirty or '(clean)'}")
-    for scope in (["git", "grep", "-n", "MUTATION:", "--", "*.rs"],
-                  ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]):
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", "*.rs"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    ).stdout.split()
+    # Stated whether or not it is zero: a zero here is what makes a clean
+    # git-grep result mean something, and it is not knowable from the result.
+    print(f"  untracked .rs files (invisible to both git-grep arms): {len(untracked)}")
+    for u in untracked:
+        print(f"      {u}")
+
+    scopes = [
+        ("git grep, working tree", ["git", "grep", "-n", "MUTATION:", "--", "*.rs"]),
+        ("git grep, HEAD", ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]),
+        ("plain grep -rn (index-free)",
+         ["grep", "-rn", "--include=*.rs", "MUTATION:", "crates/"]),
+    ]
+    for label, cmd in scopes:
         hits = [
             h for h in subprocess.run(
-                scope, cwd=ROOT, capture_output=True, text=True, check=False
+                cmd, cwd=ROOT, capture_output=True, text=True, check=False
             ).stdout.splitlines()
             if "u27-mutation-proof" not in h
         ]
-        label = "HEAD" if "HEAD" in scope else "working tree"
-        print(f"  MUTATION: in {label}: {len(hits)} hit(s)")
+        print(f"  MUTATION: via {label}: {len(hits)} hit(s)")
         for h in hits:
             print(f"      {h}")
-            bad.append(f"mutation residue in {label}: {h}")
+            bad.append(f"mutation residue via {label}: {h}")
 
     if bad:
         print("\nPROOF INCOMPLETE:")
