@@ -77,6 +77,47 @@ fn assert_splice_decode_kill(id: &str, frame: &Value) {
     );
 }
 
+/// MP-7, class `007+write` — decision 007 AMENDED by requirements decision 18.
+/// Both halves are asserted here, which is why it lives in its own function:
+/// the surviving SCHEMA half (a guardless splice is a legal frame that decodes)
+/// and the superseded BEHAVIOURAL half (the write is now refused semantically).
+///
+/// Implementing this refusal as a FRAME rejection would make guard fields
+/// effectively required at the schema and resurrect the ceremony 007 exists to
+/// kill — so the negatives below are the load-bearing assertions, not decoration.
+fn assert_mp7_007_plus_write(id: &str, request: &Value) {
+    // This probe declares "state s0", so it runs against the wsfix S0 workspace
+    // rather than the walkvault the other rungs share.
+    let (_d, s0_root) = s0_workspace();
+    let frame = answer(&s0_root, request);
+    assert_eq!(frame["ok"], false, "{id}: the WRITE is refused: {frame}");
+    assert_eq!(
+        frame["error"]["code"], "guard_required",
+        "{id}: a SEMANTIC write refusal: {frame}"
+    );
+    // 007's surviving half, asserted as a NEGATIVE: whatever else is
+    // true, the frame must never be called malformed.
+    for illegal in ["bad_frame", "bad_request", "unknown_op"] {
+        assert_ne!(
+            frame["error"]["code"], illegal,
+            "{id}: a guardless frame stays a LEGAL frame — 007's \
+                     schema half survives: {frame}"
+        );
+    }
+    assert_eq!(
+        frame["error"]["recovery"], "fix",
+        "{id}: fix class — change the request, not the channel: {frame}"
+    );
+    // It DECODED and reached the WRITE path: the refusal names the
+    // target file, a fact only the post-decode guard can fill in —
+    // a frame rejection has no path to echo.
+    assert_eq!(
+        frame["error"]["path"], request["path"],
+        "{id}: the refusal comes from the write path, so the frame \
+                 decoded: {frame}"
+    );
+}
+
 #[test]
 fn p4_probes_applicable_at_rung_2() {
     let (_d, root) = walkvault();
@@ -155,36 +196,7 @@ fn p4_probes_applicable_at_rung_2() {
             // The distinction is load-bearing: implementing this refusal as a
             // frame rejection would make guards required AT THE SCHEMA and
             // resurrect the ceremony 007 exists to kill.
-            "MP-7" => {
-                let (_d, s0_root) = s0_workspace();
-                let frame = answer(&s0_root, &probe["request"]);
-                assert_eq!(frame["ok"], false, "{id}: the WRITE is refused: {frame}");
-                assert_eq!(
-                    frame["error"]["code"], "guard_required",
-                    "{id}: a SEMANTIC write refusal: {frame}"
-                );
-                // 007's surviving half, asserted as a NEGATIVE: whatever else is
-                // true, the frame must never be called malformed.
-                for illegal in ["bad_frame", "bad_request", "unknown_op"] {
-                    assert_ne!(
-                        frame["error"]["code"], illegal,
-                        "{id}: a guardless frame stays a LEGAL frame — 007's \
-                         schema half survives: {frame}"
-                    );
-                }
-                assert_eq!(
-                    frame["error"]["recovery"], "fix",
-                    "{id}: fix class — change the request, not the channel: {frame}"
-                );
-                // It DECODED and reached the WRITE path: the refusal names the
-                // target file, a fact only the post-decode guard can fill in —
-                // a frame rejection has no path to echo.
-                assert_eq!(
-                    frame["error"]["path"], probe["request"]["path"],
-                    "{id}: the refusal comes from the write path, so the frame \
-                     decoded: {frame}"
-                );
-            }
+            "MP-7" => assert_mp7_007_plus_write(id, &probe["request"]),
             // TEXT-LAWFUL answer (D-C5) — deviation from the probe file's
             // recorded expect, documented in the provenance note
             "MP-8" => {
