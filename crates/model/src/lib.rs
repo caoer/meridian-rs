@@ -1792,7 +1792,7 @@ impl CorpusIndex {
             // behaviour is byte-for-byte what it was before U11.
             return match self.three_rules(spelling, from, corpus.ambient_docs()) {
                 Some(path) => RefResolution::Ambient(path),
-                None => RefResolution::NotFound,
+                None => RefResolution::NotFound { root: None },
             };
         };
 
@@ -1865,7 +1865,7 @@ impl CorpusIndex {
         //     unmounted class exists to prevent.
         match mounted.index.three_rules(addr.path(), from, mounted.docs) {
             Some(path) => RefResolution::Rooted { root, path },
-            None => RefResolution::NotFound,
+            None => RefResolution::NotFound { root: Some(root) },
         }
     }
 
@@ -2036,7 +2036,22 @@ pub enum RefResolution {
     },
     /// Well-formed, its root (if any) bound and readable — but the path names
     /// nothing in THAT root's corpus.
-    NotFound,
+    ///
+    /// **It carries the root the miss happened INSIDE, and that field is the
+    /// whole point.** `docs/address-grammar.md` § 5.2 row F4 requires
+    /// `file_not_found` SCOPED TO THAT ROOT — never the ambient root's
+    /// same-basename file — and a caller holding a bare `NotFound` cannot
+    /// author that refusal, because it cannot say which root "THAT" was. The
+    /// doc sentence above named a root the type then discarded.
+    ///
+    /// Measured consequence of the bare form: a cross-vault miss rendered red
+    /// `selector-unresolved` with zero candidates, which asserts the PAGE
+    /// resolved and the SELECTOR did not — the wrong cause, in the engine's own
+    /// voice, on a root the engine could see perfectly well.
+    NotFound {
+        /// The root the miss happened inside — `None` for the ambient root.
+        root: Option<MountName>,
+    },
     /// The spelling is not a well-formed address, or is one the resolver
     /// refuses (an opaque root carrying a selector).
     Malformed(AddrError),

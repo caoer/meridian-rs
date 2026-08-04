@@ -563,7 +563,11 @@ pub fn page_lock_items_in_rooted_corpus(
             }
             // Unresolved and malformed both keep the declared spelling, which is
             // what the red `selector-unresolved` render reports.
-            model::RefResolution::NotFound | model::RefResolution::Malformed(_) => {}
+            // U21: `NotFound` now carries the root the miss happened inside.
+            // This site still keeps the declared spelling — wiring the
+            // root-scoped refusal into the render surfaces is the caller-side
+            // half and lands with them, not here.
+            model::RefResolution::NotFound { .. } | model::RefResolution::Malformed(_) => {}
         }
     }
     items

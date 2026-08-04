@@ -560,6 +560,82 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
 }
 
 // ---------------------------------------------------------------------------
+// The cross-vault MEASURED-ABSENCE refusal (U21 — carried VERBATIM)
+// ---------------------------------------------------------------------------
+
+/// The resolve plane's partial-state disclosure — the THIRD such clause, beside
+/// `config::NO_PARTIAL_LOAD_CLAUSE` and `wire_serve::NO_PARTIAL_WRITE_CLAUSE`.
+///
+/// **Minted rather than reused, and the exception was ruled** (U21 Q4). The
+/// reuse rule forbids a second SPELLING of one plane; it does not forbid a
+/// clause for a NEW plane. Neither existing clause is true here: nothing was
+/// loaded and no batch was attempted — a REF failed to resolve, and what a
+/// reader needs to know is that this one ref produced nothing while the rest of
+/// the page is untouched.
+pub const NO_PARTIAL_RESOLVE_CLAUSE: &str = "Nothing was resolved for this ref and no rev was minted; every other ref on this page is unaffected.";
+
+/// The cross-vault measured-absence refusal, carried VERBATIM as the provenance
+/// anchor. [`render_file_not_found`] reproduces this wording with the real root
+/// and path interpolated; this const pins the exemplar so a drift in the wording
+/// is a visible test failure — the same shape as
+/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
+///
+/// **Why this is RED and not grey.** Grey means *outside sight*; this root is
+/// bound, readable, and its corpus loaded. The engine looked and the file is not
+/// there — a MEASURED ABSENCE, which is a claim, where grey is a refusal to
+/// claim. Conflating them is the false negative `GreyReason::Unmounted` exists
+/// to prevent, read from the other direction.
+///
+/// **Why it is not `selector-unresolved`.** That word asserts the PAGE resolved
+/// and the SELECTOR did not. For a cross-vault miss the page itself is absent,
+/// so `selector-unresolved` reports the wrong cause in the engine's own voice —
+/// which is exactly what shipped before U21.
+pub const RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR: &str = "red(file-not-found): the address 'sessions:24-01-retro/notes.md#Design' names root 'sessions', which this machine binds and reads — and that root's corpus holds no '24-01-retro/notes.md'. The root is visible, so this is a measured absence, not grey. Nothing was resolved for this ref and no rev was minted; every other ref on this page is unaffected. Fix: check the path inside 'sessions' — `mrd config` names where it is mounted — or repoint the link; see [[address-grammar]].";
+
+/// Render the cross-vault measured-absence refusal, naming the root, the path
+/// that is missing inside it, and the act that fixes it.
+///
+/// `md_only` adds the v1 limit sentence when the missing path is not markdown.
+/// **A refusal that would otherwise IMPLY absence instead NAMES THE LIMIT** —
+/// the corpus holds only `.md`, so "that root's corpus holds no
+/// `media/logo.png`" is true and misleading: the file may well be on disk. This
+/// is the one place silence would produce a confidently wrong sentence.
+/// **The parts arrive separately and are joined HERE, at the render door.** The
+/// caller never hands in a pre-joined address string — that is the U14 /
+/// decision-14 shape (`render::address_text`): a joined human spelling is
+/// derived where it is displayed and nowhere else. It also removes the only way
+/// this function could lie, which is a caller passing an `address` whose root
+/// disagrees with `root`.
+#[must_use]
+pub fn render_file_not_found(
+    root: &addr::MountName,
+    missing: &str,
+    selector: Option<&str>,
+    md_only: bool,
+) -> String {
+    let limit = if md_only {
+        " Cross-vault links are markdown-only in v1, so a non-.md target is not addressable even when the file exists."
+    } else {
+        ""
+    };
+    // The SUBJECT is the address as the author wrote it, selector included —
+    // that is what they must find on the page. The ABSENCE is the page path,
+    // because the selector is not what is missing.
+    let address = match selector {
+        Some(sel) => format!("{root}:{missing}#{sel}"),
+        None => format!("{root}:{missing}"),
+    };
+    format!(
+        "red(file-not-found): the address '{address}' names root '{root}', \
+         which this machine binds and reads — and that root's corpus holds no \
+         '{missing}'. The root is visible, so this is a measured absence, not \
+         grey.{limit} {NO_PARTIAL_RESOLVE_CLAUSE} Fix: check the path inside \
+         '{root}' — `mrd config` names where it is mounted — or repoint the \
+         link; see [[address-grammar]]."
+    )
+}
+
+// ---------------------------------------------------------------------------
 // The unmounted-root teaching refusal (D8 — carried VERBATIM)
 // ---------------------------------------------------------------------------
 
@@ -1042,5 +1118,129 @@ mod tests {
             classify_pin(&Selector::parse("22-01-session#seq-9"), &token, Some(&d)),
             Color::Grey(GreyReason::ImmutableRoot)
         ));
+    }
+}
+
+#[cfg(test)]
+mod u21_file_not_found {
+    use super::*;
+
+    /// **The four-property refusal contract**, the bar `mrd config`'s exemplar
+    /// sets and `testsuite/tests/u4a2_composed_read.rs` asserts elsewhere:
+    /// subject · cause at its grain · partial state · a runnable fix — plus the
+    /// one negative, never an internal name.
+    #[test]
+    fn the_refusal_meets_the_house_four_property_bar() {
+        let root = addr::MountName::parse("sessions").expect("a name");
+        let m = render_file_not_found(&root, "24-01-retro/notes.md", Some("Design"), false);
+
+        // 1. SUBJECT — the address, the root, and the path, all three named.
+        assert!(
+            m.contains("sessions:24-01-retro/notes.md"),
+            "names the address: {m}"
+        );
+        assert!(m.contains("root 'sessions'"), "names the root: {m}");
+
+        // 2. CAUSE AT ITS GRAIN — bound and readable, yet the corpus lacks it.
+        //    And the one wrong reading is pre-empted by name.
+        assert!(m.contains("binds and reads"), "names the cause: {m}");
+        assert!(
+            m.contains("measured absence, not grey"),
+            "pre-empts the grey misreading: {m}"
+        );
+
+        // 3. PARTIAL STATE — single-sourced, never re-spelled here.
+        assert!(
+            m.contains(NO_PARTIAL_RESOLVE_CLAUSE),
+            "discloses partial state: {m}"
+        );
+
+        // 4. FIX — an ACT, not a restatement of the problem.
+        assert!(
+            m.contains("Fix: check the path inside 'sessions'"),
+            "carries a fix: {m}"
+        );
+
+        // THE NEGATIVE — no internal vocabulary leaks into a user's sentence.
+        for internal in [
+            "RefResolution",
+            "NotFound",
+            "resolve_ref",
+            "three_rules",
+            "CorpusIndex",
+        ] {
+            assert!(
+                !m.contains(internal),
+                "leaks an internal name '{internal}': {m}"
+            );
+        }
+    }
+
+    /// The exemplar is PRODUCED, not asserted — the `mrd config` discipline
+    /// (`config::tests::refusal_exemplar_is_produced_not_asserted`). A const
+    /// nobody generates is a comment that can go stale.
+    #[test]
+    fn the_pinned_exemplar_is_reproduced_by_the_renderer() {
+        let root = addr::MountName::parse("sessions").expect("a name");
+        let produced = render_file_not_found(&root, "24-01-retro/notes.md", Some("Design"), false);
+        assert_eq!(
+            produced, RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR,
+            "the renderer and the pinned exemplar must not drift apart",
+        );
+    }
+
+    /// **This is the assertion the old type could not express.** A bare
+    /// `NotFound` carried no root, so no caller could say WHICH root missed —
+    /// address-grammar § 5.2 F4's whole requirement. Two different roots must
+    /// produce two different refusals, or the scoping is decorative.
+    #[test]
+    fn the_refusal_is_scoped_to_the_root_that_missed() {
+        let sessions = addr::MountName::parse("sessions").expect("a name");
+        let assets = addr::MountName::parse("assets").expect("a name");
+        let a = render_file_not_found(&sessions, "notes.md", None, false);
+        let b = render_file_not_found(&assets, "notes.md", None, false);
+        assert_ne!(a, b, "one path, two roots, two refusals");
+        assert!(a.contains("'sessions'") && !a.contains("'assets'"), "{a}");
+        assert!(b.contains("'assets'") && !b.contains("'sessions'"), "{b}");
+    }
+
+    /// The md-only teaching leg, endorsed verbatim at gate 3b: a refusal that
+    /// would IMPLY absence instead NAMES THE LIMIT. Asserted with its negative
+    /// half, or the sentence could be unconditional and still pass.
+    #[test]
+    fn a_non_markdown_target_names_the_v1_limit_instead_of_implying_absence() {
+        let root = addr::MountName::parse("assets").expect("a name");
+        let png = render_file_not_found(&root, "media/logo.png", None, true);
+        assert!(
+            png.contains("markdown-only in v1")
+                && png.contains("not addressable even when the file exists"),
+            "a non-.md target must name the limit, never imply absence: {png}"
+        );
+        // THE NEGATIVE HALF — an ordinary .md miss must NOT carry it, or the
+        // sentence is unconditional and teaches nothing about this target.
+        let md = render_file_not_found(&root, "notes.md", None, false);
+        assert!(
+            !md.contains("markdown-only"),
+            "an .md miss must not claim a markdown limit: {md}"
+        );
+    }
+
+    /// `resolve_ref` reports WHICH root missed, on both arms — the type-level
+    /// half of the same property. The ambient arm reports `None`, and that is a
+    /// real distinction, not an absence of information.
+    #[test]
+    fn resolve_ref_reports_which_root_the_miss_happened_inside() {
+        use std::collections::BTreeMap;
+        let docs: BTreeMap<String, Document> = BTreeMap::new();
+        let index = crate::CorpusIndex::new();
+        let corpus = crate::RootedCorpus::ambient(&docs);
+        let mounts = addr::MountSet::default();
+
+        // Ambient miss — no root.
+        assert_eq!(
+            index.resolve_ref("absent.md", "from.md", &corpus, &mounts),
+            crate::RefResolution::NotFound { root: None },
+            "an ambient miss names no root, and says so explicitly",
+        );
     }
 }
