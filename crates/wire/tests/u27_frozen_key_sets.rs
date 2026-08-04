@@ -350,21 +350,21 @@ fn splice_body_key_set_is_frozen_plus_the_v3_pin_fact() {
     );
 }
 
-/// **WITHHELD — the `armed` shape is BLOCKED.** Frozen §4.4 prints
-/// `{path, edits}`; `crates/sidecar/tests/splice_e2e.rs` asserts frozen v2
-/// frames that include `armed.file_rev_after`. The two halves of the oracle
-/// disagree on that one field and the ruling is the advisor's, so this unit
-/// mints no armed pin in either direction (Leader `160c2d32`, C3 escalation).
+/// **`Armed` — v2 §4.4 AS AMENDED (requirements decision 21, ZT, 2026-08-04;
+/// personal freeze authority per v2 §18).** The type admits exactly the frozen
+/// `{path, edits}` plus two declared passengers:
 ///
-/// `effects`, the other passenger, IS declared —
-/// `docs/wire-contract-v2-effects-amendment.md` puts reaction envelopes under
-/// `body.armed.effects` — but it rides the same object, so it waits with it.
+/// - `file_rev_after` — ratified ON V2 by decision 21. ZT's semantics: the
+///   whole-file rev AFTER a committed splice, so a client learns the new file
+///   rev WITHOUT A FOLLOW-UP TOC; latency only, correctness stays fingerprint
+///   and `root_after`; ABSENT ON DRY, because nothing was written; same family
+///   as [`DeltaFile::file_rev_after`] and a subsequent `toc` `file_rev`.
+/// - `effects` — `docs/wire-contract-v2-effects-amendment.md`, reaction
+///   envelopes under `body.armed.effects`, omitted when empty.
 ///
-/// Written, ignored, not deleted: one attribute makes it live once the ruling
-/// lands. The uncontested members of the write response —
-/// [`armed_edit_and_receipt_fact_key_sets_are_frozen`] — are minted normally.
+/// Neither is demoted and neither is v3-split. The live half
+/// (`u27_v2_key_set_pins.rs`) pins the served forms, committed and dry.
 #[test]
-#[ignore = "U27 — armed shape BLOCKED by Leader 160c2d32: doc §4.4 vs splice_e2e frozen frames disagree on `file_rev_after`; advisor ruling pending"]
 fn armed_key_set_is_frozen_plus_two_passengers() {
     let armed = Armed {
         path: path(),
