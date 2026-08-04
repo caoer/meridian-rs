@@ -91,24 +91,24 @@ pub fn enrich(e: &mut ErrorBody, doc: &model::Document, edits: &[Edit], path: &P
         return;
     };
 
-    if let Some(baseline) = r.baseline {
-        let rendered = match &r.frontmatter_key {
-            Some(key) => ops_form(key, &r.current),
+    if let Some(baseline) = r.baseline
+        && let Some(rendered) = match &r.frontmatter_key {
+            Some(key) => Some(ops_form(key, &r.current)),
             None => unified_line_diff(baseline, &r.current),
-        };
-        if rendered.len() <= DIFF_CAP_BYTES {
-            e.rung = Some(1);
-            e.diff = Some(rendered);
-            e.new_fingerprint = Some(r.new_fingerprint);
-            e.message = Some(format!(
-                "{} in {file} changed under the fingerprint your write pinned. {} Fix: apply the \
-                 `diff` extra to your copy, then resend the edit with `new_fingerprint` as its \
-                 guard, or repeat it with `force` — no re-read is needed.",
-                r.subject,
-                crate::NO_PARTIAL_WRITE_CLAUSE
-            ));
-            return;
         }
+        && rendered.len() <= DIFF_CAP_BYTES
+    {
+        e.rung = Some(1);
+        e.diff = Some(rendered);
+        e.new_fingerprint = Some(r.new_fingerprint);
+        e.message = Some(format!(
+            "{} in {file} changed under the fingerprint your write pinned. {} Fix: apply the \
+             `diff` extra to your copy, then resend the edit with `new_fingerprint` as its guard, \
+             or repeat it with `force` — no re-read is needed.",
+            r.subject,
+            crate::NO_PARTIAL_WRITE_CLAUSE
+        ));
+        return;
     }
 
     e.rung = Some(2);
@@ -237,32 +237,123 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// The SECTION-BODY form: a unified line diff from the caller's pinned picture
-/// to the node's current bytes.
+/// Lines of unchanged context carried on each side of a changed run — the
+/// conventional unified-diff window.
 ///
-/// One hunk over the whole node, deliberately: the cap already bounds what ships,
-/// so hunk-splitting would add machinery that changes no outcome. The headers say
-/// WHOSE side each is — `pinned` is the caller's, `current` is the document's —
-/// because `a/` and `b/` would name files neither side is.
-fn unified_line_diff(pinned: &str, current: &str) -> String {
+/// **This bound is what makes rung 1 the RICHER rung rather than merely a
+/// different one.** With full context a diff is always at least as large as the
+/// content it describes, so it could never be the cheaper answer and rung 1
+/// would collapse into a worse-shaped rung 2 for every node big enough to
+/// matter. Bounded context is what lets a one-line change in a 200-line section
+/// ship as seven lines.
+const DIFF_CONTEXT_LINES: usize = 3;
+
+/// The SECTION-BODY form: a unified line diff from the caller's pinned picture
+/// to the node's current bytes, in hunks with [`DIFF_CONTEXT_LINES`] of context.
+///
+/// The headers say WHOSE side each is — `pinned` is the caller's, `current` is
+/// the document's — because `a/` and `b/` would name files neither side is.
+///
+/// `None` when the two pictures have no line-level difference at all: there is
+/// no change to teach, so rung 1 has nothing to say and the caller is better
+/// served by rung 2's bytes.
+fn unified_line_diff(pinned: &str, current: &str) -> Option<String> {
     let before: Vec<&str> = pinned.lines().collect();
     let after: Vec<&str> = current.lines().collect();
-    let mut out = format!(
-        "--- pinned\n+++ current\n@@ -1,{} +1,{} @@\n",
-        before.len(),
-        after.len()
-    );
-    for op in lcs_ops(&before, &after) {
-        match op {
-            Op::Keep(l) => writeln!(out, " {l}"),
-            Op::Del(l) => writeln!(out, "-{l}"),
-            Op::Ins(l) => writeln!(out, "+{l}"),
+    let lines = numbered(lcs_ops(&before, &after));
+    let changed: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !matches!(l.op, Op::Keep(_)))
+        .map(|(i, _)| i)
+        .collect();
+    let first = *changed.first()?;
+
+    let mut out = String::from("--- pinned\n+++ current\n");
+    // Group changed runs into hunks: two runs share a hunk when the gap between
+    // them is small enough that their context windows would touch, which is the
+    // rule that keeps neighbouring edits from printing the same lines twice.
+    let mut start = first;
+    let mut prev = first;
+    for &i in changed.iter().skip(1) {
+        if i - prev > DIFF_CONTEXT_LINES * 2 {
+            emit_hunk(&mut out, &lines, start, prev);
+            start = i;
+        }
+        prev = i;
+    }
+    emit_hunk(&mut out, &lines, start, prev);
+    Some(out)
+}
+
+/// One `@@` hunk covering the changed run `first..=last`, padded by context.
+fn emit_hunk(out: &mut String, lines: &[Numbered<'_>], first: usize, last: usize) {
+    let lo = first.saturating_sub(DIFF_CONTEXT_LINES);
+    let hi = (last + DIFF_CONTEXT_LINES + 1).min(lines.len());
+    let slice = &lines[lo..hi];
+
+    // Counts are of the lines each SIDE contributes; the starts are 1-based, and
+    // a side that contributes nothing starts at 0 — the unified-diff convention
+    // for an empty range.
+    let before_len = slice
+        .iter()
+        .filter(|l| matches!(l.op, Op::Keep(_) | Op::Del(_)))
+        .count();
+    let after_len = slice
+        .iter()
+        .filter(|l| matches!(l.op, Op::Keep(_) | Op::Ins(_)))
+        .count();
+    let before_start = slice
+        .iter()
+        .find(|l| matches!(l.op, Op::Keep(_) | Op::Del(_)))
+        .map_or(0, |l| l.b + 1);
+    let after_start = slice
+        .iter()
+        .find(|l| matches!(l.op, Op::Keep(_) | Op::Ins(_)))
+        .map_or(0, |l| l.a + 1);
+
+    writeln!(
+        out,
+        "@@ -{before_start},{before_len} +{after_start},{after_len} @@"
+    )
+    .expect("String write is infallible");
+    for l in slice {
+        match l.op {
+            Op::Keep(t) => writeln!(out, " {t}"),
+            Op::Del(t) => writeln!(out, "-{t}"),
+            Op::Ins(t) => writeln!(out, "+{t}"),
         }
         .expect("String write is infallible");
     }
-    out
 }
 
+/// An op beside the 0-based line number it sits at on each side — what a hunk
+/// header needs and the op list alone cannot say.
+struct Numbered<'a> {
+    op: Op<'a>,
+    b: usize,
+    a: usize,
+}
+
+fn numbered(ops: Vec<Op<'_>>) -> Vec<Numbered<'_>> {
+    let (mut b, mut a) = (0, 0);
+    ops.into_iter()
+        .map(|op| {
+            let at = Numbered { op, b, a };
+            match at.op {
+                Op::Keep(_) => {
+                    b += 1;
+                    a += 1;
+                }
+                Op::Del(_) => b += 1,
+                Op::Ins(_) => a += 1,
+            }
+            at
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
 enum Op<'a> {
     Keep(&'a str),
     Del(&'a str),
