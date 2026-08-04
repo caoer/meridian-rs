@@ -24,6 +24,21 @@ Each arm also declares the EXACT set of tests it must redden. An arm that
 reddens more or fewer than declared fails the proof, so an over-broad mutation
 cannot be mistaken for a precise detector.
 
+The residue check at the end runs THREE scopes, not two. `git grep` is an index
+instrument: it searches TRACKED PATHS whatever revision you point it at, so it
+is blind to untracked files — which are exactly the files a new unit is most
+likely to leave residue in (All-Hands #39). The plain `grep -rn` arm has no
+index and covers what the other two cannot; the untracked-file count is printed
+whether or not it is zero, because a clean git-grep result only means something
+once you know that count.
+
+The bare arm carries NO `--include` filter (All-Hands #41): a file-type filter
+is a second index made of assumptions about where residue can live, and it
+rebuilds exactly the blind spot the arm exists to remove. Measured on this
+branch — the filtered form returned 0, the bare form returns 21, every one of
+them in this file where they belong as the injection payload. The unit adds
+four non-`.rs` files, so the filtered arm was blind to all four.
+
 Usage: python3 tools/u27-mutation-proof.py [arm-name]
 """
 
@@ -134,6 +149,39 @@ ARMS = [
         "frame, so this red is attributable to this edit alone.",
     ),
     (
+        "pin-primitive-weakened-live",
+        [(
+            "crates/sidecar/tests/u27_v2_key_set_pins.rs",
+            "    assert_eq!(\n        keys, expected,",
+            "    assert!( // MUTATION:\n"
+            "        expected.iter().all(|e| keys.contains(e)), // MUTATION:",
+        )],
+        {
+            LIVE: {"the_pin_primitive_rejects_a_superset"},
+            TYPE: set(),
+        },
+        "the ONE edit that would quietly disarm every pin in the live file: "
+        "exhaustive assert_eq! weakened to a subset check. Every existing pin "
+        "still PASSES under it — expected == served — which is exactly why the "
+        "primitive needs its own control rather than trusting the suite to notice.",
+    ),
+    (
+        "pin-primitive-weakened-type",
+        [(
+            "crates/wire/tests/u27_frozen_key_sets.rs",
+            "    assert_eq!(\n        keys, expected,",
+            "    assert!( // MUTATION:\n"
+            "        expected.iter().all(|e| keys.contains(e)), // MUTATION:",
+        )],
+        {
+            LIVE: set(),
+            TYPE: {"the_pin_primitive_rejects_a_superset"},
+        },
+        "the same weakening on the TYPE plane's own copy of the primitive. Two "
+        "definitions of one predicate (All-Hands #43), each held to the contract "
+        "by its own arm, so a drift in either is attributable to that file.",
+    ),
+    (
         "content-span-population-flip",
         [(
             "crates/wire/src/lib.rs",
@@ -235,7 +283,15 @@ def main() -> int:
                 if want == "ALL":
                     want = ran
                 elif want == "ALL_BUT_NOTIFICATION":
-                    want = ran - {"delta_notification_key_sets_are_frozen"}
+                    # Excluded because neither reads a RESPONSE frame: the
+                    # notification pin reads a frame this site never writes,
+                    # and the pin-primitive control asserts on a hand-built
+                    # value by design — it is a control on the assertion, not
+                    # a pin on the wire.
+                    want = ran - {
+                        "delta_notification_key_sets_are_frozen",
+                        "the_pin_primitive_rejects_a_superset",
+                    }
                 verdict = "OK" if failed == want else "*** PROOF FAILED ***"
                 if failed != want:
                     bad.append(f"{name}/{binary}: reddened {sorted(failed)}, expected {sorted(want)}")
@@ -261,26 +317,71 @@ def main() -> int:
             bad.append(f"post-restore {pkg}/{binary} is not green")
 
     print("\n=== restored tree, claim 2 of 2: NO mutation residue in source ===", flush=True)
-    # Two scopes, because each is blind to the other (All-Hands #14/#15):
-    # the working tree cannot see committed residue, and HEAD cannot see
-    # uncommitted residue. Neither sees residue below HEAD in history.
+    # THREE scopes, because each is blind to something the others see:
+    #   git grep (working tree) — misses UNTRACKED files (All-Hands #39)
+    #   git grep HEAD          — misses untracked AND uncommitted (#14/#15, #39)
+    #   plain grep -rn         — sees everything on disk, index-free
+    # git grep searches TRACKED PATHS whatever revision you point it at, so the
+    # working-tree form is NOT "the safe one" — it is blind to exactly the new
+    # files a unit is most likely to leave residue in. None of the three sees
+    # residue below HEAD in history.
     dirty = subprocess.run(
         ["git", "status", "--short"], cwd=ROOT, capture_output=True, text=True, check=False
     ).stdout.strip()
     print(f"  working tree: {dirty or '(clean)'}")
-    for scope in (["git", "grep", "-n", "MUTATION:", "--", "*.rs"],
-                  ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]):
-        hits = [
-            h for h in subprocess.run(
-                scope, cwd=ROOT, capture_output=True, text=True, check=False
-            ).stdout.splitlines()
-            if "u27-mutation-proof" not in h
-        ]
-        label = "HEAD" if "HEAD" in scope else "working tree"
-        print(f"  MUTATION: in {label}: {len(hits)} hit(s)")
-        for h in hits:
-            print(f"      {h}")
-            bad.append(f"mutation residue in {label}: {h}")
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    ).stdout.split()
+    # Stated whether or not it is zero: a zero here is what makes a clean
+    # git-grep result mean something, and it is not knowable from the result.
+    # NOT restricted to *.rs — the suffix filter is the same assumption #41
+    # names, and an untracked .py or .md carries residue just as well.
+    print(f"  untracked files of ANY type (invisible to both git-grep arms): {len(untracked)}")
+    for u in untracked:
+        print(f"      {u}")
+
+    scopes = [
+        ("git grep, working tree", ["git", "grep", "-n", "MUTATION:", "--", "*.rs"]),
+        ("git grep, HEAD", ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]),
+        # BARE — no file-type filter (All-Hands #41). An --include rebuilds the
+        # blind spot this arm exists to remove: file type is precisely the
+        # assumption under test, and residue lives in .py/.md/.toml/fixtures
+        # too. Bound cost by DIRECTORY (exclude build output), never by suffix.
+        ("plain grep -rn, BARE (index-free, no type filter)",
+         ["grep", "-rn", "MUTATION:", ".", "--exclude-dir=target", "--exclude-dir=.git"]),
+    ]
+    # This file legitimately CONTAINS the marker — it is the injection payload,
+    # the search pattern, and the prose describing both. A nonzero bare count is
+    # therefore correct, not a failure (All-Hands #42).
+    #
+    # But the hits are SPLIT and COUNTED rather than excluded by filename.
+    # Exempting a harness BY NAME misses real residue sitting in the same file,
+    # because a name is not a measurement. The count is: if this file's marker
+    # count changes, a human looks at why — the same key-set-pin logic this
+    # whole unit is built on, pointed at its own instrument.
+    SELF = "tools/u27-mutation-proof.py"
+    # Re-pinned deliberately, not adjusted to match: the four added hits were
+    # opened and are the weakened-assert payload of the two pin-primitive arms.
+    SELF_EXPECTED = 25  # 19 payload strings + 4 search patterns + 2 prose lines
+
+    for label, cmd in scopes:
+        out = subprocess.run(
+            cmd, cwd=ROOT, capture_output=True, text=True, check=False
+        ).stdout.splitlines()
+        mine = [h for h in out if SELF in h]
+        other = [h for h in out if SELF not in h]
+        print(f"  MUTATION: via {label}: {len(other)} in source, {len(mine)} in the harness itself")
+        for h in other:
+            print(f"      RESIDUE: {h}")
+            bad.append(f"mutation residue via {label}: {h}")
+        # Only the index-free arm can see this file at all (it is not *.rs).
+        if "BARE" in label and len(mine) != SELF_EXPECTED:
+            print(f"      harness marker count moved: {len(mine)} != {SELF_EXPECTED}")
+            bad.append(
+                f"harness self-count moved ({len(mine)} != {SELF_EXPECTED}) — open the "
+                f"hits and re-pin deliberately; do not adjust the number to match"
+            )
 
     if bad:
         print("\nPROOF INCOMPLETE:")

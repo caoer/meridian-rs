@@ -724,3 +724,30 @@ fn error_body_key_set_is_frozen_plus_the_v3_ladder_extras() {
         "ErrorBody (bare)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// The pin primitive's own control (All-Hands #43)
+// ---------------------------------------------------------------------------
+
+/// **The twin of `u27_v2_key_set_pins.rs::the_pin_primitive_rejects_a_superset`.**
+/// See that test for why the two `pin_keys` copies exist and cannot be merged;
+/// this one holds THIS crate's copy to the same contract, so a drift in either
+/// is caught where it happens rather than by whoever notices later.
+#[test]
+fn the_pin_primitive_rejects_a_superset() {
+    #[derive(serde::Serialize)]
+    struct Two {
+        a: u8,
+        b: u8,
+    }
+    let two = Two { a: 1, b: 2 };
+    let caught = std::panic::catch_unwind(|| {
+        pin_keys(&two, &["a"], "pin-primitive self-control");
+    });
+    assert!(
+        caught.is_err(),
+        "pin_keys accepted a key set with an EXTRA key — it is no longer \
+         exhaustive, and every pin in this file is now a decoration"
+    );
+    pin_keys(&two, &["a", "b"], "pin-primitive self-control");
+}
