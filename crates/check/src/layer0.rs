@@ -821,9 +821,17 @@ mod tests {
             .expect("the fixture is a heading then the block")
             .1;
         let docs = corpus("claim.md", &format!("# P\n\n{block}\n{block}"));
-        assert!(
-            lock::find(docs.get("claim.md").expect("page")).is_err(),
-            "the fixture is a REFUSED lock — two blocks on one page"
+        // The precondition names WHICH refusal, not merely that one happened.
+        // `is_err()` cannot distinguish two-blocks-on-a-page from the version
+        // gate or a malformed row, so a fixture that drifted would still satisfy
+        // it and the assertion below would then measure a refusal nobody named.
+        // The typed variant is stronger than a string: nothing to spell, nothing
+        // to drift, and the compiler checks it.
+        assert_eq!(
+            lock::find(docs.get("claim.md").expect("page")),
+            Err(lock::LockError::MultipleBlocks),
+            "the fixture is a REFUSED lock, and refused for THIS reason — two \
+             blocks on one page"
         );
         assert!(
             objects_in(&docs)
