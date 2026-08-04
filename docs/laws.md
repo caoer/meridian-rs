@@ -149,9 +149,31 @@ that it waits.
 
 ### S-1 — the stored-plane narrowing refusal, and the trigger that makes it owed
 
-**Operational trigger, so this is a tracked obligation and not a hope: when
-`ReadSel` lands on `main`, the stored-plane narrowing refusal (U21 Q1a) becomes
-implementable and OWED. The U14-merge gate checks this row.**
+**Operational trigger, so this is a tracked obligation and not a hope: the
+obligation fires when BOTH `ReadSel` AND this row are on `main`. WHICHEVER LANDS
+SECOND CARRIES THE CHECK.**
+
+> [!NOTE] Why the trigger is stated as a conjunction rather than as one merge gate
+> It first read *"when `ReadSel` lands on `main` … the U14-merge gate checks this
+> row."* That names a gate that **may not exist at the moment it is supposed to
+> fire.** Measured 2026-08-04 at `origin/u21-cross-vault-links` `c23810d3`: this
+> row is on THIS branch and nowhere else — `S-1` returns 0 hits at `origin/main`
+> and 0 at `origin/u14-arrays`, with `Law 1` returning 3 at all three revisions
+> as the positive control that the query reached the file. So if U14 lands first,
+> its merge gate reads a `laws.md` that does not contain this row, the check
+> passes vacuously, and the obligation then sits on `main` **true and
+> unwatched**.
+>
+> A conjunction has no such ordering hole: neither branch can land second without
+> both being present, so the second merge always has both the trigger and the row
+> in front of it. **This is an obligation with a trigger that cannot be relied on
+> to fire — the same defect as an obligation with no trigger, one level in**, and
+> it is the defect this row was written to prevent.
+>
+> **Invalidation condition:** this wording stops being necessary only when both
+> `ReadSel` and this row are on `main`, at which point the obligation has fired
+> and the trigger is spent. It is unaffected by either branch moving, by further
+> commits to this file, or by the order the two merges are eventually planned in.
 
 U21 Q1 was ruled (a) — refuse at the translation door with a named
 `TranslateError` — on the stated premise that *today's wikilink ingress cannot
