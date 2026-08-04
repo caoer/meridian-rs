@@ -18,7 +18,6 @@ fn create_body() -> ResponseBody {
         root_after: Some(Root("b3:bbb".into())),
         seq: Some(1),
         dry: None,
-        journal_anchor: Some("r-000001".into()),
         verdicts: Vec::new(),
     }
 }
@@ -51,7 +50,6 @@ fn a_dry_birth_keeps_its_null_root_after() {
         root_after: None,
         seq: None,
         dry: Some(true),
-        journal_anchor: None,
         verdicts: Vec::new(),
     };
     let v = serde_json::to_value(&dry).expect("serializes");
@@ -60,8 +58,8 @@ fn a_dry_birth_keeps_its_null_root_after() {
         "`root_after` is always serialized, null on a rehearsal: {v}"
     );
     assert!(
-        v.get("journal_anchor").is_none() && v.get("seq").is_none(),
-        "a rehearsal writes no row and emits no Delta, so both keys are ABSENT: {v}"
+        v.get("seq").is_none(),
+        "a rehearsal emits no Delta, so `seq` is ABSENT: {v}"
     );
     let back: ResponseBody = serde_json::from_value(v).expect("round-trips");
     assert!(matches!(back, ResponseBody::Create { .. }));
@@ -104,5 +102,46 @@ fn neither_toc_nor_create_captures_the_other() {
     assert!(
         matches!(back, ResponseBody::Create { .. }),
         "the birth frame was captured by a read body: {birth}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The 2.3 correction's gate: the journal removal is a v3 RESPONSE-shape change
+// ---------------------------------------------------------------------------
+
+/// **`wire::Delta` is UNCHANGED by the journal removal — asserted, not assumed.**
+///
+/// The obvious reading of "drop `journal_anchor`" is that it is a `Delta` field.
+/// It is not: `journal_anchor` lived on `ResponseBody::Create` (a v3 response
+/// body) and on the three `wire_serve::write` outcome structs. `Delta` never
+/// carried it, so removing it touches the v3 response shape and leaves the FROZEN
+/// v2 notification surface alone.
+///
+/// This test is what makes that a verified claim rather than a reading. It pins
+/// `Delta`'s serialized key set exactly: a key added to or removed from `Delta`
+/// fails here, which is the alarm that a journal-shaped edit reached frozen v2.
+#[test]
+fn the_delta_shape_is_untouched_by_the_journal_removal() {
+    let delta = wire::Delta {
+        seq: 7,
+        root_before: Root("b3:aaa".into()),
+        root_after: Root("b3:bbb".into()),
+        actor: Some("agent:alice".into()),
+        now: Some("2026-08-03T00:00:00Z".into()),
+        files: Vec::new(),
+    };
+    let v = serde_json::to_value(&delta).expect("Delta serializes");
+    let obj = v.as_object().expect("Delta is a JSON object");
+
+    let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["actor", "files", "now", "root_after", "root_before", "seq"],
+        "frozen v2 Delta carries exactly these keys: {v}"
+    );
+    assert!(
+        obj.keys().all(|k| !k.contains("journal")),
+        "no journal-shaped key ever rode Delta: {v}"
     );
 }

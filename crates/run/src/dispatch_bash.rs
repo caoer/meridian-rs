@@ -251,9 +251,9 @@ pub fn run(
     //
     // The bracket at step 2 opens against the root the phase-1 receipt made,
     // so by the time it can refuse, that receipt is committed and ruling 2
-    // keeps it there — an attested receipt for a run whose exec never starts,
-    // and a journal row dating the tree to it. Nothing downstream can tell
-    // that record from a completed run's, because a zero-effect run writes no
+    // keeps it there — an attested receipt for a run whose exec never starts.
+    // Nothing downstream can tell that record from a completed run's, because a
+    // zero-effect run writes no
     // completion receipt either (`descriptors.is_empty()` short-circuits
     // phase 2). Asking first turns the whole case into a refusal that writes
     // NOTHING to the attested domain.
@@ -416,8 +416,8 @@ pub fn run(
 ///
 /// The bracket at step 2 opens against the root the phase-1 receipt made, so by
 /// the time it can refuse, that receipt is committed and ruling 2 keeps it there
-/// — an attested receipt for a run whose exec never starts, and a journal row
-/// dating the tree to it. Nothing downstream can tell that record from a
+/// — an attested receipt for a run whose exec never starts. Nothing downstream
+/// can tell that record from a
 /// completed run's: a zero-effect run writes no completion receipt either
 /// (`descriptors.is_empty()` short-circuits phase 2). Asking first turns the
 /// whole case into a refusal that writes NOTHING to the attested domain.

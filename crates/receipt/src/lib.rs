@@ -50,15 +50,13 @@
 //!
 //! The same law closes three siblings of the `@fp` instance for free, because
 //! it guards the CHARSET rather than one token shape: whitespace (which forges
-//! `journal::parse_rows`' `key=value` tokens — the chain detector's own input),
-//! line endings (which forge a whole journal row), and backticks (which would
-//! close the escape span early).
+//! `key=value` token boundaries), line endings (which forge a whole row), and
+//! backticks (which would close the escape span early).
 
 use std::borrow::Cow;
 use std::fmt::Write;
 
 pub mod anchor;
-pub mod journal;
 pub mod read_mint;
 
 /// May `c` stand VERBATIM in a receipt line — a byte that cannot become

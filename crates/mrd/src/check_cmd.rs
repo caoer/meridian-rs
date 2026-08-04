@@ -4,25 +4,39 @@
 //! mrd check [--core] [--staged] [--commit-gate] [--json]
 //! ```
 //!
-//! Runs the convention-free CORE (layer 0) over the resolved workspace: date the
-//! receipt journal against the live tree (last-receipt-vs-live) and, when that
-//! holds, recompute the journal's chain continuity; then read the PIN PLANE — the
-//! pin verdicts and the anchoring state of every pinned blob. `status = freshness,
-//! check = validity` — this answers "what lies?", writing nothing and minting no
-//! receipt.
+//! Runs the convention-free CORE (layer 0) over the resolved workspace: observe
+//! every claim against the current tree, then read the PIN PLANE — the pin verdicts
+//! and the anchoring state of every pinned blob. `status = freshness, check =
+//! validity` — this answers "what lies?", writing nothing and minting no receipt.
 //!
-//! **U14 — the two planes fail independently.** Until this verb could see the pin
-//! plane, a green here meant *"baseline provable AND nothing the JOURNAL plane can
-//! see"*, and the fence built on it passed a corpus whose lock arrived by clone or
-//! pull while its source moved (`check` green / `walk` `red content-drifted` /
-//! `status` `lock red content-drifted`, one corpus, one run) and a corpus holding
-//! a blob no ref reaches — a fact no journal row will ever carry. The pin colours
-//! come from `view::walk::lock_pin_colors`, the SAME call `mrd status`'s lock axis
-//! makes over the SAME corpus build, so the three planes agree by construction and
-//! not by coincidence.
+//! # WRITE HISTORY IS NOT ASSESSED — the LAW, said out loud (ZT, 2026-08-03)
+//! Verbatim: *"Engine does not have memory. It should not have. History is pin to
+//! git when we lock. Anything between locks is not history."*
 //!
-//! # THE INTERVAL THIS VERB SPANS, stated because a check is only as wide as it
-//! (S3-R29)
+//! This verb used to date the receipt journal against the live tree and recompute
+//! chain continuity. The journal is deleted and **none of it is rebuilt as check
+//! memory** — not because the power was lost, but because it was never this
+//! engine's to hold. `check` answers **at-rest / at-touch truth: does the world
+//! still match the pins.** Archaeology lives in git; attribution lives in
+//! transcript JSONL.
+//!
+//! An out-of-band edit followed by a governed write is not detected here, and that
+//! is **outside the engine's domain by design** rather than a tolerated hole.
+//!
+//! One consequence IS disclosed, because the green narrowed: a corpus that once
+//! answered `grey(cannot-assess)` ("I cannot date your write history") now answers
+//! green ("the world still matches the pins"). **The claim behind that green is
+//! smaller, not stronger.** So every face carries a `write_history: not-assessed`
+//! line WITH its reason — the reason is what makes it read as design rather than as
+//! a gap. Without it a reader carries the old, wider green forward.
+//!
+//! **U14 — the planes fail independently.** A lock that arrives by clone or pull
+//! while its source moved, and a blob no ref reaches, are facts no journal row ever
+//! carried — which is why the pin plane outlived the journal plane. Pin colours come
+//! from `view::walk::lock_pin_colors`, the SAME call `mrd status`'s lock axis makes
+//! over the SAME corpus build, so the planes agree by construction, not coincidence.
+//!
+//! # THE INTERVAL THIS VERB SPANS (S3-R29)
 //! Two intervals, both named in every answer:
 //!
 //! - **`worktree`** — the bytes on disk. Always assessed.
@@ -32,12 +46,16 @@
 //!
 //! **F1 — why the second one exists.** `domain_snapshot` reads the worktree; git
 //! commits the index. Forge a pinned section, `git add` it, restore the exact
-//! governed bytes to the worktree, and the shipped verb answered `chain: green /
-//! pins: green`, exit 0 — over bytes no commit would record — while
-//! `git show HEAD:<page>` came back carrying the forgery. The fence built on this
-//! verb read a true statement about the wrong interval. `git add -p`,
-//! `git commit <pathspec>`, `git stash` and any concurrent writer between
-//! `git add` and hook fire reach the same gap.
+//! governed bytes to the worktree, and the shipped verb answered green, exit 0 —
+//! over bytes no commit would record — while `git show HEAD:<page>` came back
+//! carrying the forgery. `git add -p`, `git commit <pathspec>`, `git stash` and any
+//! concurrent writer between `git add` and hook fire reach the same gap.
+//!
+//! The interval is now the ONLY thing that separates the two passes. The staged
+//! interval once asked a WEAKER question than the worktree one — dated against the
+//! record rather than its own last row, so a legitimately partial stage was not a
+//! false red — and that difference was entirely journal. Both passes now run the
+//! same reads over different bytes.
 //!
 //! The exit is **worst-of across both intervals**, and every refusal names the
 //! interval it came from: *"the bytes on your disk are fine"* and *"the bytes you
@@ -48,55 +66,62 @@
 //! change-framing over a whole tree lands with that door, not this verb.
 //!
 //! # THE QUESTION THIS VERB IS ASKED (`--commit-gate`)
-//! The interval above says WHICH BYTES an answer covers. `--commit-gate` says WHICH
+//! The interval says WHICH BYTES an answer covers. `--commit-gate` says WHICH
 //! QUESTION is put to them, and the two are independent.
 //!
-//! Without it the verb asks *"is everything this corpus's record says true?"* — a
-//! claim about the whole **write history**, whose answer is **permanent** once a row
-//! breaks. With it the verb asks the narrower, per-commit question:
+//! Unscoped, the verb reports every plane it reads, worst-of across both intervals.
+//! `--commit-gate` narrows the exit to ONE interval — the one a commit records —
+//! because a finding from the worktree would otherwise swamp a clean answer about
+//! the bytes being committed.
 //!
-//! > **were these bytes produced by a governed write?**
+//! **What it gates on is now the pin plane, and only that.** The flag once rested on
+//! two planes: the journal-derived `Accounted` (was this interval's journal a
+//! truthful prefix of the record, and did its tree fold to a root some governed
+//! write produced) and the pin plane. The first died with the journal. The passing
+//! word changed with it — `accounted` and `accounted(unvouched-record)` both
+//! asserted something about a RECORD that no longer exists, so the word is now
+//! `pins-hold`, which names the plane that actually answered.
 //!
-//! **Why a second question and not a second exit code.** Three distinct
-//! propositions rode the single exit `1` out of `mrd check --staged`: a journal
-//! chain break (about the **past** — permanent by design), an out-of-band write in
-//! this index (about **this interval** — per-commit), and `grey(cannot-assess)`
-//! (about **evidence availability** — per-state). A pre-commit fence branches on the
-//! code alone, so it answered a permanent fact about the ledger's history with the
-//! same byte as a per-commit fact about bytes that fact never examined. Past the
-//! first break the exit stopped varying with what was staged: a guard whose verdict
-//! no longer depends on the thing it guards carries **zero information about it**,
-//! and the only ways past are the unrecorded escapes — so the per-commit
-//! enforcement is destroyed too. The fix is not a fourth code and not a reason word
-//! the fence must parse; it is asking the question whose answer is actually
-//! per-commit.
+//! # THE FAIL-CLOSED READING MOVED FROM DEFAULT TO OPT-IN (`--require-pins`)
+//! A corpus that declares NO pin now PASSES the gate. It used to refuse, and the
+//! refusal was **journal mechanics rather than independent doctrine**: an empty
+//! record meant no baseline, no baseline meant a grey write-history plane, and the
+//! grey gated the exit. That antecedent died with the journal, so what was removed
+//! is a mechanism with no input left — not a safety principle.
 //!
-//! **The permanence is untouched.** `mrd check` unscoped stays RED forever, citing
-//! the same row. A break never heals, is never acknowledged, and is never cleared —
-//! and under `--commit-gate` it is **printed on stderr at every commit**. The
-//! blocking is downgraded; the telling never is.
+//! *"Unknown is not clean"* is untouched where it applies. It protects the case
+//! where the gate CANNOT ASSESS something it claims to gate — a grey pin, an
+//! unaskable object store — and both **still fail closed**. Zero pins is not that
+//! case: nothing is unknown because nothing was asked, and over zero pins *"does the
+//! world still match the pins"* is vacuously true.
 //!
-//! **A gated pass over a broken record is never spelled green.** With the chain
-//! broken, the record that accounts for the interval may itself hold a forged row,
-//! so the acceptance is genuinely weaker and carries the weaker word
-//! `accounted(unvouched-record)`. Stating that weakness is the price of unblocking;
-//! hiding it would be the same defect wearing the other sign.
+//! **But a shell script cannot read a disclosure line.** `write_history:
+//! not-assessed` and `pin_coverage: 0` are legible to a human and invisible to
+//! `if [ $? -ne 0 ]`, so a caller that wants no-coverage to mean REFUSE says so with
+//! `--require-pins` and gets it in the exit code, under its own word
+//! (`no-pin-coverage`, never grey's — grey means a question was put and could not be
+//! answered, and here none was put).
+//!
+//! It is OPT-IN, and that is the load-bearing half: a fail-closed default on pinless
+//! workspaces would turn this gate into a coverage mandate nobody ruled, and make it
+//! un-adoptable on every vault that has not started pinning. **The shipped fence
+//! (`mrd skill hook`) runs the bare gate and therefore inherits the permissive
+//! default** — deliberately, and a checkout that wants strictness edits its own hook.
 //!
 //! Read-only. Exit triad (§4 preamble):
-//! - **0** — green: the journal dates the live tree and its chain is continuous.
-//!   Under `--commit-gate`: the interval a commit records is accounted for.
-//! - **1** — a finding: a broken journal chain (cites the row). A check finding,
-//!   never a door refusal (refusal-amendment). **Grey rides this leg too** (S3-R5
-//!   and S3-R8, spelled by S3-R6): when the journal cannot date the tree — no rows,
-//!   or a last receipt the live tree no longer matches — the verb refuses
-//!   `grey(cannot-assess)`. Unknown is not clean, and a hook that rejects on
-//!   non-zero must reject what nobody could vouch for. The triad stays CLOSED: no
-//!   fourth code. The exit answers "may this proceed?" (red and grey both say no);
-//!   the reason word, distinct on both faces, says why.
-//! - **2** — bad invocation, or an unreadable workspace / journal.
+//! - **0** — green: every claim converged, every pin holds, every pinned blob is
+//!   anchored. Under `--commit-gate`: the interval a commit records holds its pins.
+//! - **1** — a finding: a drifted claim, a red pin, or an orphaned blob. A check
+//!   finding, never a door refusal (refusal-amendment). **Grey rides this leg too**
+//!   (S3-R5/S3-R8, spelled by S3-R6): a grey pin or an object store that could not be
+//!   asked refuses `grey(cannot-assess)`. Unknown is not clean, and a hook that
+//!   rejects on non-zero must reject what nobody could vouch for. The triad stays
+//!   CLOSED: no fourth code. The exit answers "may this proceed?" (red and grey both
+//!   say no); the reason word, distinct on both faces, says why.
+//! - **2** — bad invocation, or an unreadable workspace.
 //!
-//! `--commit-gate` keeps all three meanings exactly. Only the question changes, so
-//! a caller that branches on the code alone still reads a code that means what it
+//! `--commit-gate` keeps all three meanings exactly. Only the question changes, so a
+//! caller that branches on the code alone still reads a code that means what it
 //! always meant.
 //!
 //! # THE FENCE LINE — A READING OF THE CHECKOUT, BESIDE THE VERDICT (row 21)
@@ -117,7 +142,7 @@ use std::fmt::Write as _;
 
 use std::path::Path;
 
-use check::{Accounted, CoreReport, GREY_CANNOT_ASSESS, JournalTrace, PinPlane, PinRow};
+use check::{CoreReport, GREY_CANNOT_ASSESS, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED};
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
@@ -161,53 +186,32 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     // planes describe two different worktrees.
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
-    let (worktree_files, worktree_fold) = fs::domain_snapshot(&root)
+    let (worktree_files, _worktree_fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
-    let worktree_journal = check::journal_page(&root)
-        .map_err(|e| Fail::tool(format!("cannot read the receipt journal: {e}")))?;
 
     // THE SECOND INTERVAL (F1), and only when the caller asked the question it
     // answers. `git` reports what the INDEX carries wherever it differs from the
     // worktree; absent divergence the two intervals coincide and one pass answers
     // both.
     let interval = if parsed.staged {
-        staged_interval(&root, &domain, &worktree_files, &worktree_journal)
+        staged_interval(&root, &domain, &worktree_files)
     } else {
         Interval::NotAsked
     };
 
-    let worktree = assess(
-        &root,
-        &mounts,
-        worktree_files,
-        &worktree_fold.0,
-        &worktree_journal,
-    )?;
+    let worktree = assess(&root, &mounts, worktree_files)?;
 
     let staged = match &interval {
         Interval::Diverges(bytes) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess_staged(
-                &root,
-                &mounts,
-                bytes.files.clone(),
-                &bytes.fold,
-                &bytes.journal,
-                &worktree_journal,
-            )?,
+            report: assess(&root, &mounts, bytes.files.clone())?.report,
         }),
         _ => None,
     };
 
-    let gate = parsed.commit_gate.then(|| {
-        build_gate(
-            &interval,
-            &worktree,
-            staged.as_ref(),
-            &worktree_journal,
-            &worktree_fold.0,
-        )
-    });
+    let gate = parsed
+        .commit_gate
+        .then(|| build_gate(&interval, &worktree, staged.as_ref(), parsed.require_pins));
 
     // **The CHECKOUT's fence coverage — read here, reported below, and reachable
     // from no exit path in this function** (row 21). It is deliberately taken on
@@ -225,17 +229,6 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         gate.as_ref(),
         &fence,
     );
-
-    // **DOWNGRADE THE BLOCKING, NEVER THE TELLING.** The standing break is printed
-    // on every gated run that has one — pass or refuse — and on stderr, so it
-    // survives a caller that reads stdout. No acknowledgement state exists to
-    // silence it: a store of "I have seen this" would be durable state that must
-    // itself be attested, a new forgery surface guarding a fact that is already
-    // permanent. Telling it every time reaches the same end with nothing new to
-    // forge.
-    if let Some(standing) = gate.as_ref().and_then(Gate::standing_report) {
-        eprint!("{standing}");
-    }
 
     // FAIL CLOSED on an interval that was ASKED FOR and could not be read. The
     // caller asked what a commit would record; degrading silently to the worktree
@@ -332,28 +325,16 @@ fn build_gate<'a>(
     interval: &'a Interval,
     worktree: &'a Assessed,
     staged: Option<&'a Assessed>,
-    worktree_journal: &'a str,
-    worktree_fold: &'a str,
+    require_pins: bool,
 ) -> Gate<'a> {
-    let (label, journal, root, pins) = match (interval, staged) {
-        (Interval::Diverges(bytes), Some(staged)) => (
-            STAGED,
-            bytes.journal.as_str(),
-            bytes.fold.as_str(),
-            &staged.report.pins,
-        ),
-        _ => (
-            WORKTREE,
-            worktree_journal,
-            worktree_fold,
-            &worktree.report.pins,
-        ),
+    let (label, pins) = match (interval, staged) {
+        (Interval::Diverges(_), Some(staged)) => (STAGED, &staged.report.pins),
+        _ => (WORKTREE, &worktree.report.pins),
     };
     Gate {
         label,
-        accounted: check::interval_accounted(journal, root, worktree_journal),
         pins,
-        record: &worktree.report.trace,
+        require_pins,
     }
 }
 
@@ -392,76 +373,121 @@ const STAGED: &str = "staged";
 /// verdict word all mean the same thing by it (S3-R6/S3-R59).
 const RED: &str = "RED";
 
-/// The gated pass whose record vouches for itself — the full-strength word.
-const ACCOUNTED: &str = "accounted";
-
-/// The gated pass whose record does **not** vouch for itself. A separate word
-/// because it is a separate, weaker claim: the interval is accounted for by a
-/// ledger whose own chain is broken or unreadable, so the acceptance rests on
-/// something nothing vouches for. Never spelled green (S3-R6 — one vocabulary,
-/// distinct words for distinct causes).
-const ACCOUNTED_UNVOUCHED: &str = "accounted(unvouched-record)";
-
-/// **What `--commit-gate` reads, and the standing fact it reports beside it.**
+/// The gated pass. Names the plane that actually answered, and cannot be misread as
+/// a claim about write history.
 ///
-/// # One interval decides the exit — that is the whole law
+/// **It replaced `accounted` / `accounted(unvouched-record)`, and the replacement is
+/// the honesty law applied to VOCABULARY rather than only to types.** Both old words
+/// asserted something about the RECORD — that it accounted for these bytes, and
+/// whether it could vouch for itself. There is no record. A passing word that
+/// asserts an unobserved property is the same defect as an enum member that does,
+/// wearing a different coat.
+const PINS_HOLD: &str = "pins-hold";
+
+/// **What `--commit-gate` reads.**
+///
+/// # One interval decides the exit — that is still the whole law
 /// Worst-of ACROSS intervals is right for the unscoped question, which is a claim
-/// about the corpus. It is wrong for this one: a finding from the worktree
-/// interval would swamp a clean answer about the bytes a commit records, which is
-/// precisely how a permanent fact came to be spent as a per-commit verdict. So the
-/// gate names ONE interval — the one a commit records — and reads two planes of it:
-/// whether the record accounts for it, and whether its pins hold. Every other
-/// reading in this run is REPORTED and gates nothing.
+/// about the corpus. It is wrong for this one: a finding from the worktree interval
+/// would swamp a clean answer about the bytes a commit records. So the gate names
+/// ONE interval — the one a commit records — and reads it.
+///
+/// # What it no longer reads — the engine keeps no memory (ZT, 2026-08-03)
+/// The gate once rested on TWO planes: `Accounted` (journal-derived — was this
+/// interval's journal a truthful prefix of the record, and did its tree fold to a
+/// root some governed write produced) and the pin plane. **The first is gone with
+/// the journal and is not re-derived.** The gate is the pin plane alone, and it says
+/// so; a gate that kept the old vocabulary over one surviving plane would be
+/// claiming evidence it no longer has.
 struct Gate<'a> {
     /// Which interval the exit reads. Named in the render and in every refusal,
     /// because a refusal a reader cannot locate is one they cannot act on.
     label: &'a str,
-    /// The scoped question's answer over that interval — this is the EXIT.
-    accounted: Accounted,
-    /// That same interval's pin plane — the second gated plane. A pin is a claim
-    /// about the bytes being committed, so it belongs to the interval, not to the
-    /// history.
+    /// That interval's pin plane — now the ONLY gated plane. A pin is a claim about
+    /// the bytes being committed, so it belongs to the interval, not to the history.
     pins: &'a PinPlane,
-    /// **The RECORD's own standing: reported, never gated on.** This is the
-    /// permanent proposition, and holding it here rather than in the exit is what
-    /// keeps it from being spent on every future commit.
-    record: &'a JournalTrace,
+    /// **The caller asked for fail-closed-on-no-coverage** (`--require-pins`).
+    /// Off by default; see [`NO_COVERAGE`] for the whole reasoning.
+    require_pins: bool,
 }
 
+/// The refusal word for a corpus that declares no pin at all, under
+/// `--require-pins`.
+///
+/// **Distinct from [`GREY_CANNOT_ASSESS`] on purpose.** Grey means *a question was
+/// put and could not be answered*; this is not that. Every question that was put
+/// was answered — there simply were none. Spelling it grey would say the gate tried
+/// and failed, which is the one thing that did not happen here.
+const NO_COVERAGE: &str = "no-pin-coverage";
+
 impl Gate<'_> {
-    /// May this commit proceed? Both gated planes must answer, and an unread plane
-    /// is not a clean one — unknown is not clean, on either.
+    /// May this commit proceed? An unread plane is not a clean one — unknown is not
+    /// clean.
+    ///
+    /// # Zero pins is VACUOUS TRUTH, not unknown — and that is why the default passes
+    /// The fail-closed doctrine (*"unknown is not clean"*) protects the case where
+    /// the gate CANNOT ASSESS something it claims to gate. That case is a grey pin
+    /// or an unaskable object store, and it keeps failing closed here, untouched.
+    ///
+    /// A corpus with no pins has declared nothing. The gate's whole question is
+    /// *"does the world still match the pins"*, and over zero pins that is
+    /// vacuously yes. Nothing is unknown because nothing was asked.
+    ///
+    /// This USED to exit 1, and the reason was journal mechanics rather than
+    /// independent doctrine: an empty record meant no baseline, no baseline meant a
+    /// grey write-history plane, and the grey gated. That antecedent died with the
+    /// journal by ruling, so the pass is not a safety principle being overturned —
+    /// it is a mechanism with no input left being removed.
+    ///
+    /// # But the doctrine survives as the CALLER'S choice
+    /// A shell script cannot read a disclosure line. `write_history: not-assessed`
+    /// and `pin_coverage: 0` are legible to a human and invisible to `if [ $? -ne 0
+    /// ]`, so a caller who wants *"no coverage ⇒ refuse"* must be able to say it in
+    /// the exit code. `--require-pins` is that, and it is OPT-IN: a fail-closed
+    /// default on pinless workspaces would silently turn this gate into a coverage
+    /// mandate nobody ruled, and make it un-adoptable on every vault that has not
+    /// started pinning. Doctrine preserved as a choice; adoption preserved as the
+    /// default.
     fn permits(&self) -> bool {
-        self.accounted.is_accounted() && !self.pins.is_red() && !self.pins.cannot_assess()
+        !self.pins.is_red() && !self.pins.cannot_assess() && !self.uncovered()
     }
 
-    /// The verdict WORD. On the passing leg it says whether the record that let the
-    /// commit through could vouch for itself; on the refusing leg it says whether
-    /// something was read and found bad, or whether nothing could be read at all.
+    /// The corpus declares no pin, and the caller asked to refuse exactly that.
+    fn uncovered(&self) -> bool {
+        self.require_pins && self.pins.declared == 0
+    }
+
+    /// The verdict WORD — what was read, and what it said.
     fn word(&self) -> &'static str {
         if self.permits() {
-            if self.record.vouches() {
-                ACCOUNTED
-            } else {
-                ACCOUNTED_UNVOUCHED
-            }
-        } else if self.accounted.is_red() || self.pins.is_red() {
+            PINS_HOLD
+        } else if self.pins.is_red() {
             RED
+        } else if self.uncovered() {
+            NO_COVERAGE
         } else {
             GREY_CANNOT_ASSESS
         }
     }
 
-    /// Why — the half of the answer the exit code cannot carry. Names the plane
-    /// that decided, so a reader is never left inferring which of two gated planes
-    /// spoke.
+    /// Why — the half of the answer the exit code cannot carry.
     fn detail(&self) -> String {
-        if self.permits() || !self.accounted.is_accounted() {
-            return self.accounted.detail();
+        if self.permits() {
+            return "every pin in the interval holds and every pinned blob is durably \
+                 anchored; write history is not assessed — the engine keeps no memory by design"
+                .to_string();
         }
-        // The journal plane accounted for the interval and the PIN plane refused.
-        // Cite its first finding only — the render above carries the full list, and
-        // repeating it here is how a reader comes to believe there are two.
+        // Before the pin findings, because it is not one: nothing is wrong with
+        // this corpus, there is simply nothing in it to be right or wrong. Saying
+        // so plainly is the difference between a caller learning it has no
+        // coverage and a caller believing it has a defect.
+        if self.uncovered() {
+            return "this corpus declares no pin at all, so the gate had nothing to read — \
+                    you asked for --require-pins, which refuses exactly that. Without the \
+                    flag this is a PASS: over zero pins, `does the world still match the \
+                    pins` is vacuously true"
+                .to_string();
+        }
         if let Some(pin) = self.pins.red.first().or_else(|| self.pins.grey.first()) {
             return format!("pin: {}", pin_line(pin));
         }
@@ -479,13 +505,12 @@ impl Gate<'_> {
         self.pins.cannot_ask.clone().unwrap_or_default()
     }
 
-    /// The scoped exit — the closed triad, over one interval. `0` it is accounted
-    /// for; `1` it is not, or could not be assessed; `2` never comes from here,
-    /// because a bad invocation is refused before any interval is read.
+    /// The scoped exit — the closed triad, over one interval. `0` the pins hold;
+    /// `1` they do not, or could not be assessed; `2` never comes from here, because
+    /// a bad invocation is refused before any interval is read.
     ///
     /// # Errors
-    /// [`Fail`] exit 1 when the interval a commit records is not accounted for, or
-    /// its pin plane refuses.
+    /// [`Fail`] exit 1 when the interval's pin plane refuses or cannot be read.
     fn exit(&self) -> Result<(), Fail> {
         if self.permits() {
             return Ok(());
@@ -498,34 +523,6 @@ impl Gate<'_> {
                 self.word(),
                 self.detail()
             ),
-        ))
-    }
-
-    /// **The STANDING BREAK, told on every run that has one** (never a blocker,
-    /// never withheld). `None` when the record vouches for itself and there is
-    /// nothing standing to tell.
-    ///
-    /// It goes to **stderr** so that it survives a caller reading stdout, and it is
-    /// emitted whether the gate permits or refuses: a fact nobody is told each time
-    /// is a fact that gets forgotten, and forgetting is exactly what an
-    /// acknowledgement store would institutionalise. Telling it every time is the
-    /// same end with no new state to attest and no new forgery surface.
-    fn standing_report(&self) -> Option<String> {
-        if self.record.vouches() {
-            return None;
-        }
-        let finding = self
-            .record
-            .red_summary()
-            .or_else(|| self.record.grey_summary())?;
-        Some(format!(
-            "meridian: the RECORD this commit was gated against does not vouch for itself.\n  \
-             {finding}\n  This is a STANDING fact about the write history, not a finding about \
-             the bytes you are committing: it does not clear, it is never acknowledged away, and \
-             `mrd check` reports it on every run. This commit was gated on the {} interval alone \
-             — {}.\n",
-            self.label,
-            self.word()
         ))
     }
 }
@@ -544,7 +541,7 @@ const FENCE_REPORTED: &str = "REPORTED, never gated on — fence coverage is a p
 /// never part of it** (row 21).
 ///
 /// # It is not a fourth proposition
-/// The chain, the `foreign_edit` trace and the pin plane are propositions about the
+/// The claims-realised findings and the pin plane are propositions about the
 /// corpus's bytes and their write history. Fence coverage is a proposition about
 /// the **local checkout's configuration**: a different subject on a different axis,
 /// which never competed for the exit code, so the closed triad above is not under
@@ -794,18 +791,19 @@ enum Interval {
 struct StagedBytes {
     paths: Vec<String>,
     files: fs::DomainFiles,
-    fold: String,
-    journal: String,
 }
 
-/// Assess ONE interval: build its corpus, colour its pins through the one
-/// computer with the real mount table, and run the layer-0 core over ITS bytes.
+/// Assess ONE interval: build its corpus, colour its pins through the one computer
+/// with the real mount table, and run the layer-0 core over ITS bytes.
+///
+/// **There is no longer a separate staged assessor.** `assess_staged` existed only
+/// to date the staged interval against the record instead of its own last row — a
+/// journal question. With the journal deleted the two intervals differ only in which
+/// bytes built the corpus, which is this function's argument.
 fn assess(
     root: &fs::WorkspaceRoot,
     mounts: &crate::walk_cmd::Mounts,
     files: fs::DomainFiles,
-    fold: &str,
-    journal: &str,
 ) -> Result<Assessed, Fail> {
     let (_index, docs) =
         fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
@@ -813,38 +811,8 @@ fn assess(
     let pins = pin_rows(&corpus, mounts.set());
     Ok(Assessed {
         paths: Vec::new(),
-        report: check::core_of(root, journal, fold, &docs, &pins),
+        report: check::core_of(root, &docs, &pins),
     })
-}
-
-/// [`assess`] for the STAGED interval, dated against the RECORD.
-///
-/// The difference is one plane: a legitimately staged INTERMEDIATE governed state is
-/// not the CURRENT one — `git add` stages content without the journal — so dating it
-/// against its own last row is a false red on the commonest path there is
-/// (`git add`, then any further governed write). `check::core_of_staged` asks
-/// instead whether the record accounts for these bytes AND the staged journal is a
-/// truthful prefix of it. The pin plane and the object store are identical.
-fn assess_staged(
-    root: &fs::WorkspaceRoot,
-    mounts: &crate::walk_cmd::Mounts,
-    files: fs::DomainFiles,
-    fold: &str,
-    journal: &str,
-    worktree_journal: &str,
-) -> Result<CoreReport, Fail> {
-    let (_index, docs) =
-        fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
-    let corpus = mounts.rooted(&docs);
-    let pins = pin_rows(&corpus, mounts.set());
-    Ok(check::core_of_staged(
-        root,
-        journal,
-        fold,
-        worktree_journal,
-        &docs,
-        &pins,
-    ))
 }
 
 /// **The interval the commit spans** (F1): the worktree snapshot with the INDEX's
@@ -871,7 +839,6 @@ fn staged_interval(
     root: &fs::WorkspaceRoot,
     domain: &fs::domain::Domain,
     worktree_files: &fs::DomainFiles,
-    worktree_journal: &str,
 ) -> Interval {
     let repo = git::Repo::at(&root.0);
     let divergence = match repo.staged_divergence() {
@@ -887,37 +854,23 @@ fn staged_interval(
         return Interval::Coincides;
     }
 
-    let (files, fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
-    let journal = divergence
-        .iter()
-        .find(|(rel, _)| rel == fs::domain::RESERVED_JOURNAL_PATH)
-        .map_or_else(
-            || worktree_journal.to_owned(),
-            |(_, content)| {
-                content.as_ref().map_or_else(String::new, |bytes| {
-                    String::from_utf8_lossy(bytes).into_owned()
-                })
-            },
-        );
+    // The reserved journal used to be picked out by hand here: it was root-EXCLUDED
+    // from the hash domain, so the overlay dropped it and a staged journal forgery
+    // would have been assessed against the worktree's copy. The carve-out is gone
+    // with the journal — there is no reserved page and nothing to hand-pick.
+    let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
     let paths = divergence
         .iter()
-        .filter(|(rel, _)| {
-            domain.contains(Path::new(rel)) || rel == fs::domain::RESERVED_JOURNAL_PATH
-        })
+        .filter(|(rel, _)| domain.contains(Path::new(rel)))
         .map(|(rel, _)| rel.clone())
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        // Everything that diverges is outside the hash domain and is not the
-        // journal — code, assets, a lock file. Neither interval reads those, so
-        // there is nothing here a second assessment could say.
+        // Everything that diverges is outside the hash domain — code, assets, a
+        // lock file. Neither interval reads those, so there is nothing here a
+        // second assessment could say.
         return Interval::Coincides;
     }
-    Interval::Diverges(StagedBytes {
-        paths,
-        files,
-        fold: fold.0,
-        journal,
-    })
+    Interval::Diverges(StagedBytes { paths, files })
 }
 
 /// Colour every `meridian-lock` pin in the corpus through **the one pin
@@ -977,6 +930,14 @@ struct Check {
     /// the index carries and there is no coherent commit gate without it. One flag
     /// for the fence to pass, not two that can be passed apart and mean nothing.
     commit_gate: bool,
+    /// **Refuse a corpus that declares NO PIN** (`--require-pins`), turning the
+    /// gate's vacuous pass into a refusal for callers that want coverage enforced.
+    ///
+    /// Opt-in, and only meaningful beside [`Check::commit_gate`] — passing it alone
+    /// is refused as a bad invocation rather than silently ignored, because a flag
+    /// that appears to tighten a gate nobody asked for is worse than no flag.
+    /// Reasoning: [`Gate::permits`].
+    require_pins: bool,
 }
 
 impl Check {
@@ -984,6 +945,7 @@ impl Check {
         let mut json = false;
         let mut staged = false;
         let mut commit_gate = false;
+        let mut require_pins = false;
         for arg in args {
             match arg.as_str() {
                 "--json" => json = true,
@@ -1001,6 +963,12 @@ impl Check {
                     commit_gate = true;
                     staged = true;
                 }
+                // The STRICTNESS the caller chooses, kept a separate word from the
+                // question itself: `--commit-gate` says which question, this says
+                // how strict the answer must be. Folding it into the first would
+                // have made one flag mean two things and left no way to ask the
+                // ordinary question.
+                "--require-pins" => require_pins = true,
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
                 }
@@ -1009,16 +977,27 @@ impl Check {
                 }
             }
         }
+        // Refused rather than ignored: a caller who typed `--require-pins` believes
+        // a gate is being tightened, and the one thing a fence's verb must never do
+        // is answer confidently about a question it did not ask.
+        if require_pins && !commit_gate {
+            return Err(Fail::tool(
+                "--require-pins tightens --commit-gate and means nothing without it: it says \
+                 REFUSE a corpus that declares no pin, and only the commit gate refuses"
+                    .to_string(),
+            ));
+        }
         Ok(Check {
             format: if json { Format::Json } else { Format::Human },
             staged,
             commit_gate,
+            require_pins,
         })
     }
 }
 
 /// Render the core verdict as a human block: the header, the chain line, the
-/// `foreign_edit` line, and one line per drifted claim (none at the CLI today).
+/// the write-history disclosure, and one line per drifted claim (none at the CLI today).
 ///
 /// Both detector lines render `grey(cannot-assess)` when the journal cannot date
 /// the tree — with no row, or with a last receipt the live root no longer
@@ -1095,19 +1074,31 @@ fn interval_line(interval: &Interval) -> String {
     }
 }
 
-/// **The PREDICATE the staged interval asserts, stated because it is WEAKER than the
-/// worktree's and S3-R29 is about the claim as much as the byte range.**
+/// **The PREDICATE the staged interval asserts** (S3-R29 is about the claim as much
+/// as the byte range).
 ///
-/// The worktree pass asks *"are these bytes the CURRENT governed state?"*. The staged
-/// pass cannot: `git add` stages content without the journal, so an ordinary
-/// `git add` followed by any further governed write leaves a staged tree that is an
-/// EARLIER governed state, and refusing it is a false red on the commonest path there
-/// is. So this interval asks the weaker question, and says which one it asked.
+/// # THIS LINE USED TO BE FALSE, and it is repaired here rather than left standing
+/// It read: *"these bytes were PRODUCED BY A GOVERNED WRITE (they match a receipt in
+/// the journal) and the journal being committed is a truthful PREFIX of it"*. Both
+/// halves name the journal, both describe reads this verb no longer performs, and
+/// the sentence was printed on every staged render — **an assertion of an unobserved
+/// property, which is exactly the banned member the honesty law names**, and the same
+/// defect `foreign_edit: none` was deleted for.
+///
+/// It also contradicted this file's own module doc four hundred lines above, which
+/// already records that the two passes *"now run the same reads over different
+/// bytes"*. The weaker-question framing was entirely journal: the staged pass was
+/// dated against the record rather than its own last row, so a legitimately partial
+/// stage was not a false red. With the record gone the asymmetry goes with it.
+///
+/// So the interval is now the ONLY thing separating the two passes, and the line says
+/// what it actually asserts: the pin plane, over the bytes a commit records.
 fn staged_predicate_line() -> String {
     format!(
-        "  {STAGED} asserts: these bytes were PRODUCED BY A GOVERNED WRITE (they match a receipt \
-         in the journal) and the journal being committed is a truthful PREFIX of it — NOT that \
-         they are the current governed state, which a partial stage legitimately is not\n"
+        "  {STAGED} asserts: every pin this corpus declares still holds against THESE bytes — \
+         the ones a commit would record, which are not necessarily the ones on disk. Write \
+         history is not assessed here either: the engine keeps no memory, so this says nothing \
+         about how these bytes came to be staged\n"
     )
 }
 
@@ -1118,44 +1109,20 @@ fn render_report(report: &CoreReport) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
-    match &report.trace {
-        JournalTrace::NoBaseline => {
-            let _ = writeln!(
-                out,
-                "  chain: {GREY_CANNOT_ASSESS} — the receipt journal carries no row, so there \
-                 is no chain to recompute"
-            );
-            let _ = writeln!(
-                out,
-                "  foreign_edit: {GREY_CANNOT_ASSESS} — the receipt journal carries no last \
-                 receipt to attribute the live tree against"
-            );
-        }
-        JournalTrace::StaleBaseline(m) => {
-            let _ = writeln!(
-                out,
-                "  chain: {GREY_CANNOT_ASSESS} — the journal's last receipt ^{} does not account \
-                 for the live tree, so its rows cannot be read against it",
-                m.last_receipt
-            );
-            let _ = writeln!(
-                out,
-                "  foreign_edit: {GREY_CANNOT_ASSESS} — tree root {} does not continue the last \
-                 receipt ^{} (recorded root_after={}); something advanced the tree that the \
-                 journal does not account for, and an out-of-writer edit is not the only door \
-                 that leaves this trace",
-                m.live_root, m.last_receipt, m.recorded_root
-            );
-        }
-        JournalTrace::Assessed { chain } => {
-            if let Some(summary) = chain.red_summary() {
-                let _ = writeln!(out, "  chain: {RED} — {summary}");
-            } else {
-                let _ = writeln!(out, "  chain: green");
-            }
-            let _ = writeln!(out, "  foreign_edit: none");
-        }
-    }
+    // **The disclosure, and it is MANDATORY** (advisor ruling, gate 1 §2). The
+    // `chain:` and `foreign_edit:` lines used to stand here. `foreign_edit: none`
+    // was the sharpest false green in this file — it read "assessed, nothing found"
+    // about a property the verb no longer observes. Deleting the lines silently
+    // would leave a reader carrying the old, wider green forward, so the narrowing
+    // is STATED instead — with its REASON, so it reads as the law it is (the engine
+    // keeps no memory) rather than as a gap the verb is apologising for.
+    let _ = writeln!(
+        out,
+        "  write_history: {WRITE_HISTORY_NOT_ASSESSED} — the engine keeps no memory by design: \
+         history is pinned to git at lock, and anything between locks is not history. This verb \
+         answers at-rest truth only (does the world still match the pins), so chain continuity \
+         and last-receipt-vs-live are not checked here at all — not grey, NOT CHECKED"
+    );
 
     for claim in &report.drifted_claims {
         let _ = writeln!(
@@ -1236,8 +1203,8 @@ fn pin_line(pin: &PinRow) -> String {
     }
 }
 
-/// The `--json` shape: the workspace plus the core object (chain breaks, the
-/// `foreign_edit`, the drifted claims) and the top-level `red` verdict.
+/// The `--json` shape: the workspace plus the core object (the drifted claims), the
+/// write-history disclosure, and the top-level `red` verdict.
 ///
 /// When the journal cannot date the tree, both journal detectors are `null` —
 /// *not assessed*, never a `{"green": true}` a reader could bank on — and a
@@ -1294,19 +1261,25 @@ fn to_json(
     // exit answered about THIS interval, `record_vouches` is the standing fact it
     // refused to spend.
     if let Some(gate) = gate {
+        // `record_vouches` and `standing_report` were REMOVED with the record they
+        // reported on. There is no ledger left to vouch for itself, so a key saying
+        // whether it does would be answering about nothing.
         value["commit_gate"] = json!({
             "gated_interval": gate.label,
             "permits": gate.permits(),
             "verdict": gate.word(),
             "detail": gate.detail(),
-            // The permanent proposition, reported and never gated on. `false` here
-            // with `permits: true` is the whole point of the flag, not a
-            // contradiction.
-            "record_vouches": gate.record.vouches(),
-            "standing_report": match gate.standing_report() {
-                None => Value::Null,
-                Some(report) => Value::String(report),
-            },
+            "gated_planes": ["pins"],
+            "write_history": WRITE_HISTORY_NOT_ASSESSED,
+            // **The POPULATION the gate read, on the face a machine reads**
+            // (S3-R23(5)). `permits: true` over `pin_coverage: 0` and over
+            // `pin_coverage: 50` are entirely different assurances, and a caller
+            // that cannot tell them apart is the caller `--require-pins` exists
+            // for. Both keys live INSIDE `commit_gate`, which is itself absent
+            // unless the gate was asked — so the shipped `pins` block is
+            // byte-identical and no existing consumer moves.
+            "pin_coverage": gate.pins.declared,
+            "require_pins": gate.require_pins,
         });
     }
     // **Top-level, and never inside [`interval_json`]** (row 21): the fence is a
@@ -1318,67 +1291,31 @@ fn to_json(
     value
 }
 
-/// One interval's verdict as the shipped `check --json` object.
+/// One interval's verdict as the `check --json` object.
+///
+/// # BREAKING CHANGE — `core.chain` and `core.foreign_edit` are REMOVED, not nulled
+/// This face's own law is that **an absent field reads as "not checked"**, and the
+/// two keys were carried as `null` precisely because the opposite was true: they
+/// HAD been checked, and null said "checked, nothing to report". Neither is checked
+/// now. Keeping them as null would assert a read that never happened — the same
+/// false green in JSON that `foreign_edit: none` was in the human render — so they
+/// are gone, along with the `cannot_assess` block that named them as its detectors.
+///
+/// `write_history` replaces all three. It is not a colour and not a detector: it is
+/// the statement that this verb does not look, so a consumer cannot mistake the
+/// narrowed green for the wider one it used to mean.
 fn interval_json(workspace: &Path, report: &CoreReport) -> Value {
     let claims: Vec<Value> = report
         .drifted_claims
         .iter()
         .map(|c| json!({ "selector": c.selector, "detail": c.detail }))
         .collect();
-    let pins = pins_json(report);
-
-    let JournalTrace::Assessed { chain } = &report.trace else {
-        let baseline = match &report.trace {
-            JournalTrace::StaleBaseline(m) => json!({
-                "last_receipt": m.last_receipt,
-                "recorded_root": m.recorded_root,
-                "live_root": m.live_root,
-            }),
-            _ => Value::Null,
-        };
-        return json!({
-            "workspace": workspace.display().to_string(),
-            "red": report.is_red(),
-            "cannot_assess": {
-                "reason": GREY_CANNOT_ASSESS,
-                "detectors": ["chain", "foreign_edit"],
-                "detail": report.trace.grey_summary().unwrap_or_default(),
-                "baseline": baseline,
-            },
-            "core": {
-                "chain": Value::Null,
-                "foreign_edit": Value::Null,
-                "drifted_claims": claims,
-            },
-            "pins": pins,
-        });
-    };
-
-    let breaks: Vec<Value> = chain
-        .breaks
-        .iter()
-        .map(|b| {
-            json!({
-                "row_anchor": b.row_anchor,
-                "line_no": b.line_no,
-                "expected_root_before": b.expected_root_before,
-                "found_root_before": b.found_root_before,
-            })
-        })
-        .collect();
     json!({
         "workspace": workspace.display().to_string(),
         "red": report.is_red(),
-        "core": {
-            "chain": { "green": chain.is_green(), "breaks": breaks },
-            // Assessed ⇔ the last receipt accounts for the live tree, so this key
-            // is null by construction here. It stays in the shape: an absent field
-            // reads as "not checked", and this one WAS checked (S3-R8 moved its
-            // only non-null case into `cannot_assess`).
-            "foreign_edit": Value::Null,
-            "drifted_claims": claims,
-        },
-        "pins": pins,
+        "write_history": WRITE_HISTORY_NOT_ASSESSED,
+        "core": { "drifted_claims": claims },
+        "pins": pins_json(report),
     })
 }
 
@@ -1480,9 +1417,13 @@ mod tests {
         );
     }
 
-    /// A `PinPlane` with nothing to report — the pin axis held flat so the gate
-    /// arms below measure the JOURNAL axis alone.
-    fn clean_pins() -> PinPlane {
+    /// A pin plane with nothing to report — the gate's passing input.
+    ///
+    /// `declared: 1` on purpose: this is a plane that WAS asked something and had no
+    /// complaint, which is a different input from one that was asked nothing. The
+    /// zero-coverage case is its own fixture ([`no_pins_declared`]), because
+    /// `--require-pins` is the one reader that tells them apart.
+    fn holding_pins() -> PinPlane {
         PinPlane {
             red: Vec::new(),
             grey: Vec::new(),
@@ -1491,167 +1432,191 @@ mod tests {
             pending: 0,
             never: 0,
             cannot_ask: None,
+            declared: 1,
         }
     }
 
-    /// A journal page from `(anchor, root_before, root_after)` triples — the three
-    /// facts a row asserts, in the shipped row grammar.
-    fn chain_of(rows: &[(&str, &str, &str)]) -> String {
-        use std::fmt::Write as _;
-        let mut page = String::new();
-        for (anchor, before, after) in rows {
-            let _ = writeln!(
-                page,
-                "- op=splice path=p.md root_before={before} root_after={after} edits=0 ^{anchor}"
-            );
+    /// A corpus that declares NO pin — clean, and covering nothing.
+    fn no_pins_declared() -> PinPlane {
+        PinPlane {
+            declared: 0,
+            ..holding_pins()
         }
-        page
     }
 
-    /// **A broken record downgrades the BLOCKER and never the REPORT.** One state,
-    /// three assertions that must hold together: the gate permits, the word is the
-    /// weaker one, and the standing break is told anyway citing its row.
-    ///
-    /// Drop the scoping and `permits` goes false. Spell the pass `green` and the
-    /// word assertion fails. Suppress the report — the acknowledgement design this
-    /// card rejected — and the standing assertion fails.
+    fn pin(color: model::selector::Color, label: &str) -> PinRow {
+        PinRow {
+            src_path: "claim.md".to_string(),
+            declared_ref: "source.md#S".to_string(),
+            color,
+            label: label.to_string(),
+        }
+    }
+
+    /// **The gate passes on the plane it actually reads, and says so in a word that
+    /// claims nothing more.** `pins-hold` replaced `accounted` /
+    /// `accounted(unvouched-record)` because both asserted something about a RECORD
+    /// the engine no longer keeps (ZT 2026-08-03: the engine has no memory).
     #[test]
-    fn a_broken_record_permits_the_interval_and_still_tells_the_break() {
-        let record = chain_of(&[
-            ("r-000001", "b3:GENESIS", "b3:R1"),
-            ("r-000002", "b3:SPLICED", "b3:R2"),
-        ]);
-        let trace = check::journal_trace_of(&record, "b3:R2");
-        let pins = clean_pins();
+    fn a_holding_pin_plane_permits_and_the_word_claims_only_the_plane_it_read() {
+        let pins = holding_pins();
         let gate = Gate {
-            label: STAGED,
-            accounted: check::interval_accounted(&record, "b3:R2", &record),
+            label: WORKTREE,
             pins: &pins,
-            record: &trace,
+            require_pins: false,
         };
-
         assert!(
             gate.permits(),
-            "the interval a commit records is accounted for"
+            "nothing was found and nothing was unreadable"
         );
         assert_eq!(
             gate.word(),
-            ACCOUNTED_UNVOUCHED,
-            "and the pass carries the WEAKER word, because the record that let it \
-             through cannot vouch for itself"
+            PINS_HOLD,
+            "the word names the plane that answered"
         );
-        assert_ne!(gate.word(), ACCOUNTED, "it is not the full-strength pass");
-        let standing = gate.standing_report().expect("a broken record has one");
+        assert!(gate.exit().is_ok(), "so the commit proceeds");
         assert!(
-            standing.contains("r-000002"),
-            "the standing report cites the broken row: {standing}"
+            !gate.word().contains("accounted"),
+            "the record-era vocabulary must not come back — there is no record to \
+             account for anything"
         );
         assert!(
-            standing.contains("does not clear"),
-            "and states the permanence rather than implying it: {standing}"
+            gate.detail().contains("no memory"),
+            "and the pass states the law rather than implying a wider check: {}",
+            gate.detail()
         );
     }
 
-    /// The full-strength pass, and its silence. An intact record has nothing
-    /// standing to tell, and a report printed unconditionally would be noise that
-    /// teaches operators to skip the one that matters.
+    /// **Zero pins passes by DEFAULT — vacuous truth, not unknown.** The gate asks
+    /// *"does the world still match the pins"*, and over no pins that is vacuously
+    /// yes. This exited 1 before the ruling, and the reason was journal mechanics:
+    /// an empty record meant no baseline, and the grey baseline gated. That
+    /// antecedent is gone, so the refusal had no input left.
     #[test]
-    fn an_intact_record_passes_at_full_strength_and_has_nothing_standing_to_tell() {
-        let record = chain_of(&[
-            ("r-000001", "b3:GENESIS", "b3:R1"),
-            ("r-000002", "b3:R1", "b3:R2"),
-        ]);
-        let trace = check::journal_trace_of(&record, "b3:R2");
-        let pins = clean_pins();
+    fn a_corpus_that_declares_no_pin_permits_by_default() {
+        let pins = no_pins_declared();
         let gate = Gate {
             label: WORKTREE,
-            accounted: check::interval_accounted(&record, "b3:R2", &record),
             pins: &pins,
-            record: &trace,
+            require_pins: false,
         };
-        assert!(gate.permits());
-        assert_eq!(gate.word(), ACCOUNTED, "nothing weakens this one");
-        assert_eq!(
-            gate.standing_report(),
-            None,
-            "and there is no standing fact to report"
-        );
+        assert!(gate.permits(), "nothing was asked, so nothing is unknown");
+        assert_eq!(gate.word(), PINS_HOLD);
+        assert!(gate.exit().is_ok());
     }
 
-    /// **The gate refuses on either gated plane, and says which one spoke.** A
-    /// refusal a reader cannot locate is one they cannot act on, so the journal leg
-    /// and the pin leg must not answer in each other's words.
+    /// **The fail-closed doctrine, preserved as the caller's choice.** The SAME plane
+    /// under `--require-pins` refuses — and with its own word, never grey's, because
+    /// nothing here was unanswerable.
     #[test]
-    fn the_gate_refuses_on_either_plane_and_names_the_one_that_decided() {
-        let record = chain_of(&[("r-000001", "b3:GENESIS", "b3:R1")]);
-        let trace = check::journal_trace_of(&record, "b3:R1");
-
-        let pins = clean_pins();
-        let journal_leg = Gate {
-            label: STAGED,
-            accounted: check::interval_accounted(&record, "b3:FORGED", &record),
-            pins: &pins,
-            record: &trace,
-        };
-        assert!(!journal_leg.permits(), "a root nothing produced is refused");
-        assert_eq!(journal_leg.word(), RED, "read, and found bad");
-        assert!(
-            journal_leg.detail().contains("b3:FORGED"),
-            "citing the fold that matches nothing: {}",
-            journal_leg.detail()
-        );
-
-        let unreadable = PinPlane {
-            cannot_ask: Some("the object store could not be asked".to_string()),
-            ..clean_pins()
-        };
-        let pin_leg = Gate {
-            label: STAGED,
-            accounted: check::interval_accounted(&record, "b3:R1", &record),
-            pins: &unreadable,
-            record: &trace,
-        };
-        assert!(
-            pin_leg.accounted.is_accounted(),
-            "FIXTURE: the journal plane is satisfied, so only the pin plane can refuse"
-        );
-        assert!(!pin_leg.permits(), "an UNREAD plane is not a clean one");
-        assert_eq!(
-            pin_leg.word(),
-            GREY_CANNOT_ASSESS,
-            "and it refuses as an absence of evidence, not as a finding"
-        );
-    }
-
-    /// **The empty record refuses without accusing.** Under the ruled cache-resident
-    /// journal this is the common case, not an edge one: a fresh clone carries zero
-    /// rows and has tampered with nothing.
-    #[test]
-    fn an_empty_record_refuses_as_an_absence_and_not_as_a_finding() {
-        let trace = check::journal_trace_of("", "b3:R1");
-        let pins = clean_pins();
+    fn require_pins_turns_zero_coverage_into_a_refusal() {
+        let pins = no_pins_declared();
         let gate = Gate {
             label: WORKTREE,
-            accounted: check::interval_accounted("", "b3:R1", ""),
             pins: &pins,
-            record: &trace,
+            require_pins: true,
         };
-        assert!(!gate.permits(), "unknown is not clean — it fails CLOSED");
+        assert!(
+            !gate.permits(),
+            "the caller asked for coverage and got none"
+        );
         assert_eq!(
             gate.word(),
-            GREY_CANNOT_ASSESS,
-            "grey, never red: nothing was read, so nobody may be accused"
+            NO_COVERAGE,
+            "its own word — grey would say the gate tried and failed, and it did not try"
         );
         assert_ne!(
             gate.word(),
-            RED,
-            "the fresh-clone path is not a tampering path"
+            GREY_CANNOT_ASSESS,
+            "the two are distinct facts and must stay distinct words"
         );
+        assert!(gate.exit().is_err(), "and it fails CLOSED, as asked");
+
+        // The other direction, same flag: coverage present ⇒ the flag is silent.
+        let covered = holding_pins();
+        let strict = Gate {
+            label: WORKTREE,
+            pins: &covered,
+            require_pins: true,
+        };
         assert!(
-            gate.detail().contains("tampered with nothing"),
-            "and the words say so: {}",
-            gate.detail()
+            strict.permits(),
+            "the flag refuses ABSENCE of coverage, never coverage itself — a flag \
+             that refused both would be a gate wired shut"
         );
+    }
+
+    /// **A red pin refuses, and the gate is load-bearing in that direction.** Without
+    /// this arm the test above passes over a gate that permits unconditionally.
+    #[test]
+    fn a_red_pin_refuses_the_commit() {
+        let pins = PinPlane {
+            red: vec![pin(
+                model::selector::Color::Red(model::selector::RedReason::Drifted),
+                "red content-drifted",
+            )],
+            ..holding_pins()
+        };
+        let gate = Gate {
+            label: STAGED,
+            pins: &pins,
+            require_pins: false,
+        };
+        assert!(
+            !gate.permits(),
+            "the ledger claims content that is not there"
+        );
+        assert_eq!(gate.word(), RED);
+        let err = gate.exit().expect_err("a red pin is a refusal");
+        assert!(
+            format!("{err:?}").contains(STAGED),
+            "and the refusal names the interval, so a reader can locate it"
+        );
+    }
+
+    /// **Unknown is not clean.** A grey pin refuses on the same leg as a red one, and
+    /// carries the distinct reason word — the exit says do-not-proceed, the word says
+    /// why.
+    #[test]
+    fn an_unreadable_pin_plane_refuses_as_an_absence_and_not_as_a_finding() {
+        let pins = PinPlane {
+            grey: vec![pin(
+                model::selector::Color::Grey(model::selector::GreyReason::Ambiguous),
+                "grey unmounted",
+            )],
+            ..holding_pins()
+        };
+        let gate = Gate {
+            label: WORKTREE,
+            pins: &pins,
+            require_pins: false,
+        };
+        assert!(!gate.permits(), "an unread plane is not a clean one");
+        assert_eq!(
+            gate.word(),
+            GREY_CANNOT_ASSESS,
+            "and it is never spelled as a finding — nobody was accused"
+        );
+        assert!(gate.exit().is_err(), "while still failing CLOSED");
+    }
+
+    /// An object store that could not be asked is the OTHER grey antecedent, and it
+    /// refuses too — a `cannot_ask` that permitted would be the false green this
+    /// verb exists to close, one plane over from the one the engine is ruled not to
+    /// hold.
+    #[test]
+    fn an_unaskable_object_store_refuses_the_commit() {
+        let pins = PinPlane {
+            cannot_ask: Some("the object store could not be asked".to_string()),
+            ..holding_pins()
+        };
+        let gate = Gate {
+            label: WORKTREE,
+            pins: &pins,
+            require_pins: false,
+        };
+        assert!(!gate.permits());
+        assert_eq!(gate.word(), GREY_CANNOT_ASSESS);
     }
 
     #[test]

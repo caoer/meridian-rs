@@ -27,18 +27,20 @@
 //! source units (pin, run plane). U2.9 reads parse and locks the face only.
 //!
 //! # U5.1 — the board-view colors + the trace query (d2 §5.3)
-//! Two default-face views ride the SAME locked read face (no face widening — the
-//! blocked-`ATTACH` guard still holds with them loaded):
+//! One default-face view rides the locked read face (no face widening — the
+//! blocked-`ATTACH` guard still holds with it loaded):
 //!
 //! - **`board`** — the colors layer: exactly one `green`/`red`/`grey` row per
 //!   `^inputs` edge. `grey` = declared-unpinned (an ungated close, never green);
 //!   `red` = drift or unresolved (a doctored verdict); `green` = the frozen pin
 //!   still equals live. "Verdicts freeze at close" is the `pinned_rev` compare —
 //!   the board reads the frozen pin, it never recomputes the verdict.
-//! - **`co_edit_trace`** — the traces layer: the reserved journal's mechanical
-//!   write-facts, per target path, convention-free. A doctored verdict shows the
-//!   subject written at the close and edited again afterwards (a co-edit),
-//!   visible before any pack reads it as red.
+//!
+//! A second view, `co_edit_trace`, carried the traces layer over the reserved
+//! journal's mechanical write-facts. It died with the journal (ZT 2026-08-02,
+//! remove-no-replacement): its every column came from `receipt_journal`, so with
+//! that table gone there is no trace to project, and a co-edit is no longer
+//! visible convention-free.
 
 use std::collections::BTreeMap;
 
@@ -209,19 +211,6 @@ CREATE VIEW board AS
         FROM input_lock il
         WHERE il.verdict_color IS NOT NULL AND il.verdict_color <> 'red';
 
--- co_edit_trace — U5.1's traces layer (d2 §5.3 'traces = core, source 3,
--- default-face visible'). The MECHANICAL write-facts of the reserved journal,
--- read convention-FREE: one row per guarded write, ordered per target path, with
--- the write's position on that path (`edit_ord`) and the total (`edits_on_path`).
--- A doctored verdict leaves the pack-free trace here: the subject was written at
--- the close (edit_ord 1) and EDITED AGAIN afterwards (edit_ord 2) — a co-edit
--- visible with no armed convention, before any board pack calls the later rev red.
-CREATE VIEW co_edit_trace AS
-    SELECT rj.path, rj.anchor, rj.op, rj.actor, rj.line_no,
-           rj.root_before, rj.root_after, rj.edits,
-           row_number() OVER (PARTITION BY rj.path ORDER BY rj.line_no) AS edit_ord,
-           count(*)     OVER (PARTITION BY rj.path)                     AS edits_on_path
-        FROM receipt_journal rj;
 ";
 
 /// Create the additive read-face schema (`input_lock` + board views) against
@@ -251,22 +240,18 @@ pub fn lock_read_face(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch("SET enable_external_access=false;\nSET lock_configuration=true;")
 }
 
-/// Build a locked, board-ready read face over `docs` + `journal_rows`: project
-/// `node` and `receipt_journal` (via [`crate::facts`]), project the `^inputs`
-/// lock blocks into `input_lock`, create the board-red views, then LOCK the
-/// face. The returned connection serves the default-face board queries and
-/// **refuses `ATTACH`/`COPY`/external access** (the C1 read-face capability).
+/// Build a locked, board-ready read face over `docs`: project `node` (via
+/// [`crate::facts`]), project the `^inputs` lock blocks into `input_lock`, create
+/// the board-red views, then LOCK the face. The returned connection serves the
+/// default-face board queries and **refuses `ATTACH`/`COPY`/external access**
+/// (the C1 read-face capability).
 ///
 /// # Errors
 /// [`ViewError::Duckdb`] on any schema-creation, projection, or lock failure.
-pub fn open_board(
-    docs: &BTreeMap<String, Document>,
-    journal_rows: &[facts::JournalRowInput],
-) -> Result<Connection, ViewError> {
+pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     facts::create_facts_schema(&conn)?;
     facts::project_nodes(&conn, docs)?;
-    facts::project_journal(&conn, journal_rows)?;
     create_read_face_schema(&conn)?;
     project_input_locks(&conn, docs)?;
     lock_read_face(&conn)?;
@@ -1152,7 +1137,7 @@ mod tests {
         let raw = "# Doc\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {ref: 'a.md', to: 'a.md#^c', rev: 'deadbeef', rev_class: 'content'}\n  - {ref: 'b.md', claim: 'declared-only'}\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("review.md".to_string(), doc(raw));
-        let conn = open_board(&docs, &[]).expect("open board");
+        let conn = open_board(&docs).expect("open board");
         let n: i64 = conn
             .query_row("SELECT count(*) FROM input_lock", [], |r| r.get(0))
             .unwrap();
@@ -1355,7 +1340,7 @@ mod tests {
             doc(&lock_page(&[("sources/target-page.md", &fp("cd"))])),
         );
         docs.insert("sources/target-page.md".to_string(), doc(target));
-        let conn = open_board(&docs, &[]).expect("open board");
+        let conn = open_board(&docs).expect("open board");
 
         let n: i64 = conn
             .query_row(
@@ -1400,7 +1385,7 @@ mod tests {
             doc(&lock_page(&[("sources/target-page.md", &live)])),
         );
         green_docs.insert("sources/target-page.md".to_string(), doc(target));
-        let gconn = open_board(&green_docs, &[]).expect("open board green");
+        let gconn = open_board(&green_docs).expect("open board green");
         let (gcolor, greason): (String, String) = gconn
             .query_row(
                 "SELECT color, reason FROM board WHERE src_path='effect.md'",
@@ -1519,7 +1504,7 @@ mod tests {
         let malformed = "# A\n\n```meridian-lock\nversion: 1\ngarbage here\n```\n";
         let mut docs = BTreeMap::new();
         docs.insert("a.md".to_string(), doc(malformed));
-        let conn = open_board(&docs, &[]).expect("board");
+        let conn = open_board(&docs).expect("board");
 
         let (declared_ref, to_path, color, reason, detail): (
             String,

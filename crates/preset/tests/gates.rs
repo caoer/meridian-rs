@@ -2,7 +2,7 @@
 //! U5.3 Test: line), each driving the REAL U2.6 guarded create over an on-disk
 //! workspace (no in-memory double — fidelity is the point):
 //!
-//! - Gate 1: `unfold_births_every_scaffold_file_with_a_birth_receipt`
+//! - Gate 1: `unfold_births_every_scaffold_file`
 //!   (the sweep asserts the FULL declared scaffold set, not a sample).
 //! - Gate 2: `def_invalid_new_refuses_naming_the_def_rule`
 //!   (the refusal code conforms to the closed §8 taxonomy — row 17 `def_invalid`).
@@ -109,11 +109,6 @@ fn workspace(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (tmp, root)
 }
 
-fn journal_text(root: &fs::WorkspaceRoot) -> String {
-    let path = root.0.join(fs::domain::RESERVED_JOURNAL_PATH);
-    std::fs::read_to_string(path).unwrap_or_default()
-}
-
 fn opts() -> BirthOptions {
     BirthOptions {
         actor: Some("preset:test".to_owned()),
@@ -123,12 +118,17 @@ fn opts() -> BirthOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Gate 1: unfold births every scaffold file, and every one carries a birth
-//         receipt (the FULL declared set, swept — not a sample).
+// Gate 1: unfold births every scaffold file — the FULL declared set, swept,
+//         not a sample.
+//
+// The sweep asserted a birth RECEIPT per file (an `op=create before=absent`
+// journal row) until the journal was removed (ZT 2026-08-02). The receipt is
+// gone; what the guarded create still owes — one born file per declared scaffold
+// entry, materialized on disk — is asserted below and is what the gate now means.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn unfold_births_every_scaffold_file_with_a_birth_receipt() {
+fn unfold_births_every_scaffold_file() {
     let (_tmp, root) = workspace(&[("presets/session.md", SESSION_PRESET)]);
 
     let report = unfold(&root, "presets/session.md", &opts()).unwrap();
@@ -140,39 +140,18 @@ fn unfold_births_every_scaffold_file_with_a_birth_receipt() {
     );
     assert_eq!(report.files.len(), SCAFFOLD.len());
 
-    // The report enumerates the FULL scaffold set, each with a birth receipt.
-    let born: std::collections::BTreeMap<&str, Option<&str>> =
-        report.births().into_iter().collect();
+    // The report enumerates the FULL scaffold set — every declared entry born.
+    let born: std::collections::BTreeSet<&str> = report.births().into_iter().collect();
     for path in SCAFFOLD {
-        let receipt = born
-            .get(path)
-            .unwrap_or_else(|| panic!("scaffold file {path} absent from the unfold report"));
         assert!(
-            receipt.is_some(),
-            "scaffold file {path} carries no birth receipt"
-        );
-    }
-
-    // The birth receipt is REAL: the reserved journal carries a guarded `op=create`
-    // (before=absent) row for EVERY scaffold file — the load-bearing sweep.
-    let journal = journal_text(&root);
-    for path in SCAFFOLD {
-        let row = format!("op=create path={path} ");
-        assert!(
-            journal.contains(&row),
-            "no birth receipt row for {path} in the journal:\n{journal}"
+            born.contains(path),
+            "scaffold file {path} absent from the unfold report"
         );
     }
     assert_eq!(
-        journal.matches("op=create").count(),
+        born.len(),
         SCAFFOLD.len(),
-        "exactly one birth row per scaffold file"
-    );
-    // Every birth is the guarded shape (before=absent) — a real create door.
-    assert_eq!(
-        journal.matches(" before=absent ").count(),
-        SCAFFOLD.len(),
-        "every scaffold birth is a guarded create (before=absent):\n{journal}"
+        "exactly one birth per scaffold file"
     );
 
     // The files exist on disk with the born bytes.
@@ -233,15 +212,11 @@ fn def_invalid_new_refuses_naming_the_def_rule() {
         refusal.reason.message
     );
 
-    // A refused birth writes NOTHING: no target file, no journal row.
+    // A refused birth writes NOTHING: no target file.
     assert!(
         !root.0.join(&refusal.target).exists(),
         "a refused birth left a file at {}",
         refusal.target
-    );
-    assert!(
-        !journal_text(&root).contains("op=create"),
-        "a refused birth wrote a journal row"
     );
 }
 
@@ -281,19 +256,9 @@ fn unfold_on_an_existing_path_refuses_via_cas_if_absent() {
         SENTINEL,
         "the guarded create must not clobber an existing file"
     );
-    // No birth receipt was minted for the occupied path.
-    let journal = journal_text(&root);
-    assert!(
-        !journal.contains("op=create path=tasks/index.md "),
-        "no birth row for the occupied path:\n{journal}"
-    );
     // The other declared paths WERE born (reconcile materializes the missing delta).
     for path in ["SESSION.md", "agents/index.md", "results/notes.md"] {
         assert!(root.0.join(path).exists(), "{path} should still be born");
-        assert!(
-            journal.contains(&format!("op=create path={path} ")),
-            "{path} birth receipt missing"
-        );
     }
 }
 
@@ -303,7 +268,7 @@ fn unfold_on_an_existing_path_refuses_via_cas_if_absent() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn valid_new_births_the_first_rev_with_a_receipt() {
+fn valid_new_births_the_first_rev() {
     let (_tmp, root) = workspace(&[("presets/session.md", SESSION_PRESET)]);
 
     let outcome = new_record(&root, "presets/session.md", "s1", &opts()).unwrap();
@@ -311,21 +276,12 @@ fn valid_new_births_the_first_rev_with_a_receipt() {
         panic!("a valid def must birth, got {outcome:?}");
     };
     assert_eq!(report.target, "session/s1.md");
-    assert!(
-        report.receipt.is_some(),
-        "born record carries a birth receipt"
-    );
 
-    // The record exists with the filled template, and the journal carries its
-    // guarded birth row.
+    // The record exists with the filled template.
     let body = std::fs::read_to_string(root.0.join("session/s1.md")).unwrap();
     assert!(
         body.contains("id: s1"),
         "the template filled {{id}}: {body}"
-    );
-    assert!(
-        journal_text(&root).contains("op=create path=session/s1.md "),
-        "birth receipt row missing"
     );
 
     // A second birth at the same target refuses via the if_absent CAS.
@@ -424,19 +380,19 @@ fn reconcile_materializes_missing_untouches_undeclared_prunes_ephemeral() {
 
     let report = reconcile(&root, "presets/session.md", true, &opts()).unwrap();
 
-    // 1. the missing declared path was MATERIALIZED with a real birth receipt.
+    // 1. the missing declared path was MATERIALIZED through the guarded create.
     let materialized: std::collections::BTreeMap<&str, bool> = report
         .materialized
         .iter()
         .map(|f| match f {
-            FileOutcome::Born { path, receipt } => (path.as_str(), receipt.is_some()),
+            FileOutcome::Born { path } => (path.as_str(), true),
             FileOutcome::Occupied { path, .. } => (path.as_str(), false),
         })
         .collect();
     assert_eq!(
         materialized.get("results/plan.md"),
         Some(&true),
-        "the missing declared path is materialized with a birth receipt: {report:?}"
+        "the missing declared path is materialized: {report:?}"
     );
     assert!(
         root.0.join("results/plan.md").exists(),

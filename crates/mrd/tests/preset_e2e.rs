@@ -122,11 +122,22 @@ fn cli_unfold_births_the_scaffold_and_new_refuses_an_invalid_def() {
     for path in ["SESSION.md", "tasks/index.md", "results/notes.md"] {
         assert!(ws.join(path).exists(), "{path} not materialized");
     }
-    let journal = std::fs::read_to_string(ws.join("meridian/journal.md")).unwrap_or_default();
-    assert_eq!(
-        journal.matches("op=create").count(),
-        3,
-        "one birth receipt per scaffold file:\n{journal}"
+    // **The birth-receipt count is GONE, and no count replaces it.** This asserted
+    // three `op=create` rows in `meridian/journal.md` — one per scaffold file — as
+    // the proof that each birth went through the governed door. There is no
+    // journal: the engine keeps no memory (ZT 2026-08-03), so a write leaves no
+    // in-engine trace to count.
+    //
+    // Deliberately NOT re-pointed at git — git records commits, and asserting over
+    // them would test git rather than the engine (U6's reasoning on `floors.rs`).
+    // What survives is the subject: every scaffold file was MATERIALIZED (asserted
+    // above) and each was born through the CAS-guarded door, which the re-unfold
+    // refusal below proves — a second unfold refuses every path via `if_absent`,
+    // and only a real governed birth arms that guard.
+    assert!(
+        !ws.join("meridian/journal.md").exists(),
+        "and nothing mints a ledger any more — a page here would mean the journal \
+         came back"
     );
 
     // A second unfold refuses every path via the if_absent CAS → exit 1.

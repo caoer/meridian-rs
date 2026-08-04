@@ -17,7 +17,7 @@
 //!
 //! # `--force` is the sanctioned bypass (decision #6)
 //! A binding break is force-escapable: a `--force` write lands, and the skip is
-//! journaled AND rendered (the caller loudly owns the bypass). The integrity floor
+//! rendered as a `forced:` verdict (the caller loudly owns the bypass). The integrity floor
 //! is not force-escapable — destroying the artifact or the marker is not a "check
 //! to skip".
 //!
@@ -82,7 +82,7 @@ pub enum DoorLaw {
     /// No binding/integrity floor applies — evaluate the armed rules.
     Clear,
     /// A one-sided artifact↔page change (taxonomy row 9). Force-escapable: a
-    /// `--force` write lands and the skip is journaled + rendered.
+    /// `--force` write lands and the skip is rendered as a `forced:` verdict.
     BindingBreak {
         /// Which side the one-sided change touched.
         side: BindingSide,
@@ -157,8 +157,8 @@ pub fn classify_door_law(
             teaching: format!(
                 "refused: the attested armed-rules artifact `{joined}` is engine-managed — a \
                  direct edit of a row breaks the artifact↔page binding; arm or disarm through \
-                 the attest/arm path, or `--force` to override (the skip is journaled and \
-                 rendered)"
+                 the attest/arm path, or `--force` to override (the skip is rendered as a \
+                 `forced:` verdict naming the bypassed rule)"
             ),
             path: joined,
             legal_path: "the attest/arm path (the ONE-act attestation)".to_string(),
@@ -173,7 +173,8 @@ pub fn classify_door_law(
             teaching: format!(
                 "refused: `{joined}` is an armed rule page — a direct edit of its attested bytes \
                  breaks the artifact↔page binding (it drifts the pinned rev); re-arm at the new \
-                 rev, or `--force` to override (the skip is journaled and rendered)"
+                 rev, or `--force` to override (the skip is rendered as a \
+                 `forced:` verdict naming the bypassed rule)"
             ),
             path: joined.clone(),
             legal_path: format!("re-arm `{joined}` at the new evidence rev"),
