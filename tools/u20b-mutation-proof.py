@@ -143,6 +143,23 @@ MUTATIONS = [
         "stripping a legitimate v2 message from a non-ladder refusal",
     ),
     (
+        # ATTRIBUTION ROW (lie 4). The early-return test must detect the early
+        # return being disabled — and ONLY that. Together with
+        # `v2-provenance-not-vintage` (the strip, one edit) this splits what the
+        # old two-edit row conflated: each pin now has its own defect, so a red
+        # can be attributed.
+        "v2-early-return-disabled",
+        ("wire-serve", "u20b_v2_notification_shape",
+         "a_refusal_with_nothing_post_v2_is_not_demoted_at_all"),
+        [(
+            "crates/wire-serve/src/rev.rs",
+            "    if !ladder_authored && !post_v2 {",
+            "    // MUTATION: disable the early return.\n"
+            "    if false && !ladder_authored && !post_v2 {",
+        )],
+        "a refusal with nothing post-v2 being demoted anyway",
+    ),
+    (
         "reap-exemption",
         "a_live_subscription_survives_the_reaper",
         [(
