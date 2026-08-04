@@ -167,10 +167,9 @@ MUTATIONS = [
         "every_reason_word_carries_the_four_property_contract",
         [(
             SRC,
-            'fix: format!("{fix} Then run `mrd retire report --json` to confirm the block parses."),',
-            "// MUTATION: leave a parse fix as an edit instruction with no way to\n"
-            "        // check it — the gap the coverage sweep actually found.\n"
-            "        fix,",
+            '            fix.push_str(" Then run `mrd retire report --json` to confirm the block parses.");',
+            "            // MUTATION: leave a parse fix as an edit instruction with no way\n"
+            "            // to check it — the gap the coverage sweep actually found.",
         )],
         "a fix clause that describes the problem's inverse instead of naming a "
         "runnable command",
