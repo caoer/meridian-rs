@@ -207,14 +207,21 @@ fn extract_body_key_set_is_frozen() {
     pin_keys(&nodes, &["nodes", "path"], "Nodes body");
 }
 
-/// The frozen v1 §5.2 node object, maximal — INCLUDING the three v3-additive
-/// host-face fields (`n`, `hpath_text`, `words`) that share the struct. They
-/// are the All-Hands #1 sighting's own family: `Option` +
-/// `skip_serializing_if` is not a version gate, so only the live half can say
-/// they stay off a v2 wire. This pin says what the type admits, so a FOURTH
-/// such field cannot be added silently.
+/// The frozen v1 §5.2 node object, maximal — INCLUDING the two v3-additive
+/// host-face fields (`n`, `words`) that share the struct. They are the
+/// All-Hands #1 sighting's own family: `Option` + `skip_serializing_if` is not
+/// a version gate, so only the live half can say they stay off a v2 wire. This
+/// pin says what the type admits, so a THIRD such field cannot be added
+/// silently.
+///
+/// **It was a TRIO when U27 measured it, and it is a PAIR here.** U14
+/// (decision 14) removed `hpath_text` — a lossy joined string address on a
+/// machine surface — and U27 branched from a tree that predates that removal,
+/// so its pin named a field the assembly does not have. The pin caught this at
+/// the assembly gate, which is what a key-set detector is for: neither branch
+/// was wrong about its own tree, and only the merge can state the live key set.
 #[test]
-fn extract_node_key_set_is_frozen_plus_the_v3_host_face_trio() {
+fn extract_node_key_set_is_frozen_plus_the_v3_host_face_pair() {
     let node = Node {
         kind: NodeKind::Heading,
         span: Span(20, 136),
@@ -226,14 +233,12 @@ fn extract_node_key_set_is_frozen_plus_the_v3_host_face_trio() {
         }),
         node_rev: Some(rev()),
         n: Some("1.2".into()),
-        hpath_text: Some("Goals".into()),
         words: Some(12),
     };
     pin_keys(
         &node,
         &[
             "hpath",
-            "hpath_text",
             "info",
             "kind",
             "n",

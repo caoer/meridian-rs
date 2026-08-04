@@ -1,7 +1,12 @@
 //! Dev tool — emit the U5.1 board-view colors over a real workspace corpus, one
-//! JSON line per `^inputs` edge (`src_path`, `to_path`, `to_sel`, `color`,
-//! `reason`). This is the CANDIDATE side of the U5.1 board-view leg parity: its
-//! colors are compared field-for-field against the legacy `md status` color.
+//! JSON line per lock-pin edge (`src_path`, `to_path`, `to_sel`, `color`,
+//! `reason`).
+//!
+//! **Its parity subject is gone (R1.3).** It was the CANDIDATE side of the
+//! board-view leg parity, compared field-for-field against the legacy
+//! `md status` color over `^inputs` edges. That comparand no longer exists, so
+//! this emits the board's own colors and proves nothing against a second
+//! implementation. Kept as a dev tool; its parity claim is retired.
 //!
 //! It builds the corpus the way `mrd sql`'s daemonless degrade does
 //! (`fs::domain_snapshot` → `fs::build_corpus`) and reads the board off U2.9's
