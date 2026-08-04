@@ -11,6 +11,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# the `std`-only address leaf: the mount table this plane injects, and the ONE
+# lexical predicate that decides whether the address plane owns a spelling
+addr = { workspace = true }
 model = { workspace = true }
 
 [dev-dependencies]

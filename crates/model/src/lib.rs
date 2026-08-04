@@ -1688,8 +1688,13 @@ impl CorpusIndex {
         // path, and rejecting (say) a `..` spelling here would refuse inputs
         // this seam answers correctly today. An instrument that cries wolf is
         // deleted by the next person it inconveniences (S3-R23(1)).
-        let trimmed = linkpath.trim();
-        if trimmed.split('/').next().unwrap_or(trimmed).contains(':') {
+        // The predicate is `addr`'s, not a local re-spelling. The link plane's
+        // in-process degrade asks the SAME question — *could the address plane
+        // have something to say about this spelling?* — and a degrade gate that
+        // merely AGREED with this guard would drift the moment either was
+        // edited, letting a spelling this guard refuses reach a path that never
+        // degraded. One question, one function, one edit site.
+        if addr::head_carries_root_separator(linkpath) {
             return None;
         }
         let key = linkpath.trim().trim_end_matches(".md").to_lowercase();
@@ -1787,7 +1792,11 @@ impl CorpusIndex {
             // behaviour is byte-for-byte what it was before U11.
             return match self.three_rules(spelling, from, corpus.ambient_docs()) {
                 Some(path) => RefResolution::Ambient(path),
-                None => RefResolution::NotFound,
+                None => RefResolution::NotFound {
+                    root: None,
+                    path: addr.path().to_owned(),
+                    selector: addr.has_selector().then(|| addr.selector().to_owned()),
+                },
             };
         };
 
@@ -1860,7 +1869,11 @@ impl CorpusIndex {
         //     unmounted class exists to prevent.
         match mounted.index.three_rules(addr.path(), from, mounted.docs) {
             Some(path) => RefResolution::Rooted { root, path },
-            None => RefResolution::NotFound,
+            None => RefResolution::NotFound {
+                root: Some(root),
+                path: addr.path().to_owned(),
+                selector: addr.has_selector().then(|| addr.selector().to_owned()),
+            },
         }
     }
 
@@ -2031,7 +2044,34 @@ pub enum RefResolution {
     },
     /// Well-formed, its root (if any) bound and readable — but the path names
     /// nothing in THAT root's corpus.
-    NotFound,
+    ///
+    /// **It carries the root the miss happened INSIDE, and that field is the
+    /// whole point.** `docs/address-grammar.md` § 5.2 row F4 requires
+    /// `file_not_found` SCOPED TO THAT ROOT — never the ambient root's
+    /// same-basename file — and a caller holding a bare `NotFound` cannot
+    /// author that refusal, because it cannot say which root "THAT" was. The
+    /// doc sentence above named a root the type then discarded.
+    ///
+    /// Measured consequence of the bare form: a cross-vault miss rendered red
+    /// `selector-unresolved` with zero candidates, which asserts the PAGE
+    /// resolved and the SELECTOR did not — the wrong cause, in the engine's own
+    /// voice, on a root the engine could see perfectly well.
+    /// **It carries the PATH and SELECTOR for the same reason it carries the
+    /// root**, and the reason is R1.6, not convenience. The refusal names the
+    /// path that is missing and echoes the address the author wrote; the only
+    /// other way for a caller to obtain those is to re-split the spelling it
+    /// handed in — a joined string address taken apart in a machine surface,
+    /// which is the construction decision 14 disapproves and the one U21 is
+    /// landing the residue of. The resolver has the parsed address in hand, so
+    /// it hands the PARTS out and nothing downstream re-parses.
+    NotFound {
+        /// The root the miss happened inside — `None` for the ambient root.
+        root: Option<MountName>,
+        /// The path that names nothing in that root's corpus.
+        path: String,
+        /// The selector as the address carried it (`None` = page grain).
+        selector: Option<String>,
+    },
     /// The spelling is not a well-formed address, or is one the resolver
     /// refuses (an opaque root carrying a selector).
     Malformed(AddrError),

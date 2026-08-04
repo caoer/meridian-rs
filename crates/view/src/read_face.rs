@@ -486,6 +486,15 @@ pub struct LockItem {
     /// Distinct from [`LockItem::lock_refusal`]: a refused lock is unreadable
     /// HERE, an unresolvable root is unreachable FROM here.
     pub root_refusal: Option<model::selector::GreyReason>,
+    /// Set when the address's root WAS bound, readable and loaded, and that
+    /// root's corpus holds no [`LockItem::to_path`] — a measured absence (U21).
+    ///
+    /// **A separate slot from [`LockItem::root_refusal`] because it is a
+    /// separate fact.** `root_refusal` says the root could not be reached;
+    /// this says the root was reached and the file is not in it. One is a
+    /// refusal to claim (grey), the other is a claim (red), and a carrier that
+    /// held both in one slot would force the renderer to guess the tone.
+    pub root_absence: Option<addr::MountName>,
 }
 
 /// Parse every lock pin declared in `doc`, document order (source 1). The SHARED
@@ -585,9 +594,31 @@ pub fn page_lock_items_in_rooted_corpus(
                 item.root_refusal =
                     Some(model::selector::GreyReason::PathUnseeable { root, path, detail });
             }
-            // Unresolved and malformed both keep the declared spelling, which is
-            // what the red `selector-unresolved` render reports.
-            model::RefResolution::NotFound | model::RefResolution::Malformed(_) => {}
+            // A miss INSIDE a mounted root is a measured absence, and it is
+            // recorded structurally like every other rooted outcome. `to_root`
+            // is set as well as `root_absence`: the target is named
+            // root-qualified (never as a bare path that reads as the ambient
+            // file), and the walk keeps it a LEAF by construction, since the
+            // ambient corpus holds no key spelled `root:path`.
+            // `to_path` becomes the path INSIDE the root, exactly as it does on
+            // the resolving arm — the resolver hands the peeled path back, and
+            // it is not the declared spelling. Leaving the spelling in place
+            // renders `sessions:sessions:absent.md`, because `to_root` is then
+            // prefixed onto an address that already carries its root.
+            model::RefResolution::NotFound {
+                root: Some(root),
+                path,
+                ..
+            } => {
+                item.to_root = Some(root.clone());
+                item.to_path = path;
+                item.root_absence = Some(root);
+            }
+            // An AMBIENT miss and a malformed spelling both keep the declared
+            // spelling, which is what the red `selector-unresolved` render
+            // reports. Unchanged, and deliberately so.
+            model::RefResolution::NotFound { root: None, .. }
+            | model::RefResolution::Malformed(_) => {}
         }
     }
     items
@@ -697,6 +728,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 // mount-table fact this seam has not consulted yet.
                 to_root: None,
                 root_refusal: None,
+                root_absence: None,
             });
             return;
         }
@@ -736,6 +768,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             // mount-table fact this seam has not consulted yet.
             to_root: None,
             root_refusal: None,
+            root_absence: None,
         });
     }
 }
