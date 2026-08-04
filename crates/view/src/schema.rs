@@ -60,14 +60,28 @@ CREATE TABLE link (
     kind       TEXT     NOT NULL,                 -- 'wikilink' | 'embed' | 'link'
     target_raw TEXT     NOT NULL,                 -- linktext as written ('' for self [[#H]])
     heading    TEXT, block TEXT, alias TEXT,      -- NULL unless present in the linktext
-    dest_path  TEXT     REFERENCES doc(path),     -- resolved vault path; NULL = dangling/external
-    resolved   BOOLEAN  GENERATED ALWAYS AS (dest_path IS NOT NULL) VIRTUAL,  -- DERIVED, never stored
+    dest_path  TEXT     REFERENCES doc(path),     -- resolved AMBIENT vault path; NULL = dangling/external/cross-root
+    -- U21 Q7(B): a CROSS-ROOT destination, as two columns and never a joined
+    -- `root:path` string (Q5's prohibition). It is kept OUT of `dest_path`
+    -- because that column carries an enforced foreign key into `doc`, and a
+    -- cross-root path is not a key in THIS corpus — measured, not assumed:
+    -- DuckDB answers "Violates foreign key constraint because key
+    -- "path: notes.md" does not exist in the referenced table". So `dest_path`
+    -- keeps meaning "a path in this corpus" ALWAYS, rather than only sometimes.
+    dest_root      TEXT,                          -- mount name; NULL = ambient
+    dest_root_path TEXT,                          -- the path INSIDE dest_root
+    resolved   BOOLEAN  GENERATED ALWAYS AS (dest_path IS NOT NULL OR dest_root IS NOT NULL) VIRTUAL,  -- DERIVED, never stored
     span_start UBIGINT  NOT NULL,                 -- C1: Wikilink/Link/Embed node span
     span_end   UBIGINT  NOT NULL,
     node_rev   TEXT     NOT NULL,
     PRIMARY KEY (src_path, seq),
     CHECK (kind IN ('wikilink','embed','link')),
-    CHECK (kind <> 'link' OR dest_path IS NULL)   -- external links never carry a vault dest
+    CHECK (kind <> 'link' OR dest_path IS NULL),  -- external links never carry a vault dest
+    -- The third column widens the error space, so the illegal states are made
+    -- UNREPRESENTABLE here rather than left to the projector's discipline.
+    CHECK ((dest_root IS NULL) = (dest_root_path IS NULL)),  -- a root without its path names nothing
+    CHECK (dest_path IS NULL OR dest_root IS NULL),          -- one destination, never two
+    CHECK (kind <> 'link' OR dest_root IS NULL)              -- external links are not cross-root either
 );
 CREATE TABLE tag (                                -- inline #hashtag bodies (NodeKind::Tag) — real node spans
     path       TEXT     NOT NULL REFERENCES doc(path),
@@ -106,9 +120,19 @@ CREATE TABLE task (
 
 -- Convenience SQL views (no new storage) --
 CREATE VIEW backlink AS                           -- inbound vault edges = resolved reverse read
+    -- AMBIENT edges only, and that is a STATED v1 non-goal rather than an
+    -- oversight: this corpus is one vault, so a cross-vault link is visible
+    -- from the source side alone. `dest_path IS NOT NULL` already excludes
+    -- cross-root rows, since their destination is not a path in this corpus.
     SELECT dest_path AS path, src_path, kind, alias FROM link WHERE dest_path IS NOT NULL;
 CREATE VIEW dangling AS                            -- broken VAULT refs only (external excluded)
-    SELECT src_path, target_raw FROM link WHERE kind IN ('wikilink','embed') AND dest_path IS NULL;
+    -- **A RESOLVED CROSS-ROOT EDGE IS NOT DANGLING.** `dest_path` is NULL for
+    -- it by construction (its target is not a path in this corpus), so the
+    -- `dest_root IS NULL` clause is what stops every working cross-vault link
+    -- being reported broken. Pinned as a RED TEST, not left as a comment:
+    -- `view/tests/u21_cross_root_link_rows.rs`.
+    SELECT src_path, target_raw FROM link
+     WHERE kind IN ('wikilink','embed') AND dest_path IS NULL AND dest_root IS NULL;
 CREATE VIEW card AS                                -- session tree as a board: pivot frontmatter
     SELECT d.path,
         max(fm.value) FILTER (fm.key = 'type')    AS type,

@@ -786,6 +786,51 @@ mod tests {
         );
     }
 
+    /// **The two refusal classes the shipped pin never watched fail** (U21).
+    ///
+    /// `the_refusals_name_the_address_and_the_ordinary_corpus_still_passes`
+    /// covers `Unmounted`, `NoVault`, `Embed` and `Fingerprint`. It covers
+    /// neither `PathUnseeable` nor `Stored` — so two refusals shipped that had
+    /// never been observed red, and **a refusal never observed red is not known
+    /// to fire.** Both are constructible today; here they are, each named.
+    #[test]
+    fn the_two_unwatched_refusal_classes_fire_and_name_what_they_refused() {
+        // PATH-UNSEEABLE — declared in the file, unreadable on this machine.
+        // Distinct from Unmounted BECAUSE THE FIX IS DIFFERENT: the mount entry
+        // is already right, so telling the user to declare it sends them to
+        // edit a config that is already correct.
+        let declared = addr::MountName::parse("declared").expect("a name");
+        let table = MountSet::new([]).with_unreachable(
+            declared.clone(),
+            "/nowhere/declared",
+            "No such file or directory (os error 2)",
+        );
+        assert_eq!(
+            to_stored("[[declared:notes.md]]", &table),
+            Err(TranslateError::PathUnseeable {
+                address: "declared:notes.md".to_string(),
+                root: "declared".to_string(),
+                path: "/nowhere/declared".to_string(),
+                detail: "No such file or directory (os error 2)".to_string(),
+            }),
+            "a DECLARED but unreadable root refuses with the PATH, never with              the declare-it teaching whose action is already done",
+        );
+
+        // STORED — the stored grammar itself refuses. A path that is not a
+        // confined corpus path has no stored spelling at all.
+        let escape = to_stored("[[sessions:../escape.md]]", &mounts());
+        assert!(
+            matches!(
+                &escape,
+                Err(TranslateError::Stored {
+                    address,
+                    source: stored::StoredError::BadPath { found },
+                }) if address == "sessions:../escape.md" && found == "../escape.md"
+            ),
+            "the stored plane's own refusal is propagated, naming the address              AND the part the grammar refused: {escape:?}",
+        );
+    }
+
     /// Every refusal class, each naming what it refused — and the ACCEPTANCE
     /// half beside it, so none of these is satisfied by a transform that
     /// refuses everything.
