@@ -280,8 +280,9 @@ fn spawn_accept(
                         continue;
                     }
                     let registry = registry.clone();
+                    let shutdown = shutdown.clone();
                     thread::spawn(move || {
-                        if let Err(e) = serve_conn(&stream, &registry) {
+                        if let Err(e) = serve_conn(&stream, &registry, &shutdown) {
                             eprintln!("registry: connection error ({e})");
                         }
                     });
@@ -377,7 +378,7 @@ fn spawn_prewarm(
 /// - **wire read ops** (`toc`/`cat`/`extract`/`links`/`root`/`diff`/`resolve`)
 ///   — the frozen contract, strict-decoded and served from the bound
 ///   workspace's warm engine.
-fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
+fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
     // The connection's bound workspace (canonical path), set by `hello`.
@@ -392,9 +393,76 @@ fn serve_conn(stream: &UnixStream, registry: &Registry) -> io::Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let out = handle_line(registry, &mut attached, &mut rev, &line);
+        // Set by an ACCEPTED `sub` and by nothing else — see `push_loop`.
+        let mut armed: Option<u64> = None;
+        let out = handle_line(registry, &mut attached, &mut rev, &mut armed, &line);
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
+        if let Some(from_seq) = armed {
+            // U20b — THE FRAMING ANSWER. From here this connection carries
+            // Notification frames and nothing else: we return out of the read
+            // loop, so no further inbound line is ever decoded on it and no
+            // frame can be misclassified as a response. The client that wants
+            // both planes opens two connections; the client that never sends
+            // `sub` sees a byte-identical socket. Desync is not avoided here,
+            // it is unrepresentable.
+            let ws = attached
+                .as_deref()
+                .expect("an accepted sub proves a bound workspace")
+                .to_path_buf();
+            return push_loop(registry, &ws, &mut writer, rev, from_seq, shutdown);
+        }
+    }
+    Ok(())
+}
+
+/// How often a subscriber looks for frames it has not yet delivered.
+///
+/// Distinct from [`crate::ring::DETECT_CADENCE`] and deliberately shorter: this
+/// is the cost of NOTICING a frame (a mutex and a seq compare), not of finding
+/// one (a corpus fold). Keeping them separate is what lets many subscribers
+/// share one workspace's folds and still each deliver promptly — a subscriber
+/// that woke only on its own detection cycle would sit on frames another
+/// subscriber's cycle had already produced.
+const PUSH_TICK: Duration = Duration::from_millis(50);
+
+/// The push channel: drive detection, deliver undelivered frames, repeat.
+///
+/// Ends on client disconnect (the write fails — a broken pipe is the normal
+/// end of a subscription, not an error to report), on daemon shutdown, or when
+/// this thread is the last thing holding the connection. The [`SubGuard`] is
+/// what keeps the reaper off this workspace for the whole of that lifetime, and
+/// it releases on EVERY exit path because it releases on drop.
+///
+/// [`SubGuard`]: crate::ring::SubGuard
+fn push_loop(
+    registry: &Registry,
+    ws: &Path,
+    writer: &mut UnixStream,
+    rev: Rev,
+    from_seq: u64,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let ring = registry.ring(ws);
+    // Registered BEFORE the first detect: a subscription that could be reaped
+    // between arming and its first cycle is a subscription with a silent hole.
+    let _subscribed = ring.subscribe();
+    let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
+    let mut delivered = from_seq;
+    while !shutdown.load(Ordering::SeqCst) {
+        // A detection failure never ends a subscription: an unreadable
+        // workspace is transient (a checkout, a network mount blinking), and
+        // the next cycle re-reads it. Silence would be the wrong answer too —
+        // the operator gets the same stderr line the sidecar's loop emits.
+        if let Err(e) = ring.detect(&ws_root) {
+            eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
+        }
+        for frame in ring.frames_after(delivered) {
+            wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;
+            delivered = frame.delta.seq;
+        }
+        writer.flush()?;
+        thread::sleep(PUSH_TICK);
     }
     Ok(())
 }
@@ -412,6 +480,7 @@ fn handle_line(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
     rev: &mut Rev,
+    armed: &mut Option<u64>,
     line: &str,
 ) -> String {
     let value: Value = match serde_json::from_str(line) {
@@ -453,7 +522,8 @@ fn handle_line(
             if *rev == Rev::V3 {
                 wire_serve::rev::rename_request(&mut obj);
             }
-            let (response, duration_us) = serve_wire(registry, attached.as_deref(), &obj, *rev);
+            let (response, duration_us) =
+                serve_wire(registry, attached.as_deref(), armed, &obj, *rev);
             wire_line(&response, *rev, duration_us)
         }
     }
@@ -529,14 +599,14 @@ const SERVER_NAME: &str = "meridian-daemon/0.1";
 
 /// The capability set the resident daemon serves (v2 §3.2 discovery honesty):
 /// the wire read ops answered from the resident engine PLUS the write op
-/// (`splice`, W1 — a BARE meridian-fs commit). NOT `sub` (P2), and `hello` itself
-/// is answered but is not a cap — an op is in `caps` or answers `unknown_op`,
-/// never both. Field-only caps (`resolve.content`, `links.require_root`, the
+/// (`splice`, W1 — a BARE meridian-fs commit) and, since U20b, `sub` — armed and
+/// advertised in the SAME commit, because an op is in `caps` or answers
+/// `unknown_op`, never both. `hello` itself is answered but is not a cap. Field-only caps (`resolve.content`, `links.require_root`, the
 /// `splice.*` amendments) name the surfaces the arms honor; `splice.verdicts` is
 /// the §11.1 surface, served `[]` (the daemon loads no pack yet). The S2/L22 law
 /// holds: `splice ∈ caps` ⇒ `node_rev` rides every `toc`/`cat`/`extract` node,
 /// which the shared read arms already emit.
-const CAPS: [&str; 16] = [
+const CAPS: [&str; 17] = [
     "toc",
     "cat",
     "extract",
@@ -557,6 +627,10 @@ const CAPS: [&str; 16] = [
     // it, so it advertises it; a sidecar neither advertises it nor serves it
     // (answers `daemon_only`).
     "view_path",
+    // U20b — the push channel (§4.7). Armed in the same commit that advertises
+    // it. A `sub` turns THIS connection into a push-only channel; a client that
+    // never sends it sees a byte-identical socket.
+    "sub",
 ];
 
 /// The resident-engine handshake (§4, U3): strict-decode the `hello` (asserting
@@ -672,6 +746,7 @@ fn hello_body(
 fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
+    armed: &mut Option<u64>,
     obj: &Map<String, Value>,
     rev: Rev,
 ) -> (wire::Response, Option<u64>) {
@@ -681,7 +756,7 @@ fn serve_wire(
             // U7 measure point: the dispatch call alone (after decode, before
             // the response render) — checked µs, never a lossy `as`.
             let started = Instant::now();
-            let body = dispatch_read(registry, attached, id, op, rev == Rev::V3);
+            let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
             let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
             (body, Some(duration_us))
         }
@@ -709,8 +784,8 @@ fn serve_wire(
 /// resident WRITE path — a BARE meridian-fs commit through the shared choke-point,
 /// reading + writing disk directly (independent of the warm engine; the next read
 /// rebuilds). `hello` is intercepted upstream (the handshake binds the
-/// connection); `sub` (P2) is not served yet and answers `unknown_op` (§3.2
-/// discovery honesty). `id` rides only into the splice receipt line (§6.1).
+/// connection); `sub` (U20b) arms the push channel and hands the connection to
+/// `push_loop`. `id` rides only into the splice receipt line (§6.1).
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
@@ -718,6 +793,7 @@ fn serve_wire(
 fn dispatch_read(
     registry: &Registry,
     attached: Option<&Path>,
+    armed: &mut Option<u64>,
     id: Option<u64>,
     op: Op,
     v3: bool,
@@ -794,11 +870,22 @@ fn dispatch_read(
             })
         }),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
-            // The resident daemon holds no delta ring: the P2 pre-warm watcher is
-            // latency-only (it re-warms the engine, emits no deltas), and the ring
-            // lands only when subscriptions (`sub`) do. So a same-root diff is
-            // truthfully empty; any other range is `root_unknown` → full resync
-            // (degrade to re-derive, never to wrong data).
+            // U20b — the daemon now HOLDS a ring per subscribed workspace, but
+            // `diff` deliberately does not read it yet: serving replay from the
+            // ring is contract surface (§7.3 replay ≡ live at this host) and it
+            // is a NAMED FOLLOW-ON, not this unit's scope. So the answer is
+            // unchanged — a same-root diff is truthfully empty, any other range
+            // is `root_unknown` → full resync. That is a degrade to re-derive,
+            // never wrong data: the ring's frames and a re-derived diff describe
+            // the same bytes, so the only cost of not reading it is a resync the
+            // client would otherwise skip.
+            //
+            // The same holds one line up for `root`'s `seq`, which stays `0`
+            // rather than reporting a ring tip: a client that subscribes from a
+            // stale-low `seq` replays from the retained window (correct) or
+            // falls outside it and resyncs (correct). Both surfaces read the
+            // ring together, or neither does — splitting them is what would
+            // make one of them lie.
             let current = engine_root(engine);
             if from_root == current && to_root == current {
                 Ok(ResponseBody::Diff {
@@ -915,11 +1002,55 @@ fn dispatch_read(
         // `read`/`check_write`/`create` land here only on a NON-v3 connection
         // (the guarded arms above take v3): absent from the frozen v2 caps →
         // `unknown_op`.
-        Op::Hello { .. }
-        | Op::Sub { .. }
-        | Op::Read { .. }
-        | Op::CheckWrite { .. }
-        | Op::Create { .. } => Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp))),
+        // U20b §4.7 — the push channel. The SUBSCRIPTION is armed here and the
+        // connection converts after the ack is written (`serve_conn`); this arm
+        // only decides whether it MAY, and answers the anchor.
+        //
+        // **The gate (S2), and it is structural.** A subscription cannot observe
+        // a workspace a composed read on this connection would refuse, because
+        // both stand behind the same two per-connection facts, both already
+        // established above: the `hello` bind (no bound workspace ⇒ the
+        // `bad_request` this function opens with) and the deny ceiling
+        // (enforced at that bind, so a denied workspace never binds at all).
+        //
+        // **What `sub` deliberately does NOT take: an actor.** Ruled by the
+        // advisor (U20a Q1): the delta stream is not actor-scoped information —
+        // frames carry identities, revs and spans, never content bytes. A
+        // per-connection actor would be the first ambient identity in a decoder
+        // whose own law is "wire input, never ambient". Actor-scoped streams are
+        // a contract amendment for ZT, never an implementation detail.
+        Op::Sub { from_seq } => {
+            let ring = registry.ring(ws);
+            if !ring.can_anchor(from_seq) {
+                let mut e = ErrorBody::new(ErrorCode::RootUnknown);
+                e.message = Some(
+                    "from_seq outside this epoch's retained history — catch up by diff-by-root (§7.1)"
+                        .into(),
+                );
+                return Err(Box::new(e));
+            }
+            // PRIME BEFORE THE ACK. The watcher's first reconcile adopts the
+            // world silently, so a subscription that acked first would swallow
+            // every edit landing before its first detection cycle — the client
+            // holding an ack, a healthy socket, and no frame for a change that
+            // really happened. Measured: the end-to-end gate failed exactly this
+            // way until the priming moved here.
+            let root = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
+            // Armed only on the success path: a refused `sub` leaves the
+            // connection an ordinary request channel, which is what lets a
+            // client retry the handshake after a resync.
+            *armed = Some(from_seq);
+            // The §4.7 ack body — the subscription's anchor tense, and now
+            // literally so: `root` is the baseline the priming settled on, so
+            // the first frame's `root_before` is the root this ack named.
+            Ok(ResponseBody::Root {
+                root,
+                seq: ring.seq(),
+            })
+        }
+        Op::Hello { .. } | Op::Read { .. } | Op::CheckWrite { .. } | Op::Create { .. } => {
+            Err(Box::new(ErrorBody::new(ErrorCode::UnknownOp)))
+        }
     }
 }
 

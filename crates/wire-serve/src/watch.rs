@@ -1,6 +1,5 @@
-//! F5-WATCH — external-change reconciliation at the serve-loop line
-//! boundary (single-threaded by charter; no notify thread exists or
-//! arrives). `WatchState` tracks the world at the ring tip; each reconcile
+//! F5-WATCH — external-change reconciliation: the CLASSIFIER, shared by both
+//! hosts (U20b). `WatchState` tracks the world at the ring tip; each reconcile
 //! runs the three-way disposition:
 //!
 //! - snapshot root == watch root → nothing (a cycle finding nothing emits
@@ -24,122 +23,89 @@
 //! plane, and the fact plane is what we serve (013 posture). STOP tripwire
 //! if a frozen worked value ever contradicts.
 //!
-//! **Stated degrade (no pin):** an external write landing in the same
-//! dispatch window as an internal commit can break ring-chain contiguity;
+//! **Stated degrade (no pin) — SIDECAR ONLY:** an external write landing in the
+//! same dispatch window as an internal commit can break ring-chain contiguity;
 //! `diff` over crossing ranges then answers `root_unknown` → full resync —
-//! degrades to re-derive, never to wrong data (§7.3 posture).
+//! degrades to re-derive, never to wrong data (§7.3 posture). The registry does
+//! NOT inherit this degrade: its detector snapshots under the workspace write
+//! flock, so it never observes a batch mid-landing (U20a §4, advisor-passed).
+//! The difference is the DRIVER's, not the classifier's — which is exactly the
+//! split that lets one classifier serve two hosts.
+//!
+//! # What is here and what is not
+//! The three-way disposition, the rename ruling and the wire projection are
+//! shared: they are the law of what a change MEANS. The DRIVER is each host's
+//! own — the sidecar reconciles on demand at its serve-loop line boundary
+//! (`sidecar::demand`, which prices a line before running it), the registry on a
+//! subscription's detection cycle. A host that copied the classifier to change
+//! its driver would be forking the law to change the schedule.
 
-use wire::{DeltaFile, DeltaFrame, ErrorBody, FileChange, NodeRev, Op, Path, Root};
+use wire::{DeltaFile, DeltaFrame, ErrorBody, FileChange, NodeRev, Path, Root};
 
 use crate::ring::RootRing;
 
-/// **The demand law.** Does this op READ the ring — the reconcile's only
-/// product?
-///
-/// A reconcile produces exactly two things: ring frames (the Delta stream and
-/// its `seq`) and the watcher's baseline. It makes NO root fresh — every arm
-/// that prints a root folds its own at its own observation point
-/// (`wire_serve::ambient_root`), which is why `toc`, `hello` and `read` print a
-/// root here and still owe no reconcile. So the axis is the RING, not the
-/// printed root: an op owes a reconcile exactly when it reads `seq` or the
-/// retained batches. Ops that do not (`cat`, `extract`, `check_write`, …) cost
-/// O(target) instead of two full corpus folds for a value they never read.
-///
-/// Freshness is unchanged because no observer's tense moves: every root a
-/// client holds is still folded at the op that handed it over, and every ring
-/// reader still reconciles immediately before reading the ring. The one tense
-/// that does move is the epoch BASELINE — it is primed at the first ring
-/// observation instead of the first line, so a `diff` anchored on a root the
-/// client learned from a ring-blind op (`toc`, `hello`, `read`) before that
-/// point answers `root_unknown` → resync. That is the §7.1 late law's existing
-/// category and the ruled degrade direction: re-derive, never wrong data.
-///
-/// Exhaustive by construction — no wildcard arm. A new op does not compile
-/// until someone classifies it, which is the point: a misclassification here is
-/// a freshness regression no timing test would catch.
-pub(crate) const fn observes_ring(op: &Op) -> bool {
-    match op {
-        // Ring readers: `epoch.seq()` / the retained batches ARE their answer.
-        //
-        // The write ops are here for a second reason — they read `epoch.seq()`
-        // to number their own Delta and chain it onto the tip, so an
-        // unreconciled external change must be emitted FIRST, or the two roots
-        // do not meet and `diff` over the crossing range degrades to
-        // `root_unknown` (the §7.3 posture, module header).
-        Op::Root
-        | Op::Diff { .. }
-        | Op::Links { .. }
-        | Op::Sub { .. }
-        | Op::Splice { .. }
-        | Op::Create { .. } => true,
-        // Ring-blind: O(target) document reads that print no ring fact, or
-        // print a root they fold themselves. `resolve` walks the corpus on its
-        // own (the §4.5 walk plane — a different corpus from the §12 hash
-        // domain, and not the ring). `view_path` refuses `daemon_only` before
-        // touching anything.
-        Op::Hello { .. }
-        | Op::Toc { .. }
-        | Op::Cat { .. }
-        | Op::Extract { .. }
-        | Op::Read { .. }
-        | Op::CheckWrite { .. }
-        | Op::Resolve { .. }
-        | Op::ViewPath { .. } => false,
-    }
-}
-
-/// Does this op MOVE the world? Only a write leaves the watcher's baseline
-/// behind its own commit, and only the post-dispatch reconcile rebases it —
-/// without that the next external delta chains from the PRE-commit root, which
-/// is the contiguity break the module header records as a stated degrade.
-/// Conservative by design: a `dry` splice moves nothing and still pays the
-/// rebase, because dry-ness is a field, not an op.
-pub(crate) const fn advances_ring(op: &Op) -> bool {
-    match op {
-        Op::Splice { .. } | Op::Create { .. } => true,
-        Op::Hello { .. }
-        | Op::Toc { .. }
-        | Op::Cat { .. }
-        | Op::Extract { .. }
-        | Op::Read { .. }
-        | Op::CheckWrite { .. }
-        | Op::Resolve { .. }
-        | Op::ViewPath { .. }
-        | Op::Root
-        | Op::Diff { .. }
-        | Op::Links { .. }
-        | Op::Sub { .. } => false,
-    }
-}
-
 /// The world at the ring tip: the watcher's baseline + its folded root.
 /// Unprimed until the first successful snapshot — the epoch's baseline.
-pub(crate) struct WatchState {
+#[derive(Debug)]
+pub struct WatchState {
     watcher: fs::Watcher,
     root: Option<Root>,
 }
 
 impl WatchState {
-    pub(crate) fn new(root: &fs::WorkspaceRoot) -> Self {
+    /// An unprimed watcher for `root`: the first reconcile adopts the world as
+    /// its baseline and emits nothing.
+    #[must_use]
+    pub fn new(root: &fs::WorkspaceRoot) -> Self {
         WatchState {
             watcher: fs::Watcher::new(root.clone()),
             root: None,
         }
     }
+
+    /// The baseline root this watcher last rebased on (`None`: unprimed).
+    ///
+    /// For a driver that wants to know whether a reconcile has anything to do
+    /// BEFORE paying for one — the registry's detector compares a freshly folded
+    /// disk root against this to decide whether to take the workspace write
+    /// flock at all. Comparing here is not a shortcut around the disposition: an
+    /// equal root is exactly the disposition's first arm ("a cycle finding
+    /// nothing emits nothing"), reached without contending for a lock.
+    #[must_use]
+    pub fn root(&self) -> Option<&Root> {
+        self.root.as_ref()
+    }
 }
 
-/// One reconcile step, run on DEMAND: before every line that reads the ring
-/// ([`observes_ring`]), after every line that moved the world
-/// ([`advances_ring`]), and on both sides of every line of a subscribed
-/// session — a live subscription is a standing observer of the delta stream.
-/// Returns the emitted external frame, if any — the caller flushes
-/// subscriptions.
-pub(crate) fn reconcile(
+/// One reconcile step. Returns the emitted external frame, if any — the caller
+/// flushes it to subscribers.
+///
+/// **The caller owns the schedule, and the schedule is a correctness argument.**
+/// The sidecar runs this on demand at its line boundary (`sidecar::demand`
+/// prices each line first). The registry runs it on a subscription's detection
+/// cycle, holding the workspace write flock so no batch is observed
+/// mid-landing. Both are single-producer per ring, which is what keeps the
+/// chain contiguous — a second concurrent producer against one ring would
+/// duplicate a `seq` or break the root chain, and no lock inside this function
+/// could repair that.
+///
+/// # Errors
+/// A snapshot or classification failure. A caller driving this in a loop should
+/// log and retry the next cycle: an unreadable workspace is a transient
+/// condition, never a reason to tear down a subscription.
+///
+/// # Panics
+/// If the watcher's baseline is unset on the arm that classifies against it —
+/// unreachable by construction, since that arm is guarded by `watch.root` being
+/// `Some`. The panic is the assertion, not a failure mode: a watcher that
+/// classified against no baseline would emit a Delta describing the whole
+/// corpus as new.
+pub fn reconcile(
     ws_root: &fs::WorkspaceRoot,
     ring: &mut RootRing,
     watch: &mut WatchState,
 ) -> Result<Option<DeltaFrame>, Box<ErrorBody>> {
-    let (files, disk_root) = wire_serve::domain_snapshot(ws_root)?;
+    let (files, disk_root) = crate::domain_snapshot(ws_root)?;
     match &watch.root {
         // Priming: the epoch's baseline is the first successful snapshot.
         None => {
@@ -163,7 +129,7 @@ pub(crate) fn reconcile(
             // The ONE production DeltaFrame constructor (§7.3), shared with the
             // commit path in `wire-serve` — `seq` is this epoch ring's current
             // counter, so the frame carries `seq + 1`; the caller advances.
-            let mut frame = wire_serve::write::assemble_delta(
+            let mut frame = crate::write::assemble_delta(
                 ring.seq(),
                 watch_root.clone(),
                 disk_root.clone(),
@@ -206,7 +172,7 @@ fn external_effects(
         // Delta describing it must still be emitted. Faults are not lost for that —
         // they ride the frame as `ArmedFault` findings, the same channel and the same
         // words the guarded write's call site carries.
-        effects.extend(wire_serve::reaction::feed_landed_change(
+        effects.extend(crate::reaction::feed_landed_change(
             ws_root,
             b.document(),
             a.document(),

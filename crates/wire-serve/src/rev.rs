@@ -404,3 +404,67 @@ mod tests {
         assert_eq!(frame["delta"]["files"][0]["path"], json!("root"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// The v2-reserved-field registry (advisor ruling, 2026-08-03)
+// ---------------------------------------------------------------------------
+
+/// WHERE in a frame a reserved field appears. A key is stripped at its declared
+/// position only — "a key by this name, anywhere" would be a search, not a law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    /// The root of a Notification frame (`{"delta":…}`, no `id`).
+    NotificationRoot,
+    /// The root of a response frame.
+    ResponseRoot,
+}
+
+/// One field that postdates frozen v2 and must never reach a v2 session.
+#[derive(Debug, Clone, Copy)]
+pub struct ReservedField {
+    /// The serialized key.
+    pub key: &'static str,
+    /// Where it appears.
+    pub position: Position,
+    /// WHO added it — recorded because the exposing unit is usually not the
+    /// author, which is the whole reason this table is shared rather than a
+    /// per-unit authorship mark.
+    pub author: &'static str,
+    /// Why it postdates v2, in one line.
+    pub why: &'static str,
+}
+
+/// **THE TABLE — append-only.** Every field that postdates frozen v2, in one
+/// place, consulted by the v2 projection at BOTH hosts (Law 3: one
+/// implementation, two hosts).
+///
+/// # Why a shared table and not a per-unit mark
+/// A per-unit authorship mark cannot gate a leak whose author is not the unit
+/// exposing it. Measured case: U20b served `sub` from the resident daemon and
+/// its notification frames carry ZERO U20b-authored fields — there was nothing
+/// for a U20b mark to key on, while the leaking field (`effects`) belongs to the
+/// C3 reaction plane and rides a surface both hosts emit. Two hosts re-applying
+/// one mark is two chances to diverge; one table consulted twice is neither.
+///
+/// # The discipline
+/// A new v3-additive field ships with its row **in the same commit**. The
+/// key-set pins (`u20b_v2_notification_shape.rs` and the U11 ladder's frozen
+/// frame) are what catch a field that forgets its row: they assert an exact key
+/// set, so a new key fails loudly rather than passing silently. A value-pinning
+/// sweep cannot see this class at all — a v3-only FIELD changes no VALUE.
+pub const V2_RESERVED_FIELDS: &[ReservedField] = &[ReservedField {
+    key: "effects",
+    position: Position::NotificationRoot,
+    author: "C3 reaction plane",
+    why: "the reaction sibling of the frozen §7.1 Delta; `skip_serializing_if` \
+          skips on an EMPTY VALUE, never on a v2 SESSION, so a fired HOOK put it \
+          on a v2 wire",
+}];
+
+/// Is `key` reserved at `position` — i.e. must a v2 session never see it?
+#[must_use]
+pub fn is_reserved(key: &str, position: Position) -> bool {
+    V2_RESERVED_FIELDS
+        .iter()
+        .any(|field| field.key == key && field.position == position)
+}

@@ -129,13 +129,18 @@ fn hello_resolves_pins_negotiates_and_lists_caps_in_one_round_trip() {
         // not just op grain.
         "splice.plan_edits",
         "splice.pin",
+        // U20b: `sub` moved from the absent list to this one — the daemon now
+        // SERVES the push channel, so §3.2 requires it to advertise it. The law
+        // this fixture pins is unchanged ("in `caps` or answers `unknown_op`,
+        // never both"); only which side of it `sub` sits on has changed.
+        "sub",
     ] {
         assert!(
             caps.contains(&served.to_string()),
             "caps list `{served}`: {hi}"
         );
     }
-    for absent in ["hello", "sub", "root"] {
+    for absent in ["hello", "root"] {
         assert!(
             !caps.contains(&absent.to_string()),
             "caps must not list `{absent}` (§3.2 discovery honesty; v3 hides `root`): {hi}"
