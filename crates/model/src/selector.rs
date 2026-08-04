@@ -217,7 +217,7 @@ pub enum GreyReason {
     LockRefused { reason: String },
 }
 
-/// Why an edge renders red — the three reasons kept distinct (decision #9).
+/// Why an edge renders red — the reasons kept distinct (decision #9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RedReason {
     /// The address resolves, but `live_rev != pinned_rev` — measured content
@@ -232,6 +232,31 @@ pub enum RedReason {
     /// A pinned heading/page selector that resolves to NOTHING (rename/move
     /// beyond recognition). Carries the live toc's nearest heading candidates.
     SelectorUnresolved { candidates: Vec<String> },
+    /// A cross-root address whose root this machine BINDS AND READS, and whose
+    /// path names nothing in that root's corpus — a MEASURED ABSENCE (U21).
+    ///
+    /// **It is red, and the distinction from grey is the whole point.** Grey is
+    /// *outside sight*: the ledger cannot measure, so it declines to claim. Here
+    /// the engine looked, inside a corpus it holds, and the file is not there.
+    /// That is a claim, and reporting it grey is the false negative
+    /// [`GreyReason::Unmounted`] exists to prevent, read from the other side.
+    ///
+    /// **It is not [`SelectorUnresolved`].** That word asserts the PAGE resolved
+    /// and the selector did not. For a cross-vault miss the page itself is
+    /// absent, so `selector-unresolved` names the wrong cause in the engine's
+    /// own voice — which is exactly what shipped before U21.
+    ///
+    /// [`SelectorUnresolved`]: RedReason::SelectorUnresolved
+    FileNotFound {
+        /// The root the miss happened inside — never the ambient root.
+        root: addr::MountName,
+        /// The path that is missing INSIDE that root.
+        path: String,
+        /// The selector as the page declared it (`None` = page grain). Carried
+        /// so the refusal can echo the address the author wrote; the parts are
+        /// joined at the render door and nowhere else (R1.6).
+        selector: Option<String>,
+    },
 }
 
 /// The tone of a color (`green` / `grey` / `red`) — the stable output word.
@@ -247,6 +272,118 @@ pub fn color_tone(color: &Color) -> &'static str {
         Color::Green => "green",
         Color::Grey(_) => "grey",
         Color::Red(_) => "red",
+    }
+}
+
+/// The reason word behind a non-green color (`None` for green) — the stable
+/// output reason, shared by the human render and the `--json` shape.
+#[must_use]
+pub fn color_reason(color: &Color) -> Option<&'static str> {
+    match color {
+        Color::Green => None,
+        Color::Grey(GreyReason::ImmutableRoot) => Some("immutable-root"),
+        Color::Grey(GreyReason::DeclaredUnpinned) => Some("declared-unpinned"),
+        Color::Grey(GreyReason::Ambiguous) => Some("ambiguous"),
+        Color::Grey(GreyReason::SupersededAlgo) => Some("superseded-algo"),
+        Color::Grey(GreyReason::UnverifiableFingerprint { .. }) => Some("unverifiable-fingerprint"),
+        Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
+        Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
+        // S3-R6's vocabulary, not a local spelling: `grey(unmounted)` renders
+        // here as the reason word `unmounted` behind the `grey` tone, which
+        // `color_label` composes into `grey unmounted (root 'x')`. The same
+        // ruling binds u14i, U14 and U15 — do not re-spell it.
+        Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
+        // S3-R49 — the BARE form of the ONE shared word. `config`'s mount plane
+        // wraps the same const as `grey(path-unseeable)`; this plane takes it
+        // bare and `color_label` wraps. The two agree by construction: a
+        // compile-time assertion in `config` fails the BUILD if they drift.
+        Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
+        Color::Red(RedReason::Drifted) => Some("content-drifted"),
+        Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
+        Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
+        // U21 — the cross-root MEASURED ABSENCE. It is the hyphenated plane
+        // spelling of the word `wire::ErrorCode::FileNotFound` already ships
+        // (address-grammar § 10 row 2), REUSED and never minted: a synonym
+        // here would be the cross-crate re-spelling S3-R6 forbids.
+        Color::Red(RedReason::FileNotFound { .. }) => Some("file-not-found"),
+    }
+}
+
+/// The detail a reason carries beyond its word (`None` when the word says it
+/// all) — WHICH fingerprint-triple member is unknown, or WHY the lock refused.
+/// Split from [`color_reason`] so the reason stays a stable enum-like token for
+/// machines while the human render still names the specific damage.
+#[must_use]
+pub fn color_detail(color: &Color) -> Option<String> {
+    match color {
+        Color::Grey(GreyReason::UnverifiableFingerprint { unknown }) => {
+            Some(format!("unknown {}", unknown.join(", ")))
+        }
+        Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
+        // The missing mount NAME is the detail that lets the human line teach
+        // (D8). The full teaching refusal is `selector::render_unmounted`; this
+        // is the one-line form the listing carries, and it still names the root
+        // — a refusal that cannot say WHICH mount is missing teaches nothing.
+        Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
+        // The PATH is the detail here, never the mount entry — the entry is
+        // already correct, which is the whole distinction S3-R43 draws.
+        Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
+            Some(format!("{path} ({detail})"))
+        }
+        // BOTH halves are the detail here. The root alone would not say what is
+        // missing, and the path alone would read as an ambient file — which is
+        // the misreading the root qualification exists to stop.
+        Color::Red(RedReason::FileNotFound { root, path, .. }) => {
+            Some(format!("root '{root}' holds no '{path}'"))
+        }
+        _ => None,
+    }
+}
+
+/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
+/// reason word already says everything.
+///
+/// **S3-R51 — this is the output path `render_unmounted` did not have.** Round 1
+/// shipped a pinned teaching-refusal exemplar that NOTHING called: the walk
+/// rendered [`color_label`] and the refusal existed only as a `const` and its
+/// tests. That is S3-R23(4)'s weakened middle — an assertion claiming a wording
+/// no user could ever see.
+///
+/// **WIRED rather than struck**, and the reason is that the two options are not
+/// symmetric. D8 requires a *teaching* refusal naming the missing mount, and it
+/// is a gate on this unit's card; striking the renderer would have left that gate
+/// satisfied only in its weaker half — the reason word names the mount, but
+/// nothing teaches the fix — and narrowing a criterion is the Advisor's pen
+/// (R27), not an implementer's. Wiring closes the weakened middle AND discharges
+/// D8 in full, so it strictly dominates. The two never collided, so nothing
+/// routed up.
+///
+/// `address` is the ref as the page DECLARED it — the refusal echoes what the
+/// author wrote, not what resolution made of it.
+#[must_use]
+pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
+    match color {
+        Color::Grey(GreyReason::Unmounted { root }) => Some(render_unmounted(root, address)),
+        Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
+            Some(render_path_unseeable(root, path, detail))
+        }
+        // U21 — WIRED at birth, for the reason S3-R51 records: a pinned
+        // teaching refusal nothing calls is an assertion claiming a wording no
+        // user can ever see. The parts go in separately and are joined inside
+        // the renderer; `address` is deliberately NOT forwarded, because a
+        // caller-supplied address string is the one way this refusal could name
+        // a root that disagrees with the root that actually missed.
+        Color::Red(RedReason::FileNotFound {
+            root,
+            path,
+            selector,
+        }) => Some(render_file_not_found(
+            root,
+            path,
+            selector.as_deref(),
+            target_is_non_markdown(path),
+        )),
+        _ => None,
     }
 }
 
@@ -606,6 +743,20 @@ pub const RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR: &str = "red(file-not-found): the 
 /// derived where it is displayed and nowhere else. It also removes the only way
 /// this function could lie, which is a caller passing an `address` whose root
 /// disagrees with `root`.
+/// **Does this missing path fall outside the markdown-only v1 corpus?** — the
+/// ONE owner of the md-only question, so the refusal's teaching leg and any
+/// later caller cannot answer it two ways.
+///
+/// A path with NO extension is markdown as far as this engine is concerned: the
+/// second of the three rules appends `.md`, so `sessions:notes` addresses
+/// `notes.md` and its absence is an ordinary miss, not a v1 limit.
+#[must_use]
+pub fn target_is_non_markdown(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| !ext.eq_ignore_ascii_case("md"))
+}
+
 #[must_use]
 pub fn render_file_not_found(
     root: &addr::MountName,
@@ -1236,11 +1387,40 @@ mod u21_file_not_found {
         let corpus = crate::RootedCorpus::ambient(&docs);
         let mounts = addr::MountSet::default();
 
-        // Ambient miss — no root.
+        // Ambient miss — no root, and the PARTS the refusal would need come
+        // back from the resolver rather than being re-split by the caller.
         assert_eq!(
             index.resolve_ref("absent.md", "from.md", &corpus, &mounts),
-            crate::RefResolution::NotFound { root: None },
+            crate::RefResolution::NotFound {
+                root: None,
+                path: "absent.md".to_owned(),
+                selector: None,
+            },
             "an ambient miss names no root, and says so explicitly",
+        );
+
+        // A miss inside a MOUNTED root names that root, and hands back the path
+        // and selector separately. **This is the assertion that keeps the
+        // caller honest**: without it, the only way to author `file_not_found`
+        // scoped to a root is to re-split the spelling that was handed in — a
+        // joined string address taken apart in a machine surface (R1.6).
+        let sessions = addr::MountName::parse("sessions").expect("a name");
+        let empty: BTreeMap<String, Document> = BTreeMap::new();
+        let corpus = crate::RootedCorpus::ambient(&docs).with_root(
+            sessions.clone(),
+            crate::RootKind::Vault,
+            &empty,
+        );
+        let mounts = addr::MountSet::new([sessions.clone()]);
+        assert_eq!(
+            index.resolve_ref("sessions:notes.md#Design", "from.md", &corpus, &mounts),
+            crate::RefResolution::NotFound {
+                root: Some(sessions),
+                path: "notes.md".to_owned(),
+                selector: Some("Design".to_owned()),
+            },
+            "a rooted miss hands back the root, the path INSIDE it, and the \
+             selector — the three parts the refusal names",
         );
     }
 }

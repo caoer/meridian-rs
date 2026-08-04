@@ -1297,6 +1297,56 @@ pub enum RefreshErrorCode {
 pub struct FileLinks {
     pub resolved: BTreeMap<String, u64>,
     pub unresolved: BTreeMap<String, u64>,
+    /// v2 §4.6, U21 — edges that resolved INSIDE a mounted root, keyed by root
+    /// name and then by the path inside THAT root.
+    ///
+    /// **Two levels, never one joined `root:path` key** (U21 Q5): a rooted
+    /// destination is two facts, and folding them into one string would put a
+    /// joined address in a machine surface (decision 14 / R1.6) and collide
+    /// with any ambient path that legitimately contains a colon.
+    ///
+    /// Omitted when empty, so a single-root corpus serializes exactly the bytes
+    /// it served before U21.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resolved_rooted: BTreeMap<String, BTreeMap<String, u64>>,
+    /// v2 §4.6, U21 — edges the address plane REFUSED, keyed by the linkpath as
+    /// written.
+    ///
+    /// **Separate from `unresolved`, because Q3 ruled they are different facts
+    /// with different exit codes.** An ambient dangling link is an ordinary
+    /// authoring state in a working vault and stays first-class in
+    /// `unresolved`. A refused edge means the author believed a mount
+    /// relationship that does not hold, or wrote something that is not an
+    /// address — and before U21 both were reported as `unresolved` at exit 0.
+    ///
+    /// Omitted when empty, for the same reason `resolved_rooted` is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, RefusedEdge>,
+}
+
+/// One refused edge on the §4.6 map: the colour plane's own verdict, rendered.
+///
+/// The `color`/`reason`/`detail` triple is the SAME vocabulary the walk plane
+/// renders (`view::walk::color_tone` / `color_reason` / `color_detail`) — a
+/// second spelling of a tone or a reason word here would be the cross-crate
+/// re-spelling S3-R6 forbids, and it is how a board and a walk start
+/// disagreeing about one address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedEdge {
+    /// `grey` or `red` — the tone.
+    pub color: String,
+    /// The reason word behind the tone (`unmounted`, `path-unseeable`,
+    /// `file-not-found`, `bad-ref`).
+    pub reason: String,
+    /// What the reason word does not say by itself — absent when it says it
+    /// all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The full teaching refusal, verbatim: subject, cause at its grain,
+    /// partial state, and a runnable fix.
+    pub message: String,
+    /// How many times the page wrote this linkpath.
+    pub count: u64,
 }
 
 /// The armed-fact set for one batch (v2 §4.4): the normative receipt content

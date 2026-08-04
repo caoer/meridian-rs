@@ -23,8 +23,10 @@
 
 use std::collections::BTreeMap;
 
+use addr::MountSet;
 use model::{
-    ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, SpliceRequest,
+    ByteSpan, CorpusIndex, Document, Edit, EditKind, HpathSeg, Node, NodeKind, Ref, RefResolution,
+    RootedCorpus, SpliceRequest,
 };
 
 /// One inbound reference: which file, where, linking how.
@@ -35,13 +37,46 @@ pub struct Backlink {
 }
 
 /// One file's outgoing edges (contract §4.6): per-edge counts, dangling refs
-/// first-class. `resolved` keys are destination corpus paths; `unresolved`
-/// keys are the raw linkpaths as written (no vault file exists to name).
-/// The model-side twin of `wire::FileLinks` (no-serde law).
+/// first-class. `resolved` keys are destination corpus paths in the AMBIENT
+/// root; `unresolved` keys are the raw linkpaths as written (no vault file
+/// exists to name). The model-side twin of `wire::FileLinks` (no-serde law).
+///
+/// **The two cross-root channels are separate maps, and that is Q5's ruling
+/// applied here.** A rooted destination is a root AND a path, and folding it
+/// into one `root:path` key in `resolved` would put a joined string address in
+/// a machine surface — decision 14 / R1.6, the disease this unit is landing the
+/// residue of. It would also collide: a corpus may hold a real ambient file
+/// whose path contains a colon.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileLinks {
     pub resolved: BTreeMap<String, u64>,
     pub unresolved: BTreeMap<String, u64>,
+    /// Edges that resolved INSIDE a mounted root — keyed by root, then by the
+    /// path inside THAT root. A consumer fetching bytes must read the root to
+    /// know which corpus to fetch from; resolving the path against the ambient
+    /// corpus is exactly FINDING 03's wrong-bytes success.
+    pub resolved_rooted: BTreeMap<addr::MountName, BTreeMap<String, u64>>,
+    /// Edges the address owner REFUSED, keyed by the linkpath as written.
+    ///
+    /// **Distinct from `unresolved`, because they are different facts and Q3
+    /// ruled that the exit code must say so.** An ambient dangling link is an
+    /// ordinary authoring state in a working vault. A refused cross-root edge
+    /// means the author believed a mount relationship that does not hold —
+    /// or wrote something that is not an address at all.
+    pub refused: BTreeMap<String, RefusedEdge>,
+}
+
+/// One refused edge: the address owner's own answer, carried structurally, plus
+/// how many times the page wrote it.
+///
+/// The resolution is kept as [`model::RefResolution`] rather than flattened to a
+/// word here. Rendering it — tone, reason word, teaching refusal — is the colour
+/// plane's job (`view::walk`), and a second classification in this crate is how
+/// one address comes to have two answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedEdge {
+    pub resolution: RefResolution,
+    pub count: u64,
 }
 
 /// The §4.6 edge map over the borrowed corpus: every file's outgoing
@@ -58,14 +93,88 @@ pub fn links(
     docs: &BTreeMap<String, Document>,
     path: Option<&str>,
 ) -> BTreeMap<String, FileLinks> {
+    links_with(index, docs, &RootedCorpus::ambient(docs), None, path)
+}
+
+/// [`links`] against a ROOT-KEYED corpus and a mount table — **the form that
+/// asks the address owner** ([`CorpusIndex::resolve_ref`]), and the one U21
+/// exists to add.
+///
+/// Before this, both link-plane resolvers called `resolve_linkpath`, which is
+/// stage-1 and ambient-only and refuses every rooted spelling by construction.
+/// Its `None` was consumed as *"unresolved"* rather than as *"you called the
+/// wrong resolver"*, so a `[[sessions:notes.md]]` whose root was bound,
+/// readable and holding the file was reported UNRESOLVED at exit 0 — a wrong
+/// answer, measured, not inferred.
+///
+/// The ambient shorthand above is the same function with NO mount authority,
+/// so there is ONE precedence here rather than two that agree until one is
+/// edited.
+#[must_use]
+pub fn links_rooted(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    corpus: &RootedCorpus<'_>,
+    mounts: &MountSet,
+    path: Option<&str>,
+) -> BTreeMap<String, FileLinks> {
+    links_with(index, docs, corpus, Some(mounts), path)
+}
+
+/// The one implementation behind [`links`] and [`links_rooted`], distinguished
+/// by whether the caller holds MOUNT AUTHORITY.
+///
+/// **`None` is not an empty table, and conflating the two would mint a lie.**
+/// An EMPTY table is a machine that binds nothing — a fact about the world, and
+/// the address plane rightly refuses a rooted address against it with grey
+/// `unmounted`. `None` is a caller that never consulted a table at all: the
+/// resident daemon, whose warm state is one ambient corpus. Handing it an empty
+/// table would turn "I did not look" into "this machine binds nothing", which
+/// is a claim it has no standing to make — and on most machines a false one.
+///
+/// So a caller with no authority reports a rooted spelling exactly as it did
+/// before U21: `unresolved`, first-class, no refusal. That is the daemon's
+/// stated, deliberate incapacity, and the CLI degrades rather than let it
+/// answer (see `mrd::engine::answer_links`).
+fn links_with(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    corpus: &RootedCorpus<'_>,
+    mounts: Option<&MountSet>,
+    path: Option<&str>,
+) -> BTreeMap<String, FileLinks> {
     docs.iter()
         .filter(|(source, _)| path.is_none_or(|p| p == source.as_str()))
         .map(|(source, doc)| {
             let mut entry = FileLinks::default();
             for (target, _span) in link_nodes(doc) {
-                match resolve_edge(index, source, target) {
-                    Some(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
-                    None => *entry.unresolved.entry(target.to_string()).or_insert(0) += 1,
+                match resolve_edge(index, source, target, corpus, mounts) {
+                    RefResolution::Ambient(dest) => *entry.resolved.entry(dest).or_insert(0) += 1,
+                    RefResolution::Rooted { root, path } => {
+                        *entry
+                            .resolved_rooted
+                            .entry(root)
+                            .or_default()
+                            .entry(path)
+                            .or_insert(0) += 1;
+                    }
+                    // An AMBIENT miss stays first-class and non-refusing — the
+                    // ordinary authoring state, byte-for-byte what it was.
+                    RefResolution::NotFound { root: None, .. } => {
+                        *entry.unresolved.entry(target.to_string()).or_insert(0) += 1;
+                    }
+                    // Everything else is the address owner refusing, and the
+                    // refusal is carried whole rather than collapsed to a word.
+                    resolution => {
+                        let slot = entry
+                            .refused
+                            .entry(target.to_string())
+                            .or_insert(RefusedEdge {
+                                resolution,
+                                count: 0,
+                            });
+                        slot.count += 1;
+                    }
                 }
             }
             (source.clone(), entry)
@@ -82,12 +191,46 @@ pub fn backlinks(
     docs: &BTreeMap<String, Document>,
     target: &str,
 ) -> Vec<Backlink> {
+    backlinks_with(index, docs, &RootedCorpus::ambient(docs), None, target)
+}
+
+/// [`backlinks`] against a ROOT-KEYED corpus and a mount table.
+///
+/// `target` is an AMBIENT corpus path, and that is a v1 non-goal stated rather
+/// than left to be discovered: this enumerates ONE corpus, so a cross-vault link
+/// is visible from the source side only. Threading the mount table here is what
+/// keeps a rooted edge from being counted as an ambient backlink to the same
+/// basename — the reverse direction of FINDING 03.
+#[must_use]
+pub fn backlinks_rooted(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    corpus: &RootedCorpus<'_>,
+    mounts: &MountSet,
+    target: &str,
+) -> Vec<Backlink> {
+    backlinks_with(index, docs, corpus, Some(mounts), target)
+}
+
+/// The one implementation behind [`backlinks`] and [`backlinks_rooted`] — see
+/// [`links_with`] for what `None` mount authority means and why it is not an
+/// empty table.
+fn backlinks_with(
+    index: &CorpusIndex,
+    docs: &BTreeMap<String, Document>,
+    corpus: &RootedCorpus<'_>,
+    mounts: Option<&MountSet>,
+    target: &str,
+) -> Vec<Backlink> {
     docs.iter()
         .flat_map(|(source, doc)| {
             link_nodes(doc)
                 .into_iter()
                 .filter(|(linkpath, _)| {
-                    resolve_edge(index, source, linkpath).is_some_and(|dest| dest == target)
+                    matches!(
+                        resolve_edge(index, source, linkpath, corpus, mounts),
+                        RefResolution::Ambient(dest) if dest == target
+                    )
                 })
                 .map(|(_, span)| Backlink {
                     path: source.clone(),
@@ -98,14 +241,67 @@ pub fn backlinks(
         .collect()
 }
 
-/// Stage-1 edge resolution: empty linkpath ⇒ the source itself; otherwise
-/// `getFirstLinkpathDest` parity over the borrowed index.
-fn resolve_edge(index: &CorpusIndex, source: &str, linkpath: &str) -> Option<String> {
+/// Edge resolution, split on ONE lexical question:
+/// [`addr::head_carries_root_separator`] — *could the address plane have
+/// something to say about this spelling?*
+///
+/// - **No** ⇒ the ambient plane, `resolve_linkpath`, unchanged. This map
+///   promises §4.6 `getFirstLinkpathDest` parity — the app's `resolvedLinks`
+///   semantics, stage 1 only, where a heading fragment never splits an edge.
+///   That is deliberately NOT the pin plane's three rules, so routing ambient
+///   spellings through [`CorpusIndex::resolve_ref`] would silently widen the
+///   contract this crate's header pins. Byte-for-byte the pre-U21 path.
+/// - **Yes** ⇒ the address owner, [`CorpusIndex::resolve_ref`], which peels the
+///   root, looks it up in the mount table, and runs the three rules against
+///   THAT root's own corpus.
+///
+/// **The same predicate gates all three sites, and that is load-bearing.**
+/// `resolve_linkpath`'s C-3 guard calls it, this split calls it, and the CLI's
+/// in-process degrade calls it. The guard is what stops a basename fallback
+/// answering the ambient root's file for a rooted address; before U21 its
+/// `None` reached the caller as *"unresolved"* rather than as *"you called the
+/// wrong resolver"*, which is the measured wrong answer. Two predicates that
+/// merely AGREE drift the moment either is edited, and the one that drifts is
+/// the silent one.
+///
+/// An empty linkpath is the source itself (stage-1 parity, a self-reference).
+fn resolve_edge(
+    index: &CorpusIndex,
+    source: &str,
+    linkpath: &str,
+    corpus: &RootedCorpus<'_>,
+    mounts: Option<&MountSet>,
+) -> RefResolution {
     if linkpath.is_empty() {
-        Some(source.to_string())
-    } else {
-        index.resolve_linkpath(linkpath, source)
+        return RefResolution::Ambient(source.to_string());
     }
+    // No mount authority ⇒ no standing to classify a rooted spelling at all.
+    // It falls through to the ambient plane, whose head-colon guard refuses it,
+    // and it is reported `unresolved` — byte-for-byte the pre-U21 answer.
+    let Some(mounts) = mounts else {
+        return match index.resolve_linkpath(linkpath, source) {
+            Some(dest) => RefResolution::Ambient(dest),
+            None => RefResolution::NotFound {
+                root: None,
+                path: linkpath.to_owned(),
+                selector: None,
+            },
+        };
+    };
+    if !addr::head_carries_root_separator(linkpath) {
+        return match index.resolve_linkpath(linkpath, source) {
+            Some(dest) => RefResolution::Ambient(dest),
+            // The §4.6 edge map keys a dangling edge by the linkpath as
+            // WRITTEN, and a wikilink's fragment is carried beside its target
+            // rather than inside it — so there is no selector to report here.
+            None => RefResolution::NotFound {
+                root: None,
+                path: linkpath.to_owned(),
+                selector: None,
+            },
+        };
+    }
+    index.resolve_ref(linkpath, source, corpus, mounts)
 }
 
 /// Every wikilink/embed in the document, span order. `NodeKind::Link`

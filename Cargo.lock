@@ -2478,6 +2478,7 @@ source = "git+https://github.com/caoer/pulldown-cmark?rev=bc5df96c23da33283ef53c
 name = "query"
 version = "0.0.0"
 dependencies = [
+ "addr",
  "model",
  "syntax",
 ]
