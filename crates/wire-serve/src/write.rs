@@ -493,8 +493,10 @@ pub fn splice(
     // feeder below runs only if `commit_batch` succeeds.
     let landed_edits = batch.edits.clone();
     let mut frame = commit_batch(
-        root,
         seq,
+        // The workspace rides the flock now — this call site held `root` and
+        // `flock` separately and they were always the same workspace; that
+        // agreement is no longer something a caller can get wrong.
         &flock,
         &CommitRequest {
             content_path: args.path.0.clone(),
@@ -3494,16 +3496,36 @@ pub enum CommitError {
 /// choke-point must therefore take the lock it was previously only assumed to
 /// hold; the D8 pre-image verify still refuses drift on top of that.
 ///
+/// **The workspace is taken FROM the flock, not passed beside it.** This door
+/// previously accepted `root` and `flock` as two independent parameters that
+/// had to agree; nothing related them, so the witness proved *a* lock was held
+/// rather than *this* workspace's. Deriving the root from the lock leaves no
+/// second value to disagree with, which is why there is no assert here to
+/// delete.
+///
 /// # Errors
 /// [`CommitError`] — validation refusal, environment failure, or I/O; in
 /// every error case nothing was emitted (a Delta exists only for a batch that
 /// actually committed).
 pub fn commit_batch(
-    root: &fs::WorkspaceRoot,
     seq: Option<&dyn crate::seq::SeqSink>,
     flock: &fs::WriteLock,
     req: &CommitRequest,
 ) -> Result<DeltaFrame, CommitError> {
+    // **The workspace comes FROM the lock, and that is the guard.**
+    //
+    // This door used to take `root` and `flock` as two independent parameters
+    // that had to agree, with nothing relating them — so the witness proved
+    // that *a* lock was held, never that it was *this* workspace's. The daemon
+    // holds many workspace roots at once (`registry` keys six maps by workspace
+    // path), so the pairing was a convention every future caller had to keep,
+    // in a process where the wrong root is always in scope.
+    //
+    // Taking the root from the lock makes the mismatch UNREPRESENTABLE rather
+    // than detected: there is no second value left to disagree with. A runtime
+    // assert here would have been a guard someone can delete; this is a shape
+    // in which the mistake cannot be spelled.
+    let root = flock.root();
     // Pre-state: the documents the batch validates against + the world root.
     let before_content = fs::load(root, FsPath::new(&req.content_path)).map_err(CommitError::Io)?;
     let before_receipt = match &req.receipt {
