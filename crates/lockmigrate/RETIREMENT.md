@@ -1,5 +1,44 @@
 # RETIREMENT — how this crate deletes itself
 
+> [!IMPORTANT] SUSPENDED — the trigger is UNFIRED and UNSCHEDULED (2026-08-04)
+> **The conditions below are NOT rewritten and NOT false.** They were never met,
+> and the event that would have met them is no longer scheduled on this docket.
+>
+> **The authority.** ZT ruled the field sweep aborted: *"MANUAL ONE-TIME CUTOVER
+> FOR THE TWO REAL LOCKS. ABORT THE FLEET VAULT-WINDOW OPS"* — the cost and risk
+> of a fleet campaign exceeding its value at n=2. The ruling **unschedules the
+> FIELD RUN for this docket and explicitly does not unbuild anything**:
+> ***"abort is not delete."*** The machinery — this crate, the governed
+> `wire_serve::write::lock_migrate` door, and `--expect-root` — **stays BUILT AND
+> GATED at `0f191cc2`** (*"u9b: arm the world guard — `mrd lock migrate
+> --expect-root <ROOT>`"*).
+>
+> **So condition 1 below — *the real sweep EXECUTED over every vault in the
+> field* — has no scheduled occasion to become true.** What went false is not the
+> condition; it is the expectation that it fires on this docket.
+>
+> **THE SITES THIS SUSPENSION GOVERNS — a list, not a property:**
+>
+> 1. `crates/lockmigrate/RETIREMENT.md` — the § When conditions below.
+> 2. `docs/laws.md` — the `lockmigrate` charter row's *"Deletes itself once the
+>    sweep is executed and broadcast"*.
+>
+> Both carry this annotation. If a third site ever states the trigger, it is
+> owed one and this list is owed a row — naming the sites is what keeps a
+> suspension from being discharged in one place and left standing in another.
+>
+> **THE COUNTER, RECORDED RATHER THAN DISMISSED.** A suspended clause with no
+> scheduled trigger **may never fire at all**, and this crate could carry a
+> self-retiring label indefinitely — a permanent "temporary". That cost is
+> **accepted**, not overlooked: rescheduling the field run is a ZT
+> overturn-on-sight question and is carried to U25. The alternative — restating
+> the trigger — would be authoring NEW retirement law, which is amendment-class
+> and needs ZT.
+>
+> **What this annotation is.** The record catching up to law ZT already changed
+> (restoration-class), never a new trigger (amendment-class). Nothing below is
+> edited.
+
 **SELF-RETIRING (U9b).** This crate is a migration kit. Its deletion is in U9b's
 definition of done, not a cleanup someone might get to. The pattern and its
 precedent: `1276c240` (the U3.2 migrate kit) → `0e17c143` (its retirement).

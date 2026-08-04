@@ -93,9 +93,44 @@ which laws it carries. In one line each:
 | `cache` | The hashed cache drawer: addressing, atomic sentinel registration, corrupt-is-a-miss probing, last-use GC |
 | `registry` | The daemon-held workspace registry: unix-socket RPC server + client, first-writer-wins, atomic state, idle-reap |
 | `mrd` | The workspace CLI — wires `workspace`/`cache`/`registry` into `init`/`unregister`/`resolve`/`cache`/`daemon`, and mounts the local run plane (`mrd run` via `crates/run`). A local CLIENT of the engine crates, never a resident organ and never on the serve path; its `run`→`model` edge stays a single reviewable dependency |
-| `lockmigrate` | **SELF-RETIRING (U9b).** The lock v1→R4-v2 field migration: the ONE quarantined place the dead v1 grammar is spelled in engine Rust, plus the vault sweep that lands every rewrite through the governed `wire_serve::write::lock_migrate` door. It exists so `lock` can be v2-only — landing that crate without an executed sweep locks every vault in the field out of its own locks. Dry-run-first, idempotent, resumable; it REFUSES a vault with no git (the restore point is a pre-sweep commit) and rewrites only ENGINE-PLACED page locks, never a v1 block illustrated inside a document. Deletes itself once the sweep is executed and broadcast — `crates/lockmigrate/RETIREMENT.md` |
+| `lockmigrate` | **SELF-RETIRING (U9b).** The lock v1→R4-v2 field migration: the ONE quarantined place the dead v1 grammar is spelled in engine Rust, plus the vault sweep that lands every rewrite through the governed `wire_serve::write::lock_migrate` door. It exists so `lock` can be v2-only — landing that crate without an executed sweep locks every vault in the field out of its own locks. Dry-run-first, idempotent, resumable; it REFUSES a vault with no git (the restore point is a pre-sweep commit) and rewrites only ENGINE-PLACED page locks, never a v1 block illustrated inside a document. Deletes itself once the sweep is executed and broadcast — `crates/lockmigrate/RETIREMENT.md`. **SUSPENDED 2026-08-04 — the trigger is UNFIRED and UNSCHEDULED; see the note below this table.** |
 | `testsuite` | Integration tests + the frozen ground-truth pack as data |
 | `perfsuite` | Perf harness and claims registry (out of default-members) |
+
+> [!IMPORTANT] `lockmigrate`'s self-retirement is SUSPENDED — unfired, unscheduled
+> **The trigger above is not rewritten and is not false.** It was never met, and
+> the event that would have met it is no longer scheduled on this docket.
+>
+> **The authority.** ZT ruled the field sweep aborted — *"MANUAL ONE-TIME CUTOVER
+> FOR THE TWO REAL LOCKS. ABORT THE FLEET VAULT-WINDOW OPS"* — at a measured
+> field size of two real page locks. The ruling unschedules the FIELD RUN for
+> this docket and explicitly does not unbuild anything:
+> ***"abort is not delete."***
+> The machinery stays **BUILT AND GATED at `0f191cc2`**.
+>
+> `crates/lockmigrate/RETIREMENT.md` § When condition 1 — *the real sweep
+> EXECUTED over every vault in the field* — therefore has no scheduled occasion
+> to become true. **What went false is the expectation that it fires, not the
+> condition.**
+>
+> **THE SITES THIS SUSPENSION GOVERNS — a list, not a property:**
+>
+> 1. `docs/laws.md` — the `lockmigrate` row in the table above.
+> 2. `crates/lockmigrate/RETIREMENT.md` — its § When conditions.
+>
+> Both carry this annotation. A third site stating the trigger is owed one, and
+> this list is owed a row — enumerating the sites is what stops a suspension
+> being discharged in one place and left standing in another.
+>
+> **THE COUNTER, RECORDED RATHER THAN DISMISSED.** A suspended clause with no
+> scheduled trigger **may never fire**, and this crate could carry a
+> self-retiring label indefinitely. That cost is **accepted**, not overlooked:
+> rescheduling the field run is a ZT overturn-on-sight question, carried to U25.
+> Restating the trigger instead would be authoring NEW retirement law —
+> amendment-class, and ZT's to make.
+>
+> This annotation is the record catching up to law ZT already changed
+> (restoration-class). It authors no trigger.
 
 ## Amendment — the policy gate (armed change plane)
 
