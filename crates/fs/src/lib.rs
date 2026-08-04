@@ -437,6 +437,16 @@ pub fn write_conflict(path: &Path) -> io::Error {
 pub struct WriteLock {
     // Held open for its fd; released by the explicit `flock(LOCK_UN)` in Drop.
     file: File,
+    /// **The workspace this lock was acquired ON.**
+    ///
+    /// Held so the witness proves *this* workspace's lock rather than merely
+    /// *a* lock. `acquire` already receives the root and used to drop it, which
+    /// made the type say "a lock is held" where every caller's invariant means
+    /// "this workspace's lock is held" — a real guard pointed one inch off the
+    /// thing it names. Retaining it costs one clone at acquisition and lets the
+    /// write door take its workspace identity FROM the lock, so a lock and a
+    /// root cannot be paired wrongly because they are no longer two values.
+    root: WorkspaceRoot,
 }
 
 /// Release the lock EXPLICITLY, before the fd closes.
@@ -485,7 +495,22 @@ impl WriteLock {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            root: root.clone(),
+        })
+    }
+
+    /// The workspace this lock is held on.
+    ///
+    /// This is what makes the lock a witness to *this* workspace rather than to
+    /// *a* workspace. A door that needs both a lock and the workspace being
+    /// written takes the workspace from HERE instead of accepting it as a
+    /// second parameter — two values that must agree become one value that
+    /// cannot disagree.
+    #[must_use]
+    pub fn root(&self) -> &WorkspaceRoot {
+        &self.root
     }
 }
 

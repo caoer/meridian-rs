@@ -191,13 +191,11 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
     // returns the frame (seq = the passed ring seq + 1); the CALLER advances its
     // epoch ring — the seam holds no ring, so the daemon commits without one.
     let lock = flock(&root);
-    let live_e3 =
-        wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &lock, &e3_request())
-            .expect("E3 commits: frozen worked request against committed S0 bytes");
+    let live_e3 = wire_serve::write::commit_batch(Some(&EpochSink(&ring)), &lock, &e3_request())
+        .expect("E3 commits: frozen worked request against committed S0 bytes");
     ring.advance(live_e3.clone());
-    let live_e4 =
-        wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &lock, &e4_request())
-            .expect("E4 commits: frozen worked request against derived S1");
+    let live_e4 = wire_serve::write::commit_batch(Some(&EpochSink(&ring)), &lock, &e4_request())
+        .expect("E4 commits: frozen worked request against derived S1");
     ring.advance(live_e4.clone());
 
     // Gate 1a (Flag-A): the DERIVED frames equal the printed §7.1 frames
@@ -246,8 +244,7 @@ fn replay_equals_live_e3_e4_through_the_commit_path() {
 fn receipt_node_rides_its_files_delta_entry_computed() {
     let (_d, root) = s0();
     // A fresh epoch's seq is 0; this test inspects the returned frame only.
-    let live =
-        wire_serve::write::commit_batch(&root, None, &flock(&root), &e3_request()).expect("E3");
+    let live = wire_serve::write::commit_batch(None, &flock(&root), &e3_request()).expect("E3");
     let receipts_entry = live
         .delta
         .files
@@ -278,8 +275,7 @@ fn receipt_node_rides_its_files_delta_entry_computed() {
 #[test]
 fn deepest_changed_node_never_duplicates_ancestors() {
     let (_d, root) = s0();
-    let live =
-        wire_serve::write::commit_batch(&root, None, &flock(&root), &e3_request()).expect("E3");
+    let live = wire_serve::write::commit_batch(None, &flock(&root), &e3_request()).expect("E3");
     let plan_entry = live
         .delta
         .files
@@ -307,7 +303,7 @@ fn refused_batch_emits_no_delta() {
     let ring = sidecar::ring::RootRing::new();
     let mut req = e3_request();
     req.batch.if_root = Some(model::MerkleRoot(R2.into())); // wrong world
-    let err = wire_serve::write::commit_batch(&root, Some(&EpochSink(&ring)), &flock(&root), &req);
+    let err = wire_serve::write::commit_batch(Some(&EpochSink(&ring)), &flock(&root), &req);
     assert!(
         matches!(
             err,
@@ -322,4 +318,97 @@ fn refused_batch_emits_no_delta() {
     assert_eq!(ring.seq(), 0, "no emission, no seq consumption");
     let plan = std::fs::read_to_string(root.0.join("notes/plan.md")).unwrap();
     assert_eq!(plan, wsfix("s0/notes/plan.md"), "no byte reached disk");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The flock witness proves THIS workspace's lock — the guard, exercised in the
+// condition that made it necessary
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// **Two live workspaces in one process, each committing a REAL frame through
+/// its own lock, and neither touching the other's bytes.**
+///
+/// # What this pins, and why it is shaped this way
+/// `commit_batch` used to take `root: &WorkspaceRoot` and `flock: &WriteLock`
+/// as two independent parameters that had to agree, with nothing relating them.
+/// The witness therefore proved *a* lock was held, never that it was *this*
+/// workspace's — a real guard pointed one inch off the thing it names.
+///
+/// The cure was not an assert. `commit_batch` now takes the workspace FROM the
+/// lock, so **a mismatched pair is unrepresentable rather than detected** —
+/// there is no second value left to disagree with. That is why this test
+/// contains no "mismatch refuses" arm: the mismatch cannot be spelled, so the
+/// negative case is a COMPILE error and there is no runtime behaviour to
+/// assert. A test asserting a refusal here would be asserting something the
+/// type already makes unreachable.
+///
+/// # Why two workspaces rather than one
+/// The enabling condition is not hypothetical: the registry daemon holds six
+/// maps keyed by workspace path and builds a fresh `WorkspaceRoot` per call, so
+/// the wrong root is always in scope in production. This test reproduces that
+/// condition — two roots live simultaneously, two locks held simultaneously —
+/// and shows each commit landing in the workspace ITS OWN lock names.
+///
+/// # Both arms carry real frames
+/// Each arm drives the frozen §4.4 E3 request through the real commit path and
+/// asserts on the returned `DeltaFrame` and the bytes on disk — production
+/// output, not a recomputation. An empty-ring or no-op arm would pass for the
+/// trivial reason and prove nothing about which workspace was written.
+#[test]
+fn two_live_workspaces_each_commit_through_their_own_lock() {
+    let (_da, root_a) = s0();
+    let (_db, root_b) = s0();
+    assert_ne!(root_a.0, root_b.0, "two DISTINCT workspaces, one process");
+
+    let was_a = std::fs::read_to_string(root_a.0.join("notes/plan.md")).expect("A pre");
+    let was_b = std::fs::read_to_string(root_b.0.join("notes/plan.md")).expect("B pre");
+    assert_eq!(
+        was_a, was_b,
+        "the two workspaces start byte-identical, so any later difference is \
+         attributable to which one was written"
+    );
+
+    // Both locks held AT ONCE — the condition under which a stray root could
+    // previously have been paired with the wrong witness.
+    let lock_a = flock(&root_a);
+    let lock_b = flock(&root_b);
+
+    let frame_a = wire_serve::write::commit_batch(None, &lock_a, &e3_request()).expect("A commits");
+    let frame_b = wire_serve::write::commit_batch(None, &lock_b, &e3_request()).expect("B commits");
+
+    // THE DECISIVE ASSERTION RUNS FIRST, DELIBERATELY. Every other check in
+    // this test is a precondition, and a precondition that fails first SHADOWS
+    // the claim the test is named for — a mutation then reddens the row for a
+    // neighbouring reason and the decisive line is never exercised (#16). Both
+    // mutation controls for this test trip HERE now, which is the only reason
+    // the byte comparison is a defended line rather than a decorative one.
+    let now_a = std::fs::read_to_string(root_a.0.join("notes/plan.md")).expect("A post");
+    let now_b = std::fs::read_to_string(root_b.0.join("notes/plan.md")).expect("B post");
+    assert_ne!(
+        now_a, was_a,
+        "A's commit changed A — the write reached the workspace A's lock names"
+    );
+    assert_ne!(
+        now_b, was_b,
+        "B's commit changed B — the write reached the workspace B's lock names"
+    );
+
+    // REAL frames, not empty ones: each carries the edited file with node-grain
+    // detail computed by the engine's own parse of the just-written bytes.
+    for (label, frame) in [("A", &frame_a), ("B", &frame_b)] {
+        let plan = frame
+            .delta
+            .files
+            .iter()
+            .find(|f| f.path.0 == "notes/plan.md")
+            .unwrap_or_else(|| panic!("{label}: the edited file has a Delta entry"));
+        assert!(
+            !plan.nodes.is_empty(),
+            "{label}: the frame carries real node-grain detail, not an empty shell"
+        );
+        assert_ne!(
+            frame.delta.root_before, frame.delta.root_after,
+            "{label}: a real commit advances the root"
+        );
+    }
 }
