@@ -145,12 +145,8 @@ fn status_genesis_is_clean_and_unverified() {
     let so = stdout(&out);
     assert_eq!(code(&out), 0, "clean genesis exits 0: {}", stderr(&out));
     assert!(
-        so.contains("0 armed · 0 drifted · 0 forced-since-realise"),
+        so.contains("0 armed · 0 drifted · forced-since-realise: not-tracked"),
         "genesis armed-rules line: {so}"
-    );
-    assert!(
-        so.contains("(receipts boundary: genesis)"),
-        "genesis boundary: {so}"
     );
     assert!(so.contains("pin green"), "clean pin: {so}");
     assert!(so.contains("armed off"), "no armed mode: {so}");
@@ -255,58 +251,37 @@ fn status_armed_and_drifted_reds_and_exits_1() {
     );
 }
 
-/// A forced write (an `op=force` journal row) renders a violation row naming the
-/// bypassed rule, counts in forced-since-realise, and exits 1.
+/// **THE JOURNAL IS INERT, AND THIS PINS IT.** A hand-written page in the retired
+/// journal's exact shape — `op=force` rows with `forced_rule=` tokens and anchors,
+/// plus a realise receipt to bound them by — moves NOTHING on this surface.
+///
+/// Two tests used to live here: one asserted the violation row and the exit-1 leg,
+/// the other the receipts-boundary arithmetic that decided which forced rows
+/// counted. ZT ruled the ledger out of existence (2026-08-03: *"Engine does not
+/// have memory. It should not have. History is pin to git when we lock. Anything
+/// between locks is not history."*), so `status` reads no such page and counts no
+/// such row.
+///
+/// This asserts the ABSENCE rather than deleting the tests, because the thing
+/// removed was a LAW and not scaffolding. A future change that re-reads a journal
+/// page — or restores the count, the boundary or the violation rows — fails HERE,
+/// loudly, instead of quietly re-growing a memory the engine is ruled not to have.
+/// It also pins the other half of the ruling: the disclosure must be PRESENT, so
+/// silence cannot pass as compliance either.
 #[test]
-fn status_forced_write_renders_violation_row() {
+fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
     let sb = sandbox();
-    let ws = sb.workspace("forced");
-    // A hand-written reserved journal carrying one forced skip (the shape the wire
-    // write door mints, U4.3): op=force + a `forced_rule=` token, both roots, an
-    // anchor. status reads it frozen — it never re-evaluates.
-    let journal = "# journal\n\
-        - op=splice path=a.md actor=agent:a now=2026-07-23T09:00:00Z root_before=b3:0 root_after=b3:1 edits=1 ^r-000001\n\
-        - op=force path=tasks/fix.md actor=agent:a now=2026-07-23T10:00:00Z root_before=b3:1 root_after=b3:2 edits=0 forced_rule=reviewer-not-owner ^r-000002\n";
-    let mdir = ws.join("meridian");
-    std::fs::create_dir_all(&mdir).expect("meridian dir");
-    std::fs::write(mdir.join("journal.md"), journal).expect("journal");
+    let ws = sb.workspace("inert-journal");
 
-    let out = sb.run(&ws, &["status"]);
-    let so = stdout(&out);
-    assert_eq!(
-        code(&out),
-        1,
-        "a forced write is a finding (exit 1): {}",
-        stderr(&out)
-    );
-    assert!(
-        so.contains("1 forced-since-realise"),
-        "forced counted (genesis boundary → all forced): {so}"
-    );
-    assert!(
-        so.contains("violation: forced past `reviewer-not-owner`"),
-        "the violation row names the bypassed rule: {so}"
-    );
-    assert!(
-        so.contains("^r-000002"),
-        "the row cites the permanent anchor: {so}"
-    );
-}
-
-/// A realise receipt AFTER a forced write moves the boundary past it — the forced
-/// count drops to 0 (the forced write predates the last realise apply). A second
-/// forced write after the receipt counts again (over-report boundary).
-#[test]
-fn status_forced_since_realise_respects_the_receipts_boundary() {
-    let sb = sandbox();
-    let ws = sb.workspace("boundary");
+    // Everything the old surface fed on, present and maximal: two forced rows
+    // either side of a realise apply, so a counter that came back would have to
+    // choose between 1 and 2 and would trip this test whichever it chose.
     let journal = "# journal\n\
         - op=force path=old.md actor=agent:a now=2026-07-23T08:00:00Z root_before=b3:0 root_after=b3:1 edits=0 forced_rule=old-rule ^r-000001\n\
         - op=force path=new.md actor=agent:a now=2026-07-23T12:00:00Z root_before=b3:1 root_after=b3:2 edits=0 forced_rule=new-rule ^r-000002\n";
     let mdir = ws.join("meridian");
-    std::fs::create_dir_all(&mdir).expect("meridian");
+    std::fs::create_dir_all(&mdir).expect("meridian dir");
     std::fs::write(mdir.join("journal.md"), journal).expect("journal");
-    // A realise apply at 10:00 — between the two forced writes.
     let receipts = "# realise receipts\n\
         - run {\"page\":\"p.md\",\"now\":\"2026-07-23T10:00:00Z\"} ^r-000001\n";
     let rdir = ws.join("receipts");
@@ -315,21 +290,46 @@ fn status_forced_since_realise_respects_the_receipts_boundary() {
 
     let out = sb.run(&ws, &["status"]);
     let so = stdout(&out);
+
+    // THE EXIT CODE. A forced write used to make this exit 1; nothing observes
+    // one now, so a clean workspace is clean.
+    assert_eq!(
+        code(&out),
+        0,
+        "a journal-shaped page is not a finding: {so}{}",
+        stderr(&out)
+    );
+
+    // THE COUNT, THE BOUNDARY AND THE VIOLATION ROWS ARE ALL GONE.
     assert!(
-        so.contains("1 forced-since-realise"),
-        "only the post-boundary forced write counts: {so}"
+        !so.contains("forced-since-realise: 1") && !so.contains("forced-since-realise: 2"),
+        "the count is not back: {so}"
     );
     assert!(
-        so.contains("(receipts boundary: since 2026-07-23T10:00:00Z)"),
-        "the boundary names the realise-apply now: {so}"
+        !so.contains("violation: forced past"),
+        "no violation row is rendered from a journal page: {so}"
     );
     assert!(
-        so.contains("violation: forced past `new-rule`"),
-        "the post-boundary rule shows: {so}"
+        !so.contains("old-rule") && !so.contains("new-rule"),
+        "no `forced_rule=` token reaches the surface: {so}"
     );
     assert!(
-        !so.contains("old-rule"),
-        "the pre-boundary forced write is excluded: {so}"
+        !so.contains("^r-000002"),
+        "no journal anchor is cited: {so}"
+    );
+    assert!(
+        !so.contains("receipts boundary"),
+        "the realise ledger no longer bounds anything on this surface: {so}"
+    );
+
+    // AND THE DISCLOSURE IS PRESENT — silence is not compliance.
+    assert!(
+        so.contains("forced-since-realise: not-tracked"),
+        "the axis is disclosed, not dropped: {so}"
+    );
+    assert!(
+        so.contains("the engine keeps no memory by design"),
+        "and the line carries its reason: {so}"
     );
 }
 
@@ -354,8 +354,28 @@ fn status_json_shape() {
     let v: serde_json::Value = serde_json::from_str(&so).expect("valid json");
     assert_eq!(v["armed_rules"]["armed"], 1);
     assert_eq!(v["armed_rules"]["drifted"], 0);
-    assert_eq!(v["armed_rules"]["forced_since_realise"], 0);
-    assert_eq!(v["armed_rules"]["boundary"]["kind"], "genesis");
+    // The disclosure object, and the ABSENCE of what it replaced. A `0` would
+    // read as "checked, none found" and a `boundary` would bound a count that no
+    // longer exists — both are claims about a property nothing observes.
+    let forced = &v["armed_rules"]["forced_since_realise"];
+    assert_eq!(forced["tracked"], serde_json::json!(false));
+    assert_eq!(forced["state"], serde_json::json!("not-tracked"));
+    assert!(
+        forced["why"].as_str().is_some_and(|w| w.contains("git")),
+        "the reason names where the answer lives now: {forced}"
+    );
+    assert!(
+        !forced.is_number(),
+        "the key must not be a count again: {forced}"
+    );
+    assert!(
+        v["armed_rules"].get("boundary").is_none(),
+        "the receipts boundary is removed, not zeroed: {v}"
+    );
+    assert!(
+        v.get("violations").is_none(),
+        "an empty violations array would read as 'looked, found none': {v}"
+    );
     assert_eq!(v["composed"]["pin_color"], "green");
     assert_eq!(v["composed"]["armed_mode"], "block");
     assert!(
