@@ -5,6 +5,29 @@ They are unaffected by edits to this file or to any other — including the comm
 that carries this line. Re-run the published commands (§ How to re-derive) to
 confirm at any revision.
 
+> [!IMPORTANT] The condition names the SITES it governs, not just the trigger
+> **A `docs/`-file count appears in FOUR places in this file, and they must move
+> together:**
+>
+> 1. § The enumeration — the table.
+> 2. § How to re-derive — the expected values in the code block, **which are
+>    controls**, not decoration.
+> 3. § The fourth authority — the *"5 of N top-level documents"* denominator.
+> 4. § How to re-derive prose — the MEMBERS scoped/unscoped worked example.
+>
+> **Measured, 2026-08-04:** the condition above fired exactly as written when the
+> landing assembly brought four amendment documents in. § The enumeration was
+> re-measured correctly. **Sites 2, 3 and 4 were not** — they still read the
+> pre-assembly `39 / 31 / 19 / 33`, and site 2's numbers are the ones this file
+> tells readers to two-arm as controls. A reader doing exactly what the document
+> asks got four mismatches and no way to tell whether the tree or the document
+> was wrong.
+>
+> **A condition is not self-enforcing.** Stating the trigger protects the author;
+> enumerating the sites protects the reader — the same asymmetry § The merge
+> obligation already names for membership rows. A property invites the next
+> editor to re-derive the scope; a list does not.
+
 **One count has a different condition, and it is the one in this file's own
 table.** The MEMBERS row count changes when a row is added to or removed from
 § MEMBERS — which happens when a new self-declared normative document lands
@@ -265,7 +288,7 @@ documents:
 > `docs/wire-contract-v3-amendment.md` (the client seam),
 > `docs/node-rev-merkle-spec.md` (**rev/hash law**), `docs/status.md` (mrd CLI).
 
-So a de-facto pointer list already exists, it covers **5 of 19** top-level
+So a de-facto pointer list already exists, it covers **5 of 23** top-level
 documents, and it calls `node-rev-merkle-spec.md` *law* while that file's own
 frontmatter says `status: spec`.
 
@@ -374,7 +397,8 @@ MEMBERS table:
 | `wire-contract-v2-extract-frames-amendment.md` | `u27-keyset` | yes |
 | `wire-contract-v2-cross-root-links-amendment.md` | `u21-cross-vault-links` | yes |
 
-**Six members become ten**, and the count in § The enumeration moves with them.
+**MEMBERS moves 9 → 13**, and the count in § The enumeration moves with it.
+(The DISCHARGED note below records the same transition — they must agree.)
 
 > **DISCHARGED — the obligation fired and this is the record of it.** The
 > landing assembly merged `u27-keyset` and `u21-cross-vault-links` (the latter
@@ -436,8 +460,8 @@ different measurements as though they were one. Both halves, or the number is
 not really published.
 
 That is not hypothetical: a reviewer re-counting the MEMBERS rows from intent
-rather than from this command got **24**, because the rebuilt query was unscoped
-over a file with many tables. The scoped count is 9. Nothing had changed but the
+rather than from this command got **28**, because the rebuilt query was unscoped
+over a file with many tables. The scoped count is 13. Nothing had changed but the
 instrument.
 
 Expected values are given so each line is its own control, and they carry their
@@ -449,15 +473,15 @@ measured at `457141ba` — provenance, not the load-bearing part.
 ```sh
 git rev-parse --short HEAD                          # state the revision
 
-/usr/bin/find docs -mindepth 1 | wc -l              # 39  total entries
+/usr/bin/find docs -mindepth 1 | wc -l              # 43  total entries
 /usr/bin/find docs -mindepth 1 -type d | wc -l      #  6  directories
 /usr/bin/find docs -type f ! -name '*.md' | wc -l   #  2  non-md files
-/usr/bin/find docs -type f -name '*.md' | wc -l     # 31  md files
-/usr/bin/find docs -maxdepth 1 -type f -name '*.md' | wc -l   # 19  md, top level
-/usr/bin/find docs -type f | wc -l                  # 33  files (32 + this list)
+/usr/bin/find docs -type f -name '*.md' | wc -l     # 35  md files
+/usr/bin/find docs -maxdepth 1 -type f -name '*.md' | wc -l   # 23  md, top level
+/usr/bin/find docs -type f | wc -l                  # 37  files (36 + this list)
 
 # MEMBERS rows — SECTION-SCOPED. An unscoped grep over this file counts every
-# table row in it and returns 24.
+# table row in it and returns 28.
 awk '/^## MEMBERS/,/^## RULED LAW/' docs/NORMATIVE.md | grep -c '^| `'   # 13
 
 grep -c -i normative docs/*.md                      # who claims it

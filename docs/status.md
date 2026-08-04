@@ -10,7 +10,7 @@ from the commands shown — prefer running them over trusting this prose.
 ## Build
 
 - Toolchain: Rust edition 2024, `rust-version = 1.96`.
-- `cargo build` builds the twenty-seven default members (the engine planes plus
+- `cargo build` builds the twenty-eight default members (the engine planes plus
   the `workspace` / `cache` / `registry` / `mrd` CLI foundation, and stage-2's
   `git` plumbing leaf); `perfsuite` is out of default-members and builds under
   `cargo build -p perfsuite`.
