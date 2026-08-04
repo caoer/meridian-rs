@@ -38,6 +38,7 @@ mod history_cmd;
 // the reader of `skill_cmd`'s document; nothing here writes.
 pub mod hook;
 mod init;
+mod lockmigrate_cmd;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
@@ -317,6 +318,16 @@ usage:
                            state: converged / drifted-fixed / non-convergent /
                            pending-agent. Exits: 0 converged/drifted-fixed (or dry)
                            / 1 non-convergent or pending-agent / 2 bad invocation
+! mrd lock-migrate --vault <PATH> [--dry]
+                           SELF-RETIRING (U9b): migrate a vault's meridian-lock
+                           blocks from v1 to R4 v2 through the governed
+                           lock-migrate door. Dry-run-first, idempotent,
+                           resumable. Rewrites ONLY engine-placed page locks (one
+                           block, at EOF); a v1 block illustrated inside a
+                           document is reported and LEFT ALONE. Refuses a vault
+                           with no git -- no restore point, no sweep. Exits: 0
+                           clean (or dry) / 1 a page was refused / 2 bad
+                           invocation or unreadable vault
 
 options:
   --json                   emit JSON instead of a human table
@@ -472,6 +483,8 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
         "realise" => realise_cmd::run(&args[1..]),
+        // SELF-RETIRING (U9b): dies with the lock migration.
+        "lock-migrate" => lockmigrate_cmd::run(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()

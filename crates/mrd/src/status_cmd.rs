@@ -27,7 +27,8 @@
 //! - **fetch-less** — the anchor axis is therefore NEVER `verified` and never
 //!   renders a bare `at-tip` (W-C1, U2.7; the colors amendment § anchor axis);
 //! - **predicate-free** — it never evaluates a `check:` (the <1s budget holds;
-//!   passenger-registry amendment). Drift here is a mechanical rev compare, never
+//!   the retired passenger-registry amendment; R4 makes an unrecognised lock key
+//!   engine-ignored by definition). Drift here is a mechanical rev compare, never
 //!   a starlark run.
 //!
 //! # The composed legend — four axes on one surface (U6.2)
