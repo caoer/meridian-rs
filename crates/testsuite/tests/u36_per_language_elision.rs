@@ -23,7 +23,7 @@
 //! names `meridian-mount` in a `pub const`. Both reddens are recorded in the U36
 //! card.
 
-use render::{Header, RenderJob, Renderer, SectionRow, TextRenderer};
+use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts};
 
 // ── Direction 1's subject: a NEW engine-emitted block ──────────────────────
@@ -77,7 +77,7 @@ fn rendered_content(raw: &str) -> String {
         .zip(&sels)
         .map(|(fact, sel)| SectionRow { sel, fact })
         .collect();
-    let rendered = TextRenderer::with_meridian_elision()
+    let rendered = ToonRenderer::with_meridian_elision()
         .render(
             &doc,
             &RenderJob::Sections {

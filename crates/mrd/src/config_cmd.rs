@@ -22,7 +22,7 @@
 //! a `--help`:
 //!
 //! - **`mrd read`** routes through the render face, which ELIDES every
-//!   `meridian-*` block (`TextRenderer::with_meridian_elision`). Measured on
+//!   `meridian-*` block (`ToonRenderer::with_meridian_elision`). Measured on
 //!   the installed binary: `mrd read MERIDIAN.md --section '…/Roots'` prints the
 //!   prose, drops all three mount blocks, and exits 0. An agent reading it would
 //!   reasonably report that the config failed to parse when it parsed perfectly

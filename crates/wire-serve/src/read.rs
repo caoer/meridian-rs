@@ -259,7 +259,7 @@ pub fn composed_read(
             // stay frozen and the structured face never diverges from the
             // rendered one. The authz facts (`span`, `content_span`) ride the
             // same rows; the anchor plane is `anchors`.
-            let rendered_text = agent_plane_face(render::toc_text(&header, &rows))?;
+            let rendered_text = agent_plane_face(render::toc_toon(&header, &rows))?;
             Ok(ResponseBody::Read {
                 path: path.clone(),
                 file_rev: NodeRev(file_rev),
@@ -591,7 +591,7 @@ fn composed_sections(
     // U4b: the render face's production configuration — engine (`meridian-*`)
     // blocks are elided from RENDERED output (`rendered_text`) only.
     let rendered =
-        render::Renderer::render(&render::TextRenderer::with_meridian_elision(), doc, &job)
+        render::Renderer::render(&render::ToonRenderer::with_meridian_elision(), doc, &job)
             .map_err(|e| {
                 let mut err = ErrorBody::new(ErrorCode::Internal);
                 err.message = Some(e.to_string());

@@ -512,7 +512,7 @@ fn no_refusal_can_publish_a_partial_mount_table() {
 /// preserved verbatim in the U36 card's redden evidence.
 #[test]
 fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
-    use render::{Header, RenderJob, Renderer, SectionRow, TextRenderer};
+    use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
     use wire_map::facts::read_facts;
 
     let raw = std::fs::read_to_string(pack().join("corpus/multi-root.md")).expect("fixture");
@@ -535,7 +535,7 @@ fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
             sel: &wire::ReadSel::parse("Roots"),
             fact,
         }];
-        let rendered = TextRenderer::with_meridian_elision()
+        let rendered = ToonRenderer::with_meridian_elision()
             .render(
                 &doc,
                 &RenderJob::Sections {

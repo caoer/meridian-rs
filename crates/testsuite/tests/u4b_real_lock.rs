@@ -2,11 +2,11 @@
 //! wrote — B's U11 `lock_write` (engine-sole-writer, EOF placement, CAS +
 //! flock) — not a static fixture. The engine-written `meridian-lock` block
 //! renders ELIDED on the render/readText face
-//! ([`TextRenderer::with_meridian_elision`], predicate =
+//! ([`ToonRenderer::with_meridian_elision`], predicate =
 //! `lock::is_meridian_lang`) and rides the raw read/cat face VERBATIM
 //! (byte pin #4: the raw face never routes through render).
 
-use render::{Header, RenderJob, Renderer, SectionRow, TextRenderer};
+use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
 use wire::{NodeRev, Path as WPath};
 use wire_map::facts::{read_facts, resolve_selector};
 use wire_serve::write::{LockWriteArgs, lock_write};
@@ -83,7 +83,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
         words_total: 0,
         decorations: &render::NO_DECORATIONS,
     };
-    let rendered = TextRenderer::with_meridian_elision()
+    let rendered = ToonRenderer::with_meridian_elision()
         .render(
             &doc,
             &RenderJob::Sections {

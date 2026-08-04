@@ -5,7 +5,7 @@
 //! and an ordinary `rust` fence, mirroring the U0 `meridian-block` corpus
 //! doc. Byte pin #4: the raw read/cat face carries `meridian-*` blocks
 //! VERBATIM and never routes through render; elision lives behind
-//! [`TextRenderer::with_meridian_elision`].
+//! [`ToonRenderer::with_meridian_elision`].
 //!
 //! **U36:** the predicate is `lock::is_engine_emitted` — derived from the
 //! registered canonical writers, not from the `meridian-*` namespace. So the
@@ -13,7 +13,7 @@
 //! claims, renders. Reservation stays uniform (`lock::is_meridian_lang`, #8 §1);
 //! readership is per-language.
 
-use render::{Header, RenderJob, RenderedSection, Renderer, SectionRow, TextRenderer};
+use render::{Header, RenderJob, RenderedSection, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts, resolve_selector};
 
 fn build(raw: &str) -> (model::Document, Vec<ReadFact>) {
@@ -49,7 +49,7 @@ fn fixture_page() -> String {
 fn render_sections(
     doc: &model::Document,
     rows: &[SectionRow<'_>],
-    r: TextRenderer,
+    r: ToonRenderer,
 ) -> render::Rendered {
     let header = Header {
         display_path: "$S/x.md",
@@ -102,7 +102,7 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
             fact: code,
         },
     ];
-    let out = render_sections(&doc, &rows, TextRenderer::with_meridian_elision());
+    let out = render_sections(&doc, &rows, ToonRenderer::with_meridian_elision());
     assert!(
         !out.text.contains("meridian-lock"),
         "lock block elided: {}",
@@ -149,7 +149,7 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
 }
 
 /// The golden-pinned default stays INERT against the REAL canonical lock
-/// bytes (the U0 gates construct `TextRenderer::default()`).
+/// bytes (the U0 gates construct `ToonRenderer::default()`).
 #[test]
 fn default_renderer_emits_real_lock_verbatim() {
     let block = lock_block();
@@ -161,7 +161,7 @@ fn default_renderer_emits_real_lock_verbatim() {
         sel: &wire::ReadSel::parse("Config"),
         fact: config,
     }];
-    let out = render_sections(&doc, &rows, TextRenderer::default());
+    let out = render_sections(&doc, &rows, ToonRenderer::default());
     assert!(
         out.sections[0].content.contains(&block),
         "default() is inert: canonical lock bytes ride the rendered content verbatim"
@@ -169,9 +169,14 @@ fn default_renderer_emits_real_lock_verbatim() {
 }
 
 /// Fully-elided ≠ empty (coordinator ruling): a page whose ONLY body is its
-/// lock block still renders the page's non-lock STRUCTURE — the header line
-/// and the section banner — never a bare empty string. The raw face carries
-/// the block verbatim regardless (pin #4).
+/// lock block still renders the page's non-lock STRUCTURE — the TOON head's
+/// row for the section, and the section's body marker — never a bare empty
+/// string. The raw face carries the block verbatim regardless (pin #4).
+///
+/// U15 made this claim harder to lose rather than softer: the section survives
+/// as a declared ROW carrying its own `rev`, so "the read served this section
+/// and it rendered to nothing" is now a fact in the head, not an inference
+/// from a banner's presence.
 #[test]
 fn all_lock_page_renders_structure_not_empty() {
     let block = lock_block();
@@ -187,11 +192,16 @@ fn all_lock_page_renders_structure_not_empty() {
         sel: &wire::ReadSel::parse("Pins"),
         fact,
     }];
-    let out = render_sections(&doc, &rows, TextRenderer::with_meridian_elision());
+    let out = render_sections(&doc, &rows, ToonRenderer::with_meridian_elision());
     assert!(!out.text.is_empty(), "never a bare empty string");
     assert!(
-        out.text.contains("== Pins (rev:"),
-        "the section banner is the surviving structure: {}",
+        out.text.contains(&format!("\n  Pins,{},0,", fact.sec_rev)),
+        "the head still declares the section, with its rev: {}",
+        out.text
+    );
+    assert!(
+        out.text.contains("== Pins =="),
+        "and the body marker is the surviving structure: {}",
         out.text
     );
     assert!(
@@ -213,7 +223,7 @@ fn elision_swallows_the_block_line() {
         sel: &wire::ReadSel::parse("H"),
         fact,
     }];
-    let out = render_sections(&doc, &rows, TextRenderer::with_meridian_elision());
+    let out = render_sections(&doc, &rows, ToonRenderer::with_meridian_elision());
     assert_eq!(
         out.sections[0].content, "\nbefore\n\n\nafter\n",
         "block + its own line removed, surrounding bytes untouched"
