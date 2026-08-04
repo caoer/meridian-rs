@@ -16,10 +16,14 @@ optional member included.
 Read exhaustively, four §8 codes serve extras the table does not name, and one
 amendment code serves extras nothing names. This amendment declares them.
 
-**The wire is not wrong here.** The extras implement ruled refusal law — the
-teaching contract below and the §8 recovery binding — so the document lagged the
-law rather than the engine departing from it. Nothing in this amendment changes
-what any door serves.
+**The wire is not wrong here.** The extras implement ruled refusal behaviour —
+the §8 recovery binding and the house refusal convention — so the documents
+lagged the engine rather than the engine departing from them. Nothing in this
+amendment changes what any door serves.
+
+**Six keys, on five codes.** The U27b sweep first reported one of the six as
+already declared elsewhere; that citation rested on a non-normative document and
+does not stand (advisor ruling, 2026-08-04). All six are declared here.
 
 ## The declared extras
 
@@ -28,7 +32,7 @@ what any door serves.
 | `bad_path` | fix class, no extras | `path` | the offending path, echoed, so the caller sees which spelling was refused |
 | `file_not_found` | env class, no extras | `path` | the requested path, echoed — the env fault names its subject |
 | `unsupported_proto` | respawn class, no extras | `supported` | the protos this engine speaks; a respawn-class refusal that does not say what would work is not actionable |
-| `guard_required` | code + recovery declared by `wire-contract-fingerprint-or-force-amendment.md` | `message`, `path` | the four-property teaching contract (below) |
+| `guard_required` | code + recovery only, by `wire-contract-fingerprint-or-force-amendment.md` — no frame, no extras | `message`, `path` | the refusal must teach; the content convention it follows is described below |
 | `bad_request` | fix class; extras declared per call site (`unknown_kinds` §4.3, `id_raw` §3.1, `overlap` §4.4) | `message`, OPTIONAL ON THE CODE | see normalization, below |
 
 ## `message` is optional on the code, never on the call site
@@ -48,13 +52,26 @@ question with measurement behind it, not something this document assumes. The
 declaration makes a message legal everywhere and required nowhere, so a site
 that gains one later needs no further amendment.
 
-## The teaching contract `guard_required` implements
+## `guard_required` — the keys are declared HERE, and only here
 
-`docs/fingerprint-or-force.md` (the design note the fingerprint-or-force
-amendment names) rules the refusal's content: a message built from the house
-refusal primitives — **subject · cause at its grain · partial state · a runnable
-fix** — plus the one negative, never an internal mode name. It has its own
-contract assertion, `assert_guard_contract`.
+**This amendment is the first normative text to declare either key.** Neither is
+inherited, and the distinction matters because it was tested: no normative
+member prints a `guard_required` frame at all. `wire-contract-fingerprint-or-force-amendment.md`
+declares the code and its recovery class in one sentence and prints no frame;
+`crates/testsuite/data/harness/p4-regression-probes.json` asserts
+`"error_code": "guard_required"` and no key beside it.
+
+The message's CONTENT follows the house refusal convention described in
+`docs/fingerprint-or-force.md` — a message built from the refusal primitives:
+**subject · cause at its grain · partial state · a runnable fix**, plus the one
+negative, never an internal mode name — enforced by `assert_guard_contract`.
+
+That document is the unit's DESIGN NOTE and is **not normative** (advisor
+ruling, 2026-08-04, on ZT's scope-of-assent doctrine DX-01: elaboration beside
+ratified content is not itself ratified, and a document does not become law by
+containing true sentences). It is cited here as the source of a convention the
+engine already follows, never as the authority for the key. The authority for
+the key is this amendment.
 
 `path` carries the subject at frame grain, so a consumer that renders the code
 without the prose still names the file. Worked:
