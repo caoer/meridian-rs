@@ -69,7 +69,6 @@ fn flatten(node: &model::Node, raw: &[u8], out: &mut Vec<wire::Node>) {
             // U2 addressing facts are attached by the extract arm under v3
             // sessions only — the projection itself stays rev-agnostic.
             n: None,
-            hpath_text: None,
             words: None,
         });
     }

@@ -24,13 +24,18 @@ fn build(raw: &str) -> (model::Document, Vec<ReadFact>) {
 
 /// A populated lock in the canonical engine-written byte form.
 fn lock_block() -> String {
+    // FIXTURE REPAIR ONLY (U14): U8 replaced the `objects:` plane and the
+    // `declared_ref` row with the R4 shape — `object` + `hash` + a `path`
+    // ARRAY selector — so this fixture no longer compiled. Rebuilt in the
+    // current shape; this test is about fence-language ELISION, so all it
+    // needs from the lock is that it renders as the engine's block.
     let mut l = lock::Lock::new();
-    l.set_object("corpus/meridian-block.md", "9ae3f1deadbeef");
-    l.upsert_pin(lock::PinEntry {
-        declared_ref: addr::Addr::parse("corpus/other.md#Design")
-            .expect("a fixture ref is an address"),
-        fingerprint: format!("fp1.span2.b3.{}", "ab".repeat(32)),
-    });
+    l.upsert_pin(lock::PinEntry::new(
+        "corpus/other",
+        "9ae3f1deadbeef",
+        lock::Selector::Path(vec!["Design".into()]),
+        &format!("fp1.span2.b3.{}", "ab".repeat(32)),
+    ));
     lock::render(&l)
 }
 
@@ -75,8 +80,9 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
     let block = lock_block();
     let raw = fixture_page();
     let (doc, facts) = build(&raw);
-    let config = resolve_selector(&facts, "Config").expect("Config resolves");
-    let code = resolve_selector(&facts, "Code").expect("Code resolves");
+    let config =
+        resolve_selector(&facts, &wire::ReadSel::parse("Config")).expect("Config resolves");
+    let code = resolve_selector(&facts, &wire::ReadSel::parse("Code")).expect("Code resolves");
 
     // RAW face (read/cat = the content span bytes): VERBATIM — pin #4.
     assert!(
@@ -88,11 +94,11 @@ fn real_lock_elided_on_render_face_verbatim_on_raw() {
     // RENDER face, production configuration: every meridian-* block gone.
     let rows = [
         SectionRow {
-            sel: "Config",
+            sel: &wire::ReadSel::parse("Config"),
             fact: config,
         },
         SectionRow {
-            sel: "Code",
+            sel: &wire::ReadSel::parse("Code"),
             fact: code,
         },
     ];
@@ -149,9 +155,10 @@ fn default_renderer_emits_real_lock_verbatim() {
     let block = lock_block();
     let raw = fixture_page();
     let (doc, facts) = build(&raw);
-    let config = resolve_selector(&facts, "Config").expect("Config resolves");
+    let config =
+        resolve_selector(&facts, &wire::ReadSel::parse("Config")).expect("Config resolves");
     let rows = [SectionRow {
-        sel: "Config",
+        sel: &wire::ReadSel::parse("Config"),
         fact: config,
     }];
     let out = render_sections(&doc, &rows, TextRenderer::default());
@@ -170,13 +177,16 @@ fn all_lock_page_renders_structure_not_empty() {
     let block = lock_block();
     let raw = format!("# Pins\n\n{block}\n");
     let (doc, facts) = build(&raw);
-    let fact = resolve_selector(&facts, "Pins").expect("resolves");
+    let fact = resolve_selector(&facts, &wire::ReadSel::parse("Pins")).expect("resolves");
 
     // Raw face: verbatim.
     assert!(content_slice(&raw, fact).contains(&block));
 
     // Render face: block gone, structure stays.
-    let rows = [SectionRow { sel: "Pins", fact }];
+    let rows = [SectionRow {
+        sel: &wire::ReadSel::parse("Pins"),
+        fact,
+    }];
     let out = render_sections(&doc, &rows, TextRenderer::with_meridian_elision());
     assert!(!out.text.is_empty(), "never a bare empty string");
     assert!(
@@ -198,8 +208,11 @@ fn all_lock_page_renders_structure_not_empty() {
 fn elision_swallows_the_block_line() {
     let raw = format!("# H\n\nbefore\n\n{}\n\nafter\n", lock_block());
     let (doc, facts) = build(&raw);
-    let fact = resolve_selector(&facts, "H").expect("resolves");
-    let rows = [SectionRow { sel: "H", fact }];
+    let fact = resolve_selector(&facts, &wire::ReadSel::parse("H")).expect("resolves");
+    let rows = [SectionRow {
+        sel: &wire::ReadSel::parse("H"),
+        fact,
+    }];
     let out = render_sections(&doc, &rows, TextRenderer::with_meridian_elision());
     assert_eq!(
         out.sections[0].content, "\nbefore\n\n\nafter\n",

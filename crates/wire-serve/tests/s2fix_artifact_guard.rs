@@ -139,7 +139,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
             Vec::new(),
             Some(PinSpec {
                 target: WPath("guide.md".into()),
-                selector: "Guide/Leader's-Guideline".into(),
+                selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
                 vibe: None,
             }),
         ),
@@ -293,7 +293,7 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
             Vec::new(),
             Some(PinSpec {
                 target: WPath("guide.md".into()),
-                selector: "Guide/Leader's-Guideline".into(),
+                selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
                 vibe: None,
             }),
         ),
@@ -362,7 +362,7 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
                 Vec::new(),
                 Some(PinSpec {
                     target: WPath("guide.md".into()),
-                    selector: sel.into(),
+                    selector: wire::ReadSel::parse(sel),
                     vibe: None,
                 }),
             ),
@@ -370,11 +370,11 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
             None,
         )
     };
-    pin("Guide/Leader's-Guideline").expect("first pin lands");
+    pin("Guide/Leader's Guideline").expect("first pin lands");
     let after_first = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
     assert!(after_first.contains("```meridian-lock"), "{after_first}");
 
-    pin("Guide/Leader's-Guideline").expect("the re-pin lands");
+    pin("Guide/Leader's Guideline").expect("the re-pin lands");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
         after_first,
@@ -419,7 +419,7 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
             Vec::new(),
             Some(PinSpec {
                 target: WPath("src.md".into()),
-                selector: "Src/Source-Guideline".into(),
+                selector: wire::ReadSel::parse("Src/Source Guideline"),
                 vibe: None,
             }),
         ),
@@ -445,7 +445,7 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
             Vec::new(),
             Some(PinSpec {
                 target: WPath("guide.md".into()),
-                selector: "Guide/Leader's-Guideline".into(),
+                selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
                 vibe: None,
             }),
         ),
@@ -488,7 +488,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
             Vec::new(),
             Some(PinSpec {
                 target: WPath("guide.md".into()),
-                selector: "Guide/Leader's-Guideline".into(),
+                selector: wire::ReadSel::parse("Guide/Leader's Guideline"),
                 vibe: None,
             }),
         ),

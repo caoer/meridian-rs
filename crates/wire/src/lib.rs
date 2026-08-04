@@ -152,6 +152,102 @@ pub enum SecRef {
     FmKey { fm_key: String },
 }
 
+/// The composed-read section selector (M1 U14, ZT decision 14) — the READ
+/// face's addressing grammar, tagged.
+///
+/// It replaces a plain `String` that carried **three grammars at once**:
+/// `resolve_selector` matched `f.hpath == sel || f.n == sel`, so one string
+/// was a heading address, a dewey ordinal, and a `^id` anchor depending on
+/// what happened to match first. Which grammar a caller MEANT was never
+/// stated, so the read face guessed — and a heading whose raw text is `1.2`
+/// or begins with `^` was addressable by accident, in the wrong plane.
+///
+/// The arms are separate because the planes are separate. The heading arm
+/// carries SEGMENTS — the same §2.1 grammar `put` takes in `target.hpath` and
+/// [`ReadRow::hpath`] publishes — so a read-then-write loop closes with no
+/// join, no split, and no sanitize-projection to invert (R1.6: arrays for
+/// machines). The dewey and anchor arms carry opaque ids, which have never
+/// been addresses.
+///
+/// Conversion from a human string happens ONCE, at an ingress door, through
+/// [`ReadSel::parse`] — never inward of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ReadSel {
+    /// `{"hpath":[{"h":"Goals"},{"h":"Q3"}]}` — the heading plane, per-segment
+    /// byte-equality on RAW heading text. A segment's `n` pins the occurrence
+    /// among same-text siblings; absent, the read face's first-match-wins law
+    /// applies (v2 §2.1 semantics for `n` itself are unchanged).
+    Hpath { hpath: Vec<HpathSeg> },
+    /// `{"n":"1.2.1"}` — the dewey ordinal the read face mints per heading
+    /// row. Positional and NOT round-trippable across an edit; it addresses a
+    /// row of a table the caller is holding, never a document address.
+    Dewey { n: String },
+    /// `{"anchor":"r-000042"}` — the `^id` block plane, id WITHOUT the `^`
+    /// marker (charset `[A-Za-z0-9-]+`, v2 §2.4).
+    Anchor { anchor: String },
+}
+
+impl ReadSel {
+    /// The ONE human-string→selector door: a CLI `--section`, a `#Fragment`
+    /// on a ref, a `pin` spec. Three disjoint spellings, decided in order:
+    ///
+    /// - `^id` → [`ReadSel::Anchor`].
+    /// - digits and dots only (`1`, `1.2.1`) → [`ReadSel::Dewey`].
+    /// - anything else → [`ReadSel::Hpath`], `/`-split into RAW heading texts.
+    ///
+    /// The order is the disambiguation: a heading literally named `1.2` is
+    /// unaddressable from a human string here, which is the SAME collision the
+    /// old joined form had — but now it is one door's stated rule instead of a
+    /// match-order accident three layers in, and the structured arm is always
+    /// available to a caller that means the heading.
+    ///
+    /// Heading text is taken VERBATIM: no sanitize, no `#n` sub-grammar. The
+    /// occurrence index rides the structured form only, because a `#` inside a
+    /// human string is itself a live ingress delimiter (wikilinks, `path#frag`)
+    /// and re-spelling it here would rebuild the delimiter collision decision
+    /// 20 removed.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        if let Some(id) = s.strip_prefix('^') {
+            return ReadSel::Anchor {
+                anchor: id.to_owned(),
+            };
+        }
+        if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return ReadSel::Dewey { n: s.to_owned() };
+        }
+        ReadSel::Hpath {
+            hpath: s
+                .split('/')
+                .map(|h| HpathSeg {
+                    h: h.to_owned(),
+                    n: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// The caller's own spelling, for a REFUSAL message to name back. Display
+    /// only — nothing addresses anything with this string, and no door parses
+    /// it back (that is what [`ReadSel::parse`] being the only ingress means).
+    #[must_use]
+    pub fn display(&self) -> String {
+        match self {
+            ReadSel::Hpath { hpath } => hpath
+                .iter()
+                .map(|s| match s.n {
+                    Some(n) => format!("{}#{n}", s.h),
+                    None => s.h.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("/"),
+            ReadSel::Dewey { n } => n.clone(),
+            ReadSel::Anchor { anchor } => format!("^{anchor}"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // v2 §9 actor and now — wire inputs, never ambient
 // ---------------------------------------------------------------------------
@@ -309,10 +405,23 @@ pub struct ReceiptAddr {
 pub struct PinSpec {
     /// The page holding the pinned content (workspace-relative).
     pub target: Path,
-    /// The selector inside `target`: a sanitized heading path (`"Notes/Q3"`) or
-    /// a block anchor (`"^id"`). The engine canonicalizes it against the
-    /// target's own read facts before anything is written.
-    pub selector: String,
+    /// The selector inside `target`, TAGGED (U14, ruled 2026-08-03).
+    ///
+    /// **It was a joined string, and that is how the delimiter collision
+    /// survived its own removal.** U14 lifted the `/`-in-heading refusal on the
+    /// grounds that an R4 `path` array carries `["A/B"]` unambiguously — true,
+    /// and not sufficient: this field still split `"Guide/A/B"` into THREE
+    /// segments, so the heading became representable in storage while staying
+    /// unpinnable. The disease decision 20 named did not die with the lock-ref
+    /// grammar; it MOVED here. Decision 14 applies unchanged — `PinSpec` is a
+    /// wire machine surface, so it carries structure.
+    ///
+    /// The human spelling lives in the CLI coat (`mrd pin --section`), which
+    /// converts through [`ReadSel::parse`] at its own door. That coat still
+    /// splits on `/`, so a `/`-bearing heading is pinnable through THIS field
+    /// and not through the CLI sugar — ZT's input-coat vs carried-canonical
+    /// split, with C2 reserved.
+    pub selector: ReadSel,
     /// `--vibe`: additionally WRITE the target's blob into git's object store
     /// (`git hash-object -w`), so the pin is retrievable before any commit
     /// references it. Absent/`false` computes the oid read-only.
@@ -327,10 +436,18 @@ pub struct PinFact {
     /// The pinned page, as given.
     pub target: Path,
     /// The CANONICAL selector the engine resolved (never the caller's spelling,
-    /// never a dewey ordinal) — the same string the read-mint gate looked up.
-    pub selector: String,
-    /// The lock's `pins[].ref` verbatim: `"<target>#<selector>"`.
-    pub declared_ref: String,
+    /// never a dewey ordinal) — the same key the read-mint gate looked up,
+    /// STRUCTURED since U14 so the two cannot drift into two spellings of one
+    /// address.
+    pub selector: ReadSel,
+    // U14 (ruling 2026-08-03, decision 14): `declared_ref` — the joined
+    // `"<target>#<selector>"` echo — is GONE. The R4 lock row it was named
+    // after carries `object` + a `path` ARRAY and has had no `ref:` field
+    // since U8, so this string echoed a grammar nothing writes and nothing
+    // reads back inward; `target` and `selector` above carry the same fact
+    // structurally. Dropping it is what retires the joined `page#A/B` spelling
+    // from the wire, and with it the `/`-in-heading refusal that existed only
+    // to protect that spelling's delimiter.
     /// The minted `fp1.…` CID-token over the selector's own span.
     pub fingerprint: String,
     /// The lock's `objects[]` blob oid for the target file; absent when git
@@ -621,10 +738,17 @@ pub enum Op {
         path: Path,
         #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// The whole-call subtree scope, as SEGMENTS (U14): the section itself
+        /// plus its descendants, matched per-segment. It was a sanitized
+        /// joined string tested with `starts_with("{frag}/")`, which made
+        /// scoping a string-prefix question over an address nothing could
+        /// invert.
         #[serde(skip_serializing_if = "Option::is_none")]
-        frag: Option<String>,
+        frag: Option<Vec<HpathSeg>>,
+        /// Document-absolute section selectors, each in the tagged read
+        /// grammar ([`ReadSel`], U14).
         #[serde(skip_serializing_if = "Option::is_none")]
-        sections: Option<Vec<String>>,
+        sections: Option<Vec<ReadSel>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         display_path: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,11 +846,13 @@ pub struct Node {
     /// carry no such key (`contract_v2.rs` goldens).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<String>,
-    /// v3-ADDITIVE (M1 U2): the sanitized joined hpath ADDRESS
-    /// ("Notes/Slash-Title-Here") on heading nodes — the Go
-    /// `sanitizeHeadingHost` semantics, computed engine-side.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hpath_text: Option<String>,
+    // U14 (D2, decision 14): `hpath_text` — the sanitized joined ADDRESS
+    // ("Notes/Slash-Title-Here") — is GONE. It was a string address on a
+    // machine surface, and a lossy one: `sanitize_heading` is many-to-one, so
+    // no consumer could invert it back to something `put` accepts. This node
+    // already carries `hpath` as SEGMENTS, which is the address that
+    // round-trips; the joined human spelling is the render plane's to derive
+    // at its own door, and it derives it there now.
     /// v3-ADDITIVE (M1 U2): the `strings.Fields` word count over the
     /// heading's SUBTREE-inclusive content span.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -788,26 +914,24 @@ pub struct ReadRow {
     pub n: String,
     pub depth: u32,
     pub title: String,
-    pub hpath: String,
-    /// v3-ADDITIVE (fix-08): the RAW segment array — the §2.1 grammar `put`
-    /// takes in `target.hpath`, so the address this row publishes is one the
-    /// write plane accepts, unmodified.
+    /// **U14 (D2): the address, as SEGMENTS.** The §2.1 grammar `put` takes in
+    /// `target.hpath`, so the address this row publishes is one the write
+    /// plane accepts, unmodified — the read→put loop closes off this row with
+    /// no second read and no reconstruction.
     ///
-    /// `hpath` above is the SANITIZED joined string and stays put (renaming it
-    /// would move Go-parity golden bytes). But `sanitize_heading` is
-    /// many-to-one — `Scratch notes`, `Scratch-notes` and `Scratch/notes` all
-    /// collapse to `Scratch-notes` — so it is a projection nothing can invert:
-    /// before this field, an agent that read a section could not address it to
-    /// write, and retyping could not recover a pre-image the row never carried.
-    /// `hpath` addresses the HUMAN plane (display, `--section`); `hpath_raw`
-    /// addresses the MACHINE plane, and only it round-trips.
+    /// It was the SANITIZED joined string (`"Notes/Slash-Title-Here"`) with the
+    /// array riding beside it as `hpath_raw` (fix-08, the half-landing). The
+    /// string is gone: `sanitize_heading` is many-to-one — `Scratch notes`,
+    /// `Scratch-notes` and `Scratch/notes` all collapse to `Scratch-notes` —
+    /// so it was a projection nothing could invert, published on the machine
+    /// surface as if it were an address. The joined human spelling is the
+    /// render plane's, derived at the render door from these segments.
     ///
     /// Per-segment `n` rides ONLY where the raw text is ambiguous among its
     /// same-parent siblings — the same occurrence `resolve_hpath_node` counts.
     /// An unconditional `n` would keep silently resolving after a duplicate
     /// appeared; a minimal address refuses loud instead.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hpath_raw: Vec<HpathSeg>,
+    pub hpath: Vec<HpathSeg>,
     pub words: u64,
     pub sec_rev: NodeRev,
     /// Full node span, heading-inclusive AND subtree-inclusive — the
@@ -844,15 +968,17 @@ pub struct ReadAnchor {
 /// `rendered_text` ONLY) — and the word count over that raw content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadSectionOut {
-    pub sel: String,
-    pub hpath: String,
-    /// v3-ADDITIVE (fix-08): the RAW put-grammar address of the section served
-    /// — so the read-a-section-then-write-it loop closes off THIS response,
-    /// with no second read and no address reconstruction. Absent on `^id`
-    /// sections, whose put grammar is `{"anchor":id}` and whose id is already
-    /// carried un-sanitized. Semantics: [`ReadRow::hpath_raw`].
+    /// The selector that hit, echoed in the caller's own TAGGED grammar
+    /// (U14) — so a caller pairing responses with requests compares structure
+    /// to structure and never re-parses a string to learn which plane it asked
+    /// about.
+    pub sel: ReadSel,
+    /// The section's address as SEGMENTS (U14 — see [`ReadRow::hpath`]).
+    /// EMPTY on `^id` sections: their put grammar is `{"anchor":id}`, and the
+    /// id rides `sel` un-sanitized, so there is no heading address to publish
+    /// and none is invented.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hpath_raw: Vec<HpathSeg>,
+    pub hpath: Vec<HpathSeg>,
     pub sec_rev: NodeRev,
     pub words: u64,
     pub content: String,

@@ -1131,14 +1131,13 @@ struct PinMint {
     /// The wire fact returned to the client.
     fact: wire::PinFact,
     /// The R4 lock row's own two structural fields, minted HERE and carried
-    /// whole — never re-derived by splitting [`wire::PinFact::declared_ref`].
+    /// whole — never re-derived by splitting a joined address spelling.
     ///
-    /// `declared_ref` is the HUMAN/wire spelling and stays a `String` (criterion
-    /// 7 freezes v2 byte-identity). R1.6 gives the machine surface arrays and no
-    /// string address form, so the two are minted side by side from one source —
-    /// the target's own read facts — and the joined form is never an input to
-    /// the structural one. That is the whole reason this field exists rather
-    /// than a `parse(&fact.declared_ref)` at the lock door.
+    /// U8 minted this beside a `declared_ref` echo, so the note here used to
+    /// explain why the two were kept apart. U14 removed the echo entirely
+    /// (decision 14: no string address forms on machine surfaces), so there is
+    /// no joined form left anywhere on this path to be tempted by — the row is
+    /// built from the target's own read facts and nothing else.
     row: PinRow,
     /// The pinned selector's span in the target — the exact bytes the
     /// fingerprint covers, in the POST-promotion document (the promotion widens
@@ -1223,37 +1222,43 @@ fn mint_pin(
     // convention can see.
     stamp_path(&mut target_doc, &spec.target);
 
-    // The CANONICAL selector, from the target's own read facts — one hpath
-    // owner (`wire_map::facts` → `model::gotext::sanitize_heading`). A dewey
-    // ordinal resolves here but is never carried: `fact.hpath` is what the
-    // receipt was keyed on and what the lock will declare.
+    // U14: `spec.selector` ARRIVES tagged — the conversion from a human string
+    // happens in the caller's own coat (`mrd pin`), never here. So this door
+    // holds no address grammar at all, which is what keeps a delimiter from
+    // reappearing in it.
+    let asked = &spec.selector;
     let facts = wire_map::facts::read_facts(
         &wire_map::project_toc(&target_doc),
         target_doc.raw.as_bytes(),
     );
-    let Some(fact) = wire_map::facts::resolve_selector(&facts, &spec.selector) else {
+    let Some(fact) = wire_map::facts::resolve_selector(&facts, asked) else {
         return Err(pin_target_missing(
             &spec.target,
             format!(
                 "no section addressed by \"{}\" in {}. Nothing was written — the pin's \
                  page is byte-untouched. {}",
-                spec.selector,
+                asked.display(),
                 spec.target.0,
-                crate::section_recovery(&spec.selector, Some(spec.target.0.as_str()))
+                crate::section_recovery(&asked.display(), Some(spec.target.0.as_str()))
             ),
         ));
     };
-    let selector = fact.hpath.clone();
+    // The CANONICAL selector: what the caller ASKED resolved to, in the read
+    // face's own tagged grammar — never the caller's spelling, and never a
+    // dewey ordinal (a dewey selector resolves here and is canonicalized to
+    // the row's structural address, because an ordinal is positional and a pin
+    // must outlive the next edit). This is the receipt key, and it is the same
+    // structure the mint side keyed on.
+    let selector = canonical_selector(fact);
+    // Refusal messages still need a spelling to name back at a human.
+    let selector_text = selector.display();
     // Captured before the promotion re-resolve borrows the doc again: anchor rows
     // carry a block id (heading rows do not), and the RAW title is what the D15
     // slug derives from.
     let fact_anchor = fact.anchor.clone();
     let title = fact.title.clone();
-    // The RAW segment array — the pre-image `hpath` above is a lossy projection
-    // of (`sanitize_heading` is many-to-one). The lock's `path` array is built
-    // from THESE segments and never by re-splitting the joined string, so the
-    // machine surface carries what round-trips (R1.6).
-    let fact_hpath_raw = fact.hpath_raw.clone();
+    // The RAW segment array the lock's `path` array is built from (R1.6).
+    let fact_segments = fact.hpath.clone();
 
     // D16: the gate, and its rev-recheck against the bytes on disk RIGHT NOW —
     // a receipt answers "was it read", never "is it current".
@@ -1267,7 +1272,7 @@ fn mint_pin(
         fact_anchor.as_deref(),
         slot,
         &title,
-        &selector,
+        &selector_text,
     )?;
 
     // Compose the promotion IN MEMORY (nothing is written here — see this
@@ -1288,34 +1293,33 @@ fn mint_pin(
     };
     let pinned_doc: &model::Document = promoted.as_ref().map_or(&target_doc, |c| c.document());
 
-    let (span, promoted_sec_rev, hpath_raw) = if promote {
+    let (span, promoted_sec_rev, segments) = if promote {
         post_promotion_facts(pinned_doc, &spec.target, &selector)?
     } else {
-        (fact_span, String::new(), fact_hpath_raw)
+        (fact_span, String::new(), fact_segments)
     };
 
-    let fingerprint = mint_fingerprint(pinned_doc, &span, &spec.target, &selector)?;
+    let fingerprint = mint_fingerprint(pinned_doc, &span, &spec.target, &selector_text)?;
     let blob = blob_oid(
         root,
         &spec.target,
         promoted.as_ref().map(model::CandidateDocument::raw),
         spec.vibe.unwrap_or(false),
     )?;
-    let declared_ref = format!(
-        "{}#{}",
-        spec.target.0,
-        lock_ref_fragment(pinned_doc, &span, fact_anchor.as_deref(), &selector)?
-    );
+    // U14 (ruling 2026-08-03): the joined `page#A/B` wire echo is GONE, so
+    // nothing builds that spelling here any more. What survives at this door is
+    // the ONE refusal the joined grammar was not the reason for — see
+    // `refuse_unrepresentable_heading`.
+    refuse_unrepresentable_heading(pinned_doc, &span, fact_anchor.as_deref(), &selector_text)?;
     let row = pin_row(
         &spec.target,
         fact_anchor.as_deref(),
-        &hpath_raw,
+        &segments,
         blob.as_deref(),
     )?;
 
     Ok(PinMint {
         fact: wire::PinFact {
-            declared_ref,
             target: spec.target.clone(),
             selector,
             fingerprint,
@@ -1349,7 +1353,7 @@ fn mint_pin(
 fn post_promotion_facts(
     pinned_doc: &model::Document,
     target: &Path,
-    selector: &str,
+    selector: &wire::ReadSel,
 ) -> Result<(std::ops::Range<usize>, String, Vec<HpathSeg>), Box<ErrorBody>> {
     let facts = wire_map::facts::read_facts(
         &wire_map::project_toc(pinned_doc),
@@ -1358,13 +1362,16 @@ fn post_promotion_facts(
     let Some(fresh) = wire_map::facts::resolve_selector(&facts, selector) else {
         return Err(pin_target_missing(
             target,
-            format!("\"{selector}\" no longer resolves after promotion"),
+            format!(
+                "\"{}\" no longer resolves after promotion",
+                selector.display()
+            ),
         ));
     };
     Ok((
         span_range(fresh.span),
         fresh.sec_rev.clone(),
-        fresh.hpath_raw.clone(),
+        fresh.hpath.clone(),
     ))
 }
 
@@ -1372,8 +1379,8 @@ fn post_promotion_facts(
 ///
 /// Everything the lock plane needs is derived HERE, from the target's own read
 /// facts, and travels onward as [`PinRow`]. No later stage re-derives an address
-/// by splitting [`wire::PinFact::declared_ref`]: that string is the human/wire
-/// spelling, `sanitize_heading` is many-to-one, and `/` is a legal character in
+/// by re-splitting a joined address spelling: `sanitize_heading` is
+/// many-to-one, and `/` is a legal character in
 /// a heading — so a split is a guess wearing a parse's clothing (R1.6: arrays
 /// for machines, no string address forms on a machine surface).
 ///
@@ -1400,12 +1407,12 @@ fn post_promotion_facts(
 fn pin_row(
     target: &Path,
     fact_anchor: Option<&str>,
-    hpath_raw: &[HpathSeg],
+    segments: &[HpathSeg],
     blob: Option<&str>,
 ) -> Result<PinRow, Box<ErrorBody>> {
     let elements = match fact_anchor {
         // Block grain, sole element, no promotion — R4's anchor form verbatim.
-        Some(id) if hpath_raw.is_empty() => vec![format!("^{id}")],
+        Some(id) if segments.is_empty() => vec![format!("^{id}")],
         Some(id) => {
             return Err(bad_request(format!(
                 "refused: the anchor ^{id} resolved with a heading chain as well, \
@@ -1414,7 +1421,7 @@ fn pin_row(
                  meaning, so the engine will not invent one. Nothing was written."
             )));
         }
-        None => hpath_raw.iter().map(|s| s.h.clone()).collect(),
+        None => segments.iter().map(|s| s.h.clone()).collect(),
     };
     if fact_anchor.is_none()
         && let Some(bad) = elements.iter().find(|h| h.starts_with('^'))
@@ -1461,44 +1468,77 @@ fn io_refusal(cause: String) -> Box<ErrorBody> {
     Box::new(err)
 }
 
-/// The lock `ref`'s fragment — the spelling that must RESOLVE, which is not the
-/// same string as the canonical selector the receipt is keyed on.
+/// The pin door's one remaining representability refusal: a heading whose RAW
+/// text carries a `#`.
 ///
-/// `model::selector::Selector::parse` is the normative ref grammar and the verify
-/// plane's front door: `#^id` → the block, anything else → a `/`-split chain of
-/// **RAW** heading texts matched byte-exactly (`model::resolve`). The host-face
-/// selector is SANITIZED (`model::gotext::sanitize_heading` turns every space
-/// and `/` into `-`), so writing it into the lock would mint a ref that resolves
-/// to nothing for any heading with a space in it — a pin that reads
-/// `red(dangling)` the moment it lands.
+/// **This function used to be `lock_ref_fragment`, and it used to BUILD an
+/// address** — the joined `page#A/B` spelling for the wire's `declared_ref`
+/// echo. U14 disposed of that echo (decision 14: no string address forms on
+/// machine surfaces), and the R4 lock row it was named after has carried an
+/// `object` plus a `path` ARRAY since U8. So there is no joined grammar left
+/// here to round-trip, and nothing to build. What is left is a guard.
+///
+/// **The `/` half of the old refusal is LIFTED** (ruled 2026-08-03). It existed
+/// only because `A/B` and `["A","B"]` were the same bytes in the joined
+/// spelling — the exact delimiter collision ZT named in the decision-20
+/// rationale (`#A#a/b` vs `#A#a#b`). An R4 `path` array carries `["A/B",
+/// "leaf"]` unambiguously by construction, and under U7's ruled direction
+/// nothing reads a joined echo back inward, so the collision the refusal
+/// guarded no longer exists. U8 was correct not to widen it; it cost that unit
+/// its fixture, and that fixture is back as
+/// `wire_map::facts`'s `a_slash_bearing_heading_is_addressable_…` and as
+/// `s7_pin`'s end-to-end proof.
+///
+/// **The `#` half SURVIVES, deliberately and narrowly.** `#` is still a live
+/// delimiter in the INGRESS grammars that address a pin — wikilink block refs
+/// (`[[page#^id]]`), the CLI's `path#Fragment` split — and nothing has ruled a
+/// `#`-bearing heading representable end-to-end through them. Whether it should
+/// be is a named candidate for a future docket, not this unit's to decide: the
+/// scope of the 2026-08-03 ruling is `/` only.
 ///
 /// # Errors
-/// `bad_request` when a heading in the chain carries a `/` or a `#` — the joined
-/// grammar cannot round-trip it, and guessing would silently address a different
-/// node. The remedy is the node's own `^id`, which has neither problem.
-fn lock_ref_fragment(
+/// `bad_request` when no heading chain sits at the span, or when a heading in
+/// the chain carries a `#`. The remedy is unchanged — the node's own `^id`,
+/// which has neither problem.
+fn refuse_unrepresentable_heading(
     doc: &model::Document,
     span: &std::ops::Range<usize>,
     anchor_row: Option<&str>,
     selector: &str,
-) -> Result<String, Box<ErrorBody>> {
-    if let Some(id) = anchor_row {
-        return Ok(format!("^{id}"));
+) -> Result<(), Box<ErrorBody>> {
+    if anchor_row.is_some() {
+        return Ok(()); // a block pin addresses by id; no heading text is involved
     }
     let Some(chain) = section_hpath_at(&doc.root, span.start) else {
         return Err(bad_request(format!(
-            "cannot address \"{selector}\" in the lock ref grammar — no heading chain \
-             at that span"
+            "cannot address \"{selector}\" as a section — no heading chain at that span"
         )));
     };
-    if let Some(bad) = chain.iter().find(|h| h.contains('/') || h.contains('#')) {
+    if let Some(bad) = chain.iter().find(|h| h.contains('#')) {
         return Err(bad_request(format!(
-            "the heading \"{bad}\" carries a `/` or `#`, which the lock ref grammar \
-             (`page#A/B`, model::selector) cannot round-trip — give that section an \
-             explicit ^id and pin that instead"
+            "the heading \"{bad}\" carries a `#`, which is still a live delimiter in the \
+             grammars that address a pin from outside the engine (wikilink block refs, \
+             the CLI's `path#fragment` split) — give that section an explicit ^id and \
+             pin that instead"
         )));
     }
-    Ok(chain.join("/"))
+    Ok(())
+}
+
+/// The canonical read-face selector for a resolved fact: the anchor plane's id
+/// when the fact is a block anchor, otherwise its structural heading address.
+///
+/// It is what a dewey ordinal canonicalizes TO. An ordinal addresses a row of a
+/// table the caller is holding — positional, and invalidated by the next
+/// heading inserted above it — so carrying one into a pin would record an
+/// address that silently means something else after any edit.
+fn canonical_selector(fact: &wire_map::facts::ReadFact) -> wire::ReadSel {
+    match &fact.anchor {
+        Some(id) => wire::ReadSel::Anchor { anchor: id.clone() },
+        None => wire::ReadSel::Hpath {
+            hpath: fact.hpath.clone(),
+        },
+    }
 }
 
 /// A wire `Span` as a byte range. Every span this engine mints comes from a
@@ -1631,17 +1671,21 @@ fn read_mint_gate(
     store: Option<&receipt::read_mint::ReadMintStore>,
     actor: Option<&str>,
     target: &Path,
-    selector: &str,
+    selector: &wire::ReadSel,
     live_sec_rev: &str,
 ) -> Result<(), Box<ErrorBody>> {
     let Some(actor) = crate::read::mint_actor(actor) else {
         return Ok(());
     };
+    // The key is STRUCTURED (U14) — the same value the mint site keyed on — so
+    // the refusal names the caller's plane back at them rather than a spelling
+    // that could belong to any of three.
+    let asked = selector.display();
     let Some(store) = store else {
         return Err(read_mint_required(
             target,
             format!(
-                "pin of {}#{selector} refused: this host holds no read-receipt ledger, so it \
+                "pin of {}#{asked} refused: this host holds no read-receipt ledger, so it \
                  cannot know that actor {actor} read the content (the per-request sidecar has \
                  no session — pin through the resident daemon, or from the local CLI)",
                 target.0
@@ -1652,7 +1696,7 @@ fn read_mint_gate(
         return Err(read_mint_required(
             target,
             format!(
-                "pin of {}#{selector} refused: actor {actor} has not read that selector in this \
+                "pin of {}#{asked} refused: actor {actor} has not read that selector in this \
                  session — you cannot attest content that was never in your context. Read it \
                  first (mode sections, that exact selector), then pin.",
                 target.0
@@ -1665,7 +1709,7 @@ fn read_mint_gate(
         e.expected = Some(NodeRev(receipt.sec_rev.clone()));
         e.actual = Some(NodeRev(live_sec_rev.to_owned()));
         e.message = Some(format!(
-            "pin of {}#{selector} refused: the receipt covers rev {} but the section now carries \
+            "pin of {}#{asked} refused: the receipt covers rev {} but the section now carries \
              {live_sec_rev} — re-read the selector (that re-mints) and pin again",
             target.0, receipt.sec_rev
         ));
@@ -1960,7 +2004,7 @@ fn lock_engine_edit(
              being pinned, so the pin could never verify green (lock-is-content, #8 §5) \
              — pin a section that does not extend to the page's end, or pin from \
              another page",
-            pin.fact.selector
+            pin.fact.selector.display()
         )));
     }
     Ok((edit, lock::render(&lock)))

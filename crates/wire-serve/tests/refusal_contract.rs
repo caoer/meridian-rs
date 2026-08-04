@@ -38,8 +38,11 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
         &WPath("notes.md".into()),
         &wire::Root("r".into()),
         &ReadParams {
-            frag: Some("Scratch-notes".into()),
-            sections: Some(vec!["Scratch-notes/Findings".into()]),
+            frag: Some(vec![wire::HpathSeg {
+                h: "Scratch notes".into(),
+                n: None,
+            }]),
+            sections: Some(vec![wire::ReadSel::parse("Scratch notes/Findings")]),
             display_path: Some("notes.md".into()),
             ..ReadParams::default()
         },

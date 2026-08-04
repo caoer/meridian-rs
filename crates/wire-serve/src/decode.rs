@@ -159,30 +159,53 @@ fn decode_read(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
             "`mode` must be `toc` or `sections` on `read`: `{m}`"
         )));
     }
+    // U14 (decision 14): `sections` and `frag` are STRUCTURED on the wire. They
+    // were arrays of joined strings, and a string address on a machine surface
+    // is exactly what this docket row removes — the caller states the plane it
+    // means (`{"hpath":[…]}` / `{"n":"1.2"}` / `{"anchor":"id"}`) instead of
+    // spelling three grammars into one field and letting match order decide.
+    // A pre-U14 caller's string arrives here and is REFUSED by name: the door
+    // it wants is `wire::ReadSel::parse`, on its own side.
     let sections = match obj.get("sections") {
         None => None,
-        Some(Value::Array(items)) => {
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                let Some(s) = item.as_str() else {
-                    return Err(bad_request(
-                        "`sections` must be an array of strings on `read`",
-                    ));
-                };
-                out.push(s.to_owned());
-            }
-            Some(out)
-        }
+        Some(v @ Value::Array(_)) => Some(
+            serde_json::from_value::<Vec<wire::ReadSel>>(v.clone()).map_err(|_| {
+                bad_request(
+                    "`sections` must be an array of tagged section selectors on `read` — \
+                     `{\"hpath\":[{\"h\":\"Notes\"},{\"h\":\"Q3\"}]}` for a heading path, \
+                     `{\"n\":\"1.2\"}` for a dewey ordinal, `{\"anchor\":\"id\"}` for a \
+                     block. A joined string is no longer an address on this face (U14): \
+                     convert it once at your own ingress door.",
+                )
+            })?,
+        ),
         Some(_) => {
             return Err(bad_request(
-                "`sections` must be an array of strings on `read`",
+                "`sections` must be an array of tagged section selectors on `read`",
+            ));
+        }
+    };
+    let frag = match obj.get("frag") {
+        None | Some(Value::Null) => None,
+        Some(v @ Value::Array(_)) => Some(
+            serde_json::from_value::<Vec<HpathSeg>>(v.clone()).map_err(|_| {
+                bad_request(
+                    "`frag` must be an array of hpath segments on `read` \
+                     (`[{\"h\":\"Notes\"},{\"h\":\"Deep\"}]`) — the subtree it scopes is a \
+                     tree fact, and a joined string made it a string-prefix question (U14).",
+                )
+            })?,
+        ),
+        Some(_) => {
+            return Err(bad_request(
+                "`frag` must be an array of hpath segments on `read`",
             ));
         }
     };
     Ok(Op::Read {
         path: req_path(obj, op, "path")?,
         mode,
-        frag: opt_str(obj, op, "frag")?,
+        frag,
         sections,
         display_path: opt_str(obj, op, "display_path")?,
         // §9 read-provenance (D-Actor/B): wire input, never ambient.
@@ -311,10 +334,35 @@ fn decode_pin(v: &Value) -> Result<wire::PinSpec, Box<ErrorBody>> {
         return Err(bad_request("`pin` must be an object on `splice`"));
     };
     check_fields(obj, "pin", &["target", "selector", "vibe"])?;
-    let selector = req_str(obj, "pin", "selector")?;
-    if selector.trim().is_empty() {
+    // U14: the pin selector is TAGGED on the wire (decision 14 — `PinSpec` is a
+    // machine surface). A joined string here re-created the `/` delimiter
+    // collision one layer up from the lock-ref grammar it was removed from, so
+    // the string form is refused by name and pointed at its own door.
+    let Some(raw_sel) = obj.get("selector") else {
+        return Err(bad_request("missing `selector` on `pin`"));
+    };
+    let selector: wire::ReadSel = serde_json::from_value(raw_sel.clone()).map_err(|_| {
+        bad_request(
+            "`pin.selector` must be a tagged section selector object on `splice` \
+             (U14, decision 14): `{\"hpath\":[{\"h\":\"Guide\"},{\"h\":\"A/B\"}]}` for a \
+             heading path, `{\"anchor\":\"id\"}` for a block, `{\"n\":\"1.2\"}` for a \
+             dewey ordinal. A joined string cannot address a heading whose own \
+             text contains the `/` it would be split on: convert once at your \
+             ingress door, off the read face's published `hpath` array.",
+        )
+    })?;
+    // An empty selector names nothing, in whichever plane it was spelled.
+    let empty = match &selector {
+        wire::ReadSel::Hpath { hpath } => {
+            hpath.is_empty() || hpath.iter().any(|s| s.h.trim().is_empty())
+        }
+        wire::ReadSel::Dewey { n } => n.trim().is_empty(),
+        wire::ReadSel::Anchor { anchor } => anchor.trim().is_empty(),
+    };
+    if empty {
         return Err(bad_request(
-            "`pin.selector` must name a section (a sanitized heading path or `^id`)",
+            "`pin.selector` must name a section (a heading path, a `^id`, or a dewey \
+             ordinal) — no segment may be blank",
         ));
     }
     Ok(wire::PinSpec {

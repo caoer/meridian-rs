@@ -333,8 +333,13 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
 // ---------------------------------------------------------------------------
 
 /// A v3 session's `extract` carries the host-face addressing facts on every
-/// heading node — dewey `n`, sanitized `hpath_text`, subtree `words` — the
-/// facts ccc-statusd re-derived host-side (U2). Non-heading nodes carry none.
+/// heading node — dewey `n` and subtree `words` — the facts ccc-statusd
+/// re-derived host-side (U2). Non-heading nodes carry none.
+///
+/// **U14 removed `hpath_text` from this enrichment** (ZT decision 14: no string
+/// address forms on machine surfaces). The address is asserted here in the form
+/// the node has always carried it — `hpath`, as SEGMENTS — which is the
+/// spelling that round-trips into `put`.
 #[test]
 fn v3_extract_enriches_heading_nodes() {
     let (_d, root) = s0();
@@ -347,12 +352,12 @@ fn v3_extract_enriches_heading_nodes() {
         .filter(|n| n["kind"] == json!("heading"))
         .collect();
     assert_eq!(headings.len(), 3, "S0 plan has 3 headings");
-    let facts: Vec<(&str, &str, u64)> = headings
+    let facts: Vec<(&str, Value, u64)> = headings
         .iter()
         .map(|h| {
             (
                 h["n"].as_str().expect("n"),
-                h["hpath_text"].as_str().expect("hpath_text"),
+                h["hpath"].clone(),
                 h["words"].as_u64().expect("words"),
             )
         })
@@ -360,14 +365,24 @@ fn v3_extract_enriches_heading_nodes() {
     assert_eq!(
         facts,
         vec![
-            ("1", "Goals", 20),
-            ("1.1", "Goals/Q3", 3),
-            ("1.2", "Goals/Q4", 10),
-        ]
+            ("1", json!([{"h": "Goals"}]), 20),
+            ("1.1", json!([{"h": "Goals"}, {"h": "Q3"}]), 3),
+            ("1.2", json!([{"h": "Goals"}, {"h": "Q4"}]), 10),
+        ],
+        "the address is the SEGMENT array (U14), never a joined string"
     );
+    // U14 tripwire: the joined address must not come back on this face.
+    for h in &headings {
+        assert!(
+            h.get("hpath_text").is_none(),
+            "ZT decision 14 / U14: `hpath_text` is retired from the machine \
+             surface — the node already carries `hpath` as segments. Restoring \
+             it needs a ruling, not a field: {h}"
+        );
+    }
     // non-heading nodes never carry the addressing keys
     for n in nodes.iter().filter(|n| n["kind"] != json!("heading")) {
-        for key in ["n", "hpath_text", "words"] {
+        for key in ["n", "words"] {
             assert!(
                 n.get(key).is_none(),
                 "non-heading node must not carry `{key}`: {n}"
@@ -400,8 +415,10 @@ fn v3_read_carries_the_derived_actor() {
     );
 }
 
-/// A v2 session's `extract` is the frozen shape: ZERO `n`/`hpath_text`/
-/// `words` keys anywhere in the frame.
+/// A v2 session's `extract` is the frozen shape: ZERO addressing keys anywhere
+/// in the frame. `hpath_text` stays in this list although U14 deleted the field
+/// — the assert is about what a v2 SESSION may receive, so it must keep failing
+/// if a future unit reintroduces the key under any owner.
 #[test]
 fn v2_extract_never_carries_addressing_keys() {
     let (_d, root) = s0();
@@ -415,6 +432,70 @@ fn v2_extract_never_carries_addressing_keys() {
             !raw.contains(key),
             "v2 extract must never emit {key}: {raw}"
         );
+    }
+}
+
+/// **The KEY-SET detector, cloned from U11's
+/// `a_frozen_v2_session_never_grows_a_field_from_the_ladder`** (Leader
+/// all-hands #1, 2026-08-03).
+///
+/// `Option` + `skip_serializing_if` is NOT a version gate: it skips on a `None`
+/// VALUE, never on a v2 SESSION. `pf_frozen_sweep` pins worked VALUES — spans,
+/// revs, roots — so a v3-only FIELD in a v2 envelope moves no value it watches
+/// and it stays green and blind. Only an EXACT KEY SET fails on a new key.
+///
+/// U14's own surface is v3-only and unreachable from v2 — established, not
+/// assumed:
+///
+/// - `ReadRow` / `ReadSectionOut` ride `ResponseBody::Read` alone, and `read`
+///   answers `unknown_op` on a v2 session at BOTH hosts (`sidecar::arms` gates
+///   on `!v3`; `registry::server` lands `Op::Read` in the `unknown_op` arm),
+///   with `read` absent from the frozen v2 caps.
+/// - `PinFact` rides a splice response, and `pin` is in `SPLICE_V3_FIELDS`
+///   only — a v2 splice carrying it is refused at `check_fields`, so no v2
+///   session can cause one to be minted.
+/// - `hpath_text` was REMOVED, and a removal cannot grow a v2 frame.
+///
+/// This pins the reachable neighbour anyway, which is the point of a detector:
+/// the v2 `extract` node key set, exactly. It is the frozen §5.2 node shape,
+/// and any key a later unit adds to `wire::Node` lands here first.
+#[test]
+fn a_frozen_v2_extract_node_never_grows_a_field() {
+    let (_d, root) = s0();
+    let input = "{\"id\":1,\"op\":\"hello\",\"proto\":1}\n\
+         {\"id\":2,\"op\":\"extract\",\"path\":\"notes/plan.md\"}\n";
+    let frames = serve(&root, input);
+    let nodes = frames[1]["body"]["nodes"].as_array().expect("nodes");
+    assert!(!nodes.is_empty(), "the fixture must produce nodes");
+    for n in nodes {
+        let mut got: Vec<&str> = n
+            .as_object()
+            .expect("a node is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        got.sort_unstable();
+        // The frozen v2 §5.2 node: the always-present trio, plus the
+        // conditional keys the frozen contract itself defines. Nothing else
+        // may appear on a v2 session — not `n`, not `words`, not any
+        // v3-additive field a future unit mints.
+        let allowed = [
+            "hpath",
+            "info",
+            "kind",
+            "node_rev",
+            "span",
+            "text_prefix_16b",
+            "unterminated",
+        ];
+        for key in &got {
+            assert!(
+                allowed.contains(key),
+                "a v2 `extract` node grew the key `{key}` — the frozen §5.2 shape \
+                 admits only {allowed:?}. `skip_serializing_if` does not gate on \
+                 session version; gate at the projection seam. Node: {n}"
+            );
+        }
     }
 }
 

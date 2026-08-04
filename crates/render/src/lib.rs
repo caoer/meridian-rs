@@ -110,8 +110,34 @@ pub struct Header<'a> {
 /// One resolved sections-mode row: the selector that hit plus its fact.
 #[derive(Debug, Clone)]
 pub struct SectionRow<'a> {
-    pub sel: &'a str,
+    pub sel: &'a wire::ReadSel,
     pub fact: &'a ReadFact,
+}
+
+/// **The human address, derived HERE (U14).** A read fact carries its address
+/// as raw segments; this is the joined, sanitized spelling a person reads —
+/// `Notes/Slash-Title-Here`, or `^id` on a block-anchor row.
+///
+/// It is the same projection the read face used to CARRY as `ReadFact.hpath`,
+/// moved to the one plane that wants it. Decision 14: arrays for machines,
+/// text for humans — so the lossy many-to-one spelling is minted at the render
+/// door, where being lossy costs nothing, and no machine surface publishes it
+/// as if it were an address.
+///
+/// Because it is derived from the same segments and by the same
+/// [`wire_map::gotext::sanitize_heading`] owner, the rendered bytes are
+/// unchanged by the promotion.
+#[must_use]
+pub fn address_text(fact: &ReadFact) -> String {
+    match &fact.anchor {
+        Some(id) => format!("^{id}"),
+        None => fact
+            .hpath
+            .iter()
+            .map(|s| wire_map::gotext::sanitize_heading(&s.h))
+            .collect::<Vec<_>>()
+            .join("/"),
+    }
 }
 
 /// One rendered section: the emitted content plus its recomputed word count
@@ -234,7 +260,7 @@ impl Renderer for TextRenderer {
                     let content =
                         walk::emit_section(doc, row.fact, self.elide_lang, header.decorations)?;
                     sections.push(RenderedSection {
-                        hpath: row.fact.hpath.clone(),
+                        hpath: address_text(row.fact),
                         sec_rev: row.fact.sec_rev.clone(),
                         words: fields_count(&content) as u64,
                         content,
@@ -262,7 +288,11 @@ pub fn toc_text(header: &Header<'_>, rows: &[&ReadFact]) -> String {
         let _ = writeln!(
             b,
             "{:<6} {}{}  words:{}  rev:{}",
-            row.n, indent, row.hpath, row.words, row.sec_rev
+            row.n,
+            indent,
+            address_text(row),
+            row.words,
+            row.sec_rev
         );
     }
     b.truncate(b.trim_end_matches('\n').len());
@@ -306,6 +336,11 @@ mod tests {
     use super::*;
     use wire_map::facts::{read_facts, resolve_selector, toc_rows};
 
+    /// A selector from its human spelling, through the ONE ingress door.
+    fn sel(s: &str) -> wire::ReadSel {
+        wire::ReadSel::parse(s)
+    }
+
     fn doc_and_facts(raw: &str) -> (model::Document, Vec<ReadFact>) {
         let doc = model::build(raw.to_string(), syntax::parse(raw));
         let facts = read_facts(&wire_map::project_toc(&doc), raw.as_bytes());
@@ -319,7 +354,7 @@ mod tests {
     #[test]
     fn toc_text_matches_readtext_shape() {
         let (doc, facts) = doc_and_facts(RAW);
-        let rows = toc_rows(&facts, "");
+        let rows = toc_rows(&facts, &[]);
         let words_total: u64 = facts.iter().map(|f| f.words).sum();
         let header = Header {
             display_path: "$S/x.md",
@@ -350,8 +385,11 @@ mod tests {
     #[test]
     fn sections_text_matches_readtext_shape() {
         let (doc, facts) = doc_and_facts(RAW);
-        let fact = resolve_selector(&facts, "Notes").expect("resolves");
-        let rows = [SectionRow { sel: "Notes", fact }];
+        let fact = resolve_selector(&facts, &sel("Notes")).expect("resolves");
+        let rows = [SectionRow {
+            sel: &sel("Notes"),
+            fact,
+        }];
         let header = Header {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
@@ -390,8 +428,11 @@ mod tests {
     fn elision_hook_inert_by_default_active_by_predicate() {
         let raw = "# H\n\nbefore\n\n```meridian-lock\nv: 1\n```\n\nafter\n";
         let (doc, facts) = doc_and_facts(raw);
-        let fact = resolve_selector(&facts, "H").expect("resolves");
-        let rows = [SectionRow { sel: "H", fact }];
+        let fact = resolve_selector(&facts, &sel("H")).expect("resolves");
+        let rows = [SectionRow {
+            sel: &sel("H"),
+            fact,
+        }];
         let header = Header {
             display_path: "p",
             file_rev: "r",
@@ -432,8 +473,11 @@ mod tests {
         let raw = "# H\n\nsee [[guide#^goal|Goal]] and [[other#^goal|Other]] and \
                    [[guide#^misc]] and [[Page#Q@Home]]\n";
         let (doc, facts) = doc_and_facts(raw);
-        let fact = resolve_selector(&facts, "H").expect("resolves");
-        let rows = [SectionRow { sel: "H", fact }];
+        let fact = resolve_selector(&facts, &sel("H")).expect("resolves");
+        let rows = [SectionRow {
+            sel: &sel("H"),
+            fact,
+        }];
 
         let inert = TextRenderer::default()
             .render(
@@ -519,8 +563,11 @@ mod tests {
         let raw = "# H\n\nsee [[guide#^goal|guide#^goal in full]] and \
                    ![[guide#^goal|#^goal]]\n";
         let (doc, facts) = doc_and_facts(raw);
-        let fact = resolve_selector(&facts, "H").expect("resolves");
-        let rows = [SectionRow { sel: "H", fact }];
+        let fact = resolve_selector(&facts, &sel("H")).expect("resolves");
+        let rows = [SectionRow {
+            sel: &sel("H"),
+            fact,
+        }];
         let header = |decorations| Header {
             display_path: "p",
             file_rev: "r",

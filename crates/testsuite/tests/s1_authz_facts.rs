@@ -189,8 +189,16 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                     r.get("anchor").is_none(),
                     "{ctx}: an anchor fact reached a `toc` row: {r}"
                 );
+                // U14: the address is a SEGMENT array, so a `^id` cannot be
+                // spelled into it at all — the check is that no segment's raw
+                // text opens with `^`, which is the same guard the write door
+                // holds (`pin_row`'s mixed-array refusal).
                 assert!(
-                    !r["hpath"].as_str().expect("row hpath").starts_with('^'),
+                    r["hpath"]
+                        .as_array()
+                        .expect("row hpath is the segment array")
+                        .iter()
+                        .all(|seg| !seg["h"].as_str().unwrap_or_default().starts_with('^')),
                     "{ctx}: a `^id` address reached `toc`: {r}"
                 );
             }
@@ -203,9 +211,21 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
                 v3_headings.len()
             );
             for (n, r) in v2_headings.iter().zip(&v3_headings) {
+                // U14: the engine row publishes RAW SEGMENTS, so the
+                // comparison against the host's sanitized mirror is made by
+                // sanitizing the row's segments here — at the test's own door,
+                // which is the only place a joined spelling belongs now. The
+                // property is unchanged: host mirror == engine address.
+                let row_sanitized = r["hpath"]
+                    .as_array()
+                    .expect("row hpath is the segment array")
+                    .iter()
+                    .map(|seg| sanitize_heading(seg["h"].as_str().unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join("/");
                 assert_eq!(
                     sanitized_hpath(n),
-                    r["hpath"].as_str().expect("row hpath"),
+                    row_sanitized,
                     "{ctx}: host-mirror sanitized hpath != engine canonical row hpath"
                 );
                 assert_eq!(n["span"], r["span"], "{ctx}: heading row span != node span");
@@ -329,98 +349,65 @@ fn composed_read_rows_carry_authz_facts_over_the_drift_guard_corpus() {
     );
 }
 
-/// The heading rows of the EXTENDED wire row set, against the U0 goldens'
-/// captured Go `structured.toc` — the host's own bytes, so "host hpath ==
-/// engine row hpath" is pinned to what the Go read face actually emitted, not
-/// to a second engine-side derivation. The M1 fact set must be untouched by
-/// the added authz facts, and every row must carry a span.
+/// **RETIRED with the Go-parity goldens (U14, docket row P9).**
+///
+/// `extended_rows_match_the_captured_go_toc_rows` pinned the extended wire row
+/// set against meridian-go's captured `structured.toc` — row-for-row `n` /
+/// `depth` / `title` / `hpath` / `words` / `sec_rev`, plus "every row carries a
+/// span". Two of its inputs died together: the captured requests spoke the
+/// joined-string selector grammar U14 removed, and the captured `hpath` was the
+/// sanitized joined ADDRESS this row no longer publishes. The captures cannot
+/// be re-taken (`CLAUDE.md` end-state ruling + § Amendment 2026-07-26: the
+/// remaining bridge legs owe meridian-go no byte parity).
+///
+/// What it protected is now held per-case, without a capture:
+///
+/// - the M1 fact set surviving the added authz facts, and every heading row
+///   carrying a span → [`extended_rows_carry_the_authz_facts_on_every_row`]
+///   below, over the same corpus;
+/// - the addresses themselves →
+///   `u14_read_face_contract::every_published_address_resolves_back_to_its_own_row`,
+///   which asserts the round-trip property the old byte pin could not (both
+///   engines computed `hpath` through the same lossy join, so they agreed
+///   precisely where the address was wrong).
+///
+/// The corpus stays — it is hand-built input, never a capture.
 #[test]
-fn extended_rows_match_the_captured_go_toc_rows() {
-    let goldens = testsuite::parity_dir().join("goldens");
-    let mut docs: Vec<String> = std::fs::read_dir(&goldens)
-        .unwrap_or_else(|e| panic!("goldens dir {}: {e}", goldens.display()))
-        .filter_map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .strip_suffix(".json")
-                .map(str::to_owned)
-        })
-        .collect();
-    docs.sort();
-    let mut steps_replayed = 0_u32;
-    let mut rows_compared = 0_u32;
-
-    for doc in docs {
-        let golden: Value = serde_json::from_str(
-            &std::fs::read_to_string(goldens.join(format!("{doc}.json"))).expect("golden reads"),
-        )
-        .expect("golden parses");
-        let mut requests: Vec<Value> = Vec::new();
-        let mut expects: Vec<(String, Value)> = Vec::new();
-        for step in golden["steps"].as_array().expect("steps") {
-            if step["tool"] == "put" {
-                break; // state moves — the rest is the write plane's
-            }
-            if step["tool"] != "read"
-                || step["is_error"] == Value::Bool(true)
-                || step["args"]["mode"].as_str().unwrap_or("toc") != "toc"
-            {
-                continue;
-            }
-            let Some(want) = step["structured"]["toc"].as_array() else {
-                continue;
-            };
-            let full_ref = step["args"]["ref"].as_str().expect("ref");
-            let (rel, frag) = full_ref.split_once('#').unwrap_or((full_ref, ""));
-            let mut req =
-                json!({"id": requests.len() + 1, "op": "read", "path": rel, "mode": "toc"});
-            if !frag.is_empty() {
-                req["frag"] = json!(frag);
-            }
-            requests.push(req);
-            expects.push((
-                step["id"].as_str().unwrap_or("?").to_owned(),
-                json!(want.clone()),
-            ));
-        }
-        if requests.is_empty() {
-            continue;
-        }
+fn extended_rows_carry_the_authz_facts_on_every_row() {
+    let mut rows = 0_u32;
+    for doc in ["basic", "duplicate-headings", "level-jumps", "trailing-ws"] {
+        let root_dir = testsuite::parity_dir().join("corpus").join(doc);
+        let rel = format!("corpus/{doc}.md");
         let frames = serve(
-            &testsuite::parity_dir().join("corpus").join(&doc),
-            &requests,
+            &root_dir,
+            &[json!({"id": 1, "op": "read", "path": rel, "mode": "toc"})],
         );
-        for (i, (step_id, want)) in expects.iter().enumerate() {
-            let ctx = format!("{doc}/{step_id}");
-            let frame = &frames[i + 1];
-            assert_eq!(frame["ok"], json!(true), "{ctx}: ok frame: {frame}");
-            // No filter: s1c makes `toc` heading-only, so the array itself
-            // must line up row-for-row with the captured Go table.
-            let got: Vec<&Value> = frame["body"]["toc"]
-                .as_array()
-                .unwrap_or_else(|| panic!("{ctx}: rows: {frame}"))
-                .iter()
-                .collect();
-            let want = want.as_array().expect("golden rows");
-            assert_eq!(got.len(), want.len(), "{ctx}: heading row count");
-            for (g, w) in got.iter().zip(want) {
-                for key in ["n", "depth", "title", "hpath", "words", "sec_rev"] {
-                    assert_eq!(g[key], w[key], "{ctx}: `{key}` on row {}", w["hpath"]);
-                }
-                assert!(
-                    g["span"].is_array(),
-                    "{ctx}: the authz span rides row {}: {g}",
-                    w["hpath"]
-                );
-                rows_compared += 1;
+        let frame = &frames[1];
+        assert_eq!(frame["ok"], json!(true), "{doc}: ok frame: {frame}");
+        for row in frame["body"]["toc"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{doc}: rows: {frame}"))
+        {
+            // The M1 fact set, untouched by the authz additions.
+            for key in ["n", "depth", "title", "hpath", "words", "sec_rev"] {
+                assert!(!row[key].is_null(), "{doc}: `{key}` rides row {row}");
             }
-            steps_replayed += 1;
+            // U14: the address is the SEGMENT array, never a joined string.
+            assert!(
+                row["hpath"].is_array(),
+                "{doc}: `hpath` is the segment array (decision 14): {row}"
+            );
+            // S1's own addition: the containment fact an anchor is tested
+            // against. This is the assert whose absence the retired gate would
+            // have caught, so it is restated here rather than dropped.
+            assert!(
+                row["span"].is_array(),
+                "{doc}: the authz span rides row {row}"
+            );
+            rows += 1;
         }
     }
-    assert!(steps_replayed >= 8, "toc steps replayed: {steps_replayed}");
-    assert!(rows_compared >= 20, "rows compared: {rows_compared}");
-    println!("S1 vs captured Go rows: {steps_replayed} toc steps, {rows_compared} heading rows");
+    assert!(rows >= 15, "rows compared: {rows}");
 }
 
 /// A `frag`-scoped read carries the anchors of that subtree ONLY — the
@@ -434,8 +421,8 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     let frames = serve(
         &root_dir,
         &[
-            json!({"id": 1, "op": "read", "path": rel, "mode": "toc", "frag": "Anchor-Zone"}),
-            json!({"id": 2, "op": "read", "path": rel, "mode": "toc", "frag": "Padded-Title"}),
+            json!({"id": 1, "op": "read", "path": rel, "mode": "toc", "frag": [{"h": "Anchor Zone"}]}),
+            json!({"id": 2, "op": "read", "path": rel, "mode": "toc", "frag": [{"h": "Padded Title"}]}),
         ],
     );
     let headings = |frame: &Value| -> Vec<String> {
@@ -443,7 +430,17 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
             .as_array()
             .unwrap_or_else(|| panic!("rows: {frame}"))
             .iter()
-            .map(|r| r["hpath"].as_str().expect("hpath").to_owned())
+            // The joined spelling is a TEST convenience for readable
+            // assertions; nothing in the engine joins one (U14).
+            .map(|r| {
+                r["hpath"]
+                    .as_array()
+                    .expect("hpath is the segment array")
+                    .iter()
+                    .map(|seg| seg["h"].as_str().unwrap_or_default().to_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
             .collect()
     };
     let anchors = |frame: &Value| -> Vec<String> {
@@ -456,8 +453,8 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     };
     assert_eq!(
         headings(&frames[1]),
-        vec!["Anchor-Zone"],
-        "the scoped heading, and no anchor row beside it"
+        vec!["Anchor Zone"],
+        "the scoped heading (RAW text — U14), and no anchor row beside it"
     );
     assert_eq!(
         anchors(&frames[1]),
@@ -466,7 +463,7 @@ fn frag_scoped_read_carries_only_the_subtree_anchors() {
     );
     assert_eq!(
         headings(&frames[2]),
-        vec!["Padded-Title"],
+        vec!["Padded Title"],
         "a sibling subtree carries none of them"
     );
     assert!(
@@ -486,9 +483,9 @@ fn sections_mode_carries_the_anchor_plane_too() {
         &root_dir,
         &[
             json!({"id": 1, "op": "read", "path": rel, "mode": "sections",
-                   "sections": ["Anchor-Zone"]}),
+                   "sections": [{"hpath": [{"h": "Anchor Zone"}]}]}),
             json!({"id": 2, "op": "read", "path": rel, "mode": "sections",
-                   "frag": "Padded-Title"}),
+                   "frag": [{"h": "Padded Title"}]}),
         ],
     );
     let anchors = |frame: &Value| -> Vec<String> {

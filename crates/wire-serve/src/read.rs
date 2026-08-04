@@ -94,10 +94,16 @@ pub fn cat(doc: &model::Document, sec: Option<SecRef>) -> Result<ResponseBody, B
 /// filtered (values already validated against the closed enum at decode).
 ///
 /// `enrich` (M1 U2, v3 sessions ONLY): attach the host-face addressing facts
-/// — dewey `n`, sanitized `hpath_text`, subtree `words` — to heading nodes,
-/// so `extract` serves every addressing fact ccc-statusd re-derived
-/// host-side. A v2 session never enriches: the new keys are v3-additive and
-/// the frozen v2 bytes stay byte-identical (`contract_v2.rs`).
+/// — dewey `n` and subtree `words` — to heading nodes, so `extract` serves
+/// every addressing fact ccc-statusd re-derived host-side. A v2 session never
+/// enriches: the keys are v3-additive and the frozen v2 bytes stay
+/// byte-identical (`contract_v2.rs`).
+///
+/// **U14 dropped `hpath_text` from this enrichment.** It was the sanitized
+/// joined ADDRESS, and the node it decorated already carries `hpath` as
+/// segments — the address that round-trips — so the string added no fact,
+/// only a second spelling of one, lossy and un-invertible. Nothing is lost
+/// here: a v3 `extract` still serves the whole address, structurally.
 #[must_use]
 pub fn extract(
     doc: &model::Document,
@@ -125,7 +131,6 @@ pub fn extract(
                 && let Some(fact) = by_span.get(&(node.span.0, node.span.1))
             {
                 node.n = Some(fact.n.clone());
-                node.hpath_text = Some(fact.hpath.clone());
                 node.words = Some(fact.words);
             }
         }
@@ -141,8 +146,10 @@ pub fn extract(
 #[derive(Debug, Clone, Default)]
 pub struct ReadParams {
     pub mode: Option<String>,
-    pub frag: Option<String>,
-    pub sections: Option<Vec<String>>,
+    /// The whole-call subtree scope, as SEGMENTS (U14).
+    pub frag: Option<Vec<wire::HpathSeg>>,
+    /// Document-absolute selectors in the tagged read grammar (U14).
+    pub sections: Option<Vec<wire::ReadSel>>,
     pub display_path: Option<String>,
     /// §9 read provenance (D-Actor/B, review C4): the daemon-derived actor,
     /// carried to THIS seam — the stage-2 read-mint site (the one place
@@ -204,7 +211,7 @@ pub fn composed_read(
     let file_rev = doc.root.node_rev.0.clone();
     let words_total: u64 = facts.iter().map(|f| f.words).sum();
     let display = params.display_path.as_deref().unwrap_or(path.0.as_str());
-    let frag = params.frag.as_deref().unwrap_or("");
+    let frag: &[wire::HpathSeg] = params.frag.as_deref().unwrap_or(&[]);
     let has_sections = params.sections.as_ref().is_some_and(|s| !s.is_empty());
     if !frag.is_empty() && has_sections {
         return Err(bad_request(format!(
@@ -235,11 +242,15 @@ pub fn composed_read(
         "toc" => {
             let rows = wire_map::facts::toc_rows(&facts, frag);
             if !frag.is_empty() && rows.is_empty() {
+                let asked = wire::ReadSel::Hpath {
+                    hpath: frag.to_vec(),
+                }
+                .display();
                 let mut e = ErrorBody::new(ErrorCode::RefNotFound);
                 e.message = Some(format!(
-                    "read: no section at \"{frag}\" in {display}. Nothing was read and no \
+                    "read: no section at \"{asked}\" in {display}. Nothing was read and no \
                      rev was minted. {}",
-                    crate::section_recovery(frag, Some(display))
+                    crate::section_recovery(&asked, Some(display))
                 ));
                 return Err(Box::new(e));
             }
@@ -263,10 +274,12 @@ pub fn composed_read(
             })
         }
         "sections" => {
-            let sels: Vec<String> = if frag.is_empty() {
+            let sels: Vec<wire::ReadSel> = if frag.is_empty() {
                 params.sections.clone().unwrap_or_default()
             } else {
-                vec![frag.to_owned()]
+                vec![wire::ReadSel::Hpath {
+                    hpath: frag.to_vec(),
+                }]
             };
             let (body, rendered_sections) = composed_sections(doc, &facts, &sels, header)?;
             // S6 read-IS-the-mint (D9): one receipt per section this call
@@ -286,8 +299,13 @@ pub fn composed_read(
             // Unresolved selectors are absent from these rows (they carry the
             // PARTIAL-read notice instead), so a miss mints nothing.
             if let (Some(store), Some(actor)) = (mint, mint_actor(params.actor.as_deref())) {
+                // U14: the receipt is keyed on the row's own TAGGED selector,
+                // the same structure the pin gate looks up — so the two sides
+                // of this coupling cannot drift into two spellings of one
+                // address, and a heading named `1.2` can no longer open the
+                // gate for the dewey row of that name.
                 for row in &rendered_sections {
-                    store.mint(actor, path.0.as_str(), &row.hpath, &row.sec_rev.0);
+                    store.mint(actor, path.0.as_str(), &row.sel, &row.sec_rev.0);
                 }
             }
             Ok(ResponseBody::Read {
@@ -318,7 +336,6 @@ fn read_row(f: &wire_map::facts::ReadFact) -> wire::ReadRow {
         depth: f.depth,
         title: f.title.clone(),
         hpath: f.hpath.clone(),
-        hpath_raw: f.hpath_raw.clone(),
         words: f.words,
         sec_rev: NodeRev(f.sec_rev.clone()),
         span: f.span,
@@ -523,7 +540,7 @@ struct SectionsRender {
 fn composed_sections(
     doc: &model::Document,
     facts: &[wire_map::facts::ReadFact],
-    sels: &[String],
+    sels: &[wire::ReadSel],
     header: render::Header<'_>,
 ) -> Result<(SectionsRender, Vec<wire::ReadSectionOut>), Box<ErrorBody>> {
     let display = header.display_path;
@@ -543,11 +560,11 @@ fn composed_sections(
         )));
     }
     let mut rows: Vec<render::SectionRow<'_>> = Vec::new();
-    let mut missing: Vec<&str> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     for sel in sels {
         match wire_map::facts::resolve_selector(facts, sel) {
             Some(fact) => rows.push(render::SectionRow { sel, fact }),
-            None => missing.push(sel),
+            None => missing.push(sel.display()),
         }
     }
     if rows.is_empty() && !missing.is_empty() {
@@ -556,7 +573,7 @@ fn composed_sections(
             "read: no section addressed by \"{}\" in {display}. Nothing was read and no \
              rev was minted. {}",
             missing[0],
-            crate::section_recovery(missing[0], Some(display))
+            crate::section_recovery(&missing[0], Some(display))
         ));
         return Err(Box::new(e));
     }
@@ -595,9 +612,8 @@ fn composed_sections(
             let content = String::from_utf8_lossy(&content).into_owned();
             let words = wire_map::gotext::fields_count(&content) as u64;
             wire::ReadSectionOut {
-                sel: row.sel.to_owned(),
+                sel: row.sel.clone(),
                 hpath: row.fact.hpath.clone(),
-                hpath_raw: row.fact.hpath_raw.clone(),
                 sec_rev: NodeRev(row.fact.sec_rev.clone()),
                 words,
                 content,

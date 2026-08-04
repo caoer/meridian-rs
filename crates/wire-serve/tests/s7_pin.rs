@@ -49,7 +49,7 @@ fn pin_args(selector: &str) -> SpliceArgs {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WPath("guide.md".into()),
-            selector: selector.into(),
+            selector: wire::ReadSel::parse(selector),
             vibe: None,
         }),
     }
@@ -100,16 +100,25 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let (_dir, root) = workspace();
 
     let out =
-        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
     let fact = pin_fact(&out.body);
 
     assert_eq!(
-        fact.selector, "Guide/Leader's-Guideline",
-        "canonical selector"
-    );
-    assert_eq!(
-        fact.declared_ref, "guide.md#Guide/Leader's Guideline",
-        "the lock ref is the RAW heading chain — the spelling model::resolve takes"
+        fact.selector,
+        wire::ReadSel::Hpath {
+            hpath: vec![
+                wire::HpathSeg {
+                    h: "Guide".into(),
+                    n: None
+                },
+                wire::HpathSeg {
+                    h: "Leader's Guideline".into(),
+                    n: None
+                },
+            ]
+        },
+        "the canonical selector is the RAW SEGMENT address (U14) — not a joined \
+         string, and not the sanitized spelling that used to be published"
     );
     assert_eq!(
         fact.anchor, "leaders-guideline",
@@ -180,10 +189,13 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
 ///
 /// - **From `hpath_raw` segments** → `["Guide", "Leader's Guideline"]`. The
 ///   space survives, because the raw pre-image is what was carried.
-/// - **From the joined string** — `fact.selector` (`Guide/Leader's-Guideline`)
-///   or `declared_ref`, split on `/` → `["Guide", "Leader's-Guideline"]`. A
-///   HYPHEN. That address resolves to nothing, and the pin would read
-///   red-dangling forever.
+/// - **From a joined string** — the sanitized address the read face used to
+///   publish, split on `/` → `["Guide", "Leader's-Guideline"]`. A HYPHEN. That
+///   address resolves to nothing, and the pin would read red-dangling forever.
+///
+/// U14 removed the joined spellings this test was defending against, so the
+/// assert below moved with them: it now pins that NOTHING on the pin path
+/// sanitizes, which is the same property stated positively.
 ///
 /// So a hyphen in the second element is proof the joined string was the input.
 /// The assert is on the space, and it cannot pass by accident: no sanitized
@@ -192,12 +204,24 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
 fn the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string() {
     let (_dir, root) = workspace();
     let out =
-        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
     let fact = pin_fact(&out.body);
     assert_eq!(
-        fact.selector, "Guide/Leader's-Guideline",
-        "the human address is SANITIZED — the space is already gone here, which \
-         is what makes it useless as a source for the array"
+        fact.selector,
+        wire::ReadSel::Hpath {
+            hpath: vec![
+                wire::HpathSeg {
+                    h: "Guide".into(),
+                    n: None
+                },
+                wire::HpathSeg {
+                    h: "Leader's Guideline".into(),
+                    n: None
+                },
+            ]
+        },
+        "the canonical selector carries the RAW text, space intact — there is no \
+         sanitized spelling anywhere on the pin path for the array to be built from"
     );
 
     let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
@@ -237,7 +261,7 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
     )
     .expect("a heading whose raw text opens with a caret");
 
-    let err = splice(&root, 0, &pin_args("Guide/^Alpha-Beta"), &[], None)
+    let err = splice(&root, 0, &pin_args("Guide/^Alpha Beta"), &[], None)
         .expect_err("an ambiguous path array must refuse");
 
     assert_eq!(err.code, ErrorCode::BadRequest);
@@ -253,6 +277,81 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
     );
 }
 
+/// **KEY-SET PIN over the serialized `PinFact`** (all-hands #1; U8 `0bb3ed73`,
+/// carried forward by U14 — see "what U14 changed" below).
+///
+/// `Option` + `skip_serializing_if` is not a version gate: it skips on the
+/// VALUE being none, never on the SESSION being v2. So what a field means for
+/// the wire is decided by whether anything POPULATES it — and U8 changed
+/// exactly that for `blob`.
+///
+/// Before U8, a pin outside git minted `blob: None` and the key serialized
+/// AWAY, so `PinFact`'s key set varied with the environment. Under R4 the hash
+/// is mandatory: a pin either carries one or refuses, so `blob` is now ALWAYS
+/// present wherever a `PinFact` exists at all. That is a key-set change, and it
+/// is the class value-pinning sweeps are blind to — they pin worked values
+/// (spans, revs, roots), not the presence of a key.
+///
+/// This test is the detector for that class on this body. `PinFact` rides
+/// `splice.pin`, which is v3-only at decode, so nothing here should reach a v2
+/// frame — this pins the key set so a later change to that reachability is
+/// caught HERE, loudly, instead of shipping green.
+///
+/// **What U14 changed, and why this expectation moved rather than weakened.**
+/// U14 dropped `declared_ref` — the joined `"<target>#<selector>"` echo — under
+/// ZT decision 14 (no string address forms on machine surfaces), and retyped
+/// `selector` from a joined string to the tagged [`wire::ReadSel`]. Seven keys
+/// became six. That is precisely the "did I change WHICH KEYS APPEAR" question
+/// U8 taught this test to ask, answered YES and deliberately, so the unit that
+/// changed the key set updates the pin. The assertion is not loosened: it is
+/// still an EXACT set, and it still fails on any key added or removed.
+///
+/// **What this test alone does NOT prove.** Its workspace is git-initialised, so
+/// it cannot witness the absent-`blob` case directly. The invariant "a `PinFact`
+/// exists ⟹ `blob` is present" is established by this test TOGETHER with
+/// [`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
+/// covers the other branch: no git, no `PinFact` at all. Neither half is
+/// sufficient alone, and a future edit that softened the refusal back to honest
+/// degradation would break that second test, not this one.
+#[test]
+fn the_pin_fact_key_set_is_pinned_and_blob_is_now_always_present() {
+    let (_dir, root) = workspace();
+    let out =
+        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
+    let fact = pin_fact(&out.body);
+
+    let serde_json::Value::Object(map) = serde_json::to_value(&fact).expect("PinFact serializes")
+    else {
+        panic!("a PinFact serializes to an object");
+    };
+    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "anchor",
+            "blob",
+            "fingerprint",
+            "promoted",
+            "selector",
+            "target",
+        ],
+        "the EXACT key set — a new key here is a wire change, an ABSENT `blob` \
+         means something started minting hashless pins again, and a returning \
+         `declared_ref` means ZT decision 14 is being re-opened"
+    );
+    assert!(
+        map["blob"].as_str().is_some_and(|b| b.len() == 40),
+        "and the key carries a real oid, not null: {:?}",
+        map["blob"]
+    );
+    assert!(
+        map["selector"].is_object(),
+        "U14: `selector` is the TAGGED read selector, not a joined string: {:?}",
+        map["selector"]
+    );
+}
+
 /// GATE 4a: promotion is rev-neutral (D14 honesty — cannot move pinned fingerprint).
 #[test]
 fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
@@ -261,7 +360,7 @@ fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
     let sibling_before = live_fingerprint(&root, "guide.md#Guide/Other");
 
     let out =
-        splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None).expect("pin commits");
+        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
     let fact = pin_fact(&out.body);
     assert!(fact.promoted);
 
@@ -287,14 +386,14 @@ fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
 fn a_re_pin_reuses_the_same_slug_and_promotes_nothing() {
     let (_dir, root) = workspace();
     let first = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
             .unwrap()
             .body,
     );
     let target_after_first = read_page(&root, "guide.md");
 
     let second = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
             .unwrap()
             .body,
     );
@@ -325,7 +424,7 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
     let pinner_before = read_page(&root, "plan.md");
     let fp_before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
 
-    let err = splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+    let err = splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
         .expect_err("a corrupt lock refuses the pin");
     assert_eq!(err.code, ErrorCode::BadRequest);
 
@@ -347,7 +446,7 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
 
     std::fs::write(root.0.join("plan.md"), PINNER).expect("repair");
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
             .unwrap()
             .body,
     );
@@ -376,7 +475,7 @@ fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
     );
 
     let healed = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
             .unwrap()
             .body,
     );
@@ -403,7 +502,7 @@ fn session_read(
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         mode: Some("sections".into()),
-        sections: Some(vec![selector.to_owned()]),
+        sections: Some(vec![wire::ReadSel::parse(selector)]),
         actor: Some(actor.to_owned()),
         ..Default::default()
     };
@@ -430,7 +529,7 @@ fn agent_pin_args(actor: &str, selector: &str) -> SpliceArgs {
 fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     let (_dir, root) = workspace();
     let store = receipt::read_mint::ReadMintStore::new();
-    let args = agent_pin_args("agent-7", "Guide/Leader's-Guideline");
+    let args = agent_pin_args("agent-7", "Guide/Leader's Guideline");
 
     let err = splice(&root, 0, &args, &[], Some(&store)).expect_err("un-read pin refuses");
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
@@ -451,7 +550,7 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
         &store,
         "agent-7",
         "guide.md",
-        "Guide/Leader's-Guideline",
+        "Guide/Leader's Guideline",
     );
     assert_eq!(store.len(), 1, "the read minted one receipt");
     let out = splice(&root, 0, &args, &[], Some(&store)).expect("the read-backed pin commits");
@@ -472,14 +571,14 @@ fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
         &store,
         "somebody-else",
         "guide.md",
-        "Guide/Leader's-Guideline",
+        "Guide/Leader's Guideline",
     );
     session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
 
     let err = splice(
         &root,
         0,
-        &agent_pin_args("agent-7", "Guide/Leader's-Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
     )
@@ -495,7 +594,7 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     let err = splice(
         &root,
         0,
-        &agent_pin_args("agent-7", "Guide/Leader's-Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         None,
     )
@@ -520,7 +619,7 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
         &store,
         "agent-7",
         "guide.md",
-        "Guide/Leader's-Guideline",
+        "Guide/Leader's Guideline",
     );
 
     std::fs::write(
@@ -532,7 +631,7 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     let err = splice(
         &root,
         0,
-        &agent_pin_args("agent-7", "Guide/Leader's-Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
     )
@@ -552,12 +651,12 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
         &store,
         "agent-7",
         "guide.md",
-        "Guide/Leader's-Guideline",
+        "Guide/Leader's Guideline",
     );
     splice(
         &root,
         0,
-        &agent_pin_args("agent-7", "Guide/Leader's-Guideline"),
+        &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
     )
@@ -582,8 +681,13 @@ fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
             .unwrap()
             .body,
     );
-    assert_eq!(fact.selector, "^claim");
-    assert_eq!(fact.declared_ref, "guide.md#^claim");
+    assert_eq!(
+        fact.selector,
+        wire::ReadSel::Anchor {
+            anchor: "claim".into()
+        },
+        "a block pin's canonical selector is the anchor plane's id"
+    );
     assert_eq!(fact.anchor, "claim", "the existing id IS the handle");
     assert!(!fact.promoted);
     assert_eq!(
@@ -613,13 +717,13 @@ fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
 fn a_missing_target_or_selector_refuses_pin_target_missing() {
     let (_dir, root) = workspace();
 
-    let mut ghost = pin_args("Guide/Leader's-Guideline");
+    let mut ghost = pin_args("Guide/Leader's Guideline");
     ghost.pin.as_mut().expect("pin").target = WPath("nope.md".into());
     let err = splice(&root, 0, &ghost, &[], None).expect_err("no such page");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
     assert_eq!(err.recovery, Recovery::Fix);
 
-    let err = splice(&root, 0, &pin_args("Guide/No-Such-Section"), &[], None)
+    let err = splice(&root, 0, &pin_args("Guide/No Such Section"), &[], None)
         .expect_err("no such selector");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
     // The teaching is unchanged in intent; only its spelling moved off the
@@ -689,7 +793,7 @@ fn without_git_the_pin_refuses_because_r4_admits_no_hashless_row() {
 #[test]
 fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
     let (_dir, root) = workspace();
-    let mut args = pin_args("Guide/Leader's-Guideline");
+    let mut args = pin_args("Guide/Leader's Guideline");
     args.dry = true;
 
     let out = splice(&root, 0, &args, &[], None).expect("dry rehearses");
@@ -709,7 +813,7 @@ fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
 fn a_second_pin_unions_into_the_existing_lock_block() {
     let (_dir, root) = workspace();
     let first = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
             .unwrap()
             .body,
     );
@@ -743,7 +847,7 @@ fn a_second_pin_unions_into_the_existing_lock_block() {
 #[test]
 fn a_pin_rides_alongside_caller_edits_in_one_batch() {
     let (_dir, root) = workspace();
-    let mut args = pin_args("Guide/Leader's-Guideline");
+    let mut args = pin_args("Guide/Leader's Guideline");
     args.edits = vec![Edit {
         target: wire::SecRef::FmKey {
             fm_key: "title".into(),
@@ -791,7 +895,15 @@ fn a_page_can_pin_its_own_section() {
             .expect("self-pin commits")
             .body,
     );
-    assert_eq!(fact.declared_ref, "plan.md#Premise");
+    assert_eq!(
+        fact.selector,
+        wire::ReadSel::Hpath {
+            hpath: vec![wire::HpathSeg {
+                h: "Premise".into(),
+                n: None
+            }]
+        }
+    );
     assert_eq!(fact.anchor, "premise");
 
     let page = read_page(&root, "plan.md");
@@ -840,7 +952,7 @@ fn a_taken_slug_refuses_rather_than_minting_a_duplicate_id() {
     )
     .expect("pre-taken slug");
 
-    let err = splice(&root, 0, &pin_args("Guide/Leader's-Guideline"), &[], None)
+    let err = splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
         .expect_err("the slug is taken");
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(
@@ -864,7 +976,7 @@ fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
     let before = live_fingerprint(&root, "guide.md#Guide/Padded Title");
 
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Padded-Title"), &[], None)
+        &splice(&root, 0, &pin_args("Guide/Padded Title"), &[], None)
             .unwrap()
             .body,
     );
@@ -886,7 +998,7 @@ fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
 #[test]
 fn a_stale_world_guard_refuses_before_the_promotion() {
     let (_dir, root) = workspace();
-    let mut args = pin_args("Guide/Leader's-Guideline");
+    let mut args = pin_args("Guide/Leader's Guideline");
     args.if_root = Some(wire::Root("b3:deadbeef".into()));
 
     let err = splice(&root, 0, &args, &[], None).expect_err("stale plan refuses");
@@ -900,7 +1012,7 @@ fn a_stale_world_guard_refuses_before_the_promotion() {
 fn a_fresh_world_guard_survives_the_pins_own_root_advance() {
     let (_dir, root) = workspace();
     let live = wire_serve::ambient_root(&root).expect("ambient");
-    let mut args = pin_args("Guide/Leader's-Guideline");
+    let mut args = pin_args("Guide/Leader's Guideline");
     args.if_root = Some(live.clone());
 
     let out = splice(&root, 0, &args, &[], None).expect("the guarded pin commits");
@@ -935,4 +1047,110 @@ fn git_init(dir: &std::path::Path) {
             .expect("git runs in the test environment");
         assert!(status.success(), "git {args:?}");
     }
+}
+
+/// **The `/`-bearing heading, pinned end to end** — the fixture U8 gave up to
+/// ask-don't-widen, landed here as the ruling's proof (2026-08-03, completed by
+/// the advisor ruling that retyped `PinSpec.selector`).
+///
+/// U8 found `lock_ref_fragment` refusing any heading containing `/`. The only
+/// thing forcing that refusal was the joined `page#A/B` wire echo, whose `/`
+/// was a delimiter — the exact collision ZT named in the decision-20 rationale.
+/// U14 disposed of the echo, and then found the SAME collision had simply moved
+/// one layer up into `PinSpec.selector`, which was still a `/`-joined string:
+/// the heading was representable in storage and still unpinnable. Both had to
+/// go for the capability to exist.
+///
+/// **What is delivered, precisely.** A `/`-bearing heading is representable and
+/// pinnable on the MACHINE surface — the wire array, which is what agents and
+/// MCP callers send, and what this test drives. The human CLI coat
+/// (`mrd pin --section`) still splits its string on `/`, so it cannot address
+/// this heading; widening the coat is C2, and C2 stays reserved. Neither half
+/// of that sentence may be dropped when this is described.
+///
+/// The load-bearing negative is the element COUNT. Any implementation that
+/// joins and re-splits produces `["Guide", "A", "B"]` — three elements, a
+/// well-formed address resolving to nothing — and that is what this asserts
+/// against.
+#[test]
+fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
+    let (_dir, root) = workspace();
+    std::fs::write(
+        root.0.join("guide.md"),
+        "# Guide\n\n## A/B\n\nreview before you close.\n",
+    )
+    .expect("rewrite the target with a `/`-bearing heading");
+
+    // The MACHINE surface: two segments, the second carrying the `/` as TEXT.
+    let mut args = pin_args("unused");
+    args.pin = Some(PinSpec {
+        target: WPath("guide.md".into()),
+        selector: wire::ReadSel::Hpath {
+            hpath: vec![
+                wire::HpathSeg {
+                    h: "Guide".into(),
+                    n: None,
+                },
+                wire::HpathSeg {
+                    h: "A/B".into(),
+                    n: None,
+                },
+            ],
+        },
+        vibe: None,
+    });
+
+    let out = splice(&root, 0, &args, &[], None)
+        .expect("a `/`-bearing heading pins — the refusal that blocked it is lifted");
+    let fact = pin_fact(&out.body);
+
+    let doc = fs::load(&root, std::path::Path::new("plan.md")).expect("load");
+    let found = lock::find(&doc).expect("parses").expect("present");
+    assert_eq!(
+        found.lock.pins[0].selector,
+        lock::Selector::Path(vec!["Guide".into(), "A/B".into()]),
+        "TWO elements: the `/` is heading TEXT, not a delimiter. A joined \
+         spelling re-split anywhere on this path would give three."
+    );
+    assert!(
+        read_page(&root, "plan.md").contains("path: [\"Guide\", \"A/B\"]"),
+        "and the stored form carries it verbatim: {}",
+        read_page(&root, "plan.md")
+    );
+    assert!(
+        fact.fingerprint.starts_with("fp1."),
+        "the pin is live, not merely well-formed: {}",
+        fact.fingerprint
+    );
+}
+
+/// The other half of the same boundary: the CLI STRING coat cannot address that
+/// heading, and says so rather than silently pinning the wrong thing.
+///
+/// `ReadSel::parse` splits on `/`, so `"Guide/A/B"` is three segments — an
+/// address that resolves to nothing here. The refusal is the honest outcome,
+/// and pinning it is what keeps the delivered capability described accurately:
+/// machine surface yes, CLI sugar no, C2 reserved.
+#[test]
+fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
+    let (_dir, root) = workspace();
+    std::fs::write(
+        root.0.join("guide.md"),
+        "# Guide\n\n## A/B\n\nreview before you close.\n",
+    )
+    .expect("rewrite the target with a `/`-bearing heading");
+
+    // POSITIVE CONTROL first (all-hands #2): the same coat, same fixture, a
+    // heading with no `/` — so the miss below is attributable to the SPLIT and
+    // not to a broken fixture, a wrong path, or a workspace with no headings.
+    splice(&root, 0, &pin_args("Guide"), &[], None)
+        .expect("the coat addresses an ordinary heading in this very fixture");
+
+    let err = splice(&root, 0, &pin_args("Guide/A/B"), &[], None)
+        .expect_err("the coat splits on `/`, so this address resolves to nothing");
+    assert_eq!(
+        err.code,
+        ErrorCode::PinTargetMissing,
+        "it MISSES — it must never silently pin a different section: {err:?}"
+    );
 }

@@ -4,7 +4,7 @@
 //! both files; rev-neutrality asserts fingerprint equality (with controls that prove the
 //! hash *can* move when bytes differ).
 
-use wire::{ErrorCode, Path as WPath, PinSpec, ResponseBody};
+use wire::{Path as WPath, PinSpec, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
 
 /// Pinning page with no lock block — first pin births one at EOF.
@@ -48,7 +48,7 @@ fn pin_args(pinning_page: &str, selector: &str) -> SpliceArgs {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WPath("guide.md".into()),
-            selector: selector.into(),
+            selector: wire::ReadSel::parse(selector),
             vibe: None,
         }),
     }
@@ -115,43 +115,64 @@ fn fingerprint_of(bytes: &str, chain: &[&str]) -> String {
         .into_string()
 }
 
-/// Heading text with `/` cannot round-trip the lock-ref grammar (finding 12).
+/// A `/`-bearing heading — the case whose REFUSAL this file used to pin.
 const SLASH_TARGET: &str = "# Guide\n\n## A/B\n\nreview before you close.\n";
 
+/// **The `/`-refusal is DEAD (U14 ruling, 2026-08-03) — this is its tripwire.**
+///
+/// `a_refused_pin_leaves_both_files_byte_unchanged` and
+/// `the_refusal_repeats_and_still_writes_nothing` pinned the opposite law: a
+/// heading containing `/` refuses with `bad_request` ("cannot round-trip"),
+/// deterministically, writing nothing. That refusal existed only because the
+/// joined `page#A/B` echo made `A/B` and `["A","B"]` the same bytes — the
+/// delimiter collision ZT named in the decision-20 rationale. U14 disposed of
+/// the echo AND of the joined `PinSpec.selector` the collision had moved into,
+/// so the refusal was ruled dead.
+///
+/// A deleted capability whose subject was a LAW gets an INVERTED test naming
+/// the ruling, so a restoration breaks a test instead of passing silently.
+///
+/// **This test asserts SUCCESS, deliberately, and that is the all-hands #2
+/// lesson applied to itself.** The obvious inversion — assert the refusal
+/// message no longer says "round-trip" — passes for a neighbouring reason: the
+/// CLI string coat splits `"Guide/A/B"` into three segments and MISSES with
+/// `pin_target_missing`, so the assertion would hold whether or not the `/`
+/// refusal ever died. A fixture that can trigger more than one refusal path
+/// cannot pin either. Driving the MACHINE surface and requiring the pin to
+/// COMMIT has exactly one way to pass.
+///
+/// **Scope guard — `/` ONLY.** The `#`-in-heading refusal SURVIVES and keeps
+/// its own coverage; `#` is still a live delimiter in the ingress grammars
+/// (wikilinks, `path#fragment`) and nothing has ruled it representable end to
+/// end. Named candidate row for a future docket, not this ruling.
 #[test]
-fn a_refused_pin_leaves_both_files_byte_unchanged() {
+fn a_slash_bearing_heading_is_no_longer_refused_and_the_pin_commits() {
     let (_dir, root) = workspace(PINNER, SLASH_TARGET);
-    let plan_before = read(&root, "plan.md");
-    let guide_before = read(&root, "guide.md");
+    let mut args = pin_args("plan.md", "unused");
+    args.pin = Some(PinSpec {
+        target: WPath("guide.md".into()),
+        selector: wire::ReadSel::Hpath {
+            hpath: vec![
+                wire::HpathSeg {
+                    h: "Guide".into(),
+                    n: None,
+                },
+                wire::HpathSeg {
+                    h: "A/B".into(),
+                    n: None,
+                },
+            ],
+        },
+        vibe: None,
+    });
 
-    let err = splice(&root, 0, &pin_args("plan.md", "Guide/A-B"), &[], None)
-        .expect_err("a `/` in the heading text cannot round-trip the ref grammar");
-
-    assert_eq!(err.code, ErrorCode::BadRequest);
-    assert!(
-        err.message
-            .as_deref()
-            .is_some_and(|m| m.contains("round-trip")),
-        "the teaching refusal still fires: {:?}",
-        err.message
-    );
-
-    let guide_after = read(&root, "guide.md");
-    assert_eq!(
-        guide_after,
-        guide_before,
-        "the pinned TARGET is byte-unchanged by a refused pin — rev before {} vs after {}",
-        rev(&guide_before),
-        rev(&guide_after)
-    );
-    let plan_after = read(&root, "plan.md");
-    assert_eq!(
-        plan_after,
-        plan_before,
-        "and so is the pinning page — rev before {} vs after {}",
-        rev(&plan_before),
-        rev(&plan_after)
-    );
+    splice(&root, 0, &args, &[], None).unwrap_or_else(|e| {
+        panic!(
+            "the `/`-round-trip refusal was RULED DEAD in U14 (2026-08-03) — an R4 \
+             path array carries [\"Guide\", \"A/B\"] unambiguously and no joined echo \
+             reads it back. A refusal here re-opens that ruling: {e:?}"
+        )
+    });
 }
 
 /// Control: withheld promotion is a real byte/rev change (identity assert is load-bearing).
@@ -169,19 +190,6 @@ fn the_promotion_the_refusal_withholds_is_a_real_byte_change() {
     );
 }
 
-/// Refusal is deterministic; re-pin still writes nothing (no healing path).
-#[test]
-fn the_refusal_repeats_and_still_writes_nothing() {
-    let (_dir, root) = workspace(PINNER, SLASH_TARGET);
-    for attempt in 1..=3 {
-        let err = splice(&root, 0, &pin_args("plan.md", "Guide/A-B"), &[], None)
-            .expect_err("still unrepresentable");
-        assert_eq!(err.code, ErrorCode::BadRequest, "attempt {attempt}");
-        assert_eq!(read(&root, "guide.md"), SLASH_TARGET, "attempt {attempt}");
-        assert_eq!(read(&root, "plan.md"), PINNER, "attempt {attempt}");
-    }
-}
-
 /// Target last line is an unterminated heading — promotion at EOF must stay rev-neutral (finding 7).
 const EOF_TARGET: &str = "# Guide\n\n## Alpha\n\nalpha body.\n\n## Omega";
 
@@ -195,7 +203,16 @@ fn promoting_at_eof_leaves_another_pages_pinned_fingerprint_identical() {
             .expect("the first pin commits")
             .body,
     );
-    assert_eq!(first.declared_ref, "guide.md#Guide");
+    assert_eq!(
+        first.selector,
+        wire::ReadSel::Hpath {
+            hpath: vec![wire::HpathSeg {
+                h: "Guide".into(),
+                n: None
+            }]
+        },
+        "U14: the pin fact carries a structured selector, not a joined `page#sel` echo"
+    );
     assert_eq!(
         first.fingerprint,
         live_fingerprint(&root, "guide.md#Guide"),

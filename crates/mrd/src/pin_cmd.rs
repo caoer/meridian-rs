@@ -76,7 +76,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WirePath(parsed.target.clone()),
-            selector: parsed.selector.clone(),
+            // **The CLI coat's ingress door (U14).** The wire carries a tagged
+            // selector; this is where the human string a person typed becomes
+            // one, and it is the only place that conversion happens.
+            //
+            // The coat keeps its known limit: `ReadSel::parse` splits on `/`,
+            // so a heading whose own RAW text contains `/` is pinnable through
+            // the WIRE ARRAY (agents, MCP) but not through this string sugar.
+            // That is ZT's input-coat vs carried-canonical split; widening the
+            // coat is C2, and C2 stays reserved.
+            selector: wire::ReadSel::parse(&parsed.selector),
             vibe: parsed.vibe.then_some(true),
         }),
     };
@@ -133,7 +142,15 @@ fn print_human(parsed: &Pin, body: &Value) {
             .unwrap_or("?")
     };
     let verb = if parsed.dry { "would pin" } else { "pinned" };
-    println!("{verb} {} into {}", field("declared_ref"), parsed.page);
+    // U14: `declared_ref` — the joined `page#selector` echo — is gone from the
+    // wire fact. The human line is composed from the two fields that carry the
+    // same address structurally, which is also what the caller typed.
+    println!(
+        "{verb} {}#{} into {}",
+        field("target"),
+        parsed.selector,
+        parsed.page
+    );
     println!("  fingerprint: {}", field("fingerprint"));
     let promoted = pin
         .and_then(|p| p.get("promoted"))
