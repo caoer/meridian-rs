@@ -19,7 +19,7 @@
 //! - **2** — bad invocation, or a structural failure (root absent from the
 //!   corpus, or an in-snapshot cycle).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use model::Document;
@@ -144,6 +144,49 @@ struct MountedCorpus {
 /// working as designed (§ 8 M6), not a reason to brick every single-root
 /// workspace on the planet.
 pub(crate) fn load_mounts() -> Mounts {
+    load_mounts_where(&|_| true)
+}
+
+/// [`load_mounts`], building a corpus ONLY for the roots in `needed`.
+///
+/// # Why a caller would want fewer corpora
+/// Building a root's corpus is a recursive directory walk plus a read and parse
+/// of every page in it — the cost is the ROOT's size, and nothing about the
+/// workspace under test bounds it. `mrd status` measured 80.6% of its whole run
+/// inside this function, walking 271 MB across four declared roots to colour two
+/// pins, none of which addressed a root at all.
+///
+/// A caller that KNOWS which roots its addresses name pays for those and no
+/// others. Which roots those are is the caller's question, not this loader's:
+/// `status` reads them off its own lock items ([`crate::status_cmd`]), and a
+/// caller that cannot know keeps [`load_mounts`].
+///
+/// # The declared table is unchanged, and that is the whole safety argument
+/// `needed` narrows the CORPORA, never the [`addr::MountSet`]. A skipped root is
+/// still pushed to `bound`, so the set answers `is_bound` exactly as it did, and
+/// every `grey(unmounted)` / `path-unseeable` verdict — which read the set and
+/// not the corpora — is byte-identical.
+///
+/// What a skipped root loses is only its docs, and the ONE consumer of those is
+/// a `root:`-qualified address resolving into it
+/// (`model::CorpusIndex::resolve_ref` arm (b)). That arm already exists and
+/// already refuses loudly — *"the mount table binds this root, but no corpus for
+/// it was loaded in this process"* — so a caller that narrows `needed` too far
+/// gets a named refusal, never a false green. Laziness cannot manufacture a
+/// clean answer here; it can only fail to have one.
+///
+/// One behaviour does change, unobservably: a skipped root whose corpus would
+/// have FAILED to build lands as bound-with-no-corpus instead of `unreachable`.
+/// Only an address naming that root could tell the two apart, and the caller
+/// skipped it precisely because no address names it.
+pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
+    load_mounts_where(&|name| needed.contains(name))
+}
+
+/// The one loader both faces above are spellings of — so the table bind, the
+/// refusal carrying, and the set assembly have exactly one implementation and
+/// cannot drift between an eager caller and a narrowed one.
+fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
     let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
         return Mounts::default();
     };
@@ -180,6 +223,13 @@ pub(crate) fn load_mounts() -> Mounts {
         let Some(path) = mount.canonical_path() else {
             continue;
         };
+        // Bound per the table, corpus not asked for. It joins `bound` exactly as
+        // a built root does — the table's answer about this root is a table fact
+        // and does not depend on whether this process read its pages.
+        if !wanted(&name) {
+            bound.push(name);
+            continue;
+        }
         match build_docs_at(path) {
             Ok(docs) => {
                 bound.push(name.clone());
