@@ -589,6 +589,32 @@ workspace /private/tmp/u3repro/ws
 Confirmed: the defect **needs the slash**, and one address grammar gives two different answers on
 the same plane today. That divergence is what § 5.1 C-4 makes the assert.
 
+> **CORRECTION (U21, 2026-08-04) — the second command is NOT a control.** The
+> measurement above stands as recorded and is preserved verbatim; what is corrected is the
+> word **"control"** and the conclusion drawn from it.
+>
+> **`-> sessions:notes.md (1, unresolved)` is emitted in BOTH worlds.** U21 measured that
+> identical line, byte for byte, with `sessions` **BOUND**, its path **readable**, and
+> `notes.md` **PRESENT** inside it — where the same line is the DEFECT, not the healthy
+> answer. Rewriting `MERIDIAN.md` to bind nothing produced **byte-identical output**, re-run
+> with a fresh `XDG_CACHE_HOME` on both arms so a stale daemon table is excluded.
+>
+> So this line **cannot distinguish the world it was cited to prove from the world it was
+> cited to exclude.** It reads as a control and is a decoration. The plane it was meant to
+> certify has been blind to the mount table the whole time, which is how that survived an
+> entire unit.
+>
+> **The claim that SURVIVES:** the defect needs the slash *on the ambient fallback path* —
+> the first command's wrong SUCCESS is real, and § 5.1 C-4's assert is unaffected.
+> **The claim that does NOT survive:** that the no-slash spelling demonstrates a healthy
+> plane. It demonstrates nothing.
+>
+> **What a real control looks like here** — state two worlds, run both, diff them; if the
+> bytes match the instrument is blind. U21's is a second plane on the same fixture:
+> `mrd walk` answers `red / content-drifted` when the root is bound and `grey / unmounted`
+> when it is not, both exit 1. It distinguishes; `mrd links` does not. That contrast is what
+> turned "unresolved" from a plausible answer into a measured defect.
+
 ### 11.2 The symlink topology S3-R7 names
 
 ```

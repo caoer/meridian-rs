@@ -130,6 +130,188 @@ out-of-band mutation (an offline pre-push git rewrite, a root-preserving forged
 journal row) is caught by the git witness plus the receipt-engine-only write
 restriction, or it is a named residual — it is never rendered green by refusal.
 
+## Named residues and candidate rows
+
+A **named residue** is a construction this engine's own law disapproves, whose
+BEHAVIOUR is correct today, deliberately left in place with its reason recorded.
+A **candidate row** is a change nobody has ordered yet, named so a future docket
+inherits it as a decision rather than rediscovering it as a defect.
+
+Both exist for one reason: an undocumented compromise becomes the architecture
+by forgetting. Neither is a TODO — a row here has been ruled, and the ruling is
+that it waits.
+
+| # | Row | Kind | Status |
+|---|---|---|---|
+| R1.6-a | The stored→agent re-join/re-parse in `wire-serve::positions` | residue | recorded by U21, deferred |
+| C-1 | The link plane resolves cross-vault refs IN-PROCESS, not in the daemon | residue | U21's degrade — **successor named below** |
+| H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **owed by U14** — see below |
+| S-1 | The stored-plane narrowing refusal (U21 Q1a) | candidate | **owed by U14** — see below |
+
+### S-1 — the stored-plane narrowing refusal, and the trigger that makes it owed
+
+**Operational trigger, so this is a tracked obligation and not a hope: the
+obligation fires when BOTH `ReadSel` AND this row are on `main`. WHICHEVER LANDS
+SECOND CARRIES THE CHECK.**
+
+> [!NOTE] Why the trigger is stated as a conjunction rather than as one merge gate
+> It first read *"when `ReadSel` lands on `main` … the U14-merge gate checks this
+> row."* That names a gate that **may not exist at the moment it is supposed to
+> fire.** Measured 2026-08-04 at `origin/u21-cross-vault-links` `c23810d3`: this
+> row is on THIS branch and nowhere else — `S-1` returns 0 hits at `origin/main`
+> and 0 at `origin/u14-arrays`, with `Law 1` returning 3 at all three revisions
+> as the positive control that the query reached the file. So if U14 lands first,
+> its merge gate reads a `laws.md` that does not contain this row, the check
+> passes vacuously, and the obligation then sits on `main` **true and
+> unwatched**.
+>
+> A conjunction has no such ordering hole: neither branch can land second without
+> both being present, so the second merge always has both the trigger and the row
+> in front of it. **This is an obligation with a trigger that cannot be relied on
+> to fire — the same defect as an obligation with no trigger, one level in**, and
+> it is the defect this row was written to prevent.
+>
+> **Invalidation condition:** this wording stops being necessary only when both
+> `ReadSel` and this row are on `main`, at which point the obligation has fired
+> and the trigger is spent. It is unaffected by either branch moving, by further
+> commits to this file, or by the order the two merges are eventually planned in.
+
+U21 Q1 was ruled (a) — refuse at the translation door with a named
+`TranslateError` — on the stated premise that *today's wikilink ingress cannot
+mint the affected values*. U21 measured that premise and **it does not hold for
+one of the three**, so the ruling was re-taken as (i): the refusal lands with
+U14.
+
+The three values, each with why it waits:
+
+- **Multi-segment hpath — REACHABLE TODAY, and refusing it now would break
+  shipped green behaviour.** `syntax::split_wikilink_target`
+  (`crates/syntax/src/lib.rs:434-443`) puts everything after the first `#` into
+  the heading fragment verbatim unless it starts with `^`, so the ordinary
+  wikilink `[[sessions:notes.md#Design/Sub]]` mints a `/`-bearing selector, and
+  `("v", "dir/a:b.md", Some("Design/Sub"))` is a PASSING row in
+  `every_stored_form_decodes_back_to_the_parts_that_minted_it`
+  (`crates/addr/src/stored.rs:472`). **On `main` a selector is one opaque string
+  on BOTH planes**, so the round trip is a genuine fixed point and there is no
+  second reading for the stored form to lose. The ambiguity `Design/Sub` would
+  be ambiguous *against* — one segment or three — comes into existence WITH
+  U14's segmented hpath, and the refusal is additive against that grammar.
+- **Dewey** — there is no dewey spelling in the agent-plane address grammar on
+  `main`. `[[x.md#1.2]]` is a heading literally named `1.2`, and `heading=1.2`
+  stores it correctly.
+- **Occurrence index** — no spelling in `Addr` at all.
+
+**The last two are not merely unreachable, they are UN-IMPLEMENTABLE, and that
+is why no variant was landed for them.** There is no value at the translation
+seam to detect, so the refusal would be a variant with no constructor —
+S3-R23(4)'s weakened middle, a claim nothing checks. **Do not land dead variants
+for symmetry, and do not let a later reader land them for tidiness.**
+
+### Q7 — why the view's cross-root destination is THREE columns, not two
+
+U21 Q5 ruled a nullable `dest_root` **beside** `dest_path`. Implementation
+measured the fact the ruling was written without: `link.dest_path` carries an
+**enforced** foreign key into `doc(path)` — DuckDB answers *"Violates foreign key
+constraint because key `path: notes.md` does not exist in the referenced
+table"* — and a cross-root path is not a key in this corpus. The literal
+two-column shape therefore required DROPPING that FK.
+
+Ruled (B), FK preserved: `dest_root` + `dest_root_path`, with `dest_path` left
+NULL for a cross-root edge. The FK is the only thing in the schema that makes *a
+link row pointing at a document that does not exist* unrepresentable, and
+trading it away inside the unit about the link plane answering with the wrong
+document is the wrong direction of travel. It also keeps the column honest at
+its grain: **`dest_path` means "a path in THIS corpus" always, rather than only
+sometimes.**
+
+The third column widens the error space, so the illegal states are closed
+STRUCTURALLY — `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
+`CHECK (dest_path IS NULL OR dest_root IS NULL)` — rather than by the
+projector's discipline. `dangling`'s two-place clause (`dest_path IS NULL AND
+dest_root IS NULL`) is what stops a resolved cross-vault link reading as broken,
+and it is pinned by a red test, mutation-proved one-edit, in
+`crates/view/tests/u21_cross_root_link_rows.rs`.
+
+### R1.6-a — the stored→agent re-join, and why it stays
+
+`stored_occupants` (`crates/wire-serve/src/positions.rs:511`) decodes a stored
+URI into its parts, then **re-joins them into one string and re-parses it**:
+
+```rust
+// crates/wire-serve/src/positions.rs:539-545
+let address = match &parsed.selector {
+    Some(sel) => format!("{name}:{}#{sel}", parsed.path),
+    None => format!("{name}:{}", parsed.path),
+};
+let occupant = Occupant {
+    addr: Addr::parse(&address)…
+```
+
+The parts were already separated; they are joined only to be split again. That
+is a joined string address on a machine surface, which **ZT decision 14 / R1.6
+disapproves** — *"Arrays for machines, TOON for humans. No string address forms
+in machine surfaces."*
+
+**It is not producing a wrong answer.** The join and the split agree, and the
+round trip is asserted byte-identically
+(`positions.rs::tests::the_agent_plane_form_round_trips_byte_identically`).
+**Only the CONSTRUCTION is disapproved, not the behaviour** — and that is what
+separates this row from the `PinSpec.selector` case U14 settled, where a refusal
+had been lifted while the capability was still missing: a half-delivered
+capability blocking an ordered proof had to be finished, and this does not.
+
+**Why it waits.** The fix requires `Addr` to gain a parts constructor, and
+`Addr` has **no `from_parts` by deliberate invariant**:
+
+> *"there is no `from_parts` a caller can use to smuggle an unparsed root prefix
+> into the `Addr::path` field"* — `crates/addr/src/lib.rs:10-15`
+
+That invariant is what makes every downstream guard checkable. Redesigning it is
+its own considered act with its own gate, not a rider slipped into another
+unit's train. **The successor act is: give `Addr` a fallible parts constructor
+running the same checks `parse` runs, then delete the join.**
+
+### C-1 — the link plane's in-process degrade, and its NAMED SUCCESSOR
+
+The daemon's warm state is one workspace's corpus, keyed by that workspace's own
+canonical path and invalidated by its own fingerprint
+(`crates/registry/src/registry.rs:317-321`, `warm_or_build`). **It holds no
+mounted-root corpora**, so the link arm serves ambient state only
+(`crates/registry/src/server.rs:782-789`). U21 therefore resolves a cross-vault
+link by DEGRADING that one op to in-process, where the mounted corpora can be
+loaded the way the walk plane already loads them
+(`crates/mrd/src/walk_cmd.rs:146`).
+
+**The asymmetry is a documented contract, not a bug awaiting discovery:** for
+this one op the daemon is knowingly less capable than the in-process path, and a
+page carrying a cross-vault link pays a cold corpus build. Stated here rather
+than smoothed, on the same discipline as the exit-code asymmetry in
+`docs/address-grammar.md`.
+
+> **THE NAMED SUCCESSOR — option (A): the daemon holds mounted corpora.** That
+> is the correct end state and it was deferred DELIBERATELY, not overlooked. It
+> needs per-root fingerprint invalidation, residency and reap — a designed
+> subsystem, which this docket handles design-first with its own element and
+> gate (P8/P10), exactly as U20a exists for the push channel. Building it as an
+> implementation detail of a link-plane fix would repeat the
+> F3-as-a-port mistake.
+
+**A degrade with a named successor is a decision; a degrade without one becomes
+the architecture by forgetting.** That is why this row exists.
+
+### H-1 — owed by U14, recorded here so it is not lost
+
+U14 found that the `#` refusal must SURVIVE, because `#` is a live delimiter in
+both wikilink and `path#fragment` ingress, and named it a candidate row rather
+than an act.
+
+**This row is a POINTER, not a claim about this tree.** U14 is not merged at the
+time of writing — `lock_ref_fragment` is still the name here
+(`crates/wire-serve/src/write.rs:1319`) and U14's rename does not exist on main.
+The row's owner is U14, and U14 fills in the detail when it lands. Writing its
+shapes here now would assert a tree that this tree contradicts, which is the
+defect this whole section exists to prevent.
+
 ## Amendment — capabilities do not apply to bash
 
 Law: ZT ruling, made verbally, re-litigated in code, and ruled again live

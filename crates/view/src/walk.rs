@@ -394,90 +394,12 @@ pub use model::selector::color_tone;
 
 /// The reason word behind a non-green color (`None` for green) — the stable
 /// output reason, shared by the human render and the `--json` shape.
-#[must_use]
-pub fn color_reason(color: &Color) -> Option<&'static str> {
-    match color {
-        Color::Green => None,
-        Color::Grey(GreyReason::ImmutableRoot) => Some("immutable-root"),
-        Color::Grey(GreyReason::DeclaredUnpinned) => Some("declared-unpinned"),
-        Color::Grey(GreyReason::Ambiguous) => Some("ambiguous"),
-        Color::Grey(GreyReason::SupersededAlgo) => Some("superseded-algo"),
-        Color::Grey(GreyReason::UnverifiableFingerprint { .. }) => Some("unverifiable-fingerprint"),
-        Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
-        Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
-        // S3-R6's vocabulary, not a local spelling: `grey(unmounted)` renders
-        // here as the reason word `unmounted` behind the `grey` tone, which
-        // `color_label` composes into `grey unmounted (root 'x')`. The same
-        // ruling binds u14i, U14 and U15 — do not re-spell it.
-        Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
-        // S3-R49 — the BARE form of the ONE shared word. `config`'s mount plane
-        // wraps the same const as `grey(path-unseeable)`; this plane takes it
-        // bare and `color_label` wraps. The two agree by construction: a
-        // compile-time assertion in `config` fails the BUILD if they drift.
-        Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
-        Color::Red(RedReason::Drifted) => Some("content-drifted"),
-        Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
-        Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
-    }
-}
-
-/// The detail a reason carries beyond its word (`None` when the word says it
-/// all) — WHICH fingerprint-triple member is unknown, or WHY the lock refused.
-/// Split from [`color_reason`] so the reason stays a stable enum-like token for
-/// machines while the human render still names the specific damage.
-#[must_use]
-pub fn color_detail(color: &Color) -> Option<String> {
-    match color {
-        Color::Grey(GreyReason::UnverifiableFingerprint { unknown }) => {
-            Some(format!("unknown {}", unknown.join(", ")))
-        }
-        Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
-        // The missing mount NAME is the detail that lets the human line teach
-        // (D8). The full teaching refusal is `selector::render_unmounted`; this
-        // is the one-line form the listing carries, and it still names the root
-        // — a refusal that cannot say WHICH mount is missing teaches nothing.
-        Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
-        // The PATH is the detail here, never the mount entry — the entry is
-        // already correct, which is the whole distinction S3-R43 draws.
-        Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
-            Some(format!("{path} ({detail})"))
-        }
-        _ => None,
-    }
-}
-
-/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
-/// reason word already says everything.
 ///
-/// **S3-R51 — this is the output path `render_unmounted` did not have.** Round 1
-/// shipped a pinned teaching-refusal exemplar that NOTHING called: the walk
-/// rendered [`color_label`] and the refusal existed only as a `const` and its
-/// tests. That is S3-R23(4)'s weakened middle — an assertion claiming a wording
-/// no user could ever see.
-///
-/// **WIRED rather than struck**, and the reason is that the two options are not
-/// symmetric. D8 requires a *teaching* refusal naming the missing mount, and it
-/// is a gate on this unit's card; striking the renderer would have left that gate
-/// satisfied only in its weaker half — the reason word names the mount, but
-/// nothing teaches the fix — and narrowing a criterion is the Advisor's pen
-/// (R27), not an implementer's. Wiring closes the weakened middle AND discharges
-/// D8 in full, so it strictly dominates. The two never collided, so nothing
-/// routed up.
-///
-/// `address` is the ref as the page DECLARED it — the refusal echoes what the
-/// author wrote, not what resolution made of it.
-#[must_use]
-pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
-    match color {
-        Color::Grey(GreyReason::Unmounted { root }) => {
-            Some(model::selector::render_unmounted(root, address))
-        }
-        Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
-            Some(model::selector::render_path_unseeable(root, path, detail))
-        }
-        _ => None,
-    }
-}
+/// Re-exported from [`model::selector`] for the SAME reason [`color_tone`] is:
+/// the §4.6 link plane's refusal rows are minted in `wire-serve`, which cannot
+/// depend on this crate, and two `match`es over one enum is how a board and a
+/// walk start disagreeing about one address.
+pub use model::selector::{color_detail, color_reason, color_teaching};
 
 /// The full color label (`green`, `red content-drifted`, `grey immutable-root`,
 /// `grey unverifiable-fingerprint (unknown version)`, …) — tone, reason, and the
@@ -680,6 +602,17 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     // wrong answer this unit exists to remove.
     if let Some(reason) = &edge.root_refusal {
         return Color::Grey(reason.clone());
+    }
+    // U21 — the root was REACHED and the file is not in it. This must be read
+    // before the target lookup below, because that lookup finds nothing and
+    // classifies as red `selector-unresolved` — the plausible-looking wrong
+    // cause, asserting that the page resolved when the page is what is absent.
+    if let Some(root) = &edge.root_absence {
+        return Color::Red(RedReason::FileNotFound {
+            root: root.clone(),
+            path: edge.to_path.clone(),
+            selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
+        });
     }
     // The target's bytes come from the root the address RESOLVED INTO — never
     // the ambient corpus. Reading the ambient one here is FINDING 03's wrong

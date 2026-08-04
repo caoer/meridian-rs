@@ -347,11 +347,34 @@ fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
          absence, rendered red: {}",
         stdout(&out),
     );
+    // **U21 CHANGED THIS WORD, and the change is the unit's whole point.**
+    //
+    // U11 asserted `selector-unresolved` here because that was the only red
+    // word the type could reach: `RefResolution::NotFound` was a unit variant,
+    // so no caller could say WHICH root missed, and the row fell through to the
+    // arm that classifies an absent target document. The word was WRONG in the
+    // engine's own voice — `selector-unresolved` asserts the PAGE resolved and
+    // the SELECTOR did not, while here the page itself is what is absent.
+    //
+    // This is not a loosened assertion. It is strictly stronger: the class is
+    // still red and still not grey (both asserted above, unchanged), and the
+    // row now also names the root the miss happened inside, which
+    // `selector-unresolved` structurally could not do — address-grammar § 5.2
+    // row F4's actual requirement.
     assert_eq!(
         reason,
-        "selector-unresolved",
-        "and it keeps its own reason word, never borrowing grey's: {}",
+        "file-not-found",
+        "and it keeps its own reason word, never borrowing grey's — nor the \
+         selector plane's, which would claim the page resolved: {}",
         stdout(&out),
+    );
+    // The half U11 could not assert: the refusal is SCOPED to the root that
+    // missed. Its grey sibling has named its root since U11; this one could not
+    // until the type carried it.
+    let (_out, _c, _r, detail, _s) = sb.walk_entry();
+    assert!(
+        detail.contains("sessions"),
+        "the refusal names the root the file is missing INSIDE: {detail}",
     );
 }
 

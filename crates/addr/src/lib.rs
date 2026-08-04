@@ -384,6 +384,36 @@ impl fmt::Display for Addr {
 /// rather than by two literals that happen to match today.
 pub const PATH_UNSEEABLE_REASON_WORD: &str = "path-unseeable";
 
+/// **Does this spelling's HEAD carry a root separator?** — the ONE lexical
+/// question *"could the address plane have something to say about this?"*
+///
+/// The head is the text before the first `/` and before the first `#`, which is
+/// exactly the span the colon law (§ 4.1) reads. Lexical on purpose, and
+/// deliberately WEAKER than "parses as a rooted [`Addr`]": a malformed rooted
+/// spelling (`Sessions:notes.md`, `a:b:c.md`, `sessions:`) does not parse, and
+/// the address plane's answer for it is a REFUSAL — which is still an answer.
+///
+/// **A predicate that asked [`Addr::parse`] instead would be a superset of the
+/// WELL-FORMED spellings only**, and every refusal would fall through it
+/// silently. That is measured, not hypothetical: `wire-serve`'s translation gate
+/// asks parse-success — correctly, because an unparseable address has no stored
+/// form — and five refusing spellings slip it. Two different questions were
+/// sharing one predicate; this is the other question.
+///
+/// It lives in this leaf because the resolver ([`model`]'s C-3 guard) and the
+/// link plane's degrade both ask it, and **they must not merely agree — they
+/// must be the same test**, or they drift the moment one is edited.
+#[must_use]
+pub fn head_carries_root_separator(spelling: &str) -> bool {
+    let trimmed = spelling.trim();
+    let before_frag = trimmed.split_once('#').map_or(trimmed, |(left, _)| left);
+    before_frag
+        .split('/')
+        .next()
+        .unwrap_or(before_frag)
+        .contains(':')
+}
+
 /// **The ONE lexical confinement predicate for a corpus-relative path.**
 ///
 /// A path is confined when it is non-empty, does not start with `/`, has no
@@ -909,6 +939,69 @@ mod tests {
         // no stored spelling either.
         let set = set.with_unreachable(sessions.clone(), "/gone", "unreadable");
         assert_eq!(set.vault_of(&sessions), None);
+    }
+
+    /// [`head_carries_root_separator`] — the one lexical "could the address
+    /// plane answer this?" test, with BOTH halves asserted (S3-R8(c)).
+    ///
+    /// **The refusing rows are the point.** A predicate built on
+    /// [`Addr::parse`] would answer false for every one of them, because they do
+    /// not parse — and their address-plane answer is a REFUSAL, which is still
+    /// an answer. A gate that drops them lets a refusal be served silently by
+    /// whichever path did not ask.
+    #[test]
+    fn the_head_separator_test_admits_refusals_and_leaves_the_ambient_corpus_out() {
+        for rooted in [
+            "sessions:notes.md",       // well-formed
+            "sessions:24-01/notes.md", // well-formed, subdirs
+            "sessions:a/b.md#Design",  // well-formed, fragment
+            "Sessions:notes.md",       // REFUSES — BadMountName
+            "My Notes:draft.md",       // REFUSES — BadMountName
+            "a:b:c.md",                // REFUSES — AmbiguousColon
+            ":notes.md",               // REFUSES — EmptyMountName
+            "sessions:",               // REFUSES — EmptyPath
+            "  sessions:notes.md",     // leading space — the resolver trims
+        ] {
+            assert!(
+                head_carries_root_separator(rooted),
+                "{rooted}: the address plane has an answer here, so the head test must admit it",
+            );
+        }
+        // ACCEPTANCE HALF — a test that admits everything gates nothing, and
+        // would fire the link plane's degrade on the whole ordinary corpus.
+        for ambient in [
+            "notes.md",
+            "a/b/c.md",
+            "dir/a:b.md",   // a `:` AFTER the first `/` is a path byte (§ 4.1)
+            "page.md#a:b",  // a `:` inside the FRAGMENT is not a root separator
+            "mail@host.md", // S3-R38
+            "",
+        ] {
+            assert!(
+                !head_carries_root_separator(ambient),
+                "{ambient}: ambient spellings must stay out",
+            );
+        }
+    }
+
+    /// The property that makes the two callers ONE test rather than two that
+    /// agree today: every spelling this predicate admits is exactly the set
+    /// `resolve_linkpath`'s C-3 guard refuses. Asserted on the parse side here —
+    /// a well-formed admitted spelling parses ROOTED, and a refused one is an
+    /// `AddrError`. Either way the address plane has an answer.
+    #[test]
+    fn everything_the_head_test_admits_has_an_address_plane_answer() {
+        for spelling in ["sessions:notes.md", "Sessions:notes.md", "a:b:c.md"] {
+            assert!(head_carries_root_separator(spelling));
+            // An Err arm needs no assertion: a refusal IS an address-plane
+            // answer, and it is exactly the case a parse-gated predicate drops.
+            if let Ok(addr) = Addr::parse(spelling) {
+                assert!(
+                    addr.root().is_some(),
+                    "{spelling}: admitted and parsed, so it must be ROOTED",
+                );
+            }
+        }
     }
 
     /// [`confined`] — the one lexical confinement law, with its ACCEPTANCE half
