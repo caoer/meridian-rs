@@ -1192,7 +1192,13 @@ fn run(args: &[String], writing: bool) -> Result<(), Fail> {
                     plan_edits: Vec::new(),
                     pin: None,
                 };
-                let outcome = splice(&root, 0, &args, &[], None)
+                // U20b retyped `seq` from a bare `u64` to `Option<&dyn
+                // SeqSink>` and migrated every caller it could see to `None` —
+                // `mrd` is a CLI client and mints no notification sequence. U23
+                // added this call site on a branch U20b never saw, so `0` was
+                // correct for its tree and is unspellable in this one. Same
+                // reading as `pin_cmd`, `put_cmd` and `corpus_tier`.
+                let outcome = splice(&root, None, &args, &[], None)
                     .map_err(|e| crate::engine::refusal_fail(&e))?;
                 if let wire::ResponseBody::Splice { root_after, .. } = &outcome.body {
                     expected.clone_from(root_after);
