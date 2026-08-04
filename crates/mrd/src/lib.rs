@@ -147,8 +147,8 @@ usage:
                            0 pinned (or dry) / 1 refused (the engine's message,
                            verbatim) / 2 bad invocation
   mrd walk <PAGE> [--down] [--depth N]
-                           the context-assembly listing over the ^inputs pin
-                           graph: up (default) = what PAGE draws from, --down =
+                           the context-assembly listing over the meridian-lock
+                           pin graph: up (default) = what PAGE draws from, --down =
                            who pins PAGE + blast radius (--depth 1 = direct
                            dependents). Read-only; every answer cites the revs
                            it read. Exits: 0 clean / 1 a red edge / 2 bad

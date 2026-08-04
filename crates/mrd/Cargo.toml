@@ -101,8 +101,10 @@ git = { workspace = true }
 starlark = { workspace = true }
 allocative = "0.3"
 anyhow = { workspace = true }
-# `mrd pin` (U2.4): read a page's inputs: manifest, resolve + compose atomically,
-# evaluate check: predicates, and splice the ^inputs lock through the strict
+# `mrd pin`: resolve + compose atomically, evaluate check: predicates, and splice
+# the `meridian-lock` block through the strict writer. (R1.3 — the U2.4 verb this
+# note described read an `inputs:` manifest and spliced an `^inputs` lock; the
+# stage-2 verb speaks the lock grammar.)
 # writer. A local CLIENT of the pin op — `pin` orchestrates model/view/wire-serve
 # and is already in the graph via those crates; no new external crate enters.
 # `mrd attest` (U2.5): attest = realised-gate + pin + receipt. A local CLIENT of

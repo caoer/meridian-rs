@@ -184,7 +184,8 @@ const CLOSE_PATH: &str = "tasks/close.md";
 /// measured both arms — block present vs removed, exit 0 and the same 2 passes
 /// either way.
 fn bare_flip_before() -> String {
-    "---\ntype: task\nstatus: open\nowner: worker-a\n---\n\n# Close\n\nclosing without a verdict.\n".to_string()
+    "---\ntype: task\nstatus: open\nowner: worker-a\n---\n\n# Close\n\nclosing without a verdict.\n"
+        .to_string()
 }
 fn bare_flip_after() -> String {
     "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Close\n\nclosing without a verdict.\n".to_string()
