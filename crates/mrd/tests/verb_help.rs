@@ -345,28 +345,31 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned. Twelve verbs change files or the drawer;
-/// the other fourteen are reads. This is the list a reviewer argues with — if it
-/// changes, it changes here, deliberately.
+/// The classification itself, pinned. Thirteen verbs change files or the
+/// drawer; the other fourteen are reads. This is the list a reviewer argues
+/// with — if it changes, it changes here, deliberately.
 ///
 /// **Was twelve of twenty-six, then eleven of twenty-five when `journal genesis`
 /// was retired with the ledger it reset (U6) — nothing is being reset any more,
-/// so the write it performed had no subject.** It is twelve of twenty-six again
-/// because U9b added `mrd lock migrate`.
+/// so the write it performed had no subject.** It is thirteen of twenty-seven
+/// because TWO units each added a writer, on branches that could not see each
+/// other: U9b's `mrd lock migrate` and U23's `mrd retire mark`. Twelve is what
+/// each of them correctly measured alone; thirteen is the fact only the
+/// assembly can state.
 ///
-/// **That verb is a WRITER, and the reason is not its flag set.** It rewrites
-/// `meridian-lock` blocks in a LIVE VAULT through a governed byte-landing door
-/// (`wire_serve::write::lock_migrate` → `fs::replace_file`). It is in fact the
-/// most write-ish verb here — the only one that rewrites content across a whole
-/// vault in one invocation. `--dry` does not exempt it any more than it exempts
-/// `pin`, `realise`, `reconcile`, `new` or `unfold`, all of which carry the same
-/// flag and are marked. Contrast `mrd test`, which is unmarked because it writes
-/// only into temporary directories — the distinction the sibling test pins.
+/// **Both are WRITERS, and the reason is not their flag set.** `lock migrate`
+/// rewrites `meridian-lock` blocks in a LIVE VAULT through a governed
+/// byte-landing door (`wire_serve::write::lock_migrate` → `fs::replace_file`);
+/// `retire mark` sweeps `~~` markers across the vault's markdown. `--dry` does
+/// not exempt either any more than it exempts `pin`, `realise`, `reconcile`,
+/// `new` or `unfold`, all of which carry the same flag and are marked. Contrast
+/// `mrd test`, which is unmarked because it writes only into temporary
+/// directories — the distinction the sibling test pins.
 ///
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_twelve_of_twenty_six() {
+fn the_write_classification_is_thirteen_of_twenty_seven() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -386,6 +389,7 @@ fn the_write_classification_is_twelve_of_twenty_six() {
             "unregister",
             "put",
             "pin",
+            "retire",
             "cache clean",
             "daemon",
             "run",
