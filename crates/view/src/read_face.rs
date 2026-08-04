@@ -79,7 +79,7 @@ pub const READ_FACE_SCHEMA_SQL: &str = r"
 -- SURFACE means, which is a separate unit's call, not a consequence of retiring
 -- a parser. The comments below still describe the SQL as written.
 --
--- input_lock — the parse projection of each page's `^inputs` lock block. One row
+-- input_lock — the parse projection of each page's `meridian-lock` block. One row
 -- per lock item, exactly as written in the vault bytes (source 1). Distinct from
 -- `edge` (owned by pin: the manifest LEFT-joined with live resolution). Every
 -- row carries the containing page's doc_rev — the rev-compare invalidation key.
@@ -87,7 +87,7 @@ pub const READ_FACE_SCHEMA_SQL: &str = r"
 -- the color plane computed for it, so the board renders the SAME color the walk
 -- renders for the same pin — one question, one answer, on both planes.
 CREATE TABLE input_lock (
-    src_path     TEXT     NOT NULL,   -- [1] page whose ^inputs block declares the item
+    src_path     TEXT     NOT NULL,   -- [1] page whose lock block declares the item
     seq          UBIGINT  NOT NULL,   -- [1] item order within the lock block
     declared_ref TEXT     NOT NULL,   -- [1] the `ref` field, verbatim ('' on a lock-refusal row, which declares no ref)
     to_path      TEXT     NOT NULL,   -- [1] `to` page path (the `ref` path when `to` is absent; '' on a lock-refusal row, which names no target)
@@ -161,7 +161,7 @@ CREATE VIEW board_red AS
         WHERE verdict_color = 'red';
 
 -- board — U5.1's colors layer (d2 §5.3 'colors = board view'; wire-contract-v2
--- colors-amendment § Colors). Exactly ONE color row per `^inputs` edge, in the
+-- colors-amendment § Colors). Exactly ONE color row per lock edge, in the
 -- DEFAULT face, no pack. The color is 'traces read through workflow vocabulary':
 --   green  — the pinned rev the verdict FROZE AT CLOSE still equals the live rev
 --            (nothing drifted since the close);
