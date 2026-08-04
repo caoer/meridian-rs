@@ -12,7 +12,7 @@
 //!   renderer and dry-run blast radius (`--depth 1` = the direct dependents).
 //!
 //! Each reached edge is one [`WalkEntry`] `{selector, rev, color, depth}`, its
-//! color computed by [`model::selector::classify_edge`] (U2.2). Every report
+//! color computed by [`model::selector::classify_pin`] (U2.2). Every report
 //! cites the doc revs it read ([`WalkReport::revs_read`]) — the honesty law
 //! (§2.4: every answer cites the doc revs it read; a walk output is itself a
 //! pinnable fact). In-snapshot cycles are errors ([`WalkError::Cycle`]).
@@ -34,7 +34,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use model::Document;
-use model::selector::{Color, GreyReason, RedReason, Selector, classify_edge, classify_pin};
+use model::selector::{Color, GreyReason, RedReason, Selector, classify_pin};
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
 
@@ -295,11 +295,17 @@ pub fn lock_pin_colors_rooted(
     let mut out = Vec::new();
     for (path, doc) in docs {
         for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
-            if item.fingerprint.is_none() && item.lock_refusal.is_none() {
+            if !item.is_colourable() {
                 // Unreachable under R4 — every pin row carries a fingerprint and
                 // every refusal carries its reason. Kept as a fail-CLOSED guard:
-                // a row that somehow carried neither would be uncolourable, and
+                // a row that somehow carried neither is uncolourable, and
                 // skipping it is the honest answer, not colouring it green.
+                //
+                // The predicate is [`LockItem::is_colourable`] and NOT a local
+                // spelling of it: the board projection reads the SAME one to
+                // decide which rows get a verdict, and its residue disclosure
+                // counts exactly the rows skipped here. Two copies of this
+                // condition could drift with nothing failing.
                 continue;
             }
             out.push(PinColor {
@@ -394,6 +400,8 @@ pub use model::selector::color_tone;
 
 /// The reason word behind a non-green color (`None` for green) — the stable
 /// output reason, shared by the human render and the `--json` shape.
+/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
+/// reason word already says everything.
 ///
 /// Re-exported from [`model::selector`] for the SAME reason [`color_tone`] is:
 /// the §4.6 link plane's refusal rows are minted in `wire-serve`, which cannot
@@ -557,33 +565,28 @@ fn edge_page(edge: &LockItem) -> String {
     }
 }
 
-/// Color one edge with the U2.2 law: parse the target selector, wrap the pinned
-/// rev, and classify against the live target document.
+/// Color one edge: parse the target selector, resolve it against the root the
+/// address named, and answer on the FINGERPRINT plane.
 ///
-/// One check rides ahead of the rev compare: a pin minted under a NAMED
-/// `hash-algo` this engine does not compute (present and not engine-native per
-/// [`model::is_native_algo`] — the `{node-rev, v2}` set) is grey
-/// `superseded-algo` — readable, unverifiable here. A foreign rev can neither
-/// equal a live node-rev (a false green) nor be measured as drift (a false red),
-/// so it renders grey before classification (d2 §6.3; U0.2/U3.4). The v1→v2
-/// supersede keeps the node-rev value under the `v2` contract label, so a `v2`
-/// pin verifies through the SAME compare as `node-rev`. An absent header
-/// defaults to native (the engine mints `node-rev`); a declared-only item (no
-/// rev) has no algo to supersede — it stays declared-unpinned grey.
-///
-/// Two rows never reach the rev compare, because neither declares a
-/// `node_rev`-comparable edge:
+/// Three rows are answered before the fingerprint compare, each because it
+/// declares no verifiable edge at all:
 ///
 /// - a **lock-refusal row** ([`LockItem::lock_refusal`]) — the page's whole
 ///   `meridian-lock` block is unreadable, so it is grey `lock-refused` with the
-///   refusal carried; and
-/// - a **`meridian-lock` pin** (form-3), which pins a `fp1.…` CID-token. That
-///   token is not `node_rev`-comparable in either direction, so the FINGERPRINT
-///   plane answers it ([`model::selector::classify_pin`] over
-///   [`LockItem::fingerprint`], the typed slot) — the same address law, a
-///   different compare. Before this, such a pin fell into the foreign-algo
-///   short-circuit below and rendered grey `superseded-algo` — visible but
-///   permanently unverified.
+///   refusal carried;
+/// - an **unmounted / unseeable root** ([`LockItem::root_refusal`]) — grey
+///   outranks red (R-3), because nothing drifted; the ledger stopped being able
+///   to measure; and
+/// - a **`meridian-lock` pin** (form-3), which pins a `fp1.…` CID-token
+///   answered by [`model::selector::classify_pin`] over
+///   [`LockItem::fingerprint`], the typed slot.
+///
+/// **The retired foreign-algo short-circuit.** A pin minted under a `hash-algo`
+/// this engine does not compute used to render grey `superseded-algo` ahead of
+/// the `node_rev` compare. R4 removed both: every pin now carries a
+/// self-describing `fp1.…` token, so the FINGERPRINT plane owns that case and
+/// spells it `unverifiable-fingerprint`, NAMING which triple member is unknown.
+/// The subject moved planes; it was not dropped.
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
@@ -636,16 +639,29 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(token) = &edge.fingerprint {
         return classify_pin(&selector, token, target);
     }
-    if edge.pinned_rev.is_some()
-        && edge
-            .hash_algo
-            .as_deref()
-            .is_some_and(|a| !model::is_native_algo(a))
-    {
-        return Color::Grey(GreyReason::SupersededAlgo);
-    }
-    let pinned = edge.pinned_rev.as_ref().map(|r| model::NodeRev(r.clone()));
-    classify_edge(&selector, pinned.as_ref(), target)
+    // **THE FAIL-CLOSED TAIL.** Arms 1-3 are the whole colour law for a lock
+    // row: a refusal, an unmounted root, or a fingerprint. Reaching here means
+    // the row carried NONE of them — it names no evidence and reports no failure
+    // to read any, so neither plane has a compare that can answer it.
+    //
+    // **GUARDED AT ONE POINT — not impossible.** Every R4 pin row carries a
+    // fingerprint and every refusal carries its reason, which is what makes this
+    // unreachable from live input. That invariant is ONE PARSER RULE with ONE
+    // TEST on it:
+    // `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`
+    // (`crates/lock/src/lib.rs`). One rule, one carrier — a single point of
+    // failure stated as one, so the next reader inherits "guarded at one point"
+    // rather than "cannot happen".
+    //
+    // **DO NOT DELETE THIS ARM AS DEAD CODE.** Its live population is zero
+    // because arms 1 and 3 are jointly exhaustive over the two `LockItem`
+    // producers (`read_face::collect_lock_pins`) — that answers "can a row reach
+    // here TODAY", NOT "is the tail unreachable in principle". Two of
+    // `edge_color`'s three callers (`steps_from`, both directions) do not filter,
+    // so the arm is structurally reachable; and the function must yield a
+    // `Color`, so removing it makes the fall-through green — a fail-OPEN default
+    // on a reachable path, reporting success.
+    Color::Grey(GreyReason::Uncolourable)
 }
 
 /// Translate R4's structural selector into the model's address selector — the
@@ -1006,19 +1022,32 @@ mod tests {
             color_label(&Color::Grey(GreyReason::ImmutableRoot)),
             "grey immutable-root"
         );
-        assert_eq!(
-            color_tone(&Color::Grey(GreyReason::DeclaredUnpinned)),
-            "grey"
-        );
+        assert_eq!(color_tone(&Color::Grey(GreyReason::Uncolourable)), "grey");
         assert_eq!(
             color_reason(&Color::Red(RedReason::SelectorUnresolved {
                 candidates: vec![]
             })),
             Some("selector-unresolved")
         );
-        assert_eq!(
-            color_label(&Color::Grey(GreyReason::SupersededAlgo)),
-            "grey superseded-algo"
+    }
+
+    /// The fail-closed sentinel renders its own indictment, not a fact about a
+    /// target — condition 3 of the bronze act. A reader who meets this line must
+    /// learn from the LINE that it is a defect, without consulting a doc comment.
+    #[test]
+    fn uncolourable_render_says_its_appearance_is_the_defect() {
+        let label = color_label(&Color::Grey(GreyReason::Uncolourable));
+        assert!(
+            label.starts_with("grey uncolourable ("),
+            "the sentinel keeps the tone/reason shape every other colour uses: {label}"
+        );
+        assert!(
+            label.contains("itself the defect"),
+            "the rendered text must say its own appearance is the finding: {label}"
+        );
+        assert!(
+            label.contains("neither a fingerprint nor a refusal"),
+            "and must name the row shape that produced it: {label}"
         );
     }
 

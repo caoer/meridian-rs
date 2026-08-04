@@ -771,6 +771,14 @@ fn unwrap_wikilink(raw: &str) -> Option<String> {
     (!inner.is_empty()).then(|| inner.to_string())
 }
 
+/// The refusal a pin row earns by omitting `hash`. Named because d2 §5.3's
+/// carrier asserts this exact spelling — a refusal test that does not name its
+/// refusal cannot tell its own case from a neighbouring one.
+pub const MISSING_HASH: &str = "pin row needs `    hash: \"…\"` after its object";
+
+/// The refusal a pin row earns by omitting `fingerprint`. See [`MISSING_HASH`].
+pub const MISSING_FINGERPRINT: &str = "pin row needs `    fingerprint: \"…\"` after its selector";
+
 /// One required `    <name>: "<value>"` continuation line. `row` is the line
 /// the pin row opened on — what a truncated row is blamed on.
 fn read_field(it: &mut BodyIter<'_>, name: &'static str, row: usize) -> Result<String, LockError> {
@@ -785,8 +793,8 @@ fn read_field(it: &mut BodyIter<'_>, name: &'static str, row: usize) -> Result<S
         return Err(LockError::Malformed {
             line: n,
             reason: match name {
-                "hash" => "pin row needs `    hash: \"…\"` after its object",
-                _ => "pin row needs `    fingerprint: \"…\"` after its selector",
+                "hash" => MISSING_HASH,
+                _ => MISSING_FINGERPRINT,
             },
         });
     };
@@ -1047,6 +1055,15 @@ mod tests {
     /// a colour, never compute one.
     #[test]
     fn a_pin_row_missing_a_mandatory_field_refuses_at_parse() {
+        // TWO pins, and the mutation is always applied to the FIRST — so the
+        // dropped field is followed by MORE ROW, never by the end of the block.
+        //
+        // This is load-bearing, and it was measured rather than assumed. With a
+        // ONE-pin fixture, `fingerprint` is the row's LAST field, so dropping it
+        // refuses with `pin row ended before its required fields` — the generic
+        // TRUNCATION rule, which is a different law from "fingerprint is
+        // mandatory". The test still went red, so it looked like a proof; it was
+        // resting on the wrong rule and could not have told the two apart.
         let complete = format!(
             "```meridian-lock\n\
              version: 2\n\
@@ -1055,13 +1072,18 @@ mod tests {
              \x20   hash: \"13c3550f41b5796dd0\"\n\
              \x20   path: [\"Findings\"]\n\
              \x20   fingerprint: \"{}\"\n\
+             \x20 - object: \"[[scratch]]\"\n\
+             \x20   hash: \"9f2c1a77b0e4d3a512\"\n\
+             \x20   path: [\"Notes\"]\n\
+             \x20   fingerprint: \"{}\"\n\
              ```",
-            fp("ab")
+            fp("ab"),
+            fp("cd")
         );
 
-        // The positive control: the complete row parses, and to ONE pin.
-        let ok = parse(&complete).expect("the complete R4 row is legal");
-        assert_eq!(ok.pins.len(), 1, "the control row parses to one pin");
+        // The positive control: the complete block parses, and to TWO pins.
+        let ok = parse(&complete).expect("the complete R4 rows are legal");
+        assert_eq!(ok.pins.len(), 2, "the control block parses to two pins");
 
         // Drop `fingerprint` from that same row — it must refuse, not default.
         let no_fingerprint = complete
@@ -1069,11 +1091,21 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("fingerprint:"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            parse(&no_fingerprint).is_err(),
-            "a pin row without a fingerprint asserts nothing and must refuse, \
-             never parse to a row a reader could colour: {no_fingerprint}"
-        );
+        // NAMING the refusal, not just demanding one: a bare `is_err()` passes
+        // when the fixture trips some OTHER refusal, which is a refusal test
+        // that cannot tell its own case from a neighbouring one. The reason
+        // string is what pins this to the fingerprint requirement.
+        match parse(&no_fingerprint) {
+            Err(LockError::Malformed { reason, .. }) => assert_eq!(
+                reason, MISSING_FINGERPRINT,
+                "the refusal must name the FINGERPRINT requirement, not some \
+                 other parse failure that happens to also refuse: {no_fingerprint}"
+            ),
+            other => panic!(
+                "a pin row without a fingerprint asserts nothing and must refuse, \
+                 never parse to a row a reader could colour: {other:?}"
+            ),
+        }
 
         // Drop `hash` from that same row — it must refuse too.
         let no_hash = complete
@@ -1081,11 +1113,16 @@ mod tests {
             .filter(|l| !l.trim_start().starts_with("hash:"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            parse(&no_hash).is_err(),
-            "\"if hash is missing, we lost the explicit target meaning\" — the \
-             grammar refuses rather than pinning a target it cannot name: {no_hash}"
-        );
+        match parse(&no_hash) {
+            Err(LockError::Malformed { reason, .. }) => assert_eq!(
+                reason, MISSING_HASH,
+                "the refusal must name the HASH requirement: {no_hash}"
+            ),
+            other => panic!(
+                "\"if hash is missing, we lost the explicit target meaning\" — the \
+                 grammar refuses rather than pinning a target it cannot name: {other:?}"
+            ),
+        }
     }
 
     /// The canonical byte form, pinned literal — R4's v2 shape.

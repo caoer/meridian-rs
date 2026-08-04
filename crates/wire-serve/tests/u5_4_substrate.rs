@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path as FsPath;
 
-use model::selector::{Color, RedReason, Selector, classify_edge};
+use model::selector::{Color, RedReason, Selector, resolve_selector};
 use model::{
     CorpusIndex, Document, HpathSeg as MHpathSeg, NodeRev, Ref, SpliceRequest, SpliceVerdict,
 };
@@ -114,11 +114,8 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     assert!(after_raw.contains("# Bar"), "heading renamed to Bar");
     assert!(!after_raw.contains("# Foo"), "the old heading text is gone");
 
-    let hpath_color = classify_edge(
-        &Selector::Heading(vec!["Foo".to_string()]),
-        Some(&pinned_hpath),
-        Some(&after),
-    );
+    let hpath_color = resolve_selector(&Selector::Heading(vec!["Foo".to_string()]), Some(&after))
+        .expect_err("the renamed heading no longer resolves");
     assert!(
         matches!(
             hpath_color,
@@ -127,15 +124,11 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
         "an hpath pin to the renamed heading must render red(selector-unresolved): {hpath_color:?}"
     );
 
-    let block_color = classify_edge(
-        &Selector::Block("abc".to_string()),
-        Some(&pinned_block),
-        Some(&after),
-    );
+    let (_, block_target) = resolve_selector(&Selector::Block("abc".to_string()), Some(&after))
+        .expect("the ^abc anchor still resolves after the rename");
     assert_eq!(
-        block_color,
-        Color::Green,
-        "a body-^block-id pin is unaffected by a heading rename (stays green)"
+        block_target.node_rev, pinned_block,
+        "a body-^block-id pin is unaffected by a heading rename (its rev still equals the pin)"
     );
 
     // Rename back: heading-inclusive rev → exact restore greens hpath pin.
@@ -145,14 +138,12 @@ fn gate1_heading_rename_preserves_block_ids_and_reddens_hpath_pins() {
     let restored_raw = read(&root, "page.md");
     assert_eq!(restored_raw, original, "renaming back is byte-identical");
     let restored = build_doc(&restored_raw);
+    let (_, restored_target) =
+        resolve_selector(&Selector::Heading(vec!["Foo".to_string()]), Some(&restored))
+            .expect("the restored heading resolves again");
     assert_eq!(
-        classify_edge(
-            &Selector::Heading(vec!["Foo".to_string()]),
-            Some(&pinned_hpath),
-            Some(&restored),
-        ),
-        Color::Green,
-        "the restored heading greens the original hpath pin"
+        restored_target.node_rev, pinned_hpath,
+        "the restored heading matches the original hpath pin's rev again"
     );
     assert!(
         restored_raw.contains("^abc"),

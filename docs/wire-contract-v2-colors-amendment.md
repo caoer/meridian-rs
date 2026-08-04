@@ -52,17 +52,27 @@ phrasing, used by every surface.
 
 | grey class | when | never renders |
 |---|---|---|
-| `declared-unpinned` | an `inputs:` ref is declared but `pinned_rev` is NULL — never pinned | red / green — the first pin is how grey turns green |
+| `declared-unpinned` | an `inputs:` ref is declared but `pinned_rev` is NULL — never pinned. **NO RENDERING SITE in the shipped engine** — R1.3 retired `inputs` as vocabulary AND as storage key, so the trigger condition is unrepresentable and `model::selector::GreyReason` has no `DeclaredUnpinned` variant. Recorded, not retired: the name is ratified and R1.3 is what removed its subject, not this act | red / green — the first pin is how grey turns green |
 | `ambiguous` | the pinned selector resolves to MORE than one node, so no single node's rev can answer the compare | red / green |
-| `superseded-algo` | pinned under a `hash_algo` this engine does not compute — readable, unverifiable here | red / green-with-tag |
+| `superseded-algo` | pinned under a `hash_algo` this engine does not compute — readable, unverifiable here. **NO RENDERING SITE in the shipped engine — THE SUBJECT MOVED PLANES, it was not dropped.** Under R4 every pin carries a self-describing `fp1.…` token, so the foreign-algo case is answered by the FINGERPRINT plane and spelled `unverifiable-fingerprint`, which names WHICH triple member is unknown. The destination says so in its own words: `GreyReason::UnverifiableFingerprint`'s doc comment calls itself *"The fingerprint plane's `superseded-algo`"*. Recorded, not retired | red / green-with-tag |
 | `immutable-root` | a `session-id#seq-N` transcript hop — recognized, not verified; the address class cannot drift by construction (§2.2) | red / green |
 | `unverifiable-fingerprint` | a `meridian-lock` pin whose fingerprint token PARSES but whose `version.codec.hashfn` triple names a member this build does not implement. The render names WHICH member is unknown, never the live-looking triple | red / green |
 | `malformed-fingerprint` | the pinned value is not a fingerprint token at all — wrong field count, empty field, or an out-of-charset digest | red / green |
 | `lock-refused` | the page's `meridian-lock` block itself is unreadable (malformed, unsupported version, or more than one block on the page), so the pins it declares are outside sight. The row carries the refusal reason verbatim, because a corrupt lock must never read as "no pins" | red / green |
-| `unmanaged` | the target sits outside the ledger's sight. **NO RENDERING SITE in the shipped engine** — this case renders `declared-unpinned` today (`model::selector::GreyReason` has no `Unmanaged` variant). Recorded, not retired: the name is ratified and its site is an open question, not a resolved one | red / green |
+| `unmanaged` | the target sits outside the ledger's sight. **NO RENDERING SITE in the shipped engine** (`model::selector::GreyReason` has no `Unmanaged` variant). The clause that said *"this case renders `declared-unpinned` today"* was TRUE WHEN WRITTEN and then went stale: cross-root addressing gave outside-sight its own variants, `Unmounted { root }` and `PathUnseeable { .. }`, and nobody re-ran the line. It is struck here rather than repaired, because `DeclaredUnpinned` no longer exists to render. **`unmanaged`'s open question STAYS OPEN** — it stopped blocking a sweep; it was not answered, and those are not the same | red / green |
+| `uncolourable` | a lock row carrying NEITHER a fingerprint NOR a refusal — it names no evidence and reports no failure to read any, so no compare on either plane can answer it. **Fail-closed sentinel**: unreachable from live input under R4, guarded at ONE point — the parser rule carried by `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`, one rule with one test on it. **If this class ever renders, the render is ITSELF the finding**, and the rendered line says so in its own words | red / green — it is not a fact about the target |
 
-A grey edge is exactly one of these, named — SEVEN rendered classes, plus
-`unmanaged`, which is a ratified contract name awaiting a rendering site. Greys
+A grey edge is exactly one of these, named. Three rows above —  `unmanaged`,
+`declared-unpinned` and `superseded-algo` — are ratified contract names with NO
+rendering site; each row says which decision removed its subject.
+
+**This section states no COUNT of the rendered classes, deliberately.** It has
+carried a wrong one twice (see the correction record below), and a count here is
+a second, hand-maintained copy of something the code already owns:
+`view::walk::color_reason` is an exhaustive match over the colour enum with no
+wildcard arm, so a class cannot exist without a label and cannot be added
+without breaking the build. A number in this prose can only ever go stale
+against it. Greys
 that belong to OTHER axes — the genesis-epoch write (enforcement axis), the
 between-runs directory shape (fs-frontier axis), the `test --history` class-C
 (history-fidelity axis) — are NOT pin colors and are governed by their own units,
@@ -71,6 +81,44 @@ not by this enumeration.
 **EXTENSION RULE.** The pin-axis grey enumeration is OPEN and is extended by
 ratified unit decisions, each recorded in this table when it lands — so a later
 reader extends the list here instead of re-litigating a stale exhaustive claim.
+
+### Amendment record — U9c, tier BRONZE, GOVERNING NOT SETTLED
+
+**Challengeable at U25.** This row and the interpretive ruling under it are a
+READING, not a fact, and they are recorded as one so U25 can reject them without
+having to reconstruct what was decided.
+
+**What landed.** `edge_color`'s two trailing arms — the foreign-algo
+short-circuit and the `node_rev`-compare fall-through — collapsed into ONE
+explicit fail-closed arm returning the new grey `uncolourable`. Both arms landed
+in a single change deliberately: deleting the first alone would have widened the
+fall-through before anything decided what the fall-through IS. `DeclaredUnpinned`,
+`SupersededAlgo` and `classify_edge` died inside that collapse.
+
+**The class.** A fail-closed sentinel for a lock row carrying neither
+fingerprint nor refusal. Unreachable from live input under R4, **guarded at ONE
+point** — the parser rule carried by
+`lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`, one rule with one
+test on it. That is a single point of failure stated as one, not a claim of
+impossibility. **If the class ever renders, the render is itself the finding**,
+and the rendered line says so in its own words rather than leaving it here.
+
+**THE INTERPRETIVE STEP, stated so it can be challenged as itself.** Advisor
+ruling: **SITE in this section means A REACHABLE RENDERING PATH.** The section
+enumerates RENDERED classes, so a variant plus an arm that no input can reach
+cannot produce a render and is therefore not a site in the sense this
+enumeration counts. On that reading `declared-unpinned` and `superseded-algo`
+were already false at the revision this act began, for stated reasons — R1.3
+retired the first's trigger plane, R4 moved the second's subject — so the act is
+the record catching up to decisions already ratified, which is this tier's
+charter. **On the competing reading — that a variant plus an arm IS a site
+regardless of reachability — those two rows are open.** That reading was put and
+ruled against, on measured evidence; it is recorded here because a ruling whose
+alternative is unrecorded cannot be re-examined.
+
+**What this act did NOT decide.** `unmanaged`'s open question stays open. Its
+stale clause is struck because its referent was deleted, which is not the same as
+answering it.
 
 ### Correction record (stage-2, tier BRONZE)
 

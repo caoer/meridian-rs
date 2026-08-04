@@ -43,15 +43,20 @@ CREATE TABLE node (
     PRIMARY KEY (path, selector, span_start)
 );
 
--- edge — one row per manifest item (a doc's `^inputs`). Manifest LEFT-joined
--- with the lock: pinned_rev NULL = declared-only (grey). Populated by the
--- pin/lock reader (a later Block-2 unit); the contract is fixed here.
+-- edge — one row per pin row of a doc's `meridian-lock` block. Populated by the
+-- pin/lock reader; the contract is fixed here.
+--
+-- R1.3 corrected the SOURCE named here, not the table: these rows came from the
+-- legacy `^inputs` manifest when this comment was written. The
+-- `pinned_rev NULL = declared-only (grey)` reading went with it — under R4 a pin
+-- row carries a mandatory fingerprint, so `declared, never pinned` is not a
+-- state a row can be in.
 CREATE TABLE edge (
-    src_path    TEXT     NOT NULL,  -- [1] the page whose `^inputs` declares the ref
-    declared_ref TEXT    NOT NULL,  -- [1] the ref as written in the manifest
+    src_path    TEXT     NOT NULL,  -- [1] the page whose lock declares the ref
+    declared_ref TEXT    NOT NULL,  -- [1] the ref as written in the lock
     to_path     TEXT,               -- [2] pin-time resolved path (NULL = unresolved)
     to_sel      TEXT,               -- [2] pin-time resolved selector
-    pinned_rev  TEXT,               -- [2] the rev recorded in the lock (NULL = declared-only -> grey)
+    pinned_rev  TEXT,               -- [2] the rev recorded in the lock
     rev_class   TEXT,               -- [2] 'content' (fingerprint token) | 'object' (git object id)
     hash_algo   TEXT                -- [2] the hash algo the pin was taken under
 );
@@ -103,7 +108,7 @@ pub fn build_facts_memory(
 /// tags) carry no independent selector and are not node rows.
 ///
 /// `pub(crate)` so the U2.9 read face ([`crate::read_face`]) can project `node`
-/// into the SAME connection as its `^inputs`/board projections (board reds join
+/// into the SAME connection as its lock-pin/board projections (board reds join
 /// `input_lock` against `node`), never a second store.
 pub(crate) fn project_nodes(
     conn: &Connection,
