@@ -99,8 +99,14 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, declared_ref: &str) -> String {
 fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     let (_dir, root) = workspace();
 
-    let out =
-        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
+    let out = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect("pin commits");
     let fact = pin_fact(&out.body);
 
     assert_eq!(
@@ -203,8 +209,14 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
 #[test]
 fn the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string() {
     let (_dir, root) = workspace();
-    let out =
-        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
+    let out = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect("pin commits");
     let fact = pin_fact(&out.body);
     assert_eq!(
         fact.selector,
@@ -261,7 +273,7 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
     )
     .expect("a heading whose raw text opens with a caret");
 
-    let err = splice(&root, 0, &pin_args("Guide/^Alpha Beta"), &[], None)
+    let err = splice(&root, None, &pin_args("Guide/^Alpha Beta"), &[], None)
         .expect_err("an ambiguous path array must refuse");
 
     assert_eq!(err.code, ErrorCode::BadRequest);
@@ -316,8 +328,14 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
 #[test]
 fn the_pin_fact_key_set_is_pinned_and_blob_is_now_always_present() {
     let (_dir, root) = workspace();
-    let out =
-        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
+    let out = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect("pin commits");
     let fact = pin_fact(&out.body);
 
     let serde_json::Value::Object(map) = serde_json::to_value(&fact).expect("PinFact serializes")
@@ -359,8 +377,14 @@ fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
     let before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
     let sibling_before = live_fingerprint(&root, "guide.md#Guide/Other");
 
-    let out =
-        splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None).expect("pin commits");
+    let out = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect("pin commits");
     let fact = pin_fact(&out.body);
     assert!(fact.promoted);
 
@@ -386,16 +410,28 @@ fn promotion_is_rev_neutral_for_the_pinned_fingerprint() {
 fn a_re_pin_reuses_the_same_slug_and_promotes_nothing() {
     let (_dir, root) = workspace();
     let first = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-            .unwrap()
-            .body,
+        &splice(
+            &root,
+            None,
+            &pin_args("Guide/Leader's Guideline"),
+            &[],
+            None,
+        )
+        .unwrap()
+        .body,
     );
     let target_after_first = read_page(&root, "guide.md");
 
     let second = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-            .unwrap()
-            .body,
+        &splice(
+            &root,
+            None,
+            &pin_args("Guide/Leader's Guideline"),
+            &[],
+            None,
+        )
+        .unwrap()
+        .body,
     );
 
     assert_eq!(second.anchor, first.anchor, "same slug, recomputed");
@@ -424,8 +460,14 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
     let pinner_before = read_page(&root, "plan.md");
     let fp_before = live_fingerprint(&root, "guide.md#Guide/Leader's Guideline");
 
-    let err = splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-        .expect_err("a corrupt lock refuses the pin");
+    let err = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect_err("a corrupt lock refuses the pin");
     assert_eq!(err.code, ErrorCode::BadRequest);
 
     assert_eq!(
@@ -446,9 +488,15 @@ fn a_corrupt_lock_refuses_the_pin_and_leaves_no_orphan_behind() {
 
     std::fs::write(root.0.join("plan.md"), PINNER).expect("repair");
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-            .unwrap()
-            .body,
+        &splice(
+            &root,
+            None,
+            &pin_args("Guide/Leader's Guideline"),
+            &[],
+            None,
+        )
+        .unwrap()
+        .body,
     );
     assert!(
         fact.promoted,
@@ -475,9 +523,15 @@ fn a_crash_orphan_is_benign_and_a_re_pin_reuses_it() {
     );
 
     let healed = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-            .unwrap()
-            .body,
+        &splice(
+            &root,
+            None,
+            &pin_args("Guide/Leader's Guideline"),
+            &[],
+            None,
+        )
+        .unwrap()
+        .body,
     );
     assert_eq!(healed.anchor, "leaders-guideline", "the orphan is REUSED");
     assert!(!healed.promoted, "so no second marker is written");
@@ -531,7 +585,7 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
     let store = receipt::read_mint::ReadMintStore::new();
     let args = agent_pin_args("agent-7", "Guide/Leader's Guideline");
 
-    let err = splice(&root, 0, &args, &[], Some(&store)).expect_err("un-read pin refuses");
+    let err = splice(&root, None, &args, &[], Some(&store)).expect_err("un-read pin refuses");
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
     assert_eq!(err.recovery, Recovery::Fix, "the caller reads, then pins");
     assert_eq!(err.path, Some(WPath("guide.md".into())));
@@ -553,7 +607,7 @@ fn the_gate_refuses_an_unread_pin_and_admits_it_after_a_covering_read() {
         "Guide/Leader's Guideline",
     );
     assert_eq!(store.len(), 1, "the read minted one receipt");
-    let out = splice(&root, 0, &args, &[], Some(&store)).expect("the read-backed pin commits");
+    let out = splice(&root, None, &args, &[], Some(&store)).expect("the read-backed pin commits");
     assert_eq!(
         pin_fact(&out.body).fingerprint,
         live_fingerprint(&root, "guide.md#Guide/Leader's Guideline")
@@ -577,7 +631,7 @@ fn another_actors_read_and_a_sibling_sections_read_both_fail_the_gate() {
 
     let err = splice(
         &root,
-        0,
+        None,
         &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
@@ -593,7 +647,7 @@ fn a_host_with_no_session_refuses_an_actor_pin_and_says_why() {
     let (_dir, root) = workspace();
     let err = splice(
         &root,
-        0,
+        None,
         &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         None,
@@ -630,7 +684,7 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
 
     let err = splice(
         &root,
-        0,
+        None,
         &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
@@ -655,7 +709,7 @@ fn a_rev_change_between_read_and_pin_is_a_write_conflict_not_a_silent_pin() {
     );
     splice(
         &root,
-        0,
+        None,
         &agent_pin_args("agent-7", "Guide/Leader's Guideline"),
         &[],
         Some(&store),
@@ -677,7 +731,7 @@ fn an_anchor_selector_is_pinned_at_block_grain_with_no_promotion() {
     .expect("anchored target");
 
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("^claim"), &[], None)
+        &splice(&root, None, &pin_args("^claim"), &[], None)
             .unwrap()
             .body,
     );
@@ -719,11 +773,11 @@ fn a_missing_target_or_selector_refuses_pin_target_missing() {
 
     let mut ghost = pin_args("Guide/Leader's Guideline");
     ghost.pin.as_mut().expect("pin").target = WPath("nope.md".into());
-    let err = splice(&root, 0, &ghost, &[], None).expect_err("no such page");
+    let err = splice(&root, None, &ghost, &[], None).expect_err("no such page");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
     assert_eq!(err.recovery, Recovery::Fix);
 
-    let err = splice(&root, 0, &pin_args("Guide/No Such Section"), &[], None)
+    let err = splice(&root, None, &pin_args("Guide/No Such Section"), &[], None)
         .expect_err("no such selector");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
     // The teaching is unchanged in intent; only its spelling moved off the
@@ -745,7 +799,7 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     let repo = git::Repo::at(dir.path().to_path_buf());
 
     let normal = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Other"), &[], None)
+        &splice(&root, None, &pin_args("Guide/Other"), &[], None)
             .unwrap()
             .body,
     );
@@ -757,7 +811,7 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
 
     let mut vibe = pin_args("Guide/Other");
     vibe.pin.as_mut().expect("pin").vibe = Some(true);
-    let eager = pin_fact(&splice(&root, 0, &vibe, &[], None).unwrap().body);
+    let eager = pin_fact(&splice(&root, None, &vibe, &[], None).unwrap().body);
     let eager_oid = eager.blob.clone().expect("oid written");
     assert!(
         repo.object_exists(&eager_oid).expect("git answers"),
@@ -773,7 +827,7 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
 #[test]
 fn without_git_the_pin_refuses_because_r4_admits_no_hashless_row() {
     let (_dir, root) = bare_workspace();
-    let err = splice(&root, 0, &pin_args("Guide/Other"), &[], None)
+    let err = splice(&root, None, &pin_args("Guide/Other"), &[], None)
         .expect_err("no repo, no oid, no legal R4 pin");
 
     assert_eq!(err.code, ErrorCode::IoError);
@@ -796,7 +850,7 @@ fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
     let mut args = pin_args("Guide/Leader's Guideline");
     args.dry = true;
 
-    let out = splice(&root, 0, &args, &[], None).expect("dry rehearses");
+    let out = splice(&root, None, &args, &[], None).expect("dry rehearses");
     let fact = pin_fact(&out.body);
     assert!(fact.promoted, "it reports what a real run would write");
     assert_eq!(
@@ -813,12 +867,18 @@ fn a_dry_pin_writes_neither_the_lock_nor_the_promotion() {
 fn a_second_pin_unions_into_the_existing_lock_block() {
     let (_dir, root) = workspace();
     let first = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-            .unwrap()
-            .body,
+        &splice(
+            &root,
+            None,
+            &pin_args("Guide/Leader's Guideline"),
+            &[],
+            None,
+        )
+        .unwrap()
+        .body,
     );
     let second = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Other"), &[], None)
+        &splice(&root, None, &pin_args("Guide/Other"), &[], None)
             .unwrap()
             .body,
     );
@@ -859,7 +919,7 @@ fn a_pin_rides_alongside_caller_edits_in_one_batch() {
         if_node_rev: None,
     }];
 
-    let out = splice(&root, 0, &args, &[], None).expect("content + lock commit together");
+    let out = splice(&root, None, &args, &[], None).expect("content + lock commit together");
     let ResponseBody::Splice { armed, .. } = &out.body else {
         panic!("splice body");
     };
@@ -891,7 +951,7 @@ fn a_page_can_pin_its_own_section() {
     args.pin.as_mut().expect("pin").target = WPath("plan.md".into());
 
     let fact = pin_fact(
-        &splice(&root, 0, &args, &[], None)
+        &splice(&root, None, &args, &[], None)
             .expect("self-pin commits")
             .body,
     );
@@ -927,7 +987,7 @@ fn a_self_pin_of_the_section_holding_the_lock_refuses() {
     let mut args = pin_args("Plan");
     args.pin.as_mut().expect("pin").target = WPath("plan.md".into());
 
-    let err = splice(&root, 0, &args, &[], None).expect_err("unverifiable by construction");
+    let err = splice(&root, None, &args, &[], None).expect_err("unverifiable by construction");
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(
         err.message
@@ -952,8 +1012,14 @@ fn a_taken_slug_refuses_rather_than_minting_a_duplicate_id() {
     )
     .expect("pre-taken slug");
 
-    let err = splice(&root, 0, &pin_args("Guide/Leader's Guideline"), &[], None)
-        .expect_err("the slug is taken");
+    let err = splice(
+        &root,
+        None,
+        &pin_args("Guide/Leader's Guideline"),
+        &[],
+        None,
+    )
+    .expect_err("the slug is taken");
     assert_eq!(err.code, ErrorCode::BadRequest);
     assert!(
         err.message
@@ -976,7 +1042,7 @@ fn a_trailing_whitespace_heading_promotes_rev_neutrally() {
     let before = live_fingerprint(&root, "guide.md#Guide/Padded Title");
 
     let fact = pin_fact(
-        &splice(&root, 0, &pin_args("Guide/Padded Title"), &[], None)
+        &splice(&root, None, &pin_args("Guide/Padded Title"), &[], None)
             .unwrap()
             .body,
     );
@@ -1001,7 +1067,7 @@ fn a_stale_world_guard_refuses_before_the_promotion() {
     let mut args = pin_args("Guide/Leader's Guideline");
     args.if_root = Some(wire::Root("b3:deadbeef".into()));
 
-    let err = splice(&root, 0, &args, &[], None).expect_err("stale plan refuses");
+    let err = splice(&root, None, &args, &[], None).expect_err("stale plan refuses");
     assert_eq!(err.code, ErrorCode::RootMismatch);
     assert_eq!(read_page(&root, "guide.md"), TARGET, "no promotion");
     assert_eq!(read_page(&root, "plan.md"), PINNER, "no lock");
@@ -1015,7 +1081,7 @@ fn a_fresh_world_guard_survives_the_pins_own_root_advance() {
     let mut args = pin_args("Guide/Leader's Guideline");
     args.if_root = Some(live.clone());
 
-    let out = splice(&root, 0, &args, &[], None).expect("the guarded pin commits");
+    let out = splice(&root, None, &args, &[], None).expect("the guarded pin commits");
     let ResponseBody::Splice {
         root_before,
         root_after,
@@ -1100,7 +1166,7 @@ fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
         vibe: None,
     });
 
-    let out = splice(&root, 0, &args, &[], None)
+    let out = splice(&root, None, &args, &[], None)
         .expect("a `/`-bearing heading pins — the refusal that blocked it is lifted");
     let fact = pin_fact(&out.body);
 
@@ -1143,10 +1209,10 @@ fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
     // POSITIVE CONTROL first (all-hands #2): the same coat, same fixture, a
     // heading with no `/` — so the miss below is attributable to the SPLIT and
     // not to a broken fixture, a wrong path, or a workspace with no headings.
-    splice(&root, 0, &pin_args("Guide"), &[], None)
+    splice(&root, None, &pin_args("Guide"), &[], None)
         .expect("the coat addresses an ordinary heading in this very fixture");
 
-    let err = splice(&root, 0, &pin_args("Guide/A/B"), &[], None)
+    let err = splice(&root, None, &pin_args("Guide/A/B"), &[], None)
         .expect_err("the coat splits on `/`, so this address resolves to nothing");
     assert_eq!(
         err.code,

@@ -403,7 +403,7 @@ mod scenarios {
         let (dir, root) = armed_block_ws();
         // The caller hands the EMPTY set (`&[]`) — it cannot weaken the decision;
         // the gate reads the workspace's OWN attested artifact.
-        let err = create(&root, 0, &owner_self_create("agent:alice"), &[])
+        let err = create(&root, None, &owner_self_create("agent:alice"), &[])
             .expect_err("owner self-close on an armed block workspace must refuse");
         assert_eq!(err.code, ErrorCode::ConventionFault);
         assert_eq!(err.recovery, Recovery::Env);
@@ -417,7 +417,7 @@ mod scenarios {
     #[test]
     fn s5_refusal_names_the_rule_id_and_cites_the_passing_case() {
         let (_dir, root) = armed_block_ws();
-        let err = create(&root, 0, &owner_self_create("agent:alice"), &[]).unwrap_err();
+        let err = create(&root, None, &owner_self_create("agent:alice"), &[]).unwrap_err();
         let msg = err.message.as_deref().unwrap_or("");
         assert!(
             msg.contains("reviewer.not-owner"),
@@ -440,7 +440,7 @@ mod scenarios {
         let (dir, root) = armed_block_ws();
         let mut args = owner_self_create("agent:bob");
         args.body = "---\nowner: agent:alice\nstatus: closed\n---\n# Task\n\nbody\n".into();
-        create(&root, 0, &args, &[]).expect("a reviewer distinct from the owner may close");
+        create(&root, None, &args, &[]).expect("a reviewer distinct from the owner may close");
         assert!(
             dir.path().join("tasks/newtask.md").exists(),
             "the write landed"
@@ -452,7 +452,7 @@ mod scenarios {
     fn s3_never_armed_is_byte_identical_no_op() {
         // Control: a workspace with no rules at all.
         let (ctrl_dir, ctrl) = tmp_ws();
-        create(&ctrl, 0, &owner_self_create("agent:alice"), &[]).expect("control create lands");
+        create(&ctrl, None, &owner_self_create("agent:alice"), &[]).expect("control create lands");
         let control_bytes = std::fs::read(ctrl_dir.path().join("tasks/newtask.md")).unwrap();
 
         // Subject: an armed BLOCK rule page AND its artifact on disk, but NO marker
@@ -466,7 +466,7 @@ mod scenarios {
             &artifact_for(&[(RULE_PATH, RULE_PAGE, "reviewer.not-owner", Mode::Block)]),
         );
         // (no set_marker — never armed)
-        let out = create(&root, 0, &owner_self_create("agent:alice"), &[])
+        let out = create(&root, None, &owner_self_create("agent:alice"), &[])
             .expect("never-armed: the gate is a no-op, the write lands");
         assert!(out.verdicts.is_empty(), "never-armed adds no verdict");
         assert_eq!(
@@ -488,7 +488,7 @@ mod scenarios {
         let before = std::fs::read(dir.path().join("tasks/fix.md")).unwrap();
         let err = splice(
             &root,
-            0,
+            None,
             &content_splice("tasks/fix.md", "agent:alice", false),
             &[],
             None,
@@ -509,7 +509,8 @@ mod scenarios {
         let (_dir, root) = armed_block_ws();
         let mut args = owner_self_create("agent:alice");
         args.dry = true;
-        let err = create(&root, 0, &args, &[]).expect_err("a dry rehearsal of a refusal refuses");
+        let err =
+            create(&root, None, &args, &[]).expect_err("a dry rehearsal of a refusal refuses");
         assert_eq!(err.code, ErrorCode::ConventionFault);
     }
 
@@ -549,7 +550,7 @@ mod scenarios {
         let mut args = owner_self_create("agent:bob");
         args.body = "---\nowner: agent:alice\n---\n# Task\n\nbody\n".into();
         let err =
-            create(&root, 0, &args, &[]).expect_err("zero rows on an armed workspace refuses");
+            create(&root, None, &args, &[]).expect_err("zero rows on an armed workspace refuses");
         assert_eq!(err.code, ErrorCode::ConventionFault);
         assert!(
             err.message
@@ -571,7 +572,7 @@ mod scenarios {
         write_artifact(&root, "not an artifact at all\n| forged | row |\n");
         let mut args = owner_self_create("agent:bob");
         args.body = "---\nowner: agent:alice\n---\n# Task\n\nbody\n".into();
-        let err = create(&root, 0, &args, &[]).expect_err("a corrupt artifact fails closed");
+        let err = create(&root, None, &args, &[]).expect_err("a corrupt artifact fails closed");
         assert_eq!(err.code, ErrorCode::ConventionFault);
         assert!(
             err.message.as_deref().unwrap_or("").contains("corrupt"),
@@ -599,7 +600,7 @@ mod scenarios {
         );
         set_marker(&root);
 
-        let err = create(&root, 0, &owner_self_create("agent:alice"), &[])
+        let err = create(&root, None, &owner_self_create("agent:alice"), &[])
             .expect_err("the workspace refuses — but the question is WHY");
         let msg = err.message.as_deref().unwrap_or("");
         assert!(
@@ -616,7 +617,7 @@ mod scenarios {
     #[test]
     fn rows_attested_off_are_a_legitimate_disarm_and_never_a_fault() {
         let (dir, root) = armed_ws(Mode::Off);
-        create(&root, 0, &owner_self_create("agent:alice"), &[])
+        create(&root, None, &owner_self_create("agent:alice"), &[])
             .expect("an attested-off workspace enforces nothing and faults not at all");
         assert!(dir.path().join("tasks/newtask.md").exists());
     }
@@ -693,7 +694,7 @@ mod scenarios {
         let artifact_path = dir.path().join(fs::domain::ARMED_RULES_PATH);
         let before = std::fs::read_to_string(&artifact_path).unwrap();
 
-        let err = splice(&root, 0, &forged_row(false), &[], None)
+        let err = splice(&root, None, &forged_row(false), &[], None)
             .expect_err("a direct artifact edit must break the artifact↔page binding");
         assert_eq!(err.code, ErrorCode::BindingBreak);
         assert_eq!(err.recovery, Recovery::Fix, "binding-break recovers by fix");
@@ -743,7 +744,7 @@ mod scenarios {
             }],
             ..content_splice(RULE_PATH, "agent:mallory", false)
         };
-        let err = splice(&root, 0, &args, &[], None)
+        let err = splice(&root, None, &args, &[], None)
             .expect_err("editing an ARMED page in place must break the binding");
         assert_eq!(err.code, ErrorCode::BindingBreak);
         assert!(
@@ -784,7 +785,7 @@ mod scenarios {
             }],
             ..content_splice("rules/draft.md", "agent:alice", false)
         };
-        splice(&root, 0, &args, &[], None).expect("an unarmed rule page is ordinary content");
+        splice(&root, None, &args, &[], None).expect("an unarmed rule page is ordinary content");
         assert!(
             std::fs::read_to_string(dir.path().join("rules/draft.md"))
                 .unwrap()
@@ -810,7 +811,7 @@ mod scenarios {
         // `--force` escapes: the write lands and the skip is rendered.
         let out = splice(
             &root,
-            0,
+            None,
             &content_splice("tasks/fix.md", "agent:alice", true),
             &[],
             None,
@@ -879,7 +880,7 @@ mod scenarios {
         let rev = live_rev(&root, fs::domain::ARMED_RULES_PATH);
         let err = remove(
             &root,
-            0,
+            None,
             &remove_args(fs::domain::ARMED_RULES_PATH, rev),
             &[],
         )
@@ -906,7 +907,7 @@ mod scenarios {
         let rev = live_rev(&root, fs::domain::ATTESTED_MARKER_PATH);
         let err = remove(
             &root,
-            0,
+            None,
             &remove_args(fs::domain::ATTESTED_MARKER_PATH, rev),
             &[],
         )

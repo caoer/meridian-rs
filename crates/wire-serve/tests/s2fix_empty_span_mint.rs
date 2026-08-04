@@ -119,9 +119,15 @@ fn probes() -> Vec<Probe> {
 fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
     for probe in probes() {
         let (_dir, root) = workspace("guide.md", probe.target_body);
-        let err = *splice(&root, 0, &pin_args("guide.md", probe.selector), &[], None)
-            .err()
-            .unwrap_or_else(|| panic!("{}: pin must refuse, it minted instead", probe.name));
+        let err = *splice(
+            &root,
+            None,
+            &pin_args("guide.md", probe.selector),
+            &[],
+            None,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{}: pin must refuse, it minted instead", probe.name));
         assert_eq!(
             err.code,
             ErrorCode::PinTargetMissing,
@@ -158,7 +164,7 @@ fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
 #[test]
 fn an_inline_anchor_on_the_same_shape_still_mints() {
     let (_dir, root) = workspace("guide.md", "# H\n\n- real content ^guideline\n");
-    let out = splice(&root, 0, &pin_args("guide.md", "^guideline"), &[], None)
+    let out = splice(&root, None, &pin_args("guide.md", "^guideline"), &[], None)
         .expect("an inline anchor has content and mints");
     let ResponseBody::Splice { pin, .. } = &out.body else {
         panic!("splice body");
@@ -201,7 +207,7 @@ fn a_whole_page_ref_cannot_reach_the_mint_at_all() {
     let (_dir, root) = workspace("empty.md", "");
 
     // An empty selector is refused by the request shape.
-    let err = *splice(&root, 0, &pin_args("empty.md", ""), &[], None)
+    let err = *splice(&root, None, &pin_args("empty.md", ""), &[], None)
         .expect_err("an empty selector must refuse");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
     assert_eq!(

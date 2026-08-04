@@ -652,7 +652,7 @@ pub fn sweep(root: &fs::WorkspaceRoot, opts: &Options) -> Result<MigrationReport
             dry: opts.dry,
         };
         let outcome =
-            wire_serve::write::lock_migrate(root, 0, &args).map_err(|e| SweepError::Door {
+            wire_serve::write::lock_migrate(root, None, &args).map_err(|e| SweepError::Door {
                 path: path.clone(),
                 detail: wire_err(&e),
             })?;

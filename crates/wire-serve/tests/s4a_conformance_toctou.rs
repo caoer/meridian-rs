@@ -120,7 +120,7 @@ fn foreign_write_between_check_and_apply_can_no_longer_split_the_verdict() {
     // Round-trip 2: the apply. The internalized verdict judges the LIVE
     // pre-image, sees the write introduce `def/required-before-terminal`, and
     // refuses before any byte lands.
-    let err = splice(&root, 0, &splice_args(false), &[], None)
+    let err = splice(&root, None, &splice_args(false), &[], None)
         .expect_err("the internalized verdict must refuse the drifted write");
     assert_eq!(
         err.code,
@@ -158,7 +158,7 @@ fn undrifted_write_still_lands() {
     let (dir, root) = workspace();
 
     assert!(refusal(&pre_flight(&root)).is_none(), "pre-flight passes");
-    splice(&root, 0, &splice_args(false), &[], None).expect("the conforming write must land");
+    splice(&root, None, &splice_args(false), &[], None).expect("the conforming write must land");
 
     let after = std::fs::read_to_string(dir.path().join("rec.md")).expect("read after");
     assert!(
@@ -175,7 +175,7 @@ fn dry_run_refuses_where_the_real_write_would() {
     let (dir, root) = workspace();
     std::fs::write(dir.path().join("rec.md"), REC_DRIFTED).expect("drifted fixture");
 
-    let err = splice(&root, 0, &splice_args(true), &[], None)
+    let err = splice(&root, None, &splice_args(true), &[], None)
         .expect_err("a dry rehearsal must refuse the non-conforming write");
     assert_eq!(err.code, ErrorCode::BadRequest, "typed: {:?}", err.message);
     assert_eq!(
@@ -198,7 +198,7 @@ fn standalone_op_and_internalized_run_agree_on_the_drifted_pre_image() {
         .clone();
     assert_eq!(op_refusal.class, "verdict", "ladder refusal, not a rebuild");
 
-    let err = splice(&root, 0, &splice_args(false), &[], None).expect_err("splice refuses");
+    let err = splice(&root, None, &splice_args(false), &[], None).expect_err("splice refuses");
     assert_eq!(
         err.message.as_deref().unwrap_or_default(),
         format!(
@@ -218,7 +218,7 @@ fn no_def_layer_leaves_ordinary_writes_alone() {
     std::fs::write(dir.path().join("rec.md"), REC).expect("record");
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
 
-    splice(&root, 0, &splice_args(false), &[], None).expect("no def anywhere ⇒ the write lands");
+    splice(&root, None, &splice_args(false), &[], None).expect("no def anywhere ⇒ the write lands");
     assert!(
         std::fs::read_to_string(dir.path().join("rec.md"))
             .expect("read after")

@@ -156,7 +156,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     // 1. The GATED door: a pin from an actor who never read the target.
     let gated = splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             mallory,
@@ -181,7 +181,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let forged = splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             mallory,
@@ -226,7 +226,7 @@ fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let forged = splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -258,7 +258,7 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
     }];
     let forged = splice(
         &root,
-        0,
+        None,
         &args,
         &[],
         Some(&receipt::read_mint::ReadMintStore::new()),
@@ -280,7 +280,7 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let born = wire_serve::write::create(
         &root,
-        0,
+        None,
         &CreateArgs {
             id: None,
             path: WPath("forged.md".into()),
@@ -310,7 +310,7 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
     // The legit mint first (CLI shape, D16 local-operator-trusted).
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -338,7 +338,7 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
 
     let forged = splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -379,7 +379,7 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     let pin = |sel: &str| {
         splice(
             &root,
-            0,
+            None,
             &args_for(
                 "plan.md",
                 None,
@@ -409,7 +409,7 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     // ordinary work — the guard must not refuse it.
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             Some("agent-scribe"),
@@ -436,7 +436,7 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     .expect("src");
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "guide.md",
             None,
@@ -462,7 +462,7 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     // Now pin INTO guide.md — this promotes an anchor into it (a raw replace).
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -505,7 +505,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
     let (dir, root) = workspace();
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -525,7 +525,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
 
     let wiped = splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,
@@ -579,7 +579,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
     // The append shape is unaffected — it adds beside the block, never over it.
     splice(
         &root,
-        0,
+        None,
         &args_for(
             "plan.md",
             None,

@@ -751,7 +751,7 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     let vibe = vibe_pin_args("agent-7", "Guide/Goal", true);
 
     // ── the assert that IS the claim: an un-read VIBE pin is REFUSED ──────────
-    let err = splice(&root, 0, &vibe, &[], Some(&store)).expect_err("un-read vibe pin refuses");
+    let err = splice(&root, None, &vibe, &[], Some(&store)).expect_err("un-read vibe pin refuses");
     assert_eq!(
         err.code,
         ErrorCode::ReadMintRequired,
@@ -780,13 +780,14 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
     // A read of the WRONG selector does not open the vibe door either — the
     // receipt is selector-grained, and vibe does not soften that.
     session_read(&root, &store, "agent-7", "guide.md", "Guide/Other");
-    let err = splice(&root, 0, &vibe, &[], Some(&store))
+    let err = splice(&root, None, &vibe, &[], Some(&store))
         .expect_err("a sibling section's read does not authorize this pin");
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
 
     // ── the same request, after a COVERING read: admitted ────────────────────
     session_read(&root, &store, "agent-7", "guide.md", "Guide/Goal");
-    let out = splice(&root, 0, &vibe, &[], Some(&store)).expect("the read-backed vibe pin commits");
+    let out =
+        splice(&root, None, &vibe, &[], Some(&store)).expect("the read-backed vibe pin commits");
     let wire::ResponseBody::Splice { pin, .. } = &out.body else {
         panic!("splice body");
     };
@@ -806,7 +807,7 @@ fn criterion_2_the_gate_refuses_an_unread_vibe_pin_and_admits_a_read_one() {
 
     // ── and the NORMAL arm, same session, same store: one gate, not two ───────
     let normal = vibe_pin_args("agent-mallory", "Guide/Other", false);
-    let err = splice(&root, 0, &normal, &[], Some(&store))
+    let err = splice(&root, None, &normal, &[], Some(&store))
         .expect_err("a foreign actor's un-read NORMAL pin refuses identically");
     assert_eq!(err.code, ErrorCode::ReadMintRequired);
 }
@@ -1201,7 +1202,7 @@ fn path_c_create_title() {
     let root = fs::WorkspaceRoot(dir.path().to_path_buf());
     splice(
         &root,
-        0,
+        None,
         &SpliceArgs {
             id: None,
             origin: wire_serve::guard::Origin::InProcess,
@@ -1258,7 +1259,7 @@ fn path_d_create_position_exclusions() {
     );
     wire_serve::write::create(
         &root,
-        0,
+        None,
         &wire_serve::write::CreateArgs {
             id: None,
             path: WPath("born.md".into()),

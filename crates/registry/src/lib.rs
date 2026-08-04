@@ -42,6 +42,7 @@ mod engine;
 mod protocol;
 mod refresh;
 mod registry;
+pub mod ring;
 mod server;
 mod state;
 

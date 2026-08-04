@@ -567,7 +567,7 @@ fn mint_board_card(
         if_root: None,
         dry: false,
     };
-    match wire_serve::write::create(root, 0, &args, &[]) {
+    match wire_serve::write::create(root, None, &args, &[]) {
         Ok(_) => Ok(Some(path)),
         // The card already exists: the guarded create refuses the occupied path
         // with a CAS mismatch — that IS the idempotency (already scheduled).
