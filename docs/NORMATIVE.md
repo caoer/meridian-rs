@@ -309,6 +309,41 @@ so exit (a) or (b) applies.
 - **`arming-from-zero.md`** and **`meridian-md-schema.md`** — **members**, by
   criterion 2, on their own surfaces. Both are in the MEMBERS table.
 
+## The merge obligation — this list does not grow by itself
+
+> **WHEN A BRANCH CARRYING A NEW SELF-DECLARED NORMATIVE DOCUMENT LANDS ON
+> `main`, ITS ROW IS OWED HERE. THE MERGE GATE CHECKS THIS FILE.**
+
+The scope declaration above — *a membership list is a snapshot* — is honest and
+it is not sufficient. A snapshot that nobody re-takes becomes wrong **at the
+moment it matters most**, and the failure is the one this file exists to close:
+a reader cannot tell that the place they are reading is incomplete. Declaring
+the limit protects the author; the trigger protects the reader.
+
+**In flight at the time of writing — measured across every worktree, not
+recalled.** Four new self-declared amendment documents exist off `main` on two
+branches. Each is a member the moment its branch lands, and none is in the
+MEMBERS table:
+
+| document | branch | self-declares |
+|---|---|---|
+| `wire-contract-v2-armed-file-rev-amendment.md` | `u27-keyset` | yes |
+| `wire-contract-v2-error-extras-amendment.md` | `u27-keyset` | yes |
+| `wire-contract-v2-extract-frames-amendment.md` | `u27-keyset` | yes |
+| `wire-contract-v2-cross-root-links-amendment.md` | `u21-cross-vault-links` | yes |
+
+**Six members become ten**, and the count in § The enumeration moves with them.
+Named by file so the next reader meets the specific instances and not only the
+rule — a rule with no instance attached is the thing everyone agrees with and
+nobody executes.
+
+Two other branches (`u9a-gamma-repair`, `u9b-migration`, `u21-cross-vault-links`)
+modify `laws.md` and `address-grammar.md`, both of which are § Findings entries.
+**Measured: none of those diffs touches a `Status:` or `normative` line**, so
+neither finding is resolved or changed by work in flight. Stated because "a
+branch is editing that file" is otherwise the obvious reason to assume a finding
+has already been handled.
+
 ## The rule for future documents
 
 A document in `docs/` **declares its own status in its opening**, before any
