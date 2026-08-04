@@ -33,7 +33,7 @@ addr = { workspace = true }
 # a git repo is refused before a single byte moves. A std-only path crate already
 # in the workspace; no new external crate enters.
 git = { workspace = true }
-# MigrationReport serializes to JSON for `mrd lock-migrate --json`.
+# MigrationReport serializes to JSON for `mrd lock migrate --json`.
 serde = { workspace = true }
 serde_json = { workspace = true }
 

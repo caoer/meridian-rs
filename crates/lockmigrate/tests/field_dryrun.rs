@@ -12,7 +12,7 @@
 //! in `gates.rs` asserts on BYTES that the dry path leaves a vault untouched;
 //! this file additionally re-reads every candidate page afterwards and fails if
 //! a single byte moved. The real sweep is not run from here, ever — it runs
-//! through `mrd lock-migrate` inside the Leader's quiesce window, after a
+//! through `mrd lock migrate` inside the Leader's quiesce window, after a
 //! pre-sweep commit in each vault.
 //!
 //! The vault list lives in `VAULTS` rather than being discovered, because a
