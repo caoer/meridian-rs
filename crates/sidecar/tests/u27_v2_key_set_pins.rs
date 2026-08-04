@@ -52,7 +52,9 @@
 //! is never converted into a regression lock by a green test that agrees with
 //! it. Whether the doc or the wire is wrong is a ruling, not a test's call.
 
+use policy::{PackFiles, RulesetPin};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::Write as _;
 
 // ---------------------------------------------------------------------------
@@ -836,4 +838,155 @@ fn guard_required_error_key_set_is_pinned() {
         &["code", "message", "path", "recovery"],
         "guard_required error",
     );
+}
+
+// ---------------------------------------------------------------------------
+// §11.1 Verdict — the rules-as-data surface, FROM THE WIRE
+// ---------------------------------------------------------------------------
+//
+// This section exists because U27 got it wrong the first time. The type-plane
+// half pins `Verdict` from a hand-built value, and the U27 report claimed the
+// shape was unreachable on the wire ("uninhabited until P6"). It is not:
+// `crates/sidecar/tests/verdicts_e2e.rs` loads a compiled rules pack and the
+// engine serves real verdicts. A pin over a value the test itself constructed
+// tests its own construction — that is exactly the defect U27 reported as
+// finding 2 against `root_mismatch.changed`, committed inside the suite that
+// named the law. So the shape gets a WIRE pin here.
+//
+// The pack below is the minimum that admits: `verdicts_e2e.rs` is the worked
+// exemplar and owns the §11.1 worked VALUES; this one owns only the KEY SET,
+// so its rule is the smallest one that fires.
+
+/// In-memory pack-file resolver (the `verdicts_e2e.rs` stand-in for the disk
+/// reads the sidecar injects in production).
+struct MemFiles(HashMap<String, String>);
+
+impl PackFiles for MemFiles {
+    fn read(&self, rel_path: &str) -> std::io::Result<String> {
+        self.0
+            .get(rel_path)
+            .cloned()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, rel_path.to_string()))
+    }
+}
+
+/// A node-class rule that fires on any heading opening directly onto a deeper
+/// one — enough to put ONE verdict on the wire, which is all a key-set pin
+/// needs.
+const BLURB_RULE: &str = r#"# blurb-required
+
+Every section must open with a blurb line.
+
+```starlark
+def check(doc):
+    nodes = doc.nodes
+    count = len(nodes)
+    for i in range(count):
+        node = nodes[i]
+        if node.kind != "heading":
+            continue
+        if i + 1 < count:
+            nxt = nodes[i + 1]
+            if nxt.kind == "heading" and nxt.level > node.level:
+                violation(
+                    rule = "blurb-required",
+                    severity = "warn",
+                    span = node.span,
+                    node_rev = node.node_rev,
+                    hpath = node.hpath,
+                    message = "section has no blurb line",
+                )
+```
+"#;
+
+const BLURB_MANIFEST: &str = "\
+id: wiki-hygiene
+api: rulepack-api@1
+budgets: { steps: 10000, mem: 4194304 }
+fixtures: [fixtures/blurb-pass.md, fixtures/blurb-fail.md]
+rules: [rules/blurb-required.md]
+";
+
+const FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n\n## Sub\n\n[[more]]\n";
+const FX_FAIL: &str = "---\nexpect: fail\n---\n# Goals\n## Sub\nmore\n";
+
+fn blurb_pack() -> policy::CompiledRuleset {
+    let files = MemFiles(
+        [
+            ("rules/blurb-required.md", BLURB_RULE),
+            ("fixtures/blurb-pass.md", FX_PASS),
+            ("fixtures/blurb-fail.md", FX_FAIL),
+        ]
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect(),
+    );
+    let pin = RulesetPin {
+        id: "wiki-hygiene".into(),
+        path: "policy/wiki-hygiene.yaml".into(),
+        sha256: None,
+    };
+    sidecar::admit(&pin, BLURB_MANIFEST, &files).expect("the pack admits (node-class)")
+}
+
+/// Frozen §11.1: a verdict is `crates/policy`'s `Violation` verbatim, projected
+/// into THE §2.1 grammar — `{rule, severity, path, hpath, span, node_rev,
+/// message}` and nothing else.
+///
+/// Taken FROM THE WIRE: a real pack, a real splice, the engine's own finding.
+/// `hpath` is the one optional member, and it rides here, so this is the
+/// maximal form — a verdict on a frontmatter or file-grain target would carry
+/// one fewer key, never one more.
+#[test]
+fn verdict_key_set_is_frozen_on_the_wire() {
+    let (_d, root) = s0();
+    let q3 = toc_rev(&root, "Q3");
+    let line = format!(
+        r#"{{"id":1,"op":"splice","path":"notes/plan.md","edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{q3}"}}]}}"#
+    );
+    let mut out = Vec::new();
+    sidecar::serve(
+        &root,
+        format!("{line}\n").as_bytes(),
+        &mut out,
+        &[blurb_pack()],
+    )
+    .expect("serve");
+    let frame: Value = serde_json::from_str(
+        String::from_utf8(out)
+            .expect("utf8")
+            .lines()
+            .next()
+            .expect("frame"),
+    )
+    .expect("frame parses");
+    let verdicts = frame["body"]["verdicts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the splice response carries verdicts: {frame}"));
+    assert!(
+        !verdicts.is_empty(),
+        "POSITIVE CONTROL: the pack must actually fire, or this pin asserts \
+         nothing about a shape it never saw: {frame}"
+    );
+    pin_keys(
+        &verdicts[0],
+        &[
+            "hpath", "message", "node_rev", "path", "rule", "severity", "span",
+        ],
+        "verdict (from the wire)",
+    );
+}
+
+/// The §2.1 node rev for one Goals subsection, read off a live `toc`.
+fn toc_rev(root: &fs::WorkspaceRoot, sec: &str) -> String {
+    let toc = one(root, r#"{"id":1,"op":"toc","path":"notes/plan.md"}"#);
+    toc["body"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|n| n["hpath"] == serde_json::json!([{"h":"Goals"},{"h":sec}]))
+        .unwrap_or_else(|| panic!("no {sec} row"))["node_rev"]
+        .as_str()
+        .expect("rev")
+        .to_string()
 }
