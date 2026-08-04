@@ -101,8 +101,9 @@ fn every_verb_in_the_listing_answers_its_own_help() {
     let verbs = verb_lines(&listing);
     // 27 in the landing assembly: U9b's `lock migrate` and U23's `retire` each
     // added one, on branches that could not see each other. DECISION 26 (ZT
-    // 2026-08-04) deleted `lock migrate` with its crate, so it is 26 again.
-    assert_eq!(verbs.len(), 26, "verbs in the listing:\n{listing}");
+    // 2026-08-04) deleted `lock migrate` with its crate, so it went back to 26 —
+    // and U22's `repair`, the lost-pin repair, makes it 27 again.
+    assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
         let address = address_of(synopsis);
@@ -368,10 +369,15 @@ fn the_write_mark_travels_into_the_verb_page() {
 /// unmarked because it writes only into temporary directories — the
 /// distinction the sibling test pins.
 ///
+/// **U22 adds `mrd repair`** — it rewrites a pin's `hash` in the operator's own
+/// page through the guarded lock door, so it is a writer on exactly the reading
+/// above, and its `--dry` exempts it no more than `retire mark`'s does. Thirteen
+/// of twenty-seven.
+///
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
 #[test]
-fn the_write_classification_is_twelve_of_twenty_six() {
+fn the_write_classification_is_thirteen_of_twenty_seven() {
     let listing = listing();
     let (writers, readers): (Vec<_>, Vec<_>) = verb_lines(&listing)
         .into_iter()
@@ -391,6 +397,7 @@ fn the_write_classification_is_twelve_of_twenty_six() {
             "unregister",
             "put",
             "pin",
+            "repair",
             "retire",
             "cache clean",
             "daemon",
