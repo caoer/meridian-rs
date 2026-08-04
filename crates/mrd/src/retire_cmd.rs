@@ -179,13 +179,22 @@ const FIELDS: [&str; 8] = [
     "version", "id", "term", "replacer", "control", "holding", "route", "proof",
 ];
 
-fn malformed(path: &str, line: usize, cause: String, fix: String) -> Refusal {
+fn malformed(path: &str, line: usize, cause: String, mut fix: String) -> Refusal {
     Refusal {
         reason: Reason::BlockMalformed,
         subject: format!("the {RETIRE_LANG} block at {path} line {line}"),
         cause,
         partial: format!("No declaration was loaded. {NO_MARK_CLAUSE}"),
-        fix,
+        // Every parse refusal ends at a RUNNABLE COMMAND, appended here rather
+        // than repeated at fifteen call sites. A block is fixed by editing it,
+        // so the edit is the instruction — but an instruction with no way to
+        // check it leaves the operator guessing whether the edit worked, and
+        // "run this to confirm" is what makes the fix clause discharge the
+        // house contract instead of merely describing the problem's inverse.
+        fix: {
+            fix.push_str(" Then run `mrd retire report --json` to confirm the block parses.");
+            fix
+        },
     }
 }
 
@@ -688,7 +697,7 @@ fn scan_doc(
             subject: format!("{path} line {} carries `(retired: {})`", b.line, b.id),
             cause: "with no `~~…~~` before it on that line — the machine half of a marker with no visible half, so the next run cannot tell the occurrence was already retired and would mark it a second time.".to_owned(),
             partial: NO_MARK_CLAUSE.to_owned(),
-            fix: format!("strike the retired words on that line as `~~<term>~~ <replacer> (retired: {})`, or delete the token.", b.id),
+            fix: format!("strike the retired words on that line as `~~<term>~~ <replacer> (retired: {})`, or delete the token; then run `mrd retire report --json` to confirm the marker reads.", b.id),
         });
     }
     for m in &marks {
@@ -1226,8 +1235,20 @@ fn to_json(
             "declared": { "proofs": d.proofs, "verified_by_this_tool": false },
             "state": if d.proofs.is_empty() { "open" } else { "closed" },
         })).collect::<Vec<_>>(),
+        // The four properties ride as their OWN KEYS, not only spliced into
+        // `message`. A contract asserted by substring-matching one sentence
+        // cannot tell a refusal that STATES its cause from one whose subject
+        // merely happens to contain the words — the assertion could not
+        // distinguish the case it names from a neighbouring one, which is the
+        // defect this docket keeps meeting. Structured, each property is
+        // checkable on its own; `message` stays the human spelling assembled
+        // from them, and `assert_contract` proves the two agree.
         "refusals": refusals.iter().map(|r| json!({
             "reason": r.reason.word(),
+            "subject": r.subject,
+            "cause": r.cause,
+            "partial": r.partial,
+            "fix": r.fix,
             "message": r.to_string(),
         })).collect::<Vec<_>>(),
         "open": open,
