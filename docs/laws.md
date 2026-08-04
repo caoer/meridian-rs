@@ -145,6 +145,69 @@ that it waits.
 | R1.6-a | The stored→agent re-join/re-parse in `wire-serve::positions` | residue | recorded by U21, deferred |
 | C-1 | The link plane resolves cross-vault refs IN-PROCESS, not in the daemon | residue | U21's degrade — **successor named below** |
 | H-1 | The `#` refusal on a heading whose raw text carries `#` | candidate | **owed by U14** — see below |
+| S-1 | The stored-plane narrowing refusal (U21 Q1a) | candidate | **owed by U14** — see below |
+
+### S-1 — the stored-plane narrowing refusal, and the trigger that makes it owed
+
+**Operational trigger, so this is a tracked obligation and not a hope: when
+`ReadSel` lands on `main`, the stored-plane narrowing refusal (U21 Q1a) becomes
+implementable and OWED. The U14-merge gate checks this row.**
+
+U21 Q1 was ruled (a) — refuse at the translation door with a named
+`TranslateError` — on the stated premise that *today's wikilink ingress cannot
+mint the affected values*. U21 measured that premise and **it does not hold for
+one of the three**, so the ruling was re-taken as (i): the refusal lands with
+U14.
+
+The three values, each with why it waits:
+
+- **Multi-segment hpath — REACHABLE TODAY, and refusing it now would break
+  shipped green behaviour.** `syntax::split_wikilink_target`
+  (`crates/syntax/src/lib.rs:434-443`) puts everything after the first `#` into
+  the heading fragment verbatim unless it starts with `^`, so the ordinary
+  wikilink `[[sessions:notes.md#Design/Sub]]` mints a `/`-bearing selector, and
+  `("v", "dir/a:b.md", Some("Design/Sub"))` is a PASSING row in
+  `every_stored_form_decodes_back_to_the_parts_that_minted_it`
+  (`crates/addr/src/stored.rs:472`). **On `main` a selector is one opaque string
+  on BOTH planes**, so the round trip is a genuine fixed point and there is no
+  second reading for the stored form to lose. The ambiguity `Design/Sub` would
+  be ambiguous *against* — one segment or three — comes into existence WITH
+  U14's segmented hpath, and the refusal is additive against that grammar.
+- **Dewey** — there is no dewey spelling in the agent-plane address grammar on
+  `main`. `[[x.md#1.2]]` is a heading literally named `1.2`, and `heading=1.2`
+  stores it correctly.
+- **Occurrence index** — no spelling in `Addr` at all.
+
+**The last two are not merely unreachable, they are UN-IMPLEMENTABLE, and that
+is why no variant was landed for them.** There is no value at the translation
+seam to detect, so the refusal would be a variant with no constructor —
+S3-R23(4)'s weakened middle, a claim nothing checks. **Do not land dead variants
+for symmetry, and do not let a later reader land them for tidiness.**
+
+### Q7 — why the view's cross-root destination is THREE columns, not two
+
+U21 Q5 ruled a nullable `dest_root` **beside** `dest_path`. Implementation
+measured the fact the ruling was written without: `link.dest_path` carries an
+**enforced** foreign key into `doc(path)` — DuckDB answers *"Violates foreign key
+constraint because key `path: notes.md` does not exist in the referenced
+table"* — and a cross-root path is not a key in this corpus. The literal
+two-column shape therefore required DROPPING that FK.
+
+Ruled (B), FK preserved: `dest_root` + `dest_root_path`, with `dest_path` left
+NULL for a cross-root edge. The FK is the only thing in the schema that makes *a
+link row pointing at a document that does not exist* unrepresentable, and
+trading it away inside the unit about the link plane answering with the wrong
+document is the wrong direction of travel. It also keeps the column honest at
+its grain: **`dest_path` means "a path in THIS corpus" always, rather than only
+sometimes.**
+
+The third column widens the error space, so the illegal states are closed
+STRUCTURALLY — `CHECK ((dest_root IS NULL) = (dest_root_path IS NULL))` and
+`CHECK (dest_path IS NULL OR dest_root IS NULL)` — rather than by the
+projector's discipline. `dangling`'s two-place clause (`dest_path IS NULL AND
+dest_root IS NULL`) is what stops a resolved cross-vault link reading as broken,
+and it is pinned by a red test, mutation-proved one-edit, in
+`crates/view/tests/u21_cross_root_link_rows.rs`.
 
 ### R1.6-a — the stored→agent re-join, and why it stays
 

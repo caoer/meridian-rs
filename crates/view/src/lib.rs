@@ -125,7 +125,7 @@ impl From<std::io::Error> for ViewError {
 pub fn build_memory(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
-    project(&conn, docs)?;
+    project(&conn, docs, &model::RootedCorpus::ambient(docs), None)?;
     let as_of = ephemeral_fingerprint(docs);
     write_stamp(
         &conn,
@@ -134,6 +134,42 @@ pub fn build_memory(docs: &BTreeMap<String, Document>) -> Result<Connection, Vie
         None,
         None,
         "view::build_memory",
+        docs.len(),
+    )?;
+    Ok(conn)
+}
+
+/// [`build_memory`] against a ROOT-KEYED corpus and a mount table — the
+/// cross-root form (U21).
+///
+/// A cross-root edge lands in `link.dest_root` + `link.dest_root_path`, never
+/// in `dest_path`: that column carries an enforced foreign key into `doc`, and
+/// a cross-root destination is not a key in THIS corpus. So `dest_path` means
+/// "a path in this corpus" always, rather than only sometimes.
+///
+/// **The ambient entry point passes NO mount authority rather than an empty
+/// table**, for the reason `query::links_with` states: an empty table is a
+/// machine that binds nothing, while a caller that never consulted one has not
+/// looked. Only the second is true of a caller that has no table to give.
+///
+/// # Errors
+/// As [`build_memory`].
+pub fn build_memory_rooted(
+    docs: &BTreeMap<String, Document>,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+) -> Result<Connection, ViewError> {
+    let conn = Connection::open_in_memory()?;
+    create_schema(&conn)?;
+    project(&conn, docs, corpus, Some(mounts))?;
+    let as_of = ephemeral_fingerprint(docs);
+    write_stamp(
+        &conn,
+        &as_of,
+        "",
+        None,
+        None,
+        "view::build_memory_rooted",
         docs.len(),
     )?;
     Ok(conn)
@@ -177,7 +213,7 @@ pub fn publish(
     {
         let conn = Connection::open(&temp)?;
         create_schema(&conn)?;
-        project(&conn, docs)?;
+        project(&conn, docs, &model::RootedCorpus::ambient(docs), None)?;
         write_stamp(
             &conn,
             &stamp.as_of_fingerprint,
@@ -228,11 +264,16 @@ pub fn publish(
 /// span-sorted containment tree yields ascending `span.start`). Links resolve
 /// same-corpus via `model::CorpusIndex::resolve_linkpath`; an unresolved vault
 /// ref is `dest_path = NULL` (first-class dangling).
-fn project(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
+fn project(
+    conn: &Connection,
+    docs: &BTreeMap<String, Document>,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: Option<&addr::MountSet>,
+) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let mut rows = Rows::default();
     for (path, doc) in docs {
-        collect_doc(path, doc, &index, &mut rows);
+        collect_doc(path, doc, &index, &mut rows, corpus, mounts);
     }
     rows.insert(conn)
 }
@@ -284,7 +325,14 @@ struct TaskRow {
 }
 
 /// Emit the `doc` row and walk the node tree for one document.
-fn collect_doc(path: &str, doc: &Document, index: &CorpusIndex, rows: &mut Rows) {
+fn collect_doc(
+    path: &str,
+    doc: &Document,
+    index: &CorpusIndex,
+    rows: &mut Rows,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: Option<&addr::MountSet>,
+) {
     let root = &doc.root;
     let line_count = match &root.kind {
         NodeKind::Document { line_count, .. } => *line_count,
@@ -298,11 +346,22 @@ fn collect_doc(path: &str, doc: &Document, index: &CorpusIndex, rows: &mut Rows)
     ]);
 
     let mut counters = Counters::default();
-    walk(root, path, doc, index, None, &mut counters, rows);
+    walk(
+        root,
+        path,
+        doc,
+        index,
+        None,
+        &mut counters,
+        rows,
+        corpus,
+        mounts,
+    );
 }
 
 /// Walk one node, emitting its fact row(s), then recurse into children carrying
 /// the governing section identity (`section_seq`) down to any task descendant.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
     path: &str,
@@ -311,6 +370,8 @@ fn walk(
     gov_section: Option<u64>,
     counters: &mut Counters,
     rows: &mut Rows,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: Option<&addr::MountSet>,
 ) {
     let mut child_gov = gov_section;
     match &node.kind {
@@ -330,7 +391,15 @@ fn walk(
             block,
             alias,
         } => {
-            let dest = resolve_dest(index, target, heading.as_deref(), block.as_deref(), path);
+            let dest = resolve_dest(
+                index,
+                target,
+                heading.as_deref(),
+                block.as_deref(),
+                path,
+                corpus,
+                mounts,
+            );
             emit_link(
                 node,
                 path,
@@ -339,7 +408,7 @@ fn walk(
                 heading.as_deref(),
                 block.as_deref(),
                 alias.as_deref(),
-                dest,
+                dest.as_ref(),
                 counters,
                 rows,
             );
@@ -350,7 +419,15 @@ fn walk(
             block,
             alias,
         } => {
-            let dest = resolve_dest(index, target, heading.as_deref(), block.as_deref(), path);
+            let dest = resolve_dest(
+                index,
+                target,
+                heading.as_deref(),
+                block.as_deref(),
+                path,
+                corpus,
+                mounts,
+            );
             emit_link(
                 node,
                 path,
@@ -359,7 +436,7 @@ fn walk(
                 heading.as_deref(),
                 block.as_deref(),
                 alias.as_deref(),
-                dest,
+                dest.as_ref(),
                 counters,
                 rows,
             );
@@ -385,7 +462,9 @@ fn walk(
         _ => {}
     }
     for child in &node.children {
-        walk(child, path, doc, index, child_gov, counters, rows);
+        walk(
+            child, path, doc, index, child_gov, counters, rows, corpus, mounts,
+        );
     }
 }
 
@@ -447,7 +526,7 @@ fn emit_link(
     heading: Option<&str>,
     block: Option<&str>,
     alias: Option<&str>,
-    dest_path: Option<String>,
+    dest: Option<&Dest>,
     counters: &mut Counters,
     rows: &mut Rows,
 ) {
@@ -461,7 +540,21 @@ fn emit_link(
         opt_text(heading),
         opt_text(block),
         opt_text(alias),
-        dest_path.map_or(Value::Null, Value::Text),
+        // THREE COLUMNS, ONE DESTINATION. The CHECK constraints in the schema
+        // make "both set" and "root without its path" unrepresentable, so this
+        // match is the only shape that can reach the table.
+        match dest {
+            Some(Dest::Ambient(p)) => Value::Text(p.clone()),
+            Some(Dest::Rooted { .. }) | None => Value::Null,
+        },
+        match dest {
+            Some(Dest::Rooted { root, .. }) => Value::Text(root.clone()),
+            _ => Value::Null,
+        },
+        match dest {
+            Some(Dest::Rooted { path, .. }) => Value::Text(path.clone()),
+            _ => Value::Null,
+        },
         Value::UBigInt(u64c(node.span.start)),
         Value::UBigInt(u64c(node.span.end)),
         Value::Text(node.node_rev.0.clone()),
@@ -521,20 +614,51 @@ fn emit_task(
     });
 }
 
-/// Resolve a wikilink/embed target to a same-corpus doc path, or `None`
-/// (first-class dangling). A self-ref `[[#H]]` / `[[#^blk]]` (empty target with a
-/// heading or block) resolves to the source doc.
+/// Resolve a wikilink/embed target to its destination, kept STRUCTURAL rather
+/// than folded into one string: `Ambient(path)` for a same-corpus doc,
+/// `Rooted { root, path }` for a cross-root one, `None` for first-class
+/// dangling. A self-ref `[[#H]]` / `[[#^blk]]` (empty target with a heading or
+/// block) resolves to the source doc.
+///
+/// **The split is the same lexical question the link plane asks** —
+/// `addr::head_carries_root_separator`. A non-rooted spelling keeps
+/// `resolve_linkpath` byte-for-byte, so the ambient projection is unchanged;
+/// a rooted one goes to the address owner. With NO mount authority (`None`) a
+/// rooted spelling stays dangling, exactly as it did before U21 — the daemon's
+/// discipline, for the same reason: not having looked is not a finding.
 fn resolve_dest(
     index: &CorpusIndex,
     target: &str,
     heading: Option<&str>,
     block: Option<&str>,
     src_path: &str,
-) -> Option<String> {
+    corpus: &model::RootedCorpus<'_>,
+    mounts: Option<&addr::MountSet>,
+) -> Option<Dest> {
     if target.trim().is_empty() {
-        return (heading.is_some() || block.is_some()).then(|| src_path.to_string());
+        return (heading.is_some() || block.is_some()).then(|| Dest::Ambient(src_path.to_string()));
     }
-    index.resolve_linkpath(target, src_path)
+    let Some(mounts) = mounts.filter(|_| addr::head_carries_root_separator(target)) else {
+        return index.resolve_linkpath(target, src_path).map(Dest::Ambient);
+    };
+    match index.resolve_ref(target, src_path, corpus, mounts) {
+        model::RefResolution::Ambient(path) => Some(Dest::Ambient(path)),
+        model::RefResolution::Rooted { root, path } => Some(Dest::Rooted {
+            root: root.to_string(),
+            path,
+        }),
+        // Every refusal projects as DANGLING here, and that is deliberate: the
+        // view is a fact table, not a refusal surface. `mrd links` is where a
+        // refusal is rendered and rides exit 1.
+        _ => None,
+    }
+}
+
+/// One link's destination — two facts when it is cross-root, never one joined
+/// `root:path` string (U21 Q5).
+enum Dest {
+    Ambient(String),
+    Rooted { root: String, path: String },
 }
 
 /// Scalar-parse a `tag`/`tags` frontmatter value into normalized tags (B2): strip
@@ -580,7 +704,7 @@ impl Rows {
         }
         insert_rows(
             conn,
-            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO link (src_path, seq, kind, target_raw, heading, block, alias, dest_path, dest_root, dest_root_path, span_start, span_end, node_rev) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             &self.link,
         )?;
         insert_rows(

@@ -716,7 +716,13 @@ fn build_and_run_ephemeral(
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
     let (_index, docs) = fs::build_corpus(files)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the corpus: {e}"))))?;
-    let conn = view::build_memory(&docs)
+    // U21 — the ephemeral view is built with MOUNT AUTHORITY, from the same
+    // `load_mounts` assembly the pin plane and the link plane use (S3-R59, one
+    // owner). Without it a cross-vault link projects as dangling and every SQL
+    // consumer reads a working link as broken.
+    let mounts = crate::walk_cmd::load_mounts();
+    let corpus = mounts.rooted(&docs);
+    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set())
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
 
     let as_of = read_as_of(&conn).map_err(EphemeralError::Fail)?;

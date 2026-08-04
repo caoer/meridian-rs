@@ -1142,3 +1142,55 @@ fn honest_tense_divergent_triple_is_permitted_never_bounded() {
     // no bound exists to violate — the absent assertion IS the §10.1 law.
     assert_eq!(serde_json::to_value(&typed).unwrap(), divergent);
 }
+
+/// **The frozen-v2 KEY SET on `FileLinks`, pinned as a SET rather than by
+/// value.**
+///
+/// U21 added two keys to this shape (`resolved_rooted`, `refused`) and both are
+/// `skip_serializing_if` empty, so a single-root corpus must serialize exactly
+/// the two keys the frozen contract names. **A field-blind worked-value sweep
+/// cannot see an added key** — it would pass whether or not the new keys leaked
+/// into a v2 frame — so the detector has to assert the key set itself
+/// (All-Hands #1). Without this, the "byte-identical for a single-root corpus"
+/// claim in the cross-root amendment is a sentence nothing checks.
+#[test]
+fn an_ambient_file_links_serializes_exactly_the_frozen_v2_key_set() {
+    let ambient = wire::FileLinks {
+        resolved: [("receipts/2026-07-18.md".to_owned(), 1u64)]
+            .into_iter()
+            .collect(),
+        unresolved: [("roadmap".to_owned(), 1u64)].into_iter().collect(),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&ambient).unwrap();
+    let keys: Vec<&str> = value
+        .as_object()
+        .expect("an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["resolved", "unresolved"],
+        "a corpus with no cross-root edges serializes the FROZEN v2 key set — \
+         the U21 keys are absent, not empty objects: {value}"
+    );
+
+    // THE NEGATIVE HALF. Without it the assertion above is satisfied by a
+    // shape that can never carry the new keys at all, and the pin would still
+    // pass if `resolved_rooted` were deleted outright.
+    let rooted = wire::FileLinks {
+        resolved_rooted: [(
+            "sessions".to_owned(),
+            [("notes.md".to_owned(), 1u64)].into_iter().collect(),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(&rooted).unwrap();
+    assert!(
+        value.get("resolved_rooted").is_some(),
+        "a corpus WITH a cross-root edge does carry the key: {value}"
+    );
+}
