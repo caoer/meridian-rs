@@ -1,7 +1,14 @@
 //! U5.1 — the ungated close, and the ONE layer that still catches it (d2 §5.3).
 //!
-//! The scenario is unchanged: an ungated close is a bare status flip that
-//! declares evidence but freezes no verdict rev.
+//! The scenario is an ungated close: a bare status flip that freezes no verdict
+//! rev.
+//!
+//! **Correction (R1.3), not a new loss.** This line read "a bare status flip
+//! that DECLARES EVIDENCE but freezes no verdict rev" until now. The
+//! declares-evidence half was proven by the colors layer and by nothing else, so
+//! it died at `eb45f0a9` when that layer was deleted — see Lost 2. The line has
+//! been describing a property nothing proved since that commit; removing the
+//! clause dates the loss where it belongs rather than to this edit.
 //!
 //! # WHAT THIS FILE PROVES NOW
 //! - **refusal = armed CHECK** — the U4.4 `close-verdict` floor, evaluated
@@ -39,6 +46,25 @@
 //!
 //! The lost claim: *"an ungated close is visible as GREY on the board — never
 //! green, never silently clean."*
+//!
+//! *Fixture residue removed (R1.3, U9c).* Both flip pages carried a `yaml
+//! ^inputs` block until now. It was THIS layer's input, not layer 1's: at
+//! `3cdbe45d` the board read `bare_flip_after()` into `open_board` and queried
+//! the edge row that exists **only** because that block declares it. With the
+//! layer gone the block was inert residue, and it is now deleted with the
+//! vocabulary.
+//!
+//! Inert by two independent mechanisms, both measured rather than argued: the
+//! block was BYTE-IDENTICAL in `bare_flip_before` and `bare_flip_after` (only
+//! frontmatter `status` differs), so it contributed no delta to `derive_change`
+//! whatever read it; and the armed gate reads frontmatter alone — which the
+//! surviving positive control demonstrates independently, since it never carried
+//! a block and passes the same gate. U9a ran both arms, block present vs
+//! removed: exit 0 and the same 2 passes either way.
+//!
+//! **This is not a third lost proposition.** Nothing died here that had not
+//! already died at `eb45f0a9`; recording a new loss would over-count the
+//! accounting and date it to the wrong commit.
 //!
 //! **THE LAW ITSELF STANDS. Only its detector died.** "An ungated close renders
 //! grey, never green" now holds BY CONSTRUCTION: green is COMPUTED — the verdict
@@ -149,12 +175,19 @@ fn doc(path: &str, md: &str) -> model::Document {
 const CLOSE_PATH: &str = "tasks/close.md";
 
 /// A task page open, then closed as a BARE FLIP: `status: closed` with NO
-/// `verdict`, declaring `subject.md#^claim` as an input but pinning no rev.
+/// `verdict`.
+///
+/// **The pages carried an `^inputs` block until R1.3 and it is now removed.**
+/// It was lost-2's fixture residue, not this layer's input: the armed gate reads
+/// FRONTMATTER, and the block was byte-identical in both pages, so it
+/// contributed no delta to `derive_change` by two independent mechanisms. U9a
+/// measured both arms — block present vs removed, exit 0 and the same 2 passes
+/// either way.
 fn bare_flip_before() -> String {
-    "---\ntype: task\nstatus: open\nowner: worker-a\n---\n\n# Close\n\n```yaml ^inputs\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', claim: 'ungated — no rev'}\n```\n".to_string()
+    "---\ntype: task\nstatus: open\nowner: worker-a\n---\n\n# Close\n\nclosing without a verdict.\n".to_string()
 }
 fn bare_flip_after() -> String {
-    "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Close\n\n```yaml ^inputs\nitems:\n  - {ref: 'subject.md', to: 'subject.md#^claim', claim: 'ungated — no rev'}\n```\n".to_string()
+    "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Close\n\nclosing without a verdict.\n".to_string()
 }
 
 // ── the end-to-end wiring ─────────────────────────────────────────────────────
