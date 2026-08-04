@@ -32,10 +32,11 @@ spelled differently. R4 states it as reserved fields versus free-form extra keys
 | a passenger may not shadow the core | an extra key may not shadow a reserved key — refused |
 
 The property the split protects is unchanged and is worth restating plainly:
-**the engine carries what it does not understand, byte for byte.** That is why
-the v1→v2 migration refuses to drop an unknown legacy key
-(`crates/lockmigrate`), and it is the one rule from this file with live
-consequences today.
+**the engine carries what it does not understand, byte for byte.** It is the one
+rule from this file with live consequences today. Its original illustration — the
+v1→v2 migration refusing to drop an unknown legacy key — is gone with
+`crates/lockmigrate` (DECISION 26, ZT 2026-08-04); the rule is a property of
+`lock`'s own round trip and never depended on that crate.
 
 ## What was SUPERSEDED, and by whom
 
@@ -78,5 +79,4 @@ Whoever owns the rules plane owns that decision.
 - R4 schema and the `objects:` removal — session `86449b4e` (08-01) and its 17:20 ruling.
 - The free-form ruling — ZT, 2026-08-03.
 - The row's implementation and its round-trip proof — `crates/lock`.
-- The v1→v2 field migration that depends on verbatim carriage — `crates/lockmigrate`.
 - The original 23-07 `check:` ruling — `results/round2/zt-rules-plane-rulings.md`.
