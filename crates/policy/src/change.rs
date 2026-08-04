@@ -96,7 +96,9 @@ pub struct DocFacts {
 
 /// One declared edge as data BEFORE resolution: the ref, the rev it is pinned at,
 /// and the (engine-ignored) claim. The caller declares these from the after
-/// document's `^inputs` lock; [`derive_change`] resolves each to an [`Edge`].
+/// document's `meridian-lock` block; [`derive_change`] resolves each to an
+/// [`Edge`]. (R1.3 corrected the source named here — the legacy `^inputs` lock
+/// was this slot's origin when the type was written; the type is unchanged.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDecl {
     /// The declared ref (`selector`), exactly as the lock spells it.
