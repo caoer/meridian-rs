@@ -1,5 +1,19 @@
 # Amendment — fingerprint-or-force at every wire door (2026-08-03)
 
+Status: normative — **this file is the sole normative text for the wire-guard
+behavioural amendment**; member by **decision 18**, ZT 2026-08-03, the ruling act
+quoted verbatim in § The ratification act below.
+
+> [!NOTE] Why this line was added later
+> The credential was always real — decision 18 ordered this document into
+> existence and the ratification act is quoted below. What was missing was the
+> LABEL. A docs membership audit measured that this file was the only one of six
+> `*-amendment.md` documents never to use the word "normative", which made the
+> document that classifies its own unit's design note look unclassified itself.
+> Clerical restoration of an already-true fact, not an amendment of substance:
+> membership-by-act is written down at grant time so the next auditor does not
+> re-run that recursion.
+
 Amends the wire contract's write plane. **The frozen v2 prose is never edited**
 (the v3-amendment precedent): `docs/wire-contract-v2.md` keeps its wording, and
 this document carries what changed.
