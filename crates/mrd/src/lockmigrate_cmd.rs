@@ -39,6 +39,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
         dry: parsed.dry,
         actor: None,
         now: None,
+        expect_root: parsed.expect_root.clone().map(wire::Root),
     };
     let report = sweep(&root, &opts).map_err(|e| Fail::tool(e.to_string()))?;
 
@@ -64,6 +65,9 @@ struct Parsed {
     vault: String,
     dry: bool,
     format: Format,
+    /// `--expect-root <ROOT>`: the §5.1 world guard, armed. See
+    /// [`lockmigrate::Options::expect_root`].
+    expect_root: Option<String>,
 }
 
 impl Parsed {
@@ -71,6 +75,7 @@ impl Parsed {
         let mut vault: Option<String> = None;
         let mut dry = false;
         let mut json = false;
+        let mut expect_root: Option<String> = None;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -79,6 +84,12 @@ impl Parsed {
                         .next()
                         .ok_or_else(|| Fail::tool("--vault needs a path".to_owned()))?;
                     vault = Some(v.clone());
+                }
+                "--expect-root" => {
+                    let r = it
+                        .next()
+                        .ok_or_else(|| Fail::tool("--expect-root needs a root".to_owned()))?;
+                    expect_root = Some(r.clone());
                 }
                 "--dry" => dry = true,
                 "--json" => json = true,
@@ -96,6 +107,7 @@ impl Parsed {
             vault,
             dry,
             format: if json { Format::Json } else { Format::Human },
+            expect_root,
         })
     }
 }

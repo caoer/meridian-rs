@@ -345,14 +345,17 @@ usage:
                            state: converged / drifted-fixed / non-convergent /
                            pending-agent. Exits: 0 converged/drifted-fixed (or dry)
                            / 1 non-convergent or pending-agent / 2 bad invocation
-! mrd lock migrate --vault <PATH> [--dry]
+! mrd lock migrate --vault <PATH> [--expect-root <ROOT>] [--dry]
                            SELF-RETIRING (U9b): migrate a vault's meridian-lock
                            blocks from v1 to R4 v2 through the governed
                            lock-migrate door. Dry-run-first, idempotent,
                            resumable. Rewrites ONLY engine-placed page locks (one
                            block, at EOF); a v1 block illustrated inside a
                            document is reported and LEFT ALONE. Refuses a vault
-                           with no git -- no restore point, no sweep. Exits: 0
+                           with no git -- no restore point, no sweep.
+                           --expect-root ARMS the world guard: every page refuses
+                           root_mismatch if the vault ambient root is not <ROOT>.
+                           Exits: 0
                            clean (or dry) / 1 a page was refused / 2 bad
                            invocation or unreadable vault
 
