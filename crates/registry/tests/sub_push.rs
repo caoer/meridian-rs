@@ -10,6 +10,19 @@
 //! condition on this unit). The mutation that reddens each one is named in its
 //! own doc comment — a pin whose failure mode is not written down is a pin
 //! nobody can re-prove.
+//!
+//! # Where the positional selects get their soundness — it is NOT in this file
+//! The gates below index pushed frames positionally (`frame["delta"]["files"][0]`,
+//! the nth frame of an epoch). That is sound only because a subscribed
+//! connection cannot desync: **the guarantee lives entirely at the PRODUCER —
+//! `crates/registry/src/server.rs`, where `serve_conn` returns out of the
+//! request read loop into `push_loop` on an accepted `Sub`, so one connection
+//! is either a request channel or a push channel and never both.** A reader of
+//! this file alone cannot see that; the pins here would look like they trust
+//! frame order for no stated reason. **Carry the crate path, never the
+//! basename** — `crates/sidecar/tests/sub_push.rs` is a different file and has
+//! twice been read as this one. DECISION 25 (ZT, 2026-08-04), riding the
+//! DECISION 22 cleanup: comment only, no code change.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
