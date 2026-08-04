@@ -32,6 +32,13 @@ index and covers what the other two cannot; the untracked-file count is printed
 whether or not it is zero, because a clean git-grep result only means something
 once you know that count.
 
+The bare arm carries NO `--include` filter (All-Hands #41): a file-type filter
+is a second index made of assumptions about where residue can live, and it
+rebuilds exactly the blind spot the arm exists to remove. Measured on this
+branch — the filtered form returned 0, the bare form returns 21, every one of
+them in this file where they belong as the injection payload. The unit adds
+four non-`.rs` files, so the filtered arm was blind to all four.
+
 Usage: python3 tools/u27-mutation-proof.py [arm-name]
 """
 
@@ -282,20 +289,26 @@ def main() -> int:
     ).stdout.strip()
     print(f"  working tree: {dirty or '(clean)'}")
     untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard", "--", "*.rs"],
+        ["git", "ls-files", "--others", "--exclude-standard"],
         cwd=ROOT, capture_output=True, text=True, check=False,
     ).stdout.split()
     # Stated whether or not it is zero: a zero here is what makes a clean
     # git-grep result mean something, and it is not knowable from the result.
-    print(f"  untracked .rs files (invisible to both git-grep arms): {len(untracked)}")
+    # NOT restricted to *.rs — the suffix filter is the same assumption #41
+    # names, and an untracked .py or .md carries residue just as well.
+    print(f"  untracked files of ANY type (invisible to both git-grep arms): {len(untracked)}")
     for u in untracked:
         print(f"      {u}")
 
     scopes = [
         ("git grep, working tree", ["git", "grep", "-n", "MUTATION:", "--", "*.rs"]),
         ("git grep, HEAD", ["git", "grep", "-n", "MUTATION:", "HEAD", "--", "*.rs"]),
-        ("plain grep -rn (index-free)",
-         ["grep", "-rn", "--include=*.rs", "MUTATION:", "crates/"]),
+        # BARE — no file-type filter (All-Hands #41). An --include rebuilds the
+        # blind spot this arm exists to remove: file type is precisely the
+        # assumption under test, and residue lives in .py/.md/.toml/fixtures
+        # too. Bound cost by DIRECTORY (exclude build output), never by suffix.
+        ("plain grep -rn, BARE (index-free, no type filter)",
+         ["grep", "-rn", "MUTATION:", ".", "--exclude-dir=target", "--exclude-dir=.git"]),
     ]
     for label, cmd in scopes:
         hits = [
