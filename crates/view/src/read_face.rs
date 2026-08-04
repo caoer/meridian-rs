@@ -109,7 +109,7 @@ CREATE TABLE input_lock (
     to_sel       TEXT     NOT NULL,   -- [1] `to` selector ('' = the page/doc root)
     pinned_rev   TEXT,                -- [1] the pinned value as written (NULL = declared-only -> grey): a `rev` for the legacy forms, the `fingerprint` CID-token for a meridian-lock pin
     rev_class    TEXT,                -- [1] 'content' | 'object' (NULL = unstated)
-    hash_algo    TEXT,                -- [1] the algo the pinned value was minted under (NULL = absent): the block's `hash-algo:` header for the legacy forms, the fingerprint token's own version field for a meridian-lock pin; != 'node-rev' -> grey superseded-algo
+    hash_algo    TEXT,                -- [1] the algo the pinned value was minted under (NULL = absent): the block's `hash-algo:` header for the legacy forms, the fingerprint token's own version field for a meridian-lock pin. PROJECTED ONLY — no `board` arm reads it, and it colours nothing (D22)
     src_doc_rev  TEXT     NOT NULL,   -- [1] containing doc_rev — the rev-compare invalidation key
     verdict_color  TEXT,              -- [color plane] the row's verdict tone ('green'|'red'|'grey'). NULL is the RESIDUE case: no arm of `board` matches it, so `board_residue` counts it and the count is disclosed. Two doors reach NULL — a row failing `LockItem::is_colourable`, and a colourable row whose verdict lookup missed
     verdict_reason TEXT,              -- [color plane] the verdict's stable reason word ('content-drifted', 'dangling-anchor', 'unverifiable-fingerprint', 'malformed-fingerprint', 'lock-refused', …); NULL for green
@@ -399,10 +399,15 @@ pub struct LockItem {
     pub rev_class: Option<String>,
     /// The containing block's `hash-algo:` header (`None` = absent). A value
     /// other than [`model::NODE_REV_ALGO`] means the pinned rev was minted under
-    /// an algo this engine does not compute — the read face renders it grey
-    /// `superseded-algo` (U3.4). Per-block, stamped onto every item of the block.
-    /// A form-3 (`meridian-lock`) pin writes no header — the label is derived
-    /// from its self-describing token ([`fingerprint_algo`]).
+    /// an algo this engine does not compute, so it stays outside the node-rev
+    /// compare. Per-block, stamped onto every item of the block. A form-3
+    /// (`meridian-lock`) pin writes no header — the label is derived from its
+    /// self-describing token ([`fingerprint_algo`]).
+    ///
+    /// **The label renders nothing.** It once drove a grey `superseded-algo`
+    /// board arm (U3.4); that arm collapsed with the legacy `^inputs` plane
+    /// (R1.3/U9c) and no board arm reads this column now. A row's colour comes
+    /// from `verdict_color` alone. DECISION 22 (ZT, 2026-08-04).
     pub hash_algo: Option<String>,
     /// The `meridian-lock` `fingerprint` — a full `fp1.…` CID-token, verbatim.
     /// The typed slot a verdict computer reads:
@@ -801,9 +806,15 @@ fn display_selector(selector: &lock::Selector) -> String {
 /// FALLBACK rather than the answer: a form-3 row's color comes from its
 /// projected verdict on both planes (the walk's `edge_color` routes a
 /// fingerprint to `model::selector::classify_pin`; the `board` view reads
-/// `verdict_color`). Should a row ever reach SQL without a verdict, the algo
-/// label keeps it out of the `node_rev` compare — it renders grey
-/// `superseded-algo`, never a false green.
+/// `verdict_color`).
+///
+/// **What the label buys, stated as what it actually does.** It cannot make a
+/// row render: the grey `superseded-algo` arm it once fed collapsed with the
+/// legacy `^inputs` plane (R1.3/U9c), and a row reaching SQL without a verdict
+/// matches no `board` arm at all — `board_residue` counts it and the count is
+/// disclosed. What staying outside the native set buys is the NEGATIVE: no
+/// node-rev compare, present or later, can be handed this label and call the
+/// row green. DECISION 22 (ZT, 2026-08-04).
 fn fingerprint_algo(token: &str) -> String {
     match model::fingerprint::parse_fingerprint(token) {
         // A hand-written token could spell a version that collides with the
