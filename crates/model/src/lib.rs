@@ -1792,7 +1792,11 @@ impl CorpusIndex {
             // behaviour is byte-for-byte what it was before U11.
             return match self.three_rules(spelling, from, corpus.ambient_docs()) {
                 Some(path) => RefResolution::Ambient(path),
-                None => RefResolution::NotFound { root: None },
+                None => RefResolution::NotFound {
+                    root: None,
+                    path: addr.path().to_owned(),
+                    selector: addr.has_selector().then(|| addr.selector().to_owned()),
+                },
             };
         };
 
@@ -1865,7 +1869,11 @@ impl CorpusIndex {
         //     unmounted class exists to prevent.
         match mounted.index.three_rules(addr.path(), from, mounted.docs) {
             Some(path) => RefResolution::Rooted { root, path },
-            None => RefResolution::NotFound { root: Some(root) },
+            None => RefResolution::NotFound {
+                root: Some(root),
+                path: addr.path().to_owned(),
+                selector: addr.has_selector().then(|| addr.selector().to_owned()),
+            },
         }
     }
 
@@ -2048,9 +2056,21 @@ pub enum RefResolution {
     /// `selector-unresolved` with zero candidates, which asserts the PAGE
     /// resolved and the SELECTOR did not — the wrong cause, in the engine's own
     /// voice, on a root the engine could see perfectly well.
+    /// **It carries the PATH and SELECTOR for the same reason it carries the
+    /// root**, and the reason is R1.6, not convenience. The refusal names the
+    /// path that is missing and echoes the address the author wrote; the only
+    /// other way for a caller to obtain those is to re-split the spelling it
+    /// handed in — a joined string address taken apart in a machine surface,
+    /// which is the construction decision 14 disapproves and the one U21 is
+    /// landing the residue of. The resolver has the parsed address in hand, so
+    /// it hands the PARTS out and nothing downstream re-parses.
     NotFound {
         /// The root the miss happened inside — `None` for the ambient root.
         root: Option<MountName>,
+        /// The path that names nothing in that root's corpus.
+        path: String,
+        /// The selector as the address carried it (`None` = page grain).
+        selector: Option<String>,
     },
     /// The spelling is not a well-formed address, or is one the resolver
     /// refuses (an opaque root carrying a selector).

@@ -648,25 +648,160 @@ pub fn links(
         e.path = Some(p.clone());
         return Err(Box::new(e));
     }
+    // **`query::links`, never `links_rooted` with a default table.** An empty
+    // `MountSet` is a machine that binds NOTHING, and the address plane will
+    // rightly answer `grey(unmounted)` against it. This caller has not consulted
+    // a mount table at all, so handing one in would turn "I did not look" into
+    // "this machine binds nothing" — a claim it has no standing to make, and on
+    // any multi-root machine a false one. Rooted spellings therefore come back
+    // `unresolved` here, exactly as before U21, and the CLI degrades rather
+    // than serve that answer (see `mrd::engine::answer_links`).
     let map = query::links(index, docs, path.map(|p| p.0.as_str()));
     let live = live_root()?;
     Ok(ResponseBody::Links {
         as_of_root,
         live_root: live,
         changes_seq,
-        files: map
+        files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+    })
+}
+
+/// [`links`] against a ROOT-KEYED corpus and a mount table — the cross-root
+/// form (U21).
+///
+/// **The daemon does not call this, and that asymmetry is stated rather than
+/// smoothed.** The resident engine's warm state is ONE workspace corpus keyed
+/// by one canonical path (`registry::warm_or_build`); it holds no mounted
+/// corpora, so for this one op it is knowingly LESS CAPABLE than the
+/// in-process path. The CLI therefore refuses to let it answer a page that may
+/// carry a cross-root position and degrades instead — see
+/// `mrd::engine::answer_links`. Making the daemon root-aware end to end means N
+/// mounted corpora per workspace with per-root fingerprint invalidation,
+/// residency and reap: a designed subsystem, recorded as the named successor,
+/// not a wiring change.
+///
+/// # Errors
+/// As [`links`].
+#[allow(clippy::too_many_arguments)]
+pub fn links_rooted(
+    index: &model::CorpusIndex,
+    docs: &BTreeMap<String, model::Document>,
+    corpus: &model::RootedCorpus<'_>,
+    mounts: &addr::MountSet,
+    path: Option<&Path>,
+    as_of_root: Root,
+    changes_seq: u64,
+    live_root: impl FnOnce() -> Result<Root, Box<ErrorBody>>,
+) -> Result<ResponseBody, Box<ErrorBody>> {
+    if let Some(p) = path
+        && !docs.contains_key(&p.0)
+    {
+        let mut e = ErrorBody::new(ErrorCode::FileNotFound);
+        e.path = Some(p.clone());
+        return Err(Box::new(e));
+    }
+    let map = query::links_rooted(index, docs, corpus, mounts, path.map(|p| p.0.as_str()));
+    let live = live_root()?;
+    Ok(ResponseBody::Links {
+        as_of_root,
+        live_root: live,
+        changes_seq,
+        files: map.into_iter().map(|(p, e)| (p, into_wire(e))).collect(),
+    })
+}
+
+/// One file's edges, as the wire carries them. Shared by both arms so the
+/// answer's SHAPE never depends on which of them served it — only its content
+/// does, and only where the two genuinely know different things.
+fn into_wire(edges: query::FileLinks) -> wire::FileLinks {
+    wire::FileLinks {
+        resolved: edges.resolved,
+        unresolved: edges.unresolved,
+        resolved_rooted: edges
+            .resolved_rooted
             .into_iter()
-            .map(|(p, e)| {
-                (
-                    p,
-                    wire::FileLinks {
-                        resolved: e.resolved,
-                        unresolved: e.unresolved,
-                    },
-                )
+            .map(|(root, paths)| (root.to_string(), paths))
+            .collect(),
+        refused: edges
+            .refused
+            .into_iter()
+            .map(|(link, edge)| {
+                let rendered = render_refused_edge(&link, &edge);
+                (link, rendered)
             })
             .collect(),
-    })
+    }
+}
+
+/// Render one refused edge into its wire shape — the colour plane's verdict,
+/// spelled in the colour plane's own words.
+///
+/// Nothing here re-classifies. The tone, the reason word and the detail come
+/// from `model::selector`, which is the one owner of that vocabulary, and the
+/// teaching refusal comes from the renderer that owns each class. A `match` of
+/// my own over `RefResolution` producing words would be a second answer waiting
+/// to disagree with the walk plane about one address.
+fn render_refused_edge(link: &str, edge: &query::RefusedEdge) -> wire::RefusedEdge {
+    use model::selector::{Color, GreyReason, RedReason};
+
+    // A spelling outside the address grammar has no COLOUR — nothing was
+    // measured and nothing was declined; it is not an address. It reuses
+    // `lock::LockError::BadRef`'s existing name for that fact rather than
+    // minting a synonym, and `AddrError`'s own `Display` is already a
+    // four-property teaching refusal, so it is carried verbatim.
+    let color = match &edge.resolution {
+        model::RefResolution::Malformed(err) => {
+            return wire::RefusedEdge {
+                color: "red".to_owned(),
+                reason: "bad-ref".to_owned(),
+                detail: None,
+                message: err.to_string(),
+                count: edge.count,
+            };
+        }
+        model::RefResolution::Unmounted(root) => {
+            Color::Grey(GreyReason::Unmounted { root: root.clone() })
+        }
+        model::RefResolution::PathUnseeable { root, path, detail } => {
+            Color::Grey(GreyReason::PathUnseeable {
+                root: root.clone(),
+                path: path.clone(),
+                detail: detail.clone(),
+            })
+        }
+        model::RefResolution::NotFound {
+            root: Some(root),
+            path,
+            selector,
+        } => Color::Red(RedReason::FileNotFound {
+            root: root.clone(),
+            path: path.clone(),
+            selector: selector.clone(),
+        }),
+        // An ambient miss and a resolution are not refusals and never reach
+        // this map — `query::links_rooted` routes them to `unresolved` and
+        // `resolved` respectively.
+        model::RefResolution::Ambient(_)
+        | model::RefResolution::Rooted { .. }
+        | model::RefResolution::NotFound { root: None, .. } => {
+            unreachable!("only refusals are carried in `refused`")
+        }
+    };
+
+    wire::RefusedEdge {
+        color: model::selector::color_tone(&color).to_owned(),
+        reason: model::selector::color_reason(&color)
+            .unwrap_or_default()
+            .to_owned(),
+        detail: model::selector::color_detail(&color),
+        // The address as the PAGE declared it — the refusal echoes what the
+        // author wrote, not what resolution made of it, so a reader can find
+        // the string on the page. The file-not-found renderer ignores it and
+        // joins its own parts, which is the one way that class cannot name a
+        // root disagreeing with the root that missed.
+        message: model::selector::color_teaching(&color, link).unwrap_or_default(),
+        count: edge.count,
+    }
 }
 
 /// wire §4.5 the walk plane: best-effort app-compatible two-stage walk over the

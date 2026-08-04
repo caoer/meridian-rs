@@ -85,7 +85,37 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
             render_links_human(&answer.body);
         }
     }
-    Ok(())
+    // **Q3(a) — the asymmetry, stated rather than smoothed.** An ambient
+    // dangling link stays first-class and non-refusing at exit 0: it is an
+    // ordinary authoring state in a working vault. A REFUSED edge is a
+    // different fact — the author believed a mount relationship that does not
+    // hold, or wrote something outside the address grammar — and the exit code
+    // says so. The refusals are already rendered above; this only carries the
+    // finding into the exit triad, the same way a red walk row does.
+    let refusals = refusal_messages(&answer.body);
+    if refusals.is_empty() {
+        return Ok(());
+    }
+    Err(Fail::findings(refusals.join("\n")))
+}
+
+/// How many times the page wrote a refused linkpath.
+fn count_of(refusal: &Value) -> u64 {
+    refusal.get("count").and_then(Value::as_u64).unwrap_or(1)
+}
+
+/// Every refusal the edge map carries, as the teaching text a reader acts on —
+/// empty when the answer refused nothing.
+fn refusal_messages(body: &Value) -> Vec<String> {
+    body.get("files")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, edges)| edges.get("refused").and_then(Value::as_object))
+        .flat_map(serde_json::Map::values)
+        .filter_map(|r| r.get("message").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Print the `links` edge map as an indented human list: each file with a
@@ -98,9 +128,11 @@ fn render_links_human(body: &Value) {
     for (file, edges) in files {
         let resolved = edges.get("resolved").and_then(Value::as_object);
         let unresolved = edges.get("unresolved").and_then(Value::as_object);
+        let rooted = edges.get("resolved_rooted").and_then(Value::as_object);
+        let refused = edges.get("refused").and_then(Value::as_object);
         let empty =
             |m: Option<&serde_json::Map<String, Value>>| m.is_none_or(serde_json::Map::is_empty);
-        if empty(resolved) && empty(unresolved) {
+        if empty(resolved) && empty(unresolved) && empty(rooted) && empty(refused) {
             continue;
         }
         any = true;
@@ -108,8 +140,28 @@ fn render_links_human(body: &Value) {
         for (dest, count) in resolved.into_iter().flatten() {
             println!("    -> {dest} ({count})");
         }
+        // A cross-root destination is printed ROOT-QUALIFIED, and that is not
+        // cosmetic: the ambient corpus may hold its own file at the same path,
+        // so an unqualified name would read as the wrong document.
+        for (root, paths) in rooted.into_iter().flatten() {
+            for (dest, count) in paths.as_object().into_iter().flatten() {
+                println!("    -> {root}:{dest} ({count})");
+            }
+        }
         for (link, count) in unresolved.into_iter().flatten() {
             println!("    -> {link} ({count}, unresolved)");
+        }
+        for (link, refusal) in refused.into_iter().flatten() {
+            let tone = refusal
+                .get("color")
+                .and_then(Value::as_str)
+                .unwrap_or("red");
+            let reason = refusal
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let count = count_of(refusal);
+            println!("    -> {link} ({count}, {tone} {reason})");
         }
     }
     if !any {
@@ -134,7 +186,9 @@ const PING_POLL: Duration = Duration::from_millis(25);
 /// in the corpus) — the same error the daemon would raise. A missing daemon is
 /// never an error.
 pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answer, Fail> {
-    if let Some(body) = try_daemon_links(workspace, path) {
+    if let Some(body) = try_daemon_links(workspace, path)
+        && !daemon_answer_needs_the_address_plane(&body)
+    {
         return Ok(Answer {
             source: EngineSource::Daemon,
             body,
@@ -145,6 +199,44 @@ pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answe
         source: EngineSource::Ephemeral,
         body,
     })
+}
+
+/// **The U21 degrade gate: does this answer depend on a question the daemon
+/// cannot ask?**
+///
+/// The daemon's warm state is ONE workspace corpus and NO mount authority
+/// (`query::links_with`), so it reports every rooted spelling `unresolved` —
+/// which for a bound, readable, present target is a wrong answer, and for an
+/// unbound one is a silent non-refusal. The in-process path holds the mount
+/// table and the mounted corpora, so it can answer both correctly. This decides
+/// which of the two the user gets.
+///
+/// **It gates on the ANSWER, not on a pre-flight scan of the corpus, and the
+/// coverage is exact rather than heuristic.** A spelling reaches the daemon's
+/// `unresolved` map precisely when `resolve_linkpath` returned `None`, and that
+/// function's C-3 guard IS [`addr::head_carries_root_separator`] — the same
+/// function, not a second predicate that agrees. So every spelling this gate
+/// could care about is already sitting in `unresolved`, by construction, and an
+/// ordinary single-root corpus pays one map walk and never degrades.
+///
+/// **Why the LEXICAL predicate and not `may_carry_cross_root`.** That one gates
+/// on `Addr::parse` succeeding, which is right for the question it asks — a
+/// WRITE-side question, *"does this address have a stored form?"*, and an
+/// unparseable address has none. Ours is a READ-side question, *"could the
+/// address plane change this answer?"*, and a REFUSAL is a changed answer. Five
+/// spellings slip the parse-gated form — `Sessions:notes.md` (uppercase root),
+/// `My Notes:draft.md`, `a:b:c.md`, `:notes.md`, `sessions:` — and each would
+/// then be served warm as `unresolved` at exit 0 while in-process refuses it.
+/// One address, two answers, decided by which path served it: the C-4 defect
+/// the address grammar exists to prevent, rebuilt inside the fix for it.
+fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
+    body.get("files")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, edges)| edges.get("unresolved").and_then(Value::as_object))
+        .flat_map(serde_json::Map::keys)
+        .any(|link| addr::head_carries_root_separator(link))
 }
 
 /// Try the whole daemon path: resolve the socket, ensure a daemon is up
@@ -303,8 +395,24 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     // `live_root` samples after the read; for a single in-process snapshot the
     // world does not move, so it equals `as_of` (a legal §10.1 frame).
     let live = as_of.clone();
-    let body = wire_serve::read::links(&index, &docs, wpath.as_ref(), as_of, 0, || Ok(live))
-        .map_err(|e| Fail::tool(render_wire_error(&e)))?;
+    // **The whole reason this path exists after U21.** The mount table and one
+    // corpus per bound root come from `walk_cmd::load_mounts` — the SAME
+    // assembly the pin plane uses (S3-R59, one owner), so a cross-root address
+    // resolves through the same `resolve_ref` on both planes and cannot answer
+    // two ways.
+    let mounts = crate::walk_cmd::load_mounts();
+    let corpus = mounts.rooted(&docs);
+    let body = wire_serve::read::links_rooted(
+        &index,
+        &docs,
+        &corpus,
+        mounts.set(),
+        wpath.as_ref(),
+        as_of,
+        0,
+        || Ok(live),
+    )
+    .map_err(|e| Fail::tool(render_wire_error(&e)))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
     // The CLI negotiated `contract:v3` on the warm path, so the degrade answer
