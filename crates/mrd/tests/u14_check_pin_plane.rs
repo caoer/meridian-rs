@@ -217,15 +217,39 @@ fn produce(root: &WorkspaceRoot, path: &str, body: &str) {
 const SOURCE_PINNED: &str = "# Source\n\n## Guideline\n\nthe pinned body\n";
 const CLAIM: &str = "# Claim\n\nwe rely on the guideline.\n";
 
-/// A `meridian-lock` block carrying ONE `objects:` entry and no pins — the
-/// RETRIEVAL plane on its own, in the canonical bytes the engine itself mints
-/// (quoted scalars, `version: 1`). The oid is well-formed and names nothing, so
-/// the question put to git is real and its answer is the fixture's subject.
-fn objects_lock(key: &str) -> String {
+/// A `meridian-lock` block carrying ONE pin, in the canonical R4 bytes the engine
+/// itself mints (quoted scalars, `version: 2`).
+///
+/// R4 retired the top-level `objects:` table and moved the blob hash onto the pin
+/// row, so the RETRIEVAL plane can no longer be put in front of `check` on its
+/// own — a hash arrives only as some pin's `hash`. The oid is well-formed and
+/// names nothing, so the question put to git is real and its answer is still the
+/// fixture's subject; the caller supplies the `fingerprint` so the CLAIM plane
+/// beside it is a state the caller chose rather than an accident of the schema
+/// change.
+///
+/// `object` is the wiki-link inner text — the target's vault path minus `.md`,
+/// which is exactly what [`wire_serve::write`]'s `pin_row` mints.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
+/// schema version, not the wire protocol version.
+fn objects_lock(object: &str, fingerprint: &str) -> String {
     format!(
-        "```meridian-lock\nversion: 1\nobjects:\n  \"{key}\": \"{}\"\n```\n",
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"{}\"\n    path: []\n    fingerprint: \"{fingerprint}\"\n```\n",
         "a".repeat(40)
     )
+}
+
+/// The LIVE whole-page fingerprint of `raw` — what a CORRECT whole-page pin
+/// holds, minted through the engine's own hasher over the same parse
+/// `fs::build_corpus` runs, so a fixture cannot pin a token the reader would not
+/// recompute.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
 }
 
 /// The pinned corpus every gate below starts from: `source.md` + `claim.md`
@@ -723,13 +747,18 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     write(&ws, "claim.md", CLAIM);
     let root = root_of(&ws);
 
-    // A pin lands even without git (`blob_oid` degrades honestly and the
-    // `objects:` entry is simply absent), so to put a blob sha in front of a
-    // missing repository the retrieval plane is written by hand.
+    // R4 makes a pin's `hash` mandatory, so `mrd pin` REFUSES outright where git
+    // cannot answer — which is exactly here. To put a blob sha in front of a
+    // missing repository the lock is therefore written by hand, with the CLAIM
+    // plane held GREEN (the live whole-page token) so the only thing left for
+    // `check` to be unhappy about is the store it cannot ask.
     write(
         &ws,
         "claim.md",
-        &format!("{CLAIM}\n{}", objects_lock("source.md")),
+        &format!(
+            "{CLAIM}\n{}",
+            objects_lock("source", &live_fingerprint(SOURCE_PINNED))
+        ),
     );
     produce(&root, "note.md", "# Note\n\ngoverned birth\n");
     assert!(
@@ -755,20 +784,46 @@ fn check_degrades_honestly_when_there_is_no_git_repository() {
     );
 }
 
-/// **The cross-root observation, held as a refusal rather than a guess.** An
-/// `objects:` key carrying a `root:` prefix names ANOTHER root's object store. This
-/// read asks the ambient repository and nothing else, so the honest answer is that
-/// it cannot assess that entry — never a fabricated verdict from the wrong store,
-/// which would be a wrong SUCCESS rather than a stale one.
+/// **THE DISCLOSURE PIN — a cross-root pin is SKIPPED AND STATED, and the fence
+/// still passes** (ruling 2026-08-04). End-to-end, through the real binary.
+///
+/// # This test's subject was replaced by a ruling, not repaired
+/// It was `check_cannot_ask_another_roots_object_store_and_says_so` and it
+/// asserted the opposite: exit non-zero, `grey(cannot-assess)`. That refusal was
+/// correct on its own terms and unchanged since v1 — but R4 made `hash`
+/// mandatory on every pin, so what used to reach it (cross-root `objects:` rows,
+/// which nobody wrote) became EVERY cross-root pin, and **the fence began
+/// refusing every commit in any repo holding one**. That is the
+/// refuses-every-governed-commit failure S3-R8 exists to prevent, arriving from
+/// a third side.
+///
+/// The anchoring plane holds ONE git handle by design, so ambient-only is what
+/// it has always measured; R4 merely made the population visible. The ruling
+/// scoped it explicitly and restored the ratified pre-R4 behaviour that
+/// `f6_check_sees_the_mount_table`'s acceptance criterion encodes.
+///
+/// # Both halves are load-bearing, and the second is why this test exists
+/// Skipping alone would be a SILENT narrowing — the false clean this plane
+/// exists to prevent. So the population is STATED on both faces: *"outside sight
+/// is never verified"* is honoured by naming the sight line, not by pretending
+/// the blob was seen. **Mutation-proved: suppressing the disclosure line reddens
+/// this test.**
+///
+/// Cross-root blob durability is not retired by the scoping — it belongs to this
+/// file's own per-root surface (`u13_per_root_anchoring`), which holds the right
+/// handle.
 #[test]
-fn check_cannot_ask_another_roots_object_store_and_says_so() {
+fn a_cross_root_pin_is_skipped_and_disclosed_and_does_not_refuse_the_fence() {
     let sb = sandbox();
     let ws = sb.git_workspace("rooted-key");
     write(&ws, "source.md", SOURCE_PINNED);
     write(
         &ws,
         "claim.md",
-        &format!("{CLAIM}\n{}", objects_lock("alpha:source.md")),
+        &format!(
+            "{CLAIM}\n{}",
+            objects_lock("alpha:source", &live_fingerprint(SOURCE_PINNED))
+        ),
     );
     commit_all(&ws, "init");
     let root = root_of(&ws);
@@ -776,13 +831,33 @@ fn check_cannot_ask_another_roots_object_store_and_says_so() {
 
     let out = sb.run(&ws, &["check"]);
     let text = said(&out);
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "a question this read cannot put to git is not a clean bill: {text}"
+
+    // THE DISCLOSURE — the human face names the population it did not measure.
+    assert!(
+        text.contains("anchoring scope:") && text.contains("alpha"),
+        "the sight line is STATED, naming the root outside it: {text}"
     );
     assert!(
-        text.contains(check::GREY_CANNOT_ASSESS) && text.contains("alpha"),
-        "and it names the root whose store it could not ask: {text}"
+        text.contains("NOT measured here"),
+        "and it says plainly that those blobs were not measured: {text}"
+    );
+
+    // AND THE ANCHORING PLANE DID NOT GREY ON IT — the scoping is not a refusal.
+    assert!(
+        !text.contains(check::GREY_CANNOT_ASSESS),
+        "a question outside this gate's jurisdiction is not `cannot-assess`: {text}"
+    );
+
+    // The `--json` face carries the same narrowing, machine-readable.
+    let json_out = sb.run(&ws, &["check", "--json"]);
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout(&json_out)).expect("check --json parses");
+    let scope = &doc["pins"]["anchoring_out_of_jurisdiction"];
+    assert_eq!(scope["count"], 1, "the machine face counts it too: {doc}");
+    assert!(
+        scope["refs"][0]
+            .as_str()
+            .is_some_and(|r| r.contains("alpha") && r.contains("claim.md")),
+        "count alone cannot be acted on — the refs name WHICH pins: {doc}"
     );
 }

@@ -147,7 +147,11 @@ fn read_json_carries_the_v3_projected_body() {
     assert_eq!(rows.len(), 2, "two heading rows: {body}");
     assert_eq!(rows[0]["n"], "1", "dewey ordinal on the first row");
     assert_eq!(rows[1]["n"], "1.1", "dewey ordinal on the nested row");
-    assert_eq!(rows[1]["hpath"], "Alpha/Beta", "sanitized joined hpath");
+    assert_eq!(
+        rows[1]["hpath"],
+        serde_json::json!([{"h": "Alpha"}, {"h": "Beta"}]),
+        "the published address is the SEGMENT array (U14), not a joined string"
+    );
 }
 
 /// Gate — `--section` implies sections mode and answers the selected
@@ -164,7 +168,12 @@ fn read_section_selects_and_serves_content() {
     let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
     let sections = v["read"]["sections"].as_array().expect("sections");
     assert_eq!(sections.len(), 1);
-    assert_eq!(sections[0]["sel"], "Alpha/Beta");
+    assert_eq!(
+        sections[0]["sel"],
+        serde_json::json!({"hpath": [{"h": "Alpha"}, {"h": "Beta"}]}),
+        "U14: the selector is echoed in the caller's own TAGGED grammar, so a \
+         caller pairing responses to requests compares structure to structure"
+    );
     assert!(
         sections[0]["content"]
             .as_str()
@@ -232,7 +241,14 @@ fn read_without_path_is_exit_2() {
 // the RAW segment array. So the output grammar was a lossy projection of the
 // input grammar and nothing in the read output recovered the pre-image — the
 // agent loop (read a document, decide an edit, write it) could not close by
-// copying. `hpath_raw` carries the raw array through the read face verbatim.
+// copying.
+//
+// **U14 finished it.** fix-08 closed the loop by adding `hpath_raw` BESIDE the
+// joined string; U14 promoted that array into `hpath` and deleted the string
+// (ZT decision 14: no string address forms on machine surfaces). So the read
+// face now publishes ONE address, it is the segment array, and it is the
+// grammar `put` accepts — there is no longer a lossy spelling on this face for
+// a caller to pick up by mistake. These gates assert the finished shape.
 
 /// Read `doc.md`'s toc rows as JSON.
 fn toc_rows(sb: &Sandbox, ws: &Path) -> Vec<Value> {
@@ -242,13 +258,16 @@ fn toc_rows(sb: &Sandbox, ws: &Path) -> Vec<Value> {
     v["read"]["toc"].as_array().expect("toc rows").clone()
 }
 
-/// The published `hpath_raw` of one toc row, asserted to be a real segment
-/// array — the RED half of these gates: at base rev the field is absent.
+/// The published address of one toc row, asserted to be a real segment array.
+///
+/// U14: this reads `hpath`, which IS the raw array now. Before U14 it read the
+/// `hpath_raw` sidecar that rode beside a joined `hpath`; the sidecar is gone
+/// because the array took the name.
 fn published_address(row: &Value) -> Value {
-    let raw = row.get("hpath_raw").unwrap_or(&Value::Null);
+    let raw = row.get("hpath").unwrap_or(&Value::Null);
     assert!(
         raw.is_array() && !raw.as_array().expect("array").is_empty(),
-        "the read face must publish hpath_raw as a raw segment array, got {raw} in row {row}"
+        "the read face must publish hpath as a raw segment array, got {raw} in row {row}"
     );
     raw.clone()
 }
@@ -265,8 +284,9 @@ fn match_at(target_hpath: &Value, old: &str, new: &str) -> String {
 
 /// Gate — the loop closes on a NESTED section: the address `read` publishes,
 /// fed straight back as a `put` target, lands the write on the section that
-/// was read. The ancestor `Scratch notes` survives only in `hpath_raw`; the
-/// sanitized `hpath` (`Scratch-notes/Findings`) never carried it.
+/// was read. The ancestor's raw text `Scratch notes` rides the published
+/// address verbatim; the sanitized spelling (`Scratch-notes/Findings`) that
+/// used to occupy `hpath` never carried it, and is no longer published at all.
 #[test]
 fn read_published_address_round_trips_into_put() {
     let sb = sandbox();
@@ -274,8 +294,10 @@ fn read_published_address_round_trips_into_put() {
     let rows = toc_rows(&sb, &ws);
     assert_eq!(rows.len(), 2, "two heading rows: {rows:?}");
     assert_eq!(
-        rows[1]["hpath"], "Scratch-notes/Findings",
-        "the sanitized address still rides, unrenamed"
+        rows[1]["hpath"],
+        serde_json::json!([{"h": "Scratch notes"}, {"h": "Findings"}]),
+        "the published address carries the ancestor's RAW text (U14) — the \
+         sanitized `Scratch-notes/Findings` spelling is gone from this face"
     );
 
     let addr = published_address(&rows[1]);
@@ -323,11 +345,21 @@ fn the_sanitized_address_does_not_round_trip() {
     );
 }
 
-/// Gate — the collision case: three headings that sanitize to ONE address each
-/// round-trip to their OWN section. On the read face `hpath` is `Scratch-notes`
-/// for all three (and a `--section` selector silently serves the first);
-/// `hpath_raw` distinguishes them byte-exactly, so each published address hits
-/// exactly one section.
+/// Gate — the collision case: three headings that SANITIZE to one address each
+/// round-trip to their OWN section.
+///
+/// **U14 changed what this gate can observe, and the subject survives.** Before,
+/// the read face published the sanitized `Scratch-notes` for all three (so a
+/// `--section` selector silently served the first) and only the `hpath_raw`
+/// sidecar told them apart. Now the ONE published address is the raw array, so
+/// the collision is not expressible on this face at all — the three rows carry
+/// three distinct addresses, and the many-to-one map survives only inside
+/// `sanitize_heading`, which no machine surface exposes.
+///
+/// So the first assertion changed from "one address for three sections" to its
+/// inverse: the published addresses must be pairwise DISTINCT. That is the
+/// property the round-trip below actually depends on, and it is the one U14
+/// established.
 #[test]
 fn each_collider_round_trips_to_its_own_section() {
     let sb = sandbox();
@@ -336,17 +368,19 @@ fn each_collider_round_trips_to_its_own_section() {
     );
     let rows = toc_rows(&sb, &ws);
     assert_eq!(rows.len(), 3, "three heading rows: {rows:?}");
-    assert_eq!(
-        rows.iter()
-            .map(|r| r.get("hpath").cloned().unwrap_or(Value::Null))
-            .collect::<Vec<_>>(),
-        vec![
-            Value::from("Scratch-notes"),
-            Value::from("Scratch-notes"),
-            Value::from("Scratch-notes")
-        ],
-        "one sanitized address for three sections — the many-to-one map"
-    );
+    let published: Vec<Value> = rows
+        .iter()
+        .map(|r| r.get("hpath").cloned().unwrap_or(Value::Null))
+        .collect();
+    for (i, a) in published.iter().enumerate() {
+        for (j, b) in published.iter().enumerate().skip(i + 1) {
+            assert_ne!(
+                a, b,
+                "rows {i} and {j} publish the SAME address — the sanitized \
+                 many-to-one collision is back on the read face (U14)"
+            );
+        }
+    }
 
     let addrs: Vec<Value> = rows.iter().map(published_address).collect();
     assert_eq!(
@@ -531,7 +565,12 @@ fn sections_mode_publishes_the_round_trippable_address() {
             "read",
             "doc.md",
             "--section",
-            "Scratch-notes/Findings",
+            // U14 / D2, user-visible: `--section` takes the RAW heading text.
+            // The sanitized `Scratch-notes/Findings` spelling addressed this
+            // section before U14 and addresses NOTHING now, because the read
+            // face publishes the raw address and the CLI converts that same
+            // spelling at its door. What you read is what you type.
+            "Scratch notes/Findings",
             "--json",
         ],
     );

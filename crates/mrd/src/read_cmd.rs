@@ -81,19 +81,6 @@ struct Read {
     format: Format,
 }
 
-/// A `#Fragment` the user typed → the segment array the wire takes. It scopes
-/// a HEADING subtree, so it is parsed as a heading path and nothing else: a
-/// `^id` or a dewey ordinal in this position would be a subtree with no
-/// descendants, which is a section read, not a scope.
-fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
-    frag.split('/')
-        .map(|h| wire::HpathSeg {
-            h: h.to_owned(),
-            n: None,
-        })
-        .collect()
-}
-
 impl Read {
     fn parse(args: &[String]) -> Result<Self, Fail> {
         let mut positional: Option<String> = None;
@@ -230,12 +217,12 @@ impl Read {
             req["frag"] = json!(frag_segments(frag));
         }
         if !self.sections.is_empty() {
-            let sels: Vec<wire::ReadSel> = self
+            let tagged: Vec<wire::ReadSel> = self
                 .sections
                 .iter()
                 .map(|s| wire::ReadSel::parse(s))
                 .collect();
-            req["sections"] = json!(sels);
+            req["sections"] = json!(tagged);
         }
         req
     }

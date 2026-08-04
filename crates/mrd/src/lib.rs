@@ -38,6 +38,7 @@ mod history_cmd;
 // the reader of `skill_cmd`'s document; nothing here writes.
 pub mod hook;
 mod init;
+mod lockmigrate_cmd;
 mod new_cmd;
 mod pin_cmd;
 mod preset_cmd;
@@ -317,6 +318,16 @@ usage:
                            state: converged / drifted-fixed / non-convergent /
                            pending-agent. Exits: 0 converged/drifted-fixed (or dry)
                            / 1 non-convergent or pending-agent / 2 bad invocation
+! mrd lock migrate --vault <PATH> [--dry]
+                           SELF-RETIRING (U9b): migrate a vault's meridian-lock
+                           blocks from v1 to R4 v2 through the governed
+                           lock-migrate door. Dry-run-first, idempotent,
+                           resumable. Rewrites ONLY engine-placed page locks (one
+                           block, at EOF); a v1 block illustrated inside a
+                           document is reported and LEFT ALONE. Refuses a vault
+                           with no git -- no restore point, no sweep. Exits: 0
+                           clean (or dry) / 1 a page was refused / 2 bad
+                           invocation or unreadable vault
 
 options:
   --json                   emit JSON instead of a human table
@@ -472,11 +483,34 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
         "unfold" => unfold_cmd::run(&args[1..]),
         "reconcile" => reconcile_cmd::run(&args[1..]),
         "realise" => realise_cmd::run(&args[1..]),
+        // SELF-RETIRING (U9b): dies with the lock migration.
+        "lock" => dispatch_lock(&args[1..]),
         "daemon" => {
             reject_extra(&args[1..])?;
             daemon::run()
         }
         other => Err(Fail::usage(format!("unknown subcommand: {other}"))),
+    }
+}
+
+/// Dispatch `mrd lock <sub>` — only `migrate` exists.
+///
+/// **SELF-RETIRING (U9b): this whole namespace dies with the lock migration.**
+///
+/// The verb is TWO WORDS, matching `cache ls` / `skill hook` / `view status`,
+/// because the listing's addressing grammar takes words while every character
+/// is ASCII lowercase (`help::words_of`). A hyphen stops that lexer dead, so a
+/// `lock-migrate` block lexes to ZERO words — unaddressable by `--help`, and
+/// silently so, which is precisely what `every_block_is_addressable` exists to
+/// forbid. Widening a shared lexer permanently for a verb that deletes itself
+/// would be the wrong trade; the two-word form is already first-class here.
+fn dispatch_lock(args: &[String]) -> Result<(), Fail> {
+    let Some(sub) = args.first() else {
+        return Err(Fail::usage("lock needs a subcommand (migrate)".to_owned()));
+    };
+    match sub.as_str() {
+        "migrate" => lockmigrate_cmd::run(&args[1..]),
+        other => Err(Fail::usage(format!("unknown lock subcommand: {other}"))),
     }
 }
 
@@ -852,6 +886,11 @@ mod help {
                     vec!["cache", "ls"],
                     vec!["cache", "clean"],
                     vec!["view", "status"],
+                    // U9b. Two words BY NECESSITY, not taste: `words_of` takes
+                    // words while every char is ASCII lowercase, so a hyphenated
+                    // `lock-migrate` lexes to zero words and becomes an
+                    // unaddressable block.
+                    vec!["lock", "migrate"],
                 ],
                 "the two-word verbs of the listing"
             );
@@ -885,22 +924,26 @@ mod help {
         }
 
         /// The write mark is the gutter, so the classification is countable
-        /// straight off the text. 11 verbs write; the rest read. (It was 12
+        /// straight off the text. 12 verbs write; the rest read. (It was 12
         /// until `mrd journal genesis` was retired — the engine keeps no memory,
-        /// so nothing writes a ledger any more.)
+        /// so nothing writes a ledger any more — and it is 12 again because U9b
+        /// added `mrd lock migrate`, which REWRITES `meridian-lock` blocks in a
+        /// live vault through a governed byte-landing door. A verb whose whole
+        /// purpose is rewriting the user's files is a writer; `--dry` does not
+        /// exempt it, exactly as it does not exempt `pin` or `realise`.)
         #[test]
-        fn eleven_verbs_are_marked_as_writers() {
+        fn twelve_verbs_are_marked_as_writers() {
             let marked: Vec<&str> = LISTING
                 .lines()
                 .filter(|line| line.starts_with("! "))
                 .collect();
             assert_eq!(
                 marked.len(),
-                11,
+                12,
                 "marked as writers:\n{}",
                 marked.join("\n")
             );
-            assert_eq!(blocks().len(), 25, "verb blocks in the listing");
+            assert_eq!(blocks().len(), 26, "verb blocks in the listing");
         }
 
         /// Every option that names an owner names a verb that exists, so a

@@ -239,13 +239,57 @@ fn token_on_disk(ws: &Path, rel: &str) -> String {
         .to_owned()
 }
 
+/// The R4 blob hash a fixture pin carries when the test is not measuring the
+/// retrieval plane. R4 makes `hash` MANDATORY — *"if hash is missing, we lost the
+/// explicit target meaning"* — so there is no pin without one.
+const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
+
 /// A hand-authored `meridian-lock` page — the fixture depends on the CLI's own
 /// READER, never on the writer that produced the bytes.
+///
+/// `declared_ref` is the `page[#A/B]` convenience spelling, split into the R4
+/// `object` wiki link and the `path` ARRAY at this one door — nothing downstream
+/// ever sees a joined string, because R4 admits none on a row. A `#^id` fragment
+/// stays a single-element array, which is what makes it the anchor arm.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` across these fixtures.
+/// That is the LOCK FILE schema version, not the wire protocol version.
 fn locked_page(title: &str, declared_ref: &str, fingerprint: &str) -> String {
     format!(
-        "# {title}\n\nclaim.\n\n```meridian-lock\nversion: 1\npins:\n  \
-         - ref: \"{declared_ref}\"\n    fingerprint: \"{fingerprint}\"\n```\n"
+        "# {title}\n\nclaim.\n\n{}\n",
+        lock_block(&[(declared_ref, fingerprint)])
     )
+}
+
+/// The canonical R4 (`version: 2`) `meridian-lock` fence for one or more pins,
+/// written by hand for the reason [`locked_page`] states. Every pin carries
+/// [`FIXTURE_BLOB`]: no gate that uses this helper measures blob reachability.
+fn lock_block(pins: &[(&str, &str)]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
+    for (declared_ref, fingerprint) in pins {
+        let (target, fragment) = match declared_ref.split_once('#') {
+            Some((t, f)) => (t, f),
+            None => (*declared_ref, ""),
+        };
+        let object = target.strip_suffix(".md").unwrap_or(target);
+        let path = if fragment.is_empty() {
+            String::new()
+        } else {
+            fragment
+                .split('/')
+                .map(|seg| format!("\"{seg}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let _ = writeln!(
+            out,
+            "  - object: \"[[{object}]]\"\n    hash: \"{FIXTURE_BLOB}\"\n    \
+             path: [{path}]\n    fingerprint: \"{fingerprint}\""
+        );
+    }
+    out.push_str("```");
+    out
 }
 
 /// Is there an `@fp` token in the file? The claim is R22/R32's exact width —
@@ -439,12 +483,15 @@ fn build_every_state_corpus(sb: &Sandbox, ws: &Path) -> Vec<(&'static str, &'sta
         "malformed.md",
         &locked_page("malformed", "t_ok.md#T/Section", "not-a-token"),
     );
-    // An unterminated quoted scalar — the lock itself refuses to parse.
+    // An unterminated quoted scalar — the lock itself refuses to parse. The
+    // version is CURRENT on purpose: a stale `version: 1` block refuses for an
+    // entirely different reason (the unsupported-version door), and this fixture
+    // must trigger the malformed-grammar refusal the assertions below name.
     write(
         ws,
         "refused.md",
-        "# refused\n\nclaim.\n\n```meridian-lock\nversion: 1\npins:\n  \
-         - ref: \"t_ok.md#T/Section\n```\n",
+        "# refused\n\nclaim.\n\n```meridian-lock\nversion: 2\npins:\n  \
+         - object: \"[[t_ok]]\n```\n",
     );
 
     vec![
@@ -635,7 +682,7 @@ fn session_read(
     let doc = fs::load(root, Path::new(rel)).expect("load");
     let params = wire_serve::read::ReadParams {
         mode: Some("sections".into()),
-        sections: Some(vec![selector.to_owned()]),
+        sections: Some(vec![wire::ReadSel::parse(selector)]),
         actor: Some(actor.to_owned()),
         ..Default::default()
     };
@@ -665,7 +712,7 @@ fn vibe_pin_args(actor: &str, selector: &str, vibe: bool) -> SpliceArgs {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WPath("guide.md".into()),
-            selector: selector.into(),
+            selector: wire::ReadSel::parse(selector),
             vibe: vibe.then_some(true),
         }),
     }
@@ -792,7 +839,14 @@ fn criterion_2_the_cli_mints_a_real_pin_normal_and_vibe() {
     );
     let claim = read(&ws, "claim.md");
     assert!(
-        claim.contains("```meridian-lock") && claim.contains("pins:") && claim.contains("objects:"),
+        claim.contains("```meridian-lock")
+            && claim.contains("pins:")
+            && claim.contains("hash:")
+            && claim.contains("fingerprint:"),
+        // R4 retired the top-level `objects:` table this used to look for; the
+        // blob rides the pin row as its MANDATORY `hash`, so checking `hash:`
+        // and `fingerprint:` is the successor check — and a stronger one, since
+        // both are now required on every row rather than optional planes.
         "a canonical lock block landed:\n{claim}"
     );
     let gauge = sb.run(&ws, &["status", "--json"]);
@@ -876,7 +930,7 @@ fn decorate_the_way_the_daemon_does(ws: &Path, rel: &str, section: &str) -> Stri
     let doc = docs.get(rel).expect("the page is in the corpus");
     let params = wire_serve::read::ReadParams {
         mode: Some("sections".into()),
-        sections: Some(vec![section.to_owned()]),
+        sections: Some(vec![wire::ReadSel::parse(section)]),
         ..Default::default()
     };
     let body = wire_serve::read::composed_read(
@@ -1268,8 +1322,8 @@ fn f4_the_artifact_guard_refuses_a_forged_lock_through_the_ordinary_edit_door() 
     let live = token_on_disk(&ws, "probe.md");
 
     let forged = format!(
-        "draws from t.\n\n```meridian-lock\nversion: 1\npins:\n  \
-         - ref: \"t.md#T/Section\"\n    fingerprint: \"{live}\"\n```\n"
+        "draws from t.\n\n{}\n",
+        lock_block(&[("t.md#T/Section", &live)])
     );
     let edits = serde_json::to_string(&serde_json::json!([{
         "target": {"hpath": [{"h": "Claim"}, {"h": "Body"}]},
@@ -1338,9 +1392,11 @@ fn f6_walk_renders_both_pins_that_share_one_selector_and_status_agrees() {
         &ws,
         "claim.md",
         &format!(
-            "# Claim\n\ndraws from t.\n\n```meridian-lock\nversion: 1\npins:\n  \
-             - ref: \"t.md#T/Section\"\n    fingerprint: \"{live}\"\n  \
-             - ref: \"t.md#T/Section\"\n    fingerprint: \"{drifted}\"\n```\n"
+            "# Claim\n\ndraws from t.\n\n{}\n",
+            lock_block(&[
+                ("t.md#T/Section", live.as_str()),
+                ("t.md#T/Section", drifted.as_str()),
+            ])
         ),
     );
 
@@ -1372,30 +1428,53 @@ fn f6_walk_renders_both_pins_that_share_one_selector_and_status_agrees() {
 }
 
 /// **F12 (P2) — a REFUSED pin leaves the target byte-unchanged.** The promotion
-/// used to run before the refusal, so `mrd pin plan.md 'guide.md#Guide/A-B'` exited
-/// 2 having written `^a-b` into a DIFFERENT file from the one the request named.
-/// Deterministic, so unlike the accepted G3 orphan it never healed.
+/// used to run before the refusal, so a refused pin exited 2 having written a
+/// `^slug` into a DIFFERENT file from the one the request named. Deterministic,
+/// so unlike the accepted G3 orphan it never healed.
 ///
 /// Re-driven with the R24 half beside it: the refusal must carry its CAUSE, not a
 /// bare error class.
+///
+/// **U14 REPOINTED THE FIXTURE, not the expectation** (all-hands #2). This test
+/// drove a `/`-bearing heading, whose refusal U14 RULED DEAD — an R4 `path`
+/// array carries `["Guide", "A/B"]` unambiguously, so `/` no longer makes a
+/// heading unrepresentable. Left alone, the old fixture still went red, but via
+/// `pin_target_missing` (the sanitized `Guide/A-B` addresses nothing now)
+/// instead of the representability refusal this test NAMES. Updating the
+/// expected string would have left a green test permanently exercising a
+/// selector typo.
+///
+/// So the fixture moved to the refusal that SURVIVES at the same door and in
+/// the same family: a `#`-bearing heading. `#` is still a live delimiter in the
+/// ingress grammars (wikilinks, `path#fragment`), nothing has ruled it
+/// representable end to end, and the refusal fires at exactly the rung the
+/// promotion used to precede — so the byte-identity claim below is tested on
+/// the same path it always was.
 #[test]
 fn f12_a_refused_pin_leaves_the_target_byte_identical_and_says_why() {
     let sb = sandbox();
     let ws = sb.workspace("f12-atomic");
-    write(&ws, "guide.md", "# Guide\n\n## A/B\n\nreview.\n");
+    write(&ws, "guide.md", "# Guide\n\n## A#B\n\nreview.\n");
     write(&ws, "plan.md", "# Plan\n\ndraws from the guide.\n");
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-qm", "init"]);
     let before_target = read(&ws, "guide.md");
     let before_pinner = read(&ws, "plan.md");
 
-    let out = sb.run(&ws, &["pin", "plan.md", "guide.md#Guide/A-B"]);
-    assert_ne!(code(&out), 0, "the ref cannot round-trip: {}", said(&out));
+    let out = sb.run(&ws, &["pin", "plan.md", "guide.md#Guide/A#B"]);
+    assert_ne!(
+        code(&out),
+        0,
+        "a `#`-bearing heading is not representable: {}",
+        said(&out)
+    );
     let said = said(&out);
+    // The REASON, precisely (all-hands #24): this must be the representability
+    // refusal, not a selector miss that happens to be red.
     assert!(
-        said.contains("cannot round-trip") && said.contains("^id"),
+        said.contains("carries a `#`") && said.contains("^id"),
         "R24: the refusal names the CAUSE and the way forward, never a bare \
-         class: {said}"
+         class — and it must be the `#` refusal, not a miss: {said}"
     );
     assert_eq!(
         read(&ws, "guide.md"),
@@ -1611,13 +1690,15 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
     );
     assert_eq!(clean["composed"]["vibe_debt"]["blobs"], 0);
 
-    // Corrupt the retrieval plane: the `objects:` value is no longer an object id.
+    // Corrupt the retrieval plane: the pin's blob value is no longer an object id.
+    // R4 retired the top-level `objects:` table — the hash rides the pin row it
+    // was minted for — so the plane this fixture corrupts is the `hash:` field.
     let text = read(&ws, "claim.md");
     let corrupted = text
         .lines()
         .map(|l| {
-            if l.trim_start().starts_with("\"t.md\":") {
-                "  \"t.md\": \"not-a-sha\"".to_owned()
+            if l.trim_start().starts_with("hash:") {
+                "    hash: \"not-a-sha\"".to_owned()
             } else {
                 l.to_owned()
             }
@@ -1626,7 +1707,7 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
         .join("\n");
     assert!(
         corrupted.contains("not-a-sha"),
-        "the fixture must actually corrupt the objects plane:\n{corrupted}"
+        "the fixture must actually corrupt the retrieval plane:\n{corrupted}"
     );
     write(&ws, "claim.md", &format!("{corrupted}\n"));
 
@@ -1641,7 +1722,11 @@ fn f26_a_malformed_objects_sha_reports_unknown_never_a_clean_zero() {
     assert!(
         gauge["unknown"]
             .as_str()
-            .is_some_and(|s| s.contains("objects:") && s.contains("claim.md")),
+            .is_some_and(|s| s.contains("claim.md") && s.contains("pin `t`")),
+        // R24 is that the reading NAMES what it could not ask about. It used to
+        // be spelled `claim.md objects.t`; with the table retired it is
+        // `claim.md pin `t``. The assertion now pins the PIN as well as the
+        // page, so it names the offender more precisely than before, not less.
         "the unknown NAMES what it could not ask about (R24): {gauge}"
     );
     assert!(

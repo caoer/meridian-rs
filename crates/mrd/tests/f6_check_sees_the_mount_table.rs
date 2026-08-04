@@ -189,11 +189,19 @@ impl Sandbox {
 
     /// Mint a real fingerprint for `DOC`'s pinned section through the SHIPPED pin
     /// door, over byte-identical content in a scratch workspace.
+    ///
+    /// The scratch workspace is a GIT repository because R4 makes a pin's `hash`
+    /// mandatory — the pin door refuses outright when git cannot give it a blob
+    /// oid — so a mint outside a work tree writes nothing to read a fingerprint
+    /// out of.
     fn mint_fingerprint(&self) -> String {
         let mint = self.tmp.path().join("mint");
         std::fs::create_dir_all(&mint).expect("mkdir");
         std::fs::write(mint.join("doc.md"), DOC).expect("doc");
         std::fs::write(mint.join("holder.md"), "# Holder\n\nholds a pin.\n").expect("holder");
+        git_ok(&mint, &["init", "-q"]);
+        git_ok(&mint, &["config", "user.email", "f6@example.invalid"]);
+        git_ok(&mint, &["config", "user.name", "f6"]);
         let init = self.run(&mint, &["init"]);
         assert!(init.status.success(), "mrd init: {}", said(&init));
         let pin = self.run(&mint, &["pin", "holder.md", "doc.md#Doc/Design"]);
@@ -220,12 +228,12 @@ impl Sandbox {
     /// the wrong thing while looking identical.
     fn cross_root_corpus(&self) -> String {
         let fp = self.mint_fingerprint();
+        let blob = git_out(&self.other, &["hash-object", "--", "doc.md"]);
         std::fs::write(
             self.ws.join("claim.md"),
             format!(
-                "# Claim\n\nwe rely on the other root's design note.\n\n\
-                 ```meridian-lock\nversion: 1\npins:\n  - ref: \"other:doc.md#Doc/Design\"\n    \
-                 fingerprint: \"{fp}\"\n```\n"
+                "# Claim\n\nwe rely on the other root's design note.\n\n{}\n",
+                lock_block("other:doc.md#Doc/Design", &blob, &fp)
             ),
         )
         .expect("claim");
@@ -410,6 +418,58 @@ fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+/// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render`
+/// emits, so this gate depends on the CLI's own READER and not on the writer that
+/// produced the row. The `page[#A/B]` convenience spelling is split into the
+/// `object` wiki link and the `path` ARRAY here — R4 admits no joined string on a
+/// row — and the root qualifier rides the object verbatim (`[[other:doc]]`),
+/// which is what makes this pin the cross-root one the file is about.
+///
+/// `hash` is the git blob hash of the target file: R4 makes it MANDATORY, and
+/// this file drives `mrd check`, whose anchoring plane asks git a real question
+/// about it, so a placeholder would measure a different fault.
+///
+/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
+/// schema version, not the wire protocol version.
+fn lock_block(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
+    let (target, fragment) = match declared_ref.split_once('#') {
+        Some((t, f)) => (t, f),
+        None => (declared_ref, ""),
+    };
+    let object = target.strip_suffix(".md").unwrap_or(target);
+    let path = if fragment.is_empty() {
+        String::new()
+    } else {
+        fragment
+            .split('/')
+            .map(|seg| format!("\"{seg}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"{blob}\"\n    path: [{path}]\n    fingerprint: \"{fingerprint}\"\n```"
+    )
+}
+
+/// A fixture-setup git command whose STDOUT is the answer (`hash-object`), failing
+/// loudly with git's own stderr.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("LC_ALL", "C")
+        .output()
+        .expect("git runs in the test environment");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
 
 fn git_ok(dir: &Path, args: &[&str]) {
     let out = Command::new("git")

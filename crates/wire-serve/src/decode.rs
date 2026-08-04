@@ -711,13 +711,14 @@ fn decode_hpath(v: &Value) -> Result<SecRef, Box<ErrorBody>> {
     Ok(SecRef::Hpath { hpath })
 }
 
-/// One hpath segment: `{"h":…,"n"?}` or v1 bare string; `n` is 1-based `u32`.
+/// One hpath segment: `{"h":…,"n"?}`, the only form; `n` is 1-based `u32`.
+/// The v1 bare string is refused (v2 §2.1 as amended, decision 20).
 fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
     match v {
-        Value::String(h) => Ok(HpathSeg {
-            h: h.clone(),
-            n: None,
-        }),
+        Value::String(h) => Err(bad_request(format!(
+            "{refusal}: `{h}`",
+            refusal = wire::HPATH_SEG_V1_REFUSAL
+        ))),
         Value::Object(seg) => {
             for key in seg.keys() {
                 if !["h", "n"].contains(&key.as_str()) {
@@ -739,9 +740,7 @@ fn decode_seg(v: &Value) -> Result<HpathSeg, Box<ErrorBody>> {
             };
             Ok(HpathSeg { h: h.clone(), n })
         }
-        _ => Err(bad_request(
-            "hpath segment must be a string or `{h, n?}` object",
-        )),
+        _ => Err(bad_request("hpath segment must be a `{h, n?}` object")),
     }
 }
 

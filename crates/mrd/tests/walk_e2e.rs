@@ -1,8 +1,13 @@
 //! End-to-end gates for `mrd walk` (U2.3), driving the REAL binary
 //! (`CARGO_BIN_EXE_mrd`) over its process boundary against a three-doc chain
-//! fixture on disk. The pins are byte-correct GREEN: each page's `^inputs` rev
-//! is computed with the SAME parse (`model::build ∘ syntax::parse`) that
-//! `fs::build_corpus` runs inside the binary, so the warm on-disk revs match.
+//! fixture on disk. The pins are byte-correct GREEN: each page's R4
+//! `meridian-lock` pin holds the target's LIVE FINGERPRINT, minted with the SAME
+//! parse (`model::build ∘ syntax::parse`) that `fs::build_corpus` runs inside the
+//! binary, so the warm on-disk tokens match.
+//!
+//! Pre-R4 this chain pinned `node_rev`s in `^inputs` blocks. That plane is
+//! retired (R1.3), so the chain greens through the FINGERPRINT compare — the same
+//! law, the surviving carrier.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -28,23 +33,56 @@ struct Chain {
     a: String,
     b: String,
     c: String,
+    /// The containing pages' doc revs — what `revs-read:` cites.
     a_rev: String,
     b_rev: String,
     c_rev: String,
+    /// The PINNED tokens — what each entry's `rev=` renders. Distinct from the
+    /// citations above and they must not be conflated: the citation says which
+    /// bytes were read, the token says what was claimed.
+    b_pin: String,
+    c_pin: String,
+}
+
+/// The live fingerprint token of a page's document root — what a CORRECT R4 pin
+/// holds. Minted through the engine's own mint over the same parse the corpus
+/// builder runs, so the fixture cannot pin a token the reader would not
+/// recompute.
+fn live_fingerprint(raw: &str) -> String {
+    let doc = model::build(raw.to_string(), syntax::parse(raw));
+    model::fingerprint::fingerprint(&doc, &doc.root)
+        .expect("the fixture page has content")
+        .into_string()
+}
+
+/// One whole-body R4 pin on `object` at `token`, hand-written in the exact bytes
+/// `lock::render` emits. `path: []` is the body without frontmatter — the
+/// document root the token was minted over.
+///
+/// Hand-written on purpose, exactly as the neighbouring e2e gates are: this
+/// gate must depend on the CLI's own READER, never on the writer that produced
+/// the bytes. Rendering through `lock::render` here would make the assertion
+/// tautological.
+///
+/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
+/// wire protocol version.
+fn lock_block(object: &str, token: &str) -> String {
+    format!(
+        "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
+         hash: \"9ae3f1deadbeef\"\n    path: []\n    fingerprint: \"{token}\"\n```"
+    )
 }
 
 fn chain() -> Chain {
     let c = "# C\n\nleaf body\n".to_string();
     let c_rev = doc_rev(&c);
+    let c_pin = live_fingerprint(&c);
 
-    let b = format!(
-        "# B\n\ndraws from c\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'c.md', rev: '{c_rev}', rev_class: 'content'}}\n```\n"
-    );
+    let b = format!("# B\n\ndraws from c\n\n{}\n", lock_block("c", &c_pin));
     let b_rev = doc_rev(&b);
+    let b_pin = live_fingerprint(&b);
 
-    let a = format!(
-        "# A\n\ndraws from b\n\n```yaml ^inputs\nhash-algo: node-rev\nitems:\n  - {{ref: 'b.md', rev: '{b_rev}', rev_class: 'content'}}\n```\n"
-    );
+    let a = format!("# A\n\ndraws from b\n\n{}\n", lock_block("b", &b_pin));
     let a_rev = doc_rev(&a);
 
     Chain {
@@ -54,6 +92,8 @@ fn chain() -> Chain {
         a_rev,
         b_rev,
         c_rev,
+        b_pin,
+        c_pin,
     }
 }
 
@@ -137,8 +177,8 @@ fn walk_up_is_byte_expected() {
 
     let expected = format!(
         "walk up a.md\n  \
-         depth 1  green  b.md  rev={b}\n  \
-         depth 2  green  c.md  rev={c}\n\
+         depth 1  green  b.md  rev={bp}\n  \
+         depth 2  green  c.md  rev={cp}\n\
          revs-read:\n  \
          a.md @ {a}\n  \
          b.md @ {b}\n  \
@@ -146,6 +186,8 @@ fn walk_up_is_byte_expected() {
         a = ch.a_rev,
         b = ch.b_rev,
         c = ch.c_rev,
+        bp = ch.b_pin,
+        cp = ch.c_pin,
     );
     assert_eq!(stdout(&out), expected);
 }
@@ -176,7 +218,11 @@ fn walk_down_depth_one_is_direct_dependents_only() {
     assert_eq!(entries[0]["selector"], "b.md");
     assert_eq!(entries[0]["depth"], 1);
     assert_eq!(entries[0]["color"], "green");
-    assert_eq!(entries[0]["rev"], ch.c_rev);
+    // `rev` is the PINNED value — b's pin OF c, which under R4 is c's
+    // fingerprint token, NOT c's doc rev. The two are different facts and this
+    // assertion used to be able to conflate them because a `^inputs` pin held a
+    // node_rev, making pinned-value and doc-rev the same string.
+    assert_eq!(entries[0]["rev"], ch.c_pin);
 
     // Unbounded down reaches the transitive a.md too — the bound above dropped it.
     let full = sb.run(&ws, &["walk", "c.md", "--down", "--json"]);

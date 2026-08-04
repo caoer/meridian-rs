@@ -301,6 +301,18 @@ fn check_is_green_on_a_governed_corpus_and_the_render_is_pinned() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
+                // The SIGHT LINE (ruling 2026-08-04). ALWAYS PRESENT, even at
+                // count 0 — a key that appears only sometimes is precisely the
+                // defect all-hands #1 catalogued: `skip_serializing_if` makes a
+                // key set vary with the ENVIRONMENT, so a reader cannot tell "no
+                // cross-root pins" from "an engine that does not report them".
+                // These two key-set pins caught this addition, which is what they
+                // are for; the set genuinely changed and is updated deliberately.
+                "anchoring_out_of_jurisdiction": {
+                    "count": 0,
+                    "refs": [],
+                    "owner": "u13_per_root_anchoring",
+                },
             },
             // F1 / S3-R29 — the interval, on the machine face. Untouched by the
             // ruling: the interval says which BYTES an answer covers, which is a
@@ -646,6 +658,18 @@ fn check_json_discloses_write_history_and_carries_no_chain_keys() {
                     "orphaned": [],
                 },
                 "anchoring_cannot_assess": null,
+                // The SIGHT LINE (ruling 2026-08-04). ALWAYS PRESENT, even at
+                // count 0 — a key that appears only sometimes is precisely the
+                // defect all-hands #1 catalogued: `skip_serializing_if` makes a
+                // key set vary with the ENVIRONMENT, so a reader cannot tell "no
+                // cross-root pins" from "an engine that does not report them".
+                // These two key-set pins caught this addition, which is what they
+                // are for; the set genuinely changed and is updated deliberately.
+                "anchoring_out_of_jurisdiction": {
+                    "count": 0,
+                    "refs": [],
+                    "owner": "u13_per_root_anchoring",
+                },
             },
             "interval": {
                 "state": "not-asked",
