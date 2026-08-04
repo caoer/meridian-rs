@@ -428,6 +428,14 @@ fn armed_edit_and_receipt_fact_key_sets_are_frozen() {
 /// v2 §11.1: the rules-as-data verdict — `policy`'s `Violation` verbatim,
 /// projected into THE grammar. The shape rode every splice response as `[]`
 /// from birth, so a field added here changes bytes the frozen contract prints.
+///
+/// TYPE-plane only, and deliberately so. This value is hand-built, which makes
+/// it a statement about the struct and NOT about the wire — U27 first shipped
+/// it as the shape's only pin, on the mistaken belief that no live path could
+/// serve a verdict. `crates/sidecar/tests/u27_v2_key_set_pins.rs::
+/// verdict_key_set_is_frozen_on_the_wire` is the wire half, taken from a real
+/// pack through the real serve loop. Read the two together: this one catches a
+/// field added to the struct, that one catches what a v2 client receives.
 #[test]
 fn verdict_key_set_is_frozen() {
     let verdict = Verdict {
