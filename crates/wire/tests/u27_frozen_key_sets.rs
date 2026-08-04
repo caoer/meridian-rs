@@ -214,12 +214,24 @@ fn extract_body_key_set_is_frozen() {
 /// pin says what the type admits, so a THIRD such field cannot be added
 /// silently.
 ///
-/// **It was a TRIO when U27 measured it, and it is a PAIR here.** U14
-/// (decision 14) removed `hpath_text` — a lossy joined string address on a
-/// machine surface — and U27 branched from a tree that predates that removal,
-/// so its pin named a field the assembly does not have. The pin caught this at
-/// the assembly gate, which is what a key-set detector is for: neither branch
-/// was wrong about its own tree, and only the merge can state the live key set.
+/// **It was a TRIO when U27 measured it, and it is a PAIR here.** U27 branched
+/// from a tree that predates the removal, so its pin named a field the assembly
+/// does not have, and the pin fired at the assembly gate.
+///
+/// **THE AUTHORISATION FOR THIS EDIT, so a reader can tell it from a quiet
+/// loosening: DECISION 14.** `hpath_text` — the sanitized joined ADDRESS — was
+/// removed as ruled work: it was a string address on a machine surface, and a
+/// lossy one, since `sanitize_heading` is many-to-one and no consumer could
+/// invert it back into something `put` accepts. `hpath` carries the same address
+/// as SEGMENTS and round-trips; the joined human spelling is the render plane's
+/// to derive.
+///
+/// The pin was NOT wrong and was NOT loosened. This suite exists so that any
+/// key-set change must be DELIBERATE, and it met a change that was — so the
+/// correct outcome is the pin updated WITH its citation, in the same change as
+/// the edit. A firing that met an UNRULED change would be a finding to report,
+/// not a pin to update. Neither branch was wrong about its own tree; only the
+/// merge can state the live key set.
 #[test]
 fn extract_node_key_set_is_frozen_plus_the_v3_host_face_pair() {
     let node = Node {
