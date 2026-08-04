@@ -132,6 +132,44 @@ pub fn project_response(frame: &mut Value) {
     }
 }
 
+/// Demote a response for a FROZEN v2 session: drop the v3-ADDITIVE error extras
+/// a v2 caller was never promised. Returns `None` when the frame already carries
+/// none, so the frozen path serializes the typed value directly and stays
+/// byte-identical — the round-trip is paid only by the frames that grew.
+///
+/// The extras are U11's mismatch-recovery ladder. They are v3-only for the same
+/// reason the v3 caps are pushed in [`project_response`] rather than declared on
+/// the typed value: the amendment's law is that a v2 session never grows a field.
+///
+/// **`rung` is the authorship mark.** An envelope carrying one was written by
+/// `ladder::enrich`, which authors SIX slots — the four extras plus the `message`
+/// and `path` that teach them. Demotion clears all six, so a frozen v2
+/// `cas_mismatch` prints exactly the `{code, recovery, expected, actual}` it
+/// always printed. Envelopes with no rung are nobody else's business here:
+/// U10's rung-0 refusals keep their message on v2 untouched.
+///
+/// This is the ONE place the ladder meets contract rev. The engine mints the
+/// richest rung it can regardless; whether the caller is entitled to read it is
+/// a vocabulary question, decided here at the projection seam, so no arm learns
+/// about revs.
+#[must_use]
+pub fn demote_v2(response: &wire::Response) -> Option<wire::Response> {
+    let wire::ResponsePayload::Error { error } = &response.payload else {
+        return None;
+    };
+    error.rung?;
+    let mut demoted = response.clone();
+    if let wire::ResponsePayload::Error { error } = &mut demoted.payload {
+        error.rung = None;
+        error.diff = None;
+        error.new_content = None;
+        error.new_fingerprint = None;
+        error.message = None;
+        error.path = None;
+    }
+    Some(demoted)
+}
+
 /// Attach `meta: {duration_us}` beside body/error (U7 timing; v3-only by caller).
 pub fn attach_meta(frame: &mut Value, duration_us: u64) {
     if let Some(obj) = frame.as_object_mut() {

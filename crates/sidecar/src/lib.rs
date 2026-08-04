@@ -212,7 +212,10 @@ fn write_response(
         }
         serde_json::to_writer(&mut *output, &v)?;
     } else {
-        serde_json::to_writer(&mut *output, response)?;
+        // A frozen v2 session never grows a field: U11's v3-additive ladder
+        // extras are dropped here, not withheld at mint time.
+        let demoted = rev::demote_v2(response);
+        serde_json::to_writer(&mut *output, demoted.as_ref().unwrap_or(response))?;
     }
     output.write_all(b"\n")
 }
@@ -258,10 +261,14 @@ fn subscribe(
 /// costs nothing at all.
 enum Decoded {
     /// Answered at the frame layer (§3.1 classification, B2 id law). No arm
-    /// runs, so nothing observes the ring.
-    Answer(Response),
-    /// A validated op beside its correlation token.
-    Op(Option<u64>, wire::Op),
+    /// runs, so nothing observes the ring. BOXED: a `Response` carries the whole
+    /// error envelope, so by-value it would make every decoded line as wide as
+    /// the widest refusal.
+    Answer(Box<Response>),
+    /// A validated op beside its correlation token. BOXED for the same reason
+    /// as `Answer`: both arms stay pointer-wide, so one line's classification
+    /// never costs the width of the widest op.
+    Op(Option<u64>, Box<wire::Op>),
 }
 
 impl Decoded {
@@ -282,13 +289,16 @@ fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
     let id = match scan_id(line) {
         // not a JSON object → the channel is broken for this line
         Err(_) => {
-            return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
+            return Decoded::Answer(Box::new(error_frame(
+                None,
+                ErrorBody::new(ErrorCode::BadFrame),
+            )));
         }
         // §3.1 emission: id:null + the offending lexeme verbatim in id_raw
         Ok(IdScan::BadId(lexeme)) => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
             e.id_raw = Some(lexeme);
-            return Decoded::Answer(error_frame(None, e));
+            return Decoded::Answer(Box::new(error_frame(None, e)));
         }
         Ok(IdScan::Request(n)) => Some(n),
         // id key absent: a legal id-less request if `op` rides the frame
@@ -297,12 +307,18 @@ fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
     };
     // scan_id proved the line is a JSON object.
     let Ok(mut obj) = serde_json::from_str::<Map<String, Value>>(line) else {
-        return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
+        return Decoded::Answer(Box::new(error_frame(
+            None,
+            ErrorBody::new(ErrorCode::BadFrame),
+        )));
     };
     if !obj.contains_key("op") {
         // Inbound frames that aren't requests (responses, notifications) are
         // protocol misuse → bad_frame; un-correlatable by design.
-        return Decoded::Answer(error_frame(None, ErrorBody::new(ErrorCode::BadFrame)));
+        return Decoded::Answer(Box::new(error_frame(
+            None,
+            ErrorBody::new(ErrorCode::BadFrame),
+        )));
     }
     // v3 session: re-key the request into its v2 form so the strict decoder
     // and every arm stay v2-only. `hello` itself always arrives in the base
@@ -318,9 +334,9 @@ fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
             if let wire::Op::Hello { contract, .. } = &op {
                 *rev = rev::Rev::from_contract(contract.as_deref());
             }
-            Decoded::Op(id, op)
+            Decoded::Op(id, Box::new(op))
         }
-        Err(e) => Decoded::Answer(error_frame(id, *e)),
+        Err(e) => Decoded::Answer(Box::new(error_frame(id, *e))),
     }
 }
 
@@ -339,23 +355,25 @@ fn respond(
     decoded: Decoded,
 ) -> (Response, Option<u64>) {
     let (id, op) = match decoded {
-        Decoded::Answer(response) => return (response, None),
+        Decoded::Answer(response) => return (*response, None),
         // The push-path op registers at the serve layer — the loop owns the
         // subscription list; everything else routes to the arms.
-        Decoded::Op(id, wire::Op::Sub { from_seq }) => {
-            return match subscribe(root, epoch, subs, from_seq) {
-                Ok(body) => (
-                    Response {
-                        id,
-                        ok: true,
-                        payload: ResponsePayload::Body { body },
-                    },
-                    None,
-                ),
-                Err(e) => (error_frame(id, *e), None),
-            };
-        }
-        Decoded::Op(id, op) => (id, op),
+        Decoded::Op(id, op) => match *op {
+            wire::Op::Sub { from_seq } => {
+                return match subscribe(root, epoch, subs, from_seq) {
+                    Ok(body) => (
+                        Response {
+                            id,
+                            ok: true,
+                            payload: ResponsePayload::Body { body },
+                        },
+                        None,
+                    ),
+                    Err(e) => (error_frame(id, *e), None),
+                };
+            }
+            op => (id, op),
+        },
     };
     // U7 measure point: the dispatch call alone (after decode, before the
     // response write) — checked µs, never a lossy `as`.

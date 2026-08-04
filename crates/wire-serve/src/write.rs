@@ -2976,10 +2976,14 @@ fn verdict_to_wire(
                 e
             }
         }
+        // U11: the ladder attaches HERE, on the existing code with its bound
+        // `Recovery::Refresh` — the refusal carries the richest computable rung
+        // so the caller never has to re-read the file (R1.2).
         model::SpliceVerdict::CasMismatch { expected, actual } => {
             let mut e = ErrorBody::new(ErrorCode::CasMismatch);
             e.expected = Some(NodeRev(expected.0.clone()));
             e.actual = Some(NodeRev(actual.0.clone()));
+            crate::ladder::enrich(&mut e, doc, edits, path);
             e
         }
         model::SpliceVerdict::NoMatch { matches } => {

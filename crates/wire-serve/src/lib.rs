@@ -11,6 +11,7 @@ pub mod check_write;
 pub mod decode;
 pub mod gate;
 pub mod guard;
+pub mod ladder;
 pub mod plan;
 pub(crate) mod positions;
 pub mod reaction;
