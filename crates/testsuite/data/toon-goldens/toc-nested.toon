@@ -1,0 +1,8 @@
+path: corpus/nested.md
+file_rev: af291906beef8cb7
+words: 22
+toc[4]{n,depth,address,words,rev}:
+  "1",1,Todo,5,7324671e40ce8935
+  "2",1,Notes,13,51579592a56fb749
+  "2.1",2,Notes/Slash-Title-Here,2,0a406e72fd298947
+  "2.2",2,Notes/世界,2,7f115833488ee64c

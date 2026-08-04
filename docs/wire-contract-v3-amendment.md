@@ -182,9 +182,18 @@ Response body (`mode` decides `toc` XOR `sections`):
 > a read receipt. The current shape is § Stage-2 item 6.
 
 `file_rev` + `fingerprint` come from the SAME borrowed snapshot (the
-atomicity witness). `rendered_text` is the token-efficient text projection,
-byte-parity with the Go host face's `readText` (gated against the U0 captured
-corpus). Unresolved selectors follow the PARTIAL-read rule (`truncated` +
+atomicity witness). `rendered_text` is the token-efficient TOON-compact
+projection (U15, DECISION 27), gated against the reviewed fixtures in
+`crates/testsuite/data/toon-goldens/`. It owes no byte parity to the Go host
+face's `readText`: those captures retired in U14 with the string selector
+grammar that produced them, and no leg owes meridian-go parity anywhere
+(`CLAUDE.md` end-state ruling). Toc mode is one TOON document; sections mode
+is a TOON head — which declares each body's `hpath`, `rev`, `words` and
+`bytes` — followed by the section bodies verbatim, since TOON has no block
+scalar and escaping prose into a quoted cell would defeat the human half of
+"arrays for machines, TOON for humans". The head's `bytes` is where a body
+ends, so prose that happens to spell a `== hpath ==` marker cannot forge a
+boundary. Unresolved selectors follow the PARTIAL-read rule (`truncated` +
 `notice`, no rev minted); ALL selectors missing refuses `ref_not_found`.
 Refusal `message` strings are the Go host face's VERBATIM texts, so a thin
 proxy forwards `error.message` without re-minting.

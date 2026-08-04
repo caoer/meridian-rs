@@ -1,0 +1,17 @@
+path: corpus/nested.md
+file_rev: af291906beef8cb7
+words: 22
+sections[1]{hpath,rev,words,bytes}:
+  Notes,51579592a56fb749,13,80
+
+== Notes ==
+
+seed note line one
+
+## Slash/Title Here
+
+deep content
+
+## 世界
+
+unicode body
