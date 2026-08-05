@@ -67,6 +67,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             print!("{text}");
+            // The degrade gets a voice AFTER the answer and on STDERR, so the
+            // face a person reads stops being the one face that hid it, and
+            // stdout stays byte-identical to the warm answer.
+            engine::voice_degrade(&source);
         }
     }
     Ok(())

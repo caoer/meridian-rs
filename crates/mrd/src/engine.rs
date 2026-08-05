@@ -46,6 +46,68 @@ impl EngineSource {
     }
 }
 
+/// The `sockaddr_un.sun_path` capacity, NUL terminator included: 108 on Linux,
+/// 104 on the BSDs (macOS). A socket path that does not fit cannot be bound OR
+/// dialled, so the daemon is unreachable however healthy it is — and the
+/// degrade catches that the same way it catches every other daemon failure.
+#[cfg(target_os = "linux")]
+const SUN_PATH_CAPACITY: usize = 108;
+#[cfg(not(target_os = "linux"))]
+const SUN_PATH_CAPACITY: usize = 104;
+
+/// Voice the degrade on a HUMAN face — nothing on the warm path.
+///
+/// **The gap this closes.** `--json` has always carried `"source"`, so a
+/// machine reader could see the degrade. The human face of `mrd read` prints
+/// the rendered projection and nothing else, so a person got a correct answer
+/// from a slower path with no signal that the path had changed. That silence
+/// invalidated roughly twenty measurements taken on this engine before anyone
+/// noticed the daemon was never in them.
+///
+/// **Why STDERR.** The answer content is stdout's, and it must stay
+/// byte-identical between the warm and degraded paths — `mrd read` output is
+/// piped and diffed. A note on stdout would corrupt the very artifact the
+/// degrade must not change. So the fact rides the channel a person reads and a
+/// pipe drops, and the ONLY delta on stdout is none at all.
+pub(crate) fn voice_degrade(source: &EngineSource) {
+    if !matches!(source, EngineSource::Ephemeral) {
+        return;
+    }
+    eprintln!(
+        "mrd: source: ephemeral — no daemon answered, so this answer was built in-process \
+         from disk."
+    );
+    eprintln!(
+        "mrd:   The content is what a warm daemon serves; the TIMING is not — do not measure \
+         this run."
+    );
+    if let Some(reason) = degrade_reason() {
+        eprintln!("mrd:   {reason}");
+    }
+}
+
+/// The one degrade cause worth naming beyond "no daemon answered": a socket
+/// path that cannot fit in `sun_path`. It is silent, it is not fixed by
+/// starting a daemon, and it is reached by an ordinary long `XDG_CACHE_HOME`.
+/// Every other cause (not running, spawn failed, refused handshake) is already
+/// covered by the first line, so this says nothing rather than guessing.
+fn degrade_reason() -> Option<String> {
+    let Ok(client) = Client::from_default() else {
+        return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
+    };
+    let socket = client.socket_path();
+    let len = socket.as_os_str().as_encoded_bytes().len();
+    if len < SUN_PATH_CAPACITY {
+        return None;
+    }
+    Some(format!(
+        "The socket path is {len} bytes, at or over this platform's {SUN_PATH_CAPACITY}-byte \
+         sun_path limit, so NO daemon can bind or dial it. Shorten the cache root \
+         (XDG_CACHE_HOME): {}",
+        socket.display()
+    ))
+}
+
 /// An engine read answer: the wire success body plus which path produced it.
 pub(crate) struct Answer {
     /// Where the answer came from (warm daemon or in-process degrade).
