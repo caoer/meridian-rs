@@ -14,6 +14,16 @@
 //!
 //! The reply's `stale` is asserted **always null** (a pre-open hint is never a
 //! verdict, B5+C3), and no tabular/row field ever appears.
+//!
+//! # The v3 vocabulary half
+//!
+//! The §Q5 gates above run on an un-negotiated (frozen v2) session, so they read
+//! `as_of_root`/`live_root`. The last test in this file drives the SAME op on a
+//! session that negotiated `contract:v3` and asserts the projected spelling —
+//! `as_of_fingerprint`/`live_fingerprint` present, and the v2 `root` names
+//! **absent**. The absent half is the load-bearing one: a rename that COPIED
+//! instead of moving would leave both spellings on the wire and a present-only
+//! assertion would pass over it.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -67,8 +77,10 @@ fn write_ws(tmp: &TempDir, files: &[(&str, &str)]) -> PathBuf {
     ws
 }
 
-/// A persistent connection speaking raw NDJSON. A v2 session (no `contract`), so
-/// the reply carries the frozen `root` vocabulary (`as_of_root`/`live_root`).
+/// A persistent connection speaking raw NDJSON. Un-negotiated by default (no
+/// `contract`), so the reply carries the frozen `root` vocabulary
+/// (`as_of_root`/`live_root`); [`Conn::hello`] negotiates a rev when a gate needs
+/// the v3 spelling instead.
 struct Conn {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -91,6 +103,17 @@ impl Conn {
         let mut response = String::new();
         self.reader.read_line(&mut response).unwrap();
         serde_json::from_str(&response).unwrap()
+    }
+
+    /// A `hello` binding `ws` under `contract` — the only way a session moves off
+    /// the frozen v2 default, since the rev is negotiated per connection.
+    fn hello(&mut self, ws: &Path, contract: &str) -> Value {
+        self.call(&json!({
+            "op": "hello",
+            "proto": 1,
+            "workspace": ws.to_str().unwrap(),
+            "contract": contract,
+        }))
     }
 
     /// `view_path` with an explicit `cwd`; `fresh` rides only when `Some`.
@@ -325,6 +348,113 @@ fn view_path_is_advertised_and_needs_no_hello() {
         json!("FRESH_AT_SAMPLE"),
         "an unbound view_path self-resolves and builds: {reply}"
     );
+
+    server.shutdown();
+}
+
+/// Recursively collect every object KEY in `v`. Values are never collected — a
+/// corpus path that spells `root` is a legitimate VALUE and must not be re-keyed.
+/// (Same mechanism as `wire_vocab_rev.rs`, kept local so this file stays a
+/// standalone suite.)
+fn keys(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map {
+                out.push(k.clone());
+                keys(child, out);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|c| keys(c, out)),
+        _ => {}
+    }
+}
+
+/// The v3 vocabulary gate for the view organ's path forwarder, end to end over
+/// the socket: a session that negotiated `contract:v3` asks for a `view_path` and
+/// the reply carries the fingerprint spelling **and only** the fingerprint
+/// spelling.
+///
+/// # Why the absent-clause is the point
+///
+/// The Rust wire type spells `as_of_root`/`live_root` deliberately — the v3
+/// projection re-keys the frozen v2 slots through the ONE rename table
+/// (`wire-serve::rev`), never a second dialect. That table's contract is that it
+/// **moves** a key. A rename that COPIED would leave a frame carrying BOTH
+/// spellings, which a present-only assertion accepts happily. Pinning the v2
+/// names as absent is what proves the move, and it is why this test exists at all
+/// — every other `view_path` gate in this file runs on a v2 session.
+///
+/// Same shape of reasoning as G5's refusal arm asserting that zero ops reached
+/// the daemon rather than merely that the caller saw an error: assert the
+/// mechanism, not the symptom.
+#[test]
+fn a_v3_session_view_path_carries_fingerprint_slots_and_never_the_root_spelling() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")]);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    // Negotiate v3 — the projection is per-session, so this handshake is the
+    // whole difference between this gate and the ones above.
+    let hi = conn.hello(&ws, "v3");
+    assert_eq!(hi["ok"], json!(true), "v3 hello ok: {hi}");
+    assert_eq!(
+        hi["body"]["contract"],
+        json!("v3"),
+        "the session negotiated v3 — without this echo the assertions below \
+         would be testing a v2 session that happens to look right: {hi}"
+    );
+
+    let reply = conn.view_path(&ws, None);
+    assert_eq!(reply["ok"], json!(true), "v3 view_path ok: {reply}");
+    let body = &reply["body"];
+    let path = body["path"].as_str().expect("path is a string");
+    assert!(
+        path.ends_with("view.duckdb") && Path::new(path).is_file(),
+        "v3 forwards the same stamped view.duckdb PATH — the projection is a \
+         vocabulary re-key, never a different answer: {reply}"
+    );
+    assert_eq!(
+        body["state"],
+        json!("FRESH_AT_SAMPLE"),
+        "the first build is fresh at its sample: {reply}"
+    );
+
+    // (1) PRESENT: both fingerprint slots, b3-shaped.
+    for key in ["as_of_fingerprint", "live_fingerprint"] {
+        assert!(
+            body[key].as_str().is_some_and(|s| s.starts_with("b3:")),
+            "a v3 view_path carries `{key}` as a b3 fingerprint hint: {reply}"
+        );
+    }
+
+    // (2) ABSENT: the v2 `root` spellings, ANYWHERE in the frame. This is the
+    // load-bearing half — a copy-instead-of-move rename passes (1) and fails
+    // here, and a whole-frame key sweep catches the slot wherever it lands.
+    let mut frame_keys = Vec::new();
+    keys(&reply, &mut frame_keys);
+    for v2_key in ["as_of_root", "live_root", "root"] {
+        assert!(
+            !frame_keys.iter().any(|k| k == v2_key),
+            "a v3 view_path frame must emit ZERO `{v2_key}` keys — the rename \
+             table MOVES the slot, and both spellings on one wire is exactly \
+             what a copying projection would produce: {reply}"
+        );
+    }
+
+    // The frozen invariants still hold under the v3 spelling: a pre-open hint is
+    // never a verdict, and the forwarder still marshals no rows.
+    assert!(
+        body.as_object().unwrap().contains_key("stale"),
+        "stale is always present: {reply}"
+    );
+    assert_eq!(body["stale"], Value::Null, "stale is ALWAYS null: {reply}");
+    for tabular in ["rows", "columns", "row_count", "result"] {
+        assert!(
+            body.get(tabular).is_none(),
+            "view_path marshals no rows (`{tabular}` absent): {reply}"
+        );
+    }
 
     server.shutdown();
 }
