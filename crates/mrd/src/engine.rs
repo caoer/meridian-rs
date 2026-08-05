@@ -98,7 +98,14 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
 /// starting a daemon, and it is reached by an ordinary long `XDG_CACHE_HOME`.
 /// Every other cause (not running, spawn failed, refused handshake) is already
 /// covered by the first line, so this says nothing rather than guessing.
-fn degrade_reason() -> Option<String> {
+///
+/// **G15 — the cause line is shared, the framing is not.** `mrd view status`
+/// does not degrade an ANSWER, so g1's two lines would be false there; what it
+/// loses is daemon-memory telemetry. It therefore writes its own two lines
+/// ([`crate::view_status::voice_daemonless`]) and calls THIS function for the
+/// cause, so the one sentence that must never drift — which socket, how many
+/// bytes, which knob fixes it — has exactly one author.
+pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
     };

@@ -48,7 +48,49 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         Format::Json => println!("{}", status.json()),
         Format::Human => status.print_human(),
     }
+    voice_daemonless(status.source);
     Ok(())
+}
+
+/// Say, on STDERR, that no daemon answered — so the reader knows this report is
+/// a disk reading rather than the daemon-memory telemetry the command exists to
+/// show. Silent on the daemon path.
+///
+/// **The misdiagnosis this closes (G15, dogfood pass-3).** With an unbindable
+/// socket the daemon cannot be dialled, so the fallback reads the cold drawer
+/// and prints `absent` / `NO_VIEW` at exit 0 with an empty stderr. A reader
+/// takes that as "this workspace has no view yet" and goes off to build one —
+/// but the sentence is only ever about THIS drawer, and the thing that actually
+/// went wrong is a socket no daemon can bind. Naming the cause is the fix; the
+/// verdict itself is unchanged, because it was never wrong about the drawer.
+///
+/// **Why stderr, and why stdout is untouched.** `view status` has a `--json`
+/// face with existing consumers; minting a field on it is a protocol surface
+/// and lives in the PARKED architecture bucket (the g13 SCOPE FORK ruling). So
+/// this rides the same channel g1 and g13 chose, and both faces keep their
+/// bytes.
+fn voice_daemonless(source: &'static str) {
+    match source {
+        "cold" => eprintln!(
+            "mrd: source: cold — no daemon answered, so this is the last-published stamp read \
+             from disk, not the daemon's live telemetry."
+        ),
+        "absent" => {
+            eprintln!(
+                "mrd: source: absent — no daemon answered, so this is a cold-drawer reading, not \
+                 the daemon's live telemetry."
+            );
+            eprintln!(
+                "mrd:   NO_VIEW here means this cache drawer holds no published view. It does \
+                 NOT mean the workspace has none, and building one may not be the fix."
+            );
+        }
+        // The daemon answered: this report IS the telemetry, and it says nothing.
+        _ => return,
+    }
+    if let Some(reason) = crate::engine::degrade_reason() {
+        eprintln!("mrd:   {reason}");
+    }
 }
 
 /// Parse `[--json] [--cwd PATH]`.
