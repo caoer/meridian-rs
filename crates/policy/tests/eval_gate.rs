@@ -1,12 +1,12 @@
-//! P6-EVAL pack-verbatim gates (impl-taskpack §9 P6-EVAL gates 1–3), driven
-//! through the public `compile` + `evaluate` API.
+//! Ruleset evaluate gates — compile pin, fixture run, severity surfaces.
 //!
-//! Gate 1 is the frozen §11.1 worked verdict: `blurb-required` over the wsfix `s2`
-//! fixture yields the single verdict with span `[20,150]` and `node_rev
-//! 5a8faa717fbcdb04` — COMPUTED from the real fixture bytes through the real
-//! pipeline (`model::build` → facts → Starlark predicate → `Violation`), matched
-//! against the frozen values. The expected values are the CONTRACT law asserted in
-//! the test; the production path never hard-codes them.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::HashMap;
 use std::fs;

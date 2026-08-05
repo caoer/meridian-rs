@@ -1,33 +1,33 @@
-//! The reaction-plane payload, derived from the change plane (C1a).
+//! Reaction-plane payload, derived from the change plane (C1a).
+//! [`derive_event`] turns a landed [`Change`] into the `on_change(event)`
+//! argument a HOOK predicate reads. Attaches values behind `fields_changed`
+//! and frontmatter; drops `actor` — the engine must not observe the observer.
 //!
-//! # Why this lives here and not in `effects`
-//! The door already computes everything a reaction needs: [`Change`] carries the
-//! before and after [`DocFacts`], so the old and new value of every changed
-//! frontmatter key is a subtraction away. The reaction plane had names only
-//! (`fields_changed`) and no document facts at all. This module is that
-//! subtraction — one function, no new evaluation, no second diff.
 //!
-//! `effects` cannot do it: it must not depend on `policy` (the edge runs the other
-//! way, C1), and it has no world model. So the derivation lives on the side that
-//! has the facts, and `effects` owns only the shape.
 //!
-//! # What this deliberately does NOT carry
-//! [`Change`] has an `actor`. The payload does not, and must never: *"delta, facts,
-//! now are ALL the names that exist. facts has no agent-state — actor-fact
-//! smuggling is a `NameError` at load."* Dropping it here is what makes that law
-//! structural instead of a rule someone has to remember. `force` goes with it — an
-//! invocation fact, actor-adjacent, and no predicate's business.
 //!
-//! `now` is **not** injected either, and that is a slice-1 decision rather than a
-//! purity one: wire §9 makes `now` a wire INPUT, never something the engine
-//! generates, and only the schedule kind needs it. Deferred, and tested as
-//! deferred, so nobody wires a clock this slice does not need.
 //!
-//! # The Delta noun is untouched
-//! This is the effects-plane payload, not `wire::Delta` and not
-//! `model::delta::NodeDelta`. §7.4 ruled node-grain at birth for the Delta NOUN;
-//! deriving old/new from the door's own [`DocFacts`] is precisely how slice 1 gets
-//! key-grain facts without reopening that ruling.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use effects::{ChangeEvent, ChangeFact, ChangeFactKind, EventFacts};
 

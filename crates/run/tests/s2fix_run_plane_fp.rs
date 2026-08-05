@@ -1,19 +1,19 @@
 //! **Advisor R32 (3) — the run plane's `@fp` door.**
+//! Free-text doors on the run plane strip before procedure-hash / receipt
+//! identity. Companion to the document-grain strip in [`run::fp`].
 //!
-//! The run plane lands bytes through `fs::apply_batch`, bypassing the wire
-//! choke-point that strips `@fp` decoration tokens, and it had no strip of its
-//! own: an `md.append_section` body carrying `[[guide#^goal@green.b3af12cd]]`
-//! landed the claim on disk. A guarded invariant with an unguarded door is not an
-//! invariant — without this file, criterion 4's law ("no write introduces an fp
-//! token in a claim-link position") is FALSE on the run surface.
 //!
-//! Every assertion here is on the WRITE — the bytes on disk, or the typed
-//! refusal — never on the colour a forged claim would render (R26).
 //!
-//! The claim is R22's, unchanged in width: **no `@fp` token in a claim-link
-//! POSITION**. The positions the one grammar does NOT call claim links are named
-//! and tested here as explicit exclusions, because a claim that does not state
-//! its own edges is wider than its proof.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

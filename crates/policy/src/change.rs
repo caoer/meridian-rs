@@ -1,25 +1,25 @@
 //! `rulepack-api@2` — the change struct + door fact surface (U1.1).
+//! [`Change`] is what `check_change(change)` reads; derived from before/after
+//! states. Closed 14-key fact vocabulary; purity guard classifies sources.
+//! Shared by `mrd test` (U1.2) and the door `gate()` (U4.2).
 //!
-//! # What this is
-//! The `@1` surface ([`crate::pack`]) injects a single document's world-model
-//! facts into a `def check(doc)` predicate. The `@2` surface injects a *change*
-//! — the before/after states of a write plus its declared evidence — into a
-//! `def check_change(change)` predicate. One shape, two customers: the `mrd test`
-//! harness (U1.2) and the door's `gate()` (U4.2) read the SAME [`Change`], so a
-//! scenario proves exactly what the door enforces (rulings § sequencing gift).
 //!
-//! # The law it obeys (ZT rulings, "door fact surface — yes. no git")
-//! A door-site CHECK reads the change (before/after docs, edits, properties,
-//! actor, force) plus ONE hop of declared pinned evidence at pinned revs,
-//! **fail-closed on drift**. There are NO git facts, NO clock, NO search, and NO
-//! randomness at the door — git and freshness questions belong to `status` and
-//! the sweep, never here. Every fact is a pure function of the two markdown
-//! STATES (before, after) and the pinned evidence bytes — never of the request's
-//! phrasing (cross-client robustness) and never of the world outside the vault.
 //!
-//! The [purity guard](../../tests/purity.rs) is the load-bearing enforcement of
-//! that law: it enumerates the [closed 14-key vocabulary](CHANGE_FACT_VOCAB) and
-//! FAILS the moment a git/clock/random/io-sourced key enters it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::{BTreeMap, BTreeSet};
 

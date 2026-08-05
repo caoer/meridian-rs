@@ -1,33 +1,33 @@
-//! The decision-#9 run flock releases when its guard drops — even while this
-//! process has a forked child holding a copy of the lock fd.
+//! Decision-#9 run flock releases when its guard drops — even while a forked
+//! child still holds a duplicate fd. Proves the S7/R19 explicit-release path:
+//! `WorkspaceLock` unlocks before close so waiters are not blocked by orphaned
+//! fds. Companion to the executor's `LOCK_NB` busy refusal.
 //!
-//! # The bug this pins (S7/R19's hazard class, second instance)
-//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates
-//! every descriptor; `FD_CLOEXEC` acts at exec, not at fork. So while
-//! `WorkspaceLock` released by closing its fd, dropping the guard while any
-//! thread sat between its fork and its exec did NOT release the lock — the
-//! child's copy kept the description alive, and unrelated runs refused
-//! `workspace_busy` for a critical section that had already finished.
 //!
-//! `fs::WriteLock` carried the identical defect and was fixed first (measured
-//! there: 12 of 60 unrelated writes refused). This lock is the SAME defect in
-//! the workspace's heaviest forker — the run plane forks a child per dispatched
-//! task — so it gets the same fix: an explicit `LOCK_UN` in `Drop`, which acts
-//! on the description and therefore releases every copy at once.
 //!
-//! The overlap is across CONCURRENT runs in one process: `dispatch_bash::run`
-//! forks its task child between its two locked windows, so the leak happens when
-//! a SECOND run holds this lock at that moment. This file reproduces that
-//! overlap directly — hold the lock, fork, drop — rather than driving two
-//! dispatches and hoping their windows meet.
 //!
-//! # Why this file forks by hand
-//! `Command::spawn` returns only after the child has exec'd, and exec closes the
-//! `O_CLOEXEC` lock fd, so a spawn-driven test has no live fd copy at the moment
-//! of the drop and passes with the defect fully restored (measured on the fs
-//! sibling: 50/50). The child here parks and never execs, so the window is held
-//! open on demand rather than raced for — and the control test below asserts
-//! that it really is open, so this file cannot go quietly vacuous.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::io;
 use std::os::unix::io::AsRawFd;

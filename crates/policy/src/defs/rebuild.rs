@@ -1,27 +1,27 @@
-//! The conformance candidate rebuild — Go `body.ApplyForConformance` +
-//! `planEditResolved` ported byte-exactly: put-plan-vocabulary edits over the
-//! PREV document produce the CANDIDATE document (or the rebuild refusal) the
-//! I4 verdict judges. This is the write plane's plan/splice/reparse pipeline
-//! MINUS flock/I3/CAS/journal/write:
+//! Conformance candidate rebuild — Go `body.ApplyForConformance` parity.
+//! Rebuilds the candidate body under def rules so the verdict compares
+//! normalized forms. Rev neutralization and string fidelity are load-bearing.
 //!
-//! - per-edit rev is NEUTRALIZED to the current section rev when the target
-//!   resolves (CAS is the host write engine's, in ITS OWN hash domain) — but a
-//!   destructive `replace_section` still REQUIRES a rev (substrate guard), and
-//!   the ECAS teaching embeds the section's Go-domain rev (xxhash64/8-hex over
-//!   the content span — reproduced here for byte parity, used for MESSAGES
-//!   only, never as a CAS the engine enforces);
-//! - append newline discipline (`ensureTrailingNL` + the leading-`\n` rule
-//!   with in-batch `pendingNL`), EOF `create_section` placement, single-line
-//!   property injection, high→low disjoint splicing, and the reparse +
-//!   `fenceOpenAtEOF` delta (`E_WOULD_CORRUPT`) mirror Splice by construction;
-//! - NO journal dedupe (the journal is host-side): a dedupe-skippable append
-//!   lands in the candidate — byte-identical text mints byte-identical
-//!   findings, which the (rule|message) delta suppresses, so the verdict is
-//!   unchanged (fixture-pinned);
-//! - anchored-op `foreign_changes` relaxation warnings are journal-derived and
-//!   DROPPED here — `ApplyForConformance` never consumes warnings.
 //!
-//! Every refusal string is verbatim from `internal/body/{map,splice}.go`.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use super::BodyError;
 use super::go_fmt::go_quote;

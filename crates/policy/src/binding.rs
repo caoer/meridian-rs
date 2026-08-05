@@ -1,30 +1,30 @@
-//! The binding law (U4.3) — the door law that keeps the attested artifact and the
-//! pages it arms ONE thing.
+//! Binding law (U4.3) — refuses one-sided artifact↔page divergence at the
+//! door. Keeps the attested artifact and the live page in lockstep: a write
+//! that would break the binding refuses with a typed, recoverable fault.
 //!
-//! # What this is (rulings § binding law; decision #6; security F2)
-//! The attested artifact ([`crate::armed::ARMED_RULES_PATH`]) and each armed rule
-//! PAGE are a bound pair: the artifact pins every armed rule at the rev a reviewer
-//! approved. Editing ONE side without the other breaks the binding — a row edited
-//! by hand (artifact side) or an armed law edited in place (page side). Both are
-//! refused at the door as a **teaching refusal** ([`DoorLaw::BindingBreak`],
-//! taxonomy row 9): the proper path is the ONE-act arming attestation.
 //!
-//! Deleting or renaming the artifact or the once-armed marker is a stronger break
-//! — it attacks the enforcement substrate itself (deleting the marker is the
-//! silent-disarm attack the fail-closed design defeats, security F2). That is the
-//! **integrity floor** ([`DoorLaw::IndexIntegrity`], taxonomy row 10): a
-//! structural refusal that `--force` does NOT escape.
 //!
-//! # `--force` is the sanctioned bypass (decision #6)
-//! A binding break is force-escapable: a `--force` write lands, and the skip is
-//! rendered as a `forced:` verdict (the caller loudly owns the bypass). The integrity floor
-//! is not force-escapable — destroying the artifact or the marker is not a "check
-//! to skip".
 //!
-//! # Purity
-//! [`classify_door_law`] is a pure function of the write's op + target path + the
-//! armed-page set. The reserved-path spellings mirror `fs::domain`; a cross-crate
-//! test in `wire-serve` fails if the two ever drift.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use crate::change::ChangeOp;
 

@@ -1,36 +1,36 @@
-//! The runner (U7) — composition + cascade loop control, NOTHING else
-//! (plan §4 U7; decisions #5/#16/#23). The pre-eval chain is U2's, the
-//! dispatch paths are U5/U6a's, synthesis and the one write path are U4's;
-//! this module only strings them together and drives the generation loop:
+//! Runner (U7) — composition + cascade loop control only.
+//! Resolves the addressed task, contracts, and authority; dispatches on fence
+//! language; threads the shared executor; records generation outcomes.
+//! Does not own write logic, process supervision, or report formatting.
 //!
-//! ```text
-//! load_page → resolve_task → contract validate → authority resolve
-//!   → dispatch by fence (starlark hermetic | bash two-phase)
-//!   → guarantee label (hermetic by construction | unsandboxed)
-//!   → cascade: event → eval(&[Rule]) → md.* through the executor → event…
-//! ```
+//! `declaring_root` and `timeout` are injected by the caller (the only holder
+//! of the convention ladder and wall-clock ceiling). `declaring_root` is
+//! `None` when no convention ceiling is in force.
 //!
-//! # Cascade (decision #5)
-//! The runner takes `&[Rule]` — EMPTY in S1, so generation 0 is the
-//! degenerate whole run (vacuous stop: no rules, no generation records).
-//! Tests inject synthetic `on_change` rules to exercise the loop against the
-//! REAL executor path. Depth semantics are the kernel's: at
-//! `event.depth >= limits.max_depth` the kernel suppresses cascading `md.*`
-//! (terminal `daemon.*`/`proto.*` survive) — the runner records the
-//! cap-reached fact for the report's generic cap line (U9) and stops.
-//! Cascade generations ride the block's resolved authority (the run's is the
-//! ceiling — a cascade can never exceed it) and carry no receipt
-//! (resident-cascade receipt policy is phase-2 scope).
 //!
-//! # The guarantee label
-//! Ruling 4: every block's claim ships scoped, per block. `hermetic` is
-//! starlark's by construction. Bash is `unsandboxed` — there is no guarantee
-//! to derive, because the exec-window bracket detects rather than prevents and
-//! the window is escaped by anything that outlives it (`docs/laws.md`
-//! § Amendment — capabilities do not apply to bash; gate
-//! `crates/mrd/tests/law_no_caps_on_bash.rs`). The bracket verdict is still
-//! rendered on every bash run, as the report's out-of-band-delta line: an
-//! observation about the window, never the block's class.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::io::Write;

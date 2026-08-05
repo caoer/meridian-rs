@@ -2,36 +2,36 @@
 //! declared budgets, and gate writes at the armed change plane.
 //!
 //! # Charter
-//! **Owns:** executing rulesets — YAML parse/compile (content-hash cache, pin
-//! verify), the 14-assertion vocabulary with declared `Budget { class, p99_us }`,
-//! and the `policy` / `policy_compile` / `policy_vocab` evaluation entry points.
-//! Since U4.2 it ALSO owns the **blocking gate** at the armed change plane (see
-//! [`gate`] / [`resolve_armed_law`]; laws.md § the policy gate): the pure
-//! decision that refuses a write when the workspace's own attested law says so.
-//! The complete contract — schema, semantics, error taxonomy, versioning —
-//! is implemented here; this crate is that contract's implementation.
+//! **Owns:** ruleset compile/eval (`policy` / `policy_compile` / `policy_vocab`),
+//! the 14-assertion vocabulary with declared budgets, and the blocking gate
+//! at the armed change plane ([`gate`] / [`resolve_armed_law`]; laws.md).
 //!
-//! **Never does:** own a corpus index (borrows `model`'s, capability-gated:
-//! `Option<&CorpusIndex>` — absent index + corpus-class ruleset = the loud
-//! `daemon_only` error), contain rules (the vocabulary is engine, rules are
-//! data — weekly-churn policy never couples to release-cadence binary), reach
-//! disk (stays I/O-free like `model`: the gate's armed-set load takes injected
-//! file access — the trusted write path in `wire-serve`/`run` does the reads).
+//! **Never does:** own a corpus index (borrows `model`'s, capability-gated),
+//! contain rules (vocabulary is engine; rules are data), or reach disk (I/O-
+//! free like `model` — callers inject file access for armed-set load).
 //!
-//! # The gate at the armed change plane (U4.2)
-//! When a workspace is armed (an attested INDEX plus the once-armed marker),
-//! [`gate`] evaluates a [`Change`] through the workspace's OWN armed law after
-//! CAS and before bytes land, in both writer paths — a `block`-severity firing,
-//! a drifted law, or an un-loadable/corrupt/missing-once-armed INDEX REFUSES the
-//! write with a `{code, recovery}` pair from the closed §8 taxonomy. A
-//! never-armed workspace is a bit-for-bit no-op. This is the seam the deferred
-//! Go-era `authorize` stub reserved; the caller-supplies shape died with Go —
-//! the armed set is loaded and verified from the workspace path, never supplied
-//! by the caller.
+//! # Gate at the armed change plane (U4.2)
+//! When armed, [`gate`] evaluates a [`Change`] through the workspace's own
+//! law after CAS and before bytes land. Block-severity, drifted law, or
+//! unloadable INDEX refuses with `{code, recovery}` from the §8 taxonomy.
+//! Never-armed is a bit-for-bit no-op. Armed set is loaded from the workspace
+//! path, never supplied by the caller.
 //!
-//! # Rungs
-//! Rung 6 lands the engine (`compile` / `evaluate` / `vocab`) and the U4.2 gate;
-//! the wire ops appear only in `sidecar`.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use model::{CorpusIndex, Document};
 
@@ -41,10 +41,10 @@ use model::{CorpusIndex, Document};
 /// landed resolver, and pins each winner's page + [`page_rev`] into an
 /// [`armed::ArmedArtifact`] row keyed by (id, arm root).
 ///
-/// It is a MODULE, not a flat re-export, because the folder loader's `index::arm`
-/// still lives until the loader cutover retires it — two acts named `arm` in one
-/// namespace would be two names for one thing at exactly the seam where the
-/// difference matters. When `index::arm` dies, nothing here has to be renamed.
+/// Module (not flat re-export) so it does not collide with the folder loader's
+/// `index::arm` at the seam where the two acts differ.
+///
+///
 pub mod armed;
 pub mod armed_law;
 

@@ -1,12 +1,12 @@
-//! U8c fixture gate: the `policy::defs` port must reproduce the Go
-//! `meridiandefs.CheckWrite` verdict STRINGS byte-exactly. Expected values are
-//! copied VERBATIM from the U0 defs goldens (ccc-statusd
-//! `internal/mcpserver/testdata/parity/goldens/defs.json`, captured from the
-//! live Go path at c0afe48/bdb0451) with `$SESSION` substituted for the
-//! scratch root and the leading `put: ` face prefix stripped (that prefix is
-//! the Go face's, not the verdict's).
+//! Def-conformance goldens — byte-exact against the U0 fixture set.
+//! `$SESSION` is substituted for the scratch root.
 //!
-//! One test fn, sequential — `UCC_HOME` is process-global env.
+//!
+//!
+//!
+//!
+//!
+//!
 #![allow(clippy::too_many_lines)] // one sequential script fn by design (env is global)
 
 use std::fs;

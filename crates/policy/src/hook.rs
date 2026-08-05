@@ -1,48 +1,48 @@
-//! The HOOK capability declaration (`HOOK.md`) — the emit leg's load surface (U1.3).
+//! HOOK capability declaration (`HOOK.md`) — the emit leg's load surface (U1.3).
+//! A [`Hook`] carries severity, scope, effect caps, per-eval budget, the
+//! VERBATIM `how:` block (frozen data; engine never interprets it), and a
+//! predicate whose capability ceiling was enforced at load.
 //!
-//! # What HOOK is (rulings § capability grammar)
-//! HOOK **may read** the landed change, **may react outward** under DECLARED effect
-//! caps, and **may never veto or mutate**. It is the emit leg, and its deferral
-//! condition (*"until a real subject needs them"*) is met — a status subscription is
-//! that subject. CHECK is the law leg and is unchanged by this module; FIX and VIEW
-//! stay deferred.
+//! [`evaluate_hooks`] runs armed, in-scope HOOKs and returns advisory-only
+//! [`HookOutcome`]s. [`SLICE1_CAPS`] is what slice 1 admits. Hooks never
+//! block a write; CHECKs do.
 //!
-//! A convention may carry HOOK **without** CHECK: a reaction is not a law, and HOOK
-//! exists as a distinct name so reactions are never confused with law.
 //!
-//! # The declaration
-//! ```text
-//! ---
-//! kind: hook
-//! severity: info
-//! paths: ["tasks/*.md"]
-//! caps:  [proto.send]
-//! budget: { steps: 10000, mem: 4194304 }
-//! how:
-//!   route:    { info: channel-review, error: telegram }
-//!   batching: 30s
-//!   wake_policy: never-cold
-//! ---
-//! ```
-//! plus one fenced Starlark block defining the reaction predicate.
 //!
-//! # `how:` is FROZEN DATA
-//! The engine **checks that it is well-formed and carries it through byte for byte**;
-//! it never interprets it. `ccc-statusd` is the only reader. That is why
-//! [`Hook::how`] hands back the verbatim source slice rather than a re-serialized
-//! structure, and why an unrecognized key under `how:` is **carried, not refused** —
-//! refusing an unknown key would be the engine ruling on a vocabulary that is not
-//! its own. Only the shapes of the keys slice 1 names are checked.
 //!
-//! # The ceiling is enforced at LOAD, not at eval
-//! A HOOK predicate is written in the `effects` rule language, so its power ceiling
-//! is the descriptor constructors that language registers. [`Hook`] resolves the
-//! declared `caps:` to exactly those constructor names, adds the non-capability
-//! reaction vocabulary, and statically resolves the predicate's free names against
-//! that closed set. A predicate that calls `set_field` under `caps: [proto.send]` is
-//! refused when the convention loads, before any change ever reaches it. This is the
-//! `check_when_vocab` precedent (§11.2) applied to the emit leg — the same
-//! `using-undefined` name resolution, a different closed vocabulary.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::HashSet;
 

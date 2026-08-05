@@ -1,43 +1,43 @@
-//! The effect-shim FD protocol (U6a, verdict ruling 1, review S6) — the ONLY
-//! channel through which a bash task block reaches the tree. Bash writes
-//! length-prefixed NDJSON `md.*` descriptor records to the shim fd; this
-//! module parses the captured stream into inert descriptors and converts them
-//! to [`effects::Effect`]s for the executor's one batch.
+//! Effect-shim FD protocol (U6a, ruling 1, review S6) — the ONLY channel for
+//! governed tree change from a bash block. Bash writes md.* descriptors as
+//! NDJSON lines on an inherited FD; the parent parses, validates, and hands
+//! them to the executor. Truncation or malformation fails the whole batch (S6).
 //!
-//! # Wire grammar (explicit framing — S6)
+//! # Wire grammar
+//! One JSON object per line. Required keys depend on `op` (the effect kind).
+//! Unknown ops refuse. Empty stream is a valid zero-effect batch.
 //!
-//! ```text
-//! stream  := record* trailer        (a ZERO-BYTE stream is the empty batch)
-//! record  := <len> ':' <payload> '\n'
-//! trailer := "end:" <count> '\n'    (must be the stream's final bytes)
-//! ```
+//! # Authority
+//! Descriptors carry no capability of their own — the executor validates
+//! against the block's [`Authority`] at the choke point. Bash is always
+//! [`Authority::Unsandboxed`]; caps do not apply (`docs/laws.md` amendment).
 //!
-//! `len` is the ASCII-decimal BYTE length of `payload`; `payload` is one JSON
-//! object; `count` is the number of records emitted. From bash (the harness
-//! sets `LC_ALL=C`, so `${#var}` counts bytes):
 //!
-//! ```bash
-//! p='{"op":"md.set_field","field":"status","value":"done"}'
-//! printf '%s:%s\n' "${#p}" "$p" >&"$MD_EFFECT_FD"
-//! printf 'end:1\n' >&"$MD_EFFECT_FD"
-//! ```
 //!
-//! # Fail closed (S6)
 //!
-//! Every deviation — a cut record, a length that overruns the stream, a
-//! missing or wrong-count trailer, bytes after the trailer, malformed JSON, an
-//! unknown or non-md op — is a typed [`ShimError`], and ONE error refuses the
-//! WHOLE phase-2 batch. A `SIGKILL`ed emitter (timeout, crash) cannot land a
-//! prefix of its intent as a smaller batch: without the trailer the stream is
-//! incomplete. The one deliberate exception: a zero-byte stream is a valid
-//! empty batch — a block that emits nothing attempted nothing, and the
-//! exec-failure matrix (S2) already refuses phase 2 when the block died.
 //!
-//! # Descriptor surface (ruling 1)
 //!
-//! The shim admits exactly the md.* write surface: `md.set_field` and
-//! `md.append_section`. `daemon.*` / `proto.*` have no bash emission path —
-//! an attempt is a typed refusal, never a silent drop.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

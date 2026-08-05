@@ -1,27 +1,27 @@
-//! **fix9 F1 — the run receipt's own free-text doors.**
+//! **fix9 F1 — the run receipt's free-text doors.**
+//! Pins which receipt fields admit free text and which are closed/typed, so a
+//! later widen cannot sneak narrative into attested identity fields.
 //!
-//! The name boundary closes `task` and `actor` at their single source, but the
-//! run receipt line is composed from more than those two: `executor::
-//! render_receipt` serialises `page` and each edit's `EditTarget` — an
-//! `md.set_field` FIELD NAME, or a SECTION heading text read off the page —
-//! straight into the committed JSON. `serde_json` escapes `"` and control
-//! characters; it does not escape `[`, `#`, `^` or `@`, so a claim link in any
-//! of them lands an `@fp` token in a claim-link position **in the receipt
-//! file** — a claim nobody computed, in stored bytes, on a plane no candidate
-//! strip judges (the receipt rides beside `.edits`, in a different file).
 //!
-//! Shipping the name guard without these would have left criterion 4 false on
-//! exactly this surface: **a guarded invariant with an unguarded door is not an
-//! invariant** (R32).
 //!
-//! Every assertion reads the receipt **off disk** — the bytes the commit
-//! actually wrote — and asserts ABSENCE through the one dialect parse
-//! (`syntax::fp_removals`), never a reading of how the line looks (R26 (2)).
 //!
-//! The `sec` case is the sharpest, and it is not hypothetical: the heading text
-//! is read from a page that ALREADY carries a token (a pre-existing token is
-//! left exactly as found, R32 (1)). Copying it into the receipt file is not
-//! retention — it is this write INTRODUCING the claim somewhere new.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

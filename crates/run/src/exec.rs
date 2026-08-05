@@ -1,42 +1,42 @@
-//! Bash process supervision (U6a, plan decision #21, review S3) — exec one
-//! task block under the run plane's resource bracket:
+//! Bash process supervision (U6a, decision #21, review S3) — exec one block
+//! under `setsid`, wall-clock timeout → group SIGKILL, stdout/stderr capture.
 //!
-//! - **Invocation cwd (U16, requirements row E1):** the block runs where `mrd`
-//!   runs — the process cwd is INHERITED, never relocated. The supervisor once
-//!   chdir'd the child into the scratch directory; the ruling overturned that
-//!   ("DO NOT CHANGE THE RUNNING PATH"), and `run/tests/exec.rs` asserts the
-//!   new truth. Scratch stays minted by the caller as the artifact location —
-//!   it is simply no longer the cwd.
-//! - **Tree access is not confinement:** the cwd inheritance means a step CAN
-//!   write into the workspace. Such a write is not tolerated and not merely
-//!   reported — the U6b exec bracket detects it as [`crate::snapshot::Detection::OutOfBand`]
-//!   and phase 2 REFUSES to converge: nothing the step emitted applies, and the
-//!   ungoverned write is never rolled back (ruling 2). Governed change reaches
-//!   the tree ONLY through the shim fd. Gates:
-//!   `run/tests/dispatch_bash.rs::an_ungoverned_tree_write_refuses_phase2_with_the_delta_named`
-//!   and `::a_project_root_relative_stray_write_refuses_convergence`.
-//! - **Own process group:** `setsid()` in the child pre-exec — the block and
-//!   everything it spawns share one group the supervisor can address.
-//! - **Wall-clock timeout (#21):** past the deadline the WHOLE group is
-//!   `SIGKILL`ed; timeout is a distinct typed state ([`ExecStatus::TimedOut`]),
-//!   never conflated with a nonzero exit.
-//! - **Step-end reaping (S3):** the group is `SIGKILL`ed when the step ends —
-//!   however it ends — so a background child cannot outlive the step and
-//!   write into the post-step window.
-//! - **Env hygiene:** the child env is cleared; it gets `PATH`, `LC_ALL=C`
-//!   (framing lengths are BYTE counts — C locale makes bash `${#var}` count
-//!   bytes), the contract-validated declared env, `MD_EFFECT_FD`, and
-//!   `MERIDIAN_PROJECT_ROOT` (U16, plan decision P6 — the project root as a
-//!   convenience for a step that no longer starts there; it grants nothing,
-//!   and a write through it refuses exactly as above).
-//! - **Shim fd:** fd 3 in the child, also named by `$MD_EFFECT_FD`. The
-//!   captured stream feeds [`crate::shim::parse`]; capture past the storage
-//!   cap sets the overflow flag and the stream fails closed downstream.
+//! # Laws
+//! - **Invocation cwd (U16):** child inherits the process cwd; never chdir
+//!   into scratch. "DO NOT CHANGE THE RUNNING PATH."
+//! - **Process group:** `setsid` so timeout can SIGKILL the whole group
+//!   (background children included).
+//! - **Timeout:** wall-clock from spawn; on expiry SIGKILL the group and
+//!   report [`ExecStatus::Timeout`] (distinct from signaled/nonzero).
+//! - **Pipes:** stdout/stderr collected; stderr is diagnostic only.
+//! - **No shell interpretation beyond bash -c:** source is the block body.
 //!
-//! This module supervises and captures — it applies nothing and parses
-//! nothing. Two-phase apply is `dispatch_bash`; the protocol is `shim`; the
-//! stdout consumer rides the [`exec_streaming`] seam (U8's `record` tee plugs
-//! in there — stdout is DATA, not effects, ruling 7).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::io::{self, Read};
