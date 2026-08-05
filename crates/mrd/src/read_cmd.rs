@@ -6,10 +6,12 @@
 //!
 //! One exchange over the U4a2 composed read op (decision D6): addressing +
 //! content + render at ONE engine snapshot. With no `--section` the read
-//! answers the section map (dewey ordinal, depth, title, hpath, words,
-//! `sec_rev`) plus the rendered text projection; `--section` (repeatable — a
-//! heading path, a dewey ordinal, or a `^anchor`) IS the section read (A5
-//! retired the `--mode` word: the selector says which face you want).
+//! answers the SECTION MAP and nothing else — dewey ordinal, depth, raw title,
+//! words, `sec_rev`, over the read's fingerprint — and no document prose: a
+//! map is what a toc read is for, and `--section` (repeatable — a heading
+//! path, a dewey ordinal, or a `^anchor`) IS the section read that serves
+//! bodies (A5 retired the `--mode` word: the selector says which face you
+//! want).
 //!
 //! Answered by the resident daemon (auto-spawned, the [`crate::engine`]
 //! watchman model) or the in-process degrade — BOTH run the same
@@ -46,10 +48,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             cwd.display()
         ))
     })?;
-    let (source, body) = answer_read(&resolved.workspace, &parsed)?;
+    let (source, mut body) = answer_read(&resolved.workspace, &parsed)?;
 
     match parsed.format {
         Format::Json => {
+            drop_duplicated_map(&mut body);
             let value = json!({
                 "workspace": resolved.workspace.display().to_string(),
                 "source": source.label(),
@@ -67,6 +70,35 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         }
     }
     Ok(())
+}
+
+/// **Read face v2 (dogfood G3/G4): a toc read's `--json` drops
+/// `rendered_text`.**
+///
+/// On a toc read the two planes carry the SAME facts twice — `toc[]`
+/// structured, and `rendered_text` the TOON encoding of those same rows. The
+/// dogfood measured 5473 chars of pure duplication on one page, per call: an
+/// agent reading `--json` wants the structured rows and pays for the render it
+/// will not read. So the CLI's machine face serves `toc[]` alone, and
+/// `rendered_text` survives in `--json` only where a BODY was requested — a
+/// section read, where it is the prose the raw `sections[].content` rows do
+/// not spell the same way (elision, `@fp` decoration).
+///
+/// Two things this deliberately is NOT. It is not a wire change: the composed
+/// read op still answers both planes, and ccc-statusd over the socket still
+/// receives what it always did. And it is not the human face: `mrd read` with
+/// no `--json` prints `rendered_text` verbatim, which is the whole point of
+/// the projection.
+///
+/// It also settles G3 in the honest direction — the help and the module doc
+/// promised "the section map plus the rendered text projection", and what
+/// arrived was the map twice over, never the document's prose. The docs now
+/// say what the face does.
+fn drop_duplicated_map(body: &mut Value) {
+    let is_toc_read = body.get("toc").is_some_and(|t| !t.is_null());
+    if let (true, Some(obj)) = (is_toc_read, body.as_object_mut()) {
+        obj.remove("rendered_text");
+    }
 }
 
 /// The parsed `read` invocation.

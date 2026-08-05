@@ -542,6 +542,7 @@ fn the_render_face_shows_config_blocks_and_differs_from_blocks_deleted() {
                     header: Header {
                         display_path: "~/MERIDIAN.md",
                         file_rev: &doc.root.node_rev.0,
+                        fingerprint: "fp",
                         words_total: 0,
                         decorations: &render::NO_DECORATIONS,
                     },

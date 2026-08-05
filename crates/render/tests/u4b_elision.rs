@@ -54,6 +54,7 @@ fn render_sections(
     let header = Header {
         display_path: "$S/x.md",
         file_rev: "r",
+        fingerprint: "fp",
         words_total: 0,
         decorations: &render::NO_DECORATIONS,
     };
@@ -195,12 +196,13 @@ fn all_lock_page_renders_structure_not_empty() {
     let out = render_sections(&doc, &rows, ToonRenderer::with_meridian_elision());
     assert!(!out.text.is_empty(), "never a bare empty string");
     assert!(
-        out.text.contains(&format!("\n  Pins,{},0,", fact.sec_rev)),
+        out.text
+            .contains(&format!("\n  \"1\",Pins,{},0,", fact.sec_rev)),
         "the head still declares the section, with its rev: {}",
         out.text
     );
     assert!(
-        out.text.contains("== Pins =="),
+        out.text.contains("== 1 =="),
         "and the body marker is the surviving structure: {}",
         out.text
     );

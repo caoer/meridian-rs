@@ -229,6 +229,11 @@ pub fn composed_read(
     let header = render::Header {
         display_path: display,
         file_rev: &file_rev,
+        // Read face v2 (dogfood G8): the `--if-fingerprint` guard's own value,
+        // printed on the face a person reads. It is the SAME `ambient` this
+        // body carries as `root`/`fingerprint`, so the rendered token and the
+        // structured one cannot disagree about the world this read saw.
+        fingerprint: &ambient.0,
         words_total,
         decorations,
     };

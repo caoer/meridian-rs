@@ -183,6 +183,150 @@ fn read_section_selects_and_serves_content() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// read face v2 (ZT 2026-08-04) — the dogfood G2/G3/G4/G8 gates
+// ---------------------------------------------------------------------------
+
+/// A page whose deep heading has a title distinct from every spelling of its
+/// PATH: the ancestors are long, and `Slash/Title Here` sanitizes to something
+/// else again, so "the row prints its raw title" and "the row prints its full
+/// address" cannot both pass.
+const DEEP: &str = "# Architecture and its discontents\n\nintro words\n\n\
+    ## Storage layer considered as a whole\n\nlayer words\n\n\
+    ### Slash/Title Here\n\nleaf words\n";
+
+/// Gate G2 — the human toc row carries the leaf's RAW title and NOT its
+/// ancestors.
+///
+/// The dogfood measured a 106-char address prefix re-typed on all 23 rows of a
+/// real page: 44% of the map's bytes, and 23 of 24 rows past 120 columns. The
+/// tree is not lost by dropping it — `n` and `depth` carry it — so the claim
+/// is asserted in both directions: the title is present, the ancestor path is
+/// absent, and no row is wide.
+#[test]
+fn the_human_toc_prints_raw_titles_and_never_re_types_ancestors() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(DEEP);
+    let out = sb.run(&ws, &["read", "doc.md"]);
+    assert_eq!(code(&out), 0, "read: {}", stderr(&out));
+    let text = stdout(&out);
+
+    assert!(
+        text.contains("\n  1.1.1,3,Slash/Title Here,"),
+        "the deep row is its dewey, its depth and its RAW title — the raw \
+         spelling `put` takes, not the sanitized `Slash-Title-Here`. The \
+         ordinal is bare here and quoted at depth 2 because the encoder quotes \
+         exactly when bare would lie, and `1.1.1` decodes as no number: {text}"
+    );
+    assert!(
+        !text.contains("discontents/"),
+        "no row re-types an ancestor path (G2): {text}"
+    );
+    assert!(
+        text.lines().all(|l| l.chars().count() <= 120),
+        "every row fits a terminal: {text}"
+    );
+}
+
+/// Gate G8 — the human toc prints the fingerprint, and it is the value
+/// `put --if-fingerprint` accepts.
+///
+/// The dogfood's G8 was not "the token is wrong" — the token round-trips. It
+/// was that the human face never printed it, so the guard the CLI offers asked
+/// a terminal user for a value only `--json` would give them. This gate closes
+/// the loop the way a user closes it: scrape `fp` off the read, hand it
+/// straight to the guard, and require the write to be admitted.
+#[test]
+fn the_fingerprint_the_human_toc_prints_is_the_guard_the_put_takes() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let text = stdout(&sb.run(&ws, &["read", "doc.md"]));
+    let fp = text
+        .lines()
+        .find_map(|l| l.strip_prefix("fp: "))
+        .expect("the human toc prints fp")
+        .trim_matches('"')
+        .to_owned();
+    assert!(fp.starts_with("b3:"), "a real fingerprint token: {fp}");
+
+    let edits = match_at(
+        &serde_json::json!([{"h": "Alpha"}]),
+        "one two three",
+        "one two four",
+    );
+    let out = sb.run_stdin(
+        &ws,
+        &["put", "doc.md", "--dry", "--if-fingerprint", &fp],
+        &edits,
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "the guard admits the fp the read printed: {}",
+        stderr(&out)
+    );
+}
+
+/// Gate G3/G4 — a toc read's `--json` serves the structured rows ALONE.
+///
+/// `toc[]` and `rendered_text` carried the same facts twice (5473 chars of
+/// duplication on one real page, per call). An agent reading JSON wants the
+/// rows; it should not pay for a render of them. The other half of the claim
+/// is asserted beside it: where a BODY was requested, `rendered_text` is
+/// prose and still rides.
+#[test]
+fn json_serves_the_map_once_and_the_prose_only_when_a_body_was_asked_for() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+
+    let out = sb.run(&ws, &["read", "doc.md", "--json"]);
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let body = &v["read"];
+    assert!(body["toc"].is_array(), "the structured map rides: {body}");
+    assert!(
+        body.get("rendered_text").is_none(),
+        "and is not repeated as a render of itself (G4): {body}"
+    );
+
+    let out = sb.run(
+        &ws,
+        &["read", "doc.md", "--section", "Alpha/Beta", "--json"],
+    );
+    let v: Value = serde_json::from_str(&stdout(&out)).expect("json parses");
+    let rendered = v["read"]["rendered_text"]
+        .as_str()
+        .expect("a body was requested, so the prose rides");
+    assert!(
+        rendered.contains("four five"),
+        "and it is the PROSE, not the map (G3): {rendered}"
+    );
+}
+
+/// Gate G2 (sections) — a body opens with its `n`, not with its full address.
+///
+/// Run 05 printed a 199-char hpath twice around an 800-byte section: once in
+/// the head row, once as the banner. The marker is now the dewey ordinal — and
+/// that ordinal is a `--section` selector, so the line that opens a body also
+/// says how to ask for it again.
+#[test]
+fn a_section_body_opens_with_its_ordinal_not_its_full_address() {
+    let sb = sandbox();
+    let ws = sb.workspace_with(DEEP);
+    let text = stdout(&sb.run(&ws, &["read", "doc.md", "--section", "1.1.1"]));
+    assert!(
+        text.contains("\n== 1.1.1 ==\n"),
+        "the body's marker is its ordinal: {text}"
+    );
+    assert!(
+        !text.contains("== Architecture"),
+        "and never the mega full-address banner (G2): {text}"
+    );
+    assert!(
+        text.contains("leaf words"),
+        "the body itself is served verbatim: {text}"
+    );
+}
+
 /// Gate — a `#FRAG` naming no section is the engine's refusal, VERBATIM, at
 /// exit 1 (the finding leg — never rewritten client-side).
 #[test]

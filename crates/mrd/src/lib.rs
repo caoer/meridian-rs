@@ -121,12 +121,17 @@ usage:
   mrd read <PATH>[#FRAG] [--section SEL]
                            the composed read: addressing + content + render at
                            ONE engine snapshot, answered by the daemon (auto
-                           -spawned) or in-process. No --section = the
-                           section map (dewey ordinal, depth, title, hpath,
-                           words, sec_rev) + the rendered text; --section
-                           (repeatable: a heading path, dewey ordinal, or
-                           ^anchor) IS the section read.
-                           Human output is the rendered text verbatim. Exits:
+                           -spawned) or in-process. No --section = the section
+                           map ALONE (dewey ordinal n, depth, raw title, words,
+                           sec_rev) under the read's own fingerprint - the fp
+                           `put --if-fingerprint` takes; --section (repeatable:
+                           a heading path, dewey ordinal, or ^anchor) IS the
+                           section read, and is what serves bodies. A body
+                           opens with its `== n ==` marker; the head declares
+                           each body's byte length, which is where it ends.
+                           Human output is the rendered text verbatim; --json
+                           on a toc read serves the structured toc[] alone and
+                           does not repeat it as rendered_text. Exits:
                            0 served / 1 the engine refused (its message,
                            verbatim) / 2 bad invocation
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]

@@ -103,6 +103,16 @@ impl std::error::Error for RenderFailed {}
 pub struct Header<'a> {
     pub display_path: &'a str,
     pub file_rev: &'a str,
+    /// The ambient corpus fingerprint this read was served at — the `b3b:…`
+    /// world-grain token `mrd put --if-fingerprint` takes.
+    ///
+    /// **Read face v2 (dogfood G8).** The guard wanted a value the human face
+    /// never printed, so a terminal user had to drop to `--json` to obtain the
+    /// argument the flag they were being offered required. It rides the header
+    /// because it is ONE fact about the whole read — a per-row column would
+    /// re-type the same 70-odd bytes on every line, which is the very cost
+    /// G2 is about.
+    pub fingerprint: &'a str,
     pub words_total: u64,
     /// Stage-2 S10: the claim-link decorations for this render (D10). It rides
     /// the HEADER, so it is an input to the render as a whole and not to one
@@ -149,7 +159,11 @@ pub fn address_text(fact: &ReadFact) -> String {
 /// leaf counts its words here even though its fact carries 0).
 #[derive(Debug, Clone)]
 pub struct RenderedSection {
-    pub hpath: String,
+    /// The row's dewey ordinal (`2.1`), or `^id` on a block-anchor row — the
+    /// short address that opens this body and re-reads it (read face v2).
+    pub n: String,
+    /// The row's RAW title, verbatim off the heading.
+    pub title: String,
     pub sec_rev: String,
     pub words: u64,
     pub content: String,
@@ -265,7 +279,8 @@ impl Renderer for ToonRenderer {
                     let content =
                         walk::emit_section(doc, row.fact, self.elide_lang, header.decorations)?;
                     sections.push(RenderedSection {
-                        hpath: address_text(row.fact),
+                        n: row.fact.n.clone(),
+                        title: row.fact.title.clone(),
                         sec_rev: row.fact.sec_rev.clone(),
                         words: fields_count(&content) as u64,
                         content,
@@ -286,6 +301,7 @@ fn header_fields(header: &Header<'_>) -> Vec<(String, toon::Value)> {
     vec![
         ("path".to_string(), toon::Value::str(header.display_path)),
         ("file_rev".to_string(), toon::Value::str(header.file_rev)),
+        ("fp".to_string(), toon::Value::str(header.fingerprint)),
         ("words".to_string(), toon::Value::Uint(header.words_total)),
     ]
 }
@@ -297,6 +313,27 @@ fn header_fields(header: &Header<'_>) -> Vec<(String, toon::Value)> {
 /// encoder quotes it for exactly that reason. `depth` carries what the retired
 /// text face carried as leading indentation: a table cannot indent, and
 /// dropping the depth would lose the tree shape a toc is read for.
+///
+/// **Read face v2 — the RELATIVE toc (ZT, 2026-08-04; dogfood G2).** The
+/// address column was the FULL sanitized heading path, so every row re-typed
+/// its ancestors: on a real 7319-word decision page a 106-char prefix was
+/// repeated across 23 rows — 2438 of the map's 5473 bytes, 44%, and 23 of 24
+/// rows past 120 columns. The discriminating text sat behind a wall of
+/// identical prose and every terminal wrapped it, which defeats the
+/// compactness TOON exists for.
+///
+/// So the column is the row's own RAW `title` and nothing else. The tree it
+/// hangs from is not dropped, it is carried by the two columns that already
+/// carry it losslessly: `depth` gives the level and `n` gives the dewey
+/// position, so a reader reconstructs the path by eye and a machine addresses
+/// any row by its `n` verbatim. Raw, not sanitized: `sanitize_heading` is
+/// many-to-one, so the sanitized spelling was a projection a reader could not
+/// invert back to the heading actually on the page — while `mrd put` takes
+/// exactly the raw text this column now prints.
+///
+/// The structured `toc[]` rows are unchanged and still carry `hpath` as
+/// segments (decision 14: arrays for machines, text for humans), so nothing a
+/// machine addressed by is lost here.
 #[must_use]
 pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
     let mut fields = header_fields(header);
@@ -306,7 +343,7 @@ pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
             toon::Value::obj([
                 ("n", toon::Value::str(&row.n)),
                 ("depth", toon::Value::Uint(u64::from(row.depth))),
-                ("address", toon::Value::str(address_text(row))),
+                ("title", toon::Value::str(&row.title)),
                 ("words", toon::Value::Uint(row.words)),
                 ("rev", toon::Value::str(&row.sec_rev)),
             ])
@@ -317,13 +354,22 @@ pub fn toc_toon(header: &Header<'_>, rows: &[&ReadFact]) -> String {
 }
 
 /// The marker that opens one section's body in the sections face.
-fn body_marker(hpath: &str) -> String {
-    format!("== {hpath} ==")
+///
+/// **Read face v2 (dogfood G2).** It was the full sanitized heading path, so a
+/// deep section printed its 199-char address twice — once in the head's row,
+/// once as the banner — around an 800-byte body: roughly half the response was
+/// address. The marker is now the row's `n` alone.
+///
+/// `n` is not merely shorter, it is the SELECTOR: a dewey ordinal (or `^id`)
+/// is exactly what `--section` takes, so the line that opens a body also says
+/// how to ask for that body again. The title, rev, words and byte length stay
+/// in the head, where each is stated once.
+fn body_marker(n: &str) -> String {
+    format!("== {n} ==")
 }
 
 /// The sections face: a TOON HEAD carrying the fixed-shape facts, then the
-/// section BODIES verbatim, one per row, each opened by its `== hpath ==`
-/// marker.
+/// section BODIES verbatim, one per row, each opened by its `== n ==` marker.
 ///
 /// **Why the bodies are not TOON.** The format has no block scalar (spec §7.1:
 /// a newline inside a string is the `\n` escape, and that is the only
@@ -338,7 +384,7 @@ fn body_marker(hpath: &str) -> String {
 /// `notice` rides the head too, so a partial read is a FIELD a reader can look
 /// up rather than a sentence to notice at the bottom.
 ///
-/// **The marker is not the boundary.** A `== hpath ==` line is ordinary text
+/// **The marker is not the boundary.** A `== n ==` line is ordinary text
 /// and any section's prose may contain one — a document ABOUT this face
 /// certainly does. So the head carries each body's `bytes` (its UTF-8 length),
 /// and that is where a body ends: a reader takes the bodies in the head's
@@ -356,7 +402,7 @@ pub fn sections_toon(
     use std::fmt::Write as _;
     let mut b = sections_head(header, sections, notice);
     for s in sections {
-        let _ = write!(b, "\n\n{}\n{}", body_marker(&s.hpath), s.content);
+        let _ = write!(b, "\n\n{}\n{}", body_marker(&s.n), s.content);
     }
     b.truncate(b.trim_end_matches('\n').len());
     b
@@ -379,7 +425,8 @@ pub fn sections_head(
         .iter()
         .map(|s| {
             toon::Value::obj([
-                ("hpath", toon::Value::str(&s.hpath)),
+                ("n", toon::Value::str(&s.n)),
+                ("title", toon::Value::str(&s.title)),
                 ("rev", toon::Value::str(&s.sec_rev)),
                 ("words", toon::Value::Uint(s.words)),
                 ("bytes", toon::Value::Uint(s.content.len() as u64)),
@@ -414,6 +461,12 @@ mod tests {
     /// The toc face is ONE TOON document: header scalars, then the section map
     /// as a tabular array. The dewey ordinals arrive quoted because they are
     /// strings — `2.1` bare would decode as a float.
+    ///
+    /// Read face v2's claim rides here as the deep row: its column is the RAW
+    /// leaf title, so a nested heading costs its own name and not its
+    /// ancestors' — and `Slash/Title Here` proves the "raw" half, because the
+    /// sanitized spelling of that heading (`Slash-Title-Here`) is a different
+    /// string that `mrd put` does not take.
     #[test]
     fn the_toc_face_is_one_toon_document() {
         let (doc, facts) = doc_and_facts(RAW);
@@ -422,6 +475,7 @@ mod tests {
         let header = Header {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
+            fingerprint: "fp",
             words_total,
             decorations: &NO_DECORATIONS,
         };
@@ -429,14 +483,20 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "path: $S/x.md");
         assert_eq!(lines[1], format!("file_rev: {}", doc.root.node_rev.0));
-        assert_eq!(lines[2], format!("words: {words_total}"));
-        assert_eq!(lines[3], "toc[3]{n,depth,address,words,rev}:");
-        assert!(lines[4].starts_with("  \"1\",1,Todo,"), "{}", lines[4]);
-        assert!(lines[5].starts_with("  \"2\",1,Notes,"), "{}", lines[5]);
+        assert_eq!(lines[2], "fp: fp");
+        assert_eq!(lines[3], format!("words: {words_total}"));
+        assert_eq!(lines[4], "toc[3]{n,depth,title,words,rev}:");
+        assert!(lines[5].starts_with("  \"1\",1,Todo,"), "{}", lines[5]);
+        assert!(lines[6].starts_with("  \"2\",1,Notes,"), "{}", lines[6]);
         assert!(
-            lines[6].starts_with("  \"2.1\",2,Notes/Slash-Title-Here,"),
-            "the depth is a COLUMN — a table cannot indent: {}",
-            lines[6]
+            lines[7].starts_with("  \"2.1\",2,Slash/Title Here,"),
+            "the row costs its own RAW title and nothing of its ancestors — \
+             the tree rides `depth` and `n`: {}",
+            lines[7]
+        );
+        assert!(
+            !text.contains("Notes/Slash"),
+            "no row re-types an ancestor path (dogfood G2): {text}"
         );
         assert!(!text.ends_with('\n'), "no trailing newline");
     }
@@ -450,6 +510,7 @@ mod tests {
         let header = Header {
             display_path: "p",
             file_rev: &doc.root.node_rev.0,
+            fingerprint: "fp",
             words_total: 0,
             decorations: &NO_DECORATIONS,
         };
@@ -474,6 +535,7 @@ mod tests {
         let header = Header {
             display_path: "$S/x.md",
             file_rev: &doc.root.node_rev.0,
+            fingerprint: "fp",
             words_total: 0,
             decorations: &NO_DECORATIONS,
         };
@@ -500,7 +562,7 @@ mod tests {
             "and the head is a TOON document, not a prose header"
         );
         assert!(
-            head.contains("sections[1]{hpath,rev,words,bytes}:"),
+            head.contains("sections[1]{n,title,rev,words,bytes}:"),
             "the head declares the bodies AND their lengths: {head}"
         );
         assert!(
@@ -509,11 +571,7 @@ mod tests {
         );
 
         // The body follows its marker, verbatim and subtree-inclusive.
-        let body = out
-            .text
-            .split("\n\n== Notes ==\n")
-            .nth(1)
-            .expect("one body");
+        let body = out.text.split("\n\n== 2 ==\n").nth(1).expect("one body");
         assert_eq!(body, out.sections[0].content.trim_end_matches('\n'));
         assert!(out.sections[0].content.contains("## Slash/Title Here"));
     }
@@ -528,7 +586,7 @@ mod tests {
     /// assertion that rots silently.
     #[test]
     fn prose_that_spells_a_marker_does_not_move_the_boundary() {
-        let raw = "# Notes\n\nthe face writes a line like\n\n== Notes ==\n\nand this section is ABOUT that line\n";
+        let raw = "# Notes\n\nthe face writes a line like\n\n== 1 ==\n\nand this section is ABOUT that line\n";
         let (doc, facts) = doc_and_facts(raw);
         let fact = resolve_selector(&facts, &sel("Notes")).expect("resolves");
         let rows = [SectionRow {
@@ -538,6 +596,7 @@ mod tests {
         let header = Header {
             display_path: "p",
             file_rev: "r",
+            fingerprint: "fp",
             words_total: 0,
             decorations: &NO_DECORATIONS,
         };
@@ -554,11 +613,11 @@ mod tests {
 
         let content = &out.sections[0].content;
         assert!(
-            content.contains("\n== Notes ==\n"),
+            content.contains("\n== 1 ==\n"),
             "the fixture really carries a lookalike marker: {content}"
         );
         // ONE section was read, so the head declares ONE row — the second
-        // `== Notes ==` in the face is prose, and the head knows nothing of it.
+        // `== 1 ==` in the face is prose, and the head knows nothing of it.
         let head = sections_head(&header, &out.sections, None);
         assert!(head.contains("sections[1]{"), "{head}");
         assert!(
@@ -566,7 +625,7 @@ mod tests {
             "the declared length is the body's real byte length: {head}"
         );
         // And the body reached the reader byte-identically, lookalike included.
-        assert_eq!(out.text.matches("== Notes ==").count(), 2);
+        assert_eq!(out.text.matches("== 1 ==").count(), 2);
     }
 
     /// The U4b hook is INERT by default: a `meridian-*` fenced block renders
@@ -585,6 +644,7 @@ mod tests {
         let header = Header {
             display_path: "p",
             file_rev: "r",
+            fingerprint: "fp",
             words_total: 0,
             decorations: &NO_DECORATIONS,
         };
@@ -635,6 +695,7 @@ mod tests {
                     header: Header {
                         display_path: "p",
                         file_rev: "r",
+                        fingerprint: "fp",
                         words_total: 0,
                         decorations: &NO_DECORATIONS,
                     },
@@ -665,6 +726,7 @@ mod tests {
                     header: Header {
                         display_path: "p",
                         file_rev: "r",
+                        fingerprint: "fp",
                         words_total: 0,
                         decorations: &decorations,
                     },
@@ -720,6 +782,7 @@ mod tests {
         let header = |decorations| Header {
             display_path: "p",
             file_rev: "r",
+            fingerprint: "fp",
             words_total: 0,
             decorations,
         };
