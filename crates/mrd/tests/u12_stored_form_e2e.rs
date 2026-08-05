@@ -1,18 +1,18 @@
-//! **U12 — criterion 4, BOTH HALVES, driven through the REAL `mrd put` / `mrd read`.**
+//! **U12 — criterion 4, BOTH HALVES, driven through the REAL `mrd put` / `mrd read`.** *"The
+//! positive half is required because round-trip identity alone is satisfied by never
+//! translating at all"* — an identity function round-trips perfectly and ships nothing. So
+//! every gate below asserts what the stored bytes ARE, not merely that they survive a round
+//! trip.
 //!
-//! *"The positive half is required because round-trip identity alone is
-//! satisfied by never translating at all"* — an identity function round-trips
-//! perfectly and ships nothing. So every gate below asserts what the stored
-//! bytes ARE, not merely that they survive a round trip.
 //!
-//! The surface is the production choke-point: `mrd put` builds `SpliceArgs` and
-//! calls `wire_serve::write::splice` in-process (`put_cmd.rs`), so these gates
-//! measure the door D9 places the translation at, not a helper beside it.
 //!
-//! `HOME`, `XDG_CACHE_HOME` and `MERIDIAN_CONFIG` are sandboxed per test, so the
-//! mount table read here is this fixture's and never the operator's — and the
-//! read path is spawn-impossible, so no resident daemon can serve a pre-fix
-//! engine (the brief's daemon trap).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -229,14 +229,14 @@ fn the_agent_plane_form_round_trips_through_the_stored_form() {
 // The positional bound — frontmatter is NOT an address position
 // ---------------------------------------------------------------------------
 
-/// **`root: SESSION.md` in frontmatter survives a write byte-identically in
-/// that span, and the pin covering it stays valid.**
+/// **`root: SESSION.md` in frontmatter survives a write byte-identically in that span, and the
+/// pin covering it stays valid.** `root:` is a live YAML key in the shipped preset/def grammar.
 ///
-/// `root:` is a live YAML key in the shipped preset/def grammar. A blanket byte
-/// transform would rewrite this line, corrupt the def, and silently invalidate
-/// every pin whose fingerprint covers it. The acceptance half rides in the same
-/// test: the BODY link translated in the same write, so this cannot pass for a
-/// transform that touches nothing.
+///
+///
+///
+///
+///
 #[test]
 fn frontmatter_root_survives_byte_identically_and_its_rev_does_not_move() {
     let sb = sandbox(true);
@@ -301,9 +301,9 @@ fn fm_rev(raw: &str) -> String {
 // The refusals — each with the acceptance half beside it
 // ---------------------------------------------------------------------------
 
-/// An UNMOUNTED root has no vault name, so it has no stored form: the write
-/// refuses and teaches the declaration. The acceptance half is the bound root
-/// in the same fixture, which lands.
+/// An UNMOUNTED root has no vault name, so it has no stored form: the write refuses and teaches
+/// the declaration. The acceptance half is the bound root in the same fixture, which lands.
+///
 #[test]
 fn an_unmounted_root_refuses_the_write_and_teaches_the_declaration() {
     let sb = sandbox(true);
@@ -338,10 +338,10 @@ fn an_unmounted_root_refuses_the_write_and_teaches_the_declaration() {
     assert!(sb.read_back("page.md").contains("obsidian://"));
 }
 
-/// **The ordinary corpus is untouched** — the control that keeps this transform
-/// from being an instrument that cries wolf. An external URL parses as an
-/// address with root `https` (`Addr::parse` measurement), so before the bound
-/// test this refused every write carrying one.
+/// **The ordinary corpus is untouched** — the control that keeps this transform from being an
+/// instrument that cries wolf. An external URL parses as an address with root `https`
+/// (`Addr::parse` measurement), so before the bound test this refused every write carrying one.
+///
 #[test]
 fn ordinary_links_and_ambient_refs_are_untouched() {
     let sb = sandbox(true);
@@ -366,10 +366,10 @@ fn ordinary_links_and_ambient_refs_are_untouched() {
     );
 }
 
-/// **No machine binds anything** — the state every machine starts in. A
-/// cross-root ref refuses (there is no vault name to store) and the ordinary
-/// corpus is completely unaffected, which is what keeps this from bricking every
-/// single-root workspace.
+/// **No machine binds anything** — the state every machine starts in. A cross-root ref refuses
+/// (there is no vault name to store) and the ordinary corpus is completely unaffected, which is
+/// what keeps this from bricking every single-root workspace.
+///
 #[test]
 fn an_absent_mount_table_refuses_cross_root_and_leaves_everything_else_alone() {
     let sb = sandbox(false);
@@ -393,15 +393,15 @@ fn an_absent_mount_table_refuses_cross_root_and_leaves_everything_else_alone() {
     );
 }
 
-/// **Criterion 5 — a hand-edited stored URI fails LOUDLY on read-back** rather
-/// than resolving to something plausible. The acceptance half is the canonical
-/// URI in the same fixture, which reads back.
+/// **Criterion 5 — a hand-edited stored URI fails LOUDLY on read-back** rather than resolving
+/// to something plausible. The acceptance half is the canonical URI in the same fixture, which
+/// reads back.
 #[test]
 fn a_hand_edited_stored_uri_fails_loudly_on_read_back() {
     let sb = sandbox(true);
-    // Hand-written, non-canonical: `adv-uri` is the legacy action spelling and
-    // `%2F` is a path separator the canon writes literally. Both name a vault
-    // this machine BINDS, so both are the engine's to judge.
+    // Hand-written, non-canonical: `adv-uri` is the legacy action spelling and `%2F` is a path
+    // separator the canon writes literally. Both name a vault this machine BINDS, so both are the
+    // engine's to judge.
     sb.seed(
         "page.md",
         "# Page\n\n## Body\n\n\
@@ -444,12 +444,12 @@ fn a_hand_edited_stored_uri_fails_loudly_on_read_back() {
     );
 }
 
-/// A RETAINED cross-root address — one the document already carried, in a
-/// section this write does not touch — is **not** rewritten.
+/// A RETAINED cross-root address — one the document already carried, in a section this write
+/// does not touch — is **not** rewritten. Rewriting it would change bytes this batch never
+/// addressed and move the fingerprint of a node this write does not own, reddening pins that
+/// have nothing to do with it. The same rule the `@fp` strip follows.
 ///
-/// Rewriting it would change bytes this batch never addressed and move the
-/// fingerprint of a node this write does not own, reddening pins that have
-/// nothing to do with it. The same rule the `@fp` strip follows.
+///
 #[test]
 fn a_retained_agent_plane_address_is_not_this_writes_to_move() {
     let sb = sandbox(true);

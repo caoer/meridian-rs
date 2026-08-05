@@ -1,21 +1,21 @@
-//! G15 gates: `mrd view status` names the unbindable socket instead of letting
-//! `NO_VIEW` be read as "this workspace has no view".
+//! G15 gates: `mrd view status` names the unbindable socket instead of letting `NO_VIEW` be
+//! read as "this workspace has no view". Dogfood pass-3 ran `mrd view status` under an
+//! over-long `XDG_CACHE_HOME`. No daemon can bind or dial a socket at or over `sun_path`, so
+//! the command fell back to the cold drawer and printed `source: absent`, `state: NO_VIEW` at
+//! exit 0 with an EMPTY stderr.
 //!
-//! Dogfood pass-3 ran `mrd view status` under an over-long `XDG_CACHE_HOME`.
-//! No daemon can bind or dial a socket at or over `sun_path`, so the command
-//! fell back to the cold drawer and printed `source: absent`, `state: NO_VIEW`
-//! at exit 0 with an EMPTY stderr. That reads as "no view yet" and sends the
-//! reader off to build one — while the thing that actually broke is the socket,
-//! which starting a daemon does not fix.
 //!
-//! The verdict is not wrong about the drawer, so these gates pin the fix as a
-//! stderr voice with THREE constraints held together, since any one alone is
-//! satisfiable by a wrong change:
 //!
-//! 1. daemonless → stderr names the daemon's absence AND the socket cause;
-//! 2. a genuinely absent view still reports `NO_VIEW` — no misdiagnosis traded
-//!    for a second one;
-//! 3. the daemon-backed path is byte-identical on BOTH faces and silent.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

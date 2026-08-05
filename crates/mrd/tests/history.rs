@@ -26,9 +26,9 @@ use std::process::{Command, Output};
 /// The workspace-relative CHECK rule page the history gates calibrate.
 const CHECK_RULE_PAGE: &str = "rules/reviewer-not-owner.md";
 
-/// Its golden list — a SPEC page in the corpus tier's D2 shape, naming the rule
-/// it excepts through a `rule:` reference. It is passed with `--spec`, never
-/// derived from the rule's path: the relationship is declared, not positional.
+/// Its golden list — a SPEC page in the corpus tier's D2 shape, naming the rule it excepts
+/// through a `rule:` reference. It is passed with `--spec`, never derived from the rule's path:
+/// the relationship is declared, not positional.
 const CHECK_GOLDEN_SPEC: &str = "specs/reviewer-not-owner.md";
 
 /// What that spec's `rule:` reference spells, resolved from the spec's own
@@ -222,9 +222,9 @@ fn seeded_workspace() -> Seeded {
     Seeded { dir, c1, c3 }
 }
 
-/// The undeclared would-refuse item (C1, alice's self-close) fails the run; the
-/// report shows it failing, names the history span, counts every fidelity class,
-/// and the grey count is asserted.
+/// The undeclared would-refuse item (C1, alice's self-close) fails the run; the report shows it
+/// failing, names the history span, counts every fidelity class, and the grey count is
+/// asserted.
 #[test]
 fn undeclared_would_refuse_fails_the_run() {
     let seeded = seeded_workspace();
@@ -442,22 +442,22 @@ fn golden_exception_without_a_reason_is_refused() {
     );
 }
 
-/// Decision #8: `mrd rules replay` is retired the SAME release — no alias, no
-/// shim. The verb no longer parses; the CLI refuses it loudly (exit 2).
+/// Decision 8: `mrd rules replay` is retired the SAME release — no alias, no shim. The verb no
+/// longer parses; the CLI refuses it loudly (exit 2). The instrument changed with the
+/// namespace; the proposition did not The `rules` namespace has since been REASSIGNED by the
+/// registration ruling § 7 to the effective-rules print verb (`mrd rules [PATH]`), which ZT's
+/// originating requirement named as reuse of exactly this precedent.
 ///
-/// # The instrument changed with the namespace; the proposition did not
-/// The `rules` namespace has since been REASSIGNED by the registration ruling
-/// § 7 to the effective-rules print verb (`mrd rules [PATH]`), which ZT's
-/// originating requirement named as reuse of exactly this precedent. So
-/// `unknown subcommand: rules` is no longer the refusal — and asserting that
-/// string would now be asserting that the new verb does not exist.
 ///
-/// What must stay true is the SHIM-LESS part, and it is stronger than one
-/// message: **no spelling of the retired form may succeed.** Both of its shapes
-/// are measured, because they fail through different arms — the flags are
-/// unknown flags, and the bare form's `replay` is a path that is not on disk.
-/// The full form was the only one the original gate covered, and it would have
-/// kept passing while `mrd rules replay` quietly printed an empty rule set.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn mrd_rules_replay_no_longer_parses() {
     for retired in [
@@ -562,9 +562,9 @@ fn a_spec_with_no_rule_reference_is_refused() {
     );
 }
 
-/// No `--spec` is the empty list — nothing declared yet, so the would-refuse item
-/// stands as a finding. This is the pre-triage state, and it must stay reachable:
-/// the tier is usable before anyone writes a spec page.
+/// No `--spec` is the empty list — nothing declared yet, so the would-refuse item stands as a
+/// finding. This is the pre-triage state, and it must stay reachable: the tier is usable before
+/// anyone writes a spec page.
 #[test]
 fn without_a_spec_nothing_is_declared() {
     let seeded = seeded_workspace();

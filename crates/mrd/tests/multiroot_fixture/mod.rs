@@ -1,23 +1,23 @@
-//! **The shared fixture behind the multi-root CPU gates** (`status`, `walk`,
-//! `check`).
+//! **The shared fixture behind the multi-root CPU gates** (`status`, `walk`, `check`). Why this
+//! is one module and not one copy per target The gate these targets run is only as honest as
+//! the table they measure through, and the W2 investigations finding was precisely a fixture
+//! that had stopped populating the input it claimed to bound: `status_walltime.rs` set `HOME`
+//! to a bare temp dir, so the mount table was EMPTY, so the eager loader had no roots to walk —
+//! a green light with no lamp behind it, for months.
 //!
-//! # Why this is one module and not one copy per target
-//! The gate these targets run is only as honest as the table they measure
-//! through, and the W2 investigation's finding was precisely a fixture that had
-//! stopped populating the input it claimed to bound: `status_walltime.rs` set
-//! `HOME` to a bare temp dir, so the mount table was EMPTY, so the eager loader
-//! had no roots to walk — a green light with no lamp behind it, for months.
 //!
-//! Three gates each carrying their own copy of that fixture is three chances for
-//! the same drift, and the copies would not fail together — one would quietly
-//! start measuring an empty table while the others stayed honest. So the table
-//! is built ONCE here, and [`assert_table_is_populated`] — the anti-blindness
-//! check — is the one place that says what "populated" means.
 //!
-//! Each `#[test]` target compiles its own copy of this module and uses only the
-//! parts its verb needs, so the unused remainder is dead code IN THAT TARGET and
-//! `pub` reaches no farther than it. Both warnings are about the module's shape
-//! as a shared test helper, not about anything a reader should act on.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 #![allow(dead_code, unreachable_pub)]
 
 use std::fmt::Write as _;
@@ -28,18 +28,18 @@ use std::time::Duration;
 /// Declared mount roots in the fixture's table. Four is the field shape (the W2
 /// investigation measured four bound roots on the dogfood machine).
 pub const ROOTS: usize = 4;
-/// Directories per root. The defect is directory ENUMERATION, so the corpus is
-/// shaped like the sharpest field case — `meridian-rs`, 200 markdown files
-/// behind 20,178 directories — rather than like a document pile.
+/// Directories per root. The defect is directory ENUMERATION, so the corpus is shaped like the
+/// sharpest field case — `meridian-rs`, 200 markdown files behind 20,178 directories — rather
+/// than like a document pile.
 pub const DIRS_PER_ROOT: usize = 25_000;
 /// Markdown pages per root, so the skipped work includes real parsing too.
 pub const PAGES_PER_ROOT: usize = 2_000;
 
-/// The binary every drive goes through — the real CLI, never a library call.
-/// `MRD_BIN` points it at another engine, which is how the BEFORE arm of an A/B
-/// is measured: the negative control for these gates is a BINARY SWAP, not an
-/// edit to the source under test, so the reddening needs no code change to
-/// reproduce and cannot be left half-applied.
+/// The binary every drive goes through — the real CLI, never a library call. `MRD_BIN` points
+/// it at another engine, which is how the BEFORE arm of an A/B is measured: the negative
+/// control for these gates is a BINARY SWAP, not an edit to the source under test, so the
+/// reddening needs no code change to reproduce and cannot be left half-applied.
+///
 pub fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -78,9 +78,9 @@ pub fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn mrd")
 }
 
-/// One declared root: its canonical-name declaration (INV-5 — without it the
-/// bind renders undeclared and the table under test is vacuous), a dirent-heavy
-/// tree, and a scatter of real pages.
+/// One declared root: its canonical-name declaration (INV-5 — without it the bind renders
+/// undeclared and the table under test is vacuous), a dirent-heavy tree, and a scatter of real
+/// pages.
 fn plant_root(dir: &Path, name: &str) {
     std::fs::create_dir_all(dir).expect("root dir");
     std::fs::write(
@@ -127,11 +127,11 @@ pub fn plant_declared_roots(sb: &Sandbox) -> Vec<String> {
     names
 }
 
-/// **The fixture's own anti-blindness assert.** This is the check whose absence
-/// let `status_walltime.rs` measure an empty table for months: prove the table
-/// under test is POPULATED and BOUND before trusting anything measured through
-/// it. A fixture that quietly stops declaring roots must fail here, loudly,
-/// rather than pass a CPU budget below for the wrong reason.
+/// **The fixtures own anti-blindness assert.** This is the check whose absence let
+/// `status_walltime.rs` measure an empty table for months: prove the table under test is
+/// POPULATED and BOUND before trusting anything measured through it. A fixture that quietly
+/// stops declaring roots must fail here, loudly, rather than pass a CPU budget below for the
+/// wrong reason.
 pub fn assert_table_is_populated(sb: &Sandbox, ws: &Path, names: &[String]) {
     let cfg = run(sb, ws, &["config"]);
     let cfg_out = String::from_utf8_lossy(&cfg.stdout).into_owned();
@@ -163,14 +163,14 @@ pub fn init_workspace(sb: &Sandbox) -> PathBuf {
     ws
 }
 
-/// The child's user+sys CPU, cumulative over every child this process has
-/// reaped. A delta of it around one `.output()` call attributes to that child
-/// **only while this process spawns nothing else concurrently**, which is why
-/// each target using this holds exactly ONE `#[test]`. `RUSAGE_CHILDREN` is
-/// per-process, not per-thread, so a second `#[test]` in one target would
-/// silently fold its own children into the measurement — the count is scoped by
-/// the target's shape, never by the test harness's scheduling. Separate test
-/// TARGETS are separate processes and do not contaminate each other.
+/// The childs user+sys CPU, cumulative over every child this process has reaped. A delta of it
+/// around one `.output()` call attributes to that child **only while this process spawns
+/// nothing else concurrently**, which is why each target using this holds exactly ONE `[test]`.
+///
+///
+///
+///
+///
 pub fn children_cpu() -> Duration {
     // SAFETY: `getrusage` writes a fully-initialised `rusage` into the out
     // pointer and reads nothing else; `RUSAGE_CHILDREN` is a valid `who`.
@@ -186,19 +186,19 @@ pub fn children_cpu() -> Duration {
     secs(usage.ru_utime) + secs(usage.ru_stime)
 }
 
-// ---------------------------------------------------------------------------
-// Daemon teardown — the perf lane's hygiene for resident auto-spawns
-// ---------------------------------------------------------------------------
+// Daemon teardown — the perf lanes hygiene for resident auto-spawns A sandboxed
+// `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon` does not. On a long-lived
+// self-hosted runner every leak accumulates (W6 measured 16 under one worktrees debug binary).
 //
-// A sandboxed `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon`
-// does not. On a long-lived self-hosted runner every leak accumulates (W6
-// measured 16 under one worktree's debug binary). G11 bounds the class at the
-// product root (idle exit); this is the harness half: reap by the pid the
-// daemon wrote to ITS OWN pidfile, never by process-table substring.
 //
-// Trap (g1, 2026-08-05): a control read AFTER teardown must ASSERT, never
-// skip-and-pass. Soft Drop reaps best-effort so a panicked test cannot leak;
-// the asserted path is [`teardown_daemon`], which the control target drives.
+//
+//
+//
+//
+//
+//
+//
+//
 
 /// The resident daemon's pidfile under this sandbox's cache root.
 pub fn daemon_pidfile(sb: &Sandbox) -> PathBuf {
@@ -251,10 +251,10 @@ pub fn try_teardown_daemon(sb: &Sandbox) -> Option<i32> {
     Some(pid)
 }
 
-/// **Asserted** teardown for the control gate: if a pidfile names a live
-/// daemon, kill it and ASSERT it is gone. If there is no pidfile, this is a
-/// no-op only when the caller has already proved no spawn was expected; the
-/// control target never relies on that branch — it asserts the spawn first.
+/// **Asserted** teardown for the control gate: if a pidfile names a live daemon, kill it and
+/// ASSERT it is gone. If there is no pidfile, this is a no-op only when the caller has already
+/// proved no spawn was expected; the control target never relies on that branch — it asserts
+/// the spawn first.
 pub fn teardown_daemon(sb: &Sandbox) {
     let Some(pid) = read_daemon_pid(sb) else {
         return;
@@ -275,9 +275,9 @@ pub fn teardown_daemon(sb: &Sandbox) {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        // Best-effort only: a panicking test must not leave a resident behind,
-        // and Drop itself must not panic. The control target's asserted path is
-        // [`teardown_daemon`], not this.
+        // Best-effort only: a panicking test must not leave a resident behind, and Drop itself must
+        // not panic. The control targets asserted path is [`teardown_daemon`], not this.
+        //
         let _ = try_teardown_daemon(self);
     }
 }

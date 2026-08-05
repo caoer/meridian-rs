@@ -1,19 +1,19 @@
-//! The engine-client path (decision 0002 §3, P1): answer an engine read op by
-//! dialing the resident daemon — auto-spawning it on first use (the watchman
-//! model) — and degrading to an in-process ephemeral engine when the daemon is
-//! unavailable.
+//! The engine-client path (decision 0002 §3, P1): answer an engine read op by dialing the
+//! resident daemon — auto-spawning it on first use (the watchman model) — and degrading to an
+//! in-process ephemeral engine when the daemon is unavailable. The degrade is the universal
+//! catch A run NEVER fails for want of a daemon.
 //!
-//! # The degrade is the universal catch
-//! A run NEVER fails for want of a daemon. Every daemon-path failure — no cache
-//! root, a spawn that cannot launch or never binds, a dropped connection, a
-//! refused handshake, or a daemon-side op error — falls through to
-//! [`in_process_links`], which builds the corpus from disk with U1's builder
-//! ([`fs::build_corpus`]) and answers through the SAME shared read arm the
-//! daemon serves ([`wire_serve::read::links`]), then applies the SAME v3
-//! vocabulary projection ([`wire_serve::rev`]) the daemon applies for a
-//! `contract:v3` session. One read projection + one rev projection, two state
-//! sources, so the warm answer and the degrade answer never drift (both speak
-//! `fingerprint`); only the reported [`EngineSource`] differs.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
@@ -93,18 +93,18 @@ pub(crate) fn voice_degrade(source: &EngineSource) {
     }
 }
 
-/// The one degrade cause worth naming beyond "no daemon answered": a socket
-/// path that cannot fit in `sun_path`. It is silent, it is not fixed by
-/// starting a daemon, and it is reached by an ordinary long `XDG_CACHE_HOME`.
-/// Every other cause (not running, spawn failed, refused handshake) is already
-/// covered by the first line, so this says nothing rather than guessing.
+/// The one degrade cause worth naming beyond "no daemon answered": a socket path that cannot
+/// fit in `sun_path`. It is silent, it is not fixed by starting a daemon, and it is reached by
+/// an ordinary long `XDG_CACHE_HOME`. Every other cause (not running, spawn failed, refused
+/// handshake) is already covered by the first line, so this says nothing rather than guessing.
 ///
-/// **G15 — the cause line is shared, the framing is not.** `mrd view status`
-/// does not degrade an ANSWER, so g1's two lines would be false there; what it
-/// loses is daemon-memory telemetry. It therefore writes its own two lines
-/// ([`crate::view_status::voice_daemonless`]) and calls THIS function for the
-/// cause, so the one sentence that must never drift — which socket, how many
-/// bytes, which knob fixes it — has exactly one author.
+///
+///
+///
+///
+///
+///
+///
 pub(crate) fn degrade_reason() -> Option<String> {
     let Ok(client) = Client::from_default() else {
         return Some("No cache root resolves, so there is no socket path to dial.".to_owned());
@@ -130,13 +130,13 @@ pub(crate) struct Answer {
     pub(crate) body: Value,
 }
 
-/// Run `mrd links [PATH]`: resolve the workspace for the cwd, answer the corpus
-/// edge map (whole-corpus, or one workspace-relative `PATH`) from the resident
-/// daemon or the in-process degrade, and print it in the house grammar.
+/// Run `mrd links [PATH]`: resolve the workspace for the cwd, answer the corpus edge map
+/// (whole-corpus, or one workspace-relative `PATH`) from the resident daemon or the in-process
+/// degrade, and print it in the house grammar. Errors The cwd or workspace cannot be resolved,
+/// or the degrade path hits a genuine corpus error (see [`answer_links`]).
 ///
-/// # Errors
-/// The cwd or workspace cannot be resolved, or the degrade path hits a genuine
-/// corpus error (see [`answer_links`]).
+///
+///
 pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), Fail> {
     let cwd = current_dir()?;
     let resolved = crate::resolve::resolve_runtime(&cwd).map_err(|e| {
@@ -162,13 +162,13 @@ pub(crate) fn run_command(path_arg: Option<&str>, format: Format) -> Result<(), 
             render_links_human(&answer.body);
         }
     }
-    // **Q3(a) — the asymmetry, stated rather than smoothed.** An ambient
-    // dangling link stays first-class and non-refusing at exit 0: it is an
-    // ordinary authoring state in a working vault. A REFUSED edge is a
-    // different fact — the author believed a mount relationship that does not
-    // hold, or wrote something outside the address grammar — and the exit code
-    // says so. The refusals are already rendered above; this only carries the
-    // finding into the exit triad, the same way a red walk row does.
+    // **Q3(a) — the asymmetry, stated rather than smoothed.** An ambient dangling link stays
+    // first-class and non-refusing at exit 0: it is an ordinary authoring state in a working
+    // vault. A REFUSED edge is a different fact — the author believed a mount relationship that
+    // does not hold, or wrote something outside the address grammar — and the exit code says so.
+    // The refusals are already rendered above; this only carries the finding into the exit triad,
+    // the same way a red walk row does.
+    //
     let refusals = refusal_messages(&answer.body);
     if refusals.is_empty() {
         return Ok(());
@@ -217,9 +217,9 @@ fn render_links_human(body: &Value) {
         for (dest, count) in resolved.into_iter().flatten() {
             println!("    -> {dest} ({count})");
         }
-        // A cross-root destination is printed ROOT-QUALIFIED, and that is not
-        // cosmetic: the ambient corpus may hold its own file at the same path,
-        // so an unqualified name would read as the wrong document.
+        // A cross-root destination is printed ROOT-QUALIFIED, and that is not cosmetic: the ambient
+        // corpus may hold its own file at the same path, so an unqualified name would read as the
+        // wrong document.
         for (root, paths) in rooted.into_iter().flatten() {
             for (dest, count) in paths.as_object().into_iter().flatten() {
                 println!("    -> {root}:{dest} ({count})");
@@ -246,22 +246,22 @@ fn render_links_human(body: &Value) {
     }
 }
 
-/// How long to wait for an auto-spawned daemon to bind its socket before
-/// degrading. Generous: a cold daemon binds in milliseconds, so this only bounds
-/// the pathological "launched but never came up" case.
+/// How long to wait for an auto-spawned daemon to bind its socket before degrading. Generous: a
+/// cold daemon binds in milliseconds, so this only bounds the pathological "launched but never
+/// came up" case.
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll granularity while waiting for the socket to answer a ping.
 const PING_POLL: Duration = Duration::from_millis(25);
 
-/// Answer `links` for `workspace` (optional workspace-relative `path`): dial the
-/// resident daemon — auto-spawning it — and on any daemon-path failure degrade
-/// to the in-process ephemeral engine.
+/// Answer `links` for `workspace` (optional workspace-relative `path`): dial the resident
+/// daemon — auto-spawning it — and on any daemon-path failure degrade to the in-process
+/// ephemeral engine.
 ///
-/// # Errors
-/// Only a genuine corpus failure in the DEGRADE path surfaces (the workspace is
-/// gone, unreadable, or holds a non-UTF-8 file, or the requested `path` is not
-/// in the corpus) — the same error the daemon would raise. A missing daemon is
-/// never an error.
+///
+///
+///
+///
+///
 pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answer, Fail> {
     if let Some(body) = try_daemon_links(workspace, path)
         && !daemon_answer_needs_the_address_plane(&body)
@@ -278,34 +278,34 @@ pub(crate) fn answer_links(workspace: &Path, path: Option<&str>) -> Result<Answe
     })
 }
 
-/// **The U21 degrade gate: does this answer depend on a question the daemon
-/// cannot ask?**
+/// **The U21 degrade gate: does this answer depend on a question the daemon cannot ask?** The
+/// daemon's warm state is ONE workspace corpus and NO mount authority (`query::links_with`), so
+/// it reports every rooted spelling `unresolved` — which for a bound, readable, present target
+/// is a wrong answer, and for an unbound one is a silent non-refusal. The in-process path holds
+/// the mount table and the mounted corpora, so it can answer both correctly. This decides which
+/// of the two the user gets. **It gates on the ANSWER, not on a pre-flight scan of the corpus,
+/// and the coverage is exact rather than heuristic.
 ///
-/// The daemon's warm state is ONE workspace corpus and NO mount authority
-/// (`query::links_with`), so it reports every rooted spelling `unresolved` —
-/// which for a bound, readable, present target is a wrong answer, and for an
-/// unbound one is a silent non-refusal. The in-process path holds the mount
-/// table and the mounted corpora, so it can answer both correctly. This decides
-/// which of the two the user gets.
 ///
-/// **It gates on the ANSWER, not on a pre-flight scan of the corpus, and the
-/// coverage is exact rather than heuristic.** A spelling reaches the daemon's
-/// `unresolved` map precisely when `resolve_linkpath` returned `None`, and that
-/// function's C-3 guard IS [`addr::head_carries_root_separator`] — the same
-/// function, not a second predicate that agrees. So every spelling this gate
-/// could care about is already sitting in `unresolved`, by construction, and an
-/// ordinary single-root corpus pays one map walk and never degrades.
 ///
-/// **Why the LEXICAL predicate and not `may_carry_cross_root`.** That one gates
-/// on `Addr::parse` succeeding, which is right for the question it asks — a
-/// WRITE-side question, *"does this address have a stored form?"*, and an
-/// unparseable address has none. Ours is a READ-side question, *"could the
-/// address plane change this answer?"*, and a REFUSAL is a changed answer. Five
-/// spellings slip the parse-gated form — `Sessions:notes.md` (uppercase root),
-/// `My Notes:draft.md`, `a:b:c.md`, `:notes.md`, `sessions:` — and each would
-/// then be served warm as `unresolved` at exit 0 while in-process refuses it.
-/// One address, two answers, decided by which path served it: the C-4 defect
-/// the address grammar exists to prevent, rebuilt inside the fix for it.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
     body.get("files")
         .and_then(Value::as_object)
@@ -316,9 +316,9 @@ fn daemon_answer_needs_the_address_plane(body: &Value) -> bool {
         .any(|link| addr::head_carries_root_separator(link))
 }
 
-/// Try the whole daemon path: resolve the socket, ensure a daemon is up
-/// (auto-spawn if not), then dial `hello` + `links`. `None` on ANY failure — the
-/// caller degrades. `Some(body)` only when the daemon answered `ok:true`.
+/// Try the whole daemon path: resolve the socket, ensure a daemon is up (auto-spawn if not),
+/// then dial `hello` + `links`. `None` on ANY failure — the caller degrades. `Some(body)` only
+/// when the daemon answered `ok:true`.
 fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Option<Value> {
     let client = Client::from_default().ok()?;
     ensure_daemon(&client).ok()?;
@@ -327,13 +327,13 @@ fn try_daemon_links(workspace: &Path, path: Option<&str>) -> Option<Value> {
         .flatten()
 }
 
-/// Ensure a daemon answers on `client`'s socket: return early if one already
-/// pings, else auto-spawn it detached and poll until it binds or the timeout
-/// elapses.
+/// Ensure a daemon answers on `client`'s socket: return early if one already pings, else
+/// auto-spawn it detached and poll until it binds or the timeout elapses. Errors The daemon
+/// could not be spawned (spawn-impossible), or it was spawned but never became ready within
+/// [`SPAWN_READY_TIMEOUT`].
 ///
-/// # Errors
-/// The daemon could not be spawned (spawn-impossible), or it was spawned but
-/// never became ready within [`SPAWN_READY_TIMEOUT`].
+///
+///
 pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     if client.ping().unwrap_or(false) {
         return Ok(());
@@ -352,18 +352,18 @@ pub(crate) fn ensure_daemon(client: &Client) -> io::Result<()> {
     ))
 }
 
-/// Dial one connection: `hello` binds and warms `workspace` (one round trip),
-/// then `links` reads from that binding. `Ok(Some(body))` when the daemon
-/// answered `ok:true`; `Ok(None)` when it answered an op error (degrade to the
-/// authoritative in-process answer); `Err` on a transport failure.
+/// Dial one connection: `hello` binds and warms `workspace` (one round trip), then `links`
+/// reads from that binding. `Ok(Some(body))` when the daemon answered `ok:true`; `Ok(None)`
+/// when it answered an op error (degrade to the authoritative in-process answer); `Err` on a
+/// transport failure.
 fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result<Option<Value>> {
     let stream = UnixStream::connect(socket)?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
 
-    // `hello` with a `workspace` resolves + pins + warms the resident engine and
-    // binds this connection to it (decision 0002 §4). A failed handshake (deny
-    // ceiling, unknown rev) degrades — the in-process answer is authoritative.
+    // `hello` with a `workspace` resolves + pins + warms the resident engine and binds this
+    // connection to it (decision 0002 §4). A failed handshake (deny ceiling, unknown rev) degrades
+    // — the in-process answer is authoritative.
     let hello = json!({
         "op": "hello",
         "proto": 1,
@@ -390,14 +390,14 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
     }
 }
 
-/// Map an engine refusal to the CLI exit triad (shared by `read`/`put`):
-/// `bad_request` is a bad invocation (exit 2); every other refusal is a
-/// finding (exit 1). When the engine minted a `message`, it is printed
-/// VERBATIM — the refusal strings are golden-pinned (U0), never reworded —
-/// and the extras that message NAMES are printed under it ([`extras`]), so a
-/// terminal reader can follow the instruction it was given. A message-less
-/// refusal is spelled here, in the house pattern: the failure, the
-/// nothing-happened clause, one fix line.
+/// Map an engine refusal to the CLI exit triad (shared by `read`/`put`): `bad_request` is a bad
+/// invocation (exit 2); every other refusal is a finding (exit 1).
+///
+///
+///
+///
+///
+///
 pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     let mut text = match &error.message {
         Some(message) => message.clone(),
@@ -411,14 +411,14 @@ pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
     }
 }
 
-/// A message-less refusal, written the way the good refusals in this tree are
-/// written: name the failure, say what did NOT happen, give the fix.
+/// A message-less refusal, written the way the good refusals in this tree are written: name the
+/// failure, say what did NOT happen, give the fix.
 ///
-/// `root_mismatch` is the one that reaches a person often — the world-grain
-/// guard on a write — so it gets the full pattern with its own recovery
-/// command. Any other message-less code falls back to the code plus the §8
-/// comparison tokens; inventing a fix line for a refusal we cannot name would
-/// teach a recovery that may not exist.
+///
+///
+///
+///
+///
 fn spelled(error: &ErrorBody) -> String {
     let code = serde_json::to_value(error.code)
         .ok()
@@ -444,24 +444,24 @@ fn spelled(error: &ErrorBody) -> String {
     }
 }
 
-/// The refusal's own extras, rendered for a TERMINAL rather than a wire client.
+/// The refusal's own extras, rendered for a TERMINAL rather than a wire client. A
+/// `cas_mismatch` refusal tells the caller to apply the `diff` extra and resend with
+/// `new_fingerprint`; on the human face those are wire response fields nobody can see, so the
+/// instruction was unfollowable exactly where it was offered. Printing them under the message
+/// is what makes the ladder's no-re-read shortcut reachable from a shell.
 ///
-/// A `cas_mismatch` refusal tells the caller to apply the `diff` extra and
-/// resend with `new_fingerprint`; on the human face those are wire response
-/// fields nobody can see, so the instruction was unfollowable exactly where it
-/// was offered. Printing them under the message is what makes the ladder's
-/// no-re-read shortcut reachable from a shell.
 ///
-/// The diff and the new content ride UNINDENTED beneath their headers — both
-/// are meant to be copied or piped, and an indent would corrupt them.
 ///
-/// Every branch here is reachable from a terminal, and that is a standing
-/// requirement rather than an observation: a refusal no input can produce is
-/// dead code with a green test guarding it. `ErrorBody::changed` was printed
-/// here until it was checked — nothing in the write path ever sets it, and
-/// `registry::root_mismatch_wire_shape` pins a served `root_mismatch` to
-/// `expected` + `actual` with NO `changed` — so that line was removed rather
-/// than left as prose about a field the engine does not send.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn extras(error: &ErrorBody) -> String {
     let mut out = String::new();
     if error.code == wire::ErrorCode::RootMismatch
@@ -489,12 +489,12 @@ fn extras(error: &ErrorBody) -> String {
     out
 }
 
-/// One NDJSON round trip on an open connection: write the request line, read one
-/// response line, parse it.
-///
-/// # Errors
-/// The write fails, the daemon closes without a response, or the response line
+/// One NDJSON round trip on an open connection: write the request line, read one response line,
+/// parse it. Errors The write fails, the daemon closes without a response, or the response line
 /// is not valid JSON.
+///
+///
+///
 pub(crate) fn call(
     writer: &mut UnixStream,
     reader: &mut BufReader<UnixStream>,
@@ -515,16 +515,16 @@ pub(crate) fn call(
     serde_json::from_str(&response).map_err(io::Error::other)
 }
 
-/// The degrade: build the corpus in-process with U1's builder and answer through
-/// the shared `links` read arm — the SAME read projection the daemon serves — then
-/// re-key it to the v3 vocabulary the CLI negotiated ([`dial_links`] sends
-/// `contract:v3`), so the answer is byte-identical to the warm one for the same
-/// corpus (`fingerprint`, never `root`).
+/// The degrade: build the corpus in-process with U1's builder and answer through the shared
+/// `links` read arm — the SAME read projection the daemon serves — then re-key it to the v3
+/// vocabulary the CLI negotiated ([`dial_links`] sends `contract:v3`), so the answer is
 ///
-/// # Errors
-/// The workspace cannot be canonicalized (gone), the corpus cannot be read, a
-/// corpus file is non-UTF-8, or the wire read arm refuses (e.g. the requested
-/// `path` is not in the corpus).
+///
+///
+///
+///
+///
+///
 fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -543,11 +543,11 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     // `live_root` samples after the read; for a single in-process snapshot the
     // world does not move, so it equals `as_of` (a legal §10.1 frame).
     let live = as_of.clone();
-    // **The whole reason this path exists after U21.** The mount table and one
-    // corpus per bound root come from `walk_cmd::load_mounts` — the SAME
-    // assembly the pin plane uses (S3-R59, one owner), so a cross-root address
-    // resolves through the same `resolve_ref` on both planes and cannot answer
-    // two ways.
+    // **The whole reason this path exists after U21.** The mount table and one corpus per bound
+    // root come from `walk_cmd::load_mounts` — the SAME assembly the pin plane uses (S3-R59, one
+    // owner), so a cross-root address resolves through the same `resolve_ref` on both planes and
+    // cannot answer two ways.
+    //
     let mounts = crate::walk_cmd::load_mounts();
     let corpus = mounts.rooted(&docs);
     let body = wire_serve::read::links_rooted(
@@ -563,10 +563,10 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     .map_err(|e| Fail::tool(render_wire_error(&e)))?;
     let body = serde_json::to_value(&body)
         .map_err(|e| Fail::tool(format!("cannot render the answer: {e}")))?;
-    // The CLI negotiated `contract:v3` on the warm path, so the degrade answer
-    // must speak the same vocabulary — run the SAME lifted projection the daemon
-    // runs (`root` → `fingerprint`) so warm and degrade never drift. The
-    // projection re-keys under `body`, so wrap, project, and unwrap.
+    // The CLI negotiated `contract:v3` on the warm path, so the degrade answer must speak the same
+    // vocabulary — run the SAME lifted projection the daemon runs (`root` → `fingerprint`) so warm
+    // and degrade never drift. The projection re-keys under `body`, so wrap, project, and unwrap.
+    //
     let mut frame = json!({ "body": body });
     wire_serve::rev::project_response(&mut frame);
     Ok(frame

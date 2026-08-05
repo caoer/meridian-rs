@@ -1,47 +1,47 @@
-//! **`mrd check` pays for the roots its addresses NAME, and for no others** (W5).
+//! **`mrd check` pays for the roots its addresses NAME, and for no others** (W5). The sibling
+//! of `walk_multiroot_cpu.rs`, and the same defect class W2 fixed in `status` and left standing
+//! here. Read that files header for why the needed set turned out to be one computation for all
+//! three verbs; this one records what is different about `check`. `check` needed a REORDER, not
+//! just a narrower call `status` and `walk` already held their corpus when they loaded the
+//! mount table, so narrowing was a one-line change of call. `check` loaded the table FIRST and
+//! built its corpus after, inside `assess` — and the roots worth building are a question about
+//! that very corpus. So the corpora are now built before the table, `assess` takes documents
+//! instead of bytes, and the parse happens exactly once per interval rather than once to ask
+//! and once to answer.
 //!
-//! The sibling of `walk_multiroot_cpu.rs`, and the same defect class W2 fixed in
-//! `status` and left standing here. Read that file's header for why the needed
-//! set turned out to be one computation for all three verbs; this one records
-//! what is different about `check`.
 //!
-//! # `check` needed a REORDER, not just a narrower call
-//! `status` and `walk` already held their corpus when they loaded the mount
-//! table, so narrowing was a one-line change of call. `check` loaded the table
-//! FIRST and built its corpus after, inside `assess` — and the roots worth
-//! building are a question about that very corpus. So the corpora are now built
-//! before the table, `assess` takes documents instead of bytes, and the parse
-//! happens exactly once per interval rather than once to ask and once to answer.
 //!
-//! # And a UNION, because `check` has two intervals
-//! `--staged` assesses a second corpus, the index's, against the SAME table
-//! (F1). The staged bytes may pin a root the worktree's do not, so the needed
-//! set is the union over both — a set computed per interval would have built the
-//! table for the first and then read it for the second. Over-collecting costs a
-//! corpus; under-collecting cannot pass silently, because the one consumer of a
-//! skipped root refuses out loud and by name (`walk_cmd::load_mounts_for`).
-//! `staged_covers_a_root_the_worktree_does_not` in
-//! `check_staged_root_union.rs` is the gate on that union.
 //!
-//! # The measure is CPU, not wall
-//! See `walk_multiroot_cpu.rs` § *The measure is CPU, not wall*. Same host, same
-//! reasoning, same `getrusage(RUSAGE_CHILDREN)` instrument.
 //!
-//! # Negative control — how to redden this gate
-//! Point `MRD_BIN` at an engine built before W5 (or restore `load_mounts()` at
-//! the `mrd check` call site) and run this target. The measured red/green pair
-//! is recorded on the card; no source edit is needed to reproduce it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::time::{Duration, Instant};
 
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
-/// **The CPU budget.** See `walk_multiroot_cpu.rs` for the budget's derivation —
-/// same fixture, same narrowing, same host. `check` does strictly more ambient
-/// work than `walk` (the fold and the fence reading), and it measured 60 ms
-/// against walk's 30 ms, so the same 600 ms bound carries 10× of headroom over
-/// the fix and sits 9× under the 5 480 ms defect arm.
+/// **The CPU budget.** See `walk_multiroot_cpu.rs` for the budgets derivation — same fixture,
+/// same narrowing, same host. `check` does strictly more ambient work than `walk` (the fold and
+/// the fence reading), and it measured 60 ms against walks 30 ms, so the same 600 ms bound
+/// carries 10× of headroom over the fix and sits 9× under the 5 480 ms defect arm.
+///
 const CPU_BUDGET: Duration = Duration::from_millis(600);
 
 #[test]

@@ -62,12 +62,12 @@ fn every_spelling_prints_the_same_identity() {
     }
 }
 
-/// The commit is the repository's own HEAD — read, never invented.
+/// The commit is the repositorys own HEAD — read, never invented. The test asks git the same
+/// question the build script did. When git cannot answer HERE (a source tree with no
+/// repository), the only legal identity is the literal `unknown`: this gate accepts that word
+/// and no other, so a build that could not know its commit can never print one that looks real.
 ///
-/// The test asks git the same question the build script did. When git cannot
-/// answer HERE (a source tree with no repository), the only legal identity is
-/// the literal `unknown`: this gate accepts that word and no other, so a build
-/// that could not know its commit can never print one that looks real.
+///
 #[test]
 fn the_commit_is_the_one_git_names() {
     let line = stdout(&mrd(&["--version"]));

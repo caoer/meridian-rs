@@ -1,24 +1,24 @@
-//! `mrd rules` end-to-end gates — the effective-rules print verb (registration
-//! ruling § 7), driven through the REAL binary over its process boundary.
+//! `mrd rules` end-to-end gates — the effective-rules print verb (registration ruling § 7),
+//! driven through the REAL binary over its process boundary. Every gate here is a claim about
+//! the SURFACE an operator reads, so none of it is asserted through a library call: the fixture
+//! is a workspace on disk plus a user scope anchored by a `MERIDIAN.md`, and the measurement is
+//! the CLIs own stdout and exit code. Two fixture disciplines, both deliberate 1. **The armed
+//! artifact is MINTED, never hand-typed.** `policy::armed::arm` resolves through the landed
+//! resolver and pins each winners real page rev.
 //!
-//! Every gate here is a claim about the SURFACE an operator reads, so none of it
-//! is asserted through a library call: the fixture is a workspace on disk plus a
-//! user scope anchored by a `MERIDIAN.md`, and the measurement is the CLI's own
-//! stdout and exit code.
 //!
-//! # Two fixture disciplines, both deliberate
-//! 1. **The armed artifact is MINTED, never hand-typed.** `policy::armed::arm`
-//!    resolves through the landed resolver and pins each winner's real page rev.
-//!    A hand-written rev would make every armed assertion vacuous — it would
-//!    agree with itself instead of with the engine.
-//! 2. **Workspace fixtures avoid directories named `rules`.** The 2026-08-01
-//!    mount law lifts a page whose immediate directory is `rules` to that
-//!    directory's PARENT, and it lands on the discovery surface (cutover 3a),
-//!    not here. Fixtures that do not use the layout folder are neutral to it, so
-//!    these gates measure this verb rather than the other worker's commit. The
-//!    USER layer has no such freedom (its enumeration law IS `rules/`), so the
-//!    one user-layer scope assertion names the layer and not the depth, and says
-//!    why at the assert.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -82,9 +82,9 @@ impl Sandbox {
         String::from_utf8(out.stdout).expect("utf-8 stdout")
     }
 
-    /// Every file under the workspace as `(relative path, bytes)` — the
-    /// read-only witness. Wider than the hash domain on purpose: a verb that
-    /// wrote a marker, a lock, or a dotfile would escape a domain-only compare.
+    /// Every file under the workspace as `(relative path, bytes)` — the read-only witness. Wider
+    /// than the hash domain on purpose: a verb that wrote a marker, a lock, or a dotfile would
+    /// escape a domain-only compare.
     fn tree(&self) -> BTreeMap<String, Vec<u8>> {
         let mut out = BTreeMap::new();
         collect(&self.ws, &self.ws, &mut out);
@@ -144,9 +144,9 @@ fn sandbox() -> Sandbox {
     sandbox
 }
 
-/// The populated fixture: one id overridden across all three ladder layers, one
-/// id at the root only, one id in each of two SIBLING sessions, one collision on
-/// a single chain, and one page that fails to register.
+/// The populated fixture: one id overridden across all three ladder layers, one id at the root
+/// only, one id in each of two SIBLING sessions, one collision on a single chain, and one page
+/// that fails to register.
 fn populated() -> Sandbox {
     let s = sandbox();
     // `task.notify` at all three layers.
@@ -183,12 +183,12 @@ fn populated() -> Sandbox {
 /// registration tag with no `id:`.
 const REFUSED_PAGE: &str = "---\ntags: [rules/hook]\n---\n\n# no id\n";
 
-/// [`populated`] plus a refused rule page at `policy/broken.md`.
+/// [`populated`] plus a refused rule page at `policy/broken.md`. It is a separate fixture
+/// because a refusal is a finding on its OWN CHAIN: this page mounts at `policy`, so it reddens
+/// `policy` and everything beneath it (§ 3 "Refusal scoping", Keeping it out of [`populated`]
+/// is what lets the other gates measure their own subject instead of this one.
 ///
-/// It is a separate fixture because a refusal is a finding on its OWN CHAIN: this
-/// page mounts at `policy`, so it reddens `policy` and everything beneath it (§ 3
-/// "Refusal scoping", 2026-08-01). Keeping it out of [`populated`] is what lets
-/// the other gates measure their own subject instead of this one.
+///
 fn populated_with_a_refusal() -> Sandbox {
     let s = populated();
     s.write("policy/broken.md", REFUSED_PAGE);
@@ -247,9 +247,9 @@ fn an_inherited_root_rule_has_a_winner_and_no_shadow() {
     );
 }
 
-/// **P3 + P4** — an overridden id prints the winner FIRST and every page it
-/// shadows beneath it, in ladder order across all three rungs. The assert is on
-/// the shadowed entries' PRESENCE, not merely on the winner being right.
+/// **P3 + P4** — an overridden id prints the winner FIRST and every page it shadows beneath it,
+/// in ladder order across all three rungs. The assert is on the shadowed entries PRESENCE, not
+/// merely on the winner being right.
 #[test]
 fn an_override_prints_the_winner_first_then_the_pages_it_shadows() {
     let s = populated();
@@ -268,10 +268,10 @@ fn an_override_prints_the_winner_first_then_the_pages_it_shadows() {
         block[2], "      shadowed  notify.md  rev=REV  scope=workspace:0  kinds=hook",
         "the workspace-root page it shadows is VISIBLE, not collapsed"
     );
-    // The user rung. Its depth digit is deliberately not asserted: this page's
-    // mount scope moves when the 2026-08-01 mount-law lift lands on the
-    // discovery surface (`rules/` → parent), and this gate is about the LAYER
-    // being present in the chain, in last position, not about its depth.
+    // The user rung. Its depth digit is deliberately not asserted: this pages mount scope moves
+    // when the mount-law lift lands on the discovery surface (`rules/` → parent), and this gate is
+    // about the LAYER being present in the chain, in last position, not about its depth.
+    //
     assert!(
         block[3].starts_with("      shadowed  rules/user-notify.md  rev=")
             && block[3].contains("scope=user:"),
@@ -309,9 +309,9 @@ fn sibling_scopes_carrying_one_id_do_not_collide() {
     }
 }
 
-/// **P5** — a collision at one scope on ONE chain is reported AS a collision,
-/// naming every tied page, with no arbitrary winner and no omission. Every other
-/// id on the chain still resolves, and the verb exits 1.
+/// **P5** — a collision at one scope on ONE chain is reported AS a collision, naming every tied
+/// page, with no arbitrary winner and no omission. Every other id on the chain still resolves,
+/// and the verb exits 1.
 #[test]
 fn a_collision_on_one_chain_is_reported_and_gates_the_exit() {
     let s = populated();
@@ -343,9 +343,9 @@ fn a_collision_on_one_chain_is_reported_and_gates_the_exit() {
     );
 }
 
-/// **P13** — a page that failed to register is REPORTED, naming the page and the
-/// reason. A rule that silently failed to register is a rule that silently
-/// stopped being enforced, so it is a finding.
+/// **P13** — a page that failed to register is REPORTED, naming the page and the reason. A rule
+/// that silently failed to register is a rule that silently stopped being enforced, so it is a
+/// finding.
 #[test]
 fn a_refused_rule_page_is_reported_with_its_reason() {
     let s = populated_with_a_refusal();
@@ -363,20 +363,20 @@ fn a_refused_rule_page_is_reported_with_its_reason() {
     );
 }
 
-/// **P13, scoped (§ 3 "Refusal scoping", 2026-08-01)** — a refused rule page
-/// reddens its OWN chain and no other. Four paths, one fixture:
+/// **P13, scoped (§ 3 "Refusal scoping", — a refused rule page reddens its OWN chain and no
+/// other. Four paths, one fixture: | queried path | on `policy/broken.md`s chain? | exit |
+/// |---|---|---| | `policy` (its mount) | yes | 1 | | `policy/deeper` (beneath it) | yes | 1 |
+/// | `sessions/s2` (a sibling scope) | no |
 ///
-/// | queried path | on `policy/broken.md`'s chain? | exit |
-/// |---|---|---|
-/// | `policy` (its mount) | yes | 1 |
-/// | `policy/deeper` (beneath it) | yes | 1 |
-/// | `sessions/s2` (a sibling scope) | no | 0 |
-/// | `.` (the workspace root, ABOVE it) | no | 0 |
 ///
-/// The two clean arms are the ones carrying the weight. Before the amendment both
-/// exited 1: one malformed page anywhere reddened every scoped query in the
-/// workspace forever, which re-couples independent scopes through diagnostics —
-/// the denial shape § 3's narrowing already rejected for rules.
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_refused_rule_page_reddens_its_own_chain_and_no_other() {
     let s = populated_with_a_refusal();
@@ -413,14 +413,14 @@ fn a_refused_rule_page_reddens_its_own_chain_and_no_other() {
     }
 }
 
-/// **The all-refusals-always invariant, held against the scoping.** A refusal a
-/// sibling scoped query cannot see is STILL in the corpus-wide walk's report —
-/// the same feed the ARM act and the cutover sweep read. Narrowing decides who
-/// hears about a broken page; it never takes one out of the index.
+/// **The all-refusals-always invariant, held against the scoping.** A refusal a sibling scoped
+/// query cannot see is STILL in the corpus-wide walks report — the same feed the ARM act and
+/// the cutover sweep read.
 ///
-/// Both halves are measured over ONE sandbox so they cannot drift: the CLI's
-/// exit 0 at the sibling, and `RuleIndex::discover` over that same workspace's
-/// hash domain naming the page.
+///
+///
+///
+///
 #[test]
 fn the_corpus_wide_walk_reports_a_refusal_the_sibling_query_does_not() {
     let s = populated();
@@ -466,11 +466,11 @@ fn walk_refusals(s: &Sandbox) -> Vec<String> {
     pages
 }
 
-/// **The mount law reaches refusals too.** A refused page in a `<scope>/rules/`
-/// layout folder is lifted to `<scope>` exactly as a registered one is, so it
-/// reddens the scope its author filed it to govern — not merely the folder it is
-/// kept in. Measured at the CLI, where the lift has to have survived `policy`'s
-/// `RegisterError` and the verb's narrowing.
+/// **The mount law reaches refusals too.** A refused page in a `<scope>/rules/` layout folder
+/// is lifted to `<scope>` exactly as a registered one is, so it reddens the scope its author
+/// filed it to govern — not merely the folder it is kept in. Measured at the CLI, where the
+/// lift has to have survived `policy`s `RegisterError` and the verbs narrowing.
+///
 #[test]
 fn a_refusal_in_a_layout_folder_reddens_its_lifted_scope() {
     let s = sandbox();
@@ -502,26 +502,26 @@ fn a_refusal_in_a_layout_folder_reddens_its_lifted_scope() {
     }
 }
 
-/// **The meridian-rs self-test — the measurement that started this card.**
+/// **The meridian-rs self-test — the measurement that started this card.** Before the § 3
+/// "Refusal scoping" amendment, `mrd rules` on meridian-rs itself exited 1 from *every* path,
+/// naming `crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md` — a
+/// deliberately malformed `MERIDIAN.md` schema fixture. Two independent things were wrong and
+/// both are fixed here, so both halves are measured: 1. **The repo is clean, measured on the
+/// REAL repo.
 ///
-/// Before the § 3 "Refusal scoping" amendment, `mrd rules` on meridian-rs itself
-/// exited 1 from *every* path, naming
-/// `crates/testsuite/data/meridian-md/refusals/frontmatter-unparseable.md` — a
-/// deliberately malformed `MERIDIAN.md` schema fixture. Two independent things
-/// were wrong and both are fixed here, so both halves are measured:
 ///
-/// 1. **The repo is clean, measured on the REAL repo.** The fixture pack left the
-///    hash domain by a declared, documented ignore (`meridian/domain.md`), so no
-///    corpus-wide walk in this repo encounters it any more — that is the half the
-///    narrowing could not deliver, because walks report ALL refusals, always.
-/// 2. **A refusal still reddens its own subtree**, measured against a sandbox
-///    reproducing the same shape, plus the walk over that sandbox still naming it.
-///    A deliberately-mounted refusal belongs in a controlled corpus, and this is
-///    the half that carries the law's proof weight: the scoping must narrow, not
-///    silence.
 ///
-/// The repo half runs with its own `HOME`, so it asserts a fact about meridian-rs
-/// rather than about whoever is running the suite.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn meridian_rs_itself_is_clean_while_a_refusal_still_reddens_its_own_subtree() {
     // ── half 1: the real repo ────────────────────────────────────────────────
@@ -655,17 +655,17 @@ fn the_user_flag_prints_one_layer() {
     );
 }
 
-/// **P15** — the mount law, proven at the CLI surface rather than in the resolver.
+/// **P15** — the mount law, proven at the CLI surface rather than in the resolver. A page whose
+/// immediate container is named `rules` mounts at that folders PARENT, so a workspaces rules
+/// kept in `<root>/rules/` govern the whole workspace instead of only that folder.
 ///
-/// A page whose immediate container is named `rules` mounts at that folder's
-/// PARENT, so a workspace's rules kept in `<root>/rules/` govern the whole
-/// workspace instead of only that folder. The verb computes no mount arithmetic of
-/// its own — it renders `policy`'s scope verbatim — so this test is what proves the
-/// lift reaches a reader.
 ///
-/// Both halves matter: the lifted page is IN PLAY at a path outside its folder
-/// (which is the bug the lift fixes), and the non-lifted sibling one level deeper
-/// is NOT (which is what stops the lift being recursive).
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_layout_folder_page_renders_its_lifted_mount_scope() {
     let s = sandbox();
@@ -697,9 +697,9 @@ fn a_layout_folder_page_renders_its_lifted_mount_scope() {
     );
 }
 
-/// **P8, the anchor arm** — with no `MERIDIAN.md` there is no user scope, so the
-/// user layer is EMPTY and the output NAMES the absent anchor. The fixture holds
-/// a `rules/` tree that a widened walk would have found.
+/// **P8, the anchor arm** — with no `MERIDIAN.md` there is no user scope, so the user layer is
+/// EMPTY and the output NAMES the absent anchor. The fixture holds a `rules/` tree that a
+/// widened walk would have found.
 #[test]
 fn an_absent_anchor_yields_an_empty_user_layer_that_says_why() {
     let s = populated();
@@ -726,9 +726,9 @@ fn an_absent_anchor_yields_an_empty_user_layer_that_says_why() {
 
 // ── the armed column ──────────────────────────────────────────────────────────
 
-/// Mint a real ARM artifact over the fixture's own bytes and write it into the
-/// workspace. `requests` is `(arm root, id, mode)`; every winner's rev is pinned
-/// by `policy::armed::arm` through the landed resolver.
+/// Mint a real ARM artifact over the fixtures own bytes and write it into the workspace.
+/// `requests` is `(arm root, id, mode)`; every winners rev is pinned by `policy::armed::arm`
+/// through the landed resolver.
 fn arm(s: &Sandbox, requests: &[(&str, &str, &str)]) {
     let root = fs::WorkspaceRoot(s.ws.clone());
     let (files, _) = fs::domain_snapshot(&root).expect("snapshot");
@@ -786,13 +786,13 @@ fn without_an_artifact_every_row_is_registered_and_unarmed() {
     assert!(stdout.contains("  task.notify  armed=-"), "{stdout}");
 }
 
-/// **P9 + P10** — the armed join is `(id, arm root)` narrowed to PATH: an id
-/// armed at a SIBLING root reads `-` here, and where an inner and an outer arm
-/// both contain the path the DEEPEST one is the one rendered.
+/// **P9 + P10** — the armed join is `(id, arm root)` narrowed to PATH: an id armed at a SIBLING
+/// root reads `-` here, and where an inner and an outer arm both contain the path the DEEPEST
+/// one is the one rendered. The two arms carry DIFFERENT modes on purpose. Equal modes would
+/// render the same cell whichever row won, so the assertion would pass without the selection
+/// law working — a control has to be able to fail.
 ///
-/// The two arms carry DIFFERENT modes on purpose. Equal modes would render the
-/// same cell whichever row won, so the assertion would pass without the
-/// selection law working — a control has to be able to fail.
+///
 #[test]
 fn the_armed_cell_joins_on_id_and_arm_root_and_the_deepest_arm_wins() {
     let s = populated();
@@ -822,9 +822,9 @@ fn the_armed_cell_joins_on_id_and_arm_root_and_the_deepest_arm_wins() {
     assert!(at_s1.contains("  root.only  armed=-"), "{at_s1}");
 }
 
-/// **P11** — an armed row whose pinned page has drifted renders red rather than
-/// clean, and the drift gates the exit. The freeze is the point: discovery moves,
-/// the arm does not.
+/// **P11** — an armed row whose pinned page has drifted renders red rather than clean, and the
+/// drift gates the exit. The freeze is the point: discovery moves, the arm does not.
+///
 #[test]
 fn a_drifted_pin_reddens_the_armed_cell_and_gates_the_exit() {
     let s = populated();
@@ -865,11 +865,11 @@ fn a_corrupt_artifact_is_unreadable_never_silently_unarmed() {
 
 // ── read-only, and one resolver ───────────────────────────────────────────────
 
-/// **P12 — the read-only proof, asserted directly.** Every view of the verb runs
-/// over a populated workspace with a minted armed artifact, and afterwards the
-/// hash-domain merkle root AND the full file tree (paths and bytes, wider than
-/// the domain) are unchanged. Nothing is armed, no receipt is minted, no marker
-/// appears.
+/// **P12 — the read-only proof, asserted directly.** Every view of the verb runs over a
+/// populated workspace with a minted armed artifact, and afterwards the hash-domain merkle root
+/// AND the full file tree (paths and bytes, wider than the domain) are unchanged. Nothing is
+/// armed, no receipt is minted, no marker appears.
+///
 #[test]
 fn every_view_leaves_the_workspace_bit_for_bit_unchanged() {
     let s = populated();
@@ -912,14 +912,14 @@ fn every_view_leaves_the_workspace_bit_for_bit_unchanged() {
     );
 }
 
-/// **P14 — one resolver, structurally.** The verb's own source carries no
-/// override law: no scope or depth comparison, no id grouping, no ordering of
-/// candidates. It calls the shared resolver instead, and the calls are named
-/// here so this gate fails if a future edit stops going through them.
+/// **P14 — one resolver, structurally.** The verbs own source carries no override law: no scope
+/// or depth comparison, no id grouping, no ordering of candidates.
 ///
-/// A source-level assertion is the right instrument for a claim about WHERE code
-/// lives: a behavioural test passes equally over a correct second
-/// implementation, which is exactly the defect the § 7 law forbids.
+///
+///
+///
+///
+///
 #[test]
 fn the_cli_layer_holds_no_second_resolver() {
     let source = include_str!("../src/rules_cmd.rs");
@@ -930,12 +930,12 @@ fn the_cli_layer_holds_no_second_resolver() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    // `.verify_at(` replaced a hand-composed `.select_at(` + `.verify(` here (C3
-    // gate finding F-4): selection-then-verification has two wrong orders, so the
-    // composition is `policy`'s single one and the CLI calls it. `.select_at(`
-    // survives in the list because the armed CELL still needs the selected rows
-    // themselves to render mode and pinned page — reading rows is not composing
-    // the law.
+    // `.verify_at(` replaced a hand-composed `.select_at(` + `.verify(` here (C3 gate finding
+    // F-4): selection-then-verification has two wrong orders, so the composition is `policy`s
+    // single one and the CLI calls it. `.select_at(` survives in the list because the armed CELL
+    // still needs the selected rows themselves to render mode and pinned page — reading rows is
+    // not composing the law.
+    //
     for called in [
         "RuleIndex::discover",
         ".narrowed_to(",
@@ -995,8 +995,8 @@ fn the_json_face_carries_the_chain_and_the_armed_cell() {
     assert_eq!(value["rules"]["armed_set"]["state"], "present");
 }
 
-/// A PATH outside the workspace is exit 2, never a quiet fall back to the root's
-/// law — which would answer a question about a folder the operator never named.
+/// A PATH outside the workspace is exit 2, never a quiet fall back to the root's law — which
+/// would answer a question about a folder the operator never named.
 #[test]
 fn a_path_outside_the_workspace_is_a_bad_invocation() {
     let s = populated();
@@ -1009,10 +1009,10 @@ fn a_path_outside_the_workspace_is_a_bad_invocation() {
     );
 }
 
-/// A PATH that is not on disk is refused, and the RETIRED `mrd rules replay`
-/// form (decision #8) refuses through that same arm now that the `rules`
-/// namespace belongs to this verb. Measured end-to-end because the regression it
-/// guards is a silent success: `mrd rules replay` printing an empty rule set.
+/// A PATH that is not on disk is refused, and the RETIRED `mrd rules replay` form (decision 8)
+/// refuses through that same arm now that the `rules` namespace belongs to this verb. Measured
+/// end-to-end because the regression it guards is a silent success: `mrd rules replay` printing
+/// an empty rule set.
 #[test]
 fn a_path_that_is_not_on_disk_is_refused_and_so_is_the_retired_form() {
     let s = populated();
@@ -1042,9 +1042,9 @@ fn the_verb_is_documented_in_the_cli_surface() {
 
 // ── reading the render ────────────────────────────────────────────────────────
 
-/// One id's block: its own line plus the indented chain beneath it, with every
-/// 16-hex rev replaced by `REV` so a fixture edit does not have to restate a
-/// hash the engine computed.
+/// One ids block: its own line plus the indented chain beneath it, with every 16-hex rev
+/// replaced by `REV` so a fixture edit does not have to restate a hash the engine computed.
+///
 fn block_for(stdout: &str, id: &str) -> Vec<String> {
     let mut block = Vec::new();
     let mut inside = false;

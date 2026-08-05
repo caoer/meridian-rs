@@ -1,13 +1,13 @@
-//! Opportunistic last-use auto-GC (Cargo model, spec §5).
+//! Opportunistic last-use auto-GC (Cargo model, spec §5). A path-keyed drawer store without a
+//! reaper is the Bazel/VSCode disk-leak class (decision 0001 round 4).
 //!
-//! A path-keyed drawer store without a reaper is the Bazel/VSCode disk-leak
-//! class (decision 0001 round 4). Cargo runs its cache GC at most once a day on
-//! normal invocations; mrd mirrors that: the cache-mutating verbs (`init`,
-//! `unregister`) opportunistically sweep past-threshold drawers, gated by a
-//! `.last-gc` stamp so the scan runs no more than once per day. It is
-//! best-effort — a sweep error never fails the verb that triggered it — and the
-//! read-only verbs (`resolve`, `cache ls`) never trigger it, so an ephemeral
-//! cwd-default resolution stays write-free.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::fs;
 use std::path::Path;

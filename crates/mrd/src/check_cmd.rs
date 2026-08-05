@@ -155,12 +155,12 @@ use crate::{Fail, Format, current_dir};
 /// lie (a chain break or a foreign edit).
 const EXIT_FINDING: u8 = 1;
 
-/// Run `mrd check [--core] [--json]`: resolve the workspace and run the layer-0
-/// core, printing the verdict.
+/// Run `mrd check [--core] [--json]`: resolve the workspace and run the layer-0 core, printing
+/// the verdict. Errors [`Fail`] exit 2 on a bad invocation or an unreadable workspace/journal;
+/// exit 1 when the core reddens (chain break or foreign edit).
 ///
-/// # Errors
-/// [`Fail`] exit 2 on a bad invocation or an unreadable workspace/journal; exit 1
-/// when the core reddens (chain break or foreign edit).
+///
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Check::parse(args)?;
     let cwd = current_dir()?;
@@ -178,47 +178,47 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
-    // ONE read of the worktree, whose bytes feed the fold AND the corpus — the
-    // reason `domain_snapshot` returns both. A second read would let the two
-    // planes describe two different worktrees.
+    // ONE read of the worktree, whose bytes feed the fold AND the corpus — the reason
+    // `domain_snapshot` returns both. A second read would let the two planes describe two
+    // different worktrees.
     let domain = fs::domain::Domain::load(&root)
         .map_err(|e| Fail::tool(format!("cannot read the hash domain: {e}")))?;
     let (worktree_files, _worktree_fold) = fs::domain_snapshot(&root)
         .map_err(|e| Fail::tool(format!("cannot read the corpus: {e}")))?;
 
-    // THE SECOND INTERVAL (F1), and only when the caller asked the question it
-    // answers. `git` reports what the INDEX carries wherever it differs from the
-    // worktree; absent divergence the two intervals coincide and one pass answers
-    // both.
+    // THE SECOND INTERVAL (F1), and only when the caller asked the question it answers. `git`
+    // reports what the INDEX carries wherever it differs from the worktree; absent divergence the
+    // two intervals coincide and one pass answers both.
+    //
     let interval = if parsed.staged {
         staged_interval(&root, &domain, &worktree_files)
     } else {
         Interval::NotAsked
     };
 
-    // W5 — **the corpora are built before the mount table, because they are what
-    // says which roots the table must build.** Each interval's corpus is built
-    // exactly once here and then assessed, rather than built inside `assess`:
-    // the root set is a question about the corpus, so asking it costs a build,
-    // and a build per question would have paid twice for the same bytes.
+    // W5 — **the corpora are built before the mount table, because they are what says which roots
+    // the table must build.** Each interval's corpus is built exactly once here and then assessed,
+    // rather than built inside `assess`: the root set is a question about the corpus, so asking it
+    // costs a build, and a build per question would have paid twice for the same bytes.
+    //
     let worktree_docs = build_corpus(worktree_files)?;
     let staged_docs = match &interval {
         Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())?),
         _ => None,
     };
 
-    // U11/F6 — the REAL mount table, through the one loader `mrd walk` uses. A
-    // default (empty) table here is what made the cross-root pin axis answer
-    // `grey(unmounted)` for a bound root in all three of its states.
+    // U11/F6 — the REAL mount table, through the one loader `mrd walk` uses. A default (empty)
+    // table here is what made the cross-root pin axis answer `grey(unmounted)` for a bound root in
+    // all three of its states. W5 — the table is whole; only the CORPORA narrow, to the roots this
+    // check's own lock addresses NAME.
     //
-    // W5 — the table is whole; only the CORPORA narrow, to the roots this
-    // check's own lock addresses NAME. The union spans BOTH intervals because
-    // ONE table serves both assessments, and the staged corpus may pin a root
-    // the worktree does not — a narrowing per interval would have built the
-    // table for the first and read it for the second. Over-collecting here costs
-    // a corpus; under-collecting cannot pass silently, since the only consumer
-    // of a skipped root refuses out loud by name
-    // ([`crate::walk_cmd::load_mounts_for`]).
+    //
+    //
+    //
+    //
+    //
+    //
+    //
     let mut needed = crate::walk_cmd::lock_addressed_roots(&worktree_docs);
     if let Some(docs) = &staged_docs {
         needed.append(&mut crate::walk_cmd::lock_addressed_roots(docs));
@@ -239,11 +239,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .commit_gate
         .then(|| build_gate(&interval, &worktree, staged.as_ref(), parsed.require_pins));
 
-    // **The CHECKOUT's fence coverage — read here, reported below, and reachable
-    // from no exit path in this function** (row 21). It is deliberately taken on
-    // every invocation, gated and ungated alike: a reading whose presence depended
-    // on a flag would be a reading the operator has to know to ask for, which is
-    // the silence this line closes.
+    // **The CHECKOUT's fence coverage — read here, reported below, and reachable from no exit path
+    // in this function** (row 21). It is deliberately taken on every invocation, gated and ungated
+    // alike: a reading whose presence depended on a flag would be a reading the operator has to
+    // know to ask for, which is the silence this line closes.
+    //
     let fence = observe_fence(&canonical);
 
     emit(
@@ -256,10 +256,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         &fence,
     );
 
-    // FAIL CLOSED on an interval that was ASKED FOR and could not be read. The
-    // caller asked what a commit would record; degrading silently to the worktree
-    // answer is the F1 shape again with one more step in front of it — a true
-    // statement about the wrong bytes.
+    // FAIL CLOSED on an interval that was ASKED FOR and could not be read. The caller asked what a
+    // commit would record; degrading silently to the worktree answer is the F1 shape again with
+    // one more step in front of it — a true statement about the wrong bytes.
+    //
     if let Interval::CannotAsk(detail) = &interval {
         return Err(Fail::with_code(
             EXIT_FINDING,
@@ -271,9 +271,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ));
     }
 
-    // **The scoped exit, and it reads ONE interval.** The worst-of below is the
-    // corpus-wide question's answer and stays exactly as it was for every caller
-    // that asks it; a gated run never reaches it.
+    // **The scoped exit, and it reads ONE interval.** The worst-of below is the corpus-wide
+    // question's answer and stays exactly as it was for every caller that asks it; a gated run
+    // never reaches it.
     if let Some(gate) = gate.as_ref() {
         return gate.exit();
     }
@@ -340,13 +340,13 @@ fn refusal_list(label: &str, summary: &str) -> String {
     out
 }
 
-/// **Which interval a commit records**, and the scoped question put to it. When the
-/// index diverges that is the staged bytes; when it coincides, or there is no
-/// repository at all, the worktree IS that interval and its own render says so.
+/// **Which interval a commit records**, and the scoped question put to it. When the index
+/// diverges that is the staged bytes; when it coincides, or there is no repository at all, the
+/// worktree IS that interval and its own render says so. Either way ONE interval answers, and
+/// the record it is read against is always the WORKTREE's journal — the most complete one the
+/// engine has, and the one the worktree pass separately validates in the same run.
 ///
-/// Either way ONE interval answers, and the record it is read against is always the
-/// WORKTREE's journal — the most complete one the engine has, and the one the
-/// worktree pass separately validates in the same run.
+///
 fn build_gate<'a>(
     interval: &'a Interval,
     worktree: &'a Assessed,
@@ -399,38 +399,38 @@ const STAGED: &str = "staged";
 /// verdict word all mean the same thing by it (S3-R6/S3-R59).
 const RED: &str = "RED";
 
-/// The gated pass. Names the plane that actually answered, and cannot be misread as
-/// a claim about write history.
+/// The gated pass. Names the plane that actually answered, and cannot be misread as a claim
+/// about write history. **It replaced `accounted` / `accounted(unvouched-record)`, and the
+/// replacement is the honesty law applied to VOCABULARY rather than only to types.
 ///
-/// **It replaced `accounted` / `accounted(unvouched-record)`, and the replacement is
-/// the honesty law applied to VOCABULARY rather than only to types.** Both old words
-/// asserted something about the RECORD — that it accounted for these bytes, and
-/// whether it could vouch for itself. There is no record. A passing word that
-/// asserts an unobserved property is the same defect as an enum member that does,
-/// wearing a different coat.
+///
+///
+///
+///
+///
 const PINS_HOLD: &str = "pins-hold";
 
-/// **What `--commit-gate` reads.**
+/// **What `--commit-gate` reads.** One interval decides the exit — that is still the whole law
+/// Worst-of ACROSS intervals is right for the unscoped question, which is a claim about the
+/// corpus. It is wrong for this one: a finding from the worktree interval would swamp a clean
+/// answer about the bytes a commit records. So the gate names ONE interval — the one a commit
+/// records — and reads it.
 ///
-/// # One interval decides the exit — that is still the whole law
-/// Worst-of ACROSS intervals is right for the unscoped question, which is a claim
-/// about the corpus. It is wrong for this one: a finding from the worktree interval
-/// would swamp a clean answer about the bytes a commit records. So the gate names
-/// ONE interval — the one a commit records — and reads it.
 ///
-/// # What it no longer reads — the engine keeps no memory (ZT, 2026-08-03)
-/// The gate once rested on TWO planes: `Accounted` (journal-derived — was this
-/// interval's journal a truthful prefix of the record, and did its tree fold to a
-/// root some governed write produced) and the pin plane. **The first is gone with
-/// the journal and is not re-derived.** The gate is the pin plane alone, and it says
-/// so; a gate that kept the old vocabulary over one surviving plane would be
-/// claiming evidence it no longer has.
+///
+///
+///
+///
+///
+///
+///
+///
 struct Gate<'a> {
     /// Which interval the exit reads. Named in the render and in every refusal,
     /// because a refusal a reader cannot locate is one they cannot act on.
     label: &'a str,
-    /// That interval's pin plane — now the ONLY gated plane. A pin is a claim about
-    /// the bytes being committed, so it belongs to the interval, not to the history.
+    /// That interval's pin plane — now the ONLY gated plane. A pin is a claim about the bytes being
+    /// committed, so it belongs to the interval, not to the history.
     pins: &'a PinPlane,
     /// **The caller asked for fail-closed-on-no-coverage** (`--require-pins`).
     /// Off by default; see [`NO_COVERAGE`] for the whole reasoning.
@@ -553,9 +553,9 @@ impl Gate<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // the fence line — the checkout, not the corpus (row 21)
-// ---------------------------------------------------------------------------
+//
+//
 
 /// The clause every fence line carries, spelled ONCE so the two faces cannot drift
 /// apart on the one claim this whole reading rests on.
@@ -563,33 +563,33 @@ const FENCE_REPORTED: &str = "REPORTED, never gated on — fence coverage is a p
                               local checkout and not of the corpus, so this line does not move \
                               check's exit";
 
-/// **What the local CHECKOUT's fence looks like — a reading beside the verdict,
-/// never part of it** (row 21).
-///
-/// # It is not a fourth proposition
-/// The claims-realised findings and the pin plane are propositions about the
-/// corpus's bytes and their write history. Fence coverage is a proposition about
-/// the **local checkout's configuration**: a different subject on a different axis,
-/// which never competed for the exit code, so the closed triad above is not under
+/// **What the local CHECKOUT's fence looks like — a reading beside the verdict, never part of
+/// it** (row 21). It is not a fourth proposition The claims-realised findings and the pin plane
+/// are propositions about the corpus's bytes and their write history. Fence coverage is a
+/// proposition about the **local checkout's configuration**: a different subject on a different
+/// axis, which never competed for the exit code, so the closed triad above is not under
 /// pressure here and needs no defending.
 ///
-/// # The isolation is STRUCTURAL, not a promise
-/// This type is not a field of [`Gate`]; nothing in [`worst_of_exit`],
-/// [`Gate::permits`] or [`Gate::exit`] can name it; and [`observe_fence`] returns
-/// no `Result`, so there is no error for a caller to propagate into a [`Fail`].
-/// The two checkouts of one corpus — one fenced, one not — exit identically
-/// because there is no path by which they could differ.
 ///
-/// # Read-only, and it leaves no souvenir
-/// It reads through [`hook::status`], which opens the door files and nothing
-/// else. A root must not come away with anything in its git dir as the souvenir
-/// of being looked at — and since the install plane retired there is no writer in
-/// this engine that could leave one.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 struct Fence {
-    /// The one word for this checkout: [`hook::Coverage::word`] when the root can
-    /// carry a fence, [`hook::Unfenceable::word`] when it cannot. **Never
-    /// re-spelled here** (S3-R6) — an operator who learned these words from
-    /// `mrd skill hook`'s document reads the same ones off this face.
+    /// The one word for this checkout: [`hook::Coverage::word`] when the root can carry a fence,
+    /// [`hook::Unfenceable::word`] when it cannot. **Never re-spelled here** (S3-R6) — an operator
+    /// who learned these words from `mrd skill hook`'s document reads the same ones off this face.
+    ///
     word: &'static str,
     /// What was observed, and what can be done about it.
     teaching: String,
@@ -602,11 +602,11 @@ struct Fence {
     /// submodule or a non-repository has no hook directory to read, which is not
     /// the same fact as a hook directory read and found empty.
     doors: Option<Vec<FenceDoor>>,
-    /// How many of those doors carry a fence this engine's line wrote — the
-    /// COVERAGE axis, and **blind to currency by construction**
-    /// ([`hook::Coverage::fenced_doors`]). A door standing at an older or a newer
-    /// generation is counted here; whether it is current is [`Fence::word`]'s
+    /// How many of those doors carry a fence this engine's line wrote — the COVERAGE axis, and
+    /// **blind to currency by construction** ([`hook::Coverage::fenced_doors`]). A door standing at
+    /// an older or a newer generation is counted here; whether it is current is [`Fence::word`]'s
     /// claim, never this one's.
+    ///
     fenced: usize,
 }
 
@@ -620,22 +620,22 @@ struct FenceDoor {
     version: Option<u32>,
 }
 
-/// Read the checkout's fence state.
+/// Read the checkout's fence state. **It cannot fail into the exit.** Every outcome of the
+/// survey — a reachable root, or one the fence cannot reach — is a [`Fence`] to report, so no
+/// branch here produces a value a caller could turn into a [`Fail`].
 ///
-/// **It cannot fail into the exit.** Every outcome of the survey — a reachable
-/// root, or one the fence cannot reach — is a [`Fence`] to report, so no branch
-/// here produces a value a caller could turn into a [`Fail`].
+///
 fn observe_fence(workspace: &Path) -> Fence {
     match hook::status(workspace) {
         Ok(coverage) => {
             let fenced = coverage.fenced_doors();
             Fence {
                 word: coverage.word(),
-                // `Coverage::teaching` is silent on the two states where the set
-                // agrees with itself, because a reader who went looking for the
-                // door set has it in front of them. **This reader did not** —
-                // the line is unasked-for, and `absent` is precisely the state
-                // row 21 exists to stop being silent about.
+                // `Coverage::teaching` is silent on the two states where the set agrees with itself, because a
+                // reader who went looking for the door set has it in front of them. **This reader did not** —
+                // the line is unasked-for, and `absent` is precisely the state row 21 exists to stop being
+                // silent about.
+                //
                 teaching: coverage
                     .teaching()
                     .unwrap_or_else(|| agreed_teaching(fenced)),
@@ -653,8 +653,8 @@ fn observe_fence(workspace: &Path) -> Fence {
                 fenced,
             }
         }
-        // A root the fence cannot reach is reported with its OBSERVED reason word
-        // and its teaching — never as a bare absence, and never as a refusal.
+        // A root the fence cannot reach is reported with its OBSERVED reason word and its teaching —
+        // never as a bare absence, and never as a refusal.
         Err(refusal) => Fence {
             word: refusal.word(),
             teaching: refusal.teaching(),
@@ -679,33 +679,33 @@ fn agreed_teaching(fenced: usize) -> String {
     }
 }
 
-/// The fence line(s) on the human face: the checkout's coverage, then the doors
-/// when it has any.
+/// The fence line(s) on the human face: the checkout's coverage, then the doors when it has
+/// any. **Two lines rather than one**, for the reason [`Fence::doors`] gives: the set's word
+/// cannot carry which door disagrees, and the per-door line can. EACH CLAUSE NAMES ITS OWN AXIS
+/// The first line composes **two instruments**: the count is COVERAGE — how many doors this
+/// engine's line wrote — and the set word is CURRENCY — whether what they carry is the
+/// generation this engine writes.
 ///
-/// **Two lines rather than one**, for the reason [`Fence::doors`] gives: the set's
-/// word cannot carry which door disagrees, and the per-door line can.
 ///
-/// # EACH CLAUSE NAMES ITS OWN AXIS
-/// The first line composes **two instruments**: the count is COVERAGE — how many
-/// doors this engine's line wrote — and the set word is CURRENCY — whether what
-/// they carry is the generation this engine writes. They are measured separately
-/// and they disagree on purpose: a fully skewed checkout is `3 of 3` doors and
-/// `installed-superseded`, which is the reading that keeps `installed-partial` and
-/// `installed-superseded` different states.
 ///
-/// So the count's clause may claim ONLY what [`Fence::fenced`] measured — the
-/// marker, at whatever generation it declares — and says so outright. The clause
-/// it replaced (*"carry this engine's fence"*) asserted the currency the count
-/// never took: beside `installed-superseded` it was false as written, and beside
-/// `installed-ahead` it contradicted its own teaching one clause later. That is
-/// `hook.rs`'s standing hazard — *nothing can prompt an operator to re-place a
-/// fence if the reporting face calls a superseded one "installed"* — compressed
-/// into a sub-sentence.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn fence_lines(fence: &Fence) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
-    // The teachings come from two different types and only some of them end in a
-    // full stop; trimming it here is what keeps one render grammar over both.
+    // The teachings come from two different types and only some of them end in a full stop;
+    // trimming it here is what keeps one render grammar over both.
     let teaching = fence.teaching.trim_end_matches('.');
     match &fence.doors {
         Some(doors) => {
@@ -727,8 +727,8 @@ fn fence_lines(fence: &Fence) -> String {
                     .join(" · ")
             );
         }
-        // No door plane, so no door line. The same law the `--json` face states at
-        // `interval_json`: an absence is not an empty reading of something.
+        // No door plane, so no door line. The same law the `--json` face states at `interval_json`: an
+        // absence is not an empty reading of something.
         None => {
             let _ = writeln!(
                 out,
@@ -751,9 +751,9 @@ fn fence_json(fence: &Fence) -> Value {
         "state": fence.word,
         "fenceable": fence.doors.is_some(),
         "teaching": fence.teaching,
-        // What THIS ENGINE writes, beside what the files declare (per door below).
-        // A verdict that does not disclose its judge cannot be checked by a third
-        // party, and in a version skew both participants are inside it.
+        // What THIS ENGINE writes, beside what the files declare (per door below). A verdict that does
+        // not disclose its judge cannot be checked by a third party, and in a version skew both
+        // participants are inside it.
         "engine_version": hook::FENCE_VERSION,
         // The card's central claim, machine-readable: a consumer must be able to
         // read off this face that the block did not decide the exit.
@@ -787,21 +787,21 @@ struct Assessed {
     report: CoreReport,
 }
 
-/// **What was asked about the second interval, and what came back** — the state
-/// the render states and the exit fails closed on.
+/// **What was asked about the second interval, and what came back** — the state the render
+/// states and the exit fails closed on. Four outcomes, each a DIFFERENT fact about this run, so
+/// none of them is rendered as another's silence (the same law the `pins:`/`anchoring:` split
+/// runs on): not asked · asked and there is no index · asked and the index adds nothing · asked
+/// and it carries other bytes.
 ///
-/// Four outcomes, each a DIFFERENT fact about this run, so none of them is
-/// rendered as another's silence (the same law the `pins:`/`anchoring:` split
-/// runs on): not asked · asked and there is no index · asked and the index adds
-/// nothing · asked and it carries other bytes.
+///
 enum Interval {
-    /// `--staged` was not passed: the index was never read, and this answer is
-    /// about the worktree only. **Said out loud** — a reader must not take a
-    /// worktree green for a statement about their commit.
+    /// `--staged` was not passed: the index was never read, and this answer is about the worktree
+    /// only. **Said out loud** — a reader must not take a worktree green for a statement about
+    /// their commit.
     NotAsked,
-    /// Asked, and this workspace is not a git repository, so no index exists to
-    /// record anything. Marker-beats-git makes that a supported state, not a
-    /// degradation.
+    /// Asked, and this workspace is not a git repository, so no index exists to record anything.
+    /// Marker-beats-git makes that a supported state, not a degradation.
+    ///
     NoRepository,
     /// Asked, and the index carries nothing the worktree does not — one pass
     /// answers both intervals. **A FACT about this run**, not an absence.
@@ -819,13 +819,13 @@ struct StagedBytes {
     files: fs::DomainFiles,
 }
 
-/// Assess ONE interval: build its corpus, colour its pins through the one computer
-/// with the real mount table, and run the layer-0 core over ITS bytes.
+/// Assess ONE interval: build its corpus, colour its pins through the one computer with the
+/// real mount table, and run the layer-0 core over ITS bytes. **There is no longer a separate
+/// staged assessor.** `assess_staged` existed only to date the staged interval against the
+/// record instead of its own last row — a journal question. With the journal deleted the two
+/// intervals differ only in which bytes built the corpus, which is this function's argument.
 ///
-/// **There is no longer a separate staged assessor.** `assess_staged` existed only
-/// to date the staged interval against the record instead of its own last row — a
-/// journal question. With the journal deleted the two intervals differ only in which
-/// bytes built the corpus, which is this function's argument.
+///
 fn assess(
     root: &fs::WorkspaceRoot,
     mounts: &crate::walk_cmd::Mounts,
@@ -839,14 +839,14 @@ fn assess(
     }
 }
 
-/// One interval's bytes, parsed into the corpus both the root scan and the
-/// assessment read.
+/// One interval's bytes, parsed into the corpus both the root scan and the assessment read.
+/// **Split out of [`assess`] by W5**, which needs the corpus in hand *before* the mount table
+/// exists — the roots worth building are read off
 ///
-/// **Split out of [`assess`] by W5**, which needs the corpus in hand *before*
-/// the mount table exists — the roots worth building are read off these very
-/// documents ([`crate::walk_cmd::lock_addressed_roots`]). Keeping the build
-/// inside `assess` would have forced a second parse of the same bytes purely to
-/// ask which roots they name.
+///
+///
+///
+///
 fn build_corpus(files: fs::DomainFiles) -> Result<BTreeMap<String, Document>, Fail> {
     let (_index, docs) =
         fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
@@ -883,19 +883,19 @@ fn staged_interval(
         Ok(divergence) => divergence,
         // No repository, no index, nothing a commit here could record.
         Err(git::GitFail::NotARepo { .. }) => return Interval::NoRepository,
-        // Inside a repository and git could not answer. NOT the worktree answer
-        // wearing a wider label — the caller asked about the commit's interval and
-        // this run cannot speak about it.
+        // Inside a repository and git could not answer. NOT the worktree answer wearing a wider label
+        // — the caller asked about the commit's interval and this run cannot speak about it.
+        //
         Err(other) => return Interval::CannotAsk(other.to_string()),
     };
     if divergence.is_empty() {
         return Interval::Coincides;
     }
 
-    // The reserved journal used to be picked out by hand here: it was root-EXCLUDED
-    // from the hash domain, so the overlay dropped it and a staged journal forgery
-    // would have been assessed against the worktree's copy. The carve-out is gone
-    // with the journal — there is no reserved page and nothing to hand-pick.
+    // The reserved journal used to be picked out by hand here: it was root-EXCLUDED from the hash
+    // domain, so the overlay dropped it and a staged journal forgery would have been assessed
+    // against the worktree's copy. The carve-out is gone with the journal — there is no reserved
+    // page and nothing to hand-pick.
     let (files, _fold) = fs::overlay_snapshot(worktree_files, &divergence, domain);
     let paths = divergence
         .iter()
@@ -903,37 +903,37 @@ fn staged_interval(
         .map(|(rel, _)| rel.clone())
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        // Everything that diverges is outside the hash domain — code, assets, a
-        // lock file. Neither interval reads those, so there is nothing here a
-        // second assessment could say.
+        // Everything that diverges is outside the hash domain — code, assets, a lock file. Neither
+        // interval reads those, so there is nothing here a second assessment could say.
+        //
         return Interval::Coincides;
     }
     Interval::Diverges(StagedBytes { paths, files })
 }
 
-/// Colour every `meridian-lock` pin in the corpus through **the one pin
-/// computer** — `view::walk::lock_pin_colors_rooted`, which is exactly what
-/// `mrd status`'s lock axis reads and what colours a `mrd walk` listing.
+/// Colour every `meridian-lock` pin in the corpus through **the one pin computer** —
+/// `view::walk::lock_pin_colors_rooted`, which is exactly what `mrd status`'s lock axis reads
+/// and what colours a `mrd walk` listing. This is the seam that makes the three planes agree BY
+/// CONSTRUCTION. A `check` that re-derived pin colours would be a second implementation of
+/// corpus index → ref resolution → selector → fingerprint compare, and a second copy of that
+/// chain is how the pin plane and the decoration plane once came to hash two different
+/// documents for one ref. There is one computer here, not three that happen to match today.
 ///
-/// This is the seam that makes the three planes agree BY CONSTRUCTION. A `check`
-/// that re-derived pin colours would be a second implementation of corpus index →
-/// ref resolution → selector → fingerprint compare, and a second copy of that
-/// chain is how the pin plane and the decoration plane once came to hash two
-/// different documents for one ref. There is one computer here, not three that
-/// happen to match today.
 ///
-/// **F6 — the computer was right and its INPUT was blind.** This verb handed it
-/// `lock_pin_colors(docs)`, which resolves against `MountSet::default()` and an
-/// ambient-only corpus, so on a BOUND root every cross-root pin answered
-/// `grey(unmounted)` whether its target matched, had drifted, or had been
-/// restored — three states, one answer, under the fence. The agree-by-construction
-/// structure above is what made this ONE edit rather than three: the corpus and
-/// the mount table are now the caller's to supply, and `mrd walk` supplies the
-/// same two through the same loader.
 ///
-/// The label rides along from `color_label` for the same reason: the reason words
-/// (`content-drifted`, `unmounted`, `path-unseeable`, …) are spelled once, in
-/// `view`, and are never re-spelled by this verb (S3-R6/S3-R59).
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn pin_rows(corpus: &model::RootedCorpus<'_>, mounts: &addr::MountSet) -> Vec<PinRow> {
     view::walk::lock_pin_colors_rooted(corpus, mounts)
         .into_iter()
@@ -990,22 +990,22 @@ impl Check {
                 // `--core` names layer 0 explicitly; it is the default today, so it
                 // is accepted and needs no separate branch.
                 "--core" => {}
-                // git's own word for the index, deliberately (`git diff --staged`)
-                // — one vocabulary, and never a second spelling for a concept the
-                // operator's other tool already named.
+                // git's own word for the index, deliberately (`git diff --staged`) — one vocabulary, and never
+                // a second spelling for a concept the operator's other tool already named.
+                //
                 "--staged" => staged = true,
-                // The QUESTION, not a second interval: it names the caller — a
-                // pre-commit gate — rather than a mechanism, so what it changes is
-                // legible from the flag alone.
+                // The QUESTION, not a second interval: it names the caller — a pre-commit gate — rather than a
+                // mechanism, so what it changes is legible from the flag alone.
+                //
                 "--commit-gate" => {
                     commit_gate = true;
                     staged = true;
                 }
-                // The STRICTNESS the caller chooses, kept a separate word from the
-                // question itself: `--commit-gate` says which question, this says
-                // how strict the answer must be. Folding it into the first would
-                // have made one flag mean two things and left no way to ask the
-                // ordinary question.
+                // The STRICTNESS the caller chooses, kept a separate word from the question itself:
+                // `--commit-gate` says which question, this says how strict the answer must be. Folding it
+                // into the first would have made one flag mean two things and left no way to ask the ordinary
+                // question.
+                //
                 "--require-pins" => require_pins = true,
                 flag if flag.starts_with('-') => {
                     return Err(Fail::tool(format!("unknown flag: {flag}")));
@@ -1015,9 +1015,9 @@ impl Check {
                 }
             }
         }
-        // Refused rather than ignored: a caller who typed `--require-pins` believes
-        // a gate is being tightened, and the one thing a fence's verb must never do
-        // is answer confidently about a question it did not ask.
+        // Refused rather than ignored: a caller who typed `--require-pins` believes a gate is being
+        // tightened, and the one thing a fence's verb must never do is answer confidently about a
+        // question it did not ask.
         if require_pins && !commit_gate {
             return Err(Fail::tool(
                 "--require-pins tightens --commit-gate and means nothing without it: it says \
@@ -1034,13 +1034,13 @@ impl Check {
     }
 }
 
-/// Render the core verdict as a human block: the header, the chain line, the
-/// the write-history disclosure, and one line per drifted claim (none at the CLI today).
+/// Render the core verdict as a human block: the header, the chain line, the the write-history
+/// disclosure, and one line per drifted claim (none at the CLI today). Both detector lines
+/// render `grey(cannot-assess)` when the journal cannot date the tree — with no row, or with a
+/// last receipt the live root no longer continues. Neither may borrow the word the assessed
+/// path earns, and neither may accuse: the mismatch is rendered as the evidence it is.
 ///
-/// Both detector lines render `grey(cannot-assess)` when the journal cannot date
-/// the tree — with no row, or with a last receipt the live root no longer
-/// continues. Neither may borrow the word the assessed path earns, and neither may
-/// accuse: the mismatch is rendered as the evidence it is.
+///
 fn render_human(
     workspace: &Path,
     worktree: &CoreReport,
@@ -1140,9 +1140,9 @@ fn staged_predicate_line() -> String {
     )
 }
 
-/// One interval's verdict lines — the journal TRACE, the claims, and the pin
-/// plane. Shared by both intervals so a reader compares like with like, and so a
-/// line can never exist for one interval and not the other.
+/// One interval's verdict lines — the journal TRACE, the claims, and the pin plane. Shared by
+/// both intervals so a reader compares like with like, and so a line can never exist for one
+/// interval and not the other.
 fn render_report(report: &CoreReport) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -1184,17 +1184,17 @@ fn render_report(report: &CoreReport) -> String {
             let _ = writeln!(out, "  pins: {}", pin_line(pin));
         }
     }
-    // The anchoring THREE-STATE as a reading (GAP A), with its POPULATION beside
-    // it (S3-R23(5)): the same empty orphan list means one thing over fifty pinned
-    // blobs and something else entirely over none, and a reading that cannot tell
-    // them apart is how coverage disappears with nothing failing.
-    // THE SIGHT LINE, stated before the reading it bounds (ruling 2026-08-04).
-    // The anchoring plane holds ONE git handle — the ambient root's — so a
-    // cross-root pin's blob is out of its jurisdiction and is not measured. That
-    // narrowing is SPOKEN, never silent: a skipped population nobody names is the
-    // false clean this plane exists to prevent. Cross-root blob durability is
-    // `u13_per_root_anchoring`'s surface; scoping this plane does not retire the
-    // question.
+    // The anchoring THREE-STATE as a reading (GAP A), with its POPULATION beside it (S3-R23(5)):
+    // the same empty orphan list means one thing over fifty pinned blobs and something else
+    // entirely over none, and a reading that cannot tell them apart is how coverage disappears
+    // with nothing failing. THE SIGHT LINE, stated before the reading it bounds (ruling ).
+    //
+    //
+    //
+    //
+    //
+    //
+    //
     if !pins.out_of_jurisdiction.is_empty() {
         let _ = writeln!(
             out,
@@ -1240,11 +1240,11 @@ fn render_report(report: &CoreReport) -> String {
         }
     }
 
-    // ── the RUN PLANE (G3) ──────────────────────────────────────────────────
-    // Pre-exec receipts with no completion. REPORTED, never gated on — like
-    // the fence line, this does not move check's exit. Receipts from before
-    // the completion marker can never clear, and a permanent red is how a
-    // reader learns to stop reading a plane.
+    // ── the RUN PLANE (G3) ────────────────────────────────────────────────── Pre-exec receipts
+    // with no completion. REPORTED, never gated on — like the fence line, this does not move
+    // check's exit. Receipts from before the completion marker can never clear, and a permanent
+    // red is how a reader learns to stop reading a plane.
+    //
     if let Some(rendered) = check::orphan::render(&report.orphans) {
         let _ = writeln!(out, "{rendered}");
     }
@@ -1264,11 +1264,11 @@ fn pin_line(pin: &PinRow) -> String {
 /// The `--json` shape: the workspace plus the core object (the drifted claims), the
 /// write-history disclosure, and the top-level `red` verdict.
 ///
-/// When the journal cannot date the tree, both journal detectors are `null` —
-/// *not assessed*, never a `{"green": true}` a reader could bank on — and a
-/// `cannot_assess` block carries the reason word, the detectors it covers, the
-/// detail, and the `baseline` evidence (`null` when there is no row at all).
-/// `red` stays honest: grey is not red. The assessed shape is untouched.
+///
+///
+///
+///
+///
 fn to_json(
     workspace: &Path,
     worktree: &CoreReport,
@@ -1319,9 +1319,9 @@ fn to_json(
     // exit answered about THIS interval, `record_vouches` is the standing fact it
     // refused to spend.
     if let Some(gate) = gate {
-        // `record_vouches` and `standing_report` were REMOVED with the record they
-        // reported on. There is no ledger left to vouch for itself, so a key saying
-        // whether it does would be answering about nothing.
+        // `record_vouches` and `standing_report` were REMOVED with the record they reported on. There
+        // is no ledger left to vouch for itself, so a key saying whether it does would be answering
+        // about nothing.
         value["commit_gate"] = json!({
             "gated_interval": gate.label,
             "permits": gate.permits(),
@@ -1329,22 +1329,22 @@ fn to_json(
             "detail": gate.detail(),
             "gated_planes": ["pins"],
             "write_history": WRITE_HISTORY_NOT_ASSESSED,
-            // **The POPULATION the gate read, on the face a machine reads**
-            // (S3-R23(5)). `permits: true` over `pin_coverage: 0` and over
-            // `pin_coverage: 50` are entirely different assurances, and a caller
-            // that cannot tell them apart is the caller `--require-pins` exists
-            // for. Both keys live INSIDE `commit_gate`, which is itself absent
-            // unless the gate was asked — so the shipped `pins` block is
-            // byte-identical and no existing consumer moves.
+            // **The POPULATION the gate read, on the face a machine reads** (S3-R23(5)). `permits: true`
+            // over `pin_coverage: 0` and over `pin_coverage: 50` are entirely different assurances, and a
+            // caller that cannot tell them apart is the caller `--require-pins` exists for. Both keys live
+            // INSIDE `commit_gate`, which is itself absent unless the gate was asked — so the shipped
+            // `pins` block is byte-identical and no existing consumer moves.
+            //
+            //
             "pin_coverage": gate.pins.declared,
             "require_pins": gate.require_pins,
         });
     }
-    // **Top-level, and never inside [`interval_json`]** (row 21): the fence is a
-    // reading of the CHECKOUT, so it is not per-interval and must not be copied
-    // into the staged object as though a commit's bytes had a fence state of their
-    // own. It is unconditional for the reason its absence would be a lie: this
-    // reading was taken on every run.
+    // **Top-level, and never inside [`interval_json`]** (row 21): the fence is a reading of the
+    // CHECKOUT, so it is not per-interval and must not be copied into the staged object as though
+    // a commit's bytes had a fence state of their own. It is unconditional for the reason its
+    // absence would be a lie: this reading was taken on every run.
+    //
     value["fence"] = fence_json(fence);
     value
 }
@@ -1377,14 +1377,14 @@ fn interval_json(workspace: &Path, report: &CoreReport) -> Value {
     })
 }
 
-/// The `pins` block: the CLAIM plane's findings and the RETRIEVAL plane's
-/// anchoring reading, each carrying its own reason word verbatim (S3-R6 — distinct
-/// on the `--json` face as well as the human one).
+/// The `pins` block: the CLAIM plane's findings and the RETRIEVAL plane's anchoring reading,
+/// each carrying its own reason word verbatim (S3-R6 — distinct on the `--json` face as well as
+/// the human one).
 ///
-/// `anchoring` is `null` when the object store could not be asked, and the reason
-/// is stated in `anchoring_cannot_assess` — *not assessed*, never an empty array a
-/// reader could bank as clean. The `pending_anchor` array is a reading of a plane
-/// that WAS asked, so its emptiness means something; a `null` says nothing was.
+///
+///
+///
+///
 fn pins_json(report: &CoreReport) -> Value {
     let pins = &report.pins;
     let row = |p: &PinRow| json!({ "src_path": p.src_path, "declared_ref": p.declared_ref, "color": p.label });
@@ -1407,8 +1407,8 @@ fn pins_json(report: &CoreReport) -> Value {
         "grey": pins.grey.iter().map(row).collect::<Vec<_>>(),
         "anchoring": match &pins.cannot_ask {
             Some(_) => Value::Null,
-            // The three-state READING plus its POPULATION (S3-R23(5)): an empty
-            // `orphaned` over `asked: 0` is a reading of nothing, not a clean bill.
+            // The three-state READING plus its POPULATION (S3-R23(5)): an empty `orphaned` over `asked: 0`
+            // is a reading of nothing, not a clean bill.
             None => json!({
                 "asked": pins.asked(),
                 "anchored": pins.anchored,
@@ -1421,11 +1421,11 @@ fn pins_json(report: &CoreReport) -> Value {
             Some(detail) => json!({ "reason": GREY_CANNOT_ASSESS, "detail": detail }),
             None => Value::Null,
         },
-        // The SIGHT LINE (ruling 2026-08-04) — the population this plane did NOT
-        // measure, because those blobs live in another root's object store. Count
-        // AND refs: a bare count cannot be acted on, and a silent skip is the
-        // false clean. Present on BOTH faces because a machine reader must be able
+        // The SIGHT LINE (ruling ) — the population this plane did NOT measure, because those blobs
+        // live in another root's object store. Count AND refs: a bare count cannot be acted on, and a
+        // silent skip is the false clean. Present on BOTH faces because a machine reader must be able
         // to see the same narrowing a human does.
+        //
         "anchoring_out_of_jurisdiction": json!({
             "count": pins.out_of_jurisdiction.len(),
             "refs": pins.out_of_jurisdiction,
@@ -1465,10 +1465,10 @@ mod tests {
         assert_eq!(Check::parse(&["--nope".to_string()]).unwrap_err().code, 2);
     }
 
-    /// `--commit-gate` IMPLIES `--staged`: the interval it gates on is the one the
-    /// index carries, and a gate without it would read the wrong bytes while
-    /// reporting confidently. Drop the implication and the fence must pass two
-    /// flags that mean nothing apart — this fails.
+    /// `--commit-gate` IMPLIES `--staged`: the interval it gates on is the one the index carries,
+    /// and a gate without it would read the wrong bytes while reporting confidently. Drop the
+    /// implication and the fence must pass two flags that mean nothing apart — this fails.
+    ///
     #[test]
     fn commit_gate_implies_staged_and_is_off_by_default() {
         let c = Check::parse(&["--commit-gate".to_string()]).expect("parse");
@@ -1485,12 +1485,12 @@ mod tests {
         );
     }
 
-    /// A pin plane with nothing to report — the gate's passing input.
+    /// A pin plane with nothing to report — the gate's passing input. `declared: 1` on purpose:
+    /// this is a plane that WAS asked something and had no complaint, which is a different input
+    /// from one that was asked nothing. The zero-coverage case is its own fixture
+    /// ([`no_pins_declared`]), because `--require-pins` is the one reader that tells them apart.
     ///
-    /// `declared: 1` on purpose: this is a plane that WAS asked something and had no
-    /// complaint, which is a different input from one that was asked nothing. The
-    /// zero-coverage case is its own fixture ([`no_pins_declared`]), because
-    /// `--require-pins` is the one reader that tells them apart.
+    ///
     fn holding_pins() -> PinPlane {
         PinPlane {
             red: Vec::new(),
@@ -1522,10 +1522,10 @@ mod tests {
         }
     }
 
-    /// **The gate passes on the plane it actually reads, and says so in a word that
-    /// claims nothing more.** `pins-hold` replaced `accounted` /
-    /// `accounted(unvouched-record)` because both asserted something about a RECORD
-    /// the engine no longer keeps (ZT 2026-08-03: the engine has no memory).
+    /// **The gate passes on the plane it actually reads, and says so in a word that claims nothing
+    /// more.** `pins-hold` replaced `accounted` / `accounted(unvouched-record)` because both
+    /// asserted something about a RECORD the engine no longer keeps .
+    ///
     #[test]
     fn a_holding_pin_plane_permits_and_the_word_claims_only_the_plane_it_read() {
         let pins = holding_pins();
@@ -1574,9 +1574,9 @@ mod tests {
         assert!(gate.exit().is_ok());
     }
 
-    /// **The fail-closed doctrine, preserved as the caller's choice.** The SAME plane
-    /// under `--require-pins` refuses — and with its own word, never grey's, because
-    /// nothing here was unanswerable.
+    /// **The fail-closed doctrine, preserved as the caller's choice.** The SAME plane under
+    /// `--require-pins` refuses — and with its own word, never grey's, because nothing here was
+    /// unanswerable.
     #[test]
     fn require_pins_turns_zero_coverage_into_a_refusal() {
         let pins = no_pins_declared();
@@ -1615,8 +1615,8 @@ mod tests {
         );
     }
 
-    /// **A red pin refuses, and the gate is load-bearing in that direction.** Without
-    /// this arm the test above passes over a gate that permits unconditionally.
+    /// **A red pin refuses, and the gate is load-bearing in that direction.** Without this arm the
+    /// test above passes over a gate that permits unconditionally.
     #[test]
     fn a_red_pin_refuses_the_commit() {
         let pins = PinPlane {
@@ -1643,9 +1643,9 @@ mod tests {
         );
     }
 
-    /// **Unknown is not clean.** A grey pin refuses on the same leg as a red one, and
-    /// carries the distinct reason word — the exit says do-not-proceed, the word says
-    /// why.
+    /// **Unknown is not clean.** A grey pin refuses on the same leg as a red one, and carries the
+    /// distinct reason word — the exit says do-not-proceed, the word says why.
+    ///
     #[test]
     fn an_unreadable_pin_plane_refuses_as_an_absence_and_not_as_a_finding() {
         let pins = PinPlane {
@@ -1669,10 +1669,10 @@ mod tests {
         assert!(gate.exit().is_err(), "while still failing CLOSED");
     }
 
-    /// An object store that could not be asked is the OTHER grey antecedent, and it
-    /// refuses too — a `cannot_ask` that permitted would be the false green this
-    /// verb exists to close, one plane over from the one the engine is ruled not to
-    /// hold.
+    /// An object store that could not be asked is the OTHER grey antecedent, and it refuses too — a
+    /// `cannot_ask` that permitted would be the false green this verb exists to close, one plane
+    /// over from the one the engine is ruled not to hold.
+    ///
     #[test]
     fn an_unaskable_object_store_refuses_the_commit() {
         let pins = PinPlane {

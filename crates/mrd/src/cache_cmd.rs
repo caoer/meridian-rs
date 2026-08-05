@@ -1,11 +1,11 @@
-//! `mrd cache ls` and `mrd cache clean` — drawer listing and explicit sweeps.
+//! `mrd cache ls` and `mrd cache clean` — drawer listing and explicit sweeps. Both read the
+//! reverse map from the drawer SENTINELS (the sole authority for hash → workspace path,
+//! amendment C3) via [`cache::list_drawers`].
 //!
-//! Both read the reverse map from the drawer SENTINELS (the sole authority for
-//! hash → workspace path, amendment C3) via [`cache::list_drawers`]. `ls` is a
-//! pure read; `clean` reaps stale-by-last-use drawers (skipping any a live
-//! workspace holds locked), drawers whose workspace path no longer exists, and
-//! drawers retired by M2 reconciliation. `--all` removes every registered
-//! drawer.
+//!
+//!
+//!
+//!
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};

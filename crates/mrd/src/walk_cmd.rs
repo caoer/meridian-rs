@@ -32,12 +32,12 @@ use crate::{Fail, Format, current_dir};
 /// carries a red edge.
 const EXIT_FINDING: u8 = 1;
 
-/// Run `mrd walk <PAGE> [--down] [--depth N] [--json]`: resolve the workspace,
-/// build the corpus in-process, walk the pin graph, and print the listing.
+/// Run `mrd walk <PAGE> [--down] [--depth N] [--json]`: resolve the workspace, build the corpus
+/// in-process, walk the pin graph, and print the listing. Errors [`Fail`] exit 2 on a bad
+/// invocation, an unreadable workspace/corpus, a missing root, or an in-snapshot cycle; exit 1
+/// when the listing carries a red edge.
 ///
-/// # Errors
-/// [`Fail`] exit 2 on a bad invocation, an unreadable workspace/corpus, a missing
-/// root, or an in-snapshot cycle; exit 1 when the listing carries a red edge.
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Walk::parse(args)?;
     let cwd = current_dir()?;
@@ -49,18 +49,18 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let docs = build_docs(&resolved.workspace)?;
 
-    // U11 — the mount table, loaded from `MERIDIAN.md`, with a corpus for the
-    // roots this workspace's own lock addresses NAME ([`lock_addressed_roots`])
-    // and no others. `mounts` owns the document maps; `corpus` borrows them, so
-    // the owner must outlive the borrow — hence two bindings rather than one
-    // expression.
+    // U11 — the mount table, loaded from `MERIDIAN.md`, with a corpus for the roots this
+    // workspaces own lock addresses NAME ([`lock_addressed_roots`]) and no others. `mounts` owns
+    // the document maps; `corpus` borrows them, so the owner must outlive the borrow — hence two
+    // bindings rather than one expression.
     //
-    // W5 — the table stays whole and only the CORPORA narrow, so every
-    // `grey(unmounted)` / `path-unseeable` verdict reads the same set it always
-    // did (see [`load_mounts_for`]). The narrowing is sound for the WALK in
-    // particular because the walk never traverses into a root: a cross-root
-    // target is a leaf (`view::walk::steps_from`), so a root's pages are read
-    // only to colour an edge naming that root — which is what this set collects.
+    //
+    //
+    //
+    //
+    //
+    //
+    //
     let mounts = load_mounts_for(&lock_addressed_roots(&docs));
     let corpus = mounts.rooted(&docs);
     let mount_set = mounts.set();
@@ -87,16 +87,16 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .iter()
         .filter(|e| walk::color_tone(&e.color) == "red")
         .count();
-    // S3-R6 — grey REFUSES, on exit 1, each with its OWN reason word, both
-    // distinct in the human line and in `--json`. **No fourth exit code**, and
-    // `--force` is the escape.
+    // S3-R6 — grey REFUSES, on exit 1, each with its OWN reason word, both distinct in the human
+    // line and in `--json`. **No fourth exit code**, and `--force` is the escape. Scoped to the
+    // two ROOT greys deliberately: the pre-existing greys (`immutable-root`, `declared-unpinned`,
+    // …
     //
-    // Scoped to the two ROOT greys deliberately: the pre-existing greys
-    // (`immutable-root`, `declared-unpinned`, …) keep exiting 0, because they
-    // describe edges the ledger was never asked to measure. These two are
-    // different — the address ASKED a question this machine cannot answer, and
-    // exiting 0 would make unmounting a root a way to turn a red into a pass
-    // through an edit to `~/MERIDIAN.md`, which cannot itself be attested.
+    //
+    //
+    //
+    //
+    //
     let root_greys: Vec<&str> = report
         .entries
         .iter()
@@ -129,105 +129,105 @@ struct MountedCorpus {
     docs: BTreeMap<String, Document>,
 }
 
-/// Load `MERIDIAN.md`'s mount table into BOTH halves resolution needs: one
-/// corpus per usable root, and the projection that says what the file declares.
+/// Load `MERIDIAN.md`s mount table into BOTH halves resolution needs: one corpus per usable
+/// root, and the projection that says what the file declares. **S3-R50 — a declared root that
+/// cannot be used is CARRIED WITH ITS STATE, never dropped.** Round 1 dropped it
+/// (`state().refuses()` → `continue`, and a `build_docs_at` failure skipped it), so a root the
+/// file DECLARES fell through to the *undeclared* arm and `mrd walk` told the user to declare
+/// it — while `mrd config`, one command away, was already naming the path correctly.
 ///
-/// **S3-R50 — a declared root that cannot be used is CARRIED WITH ITS STATE, never
-/// dropped.** Round 1 dropped it (`state().refuses()` → `continue`, and a
-/// `build_docs_at` failure skipped it), so a root the file DECLARES fell through
-/// to the *undeclared* arm and `mrd walk` told the user to declare it — while
-/// `mrd config`, one command away, was already naming the path correctly.
 ///
-/// > A word added downstream of a place that ERASES the distinction is a word
-/// > that never gets used.
 ///
-/// So the three causes arrive at the renderer distinct: **not declared at all**
-/// (absent from the projection entirely → `grey(unmounted)`, teach the
-/// declaration); **declared but unusable** and **declared, bound, corpus
-/// unreadable** (both recorded as unreachable with their path → the shared
-/// `path-unseeable` word, teach the PATH).
 ///
-/// **Never fails the walk.** No `MERIDIAN.md`, an unparseable one, or an
-/// unreadable root simply yields fewer usable roots — absence is the topology
-/// working as designed (§ 8 M6), not a reason to brick every single-root
-/// workspace on the planet.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 pub(crate) fn load_mounts() -> Mounts {
     load_mounts_where(&|_| true)
 }
 
-/// [`load_mounts`], building a corpus ONLY for the roots in `needed`.
+/// [`load_mounts`], building a corpus ONLY for the roots in `needed`. Why a caller would want
+/// fewer corpora Building a roots corpus is a recursive directory walk plus a read and parse of
+/// every page in it — the cost is the ROOTs size, and nothing about the workspace under test
+/// bounds it. `mrd status` measured 80.6% of its whole run inside this function, walking 271 MB
+/// across four declared roots to colour two pins, none of which addressed a root at all. A
+/// caller that KNOWS which roots its addresses name pays for those and no others. Which roots
+/// those are is the callers question, not this loaders: `status` reads them off its own lock
+/// items ([`crate::status_cmd`]), and a caller that cannot know keeps [`load_mounts`]. The
+/// declared table is unchanged, and that is the whole safety argument `needed` narrows the
+/// CORPORA, never the [`addr::MountSet`].
 ///
-/// # Why a caller would want fewer corpora
-/// Building a root's corpus is a recursive directory walk plus a read and parse
-/// of every page in it — the cost is the ROOT's size, and nothing about the
-/// workspace under test bounds it. `mrd status` measured 80.6% of its whole run
-/// inside this function, walking 271 MB across four declared roots to colour two
-/// pins, none of which addressed a root at all.
 ///
-/// A caller that KNOWS which roots its addresses name pays for those and no
-/// others. Which roots those are is the caller's question, not this loader's:
-/// `status` reads them off its own lock items ([`crate::status_cmd`]), and a
-/// caller that cannot know keeps [`load_mounts`].
 ///
-/// # The declared table is unchanged, and that is the whole safety argument
-/// `needed` narrows the CORPORA, never the [`addr::MountSet`]. A skipped root is
-/// still pushed to `bound`, so the set answers `is_bound` exactly as it did, and
-/// every `grey(unmounted)` / `path-unseeable` verdict — which read the set and
-/// not the corpora — is byte-identical.
 ///
-/// What a skipped root loses is only its docs, and the ONE consumer of those is
-/// a `root:`-qualified address resolving into it
-/// (`model::CorpusIndex::resolve_ref` arm (b)). That arm already exists and
-/// already refuses loudly — *"the mount table binds this root, but no corpus for
-/// it was loaded in this process"* — so a caller that narrows `needed` too far
-/// gets a named refusal, never a false green. Laziness cannot manufacture a
-/// clean answer here; it can only fail to have one.
 ///
-/// One behaviour does change, unobservably: a skipped root whose corpus would
-/// have FAILED to build lands as bound-with-no-corpus instead of `unreachable`.
-/// Only an address naming that root could tell the two apart, and the caller
-/// skipped it precisely because no address names it.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
     load_mounts_where(&|name| needed.contains(name))
 }
 
-/// Every mount root the corpus's `meridian-lock` addresses NAME — the exact set
-/// of roots whose pages this run can read, and so the exact set worth building.
+/// Every mount root the corpuss `meridian-lock` addresses NAME — the exact set of roots whose
+/// pages this run can read, and so the exact set worth building. Why the set is knowable before
+/// any root is loaded A pins root is a property of its ADDRESS, not of the tree the address
+/// points into: `sessions:notes/plan.md` names `sessions` whether or not `sessions` is
+/// declared, readable, or holds that page. Reading the name therefore costs the ambient corpus
+/// that is already in memory and no root corpus at all. The root is read off
+/// [`view::read_face::LockItem::declared_addr`] — the parsed address, which that fields
+/// contract names **the structural owner** (U10): *"Every consumer that needs the root, the
+/// path or the selector reads THIS; nothing re-splits `declared_ref`."* A second spelling of
+/// the address grammar here is exactly the drift that field exists to prevent, so this function
+/// contains none. A row with no address — a lock refusal, or a spelling outside the grammar —
+/// contributes no root, which is correct rather than lossy: it resolves into no root, so no
+/// roots pages can answer for it.
 ///
-/// # Why the set is knowable before any root is loaded
-/// A pin's root is a property of its ADDRESS, not of the tree the address points
-/// into: `sessions:notes/plan.md` names `sessions` whether or not `sessions` is
-/// declared, readable, or holds that page. Reading the name therefore costs the
-/// ambient corpus that is already in memory and no root corpus at all.
 ///
-/// The root is read off [`view::read_face::LockItem::declared_addr`] — the
-/// parsed address, which that field's contract names **the structural owner**
-/// (U10): *"Every consumer that needs the root, the path or the selector reads
-/// THIS; nothing re-splits `declared_ref`."* A second spelling of the address
-/// grammar here is exactly the drift that field exists to prevent, so this
-/// function contains none.
 ///
-/// A row with no address — a lock refusal, or a spelling outside the grammar —
-/// contributes no root, which is correct rather than lossy: it resolves into no
-/// root, so no root's pages can answer for it.
 ///
-/// # Why this is the COMPLETE needed set, and not merely a heuristic (W5)
-/// The set is read off DECLARED addresses, so it is only sound if an address
-/// that names no root can never reach into one. It cannot:
-/// `model::CorpusIndex::resolve_ref` branches on `addr.root()` FIRST, and the
-/// `None` arm resolves through `three_rules(.., corpus.ambient_docs())` — the
-/// ambient map alone (`crates/model/src/lib.rs`, the arm commented *"the ambient
-/// root … byte-for-byte what it was before U11"*). No mounted corpus is in scope
-/// on that path, so a bare or form-2 `[[wikilink]]` ref resolves ambiently or
-/// misses; it never silently lands in a root this set did not name.
 ///
-/// **This is why one computation serves `status`, `walk` and `check` alike**,
-/// though W2 expected walk and check to need a different, traversal-aware set.
-/// They do not, because neither verb traverses INTO a root: `view::walk`'s
-/// `forward_edges` maps `corpus.ambient_docs()` only, and a cross-root target is
-/// a leaf by construction — the ambient corpus holds no key spelled `root:path`,
-/// so the BFS never expands one. A root's pages are read for exactly one
-/// purpose, colouring an edge that NAMES it, and this set names every such root.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
     let mut roots = BTreeSet::new();
     for doc in docs.values() {
@@ -240,9 +240,9 @@ pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSe
     roots
 }
 
-/// The one loader both faces above are spellings of — so the table bind, the
-/// refusal carrying, and the set assembly have exactly one implementation and
-/// cannot drift between an eager caller and a narrowed one.
+/// The one loader both faces above are spellings of — so the table bind, the refusal carrying,
+/// and the set assembly have exactly one implementation and cannot drift between an eager
+/// caller and a narrowed one.
 fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
     let Ok(resolution) = config::resolve(&config::Env::from_process()) else {
         return Mounts::default();
@@ -265,11 +265,11 @@ fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
         // Declared, but the mount plane refuses it. Carried, with the path it
         // declares and that plane's own reason verbatim — never dropped.
         if mount.state().refuses() {
-            // The RAW filesystem reason where the mount plane has one, so the
-            // walk's own refusal reads as one sentence rather than nesting that
-            // plane's whole teaching inside this plane's parenthetical. For every
-            // other refusing state there is no raw reason, and that plane's
+            // The RAW filesystem reason where the mount plane has one, so the walks own refusal reads as
+            // one sentence rather than nesting that planes whole teaching inside this planes
+            // parenthetical. For every other refusing state there is no raw reason, and that planes
             // teaching IS the most specific thing available — carried verbatim.
+            //
             let detail = match mount.state() {
                 config::mount::MountState::PathUnseeable { detail } => detail.clone(),
                 other => other.detail(),
@@ -280,9 +280,9 @@ fn load_mounts_where(wanted: &dyn Fn(&addr::MountName) -> bool) -> Mounts {
         let Some(path) = mount.canonical_path() else {
             continue;
         };
-        // Bound per the table, corpus not asked for. It joins `bound` exactly as
-        // a built root does — the table's answer about this root is a table fact
-        // and does not depend on whether this process read its pages.
+        // Bound per the table, corpus not asked for. It joins `bound` exactly as a built root does —
+        // the tables answer about this root is a table fact and does not depend on whether this
+        // process read its pages.
         if !wanted(&name) {
             bound.push(name);
             continue;
@@ -318,14 +318,14 @@ pub(crate) struct Mounts {
 }
 
 impl Mounts {
-    /// The ROOT-KEYED corpus over `docs` — the ambient workspace plus one root
-    /// per bound mount.
+    /// The ROOT-KEYED corpus over `docs` — the ambient workspace plus one root per bound mount.
+    /// **One owner for this assembly** (S3-R59): `walk`, `check` and `status` all colour pins
+    /// through the same computer, so they must hand it the same corpus.
     ///
-    /// **One owner for this assembly** (S3-R59): `walk`, `check` and `status` all
-    /// colour pins through the same computer, so they must hand it the same
-    /// corpus. Two call sites building it by hand is how one of them came to hand
-    /// over an ambient-only corpus and a default mount table, and answer
-    /// `grey(unmounted)` for every state of a bound root (F6).
+    ///
+    ///
+    ///
+    ///
     pub(crate) fn rooted<'a>(
         &'a self,
         docs: &'a BTreeMap<String, Document>,
@@ -354,9 +354,9 @@ fn mount_kind(kind: config::MountKind) -> model::RootKind {
     }
 }
 
-/// [`build_docs`] without the workspace-resolution wrapper — a mount path is
-/// already canonical (canonicalize-at-bind, § 8 B-1), so re-resolving it would
-/// ask a second owner the question the mount table already answered.
+/// [`build_docs`] without the workspace-resolution wrapper — a mount path is already canonical
+/// (canonicalize-at-bind, § 8 B-1), so re-resolving it would ask a second owner the question
+/// the mount table already answered.
 fn build_docs_at(root: &Path) -> Result<BTreeMap<String, Document>, Fail> {
     let root = fs::WorkspaceRoot(root.to_path_buf());
     let (files, _fingerprint) = fs::domain_snapshot(&root)
@@ -424,8 +424,8 @@ fn parse_depth(raw: &str) -> Result<u32, Fail> {
 }
 
 /// Build the corpus in-process from the workspace on disk — the same U1 builder
-/// (`fs::build_corpus`) the daemon and the `links` degrade use, so the walk reads
-/// exactly the served projection. The wire/daemon walk leg is U3.1.
+/// (`fs::build_corpus`) the daemon and the `links` degrade use, so the walk reads exactly the
+/// served projection. The wire/daemon walk leg is U3.1.
 pub(crate) fn build_docs(workspace: &Path) -> Result<BTreeMap<String, Document>, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(
@@ -481,10 +481,10 @@ fn render_human(report: &WalkReport) -> String {
                 walk::color_label(&entry.color),
                 entry.selector,
             );
-            // S3-R51 — the teaching refusal, indented beneath the row it
-            // explains. The house pattern, copied from `mrd config`, which
-            // already prints `MountState::detail()` under each mount rather
-            // than inventing a second layout for the same job.
+            // S3-R51 — the teaching refusal, indented beneath the row it explains. The house pattern,
+            // copied from `mrd config`, which already prints `MountState::detail()` under each mount
+            // rather than inventing a second layout for the same job.
+            //
             if let Some(teaching) = walk::color_teaching(&entry.color, &entry.selector) {
                 let _ = writeln!(out, "      {teaching}");
             }
@@ -497,12 +497,12 @@ fn render_human(report: &WalkReport) -> String {
     out
 }
 
-/// The `--json` shape: the workspace plus the walk object (direction, root,
-/// depth bound, entries, rev citations). Colors split into a stable
-/// `color`/`reason` pair plus the reason's `detail` — which fingerprint-triple
-/// member is unknown, or why a lock refused — so a machine reader sees exactly
-/// what [`walk::color_label`] renders for a human, never a reason word stripped
-/// of the damage it names.
+/// The `--json` shape: the workspace plus the walk object (direction, root, depth bound,
+/// entries, rev citations). Colors split into a stable `color`/`reason` pair plus the reasons
+/// `detail` — which fingerprint-triple member is unknown, or why a lock refused — so a machine
+/// reader sees exactly what [`walk::color_label`] renders for a human, never a reason word
+/// stripped of the damage it names.
+///
 fn to_json(workspace: &Path, report: &WalkReport) -> Value {
     let entries: Vec<Value> = report
         .entries
@@ -515,9 +515,9 @@ fn to_json(workspace: &Path, report: &WalkReport) -> Value {
                 "color": walk::color_tone(&entry.color),
                 "reason": walk::color_reason(&entry.color),
                 "detail": walk::color_detail(&entry.color),
-                // S3-R51 — the teaching refusal now has an output path. `null`
-                // for every color that teaches nothing, so the field never
-                // invents advice it does not have.
+                // S3-R51 — the teaching refusal now has an output path. `null` for every color that teaches
+                // nothing, so the field never invents advice it does not have.
+                //
                 "teaching": walk::color_teaching(&entry.color, &entry.selector),
             })
         })
@@ -597,10 +597,10 @@ revs-read:
         assert_eq!(render_human(&report()), expected);
     }
 
-    /// A depth bound renders in the header; a grey entry carrying no rev prints
-    /// `rev=-` and the color reason. The subject is the RENDER SHAPE, so any
-    /// reason-carrying grey serves — this one is `immutable-root`, whose reason
-    /// word stands alone with no detail to compose.
+    /// A depth bound renders in the header; a grey entry carrying no rev prints `rev=-` and the
+    /// color reason. The subject is the RENDER SHAPE, so any reason-carrying grey serves — this one
+    /// is `immutable-root`, whose reason word stands alone with no detail to compose.
+    ///
     #[test]
     fn render_human_bounded_and_grey() {
         let mut r = report();

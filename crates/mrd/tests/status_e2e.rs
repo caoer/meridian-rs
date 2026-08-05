@@ -1,13 +1,13 @@
-//! End-to-end gates for `mrd status` (U3.6, the LAST leg), driving the REAL
-//! binary (`CARGO_BIN_EXE_mrd`) over its process boundary against on-disk
-//! workspaces. These are the merge-gate evidence: the armed/drifted summary line,
-//! the forced-write violation row, the composed three-axis line, and the exit
-//! triad. Every gate here is timing-insensitive by construction.
+//! End-to-end gates for `mrd status` (U3.6, the LAST leg), driving the REAL binary
+//! (`CARGO_BIN_EXE_mrd`) over its process boundary against on-disk workspaces.
 //!
-//! The <1s wall-time budget on a 3k-doc corpus is NOT here — it lives in
-//! `status_walltime.rs`, behind the `perf-walltime` feature, because `ci.yml`
-//! gates no wall-clock number in the PR lane. Same 1000 ms budget, different
-//! lane; that file's header carries the measurement that moved it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -251,31 +251,31 @@ fn status_armed_and_drifted_reds_and_exits_1() {
     );
 }
 
-/// **THE JOURNAL IS INERT, AND THIS PINS IT.** A hand-written page in the retired
-/// journal's exact shape — `op=force` rows with `forced_rule=` tokens and anchors,
-/// plus a realise receipt to bound them by — moves NOTHING on this surface.
+/// **THE JOURNAL IS INERT, AND THIS PINS IT.** A hand-written page in the retired journal's
+/// exact shape — `op=force` rows with `forced_rule=` tokens and anchors, plus a realise receipt
+/// to bound them by — moves NOTHING on this surface. Two tests used to live here: one asserted
+/// the violation row and the exit-1 leg, the other the receipts-boundary arithmetic that
+/// decided which forced rows counted. ZT ruled the ledger out of existence (: *"Engine does not
+/// have memory. It should not have. History is pin to git when we lock.
 ///
-/// Two tests used to live here: one asserted the violation row and the exit-1 leg,
-/// the other the receipts-boundary arithmetic that decided which forced rows
-/// counted. ZT ruled the ledger out of existence (2026-08-03: *"Engine does not
-/// have memory. It should not have. History is pin to git when we lock. Anything
-/// between locks is not history."*), so `status` reads no such page and counts no
-/// such row.
 ///
-/// This asserts the ABSENCE rather than deleting the tests, because the thing
-/// removed was a LAW and not scaffolding. A future change that re-reads a journal
-/// page — or restores the count, the boundary or the violation rows — fails HERE,
-/// loudly, instead of quietly re-growing a memory the engine is ruled not to have.
-/// It also pins the other half of the ruling: the disclosure must be PRESENT, so
-/// silence cannot pass as compliance either.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
     let sb = sandbox();
     let ws = sb.workspace("inert-journal");
 
-    // Everything the old surface fed on, present and maximal: two forced rows
-    // either side of a realise apply, so a counter that came back would have to
-    // choose between 1 and 2 and would trip this test whichever it chose.
+    // Everything the old surface fed on, present and maximal: two forced rows either side of a
+    // realise apply, so a counter that came back would have to choose between 1 and 2 and would
+    // trip this test whichever it chose.
     let journal = "# journal\n\
         - op=force path=old.md actor=agent:a now=2026-07-23T08:00:00Z root_before=b3:0 root_after=b3:1 edits=0 forced_rule=old-rule ^r-000001\n\
         - op=force path=new.md actor=agent:a now=2026-07-23T12:00:00Z root_before=b3:1 root_after=b3:2 edits=0 forced_rule=new-rule ^r-000002\n";
@@ -354,9 +354,9 @@ fn status_json_shape() {
     let v: serde_json::Value = serde_json::from_str(&so).expect("valid json");
     assert_eq!(v["armed_rules"]["armed"], 1);
     assert_eq!(v["armed_rules"]["drifted"], 0);
-    // The disclosure object, and the ABSENCE of what it replaced. A `0` would
-    // read as "checked, none found" and a `boundary` would bound a count that no
-    // longer exists — both are claims about a property nothing observes.
+    // The disclosure object, and the ABSENCE of what it replaced. A `0` would read as "checked,
+    // none found" and a `boundary` would bound a count that no longer exists — both are claims
+    // about a property nothing observes.
     let forced = &v["armed_rules"]["forced_since_realise"];
     assert_eq!(forced["tracked"], serde_json::json!(false));
     assert_eq!(forced["state"], serde_json::json!("not-tracked"));
@@ -387,25 +387,25 @@ fn status_json_shape() {
 
 // ── S9: the meridian-lock axis, end to end over the real binary ─────────────
 
-/// The canonical `meridian-lock` fence bytes for one pin — the exact form
-/// `lock::render` emits (`crates/lock`), written by hand so this gate depends on
-/// the CLI's own reader, not on the writer that produced the bytes.
+/// The canonical `meridian-lock` fence bytes for one pin — the exact form `lock::render` emits
+/// (`crates/lock`), written by hand so this gate depends on the CLI's own reader, not on the
+/// writer that produced the bytes.
 fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
     lock_block_pinning(declared_ref, FIXTURE_BLOB, fingerprint)
 }
 
-/// The R4 blob hash a fixture pin carries when the test is not measuring the
-/// retrieval plane. R4 makes `hash` MANDATORY — *"if hash is missing, we lost
-/// the explicit target meaning"* — so there is no pin without one.
+/// The R4 blob hash a fixture pin carries when the test is not measuring the retrieval plane.
+/// R4 makes `hash` MANDATORY — *"if hash is missing, we lost the explicit target meaning"* — so
+/// there is no pin without one.
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
-/// One R4 pin, hand-written in the exact bytes `lock::render` emits, so this
-/// gate depends on the CLI's own READER and not on the writer that produced
-/// them. `declared_ref` is a `page[#A/B]` convenience spelling, split into the
-/// `object` and the `path` ARRAY here — R4 admits no joined string on the row.
+/// One R4 pin, hand-written in the exact bytes `lock::render` emits, so this gate depends on
+/// the CLI's own READER and not on the writer that produced them. `declared_ref` is a
+/// `page[A/B]` convenience spelling, split into the `object` and the `path` ARRAY here — R4
+/// admits no joined string on the row. NOTE FOR REVIEWERS: `version: 1` became `version: 2`
+/// across these fixtures. That is the LOCK FILE schema version, not the wire protocol version.
 ///
-/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` across these fixtures.
-/// That is the LOCK FILE schema version, not the wire protocol version.
+///
 fn lock_block_pinning(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
     let (target, fragment) = match declared_ref.split_once('#') {
         Some((t, f)) => (t, f),
@@ -427,10 +427,10 @@ fn lock_block_pinning(declared_ref: &str, blob: &str, fingerprint: &str) -> Stri
     )
 }
 
-/// The LIVE fingerprint token of a page's document root — what a correct pin
-/// holds. Computed through the engine's own mint over the same parse
-/// `fs::build_corpus` runs, so the fixture cannot pin a token the reader would
-/// not recompute.
+/// The LIVE fingerprint token of a page's document root — what a correct pin holds. Computed
+/// through the engine's own mint over the same parse `fs::build_corpus` runs, so the fixture
+/// cannot pin a token the reader would not recompute.
+///
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -509,9 +509,9 @@ fn status_renders_the_meridian_lock_axis_green_then_red() {
     eprintln!("S9 composed (red):   {}", composed_line(&red));
 }
 
-/// S9 GATE — a REFUSED lock block is visible as `grey lock-refused` with its
-/// reason, not as a clean workspace. A corrupt lock reading as "no pins" is the
-/// one answer a drift face must never give.
+/// S9 GATE — a REFUSED lock block is visible as `grey lock-refused` with its reason, not as a
+/// clean workspace. A corrupt lock reading as "no pins" is the one answer a drift face must
+/// never give.
 #[test]
 fn status_renders_a_refused_lock_as_grey_not_silence() {
     let sb = sandbox();
@@ -564,13 +564,13 @@ fn git(ws: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The canonical `meridian-lock` fence bytes for one pinned BLOB — the
-/// retrieval plane the gauge measures, written by hand so this gate depends on
-/// the CLI's own reader.
+/// The canonical `meridian-lock` fence bytes for one pinned BLOB — the retrieval plane the
+/// gauge measures, written by hand so this gate depends on the CLI's own reader. R4 retired the
+/// shared `objects:` table; the blob rides the pin row as its `hash`, so the retrieval plane is
+/// now measured off an ordinary pin. `key` is the target the blob is OF — the pin's `object`.
 ///
-/// R4 retired the shared `objects:` table; the blob rides the pin row as its
-/// `hash`, so the retrieval plane is now measured off an ordinary pin. `key` is
-/// the target the blob is OF — the pin's `object`.
+///
+///
 fn lock_block_with_object(key: &str, blob_sha: &str) -> String {
     lock_block_pinning(key, blob_sha, &format!("fp1.span2.b3.{}", "0".repeat(64)))
 }
@@ -587,10 +587,10 @@ fn vibe_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
     doc["composed"]["vibe_debt"].clone()
 }
 
-/// S11 GATE 1 — a NEVER-COMMITTED vibe blob increments the gauge in both count
-/// and bytes. The fixture reproduces `--vibe`'s eager write exactly
-/// (`git hash-object -w`): the blob is in the object database, reachable from no
-/// ref, and the lock references it.
+/// S11 GATE 1 — a NEVER-COMMITTED vibe blob increments the gauge in both count and bytes. The
+/// fixture reproduces `--vibe`'s eager write exactly (`git hash-object -w`): the blob is in the
+/// object database, reachable from no ref, and the lock references it.
+///
 #[test]
 fn status_vibe_debt_counts_a_never_committed_blob() {
     let sb = sandbox();
@@ -628,9 +628,9 @@ fn status_vibe_debt_counts_a_never_committed_blob() {
     eprintln!("S11 json     (1 blob owed): {j}");
 }
 
-/// S11 GATE 2 — a COMMITTED blob contributes nothing. Same lock, same sha: the
-/// only change is that a commit now reaches the object, which is exactly what
-/// paying the debt means.
+/// S11 GATE 2 — a COMMITTED blob contributes nothing. Same lock, same sha: the only change is
+/// that a commit now reaches the object, which is exactly what paying the debt means.
+///
 #[test]
 fn status_vibe_debt_ignores_a_committed_blob() {
     let sb = sandbox();
@@ -676,9 +676,9 @@ fn status_vibe_debt_ignores_a_committed_blob() {
     eprintln!("S11 composed (paid): {}", composed_line(&paid));
 }
 
-/// S11 GATE 3 — ZERO RENDERS. A corpus that owes nothing still shows the gauge
-/// on the human line and still emits `0` in `--json`: a gauge that hides at zero
-/// is not a gauge, and an absent field reads as "not measured".
+/// S11 GATE 3 — ZERO RENDERS. A corpus that owes nothing still shows the gauge on the human
+/// line and still emits `0` in `--json`: a gauge that hides at zero is not a gauge, and an
+/// absent field reads as "not measured".
 #[test]
 fn status_vibe_debt_zero_renders_and_json_emits_it() {
     let sb = sandbox();
@@ -703,9 +703,9 @@ fn status_vibe_debt_zero_renders_and_json_emits_it() {
     eprintln!("S11 json     (zero): {j}");
 }
 
-/// S11 — the gauge degrades honestly. A lock referencing a blob in a workspace
-/// that is not a git repository reports `unknown` with git's own wording, never
-/// a `0` a reader would take for clean.
+/// S11 — the gauge degrades honestly. A lock referencing a blob in a workspace that is not a
+/// git repository reports `unknown` with git's own wording, never a `0` a reader would take for
+/// clean.
 #[test]
 fn status_vibe_debt_outside_a_repository_is_unknown_not_zero() {
     let sb = sandbox();
@@ -735,9 +735,9 @@ fn status_vibe_debt_outside_a_repository_is_unknown_not_zero() {
     eprintln!("S11 composed (unknown): {}", composed_line(&human));
 }
 
-/// S9 GATE — `status --json` ALWAYS emits the lock fields. A workspace with no
-/// lock pins reports `0` and a null color, never an absent object a reader could
-/// mistake for "not checked" (and never a green it did not verify).
+/// S9 GATE — `status --json` ALWAYS emits the lock fields. A workspace with no lock pins
+/// reports `0` and a null color, never an absent object a reader could mistake for "not
+/// checked" (and never a green it did not verify).
 #[test]
 fn status_json_always_emits_the_lock_axis_even_with_no_pins() {
     let sb = sandbox();

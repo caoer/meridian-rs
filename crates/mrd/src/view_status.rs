@@ -1,18 +1,18 @@
-//! `mrd view status` — the OD7 refresh-observability surface (synchronous half).
+//! `mrd view status` — the OD7 refresh-observability surface (synchronous half). Prints, per
+//! workspace: `as_of`, `state`, and the last-refresh-failure basics (`code` + `age` +
+//! `fingerprint_attempted`) plus `refresh_in_progress`.
 //!
-//! Prints, per workspace: `as_of`, `state`, and the last-refresh-failure basics
-//! (`code` + `age` + `fingerprint_attempted`) plus `refresh_in_progress`. This
-//! telemetry lives in **daemon memory** and rides the `view_path` reply's OD7
-//! advisory fields (`refresh_in_progress`, `last_error`) — it is **telemetry,
-//! never correctness**: it explains WHY a view is stale, it never gates a
-//! query's fresh/stale/null verdict.
 //!
-//! `consecutive_failures` / `next_retry` are the **async-executor** half of OD7
-//! (round-2, V4); the wire reply carries no such fields (V3 adds NO new wire
-//! surface), so round-1 reports them as `n/a (round-2 async executor)`.
 //!
-//! Daemon absent ⇒ no daemon-memory telemetry exists; the command reports the
-//! last-built stamp from the cold `view.duckdb` if present, else `NO_VIEW`.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 
@@ -22,10 +22,10 @@ use serde_json::{Value, json};
 use crate::resolve::resolve_runtime;
 use crate::{Fail, Format, current_dir};
 
-/// Run `mrd view status [--json] [--cwd PATH]`.
+/// Run `mrd view status [--json] [--cwd PATH]`. Errors The cwd/workspace cannot be resolved.
 ///
-/// # Errors
-/// The cwd/workspace cannot be resolved.
+///
+///
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let (format, cwd_arg) = parse(tail)?;
     let cwd = match cwd_arg {
@@ -52,23 +52,23 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Say, on STDERR, that no daemon answered — so the reader knows this report is
-/// a disk reading rather than the daemon-memory telemetry the command exists to
-/// show. Silent on the daemon path.
+/// Say, on STDERR, that no daemon answered — so the reader knows this report is a disk reading
+/// rather than the daemon-memory telemetry the command exists to show. Silent on the daemon
+/// path. **The misdiagnosis this closes (G15, ** With an unbindable socket the daemon cannot be
+/// dialled, so the fallback reads the cold drawer and prints `absent` / `NO_VIEW` at exit 0
+/// with an empty stderr.
 ///
-/// **The misdiagnosis this closes (G15, dogfood pass-3).** With an unbindable
-/// socket the daemon cannot be dialled, so the fallback reads the cold drawer
-/// and prints `absent` / `NO_VIEW` at exit 0 with an empty stderr. A reader
-/// takes that as "this workspace has no view yet" and goes off to build one —
-/// but the sentence is only ever about THIS drawer, and the thing that actually
-/// went wrong is a socket no daemon can bind. Naming the cause is the fix; the
-/// verdict itself is unchanged, because it was never wrong about the drawer.
 ///
-/// **Why stderr, and why stdout is untouched.** `view status` has a `--json`
-/// face with existing consumers; minting a field on it is a protocol surface
-/// and lives in the PARKED architecture bucket (the g13 SCOPE FORK ruling). So
-/// this rides the same channel g1 and g13 chose, and both faces keep their
-/// bytes.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn voice_daemonless(source: &'static str) {
     match source {
         "cold" => eprintln!(
@@ -168,9 +168,9 @@ impl Status {
         }
     }
 
-    /// Build from a cold `view.duckdb` stamp (daemon absent): read the stamp's
-    /// `as_of` `READ_ONLY` if the file is present, else `NO_VIEW`. Liveness is not
-    /// folded here (that is `mrd sql`'s job), so `state` is `UNKNOWN`.
+    /// Build from a cold `view.duckdb` stamp (daemon absent): read the stamps `as_of` `READ_ONLY`
+    /// if the file is present, else `NO_VIEW`. Liveness is not folded here (that is `mrd sql`s
+    /// job), so `state` is `UNKNOWN`.
     fn from_cold(workspace: &Path, drawer_dir: Option<&Path>) -> Self {
         let dest = drawer_dir.map(|d| d.join("view.duckdb"));
         let as_of = dest.as_deref().filter(|p| p.is_file()).and_then(cold_as_of);
@@ -236,9 +236,9 @@ impl Status {
     }
 }
 
-/// Read a cold `view.duckdb`'s `_meridian_view.as_of_fingerprint` `READ_ONLY`. A
-/// present `.wal` sidecar OR a non-read-only file ⇒ do NOT open (B1 reader-side)
-/// → `None` (reported as `NO_VIEW` / absent stamp).
+/// Read a cold `view.duckdb`s `_meridian_view.as_of_fingerprint` `READ_ONLY`. A present `.wal`
+/// sidecar OR a non-read-only file ⇒ do NOT open (B1 reader-side) → `None` (reported as
+/// `NO_VIEW` / absent stamp).
 fn cold_as_of(path: &Path) -> Option<String> {
     if crate::sql::wal_present(path) || !crate::sql::is_read_only(path) {
         return None;

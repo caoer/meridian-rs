@@ -1,14 +1,14 @@
-//! `mrd new <kind> <id> [--dry] [--actor A] [--now T]` (U5.3): file birth —
-//! resolve the def cascade, fill the def's `^template`, validate the filled
-//! record against the def's `^properties`, and birth the first rev through the
-//! U2.6 guarded create (inline birth receipt). A local CLIENT of `preset::new_record`
-//! — mrd holds no markdown semantics (docs/laws.md charter); it resolves the
-//! workspace, dials the op, and renders the house grammar.
+//! `mrd new <kind> <id> [--dry] [--actor A] [--now T]` (U5.3): file birth — resolve the def
+//! cascade, fill the defs `^template`, validate the filled record against the defs
+//! `^properties`, and birth the first rev through the U2.6 guarded create (inline birth
+//! receipt). A local CLIENT of `preset::new_record` — mrd holds no markdown semantics
+//! (docs/laws.
 //!
-//! Exit codes (§4 preamble; `docs/status.md`): 0 = born (or a `--dry`
-//! would-birth), 1 = refused — a `def_invalid` (the def is inconsistent — names
-//! the def rule) or a `cas_mismatch` (the target exists), 2 = a tool failure
-//! (bad usage, unreadable workspace, the def is not a def, a faulting write).
+//!
+//!
+//!
+//!
+//!
 
 use preset::{BirthOptions, NewOutcome};
 use serde_json::json;
@@ -20,12 +20,12 @@ fn refused(message: String) -> Fail {
     Fail::findings(message)
 }
 
-/// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`.
+/// Run `mrd new <kind> <id> [--dry] [--actor A] [--now T] [--json]`. Errors A tool failure
+/// (exit 2) — bad usage, an unreadable workspace, a def that is not a def, or a faulting write
+/// — or a birth refusal (exit 1) rendered from the closed-taxonomy reason.
 ///
-/// # Errors
-/// A tool failure (exit 2) — bad usage, an unreadable workspace, a def that is
-/// not a def, or a faulting write — or a birth refusal (exit 1) rendered from the
-/// closed-taxonomy reason.
+///
+///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;

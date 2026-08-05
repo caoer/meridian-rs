@@ -34,11 +34,11 @@ use wire::Path as WirePath;
 use crate::engine::{self, EngineSource};
 use crate::{Fail, Format, current_dir};
 
-/// Run `mrd read <PATH>[#FRAG] [--section SEL] [--json]`.
+/// Run `mrd read <PATH>[FRAG] [--section SEL] [--json]`. Errors [`Fail`] — exit 2 on a bad
+/// invocation or a `bad_request` refusal; exit 1 on any other engine refusal (`ref_not_found`
+/// …), message verbatim.
 ///
-/// # Errors
-/// [`Fail`] — exit 2 on a bad invocation or a `bad_request` refusal; exit 1 on
-/// any other engine refusal (`ref_not_found` …), message verbatim.
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Read::parse(args)?;
     let cwd = current_dir()?;
@@ -67,9 +67,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             print!("{text}");
-            // The degrade gets a voice AFTER the answer and on STDERR, so the
-            // face a person reads stops being the one face that hid it, and
-            // stdout stays byte-identical to the warm answer.
+            // The degrade gets a voice AFTER the answer and on STDERR, so the face a person reads stops
+            // being the one face that hid it, and stdout stays byte-identical to the warm answer.
+            //
             engine::voice_degrade(&source);
         }
     }
@@ -154,9 +154,9 @@ impl Read {
     }
 }
 
-/// Answer the composed read: dial the resident daemon (auto-spawning it), and
-/// on ANY daemon-path failure degrade to the in-process engine — the same
-/// leaves, the same projection, only the reported source differs.
+/// Answer the composed read: dial the resident daemon (auto-spawning it), and on ANY
+/// daemon-path failure degrade to the in-process engine — the same leaves, the same projection,
+/// only the reported source differs.
 fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail> {
     if let Some(body) = try_daemon_read(workspace, r) {
         return Ok((EngineSource::Daemon, body));
@@ -164,10 +164,10 @@ fn answer_read(workspace: &Path, r: &Read) -> Result<(EngineSource, Value), Fail
     Ok((EngineSource::Ephemeral, in_process_read(workspace, r)?))
 }
 
-/// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound),
-/// then the `read` op. `None` on ANY failure — including an op error, where
-/// the in-process recompute is authoritative and mints the SAME typed refusal
-/// for the exit triad.
+/// The whole daemon path: socket, ensure-up, `hello` (v3, workspace-bound), then the `read` op.
+/// `None` on ANY failure — including an op error, where the in-process recompute is
+/// authoritative and mints the SAME typed refusal for the exit triad.
+///
 fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
     let client = Client::from_default().ok()?;
     engine::ensure_daemon(&client).ok()?;
@@ -198,10 +198,10 @@ fn try_daemon_read(workspace: &Path, r: &Read) -> Option<Value> {
     }
 }
 
-/// A `#Fragment` the user typed → the segment array the wire takes. It scopes
-/// a HEADING subtree, so it is parsed as a heading path and nothing else: a
-/// `^id` or a dewey ordinal in this position would be a subtree with no
-/// descendants, which is a section read, not a scope.
+/// A `Fragment` the user typed → the segment array the wire takes. It scopes a HEADING subtree,
+/// so it is parsed as a heading path and nothing else: a `^id` or a dewey ordinal in this
+/// position would be a subtree with no descendants, which is a section read, not a scope.
+///
 fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
     frag.split('/')
         .map(|h| wire::HpathSeg {
@@ -212,19 +212,19 @@ fn frag_segments(frag: &str) -> Vec<wire::HpathSeg> {
 }
 
 impl Read {
-    /// The wire `read` request this invocation maps onto. `display_path` is
-    /// the PATH exactly as the user typed it (C's U4a2 contract: the engine
-    /// renders the caller's spelling, it never invents one).
+    /// The wire `read` request this invocation maps onto. `display_path` is the PATH exactly as the
+    /// user typed it (Cs U4a2 contract: the engine renders the callers spelling, it never invents
+    /// one).
     fn request(&self) -> Value {
         let mut req = json!({
             "op": "read",
             "path": self.path,
             "display_path": self.path,
         });
-        // **The human/wire ingress door (U14, U7's ruled direction).** Both
-        // selector fields are STRUCTURED on the wire, and this is where a
-        // typed string becomes structure — once, at the edge, so nothing
-        // inward of the CLI carries a joined address.
+        // **The human/wire ingress door (U14, U7s ruled direction).** Both selector fields are
+        // STRUCTURED on the wire, and this is where a typed string becomes structure — once, at the
+        // edge, so nothing inward of the CLI carries a joined address.
+        //
         if let Some(frag) = &self.frag {
             req["frag"] = json!(frag_segments(frag));
         }
@@ -240,9 +240,9 @@ impl Read {
     }
 }
 
-/// The degrade: load the ONE document from disk, answer through the SAME
-/// composed-read leaf the daemon serves, then run the SAME v3 vocabulary
-/// projection — warm and degrade bodies are byte-identical for the same state.
+/// The degrade: load the ONE document from disk, answer through the SAME composed-read leaf the
+/// daemon serves, then run the SAME v3 vocabulary projection — warm and degrade bodies are
+/// byte-identical for the same state.
 fn in_process_read(workspace: &Path, r: &Read) -> Result<Value, Fail> {
     let canonical = workspace::canonicalize(workspace).map_err(|e| {
         Fail::tool(format!(

@@ -89,11 +89,11 @@ impl View {
     }
 }
 
-/// Run `mrd rules [PATH] [--workspace|--user] [--json]`.
+/// Run `mrd rules [PATH] [--workspace|--user] [--json]`. Errors [`Fail`] exit 2 on a bad
+/// invocation, a PATH outside the workspace, or an unreadable workspace; exit 1 when the
+/// printed law carries a finding.
 ///
-/// # Errors
-/// [`Fail`] exit 2 on a bad invocation, a PATH outside the workspace, or an
-/// unreadable workspace; exit 1 when the printed law carries a finding.
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Rules::parse(args)?;
     let cwd = current_dir()?;
@@ -110,9 +110,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    // Where to look. The default view narrows to the PATH argument; a
-    // single-layer view narrows to the layer's own root, which is what "the
-    // layer alone" means in narrowing terms.
+    // Where to look. The default view narrows to the PATH argument; a single-layer view narrows to
+    // the layer's own root, which is what "the layer alone" means in narrowing terms.
+    //
     let at = match parsed.view {
         View::Effective => workspace_relative(&workspace, parsed.path.as_deref(), &cwd)?,
         View::Workspace | View::User => String::new(),
@@ -193,20 +193,20 @@ impl Rules {
     }
 }
 
-/// The workspace-relative spelling of the PATH argument (default: the cwd).
+/// The workspace-relative spelling of the PATH argument (default: the cwd). Two refusals, and
+/// why neither is an empty answer **Outside the workspace** — narrowing would fall back to the
+/// workspace root and print a law that does not govern the directory the operator named.
 ///
-/// # Two refusals, and why neither is an empty answer
-/// **Outside the workspace** — narrowing would fall back to the workspace root
-/// and print a law that does not govern the directory the operator named.
 ///
-/// **Not on disk** — every empty rule set is a claim ("nothing governs here"),
-/// and for a path that does not exist the true answer is "there is no here". A
-/// mistyped folder that answers `(no rules in effect)` reads as *unregulated*
-/// rather than *misspelled*, which is the worst failure a law-inspection verb
-/// has: it is silently reassuring. The refusal also keeps decision #8 intact —
-/// the retired `mrd rules replay` form has no shim, and with the `rules`
-/// namespace now reassigned to this verb it is `replay` (no such path) that
-/// refuses it loudly instead of the old unknown-subcommand arm.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn workspace_relative(workspace: &Path, path: Option<&str>, cwd: &Path) -> Result<String, Fail> {
     let raw = path.map_or_else(|| cwd.to_path_buf(), PathBuf::from);
     let absolute = if raw.is_absolute() {
@@ -333,12 +333,12 @@ struct RulesReport {
     user_scope: UserScope,
     armed: ArmedSource,
     rows: Vec<RuleRow>,
-    /// Pages that offered themselves to registration and were refused, NARROWED to
-    /// this query's path by `policy` exactly as the rules are (§ 3 "Refusal
-    /// scoping", 2026-08-01): a scoped query carries the refusals whose mount scope
-    /// is on its chain — the subtree each broken page would have governed — and no
-    /// others. The verb applies no mount arithmetic of its own to reach that; it
+    /// Pages that offered themselves to registration and were refused, NARROWED to this query's
+    /// path by `policy` exactly as the rules are (§ 3 "Refusal scoping", ): a scoped query carries
+    /// the refusals whose mount scope is on its chain — the subtree each broken page would have
+    /// governed — and no others. The verb applies no mount arithmetic of its own to reach that; it
     /// reads what `narrowed_to` handed it.
+    ///
     refused: Vec<String>,
     /// Files whose bytes are not UTF-8, so their tags cannot be read.
     unreadable: Vec<String>,
@@ -387,9 +387,9 @@ fn workspace_pages(workspace: &Path) -> Result<fs::DomainFiles, Fail> {
     Ok(files)
 }
 
-/// The user rung, plus the scope it came from. The enumeration law itself lives
-/// in [`fs::user_rule_pages`] — SHARED with the discovery feed, never forked
-/// here — and the anchor is the config plane's answer, never a guess.
+/// The user rung, plus the scope it came from. The enumeration law itself lives in
+/// [`fs::user_rule_pages`] — SHARED with the discovery feed, never forked here — and the anchor
+/// is the config plane's answer, never a guess.
 fn user_pages(pages: &mut Vec<(ScopeLayer, String, Vec<u8>)>) -> UserScope {
     let anchor = match config::resolve_path(&config::Env::from_process()) {
         Ok(anchor) => anchor,
@@ -519,18 +519,18 @@ fn rows(
     at: &str,
     pages: &dyn PageSource,
 ) -> Vec<RuleRow> {
-    // The selection law, from the artifact: per id, the deepest armed row whose
-    // arm root contains this path. Keyed by (id, arm root) — never by id alone.
+    // The selection law, from the artifact: per id, the deepest armed row whose arm root contains
+    // this path. Keyed by (id, arm root) — never by id alone.
     let selected: Vec<&ArmedRow> = artifact.map(|a| a.select_at(at)).unwrap_or_default();
-    // The redness of each armed row, keyed by the row key (id, arm root) — the
-    // artifact's own fail-closed rev check, never a second hash law here.
+    // The redness of each armed row, keyed by the row key (id, arm root) — the artifact's own
+    // fail-closed rev check, never a second hash law here. `verify_at` is the COMPOSED call, not
+    // `select_at` + `verify` assembled here: selection-then-verification is a law with two wrong
+    // orders (see `ArmedArtifact::verify_at`), so exactly
     //
-    // `verify_at` is the COMPOSED call, not `select_at` + `verify` assembled here:
-    // selection-then-verification is a law with two wrong orders (see
-    // `ArmedArtifact::verify_at`), so exactly one composition of it exists
-    // tree-wide and this is a call to it. Verifying the whole artifact and then
-    // reading only the selected keys out of the result gave the same cells, but by
-    // a second route — and a second route is what a later edit gets to diverge on.
+    //
+    //
+    //
+    //
     let mut reddened: BTreeMap<(String, String), &'static str> = BTreeMap::new();
     if let Some(artifact) = artifact {
         let verdict = artifact.verify_at(at, pages);
@@ -584,10 +584,10 @@ fn rows(
             id: collision.id().as_str().to_owned(),
             state: "collision",
             collision_scope: Some(collision.scope().to_string()),
-            // A collided id resolves to nothing, so there is no winner for an
-            // armed row to be about. Whatever was armed under that id was armed
-            // against a resolution that no longer stands — the tied pages below
-            // are what the reader must fix.
+            // A collided id resolves to nothing, so there is no winner for an armed row to be about.
+            // Whatever was armed under that id was armed against a resolution that no longer stands — the
+            // tied pages below are what the reader must fix.
+            //
             armed: None,
             chain: collision
                 .tied()

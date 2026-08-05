@@ -86,15 +86,15 @@ fn live_fingerprint(raw: &str) -> String {
         .into_string()
 }
 
-/// A well-formed `fp1.…` token that is NOT the live one — a pin that measures
-/// drift. Minted over different bytes, so it is a real token with a real digest,
-/// never a syntactic fake the reader could reject as malformed instead.
+/// A well-formed `fp1.…` token that is NOT the live one — a pin that measures drift. Minted
+/// over different bytes, so it is a real token with a real digest, never a syntactic fake the
+/// reader could reject as malformed instead.
 fn drifted_fingerprint() -> String {
     live_fingerprint("# Target\n\nbytes that are not on disk\n")
 }
 
-/// The canonical `meridian-lock` fence for `pins`, written by hand so the gate
-/// depends on the CLI's own reader, never on the writer that produced the bytes.
+/// The canonical `meridian-lock` fence for `pins`, written by hand so the gate depends on the
+/// CLI's own reader, never on the writer that produced the bytes.
 fn lock_block(pins: &[(&str, &str)]) -> String {
     lock_block_with_hashes(
         &pins
@@ -104,11 +104,11 @@ fn lock_block(pins: &[(&str, &str)]) -> String {
     )
 }
 
-/// [`lock_block`] with each pin's blob `hash` spelled out — for the gates that
-/// measure the RETRIEVAL plane, which R4 moved onto the pin row.
+/// [`lock_block`] with each pin's blob `hash` spelled out — for the gates that measure the
+/// RETRIEVAL plane, which R4 moved onto the pin row. NOTE FOR REVIEWERS: `version: 1` became
+/// `version: 2` here. That is the LOCK FILE schema version, not the wire protocol version.
 ///
-/// NOTE FOR REVIEWERS: `version: 1` became `version: 2` here. That is the LOCK
-/// FILE schema version, not the wire protocol version.
+///
 fn lock_block_with_hashes(pins: &[(&str, &str, &str)]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("```meridian-lock\nversion: 2\npins:\n");
@@ -149,20 +149,20 @@ fn walk_rows(human: &str) -> Vec<String> {
 
 // ── finding 6 — a red pin must not vanish behind a green one ────────────────
 
-/// F6 GATE — two pins on ONE ref, one live and one drifted: `mrd walk` renders
-/// the RED row and exits 1 (its red contract), and `mrd status` agrees on the
-/// same corpus.
+/// F6 GATE — two pins on ONE ref, one live and one drifted: `mrd walk` renders the RED row and
+/// exits 1 (its red contract), and `mrd status` agrees on the same corpus. The claim is the
+/// assert: the red row EXISTS in the listing, the green row is still there beside it, and the
+/// exit code is the finding leg.
 ///
-/// The claim is the assert: the red row EXISTS in the listing, the green row is
-/// still there beside it, and the exit code is the finding leg. A dedupe that
-/// "fixed" this by keeping the red and dropping the green would fail the
-/// row-count assert; a dedupe that keeps the green and drops the red — the
-/// shipped behavior — fails the red-row assert and the exit assert. Only a
-/// listing that carries BOTH verdicts passes.
 ///
-/// Before the fix, verbatim on the deployed binary: `walk` printed
-/// `depth 1  green  …` and exited 0 while `status` printed
-/// `lock red content-drifted [2 pins]`.
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn walk_renders_the_red_pin_that_shares_a_ref_with_a_green_one() {
     let sb = sandbox();
@@ -223,28 +223,28 @@ fn walk_renders_the_red_pin_that_shares_a_ref_with_a_green_one() {
 // ── finding 17 — one pin, one row, one verdict ──────────────────────────────
 
 // ── finding 17 — RETIRED WITH ITS SUBJECT ──────────────────────────────────
-//
 // `a_lock_fence_trailed_by_an_inputs_anchor_is_one_pin_one_row` asserted that a
-// `meridian-lock` fence trailed by an `^inputs` block anchor projects ONE row,
-// not two. The defect it guarded was the form-2 chain-block reader re-reading
-// the engine's own lock block: `status` counted `[2 pins]` for one declared pin
-// and the extra row carried a grey `declared-unpinned` verdict the page never
-// declared.
+// `meridian-lock` fence trailed by an `^inputs` block anchor projects ONE row, not two.
 //
-// R1.3 deleted that reader. The double-read is now UNREPRESENTABLE — one form,
-// one pass — so the gate could no longer fail, and a trailing `^inputs` line is
-// inert markdown. It was deleted rather than left passing for a reason
-// unrelated to its name, which is worse than failing.
+//
+//
+//
+//
+//
+//
+//
+//
+//
 
 // ── finding 26 — a malformed `objects:` sha is unknown, never zero ──────────
 
-/// F26 GATE — an `objects:` value that is not an object id lands in the vibe-debt
-/// gauge's `unknown` slot.
+/// F26 GATE — an `objects:` value that is not an object id lands in the vibe-debt gauge's
+/// `unknown` slot. git cannot be asked about a value that is not an oid, so that entry's debt
+/// is unmeasurable. Dropping it read a corrupt retrieval plane as a true `0 blobs (0 bytes)` —
+/// a false clean in the one gauge whose whole purpose is to prevent one. The claim is the
+/// assert: `unknown` is SET and names the damaged entry.
 ///
-/// git cannot be asked about a value that is not an oid, so that entry's debt is
-/// unmeasurable. Dropping it read a corrupt retrieval plane as a true `0 blobs
-/// (0 bytes)` — a false clean in the one gauge whose whole purpose is to prevent
-/// one. The claim is the assert: `unknown` is SET and names the damaged entry.
+///
 #[test]
 fn a_malformed_objects_sha_is_counted_unknown_not_dropped_to_zero() {
     let sb = sandbox();
@@ -298,9 +298,9 @@ fn a_malformed_objects_sha_is_counted_unknown_not_dropped_to_zero() {
 
 // ── R31 — the empty-span pin that could never drift ─────────────────────────
 
-/// The token a hand-authored lock carries for an empty-normalizing span:
-/// `blake3` of NO bytes. Not a syntactic fake — a real, well-formed `fp1.…`
-/// token with a real digest, which is exactly what made it dangerous.
+/// The token a hand-authored lock carries for an empty-normalizing span: `blake3` of NO bytes.
+/// Not a syntactic fake — a real, well-formed `fp1.…` token with a real digest, which is
+/// exactly what made it dangerous.
 fn empty_span_fingerprint() -> String {
     format!("fp1.span2.b3.{}", blake3::hash(b"").to_hex())
 }
@@ -328,18 +328,18 @@ fn a_hand_authored_empty_span_pin_never_reads_green() {
     let ws = sb.workspace("emptyspan");
     std::fs::create_dir_all(ws.join("sources")).expect("sources dir");
 
-    // Two of the enumerated empty-normalizing forms, at the product surface:
-    // an own-line `#^anchor` (the Block form) and a whole-page ref over a file
-    // that is nothing but an own-line anchor (the Page form — the one the
-    // ruling did not predict).
+    // Two of the enumerated empty-normalizing forms, at the product surface: an own-line `^anchor`
+    // (the Block form) and a whole-page ref over a file that is nothing but an own-line anchor
+    // (the Page form — the one the ruling did not predict).
+    //
     let ownline_v1 = "# H\n\n^guideline\n\noriginal body\n";
     let anchors_only = "^a\n";
     std::fs::write(ws.join("sources/ownline.md"), ownline_v1).expect("write ownline");
     std::fs::write(ws.join("sources/anchors.md"), anchors_only).expect("write anchors");
 
-    // A THIRD pin that is honest, minted over real content. It is the
-    // non-vacuity control: it proves this corpus can still render green, so the
-    // two reds below are the empty spans and not a blanket verdict on the walk.
+    // A THIRD pin that is honest, minted over real content. It is the non-vacuity control: it
+    // proves this corpus can still render green, so the two reds below are the empty spans and not
+    // a blanket verdict on the walk.
     let honest = "# Target\n\nreal body\n";
     std::fs::write(ws.join("sources/honest.md"), honest).expect("write honest");
 
@@ -394,10 +394,10 @@ fn a_hand_authored_empty_span_pin_never_reads_green() {
             "{state}: status rolls the same corpus up red: {status}"
         );
 
-        // Rewrite both targets end to end. On the base build this changed
-        // nothing — the pins stayed green. The second pass proves the verdict
-        // does not depend on the target's bytes at all, because there are no
-        // bytes it covers.
+        // Rewrite both targets end to end. On the base build this changed nothing — the pins stayed
+        // green. The second pass proves the verdict does not depend on the target's bytes at all,
+        // because there are no bytes it covers.
+        //
         std::fs::write(
             ws.join("sources/ownline.md"),
             "# H\n\n^guideline\n\nTOTALLY DIFFERENT BODY\n",

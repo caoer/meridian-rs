@@ -1,33 +1,33 @@
-//! **F4 — a root DECLARED in `MERIDIAN.md` but NOT BOUND on this machine.**
+//! **F4 — a root DECLARED in `MERIDIAN.md` but NOT BOUND on this machine.** The ordinary laptop
+//! case: `~/MERIDIAN.md` declares a root that is not checked out here. `bind_one` renders it
+//! `MountState::PathUnseeable` (never an error — failing there would brick every machine that
+//! does not hold all declared roots), so `projection()` files it under `MountSet::unreachable`
+//! and `is_bound` is FALSE. **Why the shipped corpus could not exhibit this.**
+//! `u12_stored_form_e2e.rs` has exactly two fixture states — `sessions` BOUND to a real
+//! directory, or no mount block at all. **There is no state that DECLARES a root at a path
+//! which does not exist**, which is the one state this finding lives in. The corpus could not
+//! have shown it (S3-R43's question, asked of the fixture rather than of the code).
 //!
-//! The ordinary laptop case: `~/MERIDIAN.md` declares a root that is not checked
-//! out here. `bind_one` renders it `MountState::PathUnseeable` (never an error —
-//! failing there would brick every machine that does not hold all declared
-//! roots), so `projection()` files it under `MountSet::unreachable` and
-//! `is_bound` is FALSE.
 //!
-//! **Why the shipped corpus could not exhibit this.** `u12_stored_form_e2e.rs`
-//! has exactly two fixture states — `sessions` BOUND to a real directory, or no
-//! mount block at all. **There is no state that DECLARES a root at a path which
-//! does not exist**, which is the one state this finding lives in. The corpus
-//! could not have shown it (S3-R43's question, asked of the fixture rather than
-//! of the code).
 //!
-//! **And the asymmetry the fixture reveals.** `agent_plane_occupants` asks a
-//! DIFFERENT question in its two positions: position 1 (wikilink) collects any
-//! ROOTED spelling and lets `stored_text` refuse; position 2 (markdown link)
-//! collects only what this machine BINDS. That bound test is load-bearing and
-//! measured — `Addr::parse("https://example.com")` succeeds with root `https`,
-//! so a position-2 scan that refused every unbound root would refuse every write
-//! carrying an external link. But `is_bound` conflates TWO populations the mount
-//! table already distinguishes: a root nobody declares (`https`, `mailto` — not
-//! ours, leave verbatim) and a root THIS FILE declares that this machine cannot
-//! read (ours, and unstorable — refuse).
 //!
-//! Every gate here rides the production door (`mrd put` → `wire_serve::write::splice`
-//! in-process) and asserts on the BYTES ON DISK. `HOME`, `XDG_CACHE_HOME`,
-//! `MERIDIAN_CONFIG` and `MERIDIAN_DAEMON_BIN` are sandboxed per test, so no
-//! resident daemon and no operator config can reach these measurements.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -178,10 +178,10 @@ const PAGE: &str = "# Page\n\n## Body\n\nseed\n";
 // The fixture's own control — the state under test is real
 // ---------------------------------------------------------------------------
 
-/// **The fixture asserts its own premise.** `mrd config` must report `notes` as
-/// DECLARED and unreachable, distinctly from an undeclared root — otherwise
-/// every gate below is measuring some other state and passing for the wrong
-/// reason.
+/// **The fixture asserts its own premise.** `mrd config` must report `notes` as DECLARED and
+/// unreachable, distinctly from an undeclared root — otherwise every gate below is measuring
+/// some other state and passing for the wrong reason.
+///
 #[test]
 fn the_fixture_really_declares_an_unreachable_root() {
     let sb = sandbox();
@@ -205,12 +205,12 @@ fn the_fixture_really_declares_an_unreachable_root() {
 // F4 — THE DEFECT, at both positions
 // ---------------------------------------------------------------------------
 
-/// **THE FINDING.** A markdown link naming a DECLARED-but-unbound root reaches
-/// disk in its agent-plane spelling, untranslated and unguarded, at exit 0.
+/// **THE FINDING.** A markdown link naming a DECLARED-but-unbound root reaches disk in its
+/// agent-plane spelling, untranslated and unguarded, at exit 0. `root:` is the AGENT plane's
+/// spelling and is unresolvable garbage to Obsidian on disk — which is the clause criterion 4
+/// states verbatim. This is inside criterion 4's measured population, not outside it.
 ///
-/// `root:` is the AGENT plane's spelling and is unresolvable garbage to Obsidian
-/// on disk — which is the clause criterion 4 states verbatim. This is inside
-/// criterion 4's measured population, not outside it.
+///
 #[test]
 fn a_markdown_link_to_a_declared_unbound_root_must_not_reach_disk_raw() {
     let sb = sandbox();
@@ -261,12 +261,12 @@ fn the_refusal_names_the_path_never_a_declaration_already_made() {
     );
 }
 
-/// **The asymmetry, stated as a gate.** Position 1 (wikilink) already refuses
-/// this root; position 2 (markdown link) did not. The tell R83 names: *the arm
-/// with coverage held, the arm without it failed.*
-///
-/// Both arms are asserted here so a future edit cannot fix one and silently
+/// **The asymmetry, stated as a gate.** Position 1 (wikilink) already refuses this root;
+/// position 2 (markdown link) did not. The tell R83 names: *the arm with coverage held, the arm
+/// without it failed.* Both arms are asserted here so a future edit cannot fix one and silently
 /// regress the other.
+///
+///
 #[test]
 fn both_positions_refuse_a_declared_unbound_root_identically() {
     for body in ["see [[notes:a.md]]\n", "see [x](notes:a.md)\n"] {
@@ -340,14 +340,14 @@ fn a_bound_root_still_translates_at_both_positions() {
     );
 }
 
-/// **ACCEPTANCE 2 — the ordinary corpus is untouched.** This is the control the
-/// bound test was introduced for, and the one a naive fix breaks: an external
-/// URL parses as an address with root `https`, so a scan that refused every
-/// unbound root would refuse **every write carrying an ordinary external link**.
+/// **ACCEPTANCE 2 — the ordinary corpus is untouched.** This is the control the bound test was
+/// introduced for, and the one a naive fix breaks: an external URL parses as an address with
+/// root `https`, so a scan that refused
 ///
-/// `https` and `mailto` are UNDECLARED — not this engine's to claim. The
-/// distinction the fix must preserve is declared-vs-undeclared, never
-/// bound-vs-unbound.
+///
+///
+///
+///
 #[test]
 fn ordinary_external_links_are_still_untouched() {
     let sb = sandbox();
@@ -374,9 +374,9 @@ fn ordinary_external_links_are_still_untouched() {
     );
 }
 
-/// **ACCEPTANCE 3 — a document with no agent-plane occupant writes clean**, on a
-/// machine whose table carries an unreachable root. The mere PRESENCE of a
-/// declared-but-unbound root may not disturb ordinary single-root traffic.
+/// **ACCEPTANCE 3 — a document with no agent-plane occupant writes clean**, on a machine whose
+/// table carries an unreachable root. The mere PRESENCE of a declared-but-unbound root may not
+/// disturb ordinary single-root traffic.
 #[test]
 fn a_document_with_no_cross_root_position_writes_clean() {
     let sb = sandbox();
@@ -398,12 +398,12 @@ fn a_document_with_no_cross_root_position_writes_clean() {
 }
 
 /// **ACCEPTANCE 4 — a RETAINED address is still not this write's to move.** A
-/// declared-but-unbound address the document already carried, in a section this
-/// write does not touch, must not turn every unrelated edit into a refusal.
+/// declared-but-unbound address the document already carried, in a section this write does not
+/// touch, must not turn every unrelated edit into a refusal. Without this gate the fix would
+/// make any page that ever mentioned an unreachable root permanently unwritable — the failure
+/// mode that gets a guard deleted by the next person it inconveniences (S3-R23(1)).
 ///
-/// Without this gate the fix would make any page that ever mentioned an
-/// unreachable root permanently unwritable — the failure mode that gets a guard
-/// deleted by the next person it inconveniences (S3-R23(1)).
+///
 #[test]
 fn a_retained_unbound_address_does_not_block_an_unrelated_edit() {
     let sb = sandbox();

@@ -1,11 +1,11 @@
-//! `mrd pin` refuses WITH its cause — the R24 gate.
+//! `mrd pin` refuses WITH its cause — the R24 gate. The `--vibe`-without-git refusal is the one
+//! pin leg whose entire content lives in the wire bodys `cause` (v2 §8: `io_error` carries the
+//! underlying cause).
 //!
-//! The `--vibe`-without-git refusal is the one pin leg whose entire content
-//! lives in the wire body's `cause` (v2 §8: `io_error` carries the underlying
-//! cause). It printed a bare `mrd: io_error` — a state reported without its
-//! reason, the exact defect stage 2 spent its read plane removing. This drives
-//! the REAL binary over its process boundary so the cause cannot be dropped
-//! again silently: a mapper that stops reading `cause` reddens here.
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -16,13 +16,13 @@ struct Sandbox {
     home: PathBuf,
 }
 
-/// A workspace that is deliberately NOT a git repository, anchored explicitly so
-/// the resolution ladder never falls to the ancestor git search — `git
-/// hash-object -w` stays the only thing that can fail.
+/// A workspace that is deliberately NOT a git repository, anchored explicitly so the resolution
+/// ladder never falls to the ancestor git search — `git hash-object -w` stays the only thing
+/// that can fail. `MERIDIAN_WORKSPACE` is the ladders only way to anchor a NON-git tree, and it
+/// is set per-subprocess in [`run`] (never on this process), so the suite stays parallel-safe.
 ///
-/// `MERIDIAN_WORKSPACE` is the ladder's only way to anchor a NON-git tree, and
-/// it is set per-subprocess in [`run`] (never on this process), so the suite
-/// stays parallel-safe.
+///
+///
 fn sandbox() -> (Sandbox, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let sb = Sandbox {
@@ -52,9 +52,9 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn mrd")
 }
 
-/// Gate — `mrd pin --vibe` outside a git repository refuses exit 1 and NAMES the
-/// cause: which flag asked, what it asked for, and what git said. The bare class
-/// alone is the failure this pins.
+/// Gate — `mrd pin --vibe` outside a git repository refuses exit 1 and NAMES the cause: which
+/// flag asked, what it asked for, and what git said. The bare class alone is the failure this
+/// pins.
 #[test]
 fn vibe_without_git_refuses_with_its_cause_not_a_bare_class() {
     let (sb, ws) = sandbox();

@@ -49,21 +49,21 @@ mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
 /// **The CPU budget.** See the module header for why it is CPU and not wall, and
-/// [`multiroot_fixture`] for the table it is measured through. The budget is the
-/// one `status_multiroot_cpu.rs` measured for the same fixture and the same
-/// narrowing — walk's post-fix work is status's ambient build plus one BFS over
-/// a corpus of two pages, which is smaller than the spread the budget already
-/// carries. The arms measured on this host, release profile:
+/// [`multiroot_fixture`] for the table it is measured through. The budget is the one
+/// `status_multiroot_cpu.rs` measured for the same fixture and the same narrowing — walks
+/// post-fix work is statuss ambient build plus one BFS over a corpus of two pages, which is
+/// smaller than the spread the budget already carries.
 ///
-/// | arm | CPU |
-/// |---|---:|
-/// | narrowed (`load_mounts_for`) | 30 ms |
-/// | eager (`load_mounts`, pre-W5) | 5 480 ms |
 ///
-/// The arms are ~180× apart; 600 ms sits 20× above the fix and 9× below the
-/// defect. The narrowed arm is INSENSITIVE to the fixture's corpus constants —
-/// it never reads those roots at all — which is the invariant the budget stands
-/// on, so the margin does not shrink as the fixture grows.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 const CPU_BUDGET: Duration = Duration::from_millis(600);
 
 #[test]
@@ -75,9 +75,9 @@ fn walk_cpu_under_budget_with_a_populated_mount_table() {
     let ws = fixture::init_workspace(&sb);
     fixture::assert_table_is_populated(&sb, &ws, &names);
 
-    // The page under walk, and one page it draws from — so the walk has a real
-    // edge to expand rather than terminating on an empty adjacency. Neither
-    // names a root: this is the common case the narrowing must make cheap.
+    // The page under walk, and one page it draws from — so the walk has a real edge to expand
+    // rather than terminating on an empty adjacency. Neither names a root: this is the common case
+    // the narrowing must make cheap.
     std::fs::write(
         ws.join("target.md"),
         "# Target\n\n## Design\n\nthe page the claim draws from.\n",
@@ -95,9 +95,9 @@ fn walk_cpu_under_budget_with_a_populated_mount_table() {
     let wall_start = Instant::now();
     let out = fixture::run(&sb, &ws, &["walk", "claim.md"]);
     let wall = wall_start.elapsed();
-    // `RUSAGE_CHILDREN` is cumulative and monotonic, so the later read can only
-    // be the larger one — but the checked form says so rather than trusting it,
-    // and an underflow here would print as a wildly under-budget PASS.
+    // `RUSAGE_CHILDREN` is cumulative and monotonic, so the later read can only be the larger one
+    // — but the checked form says so rather than trusting it, and an underflow here would print as
+    // a wildly under-budget PASS.
     let cpu = fixture::children_cpu()
         .checked_sub(cpu_before)
         .expect("children CPU is cumulative, so it never goes backwards");

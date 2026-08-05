@@ -1,19 +1,19 @@
-//! `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T]` (U3.5b): the
-//! fs-frontier reconcile-toward-scaffold (ZT ruling #3, the asymmetric reconcile
-//! law). A local CLIENT of `preset::reconcile` (docs/laws.md charter): mrd resolves
-//! the workspace and dials the op; the fold + the guarded writes live in `preset`.
+//! `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T]` (U3.5b): the fs-frontier
+//! reconcile-toward-scaffold . A local CLIENT of `preset::reconcile` (docs/laws.md charter):
+//! mrd resolves the workspace and dials the op; the fold + the guarded writes live in `preset`.
+//! The law, verbatim (plan §4 Block 3 U3.
 //!
-//! The law, verbatim (plan §4 Block 3 U3.5b): "materialize ALL missing declared
-//! paths; remove ONLY empty-undeclared + declared-ephemeral; everything else
-//! renders as check-plane findings, never prune actions." Additive by
-//! set-difference, subtractive by allowlist — `--prune` opts into the subtractive
-//! half; without it reconcile only materializes.
 //!
-//! Exit codes (§4 preamble; `docs/status.md`): 0 = the tree converged to the
-//! scaffold with no residual finding (or a `--dry` preview), 1 = a finding — an
-//! undeclared content file left drifting or a materialize that hit an occupied
-//! path, 2 = a tool failure (bad usage, unreadable workspace, the preset is not a
-//! def, a faulting write).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use preset::{BirthOptions, FileOutcome, PruneOutcome, ReconcileReport};
 use serde_json::json;
@@ -26,12 +26,12 @@ fn findings(message: String) -> Fail {
     Fail::findings(message)
 }
 
-/// Run `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T] [--json]`.
+/// Run `mrd reconcile <preset> [--prune] [--dry] [--actor A] [--now T] [--json]`. Errors A tool
+/// failure (exit 2) — bad usage, an unreadable workspace, a preset that is not a def, or a
+/// faulting write — or a findings exit (1) when an undeclared content file remains or a
+/// declared path was occupied.
 ///
-/// # Errors
-/// A tool failure (exit 2) — bad usage, an unreadable workspace, a preset that is
-/// not a def, or a faulting write — or a findings exit (1) when an undeclared
-/// content file remains or a declared path was occupied.
+///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;
@@ -69,9 +69,9 @@ pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     }
 }
 
-/// Print the reconcile report as a human table: the additive materialize half, the
-/// subtractive prune half (files + empty dirs), then the findings the check plane
-/// renders (undeclared content, NEVER pruned).
+/// Print the reconcile report as a human table: the additive materialize half, the subtractive
+/// prune half (files + empty dirs), then the findings the check plane renders (undeclared
+/// content, NEVER pruned).
 fn print_human(report: &ReconcileReport, dry: bool, prune: bool) {
     let mode = if dry { " [dry]" } else { "" };
     println!("reconcile {}{mode}", report.preset);

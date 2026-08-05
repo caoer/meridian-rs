@@ -1,24 +1,24 @@
-//! **U22 / H1 — lost-pin repair, end to end over a real git history.**
+//! **U22 / H1 — lost-pin repair, end to end over a real git history.** The verb under test
+//! recovers a pin whose evidence is gone by walking the repositorys own history, and refuses to
+//! invent evidence when the walk finds none. Every fixture here is a REAL git repository driven
+//! through the SHIPPED binary, because the whole subject is what git recorded. The shape that
+//! makes a pin recoverable — worth reading once A pins `hash` is the blob of the whole target
+//! FILE; its `fingerprint` covers ONE SECTION of it.
 //!
-//! The verb under test recovers a pin whose evidence is gone by walking the
-//! repository's own history, and refuses to invent evidence when the walk finds
-//! none. Every fixture here is a REAL git repository driven through the SHIPPED
-//! binary, because the whole subject is what git recorded.
 //!
-//! # The shape that makes a pin recoverable — worth reading once
-//! A pin's `hash` is the blob of the whole target FILE; its `fingerprint` covers
-//! ONE SECTION of it. Git is content-addressed, so a file blob that is absent
-//! from the store is a file whose exact bytes were never recorded. The recovery
-//! is possible because the SECTION can survive in a commit whose file bytes
-//! differ elsewhere: the pin's evidence is the section, and history still holds
-//! it inside a different file version. That is not a corner case — an operator
-//! who pins mid-edit and then keeps editing the page's other parts produces it.
 //!
-//! # The invariant these tests exist to hold
-//! Repair rewrites the pin's `hash` and NOTHING else. A repair that reached green
-//! by moving the `selector` or the `fingerprint` would be forgery, and
-//! `repair_refuses_the_forgery_that_would_go_green` builds the case where that
-//! forgery is AVAILABLE and proves the verb does not take it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -175,20 +175,20 @@ fn source_at(intro: &str, body: &str) -> String {
     format!("# Source\n\n{intro}\n\n## Guideline\n\n{body}\n")
 }
 
-/// **The lost-but-recoverable corpus.**
+/// **The lost-but-recoverable corpus.** 1. commit A records the page; 2. the operator edits the
+/// pages INTRO and pins the guideline mid-edit — a non-vibe pin hashes without `-w`, so the
+/// pinned FILE blob never enters the object store; 3.
 ///
-/// 1. commit A records the page;
-/// 2. the operator edits the page's INTRO and pins the guideline mid-edit — a
-///    non-vibe pin hashes without `-w`, so the pinned FILE blob never enters the
-///    object store;
-/// 3. the operator edits the intro AGAIN and commits (commit B) — so the pinned
-///    file blob is still absent, while commit B's version carries the pinned
-///    SECTION byte-identically;
-/// 4. the guideline itself is then rewritten and committed (commit C), which
-///    turns the live claim plane red.
 ///
-/// Result: both planes dark — the definition of LOST — with the evidence sitting
-/// in commit B.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn lost_but_recoverable(sb: &Sandbox, name: &str) -> PathBuf {
     let ws = sb.git_workspace(name);
     write(&ws, "source.md", &source_at(INTRO_ONE, PINNED_BODY));
@@ -228,9 +228,9 @@ fn assert_evidence_is_gone(ws: &Path, pin: &lock::PinEntry) {
 
 // ── the gates ────────────────────────────────────────────────────────────────
 
-/// **The unit's delivery.** A lost pin whose content history still holds is
-/// repaired: the row's `hash` becomes a blob git actually HOLDS, and the claim —
-/// object, selector, fingerprint — is byte-for-byte what it was.
+/// **The units delivery.** A lost pin whose content history still holds is repaired: the rows
+/// `hash` becomes a blob git actually HOLDS, and the claim — object, selector, fingerprint — is
+/// byte-for-byte what it was.
 #[test]
 fn a_lost_pin_whose_content_history_holds_is_repaired() {
     let sb = sandbox();
@@ -269,9 +269,9 @@ fn a_lost_pin_whose_content_history_holds_is_repaired() {
     );
 }
 
-/// **The invariant's consequence, stated as its own gate.** The target genuinely
-/// drifted, so the pin is STILL RED after a successful repair. A repair that left
-/// the corpus green would have moved the claim.
+/// **The invariants consequence, stated as its own gate.** The target genuinely drifted, so the
+/// pin is STILL RED after a successful repair. A repair that left the corpus green would have
+/// moved the claim.
 #[test]
 fn a_repaired_pin_is_still_red_because_the_target_really_did_drift() {
     let sb = sandbox();
@@ -309,9 +309,9 @@ fn dry_reports_the_recovery_and_writes_nothing() {
     );
 }
 
-/// **A pin whose blob git still holds is NOT lost** — it is ordinary drift with
-/// its evidence intact, and this verb does not touch it. (The retrieval plane is
-/// the discriminator: one plane dark is not a loss.)
+/// **A pin whose blob git still holds is NOT lost** — it is ordinary drift with its evidence
+/// intact, and this verb does not touch it. (The retrieval plane is the discriminator: one
+/// plane dark is not a loss.)
 #[test]
 fn a_drifted_pin_whose_evidence_is_still_held_is_not_touched() {
     let sb = sandbox();
@@ -346,9 +346,9 @@ fn a_drifted_pin_whose_evidence_is_still_held_is_not_touched() {
     assert_eq!(read(&ws, "claim.md"), before, "and nothing was written");
 }
 
-/// **TRUE LOSS is reported and NEVER auto-fixed.** No commit in this history ever
-/// carried the pinned content, so there is nothing to repair the pin WITH — the
-/// verb refuses (exit 1) and the page is byte-identical.
+/// **TRUE LOSS is reported and NEVER auto-fixed.** No commit in this history ever carried the
+/// pinned content, so there is nothing to repair the pin WITH — the verb refuses (exit 1) and
+/// the page is byte-identical.
 #[test]
 fn a_true_loss_is_reported_and_nothing_is_written() {
     let sb = sandbox();
@@ -387,24 +387,24 @@ fn a_true_loss_is_reported_and_nothing_is_written() {
     );
 }
 
-/// **THE MUTATION-PROOF GATE.** Build the case where the forgery is AVAILABLE:
-/// history holds a section at ANOTHER heading path whose bytes are exactly the
-/// pinned ones, so a repair willing to move the `selector` could report green.
+/// **THE MUTATION-PROOF GATE.** Build the case where the forgery is AVAILABLE: history holds a
+/// section at ANOTHER heading path whose bytes are exactly the pinned ones, so a repair willing
+/// to move the `selector` could report green.
 ///
-/// The test first PROVES the opportunity is real — it verifies the pinned
-/// fingerprint against the other section through `classify_pin` itself and
-/// asserts GREEN — and only then asserts that the verb answers TRUE LOSS and
-/// leaves the row untouched. Without the first half this would be a test that
-/// passes for the wrong reason.
+///
+///
+///
+///
+///
 #[test]
 fn repair_refuses_the_forgery_that_would_go_green() {
     let sb = sandbox();
     let ws = sb.git_workspace("forgery");
-    // Two sections, same heading text, different paths; the pin names Notes.
-    // Commit A deliberately carries an OLDER Notes body: the pinned bytes must
-    // exist in history under Archive's path and NOWHERE under Notes', or the
-    // repair below would have a legitimate match and the gate would prove
-    // nothing.
+    // Two sections, same heading text, different paths; the pin names Notes. Commit A deliberately
+    // carries an OLDER Notes body: the pinned bytes must exist in history under Archives path and
+    // NOWHERE under Notes, or the repair below would have a legitimate match and the gate would
+    // prove nothing.
+    //
     let page = |notes: &str, archive: &str| {
         format!(
             "# Source\n\n## Notes\n\n### Guideline\n\n{notes}\n\n## Archive\n\n### Guideline\n\n\
@@ -424,9 +424,9 @@ fn repair_refuses_the_forgery_that_would_go_green() {
     assert_eq!(pin.status.code(), Some(0), "pin: {}", said(&pin));
     let recorded = the_pin(&ws, "claim.md");
 
-    // …then make Archive a VERBATIM copy of the pinned subtree (the pin promoted
-    // a `^slug` onto its heading, so the copy has to be taken AFTER the pin for
-    // the bytes — and therefore the fingerprint — to match), and drift Notes.
+    // …then make Archive a VERBATIM copy of the pinned subtree (the pin promoted a `^slug` onto
+    // its heading, so the copy has to be taken AFTER the pin for the bytes — and therefore the
+    // fingerprint — to match), and drift Notes.
     let after_pin = read(&ws, "source.md");
     let (head, _) = after_pin
         .split_once("## Archive")
@@ -444,9 +444,9 @@ fn repair_refuses_the_forgery_that_would_go_green() {
     let before = read(&ws, "claim.md");
     assert_evidence_is_gone(&ws, &recorded);
 
-    // THE OPPORTUNITY IS REAL: the pinned fingerprint verifies GREEN against the
-    // OTHER section of the committed page. A verb willing to move the selector
-    // could report a repair here.
+    // THE OPPORTUNITY IS REAL: the pinned fingerprint verifies GREEN against the OTHER section of
+    // the committed page. A verb willing to move the selector could report a repair here.
+    //
     let committed = read(&ws, "source.md");
     let doc = model::build(committed.clone(), syntax::parse(&committed));
     let forged = lock::Selector::Path(vec![
@@ -479,9 +479,9 @@ fn repair_refuses_the_forgery_that_would_go_green() {
     );
 }
 
-/// **ONE `git log` and ONE `cat-file --batch` for the whole walk** — the law the
-/// unit is built to hold, asserted the way `crates/git`'s plumbing suite asserts
-/// it: a shim on `PATH` logs every argv and execs the real git.
+/// **ONE `git log` and ONE `cat-file --batch` for the whole walk** — the law the unit is built
+/// to hold, asserted the way `crates/git`s plumbing suite asserts it: a shim on `PATH` logs
+/// every argv and execs the real git.
 #[test]
 fn the_walk_spends_one_log_and_one_cat_file_batch() {
     let sb = sandbox();

@@ -1,83 +1,83 @@
-//! `mrd config` — the config plane's publishing surface (U6).
+//! `mrd config` — the config plane's publishing surface (U6). ```text mrd config [--json] ```
+//! Resolves the `MERIDIAN.md` bootstrap chain and prints what it found: the resolved path, the
+//! state, the config's own rev and fingerprint, the **bound mount table** with each root's
+//! state, and the declared tools in document order. Read-only — it writes nothing and mints
+//! nothing. This is criterion 2's surface as well as criterion 1's (U7) The mount table is the
+//! single authority for the three-way translation — canonical root name ↔ Obsidian vault name ↔
+//! local path — so this verb prints all three legs per root plus the state binding decided, and
+//! it prints the **canonical** path beside the declared one whenever the two differ. A verb
+//! that showed only the declared spelling would hide exactly the symlink the mount law exists
+//! to collapse. Why this verb exists rather than an existing one Two surfaces were MEASURED out
+//! before this one was written, not read out of a `--help`: - **`mrd read`** routes through the
+//! render face, which ELIDES every `meridian-*` block (`ToonRenderer::with_meridian_elision`).
+//! Measured on the installed binary: `mrd read MERIDIAN.md --section '…/Roots'` prints the
+//! prose, drops all three mount blocks, and exits 0. An agent reading it would reasonably
+//! report that the config failed to parse when it parsed perfectly — the silent-absence class.
+//! Pinned by
+//! `testsuite/tests/meridian_md.rs::the_render_face_elides_config_blocks_and_leaves_no_marker`.
 //!
-//! ```text
-//! mrd config [--json]
-//! ```
 //!
-//! Resolves the `MERIDIAN.md` bootstrap chain and prints what it found: the
-//! resolved path, the state, the config's own rev and fingerprint, the **bound
-//! mount table** with each root's state, and the declared tools in document
-//! order. Read-only — it writes nothing and mints nothing.
 //!
-//! # This is criterion 2's surface as well as criterion 1's (U7)
-//! The mount table is the single authority for the three-way translation —
-//! canonical root name ↔ Obsidian vault name ↔ local path — so this verb prints
-//! all three legs per root plus the state binding decided, and it prints the
-//! **canonical** path beside the declared one whenever the two differ. A verb
-//! that showed only the declared spelling would hide exactly the symlink the
-//! mount law exists to collapse.
 //!
-//! # Why this verb exists rather than an existing one
-//! Two surfaces were MEASURED out before this one was written, not read out of
-//! a `--help`:
 //!
-//! - **`mrd read`** routes through the render face, which ELIDES every
-//!   `meridian-*` block (`ToonRenderer::with_meridian_elision`). Measured on
-//!   the installed binary: `mrd read MERIDIAN.md --section '…/Roots'` prints the
-//!   prose, drops all three mount blocks, and exits 0. An agent reading it would
-//!   reasonably report that the config failed to parse when it parsed perfectly
-//!   — the silent-absence class. Pinned by
-//!   `testsuite/tests/meridian_md.rs::the_render_face_elides_config_blocks_and_leaves_no_marker`.
-//! - **`mrd resolve`** is the WORKSPACE-identity sense of the word: it maps a
-//!   filesystem path to a workspace and a cache drawer, and prints no mount
-//!   table (`docs/address-grammar.md` §13).
 //!
-//! So the verb that publishes the parsed mount table is this one, and the
-//! elision it works around is named in its own output rather than left for an
-//! operator to rediscover.
 //!
-//! # It reports the RESOLVED state, including where the resolution came from (U33)
-//! The table printed is the **bound** one, never the file's literal blocks. The
-//! same rule reaches the entry point itself: the line carries `origin:` — which
-//! rung of the chain supplied the path.
 //!
-//! That word exists because of a measurement, not a preference. Before it,
-//! `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd config` and `mrd config` with the
-//! variable unset printed **byte-identical output** — two environments differing
-//! in exactly the variable the chain is made of, indistinguishable at the only
-//! surface that publishes the chain. An operator debugging a stale exported
-//! override could read the endpoint and never the path taken to it.
 //!
-//! Exits: **0** resolved and every root **bound** / **1** the config refused
-//! (its message, verbatim) **or any root refuses** — grey and red alike, each
-//! with its own reason word / **2** bad invocation.
 //!
-//! **Grey rides exit 1, and that is S3-R6, not a local choice.** The exit code
-//! answers one question — *may this proceed?* — and an unseeable or drifted root
-//! answers no, exactly as a refusal does. There is **no fourth exit code**; the
-//! reason word carries the difference, in the human line and in `--json` alike.
-//! The table is printed before the non-zero exit, because a refusal an operator
-//! cannot read teaches nothing.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use serde_json::{Value, json};
 
 use crate::{Fail, Format};
 
-/// Run `mrd config [--json]`. A positional argument or an unknown flag is
-/// already an exit-2 from the shared argument parser (`NO_PATH`).
+/// Run `mrd config [--json]`. A positional argument or an unknown flag is already an exit-2
+/// from the shared argument parser (`NO_PATH`). Errors [`Fail`] exit 1 when the chain refuses —
+/// a malformed config, a stated path that is not a readable regular file, or an unbuildable
+/// `$HOME`.
 ///
-/// # Errors
-/// [`Fail`] exit 1 when the chain refuses — a malformed config, a stated path
-/// that is not a readable regular file, or an unbuildable `$HOME`.
+///
 pub(crate) fn run(format: Format) -> Result<(), Fail> {
     let env = config::Env::from_process();
-    // The ORIGIN is read from the same env the resolution is, and before it:
-    // the chain's answer to "which rung" is what the resolved path cannot say
-    // for itself when both rungs name one file (U33).
+    // The ORIGIN is read from the same env the resolution is, and before it: the chain's answer to
+    // "which rung" is what the resolved path cannot say for itself when both rungs name one file
+    // (U33).
     let rung = config::rung(&env).map_err(|e| Fail::findings(e.to_string()))?;
-    // The refusal rides verbatim: it already names what is broken, where, that
-    // nothing loaded, and the fix. Re-wording it here would be a second
-    // spelling of the same fact.
+    // The refusal rides verbatim: it already names what is broken, where, that nothing loaded, and
+    // the fix. Re-wording it here would be a second spelling of the same fact.
+    //
     let resolution = config::resolve(&env).map_err(|e| Fail::findings(e.to_string()))?;
     // A bind refusal rides verbatim for the same reason a parse refusal does:
     // it already names the mount, the line, that nothing loaded, and the fix.
@@ -85,9 +85,9 @@ pub(crate) fn run(format: Format) -> Result<(), Fail> {
         .bind()
         .map_err(|e| Fail::findings(e.to_string()))?;
 
-    // The bridge period's check (U9). It NEVER changes the exit code: a
-    // divergence between an env var and the file is a note, because fail-loud
-    // here would brick the CLI on every machine that exports the variable.
+    // The bridge period's check (U9). It NEVER changes the exit code: a divergence between an env
+    // var and the file is a note, because fail-loud here would brick the CLI on every machine that
+    // exports the variable.
     let bridged = config::bridge::check(&config::bridge::BridgeEnv::from_process(), &table);
 
     match format {
@@ -217,13 +217,13 @@ fn render_human(
     use std::fmt::Write as _;
     let mut out = String::new();
 
-    // The resolved path VERBATIM, which is the spelling a refusal from the same
-    // chain carries. Abbreviating it to `~/MERIDIAN.md` here would give one
-    // file two spellings across two faces of one verb.
+    // The resolved path VERBATIM, which is the spelling a refusal from the same chain carries.
+    // Abbreviating it to `~/MERIDIAN.md` here would give one file two spellings across two faces
+    // of one verb. Then the ORIGIN, because the path cannot say where it came from: when a stale
+    // `MERIDIAN_CONFIG` happens to name the default file, the resolved path is identical either
+    // way and only this word tells them apart (U33).
     //
-    // Then the ORIGIN, because the path cannot say where it came from: when a
-    // stale `MERIDIAN_CONFIG` happens to name the default file, the resolved
-    // path is identical either way and only this word tells them apart (U33).
+    //
     let _ = write!(
         out,
         "{}  {}  origin:{}",
@@ -240,18 +240,18 @@ fn render_human(
     out.push('\n');
 
     if matches!(resolution, config::Resolution::Absent { .. }) {
-        // State A is not an error and not a warning: every machine starts here.
-        // Saying so is what keeps an operator from reading a bare empty table as
-        // a failure.
+        // State A is not an error and not a warning: every machine starts here. Saying so is what
+        // keeps an operator from reading a bare empty table as a failure.
+        //
         out.push_str("no config file — single-root behaviour, unchanged\n");
     }
 
     let _ = writeln!(out, "mounts ({}):", table.mounts().len());
     for m in table.mounts() {
-        // The three legs of the map, then the state word. The canonical path is
-        // printed only when it differs from the declared spelling, because that
-        // difference IS the symlink the mount law collapses — printing it always
-        // would bury the one line that matters.
+        // The three legs of the map, then the state word. The canonical path is printed only when it
+        // differs from the declared spelling, because that difference IS the symlink the mount law
+        // collapses — printing it always would bury the one line that matters.
+        //
         let _ = write!(
             out,
             "  {}  {}  {}",
@@ -265,27 +265,27 @@ fn render_human(
         {
             let _ = write!(out, "  -> {}", canonical.display());
         }
-        // The vault leg is printed ALWAYS, with the marker when it is absent.
+        // The vault leg is printed ALWAYS, with the marker when it is absent. This is the ONE
+        // structurally-partial axis of criterion 2's three-way map: `Mount::vault` is `Some` iff
+        // `kind: vault`, because the parser REFUSES a `vault:` line on a `git-folder` entry. A
+        // git-folder root's vault name is therefore not missing — it cannot exist, and the criterion
+        // asks this face to say which of the two it is looking at. Dropping the cell could not say
+        // that: `archive git-folder /… bound` is byte-identical to what a build that lost the vault
+        // name between the parser and this line would print.
         //
-        // This is the ONE structurally-partial axis of criterion 2's three-way
-        // map: `Mount::vault` is `Some` iff `kind: vault`, because the parser
-        // REFUSES a `vault:` line on a `git-folder` entry. A git-folder root's
-        // vault name is therefore not missing — it cannot exist, and the
-        // criterion asks this face to say which of the two it is looking at.
         //
-        // Dropping the cell could not say that: `archive  git-folder  /…  bound`
-        // is byte-identical to what a build that lost the vault name between the
-        // parser and this line would print. **A blank cell is a dropped value**,
-        // and the reader is the one asked to guess — U6's byte-identity lesson,
-        // at the row level.
         //
-        // The other two conditional cells are NOT this class and stay
-        // conditional. `-> canonical` is suppressed when it EQUALS the declared
-        // path (an equality, not an absence), and when it is genuinely `None`
-        // the row already carries `grey(path-unseeable)` with its teaching
-        // detail — a marker there would be a second spelling of one fact.
-        // `pin:` is legal on BOTH kinds, so its absence is an operator's choice
-        // rather than a property of the root, and it is not a leg of the map.
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //
+        //
         let _ = write!(out, "  vault:{}", m.vault().unwrap_or(ABSENT_LEG));
         if let Some(pin) = m.pin() {
             let _ = write!(out, "  pin:{pin}");
@@ -301,10 +301,10 @@ fn render_human(
         let _ = writeln!(out, "  {}  {}", t.name, t.kind);
     }
 
-    // The bridge period. Every variable is listed with its state word — an
-    // operator must be able to see that a variable AGREES, not only that it
-    // failed to complain. The report line appears only on the first divergence
-    // in this process.
+    // The bridge period. Every variable is listed with its state word — an operator must be able
+    // to see that a variable AGREES, not only that it failed to complain. The report line appears
+    // only on the first divergence in this process.
+    //
     let _ = writeln!(out, "bridge ({}):", bridged.len());
     for b in bridged {
         let _ = write!(out, "  {}  {}", b.var().name(), b.state().word());
@@ -321,10 +321,10 @@ fn render_human(
     }
 
     if !resolution.mounts().is_empty() || !resolution.tools().is_empty() {
-        // S3-R10(a): the render face elides these blocks and leaves no marker,
-        // so `mrd read` on this same file shows the prose and none of the above.
-        // Naming it here is what stops the elision from reading as a parse
-        // failure.
+        // S3-R10(a): the render face elides these blocks and leaves no marker, so `mrd read` on this
+        // same file shows the prose and none of the above. Naming it here is what stops the elision
+        // from reading as a parse failure.
+        //
         out.push_str(
             "note: meridian-* blocks are elided by the render face, so `mrd read` on this file\n\
              \x20     shows its prose and none of the entries above. This verb publishes them.\n",

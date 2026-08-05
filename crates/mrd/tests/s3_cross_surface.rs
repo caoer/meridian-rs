@@ -1,58 +1,58 @@
-//! **U30 — the stage-3 CROSS-SURFACE gate.** Mirrors stage 2's `fixv`
-//! (`s2fix_cross_surface.rs`): *an exit criterion is verified across every
-//! surface it names, in ONE run, by someone who did not write the units.*
+//! **U30 — the stage-3 CROSS-SURFACE gate.** Mirrors stage 2s `fixv`
+//! (`s2fix_cross_surface.rs`): *an exit criterion is verified across every surface it names, in
+//! ONE run, by someone who did not write the units.* > **Per-unit proof and per-criterion proof
+//! are DIFFERENT OBJECTS.** Fifteen > units each proving their own surface is not a proof of a
+//! criterion that > names three. Stage 2s gate was withdrawn for exactly that substitution.
+//! Every other suite in this workspace proves one units surface. This one proves a CRITERION:
+//! ONE corpus, every surface the criterion names, one run, asserting the criterions own
+//! ratified sentence. The engine under test `MRD_BIN` overrides the binary, so the same asserts
+//! run twice with no edit: against `CARGO_BIN_EXE_mrd` in the workspace suite (criterion 7),
+//! and against the **INSTALLED** artifact for the U30 evidence run (condition 2). The point of
+//! a criterion is the artifact the fleet actually holds, not a build of it.
 //!
-//! > **Per-unit proof and per-criterion proof are DIFFERENT OBJECTS.** Fifteen
-//! > units each proving their own surface is not a proof of a criterion that
-//! > names three. Stage 2's gate was withdrawn for exactly that substitution.
 //!
-//! Every other suite in this workspace proves one unit's surface. This one
-//! proves a CRITERION: ONE corpus, every surface the criterion names, one run,
-//! asserting the criterion's own ratified sentence.
 //!
-//! # The engine under test
 //!
-//! `MRD_BIN` overrides the binary, so the same asserts run twice with no edit:
-//! against `CARGO_BIN_EXE_mrd` in the workspace suite (criterion 7), and against
-//! the **INSTALLED** artifact for the U30 evidence run (condition 2). The point
-//! of a criterion is the artifact the fleet actually holds, not a build of it.
 //!
-//! # ONE corpus, and it is built to defeat the two vacuities criterion 2 names
 //!
-//! | Root | Kind | Vault | Why it is in the corpus |
-//! |---|---|---|---|
-//! | `notes` | `vault` | **`ZT wiki`** | the vault name **DIFFERS** from the canonical name, so the three-way map is **proven rather than coincidentally identical** |
-//! | `archive` | `git-folder` | **none** | the **PARTIAL CELL BY DESIGN** — four of the map's nine cells are partial, and a corpus of only vault-kind roots proves the easy ones (S3-R35) |
-//! | `sessions` | never bound | — | criterion 3's **unmounted** half, and criterion 4's refusal |
 //!
-//! **Both kinds, deliberately.** A corpus of only vault roots is *vacuity*; a
-//! criterion demanding all three legs everywhere is a *false red* against a
-//! correct `git-folder` root. S3-R35's amendment closes both directions, so the
-//! corpus must close both too.
 //!
-//! # Isolation is not decoration (the RUNNER-side obligation)
 //!
-//! Every drive carries its own `HOME`, `XDG_CACHE_HOME`, and a
-//! `MERIDIAN_DAEMON_BIN` pointed at nowhere. A non-deployed `mrd` that registers
-//! in the shared `~/.cache/meridian` becomes the host's resident daemon, and
-//! then every other `read` on the box — including one invoked through the
-//! DEPLOYED binary — dials this engine. The obligation sits on the party running
-//! the non-deployed binary, which is this file.
 //!
-//! # What may NOT appear here (plan §9.1, the reachability audit)
 //!
-//! `mrd read` is disqualified as a **per-item colour** surface — its only colour
-//! channel is the daemon-only `@tone.8hex` decoration, which carries tone
-//! without a reason and is skipped in exactly the unresolvable-target case. So
-//! criterion 3 cites **`mrd walk`** for verdicts. `mrd read` appears once, in
-//! criterion 4, as a **render** surface for round-trip identity — which is a
-//! different claim and a cleared one.
 //!
-//! `mrd resolve` does not appear at all: U33 measured it by RUNNING it — it maps
-//! a path to a workspace identity and a cache drawer, prints no canonical root
-//! name, no vault name, no mount table, and exits 2 on a `root:`-bearing
-//! address. It passed an earlier audit **on the name of the verb rather than its
-//! behaviour**.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -61,9 +61,9 @@ use serde_json::Value;
 
 // ── the engine under test ───────────────────────────────────────────────────
 
-/// The binary every drive in this file goes through. `MRD_BIN` names the
-/// INSTALLED artifact for the U30 evidence run; the workspace suite uses the
-/// build under test.
+/// The binary every drive in this file goes through. `MRD_BIN` names the INSTALLED artifact for
+/// the U30 evidence run; the workspace suite uses the build under test.
+///
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -111,13 +111,13 @@ fn declare(root: &Path, name: &str) {
     .expect("root declaration");
 }
 
-/// The mount table, parameterised on the one axis criterion 2's sensitivity
-/// proof needs: whether the vault name COLLIDES with the canonical name.
+/// The mount table, parameterised on the one axis criterion 2s sensitivity proof needs: whether
+/// the vault name COLLIDES with the canonical name. `vault_name` is the corpus-side
+/// falsification knob (S3-R72). Passing [`VAULT_ROOT`] here produces the *"all three spellings
+/// collide"* fixture the criterion says **proves nothing** — and the assertion that rejects it
+/// is the demonstrated-sensitive instrument for the translation axis.
 ///
-/// `vault_name` is the corpus-side falsification knob (S3-R72). Passing
-/// [`VAULT_ROOT`] here produces the *"all three spellings collide"* fixture the
-/// criterion says **proves nothing** — and the assertion that rejects it is the
-/// demonstrated-sensitive instrument for the translation axis.
+///
 fn table(notes: &Path, archive: Option<&Path>, vault_name: &str) -> String {
     use std::fmt::Write as _;
     let mut raw = "---\ntype: meridian-config\nversion: 1\n---\n\n# The U30 corpus\n\n".to_string();
@@ -176,9 +176,9 @@ impl Corpus {
         c
     }
 
-    /// A drive with `MERIDIAN_CONFIG` **REMOVED** — the default rung. Identical
-    /// in every other respect, which is what makes criterion 1 a differential
-    /// over exactly one variable.
+    /// A drive with `MERIDIAN_CONFIG` **REMOVED** — the default rung. Identical in every other
+    /// respect, which is what makes criterion 1 a differential over exactly one variable.
+    ///
     fn bare(&self, args: &[&str]) -> Command {
         let mut c = Command::new(mrd_bin());
         c.args(args)
@@ -225,9 +225,9 @@ impl Corpus {
         child.wait_with_output().expect("wait mrd")
     }
 
-    /// Rewrite the mount table in place. The corpus tree is untouched — only the
-    /// table moves, so the table alone carries any verdict change (S3-R28(c):
-    /// when two facts are cited as one risk, measure which one carries it).
+    /// Rewrite the mount table in place. The corpus tree is untouched — only the table moves, so
+    /// the table alone carries any verdict change (S3-R28(c): when two facts are cited as one risk,
+    /// measure which one carries it).
     fn rebind(&self, archive: bool, vault_name: &str) {
         std::fs::write(
             &self.config,
@@ -285,10 +285,10 @@ fn code(out: &Output) -> i32 {
     out.status.code().unwrap_or(-1)
 }
 
-/// The live document-root rev of `raw` — the same parse the binary runs, so an
-/// The live fingerprint token of a page's document root — what a CORRECT R4 pin
-/// holds, minted through the engine's own mint over the same parse the corpus
-/// builder runs.
+/// The live document-root rev of `raw` — the same parse the binary runs, so an The live
+/// fingerprint token of a pages document root — what a CORRECT R4 pin holds, minted through the
+/// engines own mint over the same parse the corpus builder runs.
+///
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -296,12 +296,12 @@ fn live_fingerprint(raw: &str) -> String {
         .into_string()
 }
 
-/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits —
-/// so these gates depend on the CLI's own READER, never on the writer that made
-/// them. `object` keeps its `root:` prefix: the canonical agent-plane spelling.
+/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits — so these gates
+/// depend on the CLIs own READER, never on the writer that made them. `object` keeps its
+/// `root:` prefix: the canonical agent-plane spelling. NOTE FOR REVIEWERS: `version: 2` is the
+/// LOCK FILE schema version, not the wire protocol version.
 ///
-/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
-/// wire protocol version.
+///
 fn lock_block(object: &str, fingerprint: &str) -> String {
     format!(
         "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
@@ -330,33 +330,33 @@ fn mount_json(v: &Value, name: &str) -> Value {
         .clone()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════ CRITERION 1
+// — Advisor S3-R33, verbatim "`mrd config` publishes the resolved configuration CHAIN, not
+// merely its endpoint. Two environments differing ONLY in `MERIDIAN_CONFIG` produce
+// DISTINGUISHABLE output — human line and `--json` alike — naming which origin supplied
+// the config. VERIFIED DIFFERENTIALLY: run both spellings, set and unset, and diff them.
+// BYTE-IDENTICAL OUTPUT ACROSS TWO ENVIRONMENTS THAT DIFFER IN THE CHAIN IS A FAILURE, NOT
+// A PASS — it proves the surface publishes a constant rather than a resolution."
 // ═══════════════════════════════════════════════════════════════════════════
-// CRITERION 1 — Advisor S3-R33, verbatim
 //
-//   "`mrd config` publishes the resolved configuration CHAIN, not merely its
-//   endpoint. Two environments differing ONLY in `MERIDIAN_CONFIG` produce
-//   DISTINGUISHABLE output — human line and `--json` alike — naming which origin
-//   supplied the config. VERIFIED DIFFERENTIALLY: run both spellings, set and
-//   unset, and diff them. BYTE-IDENTICAL OUTPUT ACROSS TWO ENVIRONMENTS THAT
-//   DIFFER IN THE CHAIN IS A FAILURE, NOT A PASS — it proves the surface
-//   publishes a constant rather than a resolution."
-// ═══════════════════════════════════════════════════════════════════════════
+//
+//
 
-/// **Criterion 1, as ONE object across every surface it names.**
+/// **Criterion 1, as ONE object across every surface it names.** Four properties, one corpus,
+/// one run: the differential (human **and** `--json`), the malformed refusal with **no partial
+/// mount table**, the absent file leaving single-root behaviour unchanged, and the configs own
+/// **rev**.
 ///
-/// Four properties, one corpus, one run: the differential (human **and**
-/// `--json`), the malformed refusal with **no partial mount table**, the absent
-/// file leaving single-root behaviour unchanged, and the config's own **rev**.
 ///
-/// # The differential is the discriminator, and it is why this is not existential
 ///
-/// Both environments resolve **the same file at the same path**. `MERIDIAN_CONFIG`
-/// names `$HOME/MERIDIAN.md`, which is exactly what the default rung finds. So
-/// every byte of the endpoint agrees and only the **origin** can tell them apart
-/// — which is the precise condition under which a pre-U33 engine printed
-/// byte-identical output at the only surface that publishes the chain. *A
-/// criterion that merely asked "does it print a path" would have passed on the
-/// broken surface.*
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn criterion_1_the_chain_is_published_and_the_two_spellings_are_distinguishable() {
     let c = corpus();
@@ -461,30 +461,30 @@ fn criterion_1_the_chain_is_published_and_the_two_spellings_are_distinguishable(
     std::fs::write(&c.config, good).expect("restore");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════ CRITERION 2
+// — Advisor S3-R35 (amends S3-R33), verbatim "`mrd config` publishes the three-way
+// translation — canonical name / vault name / path — for every mounted root, such that
+// each of the three is recoverable from the output WHERE IT EXISTS. Verified over a corpus
+// containing at least one root whose vault name DIFFERS from its canonical name, so the
+// mapping is proven rather than coincidentally identical. A fixture in which all three
+// spellings collide proves nothing about a translation. A ROOT WITH NO VAULT (A GIT-FOLDER
+// ENTRY) IS A PARTIAL CELL BY DESIGN: THE CRITERION REQUIRES THE OUTPUT TO SAY SO — AN
+// ABSENT VAULT RENDERED AS ABSENT, NEVER SILENTLY OMITTED — AND THE CORPUS MUST INCLUDE AT
+// LEAST ONE SUCH ROOT, so the translation is not proven only where it is easiest."
 // ═══════════════════════════════════════════════════════════════════════════
-// CRITERION 2 — Advisor S3-R35 (amends S3-R33), verbatim
 //
-//   "`mrd config` publishes the three-way translation — canonical name / vault
-//   name / path — for every mounted root, such that each of the three is
-//   recoverable from the output WHERE IT EXISTS. Verified over a corpus
-//   containing at least one root whose vault name DIFFERS from its canonical
-//   name, so the mapping is proven rather than coincidentally identical. A
-//   fixture in which all three spellings collide proves nothing about a
-//   translation. A ROOT WITH NO VAULT (A GIT-FOLDER ENTRY) IS A PARTIAL CELL BY
-//   DESIGN: THE CRITERION REQUIRES THE OUTPUT TO SAY SO — AN ABSENT VAULT
-//   RENDERED AS ABSENT, NEVER SILENTLY OMITTED — AND THE CORPUS MUST INCLUDE AT
-//   LEAST ONE SUCH ROOT, so the translation is not proven only where it is
-//   easiest."
-// ═══════════════════════════════════════════════════════════════════════════
+//
+//
+//
 
-/// Does this output prove a TRANSLATION rather than a coincidence?
+/// Does this output prove a TRANSLATION rather than a coincidence? **Extracted as a named
+/// predicate because it is the instrument S3-R72 asks for.
 ///
-/// **Extracted as a named predicate because it is the instrument S3-R72 asks
-/// for.** It must be able to say *no* — and
-/// [`criterion_2_the_translation_assertion_is_sensitive_corpus_side`] shows it
-/// saying no on the colliding corpus, on the same binary, seconds apart. *An
-/// axis whose named instrument cannot vary on that axis is unevidenced, whatever
-/// colour it prints.*
+///
+///
+///
+///
+///
 fn translation_is_proven(v: &Value) -> bool {
     let m = mount_json(v, VAULT_ROOT);
     let (Some(name), Some(vault)) = (m["name"].as_str(), m["vault"].as_str()) else {
@@ -493,19 +493,19 @@ fn translation_is_proven(v: &Value) -> bool {
     name != vault && m["path"].as_str().is_some()
 }
 
-/// **Criterion 2, as ONE object across every surface it names.**
-///
-/// Both faces, both root KINDS, and all four legs the criterion carries: the
-/// three-way map where it exists, the absent vault **stated**, the
-/// declared-vs-bound mismatch **failing loud**, and an absent declaration
+/// **Criterion 2, as ONE object across every surface it names.** Both faces, both root KINDS,
+/// and all four legs the criterion carries: the three-way map where it exists, the absent vault
+/// **stated**, the declared-vs-bound mismatch **failing loud**, and an absent declaration
 /// rendering **grey**.
 ///
-/// # BOUND is not the same as HAS-VAULT, and conflating them reads a CORRECT root as a FAILURE
 ///
-/// Binding is about the **mount**; a vault is an independent key (INV-3). So a
-/// `git-folder` root with no vault is **BOUND, and exits 0 while rendering its
-/// absence** — which is why the exit assert and the row assert sit in the same
-/// test and neither is allowed to drift from the other.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn criterion_2_the_three_way_translation_is_recoverable_where_it_exists() {
     let c = corpus();
@@ -597,8 +597,8 @@ fn criterion_2_the_three_way_translation_is_recoverable_where_it_exists() {
         mount_row(&grey_out, VAULT_ROOT).ends_with("grey(undeclared)"),
         "an absent self-declaration renders GREY, with its own reason word: {grey_out}",
     );
-    // The ACCEPTANCE half in the same breath (S3-R8(c)): the OTHER root is still
-    // bound, so this is a per-root grey and not a build that greys everything.
+    // The ACCEPTANCE half in the same breath (S3-R8(c)): the OTHER root is still bound, so this is
+    // a per-root grey and not a build that greys everything.
     assert!(
         mount_row(&grey_out, FOLDER_ROOT).ends_with("vault:(none)  bound"),
         "the untouched root stays BOUND — a guard proven only by what it blocks is \
@@ -607,15 +607,15 @@ fn criterion_2_the_three_way_translation_is_recoverable_where_it_exists() {
     declare(&c.notes, VAULT_ROOT);
 }
 
-/// **The S3-R72 sensitivity proof for criterion 2's TRANSLATION axis, run in
-/// this same process against this same binary.**
+/// **The S3-R72 sensitivity proof for criterion 2s TRANSLATION axis, run in this same process
+/// against this same binary.** S3-R64s redden ancestor `1e89a61a` reddens criterion 2s
+/// *differential* half but is **GREEN BY CONSTRUCTION on the translation half** — the mount
+/// table
 ///
-/// S3-R64's redden ancestor `1e89a61a` reddens criterion 2's *differential* half
-/// but is **GREEN BY CONSTRUCTION on the translation half** — the mount table
-/// pre-dates it, so ancestor and candidate render byte-identical mount blocks on
-/// this corpus. *An axis citing an instrument that is green-by-construction on
-/// that axis cites nothing.* So this axis's instrument is **CORPUS-SIDE**, and
-/// here it is shown varying.
+///
+///
+///
+///
 #[test]
 fn criterion_2_the_translation_assertion_is_sensitive_corpus_side() {
     let c = corpus();
@@ -638,9 +638,9 @@ fn criterion_2_the_translation_assertion_is_sensitive_corpus_side() {
          translation — and the criterion's own sentence rejects it: {collided}",
     );
 
-    // And the ABSENCE-MARKER assertion varies on its own axis too: drop the
-    // git-folder root and the row it reads is gone. A population that can empty
-    // is a coverage arm that can silently stop meaning anything (S3-R37).
+    // And the ABSENCE-MARKER assertion varies on its own axis too: drop the git-folder root and
+    // the row it reads is gone. A population that can empty is a coverage arm that can silently
+    // stop meaning anything (S3-R37).
     c.rebind(false, VAULT_NAME);
     let dropped = text(&c.run(&["config"]));
     assert!(
@@ -655,27 +655,27 @@ fn criterion_2_the_translation_assertion_is_sensitive_corpus_side() {
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CRITERION 3 — the resolved BYTES come from the TARGET root
+// ═══════════════════════════════════════════════════════════════════════════ CRITERION 3 —
+// the resolved BYTES come from the TARGET root
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// **Criterion 3, as ONE object: all three verdicts on ONE corpus in ONE run.**
+/// **Criterion 3, as ONE object: all three verdicts on ONE corpus in ONE run.** Green when
+/// matching, `red content-drifted` when not, **grey with a teaching refusal** when unmounted —
+/// cited from **`mrd walk`**, the per-item surface §9.1 cleared, never from `mrd read`.
 ///
-/// Green when matching, `red content-drifted` when not, **grey with a teaching
-/// refusal** when unmounted — cited from **`mrd walk`**, the per-item surface
-/// §9.1 cleared, never from `mrd read`.
 ///
-/// # The two edits are the proof, and the ORDER is load-bearing
 ///
-/// A cross-root wikilink already "resolves" on pre-U11 code — to the **ambient**
-/// root's same-basename file. So an assertion that the ref resolves, or even
-/// that it goes green, is **satisfied by the defect**. Only the pair of edits
-/// separates the two documents: edit the DECOY first and the verdict must NOT
-/// move; then edit the TARGET and it must.
 ///
-/// **All halves, deliberately:** a build that renders *everything* grey satisfies
-/// the unmounted half alone. The green and the red are what stop grey from
-/// becoming the universal answer.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_render() {
     let c = corpus();
@@ -697,8 +697,8 @@ fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_ren
     );
     assert_eq!(code(&out), 0, "a green walk exits 0");
 
-    // ── (b) THE CONTROL FIRST — edit the AMBIENT DECOY. If the engine resolved
-    //     onto the ambient file, THIS is the edit that would move the verdict.
+    // ── (b) THE CONTROL FIRST — edit the AMBIENT DECOY. If the engine resolved onto the ambient
+    // file, THIS is the edit that would move the verdict.
     std::fs::write(
         c.ws.join("notes.md"),
         "# Notes\n\n## Design\n\nDECOY EDITED.\n",
@@ -731,9 +731,9 @@ fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_ren
     );
     assert_eq!(code(&out), 1, "a red edge is a finding — exit 1");
 
-    // ── (d) THE UNMOUNTED HALF — grey with a teaching refusal ────────────────
-    // Restore the bytes first, so the ONLY thing that changes from green to grey
-    // is the mount table.
+    // ── (d) THE UNMOUNTED HALF — grey with a teaching refusal ──────────────── Restore the bytes
+    // first, so the ONLY thing that changes from green to grey is the mount table.
+    //
     std::fs::write(c.notes.join("notes.md"), TARGET).expect("restore the target");
     let (_o, restored, _r, _d, _s) = c.walk_entry();
     assert_eq!(restored, "green", "green again — the corpus is back at (a)");
@@ -764,8 +764,8 @@ fn criterion_3_the_resolved_bytes_come_from_the_target_root_and_all_verdicts_ren
     );
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CRITERION 4 — the stored form IS an `obsidian://` URI carrying the VAULT NAME
+// ═══════════════════════════════════════════════════════════════════════════ CRITERION 4
+// — the stored form IS an `obsidian://` URI carrying the VAULT NAME
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn put_body(new: &str) -> String {
@@ -778,15 +778,15 @@ fn put_body(new: &str) -> String {
 
 const PAGE: &str = "---\nroot: SESSION.md\ntitle: the def\n---\n\n# Page\n\n## Body\n\nseed\n";
 
-/// **Criterion 4, as ONE object — and this corpus makes the positive half
-/// unfakeable.**
+/// **Criterion 4, as ONE object — and this corpus makes the positive half unfakeable.** The
+/// canonical root name is `notes`; the vault name is `ZT wiki`.
 ///
-/// The canonical root name is `notes`; the vault name is `ZT wiki`. **They
-/// differ**, so a stored URI carrying the vault name cannot have been produced by
-/// an identity function or by echoing the agent-plane spelling. *Round-trip
-/// identity alone is satisfied by never translating at all* — on a corpus where
-/// the two names collide, the positive half would be indistinguishable from
-/// doing nothing.
+///
+///
+///
+///
+///
+///
 #[test]
 fn criterion_4_the_stored_form_carries_the_vault_name_and_round_trips() {
     let c = corpus();

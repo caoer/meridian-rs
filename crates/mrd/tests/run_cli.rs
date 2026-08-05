@@ -1,8 +1,8 @@
-//! E2e gates for `mrd run` (U10 half A — the U7-independent surface), driving
-//! the REAL binary over its process boundary against a fixture workspace
-//! (`MERIDIAN_WORKSPACE` tier-1 override). Covers the LOCKED argv surface,
-//! the exit triad legs reachable pre-U7, `--list`, and both `--dry` paths —
-//! starlark end-to-end effect truth, bash show-and-refuse.
+//! E2e gates for `mrd run` (U10 half A — the U7-independent surface), driving the REAL binary
+//! over its process boundary against a fixture workspace (`MERIDIAN_WORKSPACE` tier-1
+//! override). Covers the LOCKED argv surface, the exit triad legs reachable pre-U7, `--list`,
+//! and both `--dry` paths — starlark end-to-end effect truth, bash show-and-refuse.
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -265,13 +265,13 @@ fn dry_starlark_prints_effect_truth_applies_nothing() {
     assert_eq!(before, after);
 }
 
-/// `--dry` bash: the block shows, exec is REFUSED (exit 0, the refusal is the
-/// content) — and the block demonstrably did not run.
+/// `--dry` bash: the block shows, exec is REFUSED (exit 0, the refusal is the content) — and
+/// the block demonstrably did not run. The `md.set_field:status` assertion is GONE, not
+/// relocated: it required `--dry` to print `fix-drift`s declared caps, and a bash task declares
+/// no capability (`docs/laws.md` § Amendment). The surface states the two honest facts instead.
 ///
-/// The `md.set_field:status` assertion is GONE, not relocated: it required
-/// `--dry` to print `fix-drift`'s declared caps, and a bash task declares no
-/// capability (`docs/laws.md` § Amendment). The surface states the two honest
-/// facts instead.
+///
+///
 #[test]
 fn dry_bash_shows_block_and_refuses_exec() {
     let ws = Ws::new();

@@ -40,32 +40,32 @@
 
 use crate::Fail;
 
-/// The commit-fence contract, the document `mrd skill hook` emits.
+/// The commit-fence contract, the document `mrd skill hook` emits. **Compiled in from
+/// `skills/hook.md`**, so the artifact an agent reads and the artifact a human reviews in the
+/// repository are the same bytes — a document built by string-concatenation in Rust is one
+/// nobody reads
 ///
-/// **Compiled in from `skills/hook.md`**, so the artifact an agent reads and the
-/// artifact a human reviews in the repository are the same bytes — a document
-/// built by string-concatenation in Rust is one nobody reads as markdown until
-/// it is too late to notice it says the wrong thing.
 ///
-/// The fence body inside it is the executable half, and
-/// `crates/mrd/tests/skill_hook_emit.rs` holds it to
-/// [`crate::hook::FENCE_VERSION`], [`crate::hook::FENCED_HOOKS`] and
-/// [`crate::hook::HOOK_MARKER`] so the document and the engine that reads placed
-/// fences cannot drift apart.
+///
+///
+///
+///
+///
+///
 const HOOK: &str = include_str!("skills/hook.md");
 
-/// Every document this verb can emit, by the name the CLI takes.
+/// Every document this verb can emit, by the name the CLI takes. **A list, so an unknown name
+/// is refused against something.** `mrd skill nonsense` names what it could have asked for
+/// rather than exiting on a bare "unknown" — the refusal is where the surface is discoverable
+/// from.
 ///
-/// **A list, so an unknown name is refused against something.** `mrd skill
-/// nonsense` names what it could have asked for rather than exiting on a bare
-/// "unknown" — the refusal is where the surface is discoverable from.
 const SKILLS: [(&str, &str); 1] = [("hook", HOOK)];
 
-/// Run `mrd skill <NAME>`.
+/// Run `mrd skill <NAME>`. Errors [`Fail`] exit 2 on a missing name, an unknown name, an
+/// unknown flag, or a second positional.
 ///
-/// # Errors
-/// [`Fail`] exit 2 on a missing name, an unknown name, an unknown flag, or a
-/// second positional.
+///
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let name = parse(args)?;
     let Some((_, body)) = SKILLS.iter().find(|(n, _)| *n == name) else {
@@ -74,9 +74,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             names()
         )));
     };
-    // `print!`, never `println!`: the document ends in its own newline, and a
-    // second one is a byte the caller did not ask for in an artifact whose whole
-    // contract is that stdout carries the document and nothing else.
+    // `print!`, never `println!`: the document ends in its own newline, and a second one is a byte
+    // the caller did not ask for in an artifact whose whole contract is that stdout carries the
+    // document and nothing else.
     print!("{body}");
     Ok(())
 }
@@ -90,9 +90,9 @@ fn names() -> String {
         .join(", ")
 }
 
-/// The one positional. **Flags are refused rather than ignored** — including
-/// `--json`, which this verb has no face for and must not silently accept as if
-/// it did.
+/// The one positional. **Flags are refused rather than ignored** — including `--json`, which
+/// this verb has no face for and must not silently accept as if it did.
+///
 fn parse(args: &[String]) -> Result<&str, Fail> {
     let mut name: Option<&str> = None;
     for arg in args {
@@ -137,9 +137,9 @@ mod tests {
 
     #[test]
     fn json_is_refused_by_name_rather_than_swallowed_as_an_unknown_flag() {
-        // Every other verb in this CLI takes `--json`, so a caller WILL try it
-        // here. "unknown flag: --json" would read as an oversight; the refusal
-        // has to say the verb has no such face and why.
+        // Every other verb in this CLI takes `--json`, so a caller WILL try it here. "unknown flag:
+        // --json" would read as an oversight; the refusal has to say the verb has no such face and
+        // why.
         let err =
             parse(&["--json".to_owned(), "hook".to_owned()]).expect_err("there is no JSON face");
         assert_eq!(err.code, 2);
@@ -159,9 +159,9 @@ mod tests {
 
     #[test]
     fn every_declared_skill_carries_a_document() {
-        // The lookup is by name over a list, so a name with an empty body would
-        // exit 0 having printed nothing — a success indistinguishable from the
-        // document being empty.
+        // The lookup is by name over a list, so a name with an empty body would exit 0 having printed
+        // nothing — a success indistinguishable from the document being empty.
+        //
         for (name, body) in SKILLS {
             assert!(
                 !body.trim().is_empty(),

@@ -1,42 +1,42 @@
-//! **F6 — the pin plane under the fence must be able to SEE the roots it judges.**
+//! **F6 — the pin plane under the fence must be able to SEE the roots it judges.** `mrd check`
+//! and `mrd status` coloured their pins through `view::walk::lock_pin_colors(docs)`, which
+//! resolves against `addr::MountSet::default()` — an EMPTY mount table — and an ambient-only
+//! corpus. On a BOUND root a form-3 cross-root pin therefore answered `grey unmounted` when its
+//! target MATCHED, when it had DRIFTED, and when it was RESTORED, while `mrd config` called the
+//! root `bound` and `mrd walk` — the one caller that passed the real table — answered green /
+//! red / green over the same corpus, in the same instant. The finding is INSENSITIVITY, and
+//! that is what this file measures A comparison gate would have passed: there is exactly one
+//! pin computer and every plane agreed with it. **They agreed on a blind answer.
 //!
-//! `mrd check` and `mrd status` coloured their pins through
-//! `view::walk::lock_pin_colors(docs)`, which resolves against
-//! `addr::MountSet::default()` — an EMPTY mount table — and an ambient-only
-//! corpus. On a BOUND root a form-3 cross-root pin therefore answered
-//! `grey unmounted` when its target MATCHED, when it had DRIFTED, and when it was
-//! RESTORED, while `mrd config` called the root `bound` and `mrd walk` — the one
-//! caller that passed the real table — answered green / red / green over the same
-//! corpus, in the same instant.
 //!
-//! # The finding is INSENSITIVITY, and that is what this file measures
-//! A comparison gate would have passed: there is exactly one pin computer and
-//! every plane agreed with it. **They agreed on a blind answer.** So the assert
-//! here is not "green" and not "matches walk" alone — it is that **the axis
-//! MOVES**: three states must produce three answers, because an axis whose
-//! instrument cannot vary on it is unevidenced (S3-R72) and a fence reading it
-//! inherits the blindness.
 //!
-//! # Why the lock is hand-written, and it is a finding of its own
-//! **`mrd pin` cannot mint a cross-root pin**: `mrd pin claim.md
-//! 'other:doc.md#Doc/Design'` is refused `bad_path` by the wire path validation
-//! (measured on the deployed engine `980008813ff69586…`). The population of
-//! form-3 cross-root pins is therefore written through other doors, and a fixture
-//! has to do the same. **The FINGERPRINT is never invented** — it is minted by the
-//! shipped `mrd pin` over byte-identical content in a scratch workspace and
-//! transplanted, the "pulled corpus" shape `u14_check_pin_plane.rs` already ships
-//! (a lock minted in one copy, read in another). A hand-typed fingerprint would
-//! make every green here vacuous.
 //!
-//! Regenerable outside cargo by the same recipe:
-//! `results/f6-mount-sight-repro.sh` in the session tree, engine as a parameter.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// The binary every drive goes through — the real CLI, never a library call.
-/// `MRD_BIN` points it at another engine, which is how the BEFORE is re-measured.
+/// The binary every drive goes through — the real CLI, never a library call. `MRD_BIN` points
+/// it at another engine, which is how the BEFORE is re-measured.
 fn mrd_bin() -> PathBuf {
     std::env::var_os("MRD_BIN")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
@@ -141,9 +141,9 @@ impl Sandbox {
         child.wait_with_output().expect("wait mrd")
     }
 
-    /// Place the fence the way `mrd skill hook`'s document says to: the one fenced
-    /// block off that verb's stdout, at every door under the common dir, `chmod
-    /// +x`. There is no installer — the document is the contract.
+    /// Place the fence the way `mrd skill hook`s document says to: the one fenced block off that
+    /// verbs stdout, at every door under the common dir, `chmod +x`. There is no installer — the
+    /// document is the contract.
     fn place_fence(&self) {
         let out = self.run(&self.ws, &["skill", "hook"]);
         assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
@@ -187,13 +187,13 @@ impl Sandbox {
             .expect("spawn git commit")
     }
 
-    /// Mint a real fingerprint for `DOC`'s pinned section through the SHIPPED pin
-    /// door, over byte-identical content in a scratch workspace.
+    /// Mint a real fingerprint for `DOC`s pinned section through the SHIPPED pin door, over
+    /// byte-identical content in a scratch workspace. The scratch workspace is a GIT repository
+    /// because R4 makes a pins `hash` mandatory — the pin door refuses outright when git cannot
+    /// give it a blob oid — so a mint outside a work tree writes nothing to read a fingerprint out
+    /// of.
     ///
-    /// The scratch workspace is a GIT repository because R4 makes a pin's `hash`
-    /// mandatory — the pin door refuses outright when git cannot give it a blob
-    /// oid — so a mint outside a work tree writes nothing to read a fingerprint
-    /// out of.
+    ///
     fn mint_fingerprint(&self) -> String {
         let mint = self.tmp.path().join("mint");
         std::fs::create_dir_all(&mint).expect("mkdir");
@@ -220,12 +220,12 @@ impl Sandbox {
         fp
     }
 
-    /// The ambient workspace, carrying a hand-written form-3 CROSS-ROOT pin and one
-    /// governed write so the journal plane can date the tree.
+    /// The ambient workspace, carrying a hand-written form-3 CROSS-ROOT pin and one governed write
+    /// so the journal plane can date the tree. Without that governed write every state below greys
+    /// on the JOURNAL plane and the pin axis is masked by an unrelated refusal — the measurement
+    /// would be of the wrong thing while looking identical.
     ///
-    /// Without that governed write every state below greys on the JOURNAL plane and
-    /// the pin axis is masked by an unrelated refusal — the measurement would be of
-    /// the wrong thing while looking identical.
+    ///
     fn cross_root_corpus(&self) -> String {
         let fp = self.mint_fingerprint();
         let blob = git_out(&self.other, &["hash-object", "--", "doc.md"]);
@@ -255,9 +255,9 @@ impl Sandbox {
         );
         assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
 
-        // THE FIXTURE'S OWN PRECONDITION: the root is BOUND. A cross-root reading
-        // over an unbound root would answer `grey unmounted` correctly, and every
-        // assert below would be measuring the wrong state.
+        // THE FIXTURES OWN PRECONDITION: the root is BOUND. A cross-root reading over an unbound root
+        // would answer `grey unmounted` correctly, and every assert below would be measuring the wrong
+        // state.
         let config = self.run(&self.ws, &["config"]);
         assert_eq!(
             config.status.code(),
@@ -305,27 +305,27 @@ impl Sandbox {
     }
 }
 
-/// **The same sensitivity gate, driven through `mrd status`.**
+/// **The same sensitivity gate, driven through `mrd status`.** This files header names `status`
+/// beside `check` as a surface the F6 blindness sat under, and every other gate here drives
+/// `check` and `walk`. So the axis `status` actually renders was argued for and never measured
+/// — the three states were never once asked of it. Why the gap became load-bearing `status` no
+/// longer builds every declared roots corpus. It builds the roots its own lock addresses NAME
+/// (`status_cmd::lock_addressed_roots`), because building the rest cost 80.6% of a bare
+/// `status` run and could change no answer.
 ///
-/// This file's header names `status` beside `check` as a surface the F6 blindness
-/// sat under, and every other gate here drives `check` and `walk`. So the axis
-/// `status` actually renders was argued for and never measured — the three states
-/// were never once asked of it.
 ///
-/// # Why the gap became load-bearing
-/// `status` no longer builds every declared root's corpus. It builds the roots its
-/// own lock addresses NAME (`status_cmd::lock_addressed_roots`), because building
-/// the rest cost 80.6% of a bare `status` run and could change no answer. That
-/// narrowing is safe exactly as far as the collector is complete, and THIS is the
-/// case that tells: `other:doc.md#Doc/Design` names a root whose DOCS the claim
-/// colour must read.
 ///
-/// Under-collect, and `resolve_ref` arm (b) refuses with *"the mount table binds
-/// this root, but no corpus for it was loaded in this process"* — a grey where a
-/// green or a red belongs. The assert is therefore the F6 assert, unchanged in
-/// shape: **the axis must MOVE**, and it must move to the NAMED colours. A grey
-/// fails it from either direction, which is what makes this a gate on the
-/// narrowing and not a restatement of it.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn the_status_lock_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     let sb = sandbox();
@@ -365,12 +365,12 @@ fn the_status_lock_axis_varies_across_matched_drifted_and_restored_on_a_bound_ro
     );
 }
 
-/// **THE SENSITIVITY GATE (F6): the pin axis must MOVE on a bound root.**
+/// **THE SENSITIVITY GATE (F6): the pin axis must MOVE on a bound root.** MATCHED / DRIFTED /
+/// RESTORED are driven in one run over one corpus, and the assert is that the three answers are
+/// not one answer. The `walk` line beside each is the independent adjudicator: it always
+/// carried the real mount table, so it shows what a SIGHTED instrument says about the same
+/// three states.
 ///
-/// MATCHED / DRIFTED / RESTORED are driven in one run over one corpus, and the
-/// assert is that the three answers are not one answer. The `walk` line beside each
-/// is the independent adjudicator: it always carried the real mount table, so it
-/// shows what a SIGHTED instrument says about the same three states.
 #[test]
 fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     let sb = sandbox();
@@ -416,9 +416,9 @@ fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
          prescribes a fix already done.\n  matched: {matched}\n  drifted: {drifted}"
     );
 
-    // The three planes agree BY CONSTRUCTION — and now on a SIGHTED answer. `walk`
-    // is the adjudicator that did not move: it read the same mount table before this
-    // fix and after it.
+    // The three planes agree BY CONSTRUCTION — and now on a SIGHTED answer. `walk` is the
+    // adjudicator that did not move: it read the same mount table before this fix and after it.
+    //
     assert!(
         matched_walk.contains("green") && restored_walk.contains("green"),
         "walk, the plane that always saw the table: {matched_walk} / {restored_walk}"
@@ -429,13 +429,13 @@ fn the_pin_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
     );
 }
 
-/// **THE ACCEPTANCE (F6, gate 8): a repo holding a form-3 cross-root pin can
-/// COMMIT.**
+/// **THE ACCEPTANCE (F6, gate 8): a repo holding a form-3 cross-root pin can COMMIT.** Measured
+/// on the deployed engine: `commit exit=1`, `commits 0 -> 0`, forever — everything governed,
+/// the root bound, and criterion 5s acceptance arm permanently unsatisfiable, because the
+/// fences verb rolled the unseeable pin up as a refusing grey. A guard that cannot be satisfied
+/// is not a guard.
 ///
-/// Measured on the deployed engine: `commit exit=1`, `commits 0 -> 0`, forever —
-/// everything governed, the root bound, and criterion 5's acceptance arm
-/// permanently unsatisfiable, because the fence's verb rolled the unseeable pin up
-/// as a refusing grey. A guard that cannot be satisfied is not a guard.
+///
 #[test]
 fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
     let sb = sandbox();
@@ -459,12 +459,12 @@ fn a_repo_holding_a_cross_root_pin_can_land_a_governed_commit() {
     );
 }
 
-/// **And the fence still REFUSES when the cross-root target genuinely drifts** —
-/// the other arm of the pair over the same corpus.
+/// **And the fence still REFUSES when the cross-root target genuinely drifts** — the other arm
+/// of the pair over the same corpus. Without this, the acceptance above is satisfied by a plane
+/// that answers green to everything, which is the same defect as answering grey to everything
+/// with the sign flipped.
 ///
-/// Without this, the acceptance above is satisfied by a plane that answers green to
-/// everything, which is the same defect as answering grey to everything with the
-/// sign flipped.
+///
 #[test]
 fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
     let sb = sandbox();
@@ -490,19 +490,19 @@ fn the_fence_refuses_a_commit_whose_cross_root_target_has_drifted() {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render`
-/// emits, so this gate depends on the CLI's own READER and not on the writer that
-/// produced the row. The `page[#A/B]` convenience spelling is split into the
-/// `object` wiki link and the `path` ARRAY here — R4 admits no joined string on a
-/// row — and the root qualifier rides the object verbatim (`[[other:doc]]`),
-/// which is what makes this pin the cross-root one the file is about.
+/// One R4 (`version: 2`) pin, hand-written in the exact bytes `lock::render` emits, so this
+/// gate depends on the CLIs own READER and not on the writer that produced the row. The
+/// `page[A/B]` convenience spelling is split into the `object` wiki link and the `path` ARRAY
+/// here — R4 admits no joined string on a row — and the root qualifier rides the object
+/// verbatim (`[[other:doc]]`), which is what
 ///
-/// `hash` is the git blob hash of the target file: R4 makes it MANDATORY, and
-/// this file drives `mrd check`, whose anchoring plane asks git a real question
-/// about it, so a placeholder would measure a different fault.
 ///
-/// NOTE FOR REVIEWERS: `version: 1` became `version: 2`. That is the LOCK FILE
-/// schema version, not the wire protocol version.
+///
+///
+///
+///
+///
+///
 fn lock_block(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
     let (target, fragment) = match declared_ref.split_once('#') {
         Some((t, f)) => (t, f),

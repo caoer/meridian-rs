@@ -31,9 +31,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// The exact refusal `resolve_ref` raises when a root is bound but this process
-/// holds no corpus for it — the symptom of an under-collecting union, and the
-/// string this gate exists to prove absent.
+/// The exact refusal `resolve_ref` raises when a root is bound but this process holds no corpus
+/// for it — the symptom of an under-collecting union, and the string this gate exists to prove
+/// absent.
 const NO_CORPUS_REFUSAL: &str = "no corpus for it";
 
 fn mrd_bin() -> PathBuf {
@@ -110,9 +110,9 @@ fn staged_covers_a_root_the_worktree_does_not() {
         String::from_utf8_lossy(&init.stderr)
     );
 
-    // The WORKTREE names no root at all. This is the asymmetry the gate needs:
-    // a needed-set computed from the worktree alone collects nothing, so if the
-    // union is wrong the staged pin below has no corpus to resolve into.
+    // The WORKTREE names no root at all. This is the asymmetry the gate needs: a needed-set
+    // computed from the worktree alone collects nothing, so if the union is wrong the staged pin
+    // below has no corpus to resolve into.
     git(&ws, &["init"]);
     std::fs::write(
         ws.join("plain.md"),
@@ -122,9 +122,9 @@ fn staged_covers_a_root_the_worktree_does_not() {
     git(&ws, &["add", "-A"]);
     git(&ws, &["commit", "-m", "plain"]);
 
-    // The STAGED interval, and only it, carries the cross-root address. The
-    // target does not exist inside `other` — see the header for why that is the
-    // sharp instrument rather than a weaker fixture.
+    // The STAGED interval, and only it, carries the cross-root address. The target does not exist
+    // inside `other` — see the header for why that is the sharp instrument rather than a weaker
+    // fixture.
     std::fs::write(
         ws.join("claim.md"),
         "# Claim\n\n## Body\n\ndrawn from another root.\n\n\

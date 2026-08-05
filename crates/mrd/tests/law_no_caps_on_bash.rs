@@ -1,34 +1,34 @@
-//! **The executable gate for `docs/laws.md` § "Amendment — capabilities do not
-//! apply to bash".** The law is prose; this file is what makes it hold. That
-//! section names this file and this file names that section, so a reader who
-//! proposes "just a small cap check on bash" meets both.
+//! **The executable gate for `docs/laws.md` § "Amendment — capabilities do not apply to
+//! bash".** The law is prose; this file is what makes it hold. That section names this file and
+//! this file names that section, so a reader who proposes "just a small cap check on bash"
+//! meets both. The law was ruled, re-litigated in code, and ruled again. Point 4 of the ruling
+//! is the only one that prevents a third round: a test that fails if a bash task ever resolves
+//! a capability. That is this file.
 //!
-//! The law was ruled, re-litigated in code, and ruled again. Point 4 of the
-//! ruling is the only one that prevents a third round: a test that fails if a
-//! bash task ever resolves a capability. That is this file.
 //!
-//! Two halves, and the second is the one that cannot be faked:
 //!
-//! 1. **No bash surface names a capability** — not `--list`, not `--dry`, not
-//!    the run report, in text or in `--json`. No `caps`, no source, no
-//!    `deny-default`, and above all no `(read-only)`.
-//! 2. **No resolution runs underneath the silence.** A bash block emits a
-//!    descriptor no declaration admits and it APPLIES. Deleting only the
-//!    printing would leave this half red — which is the point.
 //!
-//! Starlark is asserted UNCHANGED in the same file, so a future edit that
-//! weakens the real contract while satisfying the bash half fails here.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
 
-/// The fixture: a bash block that declares nothing, a bash block whose
-/// declaration admits a DIFFERENT target than the one it writes, a starlark
-/// block that declares nothing, and a bash block under the `check-*`
-/// name convention (whose refusal is a NAME law, not a capability, and must
-/// survive).
+/// The fixture: a bash block that declares nothing, a bash block whose declaration admits a
+/// DIFFERENT target than the one it writes, a starlark block that declares nothing, and a bash
+/// block under the `check-*` name convention (whose refusal is a NAME law, not a capability,
+/// and must survive).
+///
 const PAGE: &str = "\
 ---
 task.undeclared-bash: \"[[#^ub-1]]\"
@@ -132,9 +132,9 @@ fn claims_nothing(surface: &str, what: &str) {
 
 // ── Half 1: no bash surface names a capability ──────────────────────────────
 
-/// `--list` describes a bash task as an unsandboxed shell with undeclared
-/// effects, and says nothing about capabilities. The starlark row on the same
-/// page still carries its caps — the law is scoped to bash, not a deletion.
+/// `--list` describes a bash task as an unsandboxed shell with undeclared effects, and says
+/// nothing about capabilities. The starlark row on the same page still carries its caps — the
+/// law is scoped to bash, not a deletion.
 #[test]
 fn list_row_for_bash_claims_no_capability() {
     let ws = Ws::new();
@@ -219,10 +219,10 @@ fn dry_bash_claims_no_capability() {
 
 // ── Half 2: no resolution runs underneath the silence ───────────────────────
 
-/// **The gate that cannot be faked by deleting print statements.** A bash
-/// block that declares NOTHING emits a descriptor, and it APPLIES. Under a
-/// surviving deny-by-default resolution this refuses at the choke point with
-/// `capability denied`.
+/// **The gate that cannot be faked by deleting print statements.** A bash block that declares
+/// NOTHING emits a descriptor, and it APPLIES. Under a surviving deny-by-default resolution
+/// this refuses at the choke point with `capability denied`.
+///
 #[test]
 fn undeclared_bash_descriptor_applies_ungoverned() {
     let ws = Ws::new();
@@ -235,9 +235,9 @@ fn undeclared_bash_descriptor_applies_ungoverned() {
     );
 }
 
-/// A bash block whose frontmatter names a cap that admits a DIFFERENT target
-/// writes `status` anyway. The declaration governs nothing — it is not a
-/// narrower grant, it is not a grant at all.
+/// A bash block whose frontmatter names a cap that admits a DIFFERENT target writes `status`
+/// anyway. The declaration governs nothing — it is not a narrower grant, it is not a grant at
+/// all.
 #[test]
 fn bash_frontmatter_cap_declaration_governs_nothing() {
     let ws = Ws::new();
@@ -252,9 +252,9 @@ fn bash_frontmatter_cap_declaration_governs_nothing() {
 
 // ── The contract that stays real ────────────────────────────────────────────
 
-/// Starlark is UNCHANGED: an undeclared block's descriptor still refuses at
-/// the choke point, exit 1, and nothing applies. The law narrows capabilities
-/// to starlark; it does not weaken them there.
+/// Starlark is UNCHANGED: an undeclared blocks descriptor still refuses at the choke point,
+/// exit 1, and nothing applies. The law narrows capabilities to starlark; it does not weaken
+/// them there.
 #[test]
 fn starlark_capability_enforcement_is_untouched() {
     let ws = Ws::new();

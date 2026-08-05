@@ -47,12 +47,12 @@ use wire_serve::write::{SpliceArgs, splice};
 
 use crate::{Fail, Format, current_dir, engine};
 
-/// Run `mrd put <PATH> [flags] < edits.json`.
+/// Run `mrd put <PATH> [flags] < edits.json`. Errors [`Fail`] — exit 2 on a bad invocation (bad
+/// flags, malformed stdin JSON, a malformed `--now`, a `bad_request` refusal); exit 1 on any
+/// other engine refusal, message verbatim.
 ///
-/// # Errors
-/// [`Fail`] — exit 2 on a bad invocation (bad flags, malformed stdin JSON, a
-/// malformed `--now`, a `bad_request` refusal); exit 1 on any other engine
-/// refusal, message verbatim.
+///
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Put::parse(args)?;
     let edits = read_stdin_edits()?;
@@ -91,9 +91,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let outcome =
         splice(&root, None, &splice_args, &[], None).map_err(|e| engine::refusal_fail(&e))?;
 
-    // D3: the rehearsal preview, rendered from the candidate the choke-point
-    // ALREADY built (§4.4 one-reparse law) rather than re-derived here — the
-    // CLI holds no second implementation of what a batch does to a document.
+    // D3: the rehearsal preview, rendered from the candidate the choke-point ALREADY built (§4.4
+    // one-reparse law) rather than re-derived here — the CLI holds no second implementation of
+    // what a batch does to a document.
     let diff = if parsed.dry {
         rehearsal_diff(&root, &parsed.path, outcome.candidate.as_deref())?
     } else {
@@ -111,10 +111,10 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         .and_then(|obj| obj.remove("body"))
         .unwrap_or(Value::Null);
 
-    // The findings leg of the silent check: a passing rehearsal says nothing,
-    // so anything the engine DID find has to leave through a non-zero exit or
-    // it is lost. Rule packs are empty on this face, so an unforced rehearsal
-    // carries no verdicts and this is the quiet path by construction.
+    // The findings leg of the silent check: a passing rehearsal says nothing, so anything the
+    // engine DID find has to leave through a non-zero exit or it is lost. Rule packs are empty on
+    // this face, so an unforced rehearsal carries no verdicts and this is the quiet path by
+    // construction.
     if parsed.validate {
         let verdicts = body
             .get("verdicts")
@@ -141,20 +141,20 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
             }
             println!("{}", serde_json::to_string_pretty(&value).expect("json"));
         }
-        // `--validate` passed, so it says NOTHING (D3): the exit code is the
-        // whole answer, and a line of reassurance is what makes a silent check
-        // stop being one.
+        // `--validate` passed, so it says NOTHING (D3): the exit code is the whole answer, and a line
+        // of reassurance is what makes a silent check stop being one.
+        //
         Format::Human if parsed.validate => {}
         Format::Human => print_human(&parsed, &body, diff.as_deref()),
     }
     Ok(())
 }
 
-/// The `--dry` diff: the file's CURRENT bytes → the candidate the rehearsal
-/// built, through the one line-diff renderer in the tree
-/// ([`wire_serve::ladder::unified_diff`], U11's primitive). `None` when the
-/// batch changes no line — a rehearsal that would write the same bytes has no
+/// The `--dry` diff: the files CURRENT bytes → the candidate the rehearsal built, through the
+/// one line-diff renderer in the tree ([`wire_serve::ladder::unified_diff`], U11s primitive).
+/// `None` when the batch changes no line — a rehearsal that would write the same bytes has no
 /// change to show, and saying so is the honest answer.
+///
 fn rehearsal_diff(
     root: &fs::WorkspaceRoot,
     path: &str,
@@ -255,9 +255,9 @@ impl Put {
                     let value = it
                         .next()
                         .ok_or_else(|| Fail::tool("--now needs a value".to_owned()))?;
-                    // The engine reads no wall clock and the wire dispatch
-                    // strict-decode is not on this path — validate the §9
-                    // format law HERE, exactly as the server would.
+                    // The engine reads no wall clock and the wire dispatch strict-decode is not on this path —
+                    // validate the §9 format law HERE, exactly as the server would.
+                    //
                     if !wire::now_is_rfc3339(value) {
                         return Err(Fail::tool(format!(
                             "--now must be RFC 3339 (YYYY-MM-DDTHH:MM:SS[.frac](Z|±HH:MM)): {value}"
@@ -334,12 +334,12 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
                 .to_owned(),
         ));
     }
-    // Shape advice is CONDITIONAL ([`envelope_hint`]) — only the caller who
-    // really sent the envelope is told to remove one. The nothing-happened
-    // clause is UNCONDITIONAL, because it is true of every malformed case: the
-    // decode runs before the workspace is resolved and before any splice, so a
-    // refusal here has had zero engine contact. It rides last so the sentence
+    // Shape advice is CONDITIONAL ([`envelope_hint`]) — only the caller who really sent the
+    // envelope is told to remove one. The nothing-happened clause is UNCONDITIONAL, because it is
+    // true of every malformed case: the decode runs before the workspace is resolved and before
+    // any splice, so a refusal here has had zero engine contact. It rides last so the sentence
     // terminates the refusal whether or not the hint fired.
+    //
     let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
         Fail::tool(format!(
             "malformed edits JSON on stdin: {e}{}. Nothing was parsed and nothing was \
@@ -350,16 +350,16 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
     Ok(edits)
 }
 
-/// The one refusal worth naming: stdin carried the whole §4.4 REQUEST object
-/// instead of the array under its `edits` key.
+/// The one refusal worth naming: stdin carried the whole §4.4 REQUEST object instead of the
+/// array under its `edits` key. It fires only when the bytes really are that — an object with
+/// an `edits` key — so the hint can never mis-diagnose some other malformed input.
 ///
-/// It fires only when the bytes really are that — an object with an `edits`
-/// key — so the hint can never mis-diagnose some other malformed input. Any
-/// other shape gets the decoder's own message and NO shape advice: a truncated
-/// array or a stray comma told to remove an envelope it never sent would be a
-/// recovery that does not exist. (The caller is still told nothing was parsed
-/// and nothing was written — that clause is unconditional and lives at the
-/// call site, because it holds for every malformed input.)
+///
+///
+///
+///
+///
+///
 fn envelope_hint(raw: &str) -> &'static str {
     let is_envelope = serde_json::from_str::<Value>(raw)
         .ok()

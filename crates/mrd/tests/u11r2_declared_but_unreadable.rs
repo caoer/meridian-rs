@@ -1,33 +1,33 @@
-//! **U11 round 2 (S3-R43) — a DECLARED root this machine cannot read must not be
-//! called "not bound".**
+//! **U11 round 2 (S3-R43) — a DECLARED root this machine cannot read must not be called "not
+//! bound".** Round 1 collapsed two causes onto one reason word. The teaching for an
+//! *undeclared* root is *"declare it in `~/MERIDIAN.md`"*; on a root that IS declared and
+//! merely unreadable that sentence is **false and the prescribed fix is already done** — the
+//! user follows it, nothing changes, and nothing points at the real cause. **This file is the
+//! CLI half of the redden, and it exists because round 1's reachability analysis drew the wrong
+//! conclusion.
 //!
-//! Round 1 collapsed two causes onto one reason word. The teaching for an
-//! *undeclared* root is *"declare it in `~/MERIDIAN.md`"*; on a root that IS
-//! declared and merely unreadable that sentence is **false and the prescribed
-//! fix is already done** — the user follows it, nothing changes, and nothing
-//! points at the real cause.
 //!
-//! **This file is the CLI half of the redden, and it exists because round 1's
-//! reachability analysis drew the wrong conclusion.** I reported that the
-//! bound-but-no-corpus arm of `resolve_ref` is unreachable in production —
-//! true — and concluded the false teaching therefore could not fire at any
-//! shipped surface. **Wrong.** `walk_cmd::load_mounts` DROPS a declared-but-
-//! unusable root from the `MountSet` (`state().refuses()` → `continue`, and a
-//! `build_docs_at` failure skips it), so it falls to the *undeclared* arm and is
-//! called "not bound" — while `mrd config`, one command away, correctly reports
-//! the path is unseeable.
 //!
-//! Measured on `9429a5fd` before the fix, same machine, same instant:
 //!
-//! ```text
-//! $ mrd config
-//!   sessions  vault  /…/gone  vault:sessions  grey(path-unseeable)
-//!       the mount path cannot be read here (No such file or directory (os error 2))
-//!       … Fix: check out the root at that path, or remove the mount.
 //!
-//! $ mrd walk claim.md --json
-//!   "color": "grey",  "reason": "unmounted",  "detail": "root 'sessions'"
-//! ```
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -153,14 +153,14 @@ impl Sandbox {
     }
 }
 
-/// **THE REDDEN, and the gate.** A root DECLARED in `MERIDIAN.md` whose path
-/// cannot be read must NOT be reported with the undeclared root's reason word,
-/// and its detail must name the PATH rather than prescribe a declaration that
-/// already exists.
+/// **THE REDDEN, and the gate.** A root DECLARED in `MERIDIAN.md` whose path cannot be read
+/// must NOT be reported with the undeclared root's reason word, and its detail must name the
+/// PATH rather than prescribe a declaration that already exists.
 ///
-/// The `mrd config` assertion is the independent adjudicator (S3-R30): it is
-/// U7's surface, untouched by this unit, and it already answers this state
-/// correctly. The defect is that the two verbs disagreed.
+///
+///
+///
+///
 #[test]
 fn a_declared_but_unreadable_root_is_not_reported_as_undeclared() {
     let sb = sandbox(false); // declared, but the directory does not exist
@@ -201,10 +201,10 @@ fn a_declared_but_unreadable_root_is_not_reported_as_undeclared() {
     );
 }
 
-/// **The ACCEPTANCE half (S3-R8(c)), and the control that makes the test above
-/// mean something.** The SAME declaration, with the directory actually present,
-/// must still bind and resolve. Without this, a build that reported every root
-/// as unreadable would pass the gate above.
+/// **The ACCEPTANCE half (S3-R8(c)), and the control that makes the test above mean
+/// something.** The SAME declaration, with the directory actually present, must still bind and
+/// resolve. Without this, a build that reported every root as unreadable would pass the gate
+/// above.
 #[test]
 fn the_same_declaration_with_a_readable_path_still_binds_and_resolves() {
     let sb = sandbox(true); // identical MERIDIAN.md — the path exists
@@ -223,9 +223,9 @@ fn the_same_declaration_with_a_readable_path_still_binds_and_resolves() {
         "a readable declared root is not unmounted: {}",
         String::from_utf8_lossy(&out.stdout),
     );
-    // The pin's rev is deliberately wrong, so the TRUE verdict here is a
-    // measured drift — proving the ref resolved into the mounted root and was
-    // actually compared, rather than being short-circuited by any grey.
+    // The pin's rev is deliberately wrong, so the TRUE verdict here is a measured drift — proving
+    // the ref resolved into the mounted root and was actually compared, rather than being
+    // short-circuited by any grey.
     assert_eq!(
         reason,
         "content-drifted",
@@ -235,12 +235,12 @@ fn the_same_declaration_with_a_readable_path_still_binds_and_resolves() {
     );
 }
 
-/// **The third cause round 1 also collapsed:** declared, `Bound` per the mount
-/// table, but the corpus could not be built. It must not borrow the undeclared
-/// root's word either.
+/// **The third cause round 1 also collapsed:** declared, `Bound` per the mount table, but the
+/// corpus could not be built. It must not borrow the undeclared root's word either. Constructed
+/// by making the root a FILE where a directory is expected — the table binds a path that
+/// exists, and the corpus build is what fails.
 ///
-/// Constructed by making the root a FILE where a directory is expected — the
-/// table binds a path that exists, and the corpus build is what fails.
+///
 #[test]
 fn a_declared_root_whose_corpus_cannot_be_built_is_not_reported_as_undeclared() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -274,16 +274,16 @@ fn a_declared_root_whose_corpus_cannot_be_built_is_not_reported_as_undeclared() 
     assert_eq!(reason, addr::PATH_UNSEEABLE_REASON_WORD);
 }
 
-/// **BOTH ARMS DISTINCT, IN ONE RUN** — the round-2 gate.
+/// **BOTH ARMS DISTINCT, IN ONE RUN** — the round-2 gate. One `MERIDIAN.md` DECLARES `sessions`
+/// at an unreadable path and says nothing at all about `assets`. One page pins a ref into each.
 ///
-/// One `MERIDIAN.md` DECLARES `sessions` at an unreadable path and says nothing
-/// at all about `assets`. One page pins a ref into each. One `mrd walk` must
-/// render **two entries with two different reason words**, each teaching its own
-/// fix, both on exit 1.
 ///
-/// Asserting them in one run is what makes this a distinction rather than two
-/// facts: separate runs would pass against a build that emitted whichever word
-/// it felt like, as round 1 did.
+///
+///
+///
+///
+///
+///
 #[test]
 fn both_root_greys_are_distinct_in_one_run_and_both_refuse() {
     let sb = sandbox(false); // `sessions` declared, path absent; `assets` undeclared
@@ -350,14 +350,14 @@ fn both_root_greys_are_distinct_in_one_run_and_both_refuse() {
     );
 }
 
-/// **THE PINNING GATE — pins THE STRING PRODUCTION EMITS, ON THE SURFACE
-/// PRODUCTION RENDERS IT.**
+/// **THE PINNING GATE — pins THE STRING PRODUCTION EMITS, ON THE SURFACE PRODUCTION RENDERS
+/// IT.** The round-1 pinning test asserted a `const` against a renderer that nothing called — a
+/// wording pinned and never emitted, which is the weakened middle
 ///
-/// The round-1 pinning test asserted a `const` against a renderer that nothing
-/// called — a wording pinned and never emitted, which is the weakened middle
-/// this unit's own third finding caught. This one captures `mrd walk`'s real
-/// stdout and asserts the teaching line VERBATIM, so a drift in the wording is a
-/// visible failure of the thing a user actually reads.
+///
+///
+///
+///
 #[test]
 fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
     let sb = sandbox(false);
@@ -386,12 +386,12 @@ fn the_emitted_teaching_is_pinned_verbatim_on_the_surface_that_renders_it() {
     );
 }
 
-/// **The PINNING GATE for the second word**, same rule: the string PRODUCTION
-/// EMITS, on the surface production renders it.
+/// **The PINNING GATE for the second word**, same rule: the string PRODUCTION EMITS, on the
+/// surface production renders it. The path is a tempdir, so it is substituted rather than
+/// hardcoded — but every other byte is pinned, including the clause that must NOT appear. A
+/// drift in the wording fails here, where a user would see it.
 ///
-/// The path is a tempdir, so it is substituted rather than hardcoded — but every
-/// other byte is pinned, including the clause that must NOT appear. A drift in
-/// the wording fails here, where a user would see it.
+///
 #[test]
 fn the_emitted_path_unseeable_teaching_is_pinned_verbatim() {
     let sb = sandbox(false);
