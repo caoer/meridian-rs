@@ -393,6 +393,13 @@ fn body_marker(n: &str) -> String {
 /// boundary is ever found by scanning for one. The alternative — escaping or
 /// fencing the prose so the marker becomes unspellable — would edit the bytes
 /// the read exists to serve verbatim, which is the A-K1 class.
+///
+/// **So the face is never trimmed at the end.** The final body's trailing
+/// newlines are bytes the head already counted; tidying them off the tail would
+/// leave the last body shorter than its own declaration and break the only
+/// sanctioned parse (dogfood G12 — it declared 75 and served 74, and every
+/// `sections-*` golden had frozen the short face, so the suite was green on the
+/// defect). The property gate lives at `testsuite::g12_declared_bytes`.
 #[must_use]
 pub fn sections_toon(
     header: &Header<'_>,
@@ -404,7 +411,6 @@ pub fn sections_toon(
     for s in sections {
         let _ = write!(b, "\n\n{}\n{}", body_marker(&s.n), s.content);
     }
-    b.truncate(b.trim_end_matches('\n').len());
     b
 }
 
@@ -572,7 +578,11 @@ mod tests {
 
         // The body follows its marker, verbatim and subtree-inclusive.
         let body = out.text.split("\n\n== 2 ==\n").nth(1).expect("one body");
-        assert_eq!(body, out.sections[0].content.trim_end_matches('\n'));
+        assert_eq!(
+            body, out.sections[0].content,
+            "the final body is served WHOLE — trailing newline included, \
+             because the head counted it (G12)"
+        );
         assert!(out.sections[0].content.contains("## Slash/Title Here"));
     }
 
