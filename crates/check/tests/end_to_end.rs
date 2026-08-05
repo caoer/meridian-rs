@@ -1,15 +1,15 @@
-//! End-to-end gates for the `check` engine, driven through the PRODUCTION write
-//! path (a guarded `create` / `splice` — no in-memory double), over a real tree.
+//! End-to-end gates for the `check` engine, driven through the PRODUCTION write path (a
+//! guarded `create` / `splice` — no in-memory double), over a real tree.
 //!
 //! # What this file used to gate, and why it does not any more
-//! Every fixture here once seeded the reserved receipt journal and asserted the
-//! journal TRACE: a spliced row reddening the chain recompute, a stale baseline
-//! greying both detectors, the `foreign_edit` withdrawal. **That plane is deleted
-//! and is not re-derived**, so those arms are gone with it rather than being
-//! reshaped into something that looks like coverage without being any.
+//! Every fixture here once seeded the reserved receipt journal and asserted the journal
+//! TRACE: a spliced row reddening the chain recompute, a stale baseline greying both
+//! detectors, the `foreign_edit` withdrawal. **That plane is deleted and is not
+//! re-derived**, so those arms are gone with it rather than being reshaped into something
+//! that looks like coverage without being any.
 //!
-//! What remains is gated here honestly: the planes `check` still reads, driven the
-//! same production way — and, explicitly, **the law itself**
+//! What remains is gated here honestly: the planes `check` still reads, driven the same
+//! production way — and, explicitly, **the law itself**
 //! ([`the_engine_keeps_no_memory_and_this_pins_it`]), so that the engine's memorylessness
 //! is a pinned, visible fact rather than an absence a later reader has to infer.
 

@@ -2,29 +2,29 @@
 //!
 //! # What these are, and what the retired goldens were
 //! The 11 Go-parity goldens retired in U14: they were CAPTURES of meridian-go's
-//! `readText` bytes, replayed through requests whose joined-string selectors
-//! the engine no longer accepts, and they could not be re-taken because
-//! meridian-go never served the redesigned read contract. These are the
-//! opposite kind of artifact — not captures of another implementation but
-//! REVIEWED FIXTURES of our own face, hand-checked once and frozen. Nothing
-//! outside this repo is owed byte parity (`CLAUDE.md` end-state ruling).
+//! `readText` bytes, replayed through requests whose joined-string selectors the engine
+//! no longer accepts, and they could not be re-taken because meridian-go never served the
+//! redesigned read contract. These are the opposite kind of artifact — not captures of
+//! another implementation but REVIEWED FIXTURES of our own face, hand-checked once and
+//! frozen. Nothing outside this repo is owed byte parity (`CLAUDE.md` end-state ruling).
 //!
 //! # The discipline (#38)
-//! **No regeneration path exists here, deliberately.** There is no `--bless`,
-//! no `UPDATE_GOLDENS` env escape, no write-back on mismatch. A golden the
-//! code under test can rewrite is not a pin — it is the code asserting its own
-//! arithmetic, and it goes green through exactly the change it exists to
-//! catch. Every file under `data/toon-goldens/` was read by a human before it
-//! was committed, and changing the face means editing those bytes by hand and
-//! defending the diff in review.
+//! **No regeneration path exists here, deliberately.** There is no `--bless`, no
+//! `UPDATE_GOLDENS` env escape, no write-back on mismatch. A golden the code under test
+//! can rewrite is not a pin — it is the code asserting its own arithmetic, and it goes
+//! green through exactly the change it exists to catch. Every file under
+//! `data/toon-goldens/` was read by a human before it was committed, and changing the
+//! face means editing those bytes by hand and defending the diff in review.
 //!
 //! # The production path
-//! Each case drives the SIDECAR SERVE LOOP — the real v3 wire door, over a
-//! real on-disk workspace — and pins `body.rendered_text`. So what is frozen
-//! is what a caller actually receives, past the composed read op, the render
-//! plane's production configuration, and the agent-plane URI translation. A
-//! gate that called `render::toc_toon` directly would pin a function while the
-//! face it is supposed to protect drifted underneath it.
+//! Each case drives the SIDECAR SERVE LOOP — the real v3 wire door, over a real on-disk
+//! workspace — and pins `body.rendered_text`. So what is frozen is what a caller actually
+//! receives, past the composed read op, the render plane's production configuration, and
+//! the agent-plane URI translation. A gate that called `render::toc_toon` directly would
+//! pin a function while the face it is supposed to protect drifted underneath it.
+//!
+//!
+//!
 
 use serde_json::{Value, json};
 

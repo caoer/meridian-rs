@@ -1,53 +1,49 @@
 //! Git plumbing: the one organ that shells out to `git` for content-addressing.
 //!
 //! # Charter
-//! **Owns:** the operational blob-sha path (`git hash-object`, and the eager
-//! `-w` write), the object-reachability probe (`git rev-list --objects --all`
-//! computed ONCE into a [`ReachableSet`]), and object presence/size lookups
-//! (one batched `git cat-file --batch-check`), and **the write history** — the
-//! first-parent `git log --name-status` walk ([`Repo::path_history`]) plus the
-//! batched blob read that recovers each side's bytes ([`Repo::blobs_at`], one
-//! `git cat-file --batch`). History is git's by law (ZT 2026-08-03: the engine
-//! keeps no memory), so the question is asked HERE, in the one auditable
-//! shell-out leaf, and never by a caller spawning git per commit. Every call
-//! runs against a
-//! [`Repo`] handle — a path plus the git program to run — so a later per-root
-//! world constructs one handle per root and nothing here changes.
+//! **Owns:** the operational blob-sha path (`git hash-object`, and the eager `-w` write),
+//! the object-reachability probe (`git rev-list --objects --all` computed ONCE into a
+//! [`ReachableSet`]), and object presence/size lookups (one batched `git cat-file
+//! --batch-check`), and **the write history** — the first-parent `git log --name-status`
+//! walk ([`Repo::path_history`]) plus the batched blob read that recovers each side's
+//! bytes ([`Repo::blobs_at`], one `git cat-file --batch`). History is git's by law (.
+//! Every call runs against a [`Repo`] handle — a path plus the git program to run — so a
+//! later per-root world constructs one handle per root and nothing here changes.
 //!
-//! **Never does:** compute an object id itself. **git owns content-addressing**
-//! (the ratified law): this crate asks git and reports what git said. When git
-//! is absent, or the handle's root is not a repository, every call returns a
-//! typed [`GitFail`] — a fabricated or guessed oid is a correctness breach, not
-//! a fallback (plan §5, S5 rescue row).
+//! **Never does:** compute an object id itself. **git owns content-addressing** (the
+//! ratified law): this crate asks git and reports what git said. When git is absent, or
+//! the handle's root is not a repository, every call returns a typed [`GitFail`] — a
+//! fabricated or guessed oid is a correctness breach, not a fallback (plan §5, S5 rescue
+//! row).
 //!
-//! **Never does (2):** name a workspace, resolve a root, or hold a global. The
-//! caller supplies the root; there is no ambient "the repo" here.
+//! **Never does (2):** name a workspace, resolve a root, or hold a global. The caller
+//! supplies the root; there is no ambient "the repo" here.
 //!
-//! **Dependencies:** `std` only. The whole shell-out surface is one auditable
-//! leaf, so `git`-invocation churn is a one-crate event (the corollary the
-//! `syntax`/pulldown-cmark edge already sets), and every consumer — `mrd`,
-//! `wire-serve`, `view` — can take the edge without dragging `model`/`wire` in.
+//! **Dependencies:** `std` only. The whole shell-out surface is one auditable leaf, so
+//! `git`-invocation churn is a one-crate event (the corollary the `syntax`/pulldown-cmark
+//! edge already sets), and every consumer — `mrd`, `wire-serve`, `view` — can take the
+//! edge without dragging `model`/`wire` in.
 //!
 //! # This is NOT the fingerprint hasher
-//! `model::fingerprint` owns the engine's content identity (`fp1.span2.b3.…`
-//! over normalized span bytes) and `model::fingerprint::verify_object` is pure
-//! equality against a git oid the engine did not compute. THIS crate is the
-//! operational path that produces that oid for the `objects:` plane. The two
-//! never merge: one is the engine's hash, the other is git's.
+//! `model::fingerprint` owns the engine's content identity (`fp1.span2.b3.…` over
+//! normalized span bytes) and `model::fingerprint::verify_object` is pure equality
+//! against a git oid the engine did not compute. THIS crate is the operational path that
+//! produces that oid for the `objects:` plane. The two never merge: one is the engine's
+//! hash, the other is git's.
 //!
 //! # Filters are applied, deliberately
-//! [`Repo::blob_oid`] hashes a work-tree path through git's default path-based
-//! rules, so `.gitattributes` clean filters and eol conversion apply — the oid
-//! it returns is **the blob git would store**, identical to `git rev-parse
-//! HEAD:<path>` after a commit of the same bytes. `--no-filters` would return a
-//! different id for a filtered path, and that id would never appear in the
-//! object database, so every reachability answer over it would be wrong. The
-//! gate proving this is `tests/plumbing.rs::blob_oid_matches_the_committed_blob_under_a_clean_filter`.
+//! [`Repo::blob_oid`] hashes a work-tree path through git's default path-based rules, so
+//! `.gitattributes` clean filters and eol conversion apply — the oid it returns is **the
+//! blob git would store**, identical to `git rev-parse HEAD:<path>` after a commit of the
+//! same bytes. `--no-filters` would return a different id for a filtered path, and that
+//! id would never appear in the object database, so every reachability answer over it
+//! would be wrong. The gate proving this is
+//! `tests/plumbing.rs::blob_oid_matches_the_committed_blob_under_a_clean_filter`.
 //!
 //! # The three-state anchoring check
-//! This crate gathers the facts; `receipt::anchor::ObjectAnchor` classifies
-//! them (the same fact/classify split the origin-anchor axis already uses).
-//! One check, one `rev-list`:
+//! This crate gathers the facts; `receipt::anchor::ObjectAnchor` classifies them (the
+//! same fact/classify split the origin-anchor axis already uses). One check, one
+//! `rev-list`:
 //!
 //! ```no_run
 //! # use std::path::Path;
@@ -64,6 +60,10 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//!
+//!
+//!
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};

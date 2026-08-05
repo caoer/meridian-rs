@@ -1,17 +1,17 @@
 //! U4b fixtures: `meridian-*` block elision on the RENDER face ONLY.
 //!
-//! The page carries a REAL canonical lock block (built by `lock::render` —
-//! the engine-sole-writer byte form, #8 §3) plus a `meridian-journal` block
-//! and an ordinary `rust` fence, mirroring the U0 `meridian-block` corpus
-//! doc. Byte pin #4: the raw read/cat face carries `meridian-*` blocks
-//! VERBATIM and never routes through render; elision lives behind
-//! [`ToonRenderer::with_meridian_elision`].
+//! The page carries a REAL canonical lock block (built by `lock::render` — the
+//! engine-sole-writer byte form, #8 §3) plus a `meridian-journal` block and an ordinary
+//! `rust` fence, mirroring the U0 `meridian-block` corpus doc. Byte pin #4: the raw
+//! read/cat face carries `meridian-*` blocks VERBATIM and never routes through render;
+//! elision lives behind [`ToonRenderer::with_meridian_elision`].
 //!
-//! **U36:** the predicate is `lock::is_engine_emitted` — derived from the
-//! registered canonical writers, not from the `meridian-*` namespace. So the
-//! lock elides (the engine writes it) while `meridian-journal`, which no writer
-//! claims, renders. Reservation stays uniform (`lock::is_meridian_lang`, #8 §1);
-//! readership is per-language.
+//! **U36:** the predicate is `lock::is_engine_emitted` — derived from the registered
+//! canonical writers, not from the `meridian-*` namespace. So the lock elides (the engine
+//! writes it) while `meridian-journal`, which no writer claims, renders. Reservation
+//! stays uniform (`lock::is_meridian_lang`, #8 §1); readership is per-language.
+//!
+//!
 
 use render::{Header, RenderJob, RenderedSection, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts, resolve_selector};

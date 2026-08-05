@@ -1,14 +1,14 @@
-//! U3.5a merge gate — the realise engine's three named scenarios (plan Block 3
-//! U3.5a Test: line), each driving the REAL run plane and the REAL U2.6 guarded
-//! create over an on-disk workspace (no in-memory double — fidelity is the
-//! point):
+//! U3.5a merge gate — the realise engine's three named scenarios (plan Block 3 U3.5a
+//! Test: line), each driving the REAL run plane and the REAL U2.6 guarded create over an
+//! on-disk workspace (no in-memory double — fidelity is the point):
 //!
 //! - `failing_check_no_apply_mints_pending_agent_and_board_card`
 //! - `retry_exhausted_renders_non_convergent`
 //! - `no_apply_lands_unrecorded`
 //!
-//! Plus engine unit gates: caps union, `--dry-run` (zero caps + blast radius),
-//! and the converged no-op.
+//! Plus engine unit gates: caps union, `--dry-run` (zero caps + blast radius), and the
+//! converged no-op.
+//!
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

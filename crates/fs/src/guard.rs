@@ -1,80 +1,80 @@
-//! Exec-window detection bracket (run-plane U6b): residual-compare over the
-//! §12 hash domain, the domain-config change bracket, and symlink
-//! refusal in the guarded walk.
+//! Exec-window detection bracket (run-plane U6b): residual-compare over the §12 hash
+//! domain, the domain-config change bracket, and symlink refusal in the guarded walk.
 //!
 //! # What this is
-//! Bash task blocks are `detected`, not prevented (plan #16/#18): the run
-//! layer brackets every bash exec window with a [`StepGuard`] —
-//! [`StepGuard::open`] captures the config state and the pre-step domain
-//! snapshot, [`StepGuard::close`] re-snapshots after the step and REFUSES
-//! unless the post-step tree is byte-identical to pre-step files + that
-//! step's governed edits. These primitives are exec-independent; the run
-//! crate wires them around real bash windows.
+//! Bash task blocks are `detected`, not prevented (plan #16/#18): the run layer brackets
+//! every bash exec window with a [`StepGuard`] — [`StepGuard::open`] captures the config
+//! state and the pre-step domain snapshot, [`StepGuard::close`] re-snapshots after the
+//! step and REFUSES unless the post-step tree is byte-identical to pre-step files + that
+//! step's governed edits. These primitives are exec-independent; the run crate wires them
+//! around real bash windows.
 //!
 //! # Residual-compare, not root-compare (#19)
 //! A naive "the root changed, but we changed it" check passes the
-//! emit-one-honest-descriptor-and-write-elsewhere cheat. The guard instead
-//! computes the EXPECTED post-step file set — pre-step files overlaid with
-//! the step's [`GovernedEdit`]s, domain-filtered — and diffs the actual
-//! snapshot against it path-by-path, byte-by-byte. Any residual (a file
-//! present that should not be, absent that should be, or with different
-//! bytes) refuses with the exact delta named.
+//! emit-one-honest-descriptor-and-write-elsewhere cheat. The guard instead computes the
+//! EXPECTED post-step file set — pre-step files overlaid with the step's
+//! [`GovernedEdit`]s, domain-filtered — and diffs the actual snapshot against it
+//! path-by-path, byte-by-byte. Any residual (a file present that should not be, absent
+//! that should be, or with different bytes) refuses with the exact delta named.
 //!
 //! # Naming discipline (S4)
-//! A residual delta is reported as an **"out-of-band change during exec
-//! window"** — the guard names the window and the paths, never an author.
-//! The delta may equally be a human edit racing the run; accusing the block
-//! would be invented attribution. The wording lives in [`GuardError`]'s
-//! `Display` so downstream reports inherit it.
+//! A residual delta is reported as an **"out-of-band change during exec window"** — the
+//! guard names the window and the paths, never an author. The delta may equally be a
+//! human edit racing the run; accusing the block would be invented attribution. The
+//! wording lives in [`GuardError`]'s `Display` so downstream reports inherit it.
 //!
 //! # Config bracket (#20)
-//! The detection domain itself is config: a step that rewrites the domain
-//! config could widen the ignore list so its next writes fall
-//! outside detection. The guard captures the raw config bytes at open and
-//! refuses at close — BEFORE the residual diff, so a widened domain never
-//! filters it — if they changed. Byte equality subsumes the planned hash
-//! compare.
+//! The detection domain itself is config: a step that rewrites the domain config could
+//! widen the ignore list so its next writes fall outside detection. The guard captures
+//! the raw config bytes at open and refuses at close — BEFORE the residual diff, so a
+//! widened domain never filters it — if they changed. Byte equality subsumes the planned
+//! hash compare.
 //!
-//! BOTH declaration surfaces are bracketed — `meridian/domain.md` and the
-//! legacy `mdfs_config.yaml`. #20 is about the DOMAIN moving, not about one
-//! filename: a bracket watching a single file while the workspace declares its
-//! ignore list in the other would reintroduce exactly the laundering it exists
-//! to stop. [`StepGuard::config_state`] + [`StepGuard::verify_config`] are
-//! the SEAM for mid-run continuity: the run layer is expected to pin every
-//! step to the config the run started under (surfaced there as
+//! BOTH declaration surfaces are bracketed — `meridian/domain.md` and the legacy
+//! `mdfs_config.yaml`. #20 is about the DOMAIN moving, not about one filename: a bracket
+//! watching a single file while the workspace declares its ignore list in the other would
+//! reintroduce exactly the laundering it exists to stop. [`StepGuard::config_state`] +
+//! [`StepGuard::verify_config`] are the SEAM for mid-run continuity: the run layer is
+//! expected to pin every step to the config the run started under (surfaced there as
 //! `ExecBracket::open_pinned`); this module only provides the predicate.
 //!
 //! # Symlinks (#25)
-//! `ln -s <out-of-tree secret> notes/x.md` would make out-of-tree bytes
-//! addressable while the plain [`crate::walk`] silently skips the link —
-//! laundering that defeats in-domain detection, unlike a plain out-of-tree
-//! write. The guarded walk REFUSES any symlink on a non-dot path (file or
-//! directory, md or not), at open (no trustworthy baseline over links) and
-//! at close (laundering during the window); on unix, file reads are
+//! `ln -s <out-of-tree secret> notes/x.md` would make out-of-tree bytes addressable while
+//! the plain [`crate::walk`] silently skips the link — laundering that defeats in-domain
+//! detection, unlike a plain out-of-tree write. The guarded walk REFUSES any symlink on a
+//! non-dot path (file or directory, md or not), at open (no trustworthy baseline over
+//! links) and at close (laundering during the window); on unix, file reads are
 //! `O_NOFOLLOW` so a link racing the walk cannot be read through either.
 //!
 //! # Accepted gaps — named, not hidden
-//! - **Non-md / `.meridian/` / dot-path writes are UNDETECTED** (#20): the
-//!   §12 hash domain is md-only and dot-excluded, so the guard cannot see
-//!   them. An explicit S1 gap, distinct from the out-of-tree honor system.
+//! - **Non-md / `.meridian/` / dot-path writes are UNDETECTED** (#20): the §12 hash
+//!   domain is md-only and dot-excluded, so the guard cannot see them. An explicit S1
+//!   gap, distinct from the out-of-tree honor system.
 //! - **Dot-path symlinks** sit in the same gap: not walked, not refused.
-//! - **Ignored directories are not walked and their links are not refused.**
-//!   An ignored path is outside the detection domain by the workspace's own
-//!   declaration, so a symlink there can make out-of-tree bytes readable at a
-//!   path nothing attests. Two things keep this from being #25 reopened: the
-//!   ignore list is itself bracketed (a step cannot widen it mid-window to
-//!   manufacture the spot), and an ignored file never enters the hash domain,
-//!   so nothing it points at can reach a hash, attest or receipt surface. What
-//!   it does NOT buy is unreadability — a bash step could already read any
-//!   out-of-tree file directly, with or without a link, because this bracket
-//!   detects writes and has never sandboxed reads.
-//!   Without this, one link anywhere in a vendored subtree refuses the whole
-//!   walk and no bracket can open: field-notes carries 2,670 non-dot symlinks,
-//!   2,669 of them under a single ignored asset store.
-//! - **Residual escape window** (S3): background children are process-group
-//!   killed at step end (U6a); a write landing between that kill and the
-//!   close-snapshot read — or after close — is outside the bracket.
-//!   Detection holds up to the bracket boundary, no further.
+//! - **Ignored directories are not walked and their links are not refused.** An ignored
+//!   path is outside the detection domain by the workspace's own declaration, so a
+//!   symlink there can make out-of-tree bytes readable at a path nothing attests. Two
+//!   things keep this from being #25 reopened: the ignore list is itself bracketed (a
+//!   step cannot widen it mid-window to manufacture the spot), and an ignored file never
+//!   enters the hash domain, so nothing it points at can reach a hash, attest or receipt
+//!   surface. What it does NOT buy is unreadability — a bash step could already read any
+//!   out-of-tree file directly, with or without a link, because this bracket detects
+//!   writes and has never sandboxed reads. Without this, one link anywhere in a vendored
+//!   subtree refuses the whole walk and no bracket can open: field-notes carries 2,670
+//!   non-dot symlinks, 2,669 of them under a single ignored asset store.
+//! - **Residual escape window** (S3): background children are process-group killed at
+//!   step end (U6a); a write landing between that kill and the close-snapshot read — or
+//!   after close — is outside the bracket. Detection holds up to the bracket boundary, no
+//!   further.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::fmt;

@@ -1,12 +1,12 @@
-//! **The interval overlay (F1): a snapshot of bytes that are not the worktree's,
-//! folded by the same fold.**
+//! **The interval overlay (F1): a snapshot of bytes that are not the worktree's, folded
+//! by the same fold.**
 //!
-//! `domain_snapshot` reads the worktree; a pre-commit fence is asked about the git
-//! index. `overlay_snapshot` is how a caller holding the other interval's bytes
-//! folds them through ONE fold rather than a second one of its own — and the gate
-//! that matters most here is the boring one: **an overlay that changes nothing must
-//! fold to the same root.** If it does not, every governed commit greys, because
-//! the fold no longer matches the `root_after` a receipt recorded.
+//! `domain_snapshot` reads the worktree; a pre-commit fence is asked about the git index.
+//! `overlay_snapshot` is how a caller holding the other interval's bytes folds them
+//! through ONE fold rather than a second one of its own — and the gate that matters most
+//! here is the boring one: **an overlay that changes nothing must fold to the same
+//! root.** If it does not, every governed commit greys, because the fold no longer
+//! matches the `root_after` a receipt recorded.
 
 use std::path::Path;
 

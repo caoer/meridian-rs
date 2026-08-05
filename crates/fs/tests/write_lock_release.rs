@@ -1,37 +1,37 @@
-//! The D9 write flock releases when its guard drops — even while this process
-//! has a forked child holding a copy of the lock fd.
+//! The D9 write flock releases when its guard drops — even while this process has a
+//! forked child holding a copy of the lock fd.
 //!
 //! # The bug this pins (measured, stage-2 S7)
-//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates
-//! every descriptor. So any thread spawning any subprocess — `git` under the pin
-//! path, a bash task, anything — transiently holds a copy of the lock fd between
-//! its fork and its exec, `FD_CLOEXEC` notwithstanding (CLOEXEC acts at exec).
-//! While `WriteLock` released by closing its fd, dropping the guard inside that
-//! window did NOT release the lock: the child's copy kept the description alive,
-//! and unrelated writers refused `workspace_busy` for a critical section that had
-//! already finished. Measured on the S7 pin suite: 12 of 60 unrelated writes.
+//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates every
+//! descriptor. So any thread spawning any subprocess — `git` under the pin path, a bash
+//! task, anything — transiently holds a copy of the lock fd between its fork and its
+//! exec, `FD_CLOEXEC` notwithstanding (CLOEXEC acts at exec). While `WriteLock` released
+//! by closing its fd, dropping the guard inside that window did NOT release the lock: the
+//! child's copy kept the description alive, and unrelated writers refused
+//! `workspace_busy` for a critical section that had already finished. Measured on the S7
+//! pin suite: 12 of 60 unrelated writes.
 //!
-//! `WriteLock::drop` now unlocks EXPLICITLY (`LOCK_UN` acts on the description,
-//! so one unlock releases every copy). The refusal was never wrong — it is
-//! contractually the Retry class — but a door that closes when no writer is
-//! there teaches the wrong thing.
+//! `WriteLock::drop` now unlocks EXPLICITLY (`LOCK_UN` acts on the description, so one
+//! unlock releases every copy). The refusal was never wrong — it is contractually the
+//! Retry class — but a door that closes when no writer is there teaches the wrong thing.
 //!
 //! # Why this file forks by hand (the first version of it was not a test)
-//! The shipped regression test drove the window with `Command::spawn`, and it
-//! passed **400/400 with the explicit unlock reverted** — two reviewers,
-//! independently. `Command::spawn` returns only after the child has exec'd, and
-//! `exec` closes the `O_CLOEXEC` lock fd, so a sequential acquire → spawn → drop
-//! → reacquire never has a live fd copy at the moment of the drop. The window it
-//! aimed at was already shut.
+//! The shipped regression test drove the window with `Command::spawn`, and it passed
+//! **400/400 with the explicit unlock reverted** — two reviewers, independently.
+//! `Command::spawn` returns only after the child has exec'd, and `exec` closes the
+//! `O_CLOEXEC` lock fd, so a sequential acquire → spawn → drop → reacquire never has a
+//! live fd copy at the moment of the drop. The window it aimed at was already shut.
 //!
-//! So the mechanism here is a raw `fork(2)` whose child parks on a pipe and
-//! **never execs** — its inherited copy of the lock fd stays open for exactly as
-//! long as the test wants it to, with no timing and no sleep. And because a
-//! harness that silently stops opening the window would make the regression test
-//! vacuous again, the window itself is a test: `the_fork_window_is_real_…`
-//! asserts, against a raw `flock` that this crate does not own, that closing the
-//! fd does NOT release a lock while the child is parked. That control fails the
-//! day the mechanism stops reproducing the hazard.
+//! So the mechanism here is a raw `fork(2)` whose child parks on a pipe and **never
+//! execs** — its inherited copy of the lock fd stays open for exactly as long as the test
+//! wants it to, with no timing and no sleep. And because a harness that silently stops
+//! opening the window would make the regression test vacuous again, the window itself is
+//! a test: `the_fork_window_is_real_…` asserts, against a raw `flock` that this crate
+//! does not own, that closing the fd does NOT release a lock while the child is parked.
+//! That control fails the day the mechanism stops reproducing the hazard.
+//!
+//!
+//!
 
 use std::io;
 use std::os::unix::io::AsRawFd;

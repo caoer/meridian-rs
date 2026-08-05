@@ -1,19 +1,19 @@
 //! Seam bench: `model::build` — dialect stream → governed tree.
 //!
 //! # Metric contract (claims.toml)
-//! - `assemble.p99.file` — per-file assembly latency p99 (hdr path) over
-//!   `vault-2026 seed=1 files=2000`; baseline TBD on first fleet run.
+//! - `assemble.p99.file` — per-file assembly latency p99 (hdr path) over `vault-2026
+//!   seed=1 files=2000`; baseline TBD on first fleet run.
 //!
-//! `model::build` consumes its input (`raw: String`, `nodes: Vec<DialectNode>`),
-//! so every iteration needs its own copy. Parsing and cloning happen OUTSIDE
-//! the timed window — the claim is assembly, not parse+clone+assembly — which
-//! is why the hdr run records by hand instead of using `LatencyRun::run`.
+//! `model::build` consumes its input (`raw: String`, `nodes: Vec<DialectNode>`), so every
+//! iteration needs its own copy. Parsing and cloning happen OUTSIDE the timed window —
+//! the claim is assembly, not parse+clone+assembly — which is why the hdr run records by
+//! hand instead of using `LatencyRun::run`.
 //!
-//! Hand-written `main` (not `criterion_main!`): criterion runs first, then the
-//! hdr claim run records its measurement. In the PR smoke lane
-//! (`cargo bench -- --test`) the claim run downshifts to the 200-file criterion
-//! corpus and stages NOTHING — a subsampled number would lie under a
-//! full-corpus claim id (`cold_ingest.rs` established the split).
+//! Hand-written `main` (not `criterion_main!`): criterion runs first, then the hdr claim
+//! run records its measurement. In the PR smoke lane (`cargo bench -- --test`) the claim
+//! run downshifts to the 200-file criterion corpus and stages NOTHING — a subsampled
+//! number would lie under a full-corpus claim id (`cold_ingest.rs` established the
+//! split).
 
 use std::hint::black_box;
 use std::io;

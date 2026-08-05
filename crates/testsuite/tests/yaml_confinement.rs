@@ -1,18 +1,18 @@
 //! The `serde_yaml` confinement instrument (S3-R14(b)).
 //!
-//! `crates/policy/Cargo.toml` and `crates/config/Cargo.toml` both state one
-//! topology claim: `serde_yaml` is taken as a DIRECT production dependency by
-//! exactly two crates. Until this module existed the claim was a comment —
-//! violated once (U6's second edge) and caught only because a worker read it.
-//! An invariant nobody can violate loudly is not an invariant.
+//! `crates/policy/Cargo.toml` and `crates/config/Cargo.toml` both state one topology
+//! claim: `serde_yaml` is taken as a DIRECT production dependency by exactly two crates.
+//! Until this module existed the claim was a comment — violated once (U6's second edge)
+//! and caught only because a worker read it. An invariant nobody can violate loudly is
+//! not an invariant.
 //!
-//! The taker set is DERIVED from `cargo metadata --no-deps`, never
-//! hand-maintained. `--no-deps` reports each workspace member's OWN manifest
-//! edges, so the direct/transitive distinction is structural: `wire-serve`
-//! reaches `serde_yaml` through `policy` and is simply absent from this data,
-//! rather than filtered out by a heuristic that could misread it as a
-//! violation. `kind` carries the same split for dev and build edges: `null` is
-//! a production edge, `"dev"` and `"build"` are not.
+//! The taker set is DERIVED from `cargo metadata --no-deps`, never hand-maintained.
+//! `--no-deps` reports each workspace member's OWN manifest edges, so the
+//! direct/transitive distinction is structural: `wire-serve` reaches `serde_yaml` through
+//! `policy` and is absent from this data, rather than filtered out by a heuristic that
+//! could misread it as a violation. `kind` carries the same split for dev and build
+//! edges: `null` is a production edge, `"dev"` and `"build"` are not.
+//!
 
 use serde_json::Value;
 use std::collections::BTreeSet;

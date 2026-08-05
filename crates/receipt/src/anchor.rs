@@ -1,69 +1,69 @@
 //! The anchor law + two-badge freshness (d2 §2.3 v3 W-C1; d3 §1.5).
 //!
 //! # What the anchor is, and the one law it exists to hold
-//! The freshness axis is two-sided. Tip equality — the object id of local
-//! `HEAD` versus the local remote-tracking ref `origin/<branch>` — is
-//! *mechanical and local* ([`TipPosition`], a source-2 fact). But the **anchor**
-//! — the engine's local knowledge of origin's refs — carries its **own trust
-//! state**, because a restored backup restores `.git` *including the local copy
-//! of origin's refs*. A stale local `origin/<branch>` therefore makes the
-//! mechanical compare say `at-tip` while the world has moved on.
+//! The freshness axis is two-sided. Tip equality — the object id of local `HEAD` versus
+//! the local remote-tracking ref `origin/<branch>` — is *mechanical and local*
+//! ([`TipPosition`], a source-2 fact). But the **anchor** — the engine's local knowledge
+//! of origin's refs — carries its **own trust state**, because a restored backup restores
+//! `.git` *including the local copy of origin's refs*. A stale local `origin/<branch>`
+//! therefore makes the mechanical compare say `at-tip` while the world has moved on.
 //!
-//! **The load-bearing law (W-C1): no surface may render a bare `at-tip` /
-//! `behind` from the local remote-tracking ref.** Only an anchor the *current
-//! run* verified against origin may render the tip axis bare. Every other
-//! render carries a qualifier that names exactly how stale the knowledge is.
-//! [`render_tip_axis`] is the sole renderer, and it produces a bare axis from
-//! the [`AnchorState::Verified`] arm alone — the invariant is structural, not a
-//! convention.
+//! **The load-bearing law (W-C1): no surface may render a bare `at-tip` / `behind` from
+//! the local remote-tracking ref.** Only an anchor the *current run* verified against
+//! origin may render the tip axis bare. Every other render carries a qualifier that names
+//! exactly how stale the knowledge is. [`render_tip_axis`] is the sole renderer, and it
+//! produces a bare axis from the [`AnchorState::Verified`] arm alone — the invariant is
+//! structural, not a convention.
 //!
 //! # A "run" is one engine invocation
-//! One verb execution or one wire call; the facts computed within it share one
-//! moment ([`AnchorState::classify`] takes that moment as `now_unix`).
+//! One verb execution or one wire call; the facts computed within it share one moment
+//! ([`AnchorState::classify`] takes that moment as `now_unix`).
 //!
 //! # The three anchor states (qualifier mandatory unless verified)
-//! - [`AnchorState::Verified`] — the run ITSELF observed origin. Exactly one
-//!   door produces it: `realise` executing a fetch observe-class claim (net
-//!   cap, customer-triggered — the engine never fetches implicitly). Verified
-//!   is a **moment, never a stored state**: persisted evidence always decays to
-//!   as-known, so this state is reachable only with [`AnchorFacts::run_observed`]
-//!   set true for THIS run. Only Verified renders bare `at-tip` / `behind`;
-//!   `status` is cap-free and so NEVER reaches it.
+//! - [`AnchorState::Verified`] — the run ITSELF observed origin. Exactly one door
+//!   produces it: `realise` executing a fetch observe-class claim (net cap,
+//!   customer-triggered — the engine never fetches implicitly). Verified is a **moment,
+//!   never a stored state**: persisted evidence always decays to as-known, so this state
+//!   is reachable only with [`AnchorFacts::run_observed`] set true for THIS run. Only
+//!   Verified renders bare `at-tip` / `behind`; `status` is cap-free and so NEVER reaches
+//!   it.
 //! - [`AnchorState::AsKnownAged`] — the last origin observation is a journaled
-//!   fetch-claim receipt: renders `at-tip (anchor as-known, observed <now>,
-//!   ~<age>)`, the age sourced from the receipt's `now` (source 3,
-//!   chain-protected). A restore replays it only with **visibly growing age**
-//!   and cannot re-mint recency without a journaled write.
-//! - [`AnchorState::AsKnownAgeless`] — the local origin ref is present but no
-//!   journaled observation dates it (an out-of-engine `git fetch` is a world
-//!   act the ledger cannot verify). Renders `at-tip (anchor as-known)` forever,
-//!   plus the [`AGELESS_NUDGE`] hint to run the fetch through the engine door.
-//!   `FETCH_HEAD` / reflog mtimes are dropped entirely — they are never a
-//!   dater.
-//! - [`AnchorState::Unverified`] — never fetched, or anchor facts absent (no
-//!   local origin ref at all): renders `at-tip (anchor unverified)`.
+//!   fetch-claim receipt: renders `at-tip (anchor as-known, observed <now>, ~<age>)`, the
+//!   age sourced from the receipt's `now` (source 3, chain-protected). A restore replays
+//!   it only with **visibly growing age** and cannot re-mint recency without a journaled
+//!   write.
+//! - [`AnchorState::AsKnownAgeless`] — the local origin ref is present but no journaled
+//!   observation dates it (an out-of-engine `git fetch` is a world act the ledger cannot
+//!   verify). Renders `at-tip (anchor as-known)` forever, plus the [`AGELESS_NUDGE`] hint
+//!   to run the fetch through the engine door. `FETCH_HEAD` / reflog mtimes are dropped
+//!   entirely — they are never a dater.
+//! - [`AnchorState::Unverified`] — never fetched, or anchor facts absent (no local origin
+//!   ref at all): renders `at-tip (anchor unverified)`.
 //!
 //! # The two-badge fusion (d3 §1.5, fused ON TOP)
-//! A pin's color is computed per validity axis and the board badges the axis:
-//! the **owned axis** ([`OwnedBadge`], content-equality — practical, not
-//! cryptographic) and the **freshness axis** ([`FreshnessBadge`], the pointed
-//! 5th axis). The board renders **two badges, never one merged color**
-//! ([`TwoBadge`]). The anchor law fuses onto the freshness badge:
-//! [`freshness_badge`] returns green ONLY for a verified, at-tip anchor — an
-//! as-known / unverified / behind anchor is grey. This is the invariant both
-//! probes agree on: **a local-only or restored pin never reads as pointed-fresh
-//! green.** Where a single glyph is needed, freshness-grey dominates a pointed
-//! claim (fail-safe — show the weakest asserted axis; [`TwoBadge::dominant`]).
+//! A pin's color is computed per validity axis and the board badges the axis: the **owned
+//! axis** ([`OwnedBadge`], content-equality — practical, not cryptographic) and the
+//! **freshness axis** ([`FreshnessBadge`], the pointed 5th axis). The board renders **two
+//! badges, never one merged color** ([`TwoBadge`]). The anchor law fuses onto the
+//! freshness badge: [`freshness_badge`] returns green ONLY for a verified, at-tip anchor
+//! — an as-known / unverified / behind anchor is grey. This is the invariant both probes
+//! agree on: **a local-only or restored pin never reads as pointed-fresh green.** Where a
+//! single glyph is needed, freshness-grey dominates a pointed claim (fail-safe — show the
+//! weakest asserted axis; [`TwoBadge::dominant`]).
 //!
 //! # The second anchor: is the pinned BLOB anchored? (S5)
-//! The axis above answers "how stale is our knowledge of origin". A pinned
-//! `objects:` entry asks a different, local question: **does the blob this pin
-//! names exist, and is it reachable from a commit?** [`ObjectAnchor`] carries
-//! that as three states — [`ObjectAnchor::Anchored`] /
-//! [`ObjectAnchor::PendingAnchor`] / [`ObjectAnchor::NeverAnchored`] — and the
-//! same fact/classify split applies: the `git` crate gathers
-//! [`ObjectAnchorFacts`] by asking git, this module classifies them, and no
+//! The axis above answers "how stale is our knowledge of origin". A pinned `objects:`
+//! entry asks a different, local question: **does the blob this pin names exist, and is
+//! it reachable from a commit?** [`ObjectAnchor`] carries that as three states —
+//! [`ObjectAnchor::Anchored`] / [`ObjectAnchor::PendingAnchor`] /
+//! [`ObjectAnchor::NeverAnchored`] — and the same fact/classify split applies: the `git`
+//! crate gathers [`ObjectAnchorFacts`] by asking git, this module classifies them, and no
 //! state is ever inferred from a fabricated object id.
+//!
+//!
+//!
+//!
+//!
 
 use std::time::Duration;
 

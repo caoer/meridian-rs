@@ -1,19 +1,19 @@
 //! The env-var bridge's gates.
 //!
-//! Every gate asserts **both arms** (S3-R8(c)): agreement is asserted beside
-//! divergence, and silence is asserted beside the report. A bridge proven only
-//! by what it reports is indistinguishable from one that reports everything —
-//! and *that* one gets unset by the first operator it annoys, leaving the
-//! invariant with no guard at all.
+//! Every gate asserts **both arms** (S3-R8(c)): agreement is asserted beside divergence,
+//! and silence is asserted beside the report. A bridge proven only by what it reports is
+//! indistinguishable from one that reports everything — and *that* one gets unset by the
+//! first operator it annoys, leaving the invariant with no guard at all.
 //!
 //! # The topology is REPRODUCED, not stubbed
 //!
-//! `the_measured_topology` builds the exact shape S3-R7 measured on this
-//! machine — a real wiki directory, a symlink to it from a sibling repos root,
-//! and the wiki path spelled with a trailing slash. The gates then assert
-//! against real `canonicalize` calls, because the defect being guarded is a
-//! *filesystem* identity collapse: a stub would test a second implementation of
-//! the thing and prove nothing about the one that runs.
+//! `the_measured_topology` builds the exact shape S3-R7 measured on this machine — a real
+//! wiki directory, a symlink to it from a sibling repos root, and the wiki path spelled
+//! with a trailing slash. The gates then assert against real `canonicalize` calls,
+//! because the defect being guarded is a *filesystem* identity collapse: a stub would
+//! test a second implementation of the thing and prove nothing about the one that runs.
+//!
+//!
 
 use std::path::{Path, PathBuf};
 

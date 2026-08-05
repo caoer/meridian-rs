@@ -1,20 +1,19 @@
 //! The STORED plane of a cross-root address — the `obsidian://` URI.
 //!
-//! The agent plane is `[root:]path[#selector][@fp]` ([`crate::Addr`]); the
-//! stored plane is what disk carries for a CROSS-ROOT ref, because a
-//! root-prefixed wikilink is unresolvable garbage to Obsidian — stored but
-//! unclickable (`2026-07-24-cross-root-addressing.md` §2). `put` translates one
-//! into the other; `read` translates back.
+//! The agent plane is `[root:]path[#selector][@fp]` ([`crate::Addr`]); the stored plane
+//! is what disk carries for a CROSS-ROOT ref, because a root-prefixed wikilink is
+//! unresolvable garbage to Obsidian — stored but unclickable
+//! (`2026-07-24-cross-root-addressing.md` §2). `put` translates one into the other;
+//! `read` translates back.
 //!
 //! # The grammar is MEASURED, not invented
 //!
-//! The C24 canon already ships in `md encode` — *"the ONE cross-wiki reference
-//! encoder … canonical `obsidian://open` (no fragment) or advanced-uri
-//! (heading/^block) navigation URI … strict decode: non-canonical encoding is
-//! flagged, never normalized"*. This module reproduces that grammar rather than
-//! minting a second spelling of one thing: `md`'s verbs migrate into `mrd` leg
-//! by leg, and two encoders for one stored form is the defect the mount table's
-//! own three-way map exists to prevent.
+//! The C24 canon already ships in `md encode` — *"the ONE cross-wiki reference encoder …
+//! canonical `obsidian://open` (no fragment) or advanced-uri (heading/^block) navigation
+//! URI … strict decode: non-canonical encoding is flagged, never normalized"*. This
+//! module reproduces that grammar rather than minting a second spelling of one thing:
+//! `md`'s verbs migrate into `mrd` leg by leg, and two encoders for one stored form is
+//! the defect the mount table's own three-way map exists to prevent.
 //!
 //! Measured first-hand against `/Users/caoer115/.local/bin/md` (2026-07-26):
 //!
@@ -29,20 +28,21 @@
 //! error: [INVALID_INPUT] unrecognized obsidian action "adv-uri" (canon emits open|advanced-uri)
 //! ```
 //!
-//! **The ratified decision's own example spells `adv-uri` and percent-encodes
-//! the path separator** (`obsidian://adv-uri?vault=field-notes&filepath=domains%2F…`).
-//! The shipped canon emits neither spelling and REFUSES the first. The example
-//! is illustrative prose; `md encode` is the encoder in production. This module
-//! follows the shipped canon and the divergence is stated rather than absorbed.
+//! **The ratified decision's own example spells `adv-uri` and percent-encodes the path
+//! separator** (`obsidian://adv-uri?vault=field-notes&filepath=domains%2F…`). The shipped
+//! canon emits neither spelling and REFUSES the first. The example is illustrative prose;
+//! `md encode` is the encoder in production. This module follows the shipped canon and
+//! the divergence is stated rather than absorbed.
 //!
 //! # Where this module is stricter than `md`, and why
 //!
-//! On a non-canonically encoded parameter the Go canon WARNS and returns exit 0
-//! (*"flag, never silently normalize"*). The engine REFUSES: a stored URI is
-//! read back into an address a pin is measured against, so *"resolving to
-//! something plausible"* is exactly the wrong-success shape the whole address
-//! grammar refuses. Loud, with the canonical spelling named, so the fix is one
-//! edit.
+//! On a non-canonically encoded parameter the Go canon WARNS and returns exit 0 (*"flag,
+//! never silently normalize"*). The engine REFUSES: a stored URI is read back into an
+//! address a pin is measured against, so *"resolving to something plausible"* is exactly
+//! the wrong-success shape the whole address grammar refuses. Loud, with the canonical
+//! spelling named, so the fix is one edit.
+//!
+//!
 
 use core::fmt;
 

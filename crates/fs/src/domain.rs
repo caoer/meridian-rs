@@ -1,24 +1,24 @@
 //! The §12 hash domain — which markdown files' bytes enter the merkle root.
 //!
-//! ZT verbatim (contract §12.1): *"`mdfs_config.yaml` define the custom ignore
-//! list. mdfs only work for md file. it does not hash any other file."* The
-//! domain is a three-layer filter, applied in order:
+//! .1): *"`mdfs_config.yaml` define the custom ignore list. mdfs only work for md file.
+//! it does not hash any other file."* The domain is a three-layer filter, applied in
+//! order:
 //!
-//! 1. **md-only floor** — only `*.md` files hash. `mdfs_config.yaml` is not md,
-//!    so it is structurally outside its own domain.
-//! 2. **default ignore, one rule** — any path with a dot-prefixed segment is
-//!    ignored (`.github/README.md`, `.obsidian/**`, `.trash/**`). Zero
-//!    enumeration; `.git`/lock/`.obsidian` artifacts are dissolved by
-//!    construction and can never self-invalidate a guard. This floor is
-//!    structural: custom `!` re-includes cannot lift it.
-//! 3. **custom ignore** — `mdfs_config.yaml` carries a gitignore-style list
-//!    (patterns, `!` re-includes) layered over the default (§12.3's `drafts/**`
-//!    is such a rule). Last matching rule wins.
+//! 1. **md-only floor** — only `*.md` files hash. `mdfs_config.yaml` is not md, so it is
+//!    structurally outside its own domain.
+//! 2. **default ignore, one rule** — any path with a dot-prefixed segment is ignored
+//!    (`.github/README.md`, `.obsidian/**`, `.trash/**`). Zero enumeration;
+//!    `.git`/lock/`.obsidian` artifacts are dissolved by construction and can never
+//!    self-invalidate a guard. This floor is structural: custom `!` re-includes cannot
+//!    lift it.
+//! 3. **custom ignore** — `mdfs_config.yaml` carries a gitignore-style list (patterns,
+//!    `!` re-includes) layered over the default (§12.3's `drafts/**` is such a rule). Last
+//!    matching rule wins.
 //!
-//! The filter gates HASHING, not `load`: an ignored md file stays fully
-//! addressable — `toc`/`cat`/`splice` reach it by explicit path — its bytes
-//! simply never enter the root (hash ⊂ addressable, E-E8). See [`Domain`] for
-//! the predicate and [`crate::hash_domain`] for the walk that consumes it.
+//! The filter gates HASHING, not `load`: an ignored md file stays fully addressable —
+//! `toc`/`cat`/`splice` reach it by explicit path — its bytes never enter the root (hash
+//! ⊂ addressable, E-E8). See [`Domain`] for the predicate and [`crate::hash_domain`] for
+//! the walk that consumes it.
 
 use std::io;
 use std::path::{Component, Path};

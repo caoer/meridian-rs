@@ -1,25 +1,25 @@
 //! The `MERIDIAN.md` in-file schema pack, replayed (stage 3, U6 over U2's pack).
 //!
-//! `crates/testsuite/data/meridian-md/cases.json` pairs **every** case with its
-//! required outcome, and this module drives all 37 through `config::resolve` —
-//! the same entry point the CLI calls, not a parse-only shortcut, so the four
-//! resolution states of schema §2.2 are exercised as states rather than as
-//! functions.
+//! `crates/testsuite/data/meridian-md/cases.json` pairs **every** case with its required
+//! outcome, and this module drives all 37 through `config::resolve` — the same entry
+//! point the CLI calls, not a parse-only shortcut, so the four resolution states of
+//! schema §2.2 are exercised as states rather than as functions.
 //!
 //! # Why this is a MODULE and not `tests/meridian_md.rs`
-//! `crates/testsuite/Cargo.toml` sets `autotests = false`. A stray
-//! `tests/meridian_md.rs` is never compiled and never runs — a green board that
-//! measured nothing. The registration in `tests/main.rs`, the
-//! `testsuite::meridian_md_dir()` accessor, and [`case_count_is_pinned`]'s
-//! cardinality assert are the three things that make this replay non-vacuous;
-//! the pack's README names all three.
+//! `crates/testsuite/Cargo.toml` sets `autotests = false`. A stray `tests/meridian_md.rs`
+//! is never compiled and never runs — a green board that measured nothing. The
+//! registration in `tests/main.rs`, the `testsuite::meridian_md_dir()` accessor, and
+//! [`case_count_is_pinned`]'s cardinality assert are the three things that make this
+//! replay non-vacuous; the pack's README names all three.
 //!
 //! # The sandbox
-//! Every case runs in its own `tempfile::tempdir()`. `$SANDBOX` in the pack
-//! resolves to it and `$HOME` to `$SANDBOX/home`; nothing outside is read or
-//! written, and no case touches the real `HOME` or the real `MERIDIAN_CONFIG`
-//! (the chain is driven through `config::Env`, which is data — see that type's
-//! own note on why it is injected rather than read globally).
+//! Every case runs in its own `tempfile::tempdir()`. `$SANDBOX` in the pack resolves to
+//! it and `$HOME` to `$SANDBOX/home`; nothing outside is read or written, and no case
+//! touches the real `HOME` or the real `MERIDIAN_CONFIG` (the chain is driven through
+//! `config::Env`, which is data — see that type's own note on why it is injected rather
+//! than read globally).
+//!
+//!
 
 use std::path::{Path, PathBuf};
 

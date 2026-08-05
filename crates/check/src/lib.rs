@@ -1,52 +1,52 @@
-//! The `check` engine (U2.10) — the pure READ verb of the reconciliation loop
-//! (d2 §3 check: "what lies? (validity)").
+//! The `check` engine (U2.10) — the pure READ verb of the reconciliation loop (d2 §3
+//! check: "what lies? (validity)").
 //!
 //! # What check is
-//! `status = freshness, check = validity` (d2 §3). `check` reads a workspace and
-//! answers whether it LIES — without writing a byte, minting a receipt, or
-//! spending a cap. Two layers, split by whether the workspace has armed anything:
+//! `status = freshness, check = validity` (d2 §3). `check` reads a workspace and answers
+//! whether it LIES — without writing a byte, minting a receipt, or spending a cap. Two
+//! layers, split by whether the workspace has armed anything:
 //!
-//! - **Layer 0 — rule-free core** ([`layer0`]). Two pack-free reads:
-//!   1. **claims realised** — observe each claim against the current tree and
-//!      report the drifted ones (the realise engine's pure detection, run here
-//!      read-only — no apply, no cap).
-//!   2. **the pin plane** — the CLAIM plane (did the pinned content drift?) and the
-//!      RETRIEVAL plane (is the pinned blob durably anchored?).
+//! - **Layer 0 — rule-free core** ([`layer0`]). Two pack-free reads: 1. **claims
+//!   realised** — observe each claim against the current tree and report the drifted ones
+//!   (the realise engine's pure detection, run here read-only — no apply, no cap). 2.
+//!   **the pin plane** — the CLAIM plane (did the pinned content drift?) and the
+//!   RETRIEVAL plane (is the pinned blob durably anchored?).
 //!
 //! # Why check holds no write-history plane — the LAW (ZT, 2026-08-03)
-//! Verbatim: *"Engine does not have memory. It should not have. History is pin to
-//! git when we lock. Anything between locks is not history."*
+//! Verbatim: *"Engine does not have memory. It should not have. History is pin to git
+//! when we lock. Anything between locks is not history."*
 //!
-//! `check` therefore answers **at-rest / at-touch truth only: does the world still
-//! match the pins.** The receipt journal is deleted, and chain continuity, baseline
-//! dating and interval accounting are **never rebuilt as check memory** — they were
-//! never this engine's to carry. Archaeology lives in git; attribution lives in
-//! transcript JSONL.
+//! `check` therefore answers **at-rest / at-touch truth only: does the world still match
+//! the pins.** The receipt journal is deleted, and chain continuity, baseline dating and
+//! interval accounting are **never rebuilt as check memory** — they were never this
+//! engine's to carry. Archaeology lives in git; attribution lives in transcript JSONL.
 //!
 //! An out-of-band edit followed by a governed write is not detected here. That is
 //! **outside the engine's domain by design**, not a tolerated defect.
 //!
-//! One consequence is disclosed rather than absorbed: a corpus that once read grey
-//! (*"I cannot date your write history"*) now reads green (*"the world still matches
-//! the pins"*). The claim is SMALLER, not stronger, so both faces carry
-//! [`WRITE_HISTORY_NOT_ASSESSED`] together with the reason — a reader must never
-//! carry the old, wider green forward.
+//! One consequence is disclosed rather than absorbed: a corpus that once read grey (*"I
+//! cannot date your write history"*) now reads green (*"the world still matches the
+//! pins"*). The claim is SMALLER, not stronger, so both faces carry
+//! [`WRITE_HISTORY_NOT_ASSESSED`] together with the reason — a reader must never carry
+//! the old, wider green forward.
 //!
-//! - **Layer 1 — armed rules read-only** ([`layer1`]). Each armed rule's
-//!   `check_change` runs over the change through the page loader — the SAME
-//!   surface the door mounts (U4.2), so a refusal here is byte-for-byte the
-//!   refusal the door would mint. Its input is the law
-//!   [`policy::resolve_armed_law`] already resolved at the write's own path, so
-//!   this layer performs no I/O and cannot be handed an armed set the door would
+//! - **Layer 1 — armed rules read-only** ([`layer1`]). Each armed rule's `check_change`
+//!   runs over the change through the page loader — the SAME surface the door mounts
+//!   (U4.2), so a refusal here is byte-for-byte the refusal the door would mint. Its
+//!   input is the law [`policy::resolve_armed_law`] already resolved at the write's own
+//!   path, so this layer performs no I/O and cannot be handed an armed set the door would
 //!   not have honoured.
 //!
-//! Session-property integrity is exactly this verb run over a session tree as a
-//! workspace (d2 §3).
+//! Session-property integrity is exactly this verb run over a session tree as a workspace
+//! (d2 §3).
 //!
 //! # It never writes
-//! Every read here is a pure function of the tree bytes and the pinned evidence.
-//! The engine holds no write path, mints no receipt, and takes no cap — the
-//! whole surface is `&WorkspaceRoot` / `&Change` in, a report out.
+//! Every read here is a pure function of the tree bytes and the pinned evidence. The
+//! engine holds no write path, mints no receipt, and takes no cap — the whole surface is
+//! `&WorkspaceRoot` / `&Change` in, a report out.
+//!
+//!
+//!
 
 pub mod layer0;
 pub mod layer1;

@@ -1,26 +1,26 @@
 //! Layer 0 — the rule-free core of `check`.
 //!
 //! Two pack-free reads over the run plane, neither of which writes a byte:
-//! - [`claims_realised`] — observe each claim against the current tree and report
-//!   the drifted ones (the realise engine's pure detection, run read-only here);
-//! - [`pin_plane`] — the CLAIM plane (`pins:` — did the content drift?) and the
-//!   RETRIEVAL plane (each pin's `hash` — is the blob durably anchored?).
+//! - [`claims_realised`] — observe each claim against the current tree and report the
+//!   drifted ones (the realise engine's pure detection, run read-only here);
+//! - [`pin_plane`] — the CLAIM plane (`pins:` — did the content drift?) and the RETRIEVAL
+//!   plane (each pin's `hash` — is the blob durably anchored?).
 //!
 //! # Why this layer holds no write-history plane — the LAW, not a gap
-//! ZT, ruling 2026-08-03, verbatim: *"Engine does not have memory. It should not
-//! have. History is pin to git when we lock. Anything between locks is not
-//! history."*
+//! ZT, ruling 2026-08-03, verbatim: *"Engine does not have memory. It should not have.
+//! History is pin to git when we lock. Anything between locks is not history."*
 //!
 //! So layer 0 reads **at-rest / at-touch truth only: does the world still match the
-//! pins.** The receipt journal is deleted and its chain continuity, baseline dating
-//! and interval accounting are **never rebuilt as check memory** — not because they
-//! were lost, but because they were never this engine's to carry. Archaeology lives
-//! in git; attribution lives in transcript JSONL.
+//! pins.** The receipt journal is deleted and its chain continuity, baseline dating and
+//! interval accounting are **never rebuilt as check memory** — not because they were
+//! lost, but because they were never this engine's to carry. Archaeology lives in git;
+//! attribution lives in transcript JSONL.
 //!
-//! That is why an out-of-band edit followed by a governed write is not detected
-//! here. It is **outside the engine's domain by design**, not a blind spot the
-//! engine tolerates. A detector for it would be this layer reaching back into
-//! memory it is ruled not to keep.
+//! That is why an out-of-band edit followed by a governed write is not detected here. It
+//! is **outside the engine's domain by design**, not a blind spot the engine tolerates. A
+//! detector for it would be this layer reaching back into memory it is ruled not to keep.
+//!
+//!
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1,25 +1,25 @@
 //! The agent-plane address, as a fallible TYPE.
 //!
-//! `[root:]path[#selector][@fp]` — parsed once, here, so no plane downstream
-//! re-splits a string. A `std`-only leaf with zero dependencies, placed
-//! UPSTREAM of `syntax` (`docs/address-grammar.md` § 7.1): `model` depends on
-//! `syntax`, so an address type living beside the markdown parsing would be
-//! architecturally unreachable from the wikilink ingress where a cross-root
-//! address actually arrives.
+//! `[root:]path[#selector][@fp]` — parsed once, here, so no plane downstream re-splits a
+//! string. A `std`-only leaf with zero dependencies, placed UPSTREAM of `syntax`
+//! (`docs/address-grammar.md` § 7.1): `model` depends on `syntax`, so an address type
+//! living beside the markdown parsing would be architecturally unreachable from the
+//! wikilink ingress where a cross-root address actually arrives.
 //!
-//! **Construction is the only way in.** [`Addr::parse`] is the sole
-//! constructor; there is no `from_parts` a caller can use to smuggle an
-//! unparsed root prefix into the [`Addr::path`] field. That invariant —
-//! *`Addr.path` carries no root prefix* — is what makes every downstream guard
-//! checkable, and it is why the type is fallible rather than a boolean helper a
-//! caller may ignore (R5).
+//! **Construction is the only way in.** [`Addr::parse`] is the sole constructor; there is
+//! no `from_parts` a caller can use to smuggle an unparsed root prefix into the
+//! [`Addr::path`] field. That invariant — *`Addr.path` carries no root prefix* — is what
+//! makes every downstream guard checkable, and it is why the type is fallible rather than
+//! a boolean helper a caller may ignore (R5).
 //!
-//! **Parse is not resolve.** [`Addr::parse`] answers *"is this a well-formed
-//! address?"*; it never touches the mount table. Whether the named root is
-//! BOUND is the resolver's question and its answer is grey, not a parse error
-//! (`docs/address-grammar.md` § 2.2, § 6). Conflating the two would make a
-//! well-formed address to an unmounted root indistinguishable from a malformed
-//! one.
+//! **Parse is not resolve.** [`Addr::parse`] answers *"is this a well-formed address?"*;
+//! it never touches the mount table. Whether the named root is BOUND is the resolver's
+//! question and its answer is grey, not a parse error (`docs/address-grammar.md` § 2.2, §
+//! 6). Conflating the two would make a well-formed address to an unmounted root
+//! indistinguishable from a malformed one.
+//!
+//!
+//!
 
 use core::fmt;
 

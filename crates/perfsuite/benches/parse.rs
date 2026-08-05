@@ -1,17 +1,17 @@
 //! Seam bench: `syntax::parse` — the corpus-sweep lane.
 //!
 //! # Metric contract (claims.toml)
-//! - `parse.throughput.corpus` — MB/s over `vault-2026 seed=1 files=2000`;
-//!   baseline 103 MB/s, gate ≥ 82 (the prior rust-pulldown parse baseline).
+//! - `parse.throughput.corpus` — MB/s over `vault-2026 seed=1 files=2000`; baseline 103
+//!   MB/s, gate ≥ 82 (the prior rust-pulldown parse baseline).
 //! - `parse.p99.file` — per-file latency p99 via the hdr path; baseline 3.2 ms.
 //! - `parse.p99.monster_10mb` — recipe `monster-10mb`; baseline 473 ms.
 //! - `parse.reparse.full_46kb` — single-file reparse; baseline 0.22 ms.
 //!
-//! Until rung 1 gives `syntax::parse` a body, this measures corpus traversal
-//! only (harness overhead floor); the claims stay UNTESTED. When rung 1 lands:
-//! swap the loop body to `syntax::parse(text)` and record the four claims via
-//! `perfsuite::measure::LatencyRun` + `record_measurement` (see benches/roundtrip.rs
-//! for the live pattern).
+//! Until rung 1 gives `syntax::parse` a body, this measures corpus traversal only
+//! (harness overhead floor); the claims stay UNTESTED. When rung 1 lands: swap the loop
+//! body to `syntax::parse(text)` and record the four claims via
+//! `perfsuite::measure::LatencyRun` + `record_measurement` (see benches/roundtrip.rs for
+//! the live pattern).
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use std::hint::black_box;

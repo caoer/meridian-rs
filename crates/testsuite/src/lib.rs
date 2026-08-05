@@ -1,16 +1,16 @@
-//! Consolidated integration-test member carrying the frozen GT pack as data —
-//! no library code.
+//! Consolidated integration-test member carrying the frozen GT pack as data — no library
+//! code.
 //!
 //! # Charter
-//! **Owns:** the workspace's integration tests, as ONE test binary
-//! (`tests/main.rs`, modules per concern — the matklad consolidation doctrine),
-//! and the frozen GT pack under `data/gt/`.
-//! Rung 1's parse-truth gate (every lane node reproduced byte-for-byte) runs
-//! here against that pack.
+//! **Owns:** the workspace's integration tests, as ONE test binary (`tests/main.rs`,
+//! modules per concern — the matklad consolidation doctrine), and the frozen GT pack
+//! under `data/gt/`. Rung 1's parse-truth gate (every lane node reproduced byte-for-byte)
+//! runs here against that pack.
 //!
-//! **Never does:** ship code (dependents: none, ever), own fixtures that aren't
-//! frozen (scratch fixtures belong to the test module that uses them), edit the
-//! GT pack (frozen means frozen — disagreements are findings for lane 0).
+//! **Never does:** ship code (dependents: none, ever), own fixtures that aren't frozen
+//! (scratch fixtures belong to the test module that uses them), edit the GT pack (frozen
+//! means frozen — disagreements are findings for lane 0).
+//!
 
 /// Path to the frozen GT pack, for test modules.
 #[must_use]

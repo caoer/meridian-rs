@@ -1,54 +1,54 @@
-//! The realise engine (S1, U3.5a) — **observe → check → apply per claim** on
-//! the shipped run plane (plan §4 Block 3; d2 §3 realise; §5.4 the agentic
-//! bridge).
+//! The realise engine (S1, U3.5a) — **observe → check → apply per claim** on the shipped
+//! run plane (plan §4 Block 3; d2 §3 realise; §5.4 the agentic bridge).
 //!
 //! # Charter
-//! **Owns:** the convergence loop and the terminal-state classifier over a set
-//! of [`Claim`]s. Per claim: observe the current tree and CHECK it (a pure
-//! read — "check = rev compare", §5.4), then, on drift, APPLY the claim's
-//! program through the shipped run plane ([`run::runner::run`], the ordinary
-//! loop) until the check converges or the retry budget is spent. The engine
-//! classifies each claim's outcome with the **A4 mechanical classifier**
-//! (d2 §2.1) and never judges beyond it.
+//! **Owns:** the convergence loop and the terminal-state classifier over a set of
+//! [`Claim`]s. Per claim: observe the current tree and CHECK it (a pure read — "check =
+//! rev compare", §5.4), then, on drift, APPLY the claim's program through the shipped run
+//! plane ([`run::runner::run`], the ordinary loop) until the check converges or the retry
+//! budget is spent. The engine classifies each claim's outcome with the **A4 mechanical
+//! classifier** (d2 §2.1) and never judges beyond it.
 //!
-//! **Never does:** define what a claim's check MEANS (the [`Check`] trait is
-//! the caller's — the built-in [`FieldEquals`] is one instance, the storm's
-//! census is another), invent a second write path (apply rides the run plane's
-//! one write path, [`run::executor`]), or carry any per-consumer path. The
-//! storm (U3.3) is an ordinary effect page realised through THIS loop — there
-//! is no storm branch here.
+//! **Never does:** define what a claim's check MEANS (the [`Check`] trait is the caller's
+//! — the built-in [`FieldEquals`] is one instance, the storm's census is another), invent
+//! a second write path (apply rides the run plane's one write path, [`run::executor`]),
+//! or carry any per-consumer path. The storm (U3.3) is an ordinary effect page realised
+//! through THIS loop — there is no storm branch here.
 //!
 //! # The A4 mechanical classifier (d2 §2.1, verbatim)
 //! - check failed ∧ **no apply-capable claim** declared in scope →
-//!   [`ClaimState::PendingAgent`] (and one board card, born through the U2.6
-//!   guarded create — §5.4 emit).
-//! - **apply declared** ∧ retry budget exhausted →
-//!   [`ClaimState::NonConvergent`].
+//!   [`ClaimState::PendingAgent`] (and one board card, born through the U2.6 guarded
+//!   create — §5.4 emit).
+//! - **apply declared** ∧ retry budget exhausted → [`ClaimState::NonConvergent`].
 //! - check converged → [`ClaimState::Converged`] (the green terminal).
 //!
-//! The core never judges: the engine reads the [`CheckOutcome`] the claim
-//! reports and applies the mechanical rule above — it does not decide WHETHER a
-//! divergence is legitimate.
+//! The core never judges: the engine reads the [`CheckOutcome`] the claim reports and
+//! applies the mechanical rule above — it does not decide WHETHER a divergence is
+//! legitimate.
 //!
 //! # Laws held here
-//! - **No apply lands unrecorded** (d2 §3): every apply runs with a receipt
-//!   address, so the run plane's one write path mints a receipt line for every
-//!   committed batch; the engine surfaces [`RealiseError::UnrecordedApply`] if
-//!   a committed apply ever lacked a receipt (unreachable by construction — the
-//!   assertion keeps it honest).
-//! - **Caps = exactly the union of the claims' declared caps; the verb adds
-//!   none** (d2 §3): [`RealiseReport::caps_union`] is the fold of every
-//!   apply-capable claim's resolved [`run::caps::CapSet`] — the realise verb's
-//!   total authority. Enforcement stays per-apply at the executor choke point;
-//!   this is the declared surface (and the `--dry-run` blast radius).
-//! - **Board card idempotency by claim selector** (§5.4): the card path derives
-//!   from the claim selector, so a re-realise of the same pending-agent claim
-//!   hits the guarded create's `if_absent` CAS and is treated as already
-//!   scheduled — never a second card, never an error.
-//! - **§9 identity/time**: the engine mints no clock and no identity; the base
-//!   invocation id, `now`, actor, and scratch dir are all caller-supplied on
-//!   [`RealiseSpec`]. Per-apply invocation ids and receipt anchors derive
-//!   deterministically from the base plus a monotonic attempt counter.
+//! - **No apply lands unrecorded** (d2 §3): every apply runs with a receipt address, so
+//!   the run plane's one write path mints a receipt line for every committed batch; the
+//!   engine surfaces [`RealiseError::UnrecordedApply`] if a committed apply ever lacked a
+//!   receipt (unreachable by construction — the assertion keeps it honest).
+//! - **Caps = exactly the union of the claims' declared caps; the verb adds none** (d2
+//!   §3): [`RealiseReport::caps_union`] is the fold of every apply-capable claim's
+//!   resolved [`run::caps::CapSet`] — the realise verb's total authority. Enforcement
+//!   stays per-apply at the executor choke point; this is the declared surface (and the
+//!   `--dry-run` blast radius).
+//! - **Board card idempotency by claim selector** (§5.4): the card path derives from the
+//!   claim selector, so a re-realise of the same pending-agent claim hits the guarded
+//!   create's `if_absent` CAS and is treated as already scheduled — never a second card,
+//!   never an error.
+//! - **§9 identity/time**: the engine mints no clock and no identity; the base invocation
+//!   id, `now`, actor, and scratch dir are all caller-supplied on [`RealiseSpec`].
+//!   Per-apply invocation ids and receipt anchors derive deterministically from the base
+//!   plus a monotonic attempt counter.
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::io;

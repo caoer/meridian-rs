@@ -1,18 +1,18 @@
 //! The production fixture for the orphan lint (G3).
 //!
-//! A lint that passes synthetic fixtures and misses the known production
-//! orphans is worthless, so this pins the lint against the REAL anchor sequence
-//! from `field-notes/receipts/run.md` as it stood at mrd `1333af61` — the commit
-//! that first wrote completion receipts.
+//! A lint that passes synthetic fixtures and misses the known production orphans is
+//! worthless, so this pins the lint against the REAL anchor sequence from
+//! `field-notes/receipts/run.md` as it stood at mrd `1333af61` — the commit that first
+//! wrote completion receipts.
 //!
-//! That page is the defect era's own record: five invocations authorised by
-//! builds that could not write a completion for an effect-free run, then one
-//! invocation from the build that can. The boundary is visible in the bytes,
-//! which is exactly what the lint reads.
+//! That page is the defect era's own record: five invocations authorised by builds that
+//! could not write a completion for an effect-free run, then one invocation from the
+//! build that can. The boundary is visible in the bytes, which is exactly what the lint
+//! reads.
 //!
-//! The anchors are copied verbatim; the JSON bodies are elided to the fields
-//! that matter, because the lint joins on the anchor and must not depend on
-//! payload shape.
+//! The anchors are copied verbatim; the JSON bodies are elided to the fields that matter,
+//! because the lint joins on the anchor and must not depend on payload shape.
+//!
 
 use check::orphan::{orphaned_runs, render};
 use model::Document;

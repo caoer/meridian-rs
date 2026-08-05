@@ -1,26 +1,26 @@
-//! Disk truth in, atomic splices out: read/walk/watch feeding the model;
-//! tmp+fsync+rename splice execution.
+//! Disk truth in, atomic splices out: read/walk/watch feeding the model; tmp+fsync+rename
+//! splice execution.
 //!
 //! # Charter
-//! **Owns:** the disk boundary. Reading workspace files (refusing non-UTF-8 —
-//! spans must denote exact disk bytes or splice corrupts files), walking the
-//! corpus, watching for changes (rung 4), and *executing* validated splices
-//! atomically (tmp + fsync + rename — meridian's write discipline relocates
-//! verbatim). Feeds `model` and nothing else.
+//! **Owns:** the disk boundary. Reading workspace files (refusing non-UTF-8 — spans must
+//! denote exact disk bytes or splice corrupts files), walking the corpus, watching for
+//! changes (rung 4), and *executing* validated splices atomically (tmp + fsync + rename —
+//! meridian's write discipline relocates verbatim). Feeds `model` and nothing else.
 //!
-//! **Never does:** writing bytes it didn't splice, caching anything to disk
-//! (law 2: no snapshot files, no second database — the moment memory can't be
-//! thrown away, the architecture has been violated), interpreting content.
+//! **Never does:** writing bytes it didn't splice, caching anything to disk (law 2: no
+//! snapshot files, no second database — the moment memory can't be thrown away, the
+//! architecture has been violated), interpreting content.
 //!
 //! # Law enforcement (candidate thesis, this crate's part)
 //! Write execution demands `model::ValidatedBatch` — a token only `model`'s CAS
-//! validation can mint. An unvalidated write cannot reach disk by construction;
-//! the splice pipeline (validate in `model`, execute here) is enforced by types,
-//! not review.
+//! validation can mint. An unvalidated write cannot reach disk by construction; the
+//! splice pipeline (validate in `model`, execute here) is enforced by types, not review.
 //!
 //! # Rungs
-//! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds
-//! the daemon's change feed.
+//! Rung 1: read + walk. Rung 2: atomic splice execution. Rung 4: watch feeds the daemon's
+//! change feed.
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};

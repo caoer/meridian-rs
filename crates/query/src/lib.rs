@@ -1,25 +1,25 @@
-//! Rung-5 corpus reads: backlinks, the §4.6 edge map, span-exact rename
-//! planning — borrows the model's index, applies nothing.
+//! Rung-5 corpus reads: backlinks, the §4.6 edge map, span-exact rename planning —
+//! borrows the model's index, applies nothing.
 //!
 //! # Charter
-//! **Owns:** corpus-level reads. The outgoing edge map (contract §4.6 `links`
-//! — the app's `resolvedLinks`/`unresolvedLinks` shape, per-edge counts),
-//! backlinks (find-references over wikilinks/embeds), board queries (session
-//! tree as database), and rename *planning* — the corpus-wide, span-exact
-//! wikilink-rewrite plan (depth/anchor/alias-preserving, meridian's `mv`
+//! **Owns:** corpus-level reads. The outgoing edge map (contract §4.6 `links` — the app's
+//! `resolvedLinks`/`unresolvedLinks` shape, per-edge counts), backlinks (find-references
+//! over wikilinks/embeds), board queries , and rename *planning* — the corpus-wide,
+//! span-exact wikilink-rewrite plan (depth/anchor/alias-preserving, meridian's `mv`
 //! relocated) that nothing in the stack has today.
 //!
-//! **Never does:** apply edits (a rename plan is a list of splices; application
-//! goes through `model` validation + `fs` execution like every other write),
-//! own the corpus index (borrowed from `model` — sibling of `policy`, no edge
-//! between them), serialize (no-serde law: `wire` twins these shapes; the
-//! sidecar converts).
+//! **Never does:** apply edits (a rename plan is a list of splices; application goes
+//! through `model` validation + `fs` execution like every other write), own the corpus
+//! index (borrowed from `model` — sibling of `policy`, no edge between them), serialize
+//! (no-serde law: `wire` twins these shapes; the sidecar converts).
 //!
 //! # Rungs
 //! Rung 5 entirely. Edge-map resolution is the walk plane's **stage 1 only**
-//! (`CorpusIndex::resolve_linkpath` — `getFirstLinkpathDest` parity, contract
-//! §4.5): the app's `resolvedLinks` counts a link toward its destination FILE;
-//! heading/block fragments never split an edge.
+//! (`CorpusIndex::resolve_linkpath` — `getFirstLinkpathDest` parity, contract §4.5): the
+//! app's `resolvedLinks` counts a link toward its destination FILE; heading/block
+//! fragments never split an edge.
+//!
+//!
 
 use std::collections::BTreeMap;
 

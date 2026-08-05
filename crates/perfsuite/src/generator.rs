@@ -1,16 +1,16 @@
-//! The deterministic markdown generator: `(profile, seed, file index)` →
-//! byte-identical file + construct inventory.
+//! The deterministic markdown generator: `(profile, seed, file index)` → byte-identical
+//! file + construct inventory.
 //!
-//! **Recognizable-context invariant (load-bearing):** counted constructs are
-//! planted only where a correct parser must recognize them — never inside
-//! fence bodies, callout bodies, table cells, or after an unterminated fence
-//! (which is always the final block). Filler text never begins a line with
-//! `#`, `>`, `|`, `-`, `` ` ``, `%%`, `[[` or `---`. Indentation is used by one
-//! construct only — task lines — and never jumps more than one level past the
-//! item above it, so an indented line is always a nested item and never an
-//! indented code block. Together these make the
-//! inventory a sound lower bound: `parsed(kind) ≥ planted(kind)` for every
-//! correct parser, which is what the ≥-planted assertion in `tests/` checks.
+//! **Recognizable-context invariant (load-bearing):** counted constructs are planted only
+//! where a correct parser must recognize them — never inside fence bodies, callout
+//! bodies, table cells, or after an unterminated fence (which is always the final block).
+//! Filler text never begins a line with `#`, `>`, `|`, `-`, `` ` ``, `%%`, `[[` or `---`.
+//! Indentation is used by one construct only — task lines — and never jumps more than one
+//! level past the item above it, so an indented line is always a nested item and never an
+//! indented code block. Together these make the inventory a sound lower bound:
+//! `parsed(kind) ≥ planted(kind)` for every correct parser, which is what the ≥-planted
+//! assertion in `tests/` checks.
+//!
 
 use std::fmt::Write as _;
 

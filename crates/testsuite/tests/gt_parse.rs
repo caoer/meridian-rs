@@ -1,11 +1,11 @@
-//! Rung-1 parse-truth gate: `syntax::parse` reproduces the frozen GT pack's
-//! node boundaries and classifications, file by file.
+//! Rung-1 parse-truth gate: `syntax::parse` reproduces the frozen GT pack's node
+//! boundaries and classifications, file by file.
 //!
 //! Syntax owns exactly `(kind, span)` — the dialect facts. The pack's `hpath`
-//! (section-tree assembly) is `model`'s and `text_prefix_16b` is `wire-map`'s,
-//! so this gate compares the syntax-owned projection: every GT node's kind and
-//! byte span, in the §1 total order both sides emit. The pack is demoted to a
-//! bench fixture only later (PF-GT-RETARGET); until then this diff is reviewable.
+//! (section-tree assembly) is `model`'s and `text_prefix_16b` is `wire-map`'s, so this
+//! gate compares the syntax-owned projection: every GT node's kind and byte span, in the
+//! §1 total order both sides emit. The pack is demoted to a bench fixture only later
+//! (PF-GT-RETARGET); until then this diff is reviewable.
 
 use serde_json::Value;
 use std::fmt::Write as _;

@@ -1,113 +1,113 @@
-//! The env-var bridge — the two llm-wiki environment variables checked against
-//! the bound mount table (U9).
+//! The env-var bridge — the two llm-wiki environment variables checked against the bound
+//! mount table (U9).
 //!
 //! # Charter
-//! **Owns:** the two bridged variable names, the check of each stated path
-//! against the bound table, the four bridge states, the file-wins rule, and the
-//! once-per-process divergence report.
+//! **Owns:** the two bridged variable names, the check of each stated path against the
+//! bound table, the four bridge states, the file-wins rule, and the once-per-process
+//! divergence report.
 //!
-//! **Never does:** canonicalize a path itself, decide what a root is called, or
-//! change an exit code. Canonicalization at bind is [`crate::mount`]'s and is
-//! reused whole through [`MountTable::by_path`]; a divergence is a **note**, not
-//! a refusal.
+//! **Never does:** canonicalize a path itself, decide what a root is called, or change an
+//! exit code. Canonicalization at bind is [`crate::mount`]'s and is reused whole through
+//! [`MountTable::by_path`]; a divergence is a **note**, not a refusal.
 //!
 //! # The inversion, and the period this module IS
 //!
 //! `2026-07-24-meridian-md-entry-point.md` §5 (**silver**) ruled the relationship
-//! flipped: the two llm-wiki environment variables — `CCC_LLM_WIKI_PATH` and the
-//! repo root — **become mount entries** in `MERIDIAN.md`, and the wiki stops
-//! being the frame that contains meridian. The migration is an **inversion, not
-//! a break**:
+//! flipped: the two llm-wiki environment variables — `CCC_LLM_WIKI_PATH` and the repo
+//! root — **become mount entries** in `MERIDIAN.md`, and the wiki stops being the frame
+//! that contains meridian. The migration is an **inversion, not a break**:
 //!
-//! > *Bridge period: ccc-statusd and the skills keep honoring the env vars while
-//! > they are derived from — or checked against — the file; then the env vars
-//! > demote to overrides only.*
+//! > *Bridge period: ccc-statusd and the skills keep honoring the env vars while > they
+//! > are derived from — or checked against — the file; then the env vars > demote to
+//! > overrides only.*
 //!
-//! This module is the **"checked against"** half. Nothing here removes a
-//! variable, and nothing here reads one to decide where a root lives — the file
-//! decides that. The demotion to overrides is the period's END and is not this
-//! unit.
+//! This module is the **"checked against"** half. Nothing here removes a variable, and
+//! nothing here reads one to decide where a root lives — the file decides that. The
+//! demotion to overrides is the period's END and is not this unit.
 //!
 //! # What "checked against" resolves to — the outcome the ruling implied
 //!
-//! *"Checked against"* implies an outcome the ratifying decision never stated:
-//! what happens when the variable and the file **disagree**. Plan §5 rules it:
+//! *"Checked against"* implies an outcome the ratifying decision never stated: what
+//! happens when the variable and the file **disagree**. Plan §5 rules it:
 //!
-//! > **THE FILE WINS, and the divergence is REPORTED ONCE PER PROCESS, never
+//! > **THE FILE WINS, and the divergence is REPORTED ONCE PER PROCESS, never >
 //! > silently.**
 //!
-//! **Fail-loud here would brick the CLI on every machine that exports the
-//! variable**, and a bridge period whose mismatch is fatal is not a bridge. So
-//! divergence rides a note and **never an exit code**: [`check`] returns a
-//! report, it does not return an error, and there is no `Err` variant for a
-//! caller to be tempted into propagating.
+//! **Fail-loud here would brick the CLI on every machine that exports the variable**, and
+//! a bridge period whose mismatch is fatal is not a bridge. So divergence rides a note
+//! and **never an exit code**: [`check`] returns a report, it does not return an error,
+//! and there is no `Err` variant for a caller to be tempted into propagating.
 //!
-//! "The file wins" is made observable rather than asserted in prose:
-//! [`Bridged::mount`] is `Some` **only** on agreement. A variable that states a
-//! tree the table does not bind therefore names **no root at all** — the mount
-//! table stays the single authority on which roots exist, which is precisely
-//! what the inversion means.
+//! "The file wins" is made observable rather than asserted in prose: [`Bridged::mount`]
+//! is `Some` **only** on agreement. A variable that states a tree the table does not bind
+//! therefore names **no root at all** — the mount table stays the single authority on
+//! which roots exist, which is precisely what the inversion means.
 //!
 //! # Why the check routes through `by_path`, and what it would otherwise build
 //!
 //! Measured on this machine before this module existed (S3-R7):
 //!
-//! | Fact | Value |
-//! |---|---|
-//! | `CCC_LLM_WIKI_PATH` | `/Users/Shared/projects/field-notes/` — the real path, **with a trailing slash** |
-//! | `CCC_LLM_WIKI_REPOS_ROOT` | `/Users/Shared/repos` |
-//! | `/Users/Shared/repos/field-notes` | a **symlink** to `/Users/Shared/projects/field-notes` |
+//! | Fact | Value | |---|---| | `CCC_LLM_WIKI_PATH` | `/Users/Shared/projects/field-notes/`
+//! — the real path, **with a trailing slash** | | `CCC_LLM_WIKI_REPOS_ROOT` |
+//! `/Users/Shared/repos` | | `/Users/Shared/repos/field-notes` | a **symlink** to
+//! `/Users/Shared/projects/field-notes` |
 //!
-//! A **literal** inversion — taking each variable's bytes as a mount path —
-//! binds **one tree twice under two names**: two canonical refs over identical
-//! bytes with identical `sec_rev`, which the read-mint recheck cannot tell apart,
-//! so **a receipt minted on ref A would gate a pin on ref B.** That is a
-//! read-mint bypass, and it is the reason this module compares **nothing**
-//! itself: [`MountTable::by_path`] canonicalizes its argument by the same rule
-//! [`crate::mount::bind`] used, so the symlinked spelling, the trailing-slash
-//! spelling and the real path are one lookup with one answer. A second
-//! comparison written here would be a second canonicalization law, and the two
-//! would drift.
+//! A **literal** inversion — taking each variable's bytes as a mount path — binds **one
+//! tree twice under two names**: two canonical refs over identical bytes with identical
+//! `sec_rev`, which the read-mint recheck cannot tell apart, so **a receipt minted on ref
+//! A would gate a pin on ref B.** That is a read-mint bypass, and it is the reason this
+//! module compares **nothing** itself: [`MountTable::by_path`] canonicalizes its argument
+//! by the same rule [`crate::mount::bind`] used, so the symlinked spelling, the
+//! trailing-slash spelling and the real path are one lookup with one answer. A second
+//! comparison written here would be a second canonicalization law, and the two would
+//! drift.
 //!
-//! **The repos root shows the same trap from the other side, and it is the half
-//! a reader would assume away.** `/Users/Shared/repos` *appears* to contain the
-//! wiki at `/Users/Shared/repos/field-notes`, so a string-prefix reading would call
-//! the two mounts nested and refuse them. Canonicalized they are **siblings** —
-//! `/Users/Shared/projects/field-notes` is not under `/Users/Shared/repos` — and
-//! the nesting **dissolves**. Canonicalization is therefore not only what
-//! collapses a false distinction; it is also what dissolves a false collision,
-//! and a bridge reasoning on the stated bytes would get **both** directions
-//! wrong.
+//! **The repos root shows the same trap from the other side, and it is the half a reader
+//! would assume away.** `/Users/Shared/repos` *appears* to contain the wiki at
+//! `/Users/Shared/repos/field-notes`, so a string-prefix reading would call the two mounts
+//! nested and refuse them. Canonicalized they are **siblings** —
+//! `/Users/Shared/projects/field-notes` is not under `/Users/Shared/repos` — and the
+//! nesting **dissolves**. Canonicalization is therefore not only what collapses a false
+//! distinction; it is also what dissolves a false collision, and a bridge reasoning on
+//! the stated bytes would get **both** directions wrong.
 //!
 //! # The empty table is UNCHECKED, and that is what keeps this instrument alive
 //!
-//! An instrument's precision is what buys its survival (S3-R23): a check that
-//! cries wolf is deleted by the next person it inconveniences, and then the
-//! invariant has no guard at all.
+//! An instrument's precision is what buys its survival (S3-R23): a check that cries wolf
+//! is deleted by the next person it inconveniences, and then the invariant has no guard
+//! at all.
 //!
-//! **Every machine today is state A** — no `MERIDIAN.md`, an empty mount table —
-//! while both variables are exported. A bridge that called that a divergence
-//! would fire on **100% of machines on its first run**, teach nothing, and be
-//! unset or patched out within a day. So an empty table is
-//! [`BridgeState::Unchecked`]: the inversion has not happened here, there is
-//! nothing to be inconsistent *with*, and the variable is honoured in silence.
+//! **Every machine today is state A** — no `MERIDIAN.md`, an empty mount table — while
+//! both variables are exported. A bridge that called that a divergence would fire on
+//! **100% of machines on its first run**, teach nothing, and be unset or patched out
+//! within a day. So an empty table is [`BridgeState::Unchecked`]: the inversion has not
+//! happened here, there is nothing to be inconsistent *with*, and the variable is
+//! honoured in silence.
 //!
-//! This reuses the config plane's own nil-vs-empty identity rather than adding a
-//! branch: state A (absent) and state D (a clean parse declaring zero mounts)
-//! both produce the empty table and both reach this one arm.
+//! This reuses the config plane's own nil-vs-empty identity rather than adding a branch:
+//! state A (absent) and state D (a clean parse declaring zero mounts) both produce the
+//! empty table and both reach this one arm.
 //!
 //! # The latch is per VARIABLE, and the word is deliberate
 //!
-//! The ruling says *once per process*. The latch is held **per variable**, not
-//! once for the pair, because the two carry **different** facts: a shared latch
-//! would silence the second variable's distinct divergence entirely, and
-//! "never silently" is the half of the ruling that would be lost. Each
-//! divergence is reported once per process; neither is reported twice.
+//! The ruling says *once per process*. The latch is held **per variable**, not once for
+//! the pair, because the two carry **different** facts: a shared latch would silence the
+//! second variable's distinct divergence entirely, and "never silently" is the half of
+//! the ruling that would be lost. Each divergence is reported once per process; neither
+//! is reported twice.
 //!
-//! The latch is taken **at check time** and the report is carried in the
-//! returned value, so holding a [`Bridged`] cannot print twice by accident —
-//! the same shape [`crate::Config`] uses to make "no partial load" a property of
-//! the type rather than of today's call sites.
+//! The latch is taken **at check time** and the report is carried in the returned value,
+//! so holding a [`Bridged`] cannot print twice by accident — the same shape
+//! [`crate::Config`] uses to make "no partial load" a property of the type rather than of
+//! today's call sites.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,26 +1,26 @@
-//! One pure function: markdown bytes → dialect node list with byte-exact spans —
-//! the only crate that touches the pulldown-cmark fork.
+//! One pure function: markdown bytes → dialect node list with byte-exact spans — the only
+//! crate that touches the pulldown-cmark fork.
 //!
 //! # Charter
-//! **Owns:** the dialect grammar truth. Fork events (wikilinks, anchors, callout
-//! types + fold markers, embed `!`-folding) plus the two post-passes the fork
-//! deliberately excludes (`%%comment%%` — cross-block, 12 lines outside the
-//! parser beats touching `firstpass.rs`; and masking). Byte-exact spans are the
-//! load-bearing contract: pulldown emits `(event, byte_range)` natively, so a
-//! parser version bump fails at compile time, never silently at runtime.
+//! **Owns:** the dialect grammar truth. Fork events (wikilinks, anchors, callout types +
+//! fold markers, embed `!`-folding) plus the two post-passes the fork deliberately
+//! excludes (`%%comment%%` — cross-block, 12 lines outside the parser beats touching
+//! `firstpass.rs`; and masking). Byte-exact spans are the load-bearing contract: pulldown
+//! emits `(event, byte_range)` natively, so a parser version bump fails at compile time,
+//! never silently at runtime.
 //!
-//! **Never does:** I/O, state, hashing, world-model assembly (that's `model`'s),
-//! body formatting (permanently out of scope — ccc-mdformat owns it).
+//! **Never does:** I/O, state, hashing, world-model assembly (that's `model`'s), body
+//! formatting (permanently out of scope — ccc-mdformat owns it).
 //!
 //! # Law enforcement (candidate thesis, this crate's part)
-//! This is the ONLY crate allowed to depend on the fork. The fork's churn and
-//! ours must not couple (constraint 5): every other crate sees `DialectNode`,
-//! never a pulldown type, so a fork API change is a one-crate event.
+//! This is the ONLY crate allowed to depend on the fork. The fork's churn and ours must
+//! not couple (constraint 5): every other crate sees `DialectNode`, never a pulldown
+//! type, so a fork API change is a one-crate event.
 //!
 //! # Rungs
 //! Rung 1 lands `parse` complete (the the prior `rust-pulldown` parse baseline's
-//! extraction core relocates here); later rungs add dialect events, never
-//! callers.
+//! extraction core relocates here); later rungs add dialect events, never callers.
+//!
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use std::ops::Range;

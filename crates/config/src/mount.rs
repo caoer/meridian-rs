@@ -1,113 +1,113 @@
 //! The mount table — where a declared mount entry becomes a **bound** root.
 //!
 //! # Charter
-//! **Owns:** canonicalization at bind, the `workspace::deny_reason` ceiling,
-//! the equal-or-nested refusal, the three-way map's uniqueness invariants, the
-//! read of each root's own self-declaration and the declared-vs-bound check,
-//! and mount-as-claim — the pin a mount carries over the root it declares.
+//! **Owns:** canonicalization at bind, the `workspace::deny_reason` ceiling, the
+//! equal-or-nested refusal, the three-way map's uniqueness invariants, the read of each
+//! root's own self-declaration and the declared-vs-bound check, and mount-as-claim — the
+//! pin a mount carries over the root it declares.
 //!
-//! **Never does:** resolve an address. Which corpus a `root:` prefix selects,
-//! and what an unmounted root renders, are U11's (`docs/address-grammar.md`
-//! §5, §6). This module answers only *which roots does this machine bind, and
-//! what can it say about each*.
+//! **Never does:** resolve an address. Which corpus a `root:` prefix selects, and what an
+//! unmounted root renders, are U11's (`docs/address-grammar.md` §5, §6). This module
+//! answers only *which roots does this machine bind, and what can it say about each*.
 //!
 //! # The three-way map, and the arithmetic that closes it (R32)
 //!
-//! The mount table is the single authority for the three-way translation —
-//! **canonical root name ↔ Obsidian vault name ↔ local path**
-//! (`2026-07-24-cross-root-addressing.md` §2). Three representations give a
-//! **3 × 3 = 9-cell** matrix, and every cell is accounted for exactly once: the
-//! **diagonal** is "this representation is a key" (the three uniqueness
-//! invariants), the **off-diagonal** is the six directed translations. Nothing
-//! is counted twice, because the nine cells are the whole product set.
+//! The mount table is the single authority for the three-way translation — **canonical
+//! root name ↔ Obsidian vault name ↔ local path** (`2026-07-24-cross-root-addressing.md`
+//! §2). Three representations give a **3 × 3 = 9-cell** matrix, and every cell is
+//! accounted for exactly once: the **diagonal** is "this representation is a key" (the
+//! three uniqueness invariants), the **off-diagonal** is the six directed translations.
+//! Nothing is counted twice, because the nine cells are the whole product set.
 //!
-//! | from ↓ / to → | **name** | **vault** | **path** |
-//! |---|---|---|---|
-//! | **name** | INV-1 — no two entries share a name. Enforced at PARSE ([`crate::Reason::DuplicateMountName`], schema §5.1) | name → vault: [`Mount::vault`]. **Partial** — `None` on a `git-folder` entry | name → path: [`MountTable::by_name`] then [`Mount::canonical_path`] |
-//! | **vault** | vault → name: [`MountTable::by_vault`] then [`Mount::name`]. **Partial domain** — `vault`-kind entries only | INV-3 — no two entries share a vault name. [`MountReason::DuplicateVaultName`] | vault → path: [`MountTable::by_vault`] then [`Mount::canonical_path`]. **Partial domain** |
-//! | **path** | path → name: [`MountTable::by_path`] then [`Mount::name`] | path → vault: [`MountTable::by_path`] then [`Mount::vault`]. **Partial** | INV-2 — no two entries share a canonicalized path, and INV-4 — none contains another. [`MountReason::DuplicateMountPath`], [`MountReason::NestedMount`] |
+//! | from ↓ / to → | **name** | **vault** | **path** | |---|---|---|---| | **name** |
+//! INV-1 — no two entries share a name. Enforced at PARSE
+//! ([`crate::Reason::DuplicateMountName`], schema §5.1) | name → vault: [`Mount::vault`].
+//! **Partial** — `None` on a `git-folder` entry | name → path: [`MountTable::by_name`]
+//! then [`Mount::canonical_path`] | | **vault** | vault → name: [`MountTable::by_vault`]
+//! then [`Mount::name`]. **Partial domain** — `vault`-kind entries only | INV-3 — no two
+//! entries share a vault name. [`MountReason::DuplicateVaultName`] | vault → path:
+//! [`MountTable::by_vault`] then [`Mount::canonical_path`]. **Partial domain** | |
+//! **path** | path → name: [`MountTable::by_path`] then [`Mount::name`] | path → vault:
+//! [`MountTable::by_path`] then [`Mount::vault`]. **Partial** | INV-2 — no two entries
+//! share a canonicalized path, and INV-4 — none contains another.
+//! [`MountReason::DuplicateMountPath`], [`MountReason::NestedMount`] |
 //!
 //! **The count, stated:** 9 cells = 3 diagonal (INV-1, INV-3, INV-2+INV-4) + 6
-//! off-diagonal translations. Of the six, **two are total** (name ↔ path) and
-//! **four are partial** (every cell on the vault row or column), because a
-//! `git-folder` root has no Obsidian vault. That partiality is the one fact a
-//! reader would otherwise assume away: **the map is a bijection on the
-//! name↔path axis and only an injection on the vault axis**, since INV-3 holds
-//! vacuously over the `git-folder` entries that carry no vault name at all.
+//! off-diagonal translations. Of the six, **two are total** (name ↔ path) and **four are
+//! partial** (every cell on the vault row or column), because a `git-folder` root has no
+//! Obsidian vault. That partiality is the one fact a reader would otherwise assume away:
+//! **the map is a bijection on the name↔path axis and only an injection on the vault
+//! axis**, since INV-3 holds vacuously over the `git-folder` entries that carry no vault
+//! name at all.
 //!
-//! `is_bound_by_this_machine` is deliberately absent from the matrix: it is a
-//! predicate over one entry, not a translation between two representations.
+//! `is_bound_by_this_machine` is deliberately absent from the matrix: it is a predicate
+//! over one entry, not a translation between two representations.
 //!
 //! # The ceiling — why a mount is not just a path
 //!
-//! `MERIDIAN.md` is ordinary editable content. Without a ceiling at bind, a
-//! mount binding `$HOME` or `/` would hand the whole filesystem to every plane
-//! that resolves through the table — **the workspace deny ceiling bypassed by a
-//! file that is itself ordinary editable content**. So every mount path is
-//! canonicalized and then passed through [`workspace::deny_reason`], the SAME
-//! predicate the workspace ladder uses; it is reused here, never re-implemented
-//! (`docs/address-grammar.md` §8 B-2).
+//! `MERIDIAN.md` is ordinary editable content. Without a ceiling at bind, a mount binding
+//! `$HOME` or `/` would hand the whole filesystem to every plane that resolves through
+//! the table — **the workspace deny ceiling bypassed by a file that is itself ordinary
+//! editable content**. So every mount path is canonicalized and then passed through
+//! [`workspace::deny_reason`], the SAME predicate the workspace ladder uses; it is reused
+//! here, never re-implemented (`docs/address-grammar.md` §8 B-2).
 //!
-//! A refused mount **fails the whole parse**. Like [`crate::Config`],
-//! [`MountTable`]'s field is private and [`bind`] is its only constructor, so a
-//! partially-bound table cannot exist to be observed.
+//! A refused mount **fails the whole parse**. Like [`crate::Config`], [`MountTable`]'s
+//! field is private and [`bind`] is its only constructor, so a partially-bound table
+//! cannot exist to be observed.
 //!
 //! # Canonicalize first, and refuse equal-or-nested (S3-R7)
 //!
-//! Measured on this machine, before the code existed:
-//! `/Users/Shared/repos/field-notes` is a **symlink** to
-//! `/Users/Shared/projects/field-notes`, while `CCC_LLM_WIKI_PATH` carries the
-//! real path **with a trailing slash**. A literal env-var inversion therefore
-//! binds **one tree twice under two names** — two canonical refs over identical
-//! bytes, with identical `sec_rev`, which **the read-mint recheck cannot tell
-//! apart: a receipt minted on ref A would gate a pin on ref B.** That is a
-//! read-mint bypass, and only canonicalization collapses both spellings.
+//! Measured on this machine, before the code existed: `/Users/Shared/repos/field-notes` is
+//! a **symlink** to `/Users/Shared/projects/field-notes`, while `CCC_LLM_WIKI_PATH` carries
+//! the real path **with a trailing slash**. A literal env-var inversion therefore binds
+//! **one tree twice under two names** — two canonical refs over identical bytes, with
+//! identical `sec_rev`, which **the read-mint recheck cannot tell apart: a receipt minted
+//! on ref A would gate a pin on ref B.** That is a read-mint bypass, and only
+//! canonicalization collapses both spellings.
 //!
-//! Nesting is refused on the same argument one level down: `/a/wiki` and
-//! `/a/wiki/sub` bound under two names give one document two canonical
-//! addresses. The prefix test is **path-segment-boundary** (`Path::starts_with`
-//! is component-wise), so the sibling case `/a/wiki` + `/a/wiki-two` stays
-//! legal — a naive string prefix would refuse it, and a mount law that refuses
-//! legitimate siblings is a guard that blocks everything.
+//! Nesting is refused on the same argument one level down: `/a/wiki` and `/a/wiki/sub`
+//! bound under two names give one document two canonical addresses. The prefix test is
+//! **path-segment-boundary** (`Path::starts_with` is component-wise), so the sibling case
+//! `/a/wiki` + `/a/wiki-two` stays legal — a naive string prefix would refuse it, and a
+//! mount law that refuses legitimate siblings is a guard that blocks everything.
 //!
 //! # The root declares; `MERIDIAN.md` binds (D7)
 //!
-//! *"MERIDIAN.md binds, it doesn't baptize"* (`2026-07-24-cross-root-addressing.md`
-//! §1a). A root's canonical name belongs to the root, because root names travel
-//! inside stored, shared content — a name defined only in one user's config
-//! would make links valid on exactly one machine. So a root declares its own
-//! name in [`DECLARATION_FILENAME`] at its top level, and this module **checks**
-//! the binding against it:
+//! *"MERIDIAN.md binds, it doesn't baptize"* (`2026-07-24-cross-root-addressing.md` §1a).
+//! A root's canonical name belongs to the root, because root names travel inside stored,
+//! shared content — a name defined only in one user's config would make links valid on
+//! exactly one machine. So a root declares its own name in [`DECLARATION_FILENAME`] at
+//! its top level, and this module **checks** the binding against it:
 //!
 //! - the two agree → the mount **binds** (the acceptance half, S3-R8(c));
 //! - the two disagree → the **whole parse fails loud**, naming both spellings;
-//! - the declaration is **absent** → the mount renders **grey**, naming the
-//!   file it looked for. Not a mismatch, not a refusal of the table.
+//! - the declaration is **absent** → the mount renders **grey**, naming the file it
+//!   looked for. Not a mismatch, not a refusal of the table.
 //!
 //! The declaration is spelled in the **same reserved filename** as the config
 //! ([`DECLARATION_FILENAME`] is [`crate::CONFIG_FILENAME`], one constant) and
-//! discriminated by its `type:` key. That is not a collision, it is the
-//! discriminator doing its job: `MERIDIAN_CONFIG` aimed at a root's declaration
-//! refuses with [`crate::Reason::WrongTypeValue`] rather than half-loading an
-//! unrelated page — which is precisely why schema §4 required the key. The two
-//! can never be one file, because `$HOME` is a denied mount path
-//! ([`workspace::DenyReason::HomeDir`]) and a root is never `$HOME`.
+//! discriminated by its `type:` key. That is not a collision, it is the discriminator
+//! doing its job: `MERIDIAN_CONFIG` aimed at a root's declaration refuses with
+//! [`crate::Reason::WrongTypeValue`] rather than half-loading an unrelated page — which
+//! is precisely why schema §4 required the key. The two can never be one file, because
+//! `$HOME` is a denied mount path ([`workspace::DenyReason::HomeDir`]) and a root is
+//! never `$HOME`.
 //!
 //! # Mount-as-claim, and the residual it does NOT close
 //!
-//! A mount may **pin the root it declares** (schema §5.3). The pin's target is
-//! the declaration file, and the two jobs reinforce each other: the pin
-//! protects exactly the artifact the declared-vs-bound check reads, so tampering
-//! with a root's declaration reddens the mount that trusts it. Verification
-//! reuses [`model::fingerprint::verify_content`] whole — no new codec, no new
-//! hash law, and an unimplemented triple member renders grey rather than green
-//! (R26: outside sight never renders as verified).
+//! A mount may **pin the root it declares** (schema §5.3). The pin's target is the
+//! declaration file, and the two jobs reinforce each other: the pin protects exactly the
+//! artifact the declared-vs-bound check reads, so tampering with a root's declaration
+//! reddens the mount that trusts it. Verification reuses
+//! [`model::fingerprint::verify_content`] whole — no new codec, no new hash law, and an
+//! unimplemented triple member renders grey rather than green (R26: outside sight never
+//! renders as verified).
 //!
-//! **What it does not close, stated rather than implied (S3-R10(b)):** a mount
-//! pin protects the root a mount declares; it does **not** protect the table's
-//! own *membership*, because deleting a mount block deletes its pin along with
-//! it. What prevents silent passage there is S3-R6 — grey refuses on exit 1 —
-//! not this mechanism.
+//! **What it does not close, stated rather than implied (S3-R10(b)):** a mount pin
+//! protects the root a mount declares; it does **not** protect the table's own
+//! *membership*, because deleting a mount block deletes its pin along with it. What
+//! prevents silent passage there is S3-R6 — grey refuses on exit 1 — not this mechanism.
 
 use std::path::{Path, PathBuf};
 

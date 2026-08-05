@@ -1,42 +1,42 @@
 //! The `MERIDIAN.md` config plane — the one entry point, parsed as content.
 //!
 //! # Charter
-//! **Owns:** the bootstrap chain (`MERIDIAN_CONFIG` → `$HOME/MERIDIAN.md`), the
-//! four resolution states, the in-file schema's strict parse (frontmatter +
-//! the `meridian-mount` / `meridian-tool` block grammars), the closed refusal
-//! set with its 1-based FILE lines, and the config's own rev and fingerprint —
-//! minted by the shipped laws, never a new one (`docs/meridian-md-schema.md`
-//! §7.1).
+//! **Owns:** the bootstrap chain (`MERIDIAN_CONFIG` → `$HOME/MERIDIAN.md`), the four
+//! resolution states, the in-file schema's strict parse (frontmatter + the
+//! `meridian-mount` / `meridian-tool` block grammars), the closed refusal set with its
+//! 1-based FILE lines, and the config's own rev and fingerprint — minted by the shipped
+//! laws, never a new one (`docs/meridian-md-schema.md` §7.1).
 //!
 //! **Never does:** bind a mount *in this module*. Canonicalization at bind, the
-//! `workspace::deny_reason` ceiling, the equal-or-nested refusal, the
-//! declared-vs-bound check and the grey classes live in [`mount`] —
-//! `docs/address-grammar.md` §8. This module produces the parsed config; that
-//! one gives it meaning. It also does not do project-local walk-up discovery: the
-//! ratifying decision defers it, so the chain in [`resolve`] has exactly two
-//! rungs and no third. The bridge period's env-var check is [`bridge`]'s.
+//! `workspace::deny_reason` ceiling, the equal-or-nested refusal, the declared-vs-bound
+//! check and the grey classes live in [`mount`] — `docs/address-grammar.md` §8. This
+//! module produces the parsed config; that one gives it meaning. It also does not do
+//! project-local walk-up discovery: the ratifying decision defers it, so the chain in
+//! [`resolve`] has exactly two rungs and no third. The bridge period's env-var check is
+//! [`bridge`]'s.
 //!
 //! # Two env axes, one nil-vs-empty rule
-//! [`Env`] carries the BOOTSTRAP variables (`MERIDIAN_CONFIG`, `HOME`) — where
-//! the config file is. [`bridge::BridgeEnv`] carries the two llm-wiki variables
-//! the entry-point ruling inverts into mount entries — what the file should
-//! already say. Both treat an empty or whitespace-only value as unset, so the
-//! two axes cannot come to disagree about what "stated" means.
+//! [`Env`] carries the BOOTSTRAP variables (`MERIDIAN_CONFIG`, `HOME`) — where the config
+//! file is. [`bridge::BridgeEnv`] carries the two llm-wiki variables the entry-point
+//! ruling inverts into mount entries — what the file should already say. Both treat an
+//! empty or whitespace-only value as unset, so the two axes cannot come to disagree about
+//! what "stated" means.
 //!
 //! # The precedent this EXTENDS
 //! `meridian/armed-rules.md` is markdown-as-config shipping today
-//! (`crates/policy/src/index.rs`): strictness scoped to a machine surface,
-//! malformed fails closed, and the pinned rev is `blake3(bytes)[:16]`. Schema
-//! §1 walks the parallel row by row and names the five places this schema
-//! deliberately differs.
+//! (`crates/policy/src/index.rs`): strictness scoped to a machine surface, malformed
+//! fails closed, and the pinned rev is `blake3(bytes)[:16]`. Schema §1 walks the parallel
+//! row by row and names the five places this schema deliberately differs.
 //!
 //! # No partial mount table, by construction
-//! [`parse`] returns `Result<Config, ConfigError>` and [`Config`]'s fields are
-//! private with no public constructor — the only way to hold one is to have
-//! parsed a whole file cleanly. A malformed config therefore leaves no
-//! partially-populated state observable to any caller, because there is no
-//! value to observe. That is the ratified no-partial-load made a property of
-//! the type rather than of today's call sites.
+//! [`parse`] returns `Result<Config, ConfigError>` and [`Config`]'s fields are private
+//! with no public constructor — the only way to hold one is to have parsed a whole file
+//! cleanly. A malformed config therefore leaves no partially-populated state observable
+//! to any caller, because there is no value to observe. That is the ratified
+//! no-partial-load made a property of the type rather than of today's call sites.
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 

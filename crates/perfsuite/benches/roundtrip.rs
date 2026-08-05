@@ -1,16 +1,16 @@
 //! Seam bench: transport codec today, sidecar end-to-end when rungs land.
 //!
 //! # Metric contract (claims.toml)
-//! - `transport.codec.ndjson_roundtrip_p99` — **LIVE day 1**: µs per
-//!   single-frame encode+decode round-trip, p99 via the hdr path
-//!   (`NdjsonCodec` is implemented). Recorded to staging on every run — this
-//!   target is the end-to-end proof of the claims pipeline.
-//! - `roundtrip.op.p99` — dormant until rung 1+: NDJSON request in → response
-//!   out through parse+assemble+project+codec, the latency Go actually feels.
+//! - `transport.codec.ndjson_roundtrip_p99` — **LIVE day 1**: µs per single-frame
+//!   encode+decode round-trip, p99 via the hdr path (`NdjsonCodec` is implemented).
+//!   Recorded to staging on every run — this target is the end-to-end proof of the claims
+//!   pipeline.
+//! - `roundtrip.op.p99` — dormant until rung 1+: NDJSON request in → response out through
+//!   parse+assemble+project+codec, the latency Go actually feels.
 //!
-//! Hand-written `main` (not `criterion_main!`): criterion runs first, then the
-//! hdr claim run records its measurement — both happen in smoke mode too, so
-//! every CI run refreshes the staged measurement.
+//! Hand-written `main` (not `criterion_main!`): criterion runs first, then the hdr claim
+//! run records its measurement — both happen in smoke mode too, so every CI run refreshes
+//! the staged measurement.
 
 use std::hint::black_box;
 use std::io::Write as _;
