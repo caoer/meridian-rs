@@ -136,8 +136,11 @@ usage:
                            verbatim) / 2 bad invocation
 ! mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
           [--if-fingerprint FP] [--receipt PATH#ANCHOR]
-                           the batch write: edits JSON on STDIN (the wire §4.4
-                           grammar, [{target, edit, if_node_rev?}]), routed
+                           the batch write: the edits ride STDIN as a BARE JSON
+                           ARRAY — [{target, edit, if_node_rev?}], which is the
+                           VALUE of the wire §4.4 `edits` field and NEVER the
+                           request object §4.4 shows around it (no id, no op,
+                           no path — those are argv's here). Routed
                            through the production splice choke-point (CAS +
                            armed gate + write flock — never bypassed). --dry
                            and --validate are ONE rehearsal (everything except
@@ -388,6 +391,9 @@ options:
                            ```golden fence declares the exceptions; its `rule:`
                            reference must resolve to --rule's PAGE. Omitted:
                            nothing is declared
+  -V, --version            print the build identity — package version + the
+                           commit this binary was built from (`unknown` when
+                           the build could read no repository)
   -h, --help               print this help
 ";
 
@@ -464,6 +470,22 @@ fn usage() -> String {
     format!("{HEADER}\n{LISTING}")
 }
 
+/// The build identity, one line: the package version and the commit
+/// `build.rs` read at compile time.
+///
+/// The version alone cannot answer "which binary is this" — the workspace
+/// publishes nothing, so every crate carries `0.0.0` forever. The commit is the
+/// answer, and it is READ, never invented: a build that could reach no
+/// repository bakes `unknown`, and this line prints that word rather than a
+/// commit nobody stood behind.
+fn version() -> String {
+    format!(
+        "mrd {} (git {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("MRD_BUILD_SHA")
+    )
+}
+
 /// Parse `args` (argv without the program name) and run the selected verb.
 #[must_use]
 pub fn run(args: &[String]) -> ExitCode {
@@ -493,6 +515,14 @@ fn dispatch(args: &[String]) -> Result<(), Fail> {
     match verb.as_str() {
         "help" | "-h" | "--help" => {
             print!("{}", usage());
+            Ok(())
+        }
+        // Answered next to `help` and by the same three spellings a caller
+        // reaches for, because the cost of guessing wrong used to be exit 2
+        // plus the whole listing — the loudest possible answer to the
+        // smallest possible question.
+        "version" | "-V" | "--version" => {
+            println!("{}", version());
             Ok(())
         }
         "init" => init::dispatch(&args[1..]),

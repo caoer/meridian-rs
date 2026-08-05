@@ -14,11 +14,19 @@
 //! contradiction (exit 2): one invocation cannot be both the loud and the
 //! quiet face.
 //!
-//! The edits ride STDIN in the wire §4.4 grammar VERBATIM — a JSON array of
-//! `{target, edit, if_node_rev?}` where `target` is `{"hpath":[…]}` /
+//! The edits ride STDIN in the wire §4.4 grammar VERBATIM — a BARE JSON array
+//! of `{target, edit, if_node_rev?}` where `target` is `{"hpath":[…]}` /
 //! `{"anchor":"…"}` / `{"fm_key":"…"}` and `edit` is `{"match":{"old","new"}}`
 //! or `{"put":{"at","text"}}` — strict-decoded, so an unknown key is a loud
 //! exit 2, never ignored.
+//!
+//! **The array is the VALUE of §4.4's `edits` field, not the request object
+//! around it.** §4.4 documents a wire request, where the array sits under an
+//! `"edits"` key beside `id`/`op`/`path`; here those three are argv's, so
+//! sending the whole envelope on stdin is a type error the decoder refuses
+//! (dogfood 2026-08-04, run 14). [`read_stdin_edits`] names that exact mistake
+//! when it sees it, because "expected a sequence" alone leaves a caller
+//! re-reading the doc that misled them.
 //!
 //! Every put routes through THE production splice choke-point
 //! ([`wire_serve::write::splice`], decision 0002 W1) in-process: the CAS
@@ -326,7 +334,30 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
                 .to_owned(),
         ));
     }
-    let edits: Vec<Edit> = serde_json::from_str(&raw)
-        .map_err(|e| Fail::tool(format!("malformed edits JSON on stdin: {e}")))?;
+    let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
+        Fail::tool(format!(
+            "malformed edits JSON on stdin: {e}{}",
+            envelope_hint(&raw)
+        ))
+    })?;
     Ok(edits)
+}
+
+/// The one refusal worth naming: stdin carried the whole §4.4 REQUEST object
+/// instead of the array under its `edits` key.
+///
+/// It fires only when the bytes really are that — an object with an `edits`
+/// key — so the hint can never mis-diagnose some other malformed input. Any
+/// other shape gets the decoder's own message and nothing added to it.
+fn envelope_hint(raw: &str) -> &'static str {
+    let is_envelope = serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|v| v.get("edits").cloned())
+        .is_some_and(|edits| edits.is_array());
+    if is_envelope {
+        " — stdin takes the BARE edits ARRAY, not the wire §4.4 request object: \
+         send the value of its \"edits\" field (id / op / path are argv's here)"
+    } else {
+        ""
+    }
 }
