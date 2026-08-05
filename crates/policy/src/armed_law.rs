@@ -1,50 +1,50 @@
-//! A workspace's attested armed law at one path — and the ONE surface that
-//! reports every way it cannot be honored.
+//! A workspace's attested armed law at one path — and the surface reporting
+//! every way it could not be honored ([`ArmedFault`]: absent, corrupt, zero
+//! rows, red row, unloadable row, unevaluable law).
 //!
-//! # Why one surface
-//! Every silent-disarm defect this module closes has the same shape: the armed law
-//! of a workspace that HAS been armed could not be honored, and the operator was
-//! told nothing. They arrived as three separate reports, and fixing them
-//! separately would have minted three vocabularies for one fact:
+//! [`resolve_armed_law`] pivots on the once-armed marker so a workspace that
+//! has ever been armed fails CLOSED rather than reading as "nothing armed".
+//! Output is the [`ArmedLaw`] the gate consumes at the write's own path.
 //!
-//! - a well-formed EMPTY artifact read as "nothing is armed" ([`ArmedFault::Disarmed`]);
-//! - a CORRUPT artifact whose fault reached a `.unwrap_or_default()`
-//!   ([`ArmedFault::Corrupt`]);
-//! - ONE unloadable row silencing every other rule at the same path
-//!   ([`ArmedFault::Unloadable`], now isolated per row).
 //!
-//! So there is one fault vocabulary, one renderer ([`ArmedFault`]'s `Display` — the
-//! operator's teaching text), and one resolver ([`resolve_armed_law`]) that both
-//! hosts call. A host chooses only the CHANNEL it reports on, never the words.
 //!
-//! # One surface, two dispositions — and the split is ruled, not chosen
-//! [`ArmedFault::refuses`] answers whether a fault must stop the write:
 //!
-//! - The three WHOLE-ARTIFACT faults refuse. The law itself is unreadable, so
-//!   nothing may be assumed about it — the fail-closed posture the once-armed
-//!   marker exists to hold.
-//! - A PER-ROW fault refuses iff the row's mode enforces ([`Mode::enforces`]): a
-//!   red CHECK row means a law cannot be evaluated and letting the write land would
-//!   silently disable a gate, while a red HOOK row falls silent, because refusing a
-//!   write on a reaction's behalf hands a hook the veto the ruling denies it. This
-//!   is [`crate::armed::ArmedVerdict::refusing`]'s split, applied to every fault
-//!   rather than to redness alone.
 //!
-//! # Zero rows is not "nothing armed"
-//! An armed workspace attests SOMETHING. A rule deliberately not enforced is a row
-//! spelled `off` — an attestation that a reviewer read the page at that rev and
-//! chose not to activate it. ZERO rows is the ABSENCE of attestation, not an
-//! attestation of absence, and it is exactly the shape a row deletion leaves
-//! behind: a well-formed, legitimate-looking page that arms nothing. Pivoting the
-//! once-armed state against it is what makes deleting rows loud instead of a
-//! silent total disarm.
 //!
-//! # Selection and verification stay in ONE call
-//! Row selection is [`crate::armed::ArmedArtifact::verify_at`] and nothing else.
-//! Its doc comment carries the grounds: each of the two obvious hand-compositions
-//! of `select_at` + `verify` is a live defect, in opposite directions. This module
-//! adds the once-armed pivot ABOVE that call and the page LOAD below it; it does
-//! not re-compose it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use crate::armed::{ARMED_RULES_PATH, ArmedRow, Mode, PageSource, RedRow, Redness, parse_artifact};
 use crate::check_eval::CheckLimits;

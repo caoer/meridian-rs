@@ -1,18 +1,18 @@
-//! **fix9 — the NAME BOUNDARY.** A `task.<name>` frontmatter key is stamped
-//! verbatim into every run receipt line (`"task": …` and `"actor": "run:…"`),
-//! and the receipt rides `ValidatedBatch.receipt` — a field BESIDE `.edits`, in
-//! a different FILE — so no candidate `@fp` strip on either plane ever sees it.
-//! A name carrying a decorated claim link therefore lands a claim nobody
-//! computed in stored bytes: the forgery class (advisor R25), reached without
-//! touching the page the strip guards.
+//! Task-name charset guard — refuses decorated claim-link spellings and other
+//! non-identifier names at address time. Names that the session tree and
+//! grammar admit stay green.
 //!
-//! The gate here is CLAIM-AS-ASSERT (R26 (2)): each test asserts the REFUSAL,
-//! never a rendering. A fix that let the name through but rendered it prettily
-//! fails these by construction.
 //!
-//! The guard is the one charset (ruling 011, `syntax::is_block_id`) — the SAME
-//! predicate the binding's VALUE already passes. Both halves of a binding are
-//! identifiers; the hostile bytes become unrepresentable rather than removable.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 mod support;
 

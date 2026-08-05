@@ -1,37 +1,37 @@
-//! I4 def-conformance (U8c) — the engine-side port of meridian-go's
-//! `internal/defs` write-time validator, byte-exact against the U0 defs corpus
-//! goldens (`ccc-statusd` `internal/mcpserver/testdata/parity/goldens/defs.json`).
+//! I4 def-conformance (U8c) — engine-side port of meridian-go's write-time
+//! def validator. Pure verdict over (prev, candidate) documents the put path
+//! consults before any splice. Byte-exact against the U0 defs goldens.
 //!
-//! # What this is
-//! The pure verdict half of Go `defs.CheckWrite`: given the PREV document and
-//! the CANDIDATE (post-write) document, reproduce the whole severity ladder for
-//! the twelve write-blocking def guards plus the close-stamp repair:
 //!
-//! ```text
-//! error   → refuse (never forceable)
-//! warning → refuse unless force (forced rule ids surface in `forced`)
-//! repair  → autofill (v1: stamp:close timestamps on a terminal transition)
-//! ```
 //!
-//! Findings are DELTA-scored against prev (key: `rule + "|" + message`,
-//! line-shift immune): only a write that INTRODUCES a violation refuses.
-//! `def/legacy-entry` never blocks; a kind with NO def anywhere passes
-//! (undeclared ≠ contract); a def that EXISTS but fails to load refuses unless
-//! forced (rot in the schema layer is loud, never a silent skip).
 //!
-//! The candidate REBUILD (plan-vocabulary edits → next document — Go
-//! `body.ApplyForConformance`) is the write plane's and lives with the splice
-//! machinery in `wire-serve`, not here: this module judges two documents.
 //!
-//! # Laws inherited
-//! - **Raw bytes only** (worker A, norm-v2 spec): conformance validates the raw
-//!   pre-write bytes and the raw candidate — never norm-v2 canonical bytes.
-//!   norm-v2/fingerprint is the hash domain; validation faces stay raw.
-//! - **Clock is caller-supplied** (§9): close-stamp repairs take `now` from the
-//!   request; the engine mints no time.
-//! - **String fidelity**: every message/remedy byte matches the Go lib — the
-//!   parity gate compares refusal text verbatim. `go_fmt` carries the Go
-//!   formatting quirks (strconv.Quote, `%v` slices).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 // Verbatim-port pedantic allowances: function shapes mirror the Go source for
 // side-by-side auditability (too_many_lines, manual_let_else, match_same_arms);

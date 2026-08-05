@@ -1,30 +1,30 @@
-//! The `@fp` strip on the RUN plane, at DOCUMENT grain (advisor R32 (3)).
+//! `@fp` strip on the RUN plane, at DOCUMENT grain (advisor R32 (3)).
+//! Strips free-text doors that must not enter the procedure hash / receipt
+//! identity. Same discipline as other planes; this module is the run-plane
+//! owner of that strip.
 //!
-//! `@green.b3af12cd` after a block ref is a render-face decoration the engine
-//! mints on READ (S10) — never storable content. The wire choke-point strips it
-//! from every put; the run plane lands bytes through `fs::apply_batch`, bypassing
-//! that choke-point entirely, so an `md.append_section` body carrying a token
-//! used to land it on disk. **A guarded invariant with an unguarded door is not
-//! an invariant** (R32): without this, "no write introduces an fp token in a
-//! claim-link position" is false on the run surface.
 //!
-//! # The grain is the CANDIDATE, never the payload
-//! Tokens are identified in the document this batch is about to commit, through
-//! the ONE dialect parse ([`syntax::fp_removals`]), and removed from the payload
-//! that carries them. A payload-field walk is the defect class fix2a deleted: it
-//! cannot see a token the batch composes out of bytes it does not supply, and it
-//! strips what the document law calls a code sample (R22).
 //!
-//! # Three origins, three outcomes
-//! - **Introduced** — the token sits inside bytes THIS batch supplies: removed
-//!   from that payload, the batch re-validated, the candidate rebuilt, and the
-//!   result asserted to introduce none.
-//! - **Retained** — the token was already on disk at that offset: left exactly as
-//!   found (R32 (1)). Removing bytes this write does not own would move the
-//!   fingerprint of a node it never addressed, reddening unrelated pins.
-//! - **Composed** — a claim the batch creates out of bytes it does not supply
-//!   (an edit that un-masks retained text). Nothing to strip and nobody to
-//!   attribute it to: REFUSE, loud, having applied nothing.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::ops::Range;
 

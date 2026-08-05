@@ -1,26 +1,26 @@
-//! Bash step-end reaping wall-time budget — the PERF lane's gate, not the PR
-//! lane's.
+//! Bash step-end reaping wall-time budget — PERF lane only, not the PR lane.
 //!
-//! `ci.yml` states the law this file obeys: *"Wall-time numbers are NEVER gated
-//! in this lane (shared-runner noise); that's perf.yml's job on the pinned fleet
-//! runner."* While the `elapsed < 5s` assert lived in
-//! `run/tests/exec.rs::a_background_child_is_reaped_at_step_end` that law was
-//! contradicted — `cargo test --workspace` gated a wall-clock number on whatever
-//! machine happened to run it. Two failures under host load this session (U13
-//! worker during a build-load suite; w6 worker at load ~20): both measured the
-//! background-child reaping path past 5s (one recorded at **15.03s**) while the
-//! same binary in isolation stayed green 3/3 (~0.33s). The assert was measuring
-//! contention, not the S3 reaping contract.
+//! `ci.yml`: wall-time numbers are NEVER gated on shared runners; that is
+//! `perf.yml`'s job on the pinned fleet. This target requires `perf-walltime`:
+//! `cargo test --workspace` skips it (no wall-clock gate, no vacuous pass);
+//! `ci.yml` still compiles/lints it; `perf.yml` runs it for real.
 //!
-//! So the wall-clock MOVED, and **the 5s budget did not move with it.** The
-//! mechanism is `required-features = ["perf-walltime"]` in `crates/run/Cargo.toml`:
-//! `cargo test --workspace` skips this target entirely (no wall-clock gate, and
-//! no vacuous pass either), `ci.yml` still compiles and lints it so it cannot
-//! bit-rot, and `perf.yml` runs it for real on the pinned runner.
+//! Correctness keeps the load-insensitive EVENT half
+//! (`exec.rs::a_background_child_is_reaped_at_step_end`): step succeeds and
+//! the post-step leak file is absent. This file gates only the duration (5s
+//! budget — relocation from correctness, not relaxation).
 //!
-//! The correctness suite keeps the load-insensitive EVENT half of the same
-//! scenario (`exec.rs::a_background_child_is_reaped_at_step_end`): step succeeds
-//! and the post-step leak file is absent. This file gates only the duration.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};

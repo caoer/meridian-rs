@@ -1,61 +1,61 @@
-//! The attested armed-set artifact (INDEX successor) — the ARM act, the § 4 row
-//! grammar, and the fail-closed rev check at the gate.
+//! Attested armed-set artifact (INDEX successor) — the ARM act, the § 4 row
+//! grammar, and selection of what governs a path.
 //!
-//! # What this is (registration ruling § 4, amended 2026-08-01)
-//! One attested armed-set artifact per workspace, engine-readable, one row per
-//! **(id, arm root)**:
+//! [`arm`] is the ONE act that turns a discovered page into an armed one: it
+//! narrows to an [`ArmRoot`], resolves through the landed resolver, and pins
+//! each winner's page + [`page_rev`] into an [`ArmedArtifact`] row keyed by
+//! (id, arm root). Discovery makes a page known; only ARM activates it.
 //!
-//! ```text
-//! | id | page | rev | scope | mode |
-//! | --- | --- | --- | --- | --- |
-//! | `task.review-notify` | `rules/notify.md` | `1aa7b939cee536b2` | `.` | `armed` |
-//! ```
+//! # Row law
+//! - Key is (id, arm root); mode must be one the page kind admits.
+//! - Selection for a write path is nearest-wins under § 3 narrowing.
+//! - Fail-closed on corrupt/missing artifact once the workspace has been armed.
+//! - Sibling subtrees do not couple: a CHECK armed at `sessions/a` must not
+//!   refuse a write under `sessions/b`.
 //!
-//! - **id** — the frontmatter id ([`crate::RuleId`], § 2 grammar);
-//! - **page** — the workspace path of the RESOLVED page (the override winner);
-//! - **rev** — the PAGE rev ([`crate::page_rev`]), the uniform fingerprint;
-//! - **scope** — the ARM ROOT: the root the resolution was narrowed to;
-//! - **mode** — checks `off|warn|block`, hooks `off|armed` ([`Mode`]).
 //!
-//! # Why the row key is (id, arm root), not id alone
-//! § 3's 2026-08-01 amendment rules resolution NARROWED: the candidate set at a
-//! path is exactly the pages mounted at-or-above it. Two sibling sessions carrying
-//! the same id are then NO conflict and **both may arm**, so a per-workspace
-//! artifact holds two rows sharing an id. Global id-uniqueness and narrowed arming
-//! cannot both hold; the `scope` column — which § 4 defines as "the root the
-//! resolution was computed against" — carries the difference and joins the key.
-//! Two rows sharing (id, arm root) is a defect, refused loudly ([`ArmFault::Duplicate`],
-//! [`ArtifactCorrupt`]).
 //!
-//! **Selection law** ([`ArmedArtifact::select_at`]): at path P, per id, the deepest
-//! armed row whose arm root contains P governs. An inner arm shadows an outer arm on
-//! one chain; siblings never interact.
 //!
-//! # Arming freezes resolution (the cap-escape guardrail)
-//! The ARM act resolves ONCE, at arm time, and pins bytes. Afterwards the artifact
-//! is the authority: a newly appearing deeper override candidate does NOT enter the
-//! armed set until a re-arm, no matter what a live [`crate::RuleIndex::resolve`]
-//! would now say. Discovery makes a page known; only this act activates it. Nothing
-//! arms by tag alone — a discovered page that no [`ArmRequest`] named is simply not
-//! a row.
 //!
-//! # Fail-closed at the gate, split by kind
-//! [`ArmedArtifact::verify`] re-hashes each pinned page and REDDENS any row whose
-//! bytes moved or vanished. A red row never fires on its new bytes. What "fails
-//! closed" MEANS then splits by kind, because a hook may never veto:
-//! - a red CHECK row (`warn`/`block`) REFUSES the write ([`ArmedVerdict::refusing`]);
-//! - a red HOOK row (`armed`) simply does not fire — refusing a write because a
-//!   REACTION drifted would hand a hook the veto the ruling denies it.
 //!
-//! # The fingerprint is the page rev, uniformly
-//! Check pages and hook pages are attested by ONE law, [`crate::page_rev`]. There is
-//! no `blake3(CHECK.md)` special-casing here and no per-kind fingerprint — that
-//! grain is what closed the original attestation blocker.
 //!
-//! # Where the walk lives
-//! `policy` is I/O-free (docs/laws.md), so this module reads no page itself: the ARM
-//! act consumes a [`crate::RuleIndex`] the caller's walk built, and verification
-//! takes an injected [`PageSource`].
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::{BTreeMap, BTreeSet};
 

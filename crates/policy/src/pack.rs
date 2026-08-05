@@ -1,32 +1,32 @@
-//! Pack loading internals for `compile` (§11.3): manifest parse, fixtures, the
-//! sealed Starlark evaluation bridge, the injected `rulepack-api@1` fact API, and
-//! ruleset budget-class classification.
+//! Pack loading for `compile` (§11.3): manifest parse, fixtures, the injected
+//! fact surface, and metered predicate evaluation. Pin verify before run.
+//! [`facts_from_document`] builds [`FactDoc`]s from a real AST so no
+//! `syntax`/`model` type crosses the load-gate fence.
 //!
-//! Everything here is `pub(crate)` — the public surface is `compile` +
-//! `CompiledRuleset` in `lib.rs`. The evaluation bridge (`RuleEvaluator`) is the
-//! sealed seam: `StarlarkEvaluator` (ruling 008) runs fenced Starlark predicates
-//! over injected world-model facts, metered under the manifest's `EvalBudget`.
-//! P6-EVAL feeds the same [`FactDoc`] surface from real `model` ASTs — without
-//! reshaping it — and neither the public `compile` signature nor `CompiledRuleset`
-//! changes.
 //!
-//! # `rulepack-api@1` — the injected fact API (the pin's meaning)
-//! A rule page is literate markdown whose predicate is a fenced ` ```starlark `
-//! block defining `def check(doc)`. The engine calls it once per document,
-//! injecting exactly the §11.2 world-model fact surface — nodes, revs, spans,
-//! links, hpaths — and nothing else:
 //!
-//! - `doc.path` (str) — the document path.
-//! - `doc.nodes` (list) — world-model nodes in document order. Each node exposes
-//!   `kind` (str: `"heading"` / `"paragraph"` / …), `level` (int; heading level or
-//!   `0`), `text` (str), `span` (int tuple `(start, end)`), `node_rev` (str),
-//!   `hpath` (list[str]).
-//! - `violation(rule, severity, span, node_rev, hpath, message)` (builtin, all
-//!   named) — records one §11.1 finding; `severity` ∈ {`error`, `warn`, `info`}.
 //!
-//! Changing this surface or the dialect is an evaluator change ⇒ a
-//! `rulepack-api@N` bump, gated at load — never a wire amendment (row-13
-//! wire-invariance: no wire crate names Starlark).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::cell::RefCell;
 

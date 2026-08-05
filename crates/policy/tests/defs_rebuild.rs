@@ -1,11 +1,11 @@
-//! U8c rebuild-fixture gate: `policy::defs::rebuild` must reproduce the Go
-//! `ApplyForConformance` refusal strings byte-exactly. Expected values are
-//! copied VERBATIM from the U0 rebuild goldens (ccc-statusd
-//! `internal/mcpserver/testdata/parity/goldens/rebuild.json` @ 1f0b1ef) with
-//! the Go face's `put: def-conformance check could not run: ` prefix stripped
-//! (that wrap is putsidecar's; the verdict half renders `CODE: msg — remedy`).
-//! Candidate-content cases assert the byte mechanics (newline discipline, EOF
-//! create, property injection) against Go `planEditResolved` semantics.
+//! Def rebuild unit gates — rev neutralization and plan-edit application.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use policy::defs::{PlanEdit, rebuild, rev8};
 

@@ -1,23 +1,23 @@
-//! Untyped NDJSON message envelope + codec seam (lsp-server pattern): knows
-//! framing, never meaning.
+//! Untyped NDJSON message envelope + codec seam: knows framing, never meaning.
 //!
 //! # Charter
 //! **Owns:** the frame layer — one JSON object per line, blank lines ignored,
-//! stdout frames-only — and the envelope classification (request / response /
-//! notification). The envelope is deliberately UNTYPED (`serde_json::Value`
-//! payloads, rust-analyzer's lsp-server pattern): protocol evolution never
-//! forces a transport release and vice versa. r-a swapped its entire types
-//! crate with zero transport changes; this seam is that payoff, reserved.
+//! stdout frames-only — and envelope classification (request / response /
+//! notification). Envelope is deliberately UNTYPED (`serde_json::Value`
+//! payloads): protocol evolution never forces a transport release and vice
+//! versa. Alternate framings implement the same [`Codec`] seam.
 //!
-//! **Never does:** know what ops mean, validate op fields (the typed edge is
-//! `wire`, consulted at the `sidecar` boundary), touch the filesystem or the
-//! model. `wire` appears in dev-dependencies at most.
+//! **Never does:** know what ops mean, validate op fields (typed edge is
+//! `wire` at the `sidecar` boundary), touch the filesystem or the model.
 //!
-//! # Rungs
-//! Rung 1: `NdjsonCodec` over stdin/stdout. Rung 4: notification frames start
-//! flowing (events carry no `id`). Rung 6: an LSP Content-Length codec drops in
-//! behind the same [`Codec`] seam — the NDJSON→JSON-RPC graduation touches this
-//! crate only.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};

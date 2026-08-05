@@ -1,39 +1,39 @@
-//! The page-shaped rule load — what a tag-registered page becomes when it is
-//! evaluated.
+//! Page-shaped rule load — what a tag-registered page becomes when evaluated.
+//! [`register_page`] answers identity (tag + `id:`); [`load_rule`] answers
+//! evaluability, parsing the legs registration tags declare through the same
+//! parsers the convention folder loader uses. Takes the [`Registration`]
+//! rather than re-deriving one, and verifies bytes against the registered rev.
 //!
-//! # The layering (ruling §§ 1–2)
-//! [`crate::registration`] answers IDENTITY: does this page carry a `rules/*` tag,
-//! and what is its `id:`. This module answers EVALUABILITY: what does that page
-//! DECLARE, and does the declaration load. The split is why [`load_rule`] takes a
-//! [`Registration`] rather than re-deriving one — there is exactly one place a page
-//! becomes a rule, and it is upstream of here.
 //!
-//! # What a rule page declares
-//! One page, one id, up to two legs — the legs its registration tags name:
 //!
-//! - `rules/check` — the law leg: `paths:` frontmatter plus a fenced
-//!   `def check_change(change)` predicate. May refuse a write.
-//! - `rules/hook` — the reaction leg: the [`crate::hook`] declaration
-//!   (`severity`/`paths`/`caps`/`budget`/`how` plus the reaction predicate). May
-//!   never veto or mutate.
 //!
-//! A page carrying BOTH tags declares both legs and must satisfy both loads. It is
-//! fail-closed and never partial, the same way a two-capability convention folder
-//! is: a page that gets one leg wrong loads NEITHER, because half a rule is a rule
-//! whose author does not know which half is running.
 //!
-//! # The filename is gone, and nothing replaced it
-//! Nothing here reads a folder name, a `CHECK.md`/`HOOK.md` spelling, or a `kind:`
-//! frontmatter key. The parsers are the SAME ones the folder loader uses
-//! ([`crate::declaration::parse_check`], [`crate::hook::load_hook`]) — they were
-//! always page-shaped, taking bytes rather than filenames. What dies with the folder
-//! loader is the addressing above them, not the parsing.
 //!
-//! # Bytes must be the registered bytes
-//! [`load_rule`] verifies `page_rev(bytes)` against the rev the registration pinned
-//! and refuses on mismatch. A caller that walks, registers, then re-reads a page an
-//! editor has moved under it would otherwise evaluate one page's law under another
-//! page's identity — silently, and only sometimes.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use crate::check_eval::CheckLimits;
 use crate::declaration::{CheckOutcome, LoadError};

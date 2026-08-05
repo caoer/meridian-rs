@@ -1,24 +1,24 @@
-//! The DECLARATION layer — what a rule page's legs say, and the one scope
-//! grammar every leg answers through.
+//! Declaration layer — what a rule page's legs say. [`LoadError`] names the
+//! LEG, never a file (a page has no filename to name). A loaded [`Rule`] runs
+//! its check leg over a [`Change`] and returns [`Refusal`]s that cite their
+//! passing case.
 //!
-//! # Two layers, one page (ruling § 1, § 5)
-//! Registration answers IDENTITY: a page carries `rules/check` / `rules/hook` in
-//! its `tags:` and an `id:`, and that is the whole of what makes it a known rule
-//! ([`crate::registration`]). Declaration answers EVALUABILITY: the `paths:` scope
-//! and the fenced predicate that make the named leg runnable. This module is the
-//! second half, and it reads BYTES — never a filename.
 //!
-//! # Why nothing here names a file
-//! The generation this replaces keyed a rule on its FOLDER: `conventions/<slug>/`
-//! held `CHECK.md` and `HOOK.md`, the slug was the identity, and the capability
-//! was the filename. Under tag registration the page IS the rule, so the leg is
-//! named by a tag and the identity by an `id:`. What survived the cut is exactly
-//! what was never about filenames: the declaration parser ([`parse_check`]) and
-//! the `paths:` glob grammar ([`path_in_scope`]) that both legs share, so a
-//! capability can never drift into a second glob dialect.
 //!
-//! A [`LoadError`] here therefore names the LEG, never a file. The caller
-//! ([`crate::rule::RuleLoadError`]) supplies which page it was reading.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use crate::check_eval::{self, CheckError, CheckLimits};
 

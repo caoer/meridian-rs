@@ -1,17 +1,17 @@
-//! Capability gates (ruling 3 / decision #15): deny-by-default, the
-//! explicit > convention > none ladder, narrow-only ceilings, the builtin
-//! read-only conventions, and the bash-fence load refusal (check-*/verify-*
-//! only — fix-* is where bash writes are wanted).
+//! Capability resolution gates — deny-by-default, convention narrowing,
+//! check-*/verify-* bash refusal, and source reporting.
 //!
-//! The ladder is STARLARK's: capabilities do not apply to bash (`docs/laws.md`
-//! § Amendment), so `resolve_caps` takes no language and the tests below name
-//! none. The language-aware entry is `resolve_authority`, tested here only for
-//! the two answers it owns — the `check-*` name refusal, and `Unsandboxed`.
-//! The whole law is gated at the binary boundary in
-//! `crates/mrd/tests/law_no_caps_on_bash.rs`.
 //!
-//! WHERE the convention table is declared is a separate law with its own file:
-//! `caps_home.rs` (the root's own `MERIDIAN.md`, marker-retirement ruling).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 mod support;
 

@@ -1,36 +1,36 @@
-//! The armed-plane gate mount for the run plane (U4.2) — byte-landing parity.
+//! Armed-plane gate mount for the run plane (U4.2) — byte-landing parity
+//! with the wire-serve write path. Before the executor commits, evaluates the
+//! workspace's own armed law over the pending change; a block-severity
+//! finding refuses. Never-armed workspaces are a no-op.
 //!
-//! The run plane lands page bytes through `fs::apply_batch` (`executor::apply`),
-//! NOT the wire-serve write choke-point. The byte-landing enumeration (plan §4
-//! Block 4) still lists it as gated "through the same evaluator on the change
-//! surface it produces", so this module mounts the SAME gate: it resolves the
-//! workspace's own attested armed law AT THE WRITE'S PATH and evaluates the change
-//! the executor produces through [`policy::gate`], refusing BEFORE the commit.
+//! This module adapts run-plane intents into [`policy::Change`] and calls
+//! [`policy::gate`]. It does not own armed-set load or rule evaluation.
 //!
-//! # The law is resolved per WRITE PATH
-//! An arm is rooted, so "what governs this write" is a question about the write's
-//! own path, never a workspace-wide set resolved once and filtered after. The
-//! executor knows the target page, so the mount asks at exactly that path and
-//! hands the answer to the pure decision.
 //!
-//! # The disk edge is copied here, and the copy owes exactness
-//! The load-bearing DECISION is single-copy in `policy`
-//! ([`policy::resolve_armed_law`] and [`policy::gate`], unit-tested there). The
-//! three reads that feed it — the once-armed marker probe, the artifact read, and
-//! the pinned-page source — are shared by both armed-law hosts and live once, in
-//! `wire_serve::armed_disk`. This crate cannot reach them: it does not depend on
-//! `wire-serve` and must not, because `run` is consumer-plane by charter (see the
-//! crate docs — *never touch the wire or the daemon*), and naming the write door
-//! in order to read three files would invert that.
 //!
-//! What the copy owes is exact agreement on the three dispositions that are
-//! DECISIONS rather than plumbing: an ambiguous marker stat reads ARMED, an
-//! artifact that exists and will not read reads CORRUPT rather than absent, and a
-//! pinned page is read ONCE so verification and loading cannot see different
-//! bytes. Each fails closed in the same direction `wire_serve::armed_disk` does —
-//! a workspace that disagreed with itself about whether it is armed, depending on
-//! which door was knocked on, is the defect that module was extracted to end. The
-//! day `run` may name that module, this seam collapses into it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

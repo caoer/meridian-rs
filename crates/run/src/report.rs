@@ -1,38 +1,38 @@
-//! The run report (U9) — the ONE renderer of a [`RunReport`] into the human
-//! report and the `--json` one-object (plan §4 U9; verdict ruling 3).
+//! Run report (U9) — the ONE renderer of a [`RunReport`] into the human-
+//! facing summary. Owns presentation only; never decides outcomes.
 //!
-//! # Laws enforced here
-//! - **md-only local caps; daemon.*/proto.* surfaced, never dropped/faked.**
-//!   The local runner has exactly one executor: the md.* choke point. Every
-//!   other effect a block emits (`daemon.*`/`proto.*`) has NO local executor,
-//!   so the report names it `unexecuted-no-capability` — visible, never
-//!   silently discarded and never faked as applied.
-//! - **Closed report-state enum (S2):** a run is exactly one
-//!   [`ReportState`] — `applied` / `unexecuted-no-capability` /
-//!   `withheld-depth-cap` / `partial` / `interrupted`. No open-ended states.
-//! - **Generic cap-reached line (not per-effect):** when the cascade hit the
-//!   depth cap the kernel drops the capped md.* WHOLESALE; the report states
-//!   the fact once (`cap_reached`), never a per-descriptor suppression list.
-//! - **`narrowed[]` is rendered (#23 sharpened gate, condition b):** the caps
-//!   a ceiling tightened away are surfaced — a run's effective authority is
-//!   always visible next to what a convention removed.
-//! - **No capability claim on a bash surface** (`docs/laws.md` § Amendment —
-//!   capabilities do not apply to bash; gate
-//!   `crates/mrd/tests/law_no_caps_on_bash.rs`). An unsandboxed run renders no
-//!   `caps` key at all — not `null`, not `[]`, which would still be answers —
-//!   and says `effects: undeclared` instead. The [`Report`] cannot carry a
-//!   half-answer: its `caps` is `Option<CapsReport>` sourced from
-//!   [`Authority::capabilities`], which is `None` for a shell.
-//! - **`--json` is ONE object** (the whole report), and the human text is the
-//!   same facts — the two never diverge in content.
+//! Renders caps, effects, exec status, detection verdict, and refusals in a
+//! stable order so CLI and tests share one surface. Out-of-band delta lines
+//! come from [`Detection`], not from the block's own effects.
 //!
-//! The guarantee class is `hermetic` for starlark by construction and
-//! `unsandboxed` for bash — the engine claims nothing it cannot keep. What the
-//! exec-window bracket DID observe still renders, on its own
-//! [`crate::snapshot::Detection`] out-of-band-delta line, where it is an
-//! observation rather than a class. The renderer handles every
-//! [`TaskOutcome`] and report-state shape, including the bash
-//! `partial`/`interrupted` matrix.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use serde::Serialize;
 

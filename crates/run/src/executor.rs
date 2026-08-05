@@ -1,37 +1,37 @@
-//! The shared executor — the ONE write path both dispatch paths (starlark U5,
-//! bash U6) converge on (plan decision #4; verdict ruling 2). md.* effect
-//! descriptors → block-capability validation AT THE CHOKE POINT → one atomic
-//! `if_root`-pinned splice batch → receipt in the same commit → apply→event
-//! synthesis with REAL post-apply fingerprints (the phase-2 cascade adopts
-//! this module; it imports no runner).
+//! Shared executor — the ONE write path both dispatch paths converge on
+//! (decision #4; verdict ruling 2). md.* descriptors → cap validation at the
+//! choke point → one atomic `if_root`-pinned splice batch → receipt in the
+//! same commit → apply→event synthesis with real post-apply fingerprints.
 //!
-//! # Laws enforced here
-//! - **Choke point (decision #13):** every descriptor is validated against the
-//!   block's [`CapSet`] before ANY I/O; one violation refuses the whole batch.
-//! - **One batch (ruling 2):** all edits + the receipt ride ONE
-//!   `model::validate_batch` → `fs::apply_batch` commit; a refusal applies
-//!   nothing. There is NO rollback path — the executor never un-writes
-//!   (rollback would be a second write path with invented authority).
-//! - **`if_root` pin + gate #19:** the batch pins `pin_root` and validates
-//!   against `live_root`; BOTH are required `MerkleRoot`s at this API, so the
-//!   silent enforcement-off (`live_root = None` skips the guard,
-//!   `model::validate_batch` §5.1) is unrepresentable. The caller threads the
-//!   COMPUTED root — never re-read around a bash step.
-//! - **Self-guards (decision #9):** every edit carries `if_node_rev` from the
-//!   load-time resolve; load → validate → commit runs under the workspace
-//!   flock ([`WorkspaceLock`], `LOCK_NB` — a held lock is the fast typed
-//!   [`ExecError::WorkspaceBusy`] refusal, never a wait), closing the
-//!   cross-process read→rename TOCTOU without ever taking callers hostage.
-//! - **Foreign-edit law (decision #26, ZT):** CAS only covers concurrent
-//!   races — a re-run reads the edited state, so its token matches and a
-//!   replace would silently destroy a newer HUMAN edit. The executor anchors
-//!   on receipts: if a target has a prior run receipt and its current rev is
-//!   not that receipt's after-rev, the batch refuses with a typed
-//!   [`ExecError::ForeignEdit`] carrying the three-way frame (target, the
-//!   last governed after-rev, the current rev). Overwrite only via the
-//!   explicit `takeover` flag.
-//! - **§9 identity/time:** `invocation_id` and `now` are caller-supplied
-//!   strings; nothing here reads a clock or mints an id.
+//! # Laws
+//! - **Choke point (#13):** every descriptor validated against the block's
+//!   [`CapSet`] before any I/O; one violation refuses the whole batch.
+//! - **One batch (ruling 2):** all edits + receipt ride one
+//!   `validate_batch` → `apply_batch`; no rollback path.
+//! - **`if_root` pin (#19):** batch pins `pin_root` and validates against
+//!   `live_root`; both required so silent enforcement-off is unrepresentable.
+//!   Caller threads the COMPUTED root — never re-read around bash.
+//! - **Self-guards (#9):** every edit carries `if_node_rev`; load→validate→
+//!   commit under workspace flock ([`WorkspaceLock`], `LOCK_NB`).
+//! - **Foreign-edit (#26):** if target has a prior run receipt and current rev
+//!   is not that receipt's after-rev, refuse [`ExecError::ForeignEdit`].
+//!   Overwrite only via explicit `takeover`.
+//! - **§9:** `invocation_id` and `now` are caller-supplied; no clock here.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};

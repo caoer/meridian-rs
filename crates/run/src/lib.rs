@@ -1,28 +1,23 @@
-//! The mrd-local run plane — `mrd run` (S1, as shipped).
+//! The mrd-local run plane — `mrd run` (S1).
 //!
 //! # Charter
-//! **Owns:** the whole of `mrd run` — resolve, dispatch, execute, apply.
-//! Pre-eval resolution locates the addressed task block ([`address`]),
-//! classifies its fence language ([`fence`]), validates the declared arg/env
-//! contract ([`contracts`]) and resolves the block's capability set
-//! deny-by-default against the root's own declaration ([`caps`]). Past that, [`runner`] dispatches on the fence
-//! language — `starlark` to the hermetic kernel ([`dispatch_starlark`]),
-//! `bash` to a `setsid` child under a wall-clock timeout ([`exec`],
-//! [`dispatch_bash`]) whose only tree mutation is the effect-shim fd
-//! ([`shim`]) — and both converge on the ONE write path, the shared executor
-//! ([`executor`]): caps validated at the choke point, one `if_root`-pinned
-//! splice batch, the receipt in the same commit. [`gate`] refuses an armed
-//! change before that commit; [`snapshot`] names any residual delta around
-//! every bash step; [`record`] stores stdout out-of-tree, content-addressed.
+//! **Owns:** resolve, dispatch, execute, apply for `mrd run`.
+//! Pre-eval: address the task ([`address`]), classify fence ([`fence`]),
+//! validate arg/env ([`contracts`]), resolve caps deny-by-default ([`caps`]).
+//! Dispatch: `starlark` → hermetic kernel ([`dispatch_starlark`]); `bash` →
+//! `setsid` child under wall-clock timeout ([`exec`], [`dispatch_bash`]) with
+//! tree mutation only via the effect-shim fd ([`shim`]). Both converge on the
+//! shared executor ([`executor`]): caps at the choke point, one `if_root`-pinned
+//! splice batch, receipt in the same commit. [`gate`] refuses armed changes
+//! before commit; [`snapshot`] names residual delta around bash; [`record`]
+//! stores stdout out-of-tree, content-addressed.
 //!
 //! **Never does:** touch the wire or the daemon, or roll back an ungoverned
-//! write (decision #14 — it persists as actor-absent external change). `run`
-//! is consumer-plane — the engine cannot tell run exists. Bash enforcement is
-//! **detection, not prevention** (ratified S1 scope): the claim ships scoped,
-//! never unqualified. Full surface + accepted gaps: `docs/run-plane.md`.
+//! write (decision #14 — persists as actor-absent external change). Bash
+//! enforcement is **detection, not prevention** (S1): claims ship scoped,
+//! never unqualified. Full surface: `docs/run-plane.md`.
 //!
-//! # The task grammar (§2.1 reuse, no new syntax)
-//! A page declares tasks in frontmatter, one top-level key per task:
+//! # Task grammar (§2.1 reuse, no new syntax)
 //!
 //! ```markdown
 //! ---
@@ -34,30 +29,35 @@
 //! ---
 //! ```
 //!
-//! The binding value is the Obsidian same-file block linktext (`#^id`, with or
-//! without `[[…]]`/alias sugar — the §2.2 walk-plane spelling); the anchor
-//! resolves via the strict mint plane (`model::resolve`, loud on missing /
-//! ambiguous) to the fenced code block it keys. Cross-file refs
-//! (`other.md#^id`) are an S1 NON-GOAL (plan decision #11) and refuse with a
-//! typed error. Sub-keys `.caps` / `.args` / `.env` carry the block's explicit
-//! capability declaration and its arg/env contract.
+//! Binding value is same-file block linktext (`#^id`); resolved via the strict
+//! mint plane. Cross-file refs are S1 NON-GOAL (decision #11). Sub-keys
+//! `.caps` / `.args` / `.env` carry capability and input contracts.
 //!
 //! # Capability law (verdict ruling 3, plan decision #15)
-//! Deny-by-default: an undeclared block is read-only. Resolution precedence is
-//! explicit frontmatter (`task.<name>.caps`) > the ROOT'S OWN `MERIDIAN.md`
-//! declaration (`run.caps.<pattern>`) > none; conventions NARROW only, never
-//! widen. `check-*` / `verify-*` blocks refuse a bash fence loudly at load
-//! (`fix-*` does not — fix blocks declare writes and are exactly where bash is
-//! wanted). Caps are namespaced strings (`md.set_field`), forward-compatible to
-//! target-scoped (`md.set_field:status`).
+//! Deny-by-default: undeclared block is read-only. Precedence: explicit
+//! `task.<name>.caps` > root `MERIDIAN.md` `run.caps.<pattern>` > none.
+//! Conventions NARROW only. `check-*` / `verify-*` refuse bash at load.
+//! Caps are namespaced (`md.set_field`), forward-compatible to target-scoped
+//! (`md.set_field:status`). Declaring root and timeout are injected by the
+//! caller. Full law: [`caps`].
 //!
-//! The convention plane is the root's own self-declaration (marker-retirement
-//! ruling, 2026-07-26): *"the root declares, `MERIDIAN.md` binds"*. Both the
-//! declaring root and the wall-clock ceiling are INJECTED by the caller
-//! (`RunSpec::declaring_root`, `RunSpec::timeout`) — only the caller holds the
-//! ladder's answer, and `declaring_root` is `None` exactly when the ladder
-//! answered nothing, where no convention ceiling is in force. Full law:
-//! [`caps`].
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 pub mod address;
 pub mod caps;

@@ -1,44 +1,44 @@
-//! The sealed `check_change(change)` evaluator (U1.3) — the CHECK capability's
-//! power ceiling, enforced by the evaluator.
+//! Sealed `check_change(change)` evaluator (U1.3) — the CHECK capability's
+//! metered predicate runner. [`CheckLimits`] meters tick, heap, call-depth,
+//! source-size, and nesting. [`CheckError`] is the typed failure surface.
+//! Capability ceiling for CHECK globals is enforced at load; evaluation is
+//! pure over the injected change facts.
 //!
-//! # What this is
-//! A convention's `CHECK.md` carries a fenced `def check_change(change)` Starlark
-//! predicate. This module runs it: it injects the [`rulepack-api@2`](crate::change)
-//! [`Change`] as a `change` value, calls `check_change(change)` under the FULL
-//! evaluation limits, and records the [`Refusal`]s the predicate emits through the
-//! ONE builtin the CHECK ceiling grants — `refuse(message, passing)`.
 //!
-//! # The capability ceiling (rulings § capability grammar)
-//! CHECK **may read** the change + pinned facts, **may do** findings / refuse, and
-//! **may never** write or reach outward. The ceiling is the globals:
-//! [`check_globals`] is `GlobalsBuilder::standard().with(check_api)` and `check_api`
-//! registers ONLY `refuse`. The Starlark standard library carries no ambient I/O
-//! (no file/net/os/clock/random), and no effect-descriptor / mutate / emit builtin
-//! is registered — so a CHECK that names `set_field`, `send`, `open`, or `now`
-//! reaches an unbound name and faults [`CheckError::Runtime`]. FIX's mutate power
-//! and HOOK's outward reach are not on THIS surface: HOOK loads (it is the emit leg,
-//! and its ceiling is enforced at load by [`crate::hook`]), but it is a separate
-//! capability with separate globals — a CHECK never gains a descriptor constructor.
 //!
-//! # Full `EvalLimits`, never fuel alone (plan §4 preamble, security F5)
-//! Every guard the `effects` kernel (`crates/effects/src/kernel.rs`) applies is
-//! applied here — tick (`fuel`), heap (`mem`), call-depth (`max_call_depth`),
-//! source-size (`max_source_bytes`), and parser nesting ([`MAX_NESTING_DEPTH`]) —
-//! so a runaway loop, recursion bomb, huge allocation, over-long source, or
-//! pathologically nested source terminates the predicate, never hangs and never
-//! aborts the loader. This mirrors that kernel pattern rather than calling it:
-//! `policy` is the correctness gate and `effects` is the advisory kernel, so CHECK —
-//! which decides whether a write is ADMITTED — evaluates on its own metered core and
-//! borrows no code from the advisory crate.
 //!
-//! The crate does now carry one edge on `effects`, and it is deliberately not this
-//! one: [`crate::hook`] load-gates HOOK predicates through `effects::validate`,
-//! because a HOOK predicate is WRITTEN in the effects rule language (`on_change`
-//! over the descriptor constructors) and that language's own validator is the honest
-//! gate for it. HOOK is advisory by charter — it may never veto or mutate — so the
-//! correctness path still takes nothing from the advisory kernel. If a future change
-//! makes a CHECK verdict depend on `effects`, that is the line this paragraph exists
-//! to defend.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::cell::RefCell;
 

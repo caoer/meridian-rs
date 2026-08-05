@@ -1,44 +1,44 @@
-//! The blocking gate at the armed change plane (U4.2) — the pure decision half.
+//! Blocking gate at the armed change plane (U4.2) — the pure decision half.
+//! Input is the [`ArmedLaw`] [`resolve_armed_law`] resolved at the write path.
+//! A block-severity firing, drifted law, or unloadable set refuses with a
+//! closed `{code, recovery}` pair. Never-armed is a no-op. Fills the retired
+//! `authorize` seam; does not load from disk (caller injects the law).
 //!
-//! # What this is (laws.md § the policy gate; refusal-amendment §11.1)
-//! `crates/policy` once owned advisory verdicts only. This module is the
-//! blocking `gate()` seam: after CAS and before bytes land, the write door
-//! evaluates a [`Change`](crate::Change) through a workspace's OWN armed law and
-//! either lets the write stand ([`GateOutcome::Ok`]) or REFUSES it
-//! ([`GateOutcome::Refusal`]) — the bytes never land.
 //!
-//! # Two halves, one seam
-//! The seam splits along the I/O line the crate's charter draws (policy stays
-//! I/O-free, as `model` is):
-//! - [`resolve_armed_law`](crate::armed_law::resolve_armed_law) — the LOAD +
-//!   VERIFY half, and the ONE surface that reports every way a workspace's armed
-//!   law could not be honored. Given the attested artifact's bytes, the
-//!   once-armed marker, an injected [`PageSource`](crate::armed::PageSource), and
-//!   the write's path, it resolves an [`ArmedLaw`]. All I/O is injected — the
-//!   caller (the trusted write path in `wire-serve`/`run`) does the disk reads.
-//! - [`gate`] — the DECISION half. `gate(change, law)`: never-armed is a no-op; a
-//!   REFUSING fault refuses fail-closed; otherwise every in-scope armed rule runs
-//!   over the change and its refusals STACK (conjunction), a `block`-mode firing
-//!   refusing the write, a `warn` firing rendering as an advisory finding.
 //!
-//! # The law is resolved PER WRITE PATH
-//! An arm is rooted (`armed::ArmRoot`), so what governs a write is a question
-//! about that write's path — not a workspace-wide set resolved once. The caller
-//! resolves at the target path and hands the result here; selection order and its
-//! two wrong hand-compositions are `ArmedArtifact::verify_at`'s own doc.
 //!
-//! # A fault is never silently survived
-//! [`ArmedLaw::refusing`] is the refusal set; the faults it does NOT carry (a
-//! hook row's, which never vetoes) still reach the operator, as advisory findings
-//! rendered in the same words. The gate chooses the CHANNEL, never the vocabulary
-//! — [`crate::armed_law::ArmedFault`]'s `Display` is the one renderer.
 //!
-//! # ATTACK-034 scoping (laws.md)
-//! Refusal makes violations "unrepresentable through an armed change plane" —
-//! never a stronger claim. A never-armed workspace is a bit-for-bit no-op; the
-//! genesis epoch renders grey, never green. Out-of-band mutation is caught by
-//! the git witness plus the receipt-engine-only write restriction, never by this
-//! gate.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use crate::armed::Mode;
 use crate::armed_law::{ArmedFault, ArmedLaw, ArmedRule};

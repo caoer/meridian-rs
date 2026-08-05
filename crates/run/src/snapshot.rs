@@ -1,32 +1,32 @@
-//! U6b — the detection bracket around the bash exec window (plan §4 U6b;
-//! decisions #14/#19/#20/#25; review S3/S4).
+//! U6b — detection bracket around the bash exec window (plan §4 U6b;
+//! decisions #19/#20/#25). Opens against the computed post-phase1 root;
+//! closes after group kill. Residual compare, config bracket, and symlink
+//! refusal produce a [`Detection`] verdict. Observation only — never rolls
+//! back; phase 2 gates on [`Detection::is_clean`].
 //!
-//! [`ExecBracket::open`] pins the pre-exec baseline: it takes the guarded
-//! snapshot (`fs::guard::StepGuard` — symlink-refusing walk, config capture)
-//! and cross-checks the observed root against the flock-computed
-//! `root_after_phase1` (#19 addendum: the COMPUTED root is the authority — a
-//! mismatch means the tree moved between the phase-1 commit and the bracket
-//! opening, and the exec must not start).
 //!
-//! [`ExecBracket::close`] renders the window's [`Detection`] verdict after
-//! the process group is dead (S3). The window has ZERO governed writes by
-//! construction — the two-phase design puts phase 1 before the bracket and
-//! phase 2 after it — so the residual-compare runs with an empty governed
-//! set: ANY domain delta is out-of-band. `close` never errors: every failure
-//! is a typed verdict, and phase 2 gates on [`Detection::Clean`] (fail
-//! closed — no verdict is not a pass).
 //!
-//! # Wording (S4)
-//! A delta renders as an "out-of-band change during exec window" — the
-//! window is named, never the block. The wording's single source is
-//! `fs::guard::ResidualDelta`'s `Display`; this module only delegates.
 //!
-//! # What detection can and cannot see (the named gaps)
-//! Detection covers the §12 hash domain: md-only, dot-excluded, custom
-//! ignores honored. Non-md / `.meridian/` / dot-path writes are UNDETECTED
-//! (#20, explicit accepted gap, distinct from the out-of-tree honor system);
-//! symlinks on non-dot paths REFUSE (#25); writes landing after the close
-//! snapshot are outside the bracket (S3 residual escape window).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use fs::guard::{ConfigState, GuardError, ResidualDelta, StepGuard};
 use model::MerkleRoot;

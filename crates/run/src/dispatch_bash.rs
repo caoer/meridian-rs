@@ -1,4 +1,4 @@
-//! The bash dispatch path (U6a) — two-phase apply around a supervised exec
+//! Bash dispatch (U6a) — two-phase apply around supervised exec
 //! (plan §2, decisions #13/#19/#21/#22; verdict rulings 1/2):
 //!
 //! ```text
@@ -6,50 +6,50 @@
 //! │ phase 1: pre-exec receipt commit  →  root_after_phase1 snapshot  │
 //! └──────────────────────────────────────────────────────────────────┘
 //!   → U6b bracket OPENS against the computed root (PreExecMismatch ⇒
-//!     refuse, the exec never starts)
-//!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL; stdout teed
-//!     into the U8 record; md.* descriptors on the shim fd)
-//!   → U6b bracket CLOSES after the group kill (residual-compare #19 +
-//!     config bracket #20 + symlink refusal #25) — verdict on EVERY path
-//!   → phase 2 (gated on a verified-clean window): shim batch through the
-//!     executor's ONE choke point, pinned AND validated against the
-//!     COMPUTED `root_after_phase1` — never a root re-read after the bash
-//!     step (#19).
+//!     refuse; exec never starts)
+//!   → exec (invocation cwd — U16, `setsid`, timeout→group SIGKILL;
+//!     stdout teed; md.* descriptors on the shim fd)
+//!   → U6b bracket CLOSES after group kill (residual-compare #19 +
+//!     config #20 + symlink #25) — verdict on EVERY path
+//!   → phase 2 (clean window only): shim batch through executor choke
+//!     point, pinned to COMPUTED `root_after_phase1` — never re-read
+//!     after bash (#19).
 //! ```
 //!
-//! **No `Exec` `EffectKind`** (ruling 1): running the block is not an effect —
-//! the ONLY effects are the md.* descriptors bash emitted on the shim fd.
+//! **No `Exec` `EffectKind`** (ruling 1): only md.* descriptors on the shim
+//! are effects.
 //!
 //! # Failure matrix (S2/S6/#21)
 //! - phase-1 refusal → nothing ran, nothing committed ([`BashError::Phase1`]).
-//! - exec nonzero → the effect batch REFUSES, and the run is still RECORDED:
-//!   **completion is not success** (G3b). The completion receipt carries the exit
-//!   code, so a check that reported a finding is no longer the same bytes as a
-//!   crash ([`Phase2::RefusedExecFailed`]).
-//! - signaled → the step did NOT complete; no completion receipt is written and the
-//!   phase-1 pre-exec receipt stands alone (the orphan-lint anchor, S2).
-//! - timeout → the group is `SIGKILL`ed; a DISTINCT state, phase 2 refuses and
-//!   no completion receipt is written — the run did not finish.
-//! - truncated / malformed shim stream → fails closed, the WHOLE phase-2
-//!   batch refuses (S6).
-//! - executor refusal in phase 2 → typed, nothing applied.
-//! - window not verified clean (U6b: out-of-band delta / config change /
-//!   symlink / no verdict) → phase 2 refuses ([`Phase2::RefusedDetection`]);
-//!   the verdict with the named delta is [`BashOutcome::detection`] and the
-//!   change is NEVER rolled back (ruling 2).
+//! - exec nonzero → effect batch REFUSES; run still RECORDED (G3b: completion
+//!   is not success). Completion receipt carries exit code.
+//! - signaled → no completion receipt; phase-1 pre-exec receipt stands (S2).
+//! - timeout → group SIGKILL; distinct state; phase 2 refuses; no completion.
+//! - truncated/malformed shim → fails closed; whole phase-2 batch refuses (S6).
+//! - executor refusal in phase 2 → typed; nothing applied.
+//! - window not clean (U6b) → phase 2 refuses ([`Phase2::RefusedDetection`]);
+//!   verdict on [`BashOutcome::detection`]; NEVER rolled back (ruling 2).
 //!
-//! # Detection (U6b) and what stays elsewhere
-//! The exec-window bracket IS wired here: [`crate::snapshot::ExecBracket`]
-//! opens against the computed `root_after_phase1` and closes after the
-//! group kill; phase 2 gates on [`Detection::is_clean`]. The verdict rides
-//! [`BashOutcome::detection`] to the report's out-of-band-delta line — an
-//! observation about the window, never a claim about the block: the window
-//! closes, and a `nohup` or launchd plist writes after it with no observer.
+//! # Detection (U6b)
+//! Bracket opens against computed `root_after_phase1`, closes after group
+//! kill; phase 2 gates on [`Detection::is_clean`]. Verdict is an observation
+//! about the window, not a claim about the block. Rendered on every OUTCOME
+//! path; a [`BashError`] aborts with bracket unclosed and no verdict.
 //!
-//! The verdict is rendered on every OUTCOME path, not every error path: a
-//! [`BashError`] (spawn failure included) aborts before phase 2 with the
-//! bracket unclosed and NO verdict — nothing ran or nothing can apply, so
-//! there is no window to attest.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};

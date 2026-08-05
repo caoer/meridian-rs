@@ -142,12 +142,12 @@ fn a_background_child_is_reaped_at_step_end() {
     // never lands its post-step write.
     //
     // Correctness is the EVENT, not a duration: after step end the leak file
-    // must not exist. The former `elapsed < 5s` wall-clock assert lived here
-    // and failed under host load twice this session (U13 worker; w6 worker at
-    // load ~20) while isolation stayed green — the exact class `ci.yml`
-    // forbids in this lane. That budget rides the perf lane now
-    // (`exec_walltime.rs`, feature `perf-walltime`); the 5s number is
-    // unchanged — relocation, not relaxation.
+    // must not exist. Wall-clock budget lives in `exec_walltime.rs` under
+    // feature `perf-walltime` (ci.yml forbids wall-time gates here). The 5s
+    // number is unchanged — relocation, not relaxation.
+    //
+    //
+    //
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
     // The leak path is ABSOLUTE: since U16 the step runs in the invocation

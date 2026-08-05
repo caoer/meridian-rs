@@ -1,13 +1,13 @@
-//! U18 (docket row F2) — the board's status-move guard, driven through the door.
+//! Status-move CHECK gate: legal transitions name themselves; illegal ones
+//! refuse with a message that cites the allowed move.
 //!
-//! The guard is a PAGE (`tests/rules/status-move.md`), armed and evaluated through
-//! the same `RuleIndex::discover` → `arm` → `resolve_armed_law` → `gate` path the
-//! write door runs. That is the whole point of the unit: verdict row 9.12
-//! (gate-as-rev) is SUPERSEDED — a status move is guarded by an armed starlark
-//! CHECK, never by a new engine surface.
 //!
-//! The refusal TEXT is asserted, not merely the refusal: a guard whose message
-//! stops naming the move, the legal moves, or the way forward regresses silently.
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

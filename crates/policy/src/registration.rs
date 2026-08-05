@@ -1,59 +1,59 @@
 //! Tag-indexed rule registration — discovery, id grammar, override resolution.
 //!
-//! # What registers (ruling § 1)
-//! A page registers as a rule by carrying a **registration tag** in its
-//! frontmatter `tags:` — [`RuleKind::Hook`] is `rules/hook`, [`RuleKind::Check`] is
-//! `rules/check`. `rules/` is the registration NAMESPACE: any page in the
-//! workspace carrying a `rules/*` tag is discoverable, and a `rules/*` tag this
-//! slice does not carry is a NAMED deferral ([`RegisterError::KindDeferred`]),
-//! never a silent drop.
+//! A page registers by carrying `rules/hook` / `rules/check` in frontmatter
+//! `tags:` ([`RuleKind`]), is identified by frontmatter `id:` ([`RuleId`],
+//! § 2 grammar), and resolves against same-id pages by mount depth along the
+//! three-rung scope ladder ([`ScopeLayer`] → [`Scope`]).
 //!
-//! Registration replaces the filename: nothing here reads a folder name, a
-//! `CHECK.md`/`HOOK.md` spelling, or the corpus's legacy `kind:` frontmatter. Two
-//! names for one thing is the defect being removed, so `kind:` is **not consulted
-//! by this layer at all**.
+//! [`RuleIndex::discover`] reads a caller-supplied page feed ([`PageRef`] —
+//! policy stays I/O-free). [`RuleIndex::resolve`] is the ONE pure resolver
+//! both arming and read-only print call; it RETAINS every shadowed candidate
+//! so the override chain stays printable.
 //!
-//! Tags are read from FRONTMATTER only — "frontmatter is for filtering, body is
-//! for reading". An inline `#rules/hook` in prose does not register a page.
+//! Nothing here arms: discovery makes a page known; only the attested ARM act
+//! activates it. Workspace root and folder/session tree are one layer,
+//! separated by [`Scope::depth`].
 //!
-//! # Identity is a frontmatter query (ruling § 2)
-//! Identity lives in frontmatter `id:`, grammar
-//! `^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*$`, at most [`MAX_ID_LEN`] bytes. A
-//! registration-tagged page without a valid `id:` fails loudly. The fenced
-//! Starlark block MAY restate the id as a top-level `id = "…"` assignment; if it
-//! does, it must agree with the frontmatter, and it is read STATICALLY from the
-//! parsed AST — never evaluated. Needing to run a block to learn its identity
-//! inverts the layering.
 //!
-//! # Registration is not arming (the cap-escape guardrail)
-//! Nothing in this module arms anything, mints a receipt, spends a cap, or
-//! touches disk. Discovery makes a page KNOWN; only the explicit attested ARM act
-//! activates it. A tag that armed by itself would let any writer with put access
-//! self-arm reactive code under caps. [`RuleIndex::resolve`] is a pure function of
-//! its input, so a read-only consumer (`mrd rules`) and the arming path call the
-//! SAME resolver — never a parallel computation.
 //!
-//! # Override resolution (ruling § 3)
-//! Precedence is the scope ladder, outermost to innermost: **user space** →
-//! **workspace root** → **folder/session tree**. Among pages sharing an id the
-//! deepest mount governs — layer first, then directory depth, and NOTHING else.
-//! There is no lexical and no mtime tiebreak; mtime is not even an input to this
-//! module. Two pages tied at the winning scope are a loud refusal: that id
-//! resolves to nothing, the refusal names both pages, and every other id is
-//! unaffected.
 //!
-//! # The chain is retained, never collapsed (ruling § 7)
-//! Resolution keeps EVERY candidate for an id, not just the winner, so the
-//! override chain is printable winner-first in ladder order — the
-//! `git config --show-origin` spirit. A resolver that discarded losers would make
-//! the chain unreconstructable, so retention is a property of this layer rather
-//! than of its consumer.
 //!
-//! # Where the walk lives
-//! `policy` is the WHEN plane and is I/O-free (docs/laws.md), so this module never
-//! enumerates a directory. The caller's walk offers [`PageRef`]s exactly as the
-//! rule loader takes caller-supplied page BYTES; siting the disk
-//! edge is the cutover card's job.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::borrow::Borrow;
 use std::collections::BTreeMap;

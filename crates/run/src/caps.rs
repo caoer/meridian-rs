@@ -1,56 +1,56 @@
-//! Capability resolution — deny-by-default (verdict ruling 3, plan decision
-//! #15). An undeclared block is read-only: it can compute, but no effect of
-//! its executes. Resolution precedence: explicit frontmatter
-//! (`task.<name>.caps`) > the ROOT'S OWN `MERIDIAN.md` declaration
-//! (`run.caps.<pattern>`) > none. Conventions NARROW only, never widen: a
-//! matching convention acts as a ceiling over an explicit grant (the
-//! intersection survives, the narrowed remainder is reported), and the builtin
-//! `check-*` / `verify-*` read-only ceiling cannot be overridden at all.
-//! `check-*` / `verify-*` names refuse a bash fence loudly at load; `fix-*`
-//! does not — fix blocks declare writes and are exactly where bash is wanted.
+//! Capability resolution — deny-by-default (verdict ruling 3, decision #15).
+//! Undeclared block is read-only. Precedence: explicit `task.<name>.caps` >
+//! root `MERIDIAN.md` `run.caps.<pattern>` > none. Conventions NARROW only
+//! (intersection survives; narrowed remainder reported). Builtin `check-*` /
+//! `verify-*` ceiling is empty and non-overridable; those names refuse bash
+//! at load. `fix-*` does not — fix blocks declare writes.
 //!
-//! # Capabilities do not apply to bash (`docs/laws.md` § Amendment)
-//! The whole ladder above is **starlark's**. A bash task resolves
-//! [`Authority::Unsandboxed`]: no cap set, no source, no `deny-default`, and
-//! its `task.<name>.caps` frontmatter is not even READ — a value that governs
-//! nothing is not validated into looking like it might. [`Authority`] is what
-//! makes that structural rather than a printing convention: the bash path does
-//! not hold the type that carries a capability, so it cannot name one. The
-//! executable gate is `crates/mrd/tests/law_no_caps_on_bash.rs`.
+//! # Caps do not apply to bash (`docs/laws.md` § Amendment)
+//! The ladder above is **starlark's**. Bash resolves [`Authority::Unsandboxed`]
+//! — no cap set, no source; `task.<name>.caps` is not read. [`Authority`]
+//! makes that structural: bash never holds the capability-carrying type.
+//! Gate: `crates/mrd/tests/law_no_caps_on_bash.rs`.
 //!
-//! [`resolve_authority`] is the ONE language-aware entry, and the only place
-//! the bash short-circuit lives. [`resolve_caps`] below it takes no language:
-//! the ladder has no language axis to get wrong.
+//! [`resolve_authority`] is the only language-aware entry (bash short-circuit).
+//! [`resolve_caps`] takes no language.
 //!
-//! # The convention plane (marker-retirement ruling, 2026-07-26)
-//! The table lives in the root's own self-declaration — `<root>/MERIDIAN.md`
-//! with `type: meridian-root`, the artifact D7's *"the root declares,
-//! `MERIDIAN.md` binds"* already governs. The retired marker files are NOT read
-//! and NO fallback to them ships: a reader that still found one would defeat the
-//! retirement the ruling ordered. `tests/caps_home.rs` proves them inert.
-//!
-//! The grammar is the PAGE grammar reused — flat dotted frontmatter keys,
-//! comma-separated cap lists, read through the same [`frontmatter`] helper as
-//! `task.<name>.caps`:
+//! # Convention plane (marker-retirement ruling, 2026-07-26)
+//! Table lives in `<root>/MERIDIAN.md` with `type: meridian-root`. Retired
+//! marker files are not read and have no fallback. Grammar is flat dotted
+//! keys (model's FM scanner skips indented lines):
 //!
 //! ```yaml
 //! run.caps.fix-*: md.set_field, md.append_section
 //! run.caps.fix-note: md.set_field:status
 //! ```
 //!
-//! Flat is the law of the reader, not a preference: `model`'s frontmatter
-//! scanner takes no YAML crate and SKIPS every indented line, so a nested
-//! `run:` / `  caps:` spelling would be unreadable through it.
+//! [`ConventionSource`] reports which root situation answered. Present-but-
+//! invalid declaration REFUSES ([`CapsError::Declaration`]) — silent empty
+//! table would delete a ceiling on typo. Target-scoped caps are narrower
+//! than untargeted forms.
 //!
-//! [`ConventionSource`] states which of the four root situations answered — a
-//! resolution never goes silent about whether a ceiling was in force. A
-//! present-but-invalid declaration REFUSES ([`CapsError::Declaration`]):
-//! silently reading it as the empty table would delete a ceiling on one typo,
-//! which is the widening this plane exists to prevent.
 //!
-//! Caps are namespaced strings (`md.set_field`), forward-compatible to
-//! target-scoped (`md.set_field:status`) — a target-scoped cap is strictly
-//! narrower than its untargeted form.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

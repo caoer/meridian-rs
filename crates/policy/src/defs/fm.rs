@@ -1,24 +1,24 @@
-//! Frontmatter typed values with Go yaml.v3 OUTCOME parity — the closed
-//! surface `CheckShape`/`IsNested`/the biconditional actually consult.
+//! Frontmatter typed values with Go yaml.v3 OUTCOME parity — closed value
+//! set the def checker accepts. Structure this subset carefully: continuation
+//! of an unconsumed value is a structural fault, not a soft parse.
 //!
-//! Go decodes the whole frontmatter block with yaml.v3 into `map[string]any`
-//! (meridian `internal/frontmatter.ParseBytes`), then iterates SORTED keys.
-//! The load-bearing typing facts (each pinned by a fixture):
 //!
-//! - quoted scalars are strings, always
-//! - unquoted: null forms → nil · true/false forms → bool · integers → int ·
-//!   decimal floats → float · yaml-timestamp shapes (incl. DATE-ONLY) →
-//!   time.Time · everything else → string
-//! - flow/block sequences → []any (items typed by the same scalar rules)
-//! - flow/block mappings anywhere, or a list inside a list → the NESTED class
-//!   (substrate-law error)
-//! - duplicate top-level keys → yaml.v3 decode ERROR → "unreadable
-//!   frontmatter" (def/frontmatter finding), not last-wins
 //!
-//! The parser is a YAML SUBSET tuned to those outcomes, affordable because the
-//! substrate law bounds depth at one level; it never guesses beyond what a
-//! fixture pins — an unsupported construct classifies as Nested (loud), never
-//! silently as string.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

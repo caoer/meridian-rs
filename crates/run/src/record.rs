@@ -1,34 +1,34 @@
-//! The run stdout record (U8): live-stream tee + content-addressed
-//! out-of-tree log + the exec facts the receipt adopts.
+//! Run stdout record (U8): live-stream tee + content-addressed durable log.
+//! Stdout is teed to the caller while hashing; seal fsyncs and mints the
+//! [`StdoutRecord`] (S8 ordering hook). Address is the invocation id; content
+//! pinned by full sha256. Env is recorded as KEYS ONLY (S7) — values never
+//! enter the receipt type.
 //!
-//! # Laws enforced here (plan §4 U8; verdict ruling 7)
-//! - **Stdout is data, not effects.** Bash stdout never becomes a tree
-//!   write; it streams LIVE to the caller's sink and lands out-of-tree at
-//!   `.meridian/runs/<invocation-id>.log`. Tree output happens ONLY via an
-//!   explicit `md.append_section` descriptor at the executor choke point —
-//!   nothing in this module can splice. `.runs.md` stays dead (decision #6):
-//!   no in-tree run journal exists and no code here writes one.
-//! - **fsync-before-receipt (S8):** the log is durable BEFORE any receipt
-//!   can carry its facts. The ordering is structural, not procedural: the
-//!   receipt-side facts ([`StdoutRecord`]) exist only as [`RunLog::seal`]'s
-//!   return value, and `seal` fsyncs the log file AND its directory entry
-//!   first. A crash after the receipt commit can orphan a log (the lint
-//!   finds it); it can never mint a receipt naming a log that is not
-//!   durable.
-//! - **Env keys, never values (S7):** [`ExecRecord`] takes the child's full
-//!   environment at construction and keeps ONLY the sorted key list — the
-//!   seam accepts values but cannot emit one, so a secret cannot reach any
-//!   record through this type.
-//! - **§9 identity:** the invocation id is caller-supplied; nothing here
-//!   reads a clock or mints an id. The id is validated as a single path
-//!   component (no traversal) before it names a file.
 //!
-//! # The U8→U4 record edge (review S10)
-//! The receipt struct is the executor's ([`crate::executor::ReceiptFacts`]).
-//! This module defines the exec-fact shape ([`ExecRecord`]) and the adoption
-//! seam ([`ExecRecordSink`]); the receipt grows its exec field by
-//! implementing the trait, so the two units land without editing each
-//! other's files.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};

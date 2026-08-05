@@ -1,16 +1,16 @@
-//! Purity guard for the `rulepack-api@2` change surface (U1.1) — the door-fact
-//! mirror of `crates/effects/tests/purity.rs`.
+//! Door-fact purity: the closed 14-key change surface admits no git, clock,
+//! random, or I/O sources. [`assert_vocab_pure`] is the executable law.
 //!
-//! The rules-crate guard proves the effect sandbox exposes no I/O NAME. This
-//! guard proves the door's *fact vocabulary* names no git/clock/random/io
-//! SOURCE: a `check_change(change)` predicate reads only facts derived from the
-//! before/after markdown states and one hop of pinned evidence. "yes. no git"
-//! (ZT ruling, door fact surface).
 //!
-//! It is a load-bearing NEGATIVE: `every_allowed_fact_key_is_pure` passes on the
-//! real vocabulary, and `the_guard_fails_on_an_introduced_impure_field` proves
-//! the assertion actually BITES — introduce a git/clock/random/io-sourced field
-//! and it fails loud, naming the key and its class.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use policy::{CHANGE_FACT_VOCAB, assert_vocab_pure, impure_source, vocab, vocab_keys};
 
