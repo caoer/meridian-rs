@@ -255,6 +255,7 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
     args.plan_edits = vec![PlanEdit::Append {
         hpath: "Plan".into(),
         body: lock_block("guide", &["Guide", "Leader's Guideline"], &token),
+        rev: None,
     }];
     let forged = splice(
         &root,

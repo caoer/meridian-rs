@@ -496,7 +496,15 @@ pub struct PinFact {
 pub enum PlanEdit {
     /// Append to a section's content end — `ensureTrailingNL` + the
     /// leading-`\n` discipline applied ENGINE-side (the U8b directive).
-    Append { hpath: String, body: String },
+    /// `rev` is the NODE-grain guard token (R4), threaded to `if_node_rev`
+    /// exactly as `match`/`replace_section` carry theirs: an append changes
+    /// existing content and is guarded like every other change (U10 S3).
+    Append {
+        hpath: String,
+        body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rev: Option<String>,
+    },
     /// Anchored replace; `all: true` replaces EVERY occurrence (the host's
     /// read-modify-write moved engine-side). `rev` is the v2-domain node rev
     /// (blake3) threaded to `if_node_rev`; empty/absent = the relaxed write.

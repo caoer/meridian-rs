@@ -122,7 +122,14 @@ never edited (v3-amendment precedent); the amendment doc carries the change.
   `wire::Edit` is a FROZEN v2 type and adding a field to it is an
   amendment-3 question, not this unit's to answer. The plan face — where P3
   authorized the additive field — carries the file-grain token.
-- **The plan `append` shape carries no rev field**, so a wire-origin plan append
+- ~~**The plan `append` shape carries no rev field**, so a wire-origin plan append
   can only proceed with `force` or through the native face with `if_node_rev`.
   The refusal names both paths. Giving `append` its own token is a contract
-  amendment beyond this unit's authorization.
+  amendment beyond this unit's authorization.~~ **RETIRED by R4 (2026-08-05)** —
+  ZT granted the amendment U10 deferred. `PlanEdit::Append` now carries
+  `rev: Option<String>`, decoded on its own face and threaded to `if_node_rev`;
+  append joins the `match`/`replace_section` guard arm, and `Slot::PlanAppendUnslotted`
+  is deleted along with the fix text that sent callers to a native `edits` batch
+  or `force`. The refusal now names `rev` on the plan edit, like its siblings.
+  The guard did not loosen: no `rev` still refuses `guard_required`, and a stale
+  one still refuses at CAS.

@@ -93,8 +93,8 @@ pub fn lower(
     for e in plan_edits {
         match e {
             wire::PlanEdit::SetProperty { .. } => {}
-            wire::PlanEdit::Append { hpath, body } => {
-                edits.push(lower_append(&idx, raw, hpath, body)?);
+            wire::PlanEdit::Append { hpath, body, rev } => {
+                edits.push(lower_append(&idx, raw, hpath, body, rev.as_deref())?);
             }
             wire::PlanEdit::Match {
                 hpath,
@@ -135,6 +135,7 @@ fn lower_append(
     raw: &[u8],
     hpath: &str,
     body: &str,
+    rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
     if hpath.starts_with('^') {
         return Err(bad_request(format!(
@@ -163,7 +164,9 @@ fn lower_append(
             at: PutAt::End,
             text: String::from_utf8_lossy(&payload).into_owned(),
         },
-        if_node_rev: None,
+        if_node_rev: rev
+            .filter(|r| !r.is_empty())
+            .map(|r| NodeRev(r.to_string())),
     })
 }
 
@@ -431,6 +434,7 @@ mod tests {
             PlanEdit::Append {
                 hpath: "Memo".into(),
                 body: "added".into(),
+                rev: None,
             },
         )
         .expect("lowers");
@@ -443,6 +447,7 @@ mod tests {
             PlanEdit::Append {
                 hpath: "Memo".into(),
                 body: "added\n".into(),
+                rev: None,
             },
         )
         .expect("lowers");
@@ -485,6 +490,7 @@ mod tests {
             PlanEdit::Append {
                 hpath: "^t1".into(),
                 body: "x".into(),
+                rev: None,
             },
         )
         .expect_err("block append refuses");
@@ -504,6 +510,7 @@ mod tests {
             PlanEdit::Append {
                 hpath: "Ghost".into(),
                 body: "x".into(),
+                rev: None,
             },
         )
         .expect_err("miss refuses");
