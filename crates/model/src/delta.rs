@@ -1,27 +1,20 @@
 //! Delta change-fact computation (contract §7, D3-DELTA — wire-lane-owned).
 //!
-//! Non-serde, by the model charter: this module computes the FACTS a Delta
-//! carries; `wire-map` projects them onto `wire::Delta` and the sidecar
-//! assembles the envelope (seq/roots/actor/now — the engine records nothing
-//! it wasn't given, §9).
+//! Computes Delta FACTS only (no-serde charter); `wire-map` projects to
+//! `wire::Delta`; sidecar owns the envelope (seq/roots/actor/now — engine
+//! records nothing it wasn't given, §9).
 //!
-//! **The deepest-changed-node law (D-C7, §7.1):** node entries name the
-//! deepest mint-addressable node containing each changed byte range —
-//! sections, anchor-bearing blocks (host-block grain), and frontmatter key
-//! lines. Ancestor section revs change implicitly (rev = span hash) and are
-//! re-readable via `toc`, never duplicated into the delta.
+//! **Deepest-changed-node (D-C7, §7.1):** entries name the deepest
+//! mint-addressable node per changed byte range (sections, anchor host-blocks,
+//! fm keys). Ancestor revs change implicitly; re-readable via `toc`, never
+//! duplicated into the delta.
 //!
-//! **Node-grain at birth (decision 012, §7.4):** the grain is exactly
-//! [`NodeDelta`] — identity in the §2.1 grammar, rev transition, span after.
-//! No key-grain sub-entries exist here; that amendment slot is contract
-//! prose, future-only.
+//! **Node-grain (decision 012, §7.4):** grain is exactly [`NodeDelta`] —
+//! §2.1 identity, rev transition, span after. No key-grain sub-entries.
 //!
-//! Known bound (documented, not hidden): changed ranges are derived by
-//! common-prefix/common-suffix over the raw bytes — one contiguous range per
-//! file revision. The rung-4 write path knows its exact edit spans and may
-//! refine this; `renamed` detection needs cross-file correlation only the
-//! watcher/apply layers have, so this module classifies `created`/
-//! `modified`/`deleted` and leaves `renamed` to callers that know.
+//! Bound: changed ranges are common-prefix/common-suffix over raw bytes — one
+//! contiguous range per file revision. Classifies `created`/`modified`/
+//! `deleted`; `renamed` needs cross-file correlation only callers have.
 
 use crate::{ByteSpan, Document, Node, NodeKind, NodeRev, Ref, resolve};
 
@@ -377,13 +370,9 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
-    // -----------------------------------------------------------------
-    // C0 — the one-put gated close over a realistic task card.
-    // -----------------------------------------------------------------
+    // C0 — one-put gated close over a realistic task card
 
-    /// The fixture the three C0 cases splice over: a task card carrying a
-    /// `status:` key in frontmatter and a `## Verdict` body section — the two
-    /// halves the ratified gating law requires in ONE `put`.
+    /// Task card fixture: `status:` + `## Verdict` — the two halves one put must cover.
     fn task_card(status: &str, verdict: &str) -> String {
         format!(
             "---\ntype: task\nstatus: {status}\nowner: e4201e72\n---\n\n\
@@ -433,18 +422,13 @@ mod tests {
         assert_eq!(got[0].change, NodeChangeKind::Edited);
     }
 
-    /// C0 case 3 — the ratified one-put gated close: `status:` AND the
-    /// `## Verdict` section in ONE splice. **Observed 2026-07-30: no node
-    /// entries at all** — neither the `fm_key` of case 1 nor the `hpath` of
-    /// case 2, though each half alone produces one. The joint edit collapses
-    /// to one contiguous range that only the Document root contains, and
-    /// `identity_of` has no arm for `NodeKind::Document`. The file-level fact
-    /// survives; the node inventory does not.
+    /// C0 case 3 — one-put gated close: `status:` AND `## Verdict` in ONE
+    /// splice yields **no node entries**. Each half alone produces one; the
+    /// joint edit is one contiguous range only the Document root contains, and
+    /// `identity_of` has no `NodeKind::Document` arm. File-level fact survives.
     ///
-    /// This is a pin on OBSERVED behaviour, not a ratification of it: what
-    /// §7.1's deepest-section law requires when no addressable node contains
-    /// the range is an open contract question. If that question is answered
-    /// by emitting something, this test fails — deliberately.
+    /// Pins observed behaviour, not a ratified §7.1 answer for "no addressable
+    /// node contains the range". Emitting entries later must fail this test.
     #[test]
     fn c0_gated_close_one_put_emits_no_node_entries() {
         let b = doc(&task_card("in-progress", "pending"));
@@ -473,11 +457,9 @@ mod tests {
         assert!(fd.nodes.is_empty(), "{:?}", fd.nodes);
     }
 
-    /// C0 case 3b — the gated close as practiced: the `## Verdict` section is
-    /// APPENDED (genuinely added) while `status:` flips, in one splice.
-    /// **Observed 2026-07-30: also empty** — a section that was truly added
-    /// yields no `added` entry, because the after-range still opens inside
-    /// the frontmatter. The collapse is not edit-shape-dependent.
+    /// C0 case 3b — append `## Verdict` while flipping `status:` in one splice:
+    /// still empty. A truly-added section yields no `added` entry because the
+    /// after-range opens inside frontmatter. Collapse is not edit-shape-dependent.
     #[test]
     fn c0_gated_close_appending_verdict_also_emits_nothing() {
         let b = doc(
@@ -488,19 +470,13 @@ mod tests {
                      # Task: widget-rollout\n\n## Objective\n\nShip the widget.\n\n\
                      ## Verdict\n\npassed - gates green\n");
 
-        // Control: the same append WITHOUT the status flip is visible — so
-        // the emptiness below is caused by the joint edit, not by the append
-        // being invisible.
+        // Control: append without status flip is visible — emptiness below is
+        // from the joint edit, not an invisible append.
         //
-        // Observed 2026-07-30, and NOT what this control was written to
-        // expect: the append names the PARENT section `# Task: …` as `Edited`,
-        // never the added `## Verdict` as `Added`. The changed range is
-        // `"\n## Verdict\n\npassed - gates green\n"` — it opens with the blank
-        // line that terminates `## Objective`, so the `## Verdict` span does
-        // not contain it. `trim_final_terminator` trims a trailing terminator;
-        // nothing trims a leading one. The `appended_anchor_block_*` test
-        // above escapes this only because its fixture has no blank line
-        // before the appended block.
+        // Append alone names the PARENT `# Task: …` as `Edited`, never
+        // `## Verdict` as `Added`. Changed range opens with the blank line that
+        // ends `## Objective`, so `## Verdict` does not contain it.
+        // `trim_final_terminator` trims trailing terminators only.
         let alone = node_deltas(
             &doc(
                 "---\ntype: task\nstatus: in-progress\nowner: e4201e72\n---\n\n\

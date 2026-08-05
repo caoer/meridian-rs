@@ -1,20 +1,8 @@
-//! G11 design gates: what a QUIET daemon is allowed to cost.
+//! G11: what a quiet daemon may cost — assert on corpus folds, not CPU %.
 //!
-//! The gap this file exists for was found by inversion — one binary, zero
-//! client traffic, two corpora — and measured **28.6% of a core against a 20 GB
-//! vault versus 0.07% against one file**. The mechanism was a pre-warm sweep
-//! that re-read and re-folded every byte of the corpus once a second, behind a
-//! comment claiming a quiet sweep was cheap because it did not PARSE.
-//!
-//! A CPU percentage cannot be asserted in a unit test on a shared host, so these
-//! gates assert the thing the percentage was made of: **corpus folds**.
-//! `fs::fold_count` counts every full-corpus read-and-fold, and a quiet sweep is
-//! now required to run ZERO of them. That is the same claim in units that do not
-//! move with the load average.
-//!
-//! **This file must be the only fold-asserting work in its process.** `fold_count`
-//! is process-global, so it is asserted as a DIFFERENCE and these tests share one
-//! test binary with nothing that folds concurrently.
+//! Quiet pre-warm must run ZERO full-corpus folds (`fs::fold_count`). This
+//! binary must be the only fold-asserting work in its process (`fold_count` is
+//! process-global; assert as a difference).
 
 use std::fs;
 use std::path::{Path, PathBuf};

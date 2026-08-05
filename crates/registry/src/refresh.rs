@@ -1,21 +1,9 @@
-//! OD7 refresh-failure observability — daemon-memory `RefreshState`, the
-//! synchronous half (design §OD7).
+//! OD7 refresh-failure observability — daemon-memory `RefreshState`.
 //!
-//! # Telemetry, never correctness
-//! A failed rebuild cannot write the immutable last-good `view.duckdb`
-//! (rebuild-is-the-update — a failure produces no new file), so refresh errors
-//! live HERE, in daemon memory, surfaced by the `view_path` reply's
-//! `refresh_in_progress` + `last_error`. They explain *why* a view is stale;
-//! they NEVER gate a freshness verdict (that stays the independent §Q3 fold).
-//! Lost on daemon restart (advisory; the next build re-succeeds or
-//! re-surfaces).
-//!
-//! # Round-1 vs round-2
-//! Round-1 has exactly one rebuild trigger: the **synchronous** `view_path`
-//! (`fresh:true` or an absent/first build). Its failure surfaces INLINE on the
-//! reply, so a silent forever-failure is impossible. The `next_retry`/`backoff`
-//! fields the async executor needs (round-2, V4) are deliberately absent here —
-//! this crate builds no executor.
+//! Telemetry, never correctness: failed rebuild cannot write last-good
+//! `view.duckdb`, so errors live here and surface on `view_path` as
+//! `refresh_in_progress` + `last_error`. Never gate freshness (§Q3 fold).
+//! Lost on restart. Synchronous half only — no async retry/backoff fields.
 
 /// The per-workspace refresh telemetry the daemon holds in memory (OD7). One
 /// entry per workspace that has attempted a build; absent until the first

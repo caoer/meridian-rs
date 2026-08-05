@@ -1,22 +1,8 @@
-//! U10: **every wire door enforces** — asserted at the door that is NOT MCP.
+//! U10: every wire door enforces fingerprint-or-force — at the non-MCP door.
 //!
-//! The ruling (ZT, 2026-08-03), verbatim:
-//!
-//! > Content-mutating writes on every wire door require fingerprint match or
-//! > force; guard fields stay schema-optional; force is any client's
-//! > refuse→rewrite path; MCP is the main agent client that implements that
-//! > path, not a separate trust plane.
-//!
-//! The resident daemon's socket is the MCP door and its enforcement is covered
-//! by the registry suite. THIS suite covers the other one: the per-workspace
-//! sidecar is a plain stdio NDJSON host — `sidecar <workspace-root>` reading any
-//! stdin, historically driven by the meridian-go bridge, with no MCP coupling
-//! whatsoever. It enforces identically, and that is the whole point of the
-//! ruling: the law binds the DOOR, never the client behind it.
-//!
-//! Without this file the sidecar's enforcement is only an implementation detail
-//! of one `Origin::Wire` literal in `arms.rs`, which a later reader could
-//! "simplify" back to exempt on the reasoning that it is not the MCP path.
+//! Sidecar is plain stdio NDJSON (`Origin::Wire`); registry covers the MCP
+//! socket. Law binds the door, not the client. Pins: guardless content change
+//! → `guard_required` (semantic, frame stays legal); `force` lands here too.
 
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -58,8 +44,7 @@ fn guardless_splice() -> String {
     .to_string()
 }
 
-/// The non-MCP wire door refuses a guardless content change, exactly as the MCP
-/// door does. No door is exempted for who is behind it.
+/// Guardless content change refused at this door (`guard_required`).
 #[test]
 fn the_non_mcp_wire_door_enforces_too() {
     let (_d, root) = workspace(&[("memo.md", DOC)]);
@@ -87,9 +72,7 @@ fn the_non_mcp_wire_door_enforces_too() {
     );
 }
 
-/// …and the refusal is SEMANTIC, not frame-illegality. The frame decoded — it
-/// reached the write path and was answered there. Decision 007's schema half is
-/// intact: guard fields stay optional and a guardless frame is legal.
+/// Refusal is semantic (not `bad_frame`/`bad_request`): guard fields stay optional.
 #[test]
 fn the_refusal_is_semantic_the_frame_stays_legal() {
     let (_d, root) = workspace(&[("memo.md", DOC)]);
@@ -119,8 +102,7 @@ fn the_refusal_is_semantic_the_frame_stays_legal() {
     );
 }
 
-/// `force` is any client's refuse→rewrite path — it is not an MCP affordance,
-/// so it works at this door too.
+/// `force` works at every door (not MCP-only).
 #[test]
 fn force_is_any_clients_rewrite_path() {
     let (_d, root) = workspace(&[("memo.md", DOC)]);

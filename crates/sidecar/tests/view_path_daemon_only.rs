@@ -1,9 +1,5 @@
-//! V2 §Q2: `view_path` is DAEMON-ONLY. The per-process sidecar is not the
-//! persistent builder (OD6) and cannot publish — C2 forbids `sidecar`→`view`,
-//! and an in-memory build has no filesystem path to forward. So the sidecar
-//! refuses `view_path` LOUD with `daemon_only` (the `env` recovery class — start
-//! the daemon), and never advertises it in its caps (§3.2 discovery honesty:
-//! the sidecar's cap set is unchanged).
+//! §Q2: sidecar refuses `view_path` with `daemon_only` (OD6; C2 forbids
+//! sidecar→view); never in caps (§3.2).
 
 use serde_json::{Value, json};
 use std::io::Write as _;

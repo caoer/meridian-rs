@@ -1,18 +1,6 @@
-//! The BIRTH op (`{"op":"create"}`) through the LIVE serve loop — the design
-//! tests for its contract.
-//!
-//! The op's whole value is that it FORWARDS to the guarded in-process door
-//! (`wire_serve::write::create`) instead of opening a second birth path. A
-//! daemon-side `O_EXCL` birth would be trivially green and would bypass all
-//! four engine birth guards while writing no journal row. So these tests do not
-//! merely assert "a file appeared": they assert the file appeared THROUGH the
-//! door — the journal row that dates it, the CAS that refuses a clobber, and a
-//! guard refusal that only the door can produce.
-//!
-//! Every refusal arm is asserted by its CAUSE (code + the teaching message),
-//! never by "it failed": two arms that both refuse for different reasons are two
-//! detectors, and asserting only the code would let one silently become the
-//! other.
+//! Birth op (`create`) through live serve — pins the guarded door
+//! (`wire_serve::write::create`): CAS clobber refuse, guard refuses by cause
+//! (code + message), landed bytes/rev. Forwards only; no second birth path.
 
 use serde_json::{Value, json};
 
@@ -27,8 +15,7 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (dir, root)
 }
 
-/// One serve session: `input` lines in, parsed frames out. The negotiated rev
-/// is per-session, so a hello and its follow-ups MUST ride one call.
+/// One serve session (rev per-session — hello + follow-ups in one call).
 fn serve(root: &fs::WorkspaceRoot, input: &str) -> Vec<Value> {
     let mut out = Vec::new();
     sidecar::serve(root, input.as_bytes(), &mut out, &[]).expect("serve");
@@ -42,9 +29,7 @@ fn serve(root: &fs::WorkspaceRoot, input: &str) -> Vec<Value> {
 const HELLO_V3: &str = r#"{"id":1,"op":"hello","proto":1,"client":"design-test","contract":"v3"}"#;
 const HELLO_V2: &str = r#"{"id":1,"op":"hello","proto":1,"client":"design-test"}"#;
 
-/// A live handshake, asserted live. A REJECTED hello makes every later op on
-/// the session refuse, which is indistinguishable from a missing capability —
-/// so no test here reads an absence without first proving the session is alive.
+/// Assert hello ok (reject would make later absences uninterpretable).
 fn assert_handshake_ok(frame: &Value) {
     assert_eq!(
         frame["ok"],
@@ -54,10 +39,7 @@ fn assert_handshake_ok(frame: &Value) {
     );
 }
 
-/// The whole-file rev of `bytes`, computed through the model's own document
-/// law (`node_rev = blake3(span bytes)[:16]`, node-rev-merkle-spec §1) — the
-/// test's OWN recomputation, so an assertion against it fails when the engine
-/// reports a rev over bytes other than the ones it landed.
+/// Whole-file rev of `bytes` via model law (test recomputation, not echo).
 fn whole_file_rev(path: &str, bytes: &str) -> String {
     model::candidate_of_body(path, bytes.to_owned())
         .document()
@@ -163,14 +145,7 @@ fn create_births_the_callers_exact_bytes() {
         "a v3 session emits no `root` spelling: {b}"
     );
 
-    // THE DOOR TEST was a journal read: a `create` row existed and its anchor was
-    // the one the reply handed back, which a birth that bypassed the guarded door
-    // could not produce. The journal is gone (ZT 2026-08-02, remove-no-
-    // replacement), so that anti-bypass evidence is gone with it — deliberately,
-    // and NOT swapped for a weaker stand-in. The actor-verbatim (§9) leg went with
-    // it too: the row was the only surface that recorded the caller's actor.
-    // What remains above still binds the reply to the disk: the landed bytes, the
-    // newborn's rev, and the advanced world fingerprint.
+    // Journal retired — anchor null; binding is landed bytes + rev + fingerprint.
     assert!(
         b["journal_anchor"].is_null(),
         "the retired journal anchor is gone from the birth reply: {b}"
@@ -289,17 +264,11 @@ fn a_stale_world_guard_refuses_fingerprint_mismatch_and_births_nothing() {
     );
 }
 
-/// **The proof that this op forwards rather than re-implements.**
-///
-/// The S10/R25 document-grain `@fp` strip lives inside `write::create` and
-/// nowhere else. A daemon-side `O_EXCL` birth would land the forged claim token
-/// verbatim — so this test discriminates precisely between the guarded door and
-/// a bypass, and it fails in BOTH bypass directions: a birth that lands the
-/// token, and a birth that reports the un-stripped draft's rev.
+/// S10/R25 `@fp` strip in `write::create`: forged token stripped, address kept;
+/// reported rev is of landed (stripped) bytes.
 #[test]
 fn the_birth_runs_the_engines_own_guards_not_a_parallel_path() {
     let (_dir, root) = workspace();
-    // A claim-link carrying a fingerprint token the engine never minted.
     let forged = "# Forged\n\nsee [[guide#^goal@green.b3af12cd]] for the plan\n";
     let stripped = "# Forged\n\nsee [[guide#^goal]] for the plan\n";
 
@@ -315,16 +284,12 @@ fn the_birth_runs_the_engines_own_guards_not_a_parallel_path() {
         "the strip admits the birth: {reply}"
     );
 
-    // The forged claim is gone and the ADDRESS survives — the guard strips the
-    // token, it does not discard the link.
     let landed = std::fs::read_to_string(root.0.join("forged.md")).expect("newborn");
     assert_eq!(
         landed, stripped,
         "the document-grain strip removed the @fp claim and kept the address"
     );
 
-    // And the reported rev is the rev of the STRIPPED bytes, never of the
-    // decorated draft the caller sent (`write::create`'s own stated law).
     assert_eq!(
         reply["body"]["file_rev_after"].as_str().expect("rev"),
         whole_file_rev("forged.md", stripped),
@@ -336,13 +301,6 @@ fn the_birth_runs_the_engines_own_guards_not_a_parallel_path() {
         "anti-vacuity: the two revs genuinely differ, so the assertion above discriminates"
     );
 }
-
-// `the_reserved_journal_cannot_be_born_over` lived here: a guarded create aimed
-// at `meridian/journal.md` refused `bad_request` because that path was reserved to
-// the receipt engine. The reserved path is RETIRED with the journal (ZT
-// 2026-08-02) — the page is ordinary content now, so a birth there is an ordinary
-// birth and there is no refusal left to assert. Workspace confinement (below) is
-// untouched and still refuses what it always did.
 
 #[test]
 fn a_path_escaping_the_workspace_refuses_bad_path_at_the_wire() {
@@ -369,10 +327,7 @@ fn a_path_escaping_the_workspace_refuses_bad_path_at_the_wire() {
     );
 }
 
-/// A malformed `now` refuses at the wire, because the journal row is stamped
-/// with the CALLER's clock (§9: the engine validates time, never generates it).
-/// Landing the row first and discovering the garbage later is not an option —
-/// the row is the baseline `check` dates the tree against.
+/// Malformed `now` refuses at the wire (§9: engine validates time, never mints).
 #[test]
 fn a_malformed_now_refuses_before_anything_is_born() {
     let (_dir, root) = workspace();
@@ -390,9 +345,7 @@ fn a_malformed_now_refuses_before_anything_is_born() {
     assert!(!root.0.join("clock.md").exists(), "nothing was born");
 }
 
-/// The birth is visible to the read plane in the SAME session — it is a real
-/// commit, not a staged one. Proves the root advance the reply reported is the
-/// root the next op reads.
+/// Birth is a real commit: same-session read sees the advanced root.
 #[test]
 fn the_newborn_is_immediately_readable_at_the_root_the_birth_reported() {
     let (_dir, root) = workspace();

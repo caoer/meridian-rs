@@ -1,8 +1,5 @@
-//! Fuel / bomb tests (0003 § Testing methodology): a runaway loop, a recursion
-//! bomb, and a huge allocation must terminate with a budget error — never hang,
-//! never crash. Every case runs under a hard test timeout by virtue of the fuel
-//! guard: if any of these hung, the suite would hang, so their passing IS the
-//! "never hangs" proof.
+//! Fuel/bomb: runaway loop, recursion, huge alloc → budget error; never hang or
+//! crash.
 
 use effects::{EvalError, EvalLimits, Rule, eval_with_limits};
 

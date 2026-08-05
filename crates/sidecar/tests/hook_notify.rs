@@ -1,4 +1,5 @@
-//! C3 — process-boundary reaction feeding through the real sidecar binary.
+//! C3 — reaction plane through the real sidecar binary (v3 session: `effects`
+//! is v3 vocabulary; v2 demotes it and would vacate the no-reaction half).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -7,18 +8,11 @@ use policy::armed::{ArmRequest, ArmRoot, Mode};
 use policy::{PageRef, RuleId, RuleIndex, ScopeLayer, page_rev};
 use serde_json::{Value, json};
 
-/// The armed rule's id — the § 2 grammar, not a folder slug.
+/// Armed rule id (§2 grammar, not a folder slug).
 const HOOK_ID: &str = "task.review-notify";
 
-/// The tag-registered HOOK page. It carries BOTH key sets: `tags:` + `id:` are the
-/// REGISTRATION layer the ARM act reads (ruling § 1/§ 2), and
-/// `kind:`/`severity:`/`paths:`/`caps:`/`budget:`/`how:` are C1's declaration layer,
-/// which ruling § 5 leaves untouched.
-///
-/// The page sits DIRECTLY in the folder it governs (§ 3 "gitignore-style"), so it
-/// mounts at the workspace root. The ruled layout-folder style (`rules/*.md` mounting
-/// at the parent) is not used: that mount rule is ruled but not yet implemented, and
-/// this card consumes armed rows rather than minting mount rules.
+/// Tag-registered HOOK page: registration (`tags`/`id`) + C1 declaration.
+/// Placed in the governed folder (root mount); layout-folder mount unused.
 const HOOK_PAGE_PATH: &str = "task-review-notify.md";
 
 const HOOK_PAGE: &str = r#"---
@@ -57,9 +51,7 @@ fn workspace(armed: bool) -> tempfile::TempDir {
     armed_workspace(if armed { Some(Mode::Armed) } else { None })
 }
 
-/// A live workspace whose rule page is armed at `mode` through the REAL ARM act.
-/// `None` never arms it at all — no artifact is written, which is the never-armed
-/// state the bit-for-bit gate depends on.
+/// Workspace with rule page armed at `mode` (real ARM act). `None` = never armed.
 fn armed_workspace(mode: Option<Mode>) -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("temp workspace");
     for path in ["tasks/x.md", "notes/x.md"] {
@@ -97,19 +89,13 @@ fn arm_hook(root: &std::path::Path, mode: Mode) {
         .expect("artifact parent");
     std::fs::write(artifact_path, artifact.render()).expect("armed-rules artifact");
 
-    // The once-armed MARKER, beside the artifact. Arming is ONE act over TWO files:
-    // the marker is the pivot BOTH armed-law surfaces read, so an artifact without
-    // it describes a workspace the engine considers never armed — the notification
-    // this test waits for would never be produced, and the wait would hang rather
-    // than fail.
+    // Once-armed marker (arming = artifact + marker; missing marker = never armed).
     let marker_path = root.join(fs::domain::ATTESTED_MARKER_PATH);
     std::fs::create_dir_all(marker_path.parent().expect("marker parent")).expect("marker parent");
     std::fs::write(marker_path, "").expect("once-armed marker");
 }
 
-/// U10: `status` already exists on these fixtures, so an upsert of it is a
-/// content change and a wire-origin write must carry the key node's fingerprint.
-/// `rev` comes from a `cat` of that very key — read first, write what you read.
+/// U10: status upsert is content change — wire write carries key fingerprint.
 fn splice(id: u64, path: &str, status: &str, rev: &str) -> String {
     json!({
         "id": id,
@@ -125,8 +111,7 @@ fn splice(id: u64, path: &str, status: &str, rev: &str) -> String {
     .to_string()
 }
 
-/// The live `node_rev` of one frontmatter key, over the wire the test already
-/// speaks: `cat` that key, keep its token.
+/// Live `node_rev` of the status fm key via `cat`.
 fn fm_rev(sidecar: &mut LiveSidecar, id: u64, path: &str) -> String {
     sidecar.send(
         &json!({
@@ -183,15 +168,7 @@ impl LiveSidecar {
         }
     }
 
-    /// Negotiate v3 — **the contract the reaction plane belongs to.**
-    ///
-    /// `effects` postdates frozen v2, so a v2 session is DEMOTED past it
-    /// (`wire_serve::rev::V2_RESERVED_FIELDS`). A reaction test left on the
-    /// default v2 session therefore asserts the v2 WIRE SHAPE while its name
-    /// claims it covers ARMING — and the "no reaction" half goes vacuous, since
-    /// a v2 notification never carries `effects` whether or not one was armed.
-    /// Moving the fixture onto v3 is what keeps these tests pointed at their own
-    /// subject.
+    /// Negotiate v3 — `effects` is v3 vocabulary (v2 demotes it).
     fn negotiate_v3(&mut self, id: u64) {
         self.send(&format!(
             r#"{{"id":{id},"op":"hello","proto":1,"contract":"v3"}}"#
@@ -294,11 +271,8 @@ fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
     .expect("external edit");
     sidecar.send(r#"{"id":11,"op":"root"}"#);
 
-    // DRAIN, do not index. One external write is not guaranteed to produce
-    // exactly one notification: measured 4 exchanges in 50 emitted TWO, and a
-    // positional read then slid every assertion below onto the wrong frame —
-    // which is this test's historical intermittent failure, not a slow child.
-    // Design fix per the card; no timeout and no threshold was touched.
+    // Drain until response; select the effects-bearing notification by content
+    // (external write may emit more than one notification).
     let mut notifications = Vec::new();
     let response = loop {
         let (_, frame) = sidecar.receive();
@@ -312,8 +286,6 @@ fn external_edit_with_no_caller_emits_intent_with_actor_absent() {
         !notifications.is_empty(),
         "the external edit must notify at least once"
     );
-    // The ARMED notification is the one carrying effects. Naming it by its
-    // content rather than by its position is what makes this deterministic.
     let notification = notifications
         .iter()
         .find(|f| f.get("effects").is_some())
@@ -375,11 +347,7 @@ fn refused_and_out_of_scope_writes_emit_no_reaction() {
 fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
-    // The subject here is ARMED FEEDBACK and ring behaviour with no subscriber,
-    // not the v2 wire shape — and `effects` is v3 vocabulary on BOTH exits it
-    // asserts (the splice response's `body.armed.effects` and the `diff`
-    // batches). Left on the default v2 session this would assert the demotion
-    // instead of the arming, which is the wrong subject.
+    // Armed feedback + ring with no subscriber (`effects` is v3 vocabulary).
     sidecar.negotiate_v3(130);
     let rev = fm_rev(&mut sidecar, 930, "tasks/x.md");
     sidecar.send(&splice(30, "tasks/x.md", "review", &rev));
@@ -387,10 +355,7 @@ fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
     let armed = response["body"]["armed"]["effects"].clone();
     assert_armed_intent(&armed);
 
-    // v3 spellings: the root->fingerprint re-key is the RULED vocabulary
-    // projection, not a leak — unlike `effects`, which is a field that should
-    // never have crossed. The request below still sends the v2 spellings, which
-    // a v3 session accepts by input leniency.
+    // v3 body keys; request still uses v2 spellings (input leniency).
     let from = response["body"]["fingerprint_before"]
         .as_str()
         .expect("fingerprint before");
@@ -409,10 +374,7 @@ fn zero_subscribers_still_ring_delta_and_return_armed_feedback() {
 fn never_armed_process_output_omits_reaction_fields() {
     let workspace = workspace(false);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
-    // v3, and for the same reason as its neighbours: on a v2 session the
-    // demotion strips `effects` unconditionally, so "the never-armed response
-    // carries no reaction fields" would pass whether or not anything armed —
-    // vacuous, and pointed at the wire shape instead of at arming.
+    // v3 so absence of effects means no arming (not demotion).
     sidecar.negotiate_v3(140);
     let rev = fm_rev(&mut sidecar, 940, "tasks/x.md");
     sidecar.send(&splice(40, "tasks/x.md", "review", &rev));
@@ -422,10 +384,6 @@ fn never_armed_process_output_omits_reaction_fields() {
         "never-armed response bytes: {raw}"
     );
 
-    // v3 spellings: the root->fingerprint re-key is the RULED vocabulary
-    // projection, not a leak — unlike `effects`, which is a field that should
-    // never have crossed. The request below still sends the v2 spellings, which
-    // a v3 session accepts by input leniency.
     let from = response["body"]["fingerprint_before"]
         .as_str()
         .expect("fingerprint before");
@@ -443,9 +401,7 @@ fn never_armed_process_output_omits_reaction_fields() {
 
 #[test]
 fn a_row_armed_off_fires_nothing_through_the_live_loop() {
-    // The page is present, in scope, and pinned at its live rev — only the ATTESTED
-    // MODE differs. Hook activation is binary by law, so `off` emits nothing while
-    // the write itself lands exactly as it would unarmed.
+    // Mode::Off: page in scope/pinned; activation binary — write lands, no effects.
     let workspace = armed_workspace(Some(Mode::Off));
     let mut sidecar = LiveSidecar::spawn(workspace.path());
     sidecar.send(r#"{"id":50,"op":"sub","from_seq":0}"#);
@@ -469,24 +425,10 @@ fn a_row_armed_off_fires_nothing_through_the_live_loop() {
     sidecar.finish();
 }
 
-// ---------------------------------------------------------------------------
-// The two EMPTY-EFFECTS worlds, constructed on purpose
-// (card: gate-nondeterminism-hook-notify)
-// ---------------------------------------------------------------------------
-//
-// `external_edit_with_no_caller_emits_intent_with_actor_absent` fails, rarely and
-// under load, at `assert_armed_intent`'s `effects.as_array().expect(...)`. In the
-// measured failure the frame WAS a notification (its `id`-absent assertion passed)
-// carrying a `delta`, with `effects` ABSENT — and `effects` is
-// `skip_serializing_if = "Vec::is_empty"`, so absent means EMPTY, not missing.
-//
-// `external_effects` feeds ONLY from `changes.modified`, so an empty `effects`
-// has exactly two causes: the change did not classify as `modified`, or the HOOK's
-// scope did not arm on it. BOTH ARE CONSTRUCTIBLE WITHOUT THE SCHEDULER — which is
-// why these tests need no load and are deterministic. You cannot summon the race;
-// you can build the two states the race would leave behind.
+// Empty-effects worlds: `external_effects` feeds only `changes.modified`, so
+// empty effects means birth-not-mod or out-of-scope (both constructible).
 
-/// Drive one external change and return its notification frame.
+/// Drive one external change; return first notification frame (drain by content).
 fn external_change_frame(mutate: impl FnOnce(&std::path::Path)) -> Value {
     let workspace = workspace(true);
     let mut sidecar = LiveSidecar::spawn(workspace.path());
@@ -494,10 +436,6 @@ fn external_change_frame(mutate: impl FnOnce(&std::path::Path)) -> Value {
     assert_eq!(sidecar.receive().1["id"], 10, "sub ack");
     mutate(workspace.path());
     sidecar.send(r#"{"id":11,"op":"root"}"#);
-    // Drain notifications until the response arrives, COUNTING them. The
-    // original test consumes frames POSITIONALLY — one notification, then the
-    // response — so if a second notification ever appears, every later
-    // assertion slides by one frame.
     let mut notes = Vec::new();
     let response = loop {
         let (_, f) = sidecar.receive();
@@ -517,9 +455,7 @@ fn external_change_frame(mutate: impl FnOnce(&std::path::Path)) -> Value {
     frame
 }
 
-/// **World (a): in HOOK scope, but the change is a BIRTH, not a modification.**
-/// `external_effects` iterates `changes.modified` only, so a created file arms
-/// nothing however well it matches `paths`.
+/// In-scope birth (not modification) → delta with no effects.
 #[test]
 fn world_a_created_in_scope_file_emits_a_delta_with_no_effects() {
     let frame = external_change_frame(|root| {
@@ -536,8 +472,7 @@ fn world_a_created_in_scope_file_emits_a_delta_with_no_effects() {
     );
 }
 
-/// **World (b): a real modification, but OUTSIDE the HOOK's `paths` glob.**
-/// The hook governs `tasks/*.md`; `notes/x.md` is the same edit out of scope.
+/// Out-of-scope modification → delta with no effects.
 #[test]
 fn world_b_out_of_scope_modification_emits_a_delta_with_no_effects() {
     let frame = external_change_frame(|root| {
@@ -554,22 +489,6 @@ fn world_b_out_of_scope_modification_emits_a_delta_with_no_effects() {
     );
 }
 
-/// **OPEN — an anomaly I could not settle, recorded rather than asserted.**
-///
-/// The in-scope MODIFICATION (`tasks/x.md` → status review) is the world that
-/// SHOULD arm, and `external_edit_with_no_caller_emits_intent_with_actor_absent`
-/// shows it arming 18 runs in 20. Driven through the helper above it armed in
-/// ZERO of the attempts I made, first-in-sequence and third-in-sequence alike,
-/// with a byte-identical delta (`tasks/x.md`, `fm_key: status`, change `edited`)
-/// and `effects` absent.
-///
-/// So the helper and the original test differ in some way I did not isolate.
-/// I am not asserting a mechanism for it and I did not land a test that claims
-/// one. What IS established and landed is the pair above: two constructed worlds
-/// that reach the empty-effects state by different causes, which is what the
-/// failing assertion cannot tell apart.
-///
-/// Whoever picks this up: the ordering experiment is already ruled out, and the
-/// deltas are byte-identical between the arming and non-arming runs — so the
-/// difference is not in the change classification.
+// OPEN: in-scope mod via `external_change_frame` sometimes emits empty
+// effects while the original test arms; cause not isolated (not classification).
 const _ANOMALY: () = ();

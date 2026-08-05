@@ -382,12 +382,9 @@ fn spawn_reaper(
     })
 }
 
-/// Spawn the pre-warm thread (decision 0002, P2): every `interval`, sweep the
-/// warm workspaces so a file change pays its parse HERE — the watch event — not
-/// on the next query. Latency only; correctness stays fingerprint
-/// ([`Registry::prewarm`] reuses the warm engine when the corpus content hash is
-/// unchanged, so a quiet sweep parses nothing). Wakes every [`PREWARM_TICK`] so
-/// shutdown is prompt even when the interval is long; exits on the shutdown flag.
+/// Pre-warm thread (P2): every `interval`, sweep warm workspaces so file
+/// changes parse off the query path. Latency only; correctness is fingerprint.
+/// Wakes every [`PREWARM_TICK`] for prompt shutdown.
 fn spawn_prewarm(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
@@ -412,11 +409,8 @@ fn spawn_prewarm(
                     rebuilt.len()
                 );
             }
-            // G11 the quiet backoff. Two things restore the base cadence: a
-            // rebuild (the corpus is moving) and client traffic since the last
-            // sweep (somebody is working, so the next edit is worth catching
-            // fast). Otherwise the cadence doubles toward the ceiling, so an
-            // abandoned daemon's cost decays instead of persisting forever.
+            // G11 quiet backoff: rebuild or client traffic restores base;
+            // otherwise delay doubles toward the ceiling.
             let requests = registry.request_count();
             let quiet = rebuilt.is_empty() && requests == seen_requests;
             delay = next_prewarm_delay(delay, interval, quiet_max, quiet);
@@ -425,16 +419,8 @@ fn spawn_prewarm(
     })
 }
 
-/// G11 the quiet-backoff step: the sweep interval after one sweep.
-///
-/// A quiet sweep doubles the delay toward `quiet_max`; anything else drops
-/// straight back to `base`. Doubling, not a fixed long interval, is what keeps
-/// the ACTIVE case unchanged — a daemon somebody is using still sweeps at
-/// `base` — while an abandoned one's cost decays to a walk a minute.
-///
-/// Clamped at both ends: `base` when a configuration puts `quiet_max` below it
-/// (a nonsense pair must not produce a sweep faster than the base cadence), and
-/// `quiet_max` above.
+/// G11 quiet-backoff step. Quiet ⇒ double toward `quiet_max`; else reset to
+/// `base`. Clamped so a nonsense `quiet_max < base` never sweeps faster than base.
 fn next_prewarm_delay(
     current: Duration,
     base: Duration,
@@ -447,55 +433,34 @@ fn next_prewarm_delay(
     current.saturating_mul(2).min(quiet_max.max(base)).max(base)
 }
 
-/// Serve one connection: read NDJSON frames until EOF, routing each to the
-/// unified daemon surface and writing one NDJSON response per line (R1: ONE
-/// vocabulary on the socket).
-///
-/// Three verb families share the socket, disambiguated by the `op` tag:
-/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — the
-///   workspace-registry verbs the `Client` drives, daemon-internal and absent
-///   from any wire `caps` (so the 108da20a v3 proxy sees no change);
-/// - **`hello`** — the resident-engine handshake (§4): assert the contract rev,
-///   resolve the workspace-target, pin its storage, warm its resident engine,
-///   and BIND this connection to it, so the wire read ops know which corpus to
-///   serve. This is the U3 fold — `hello` subsumes the old daemon-internal
-///   `attach` op, which is deleted (§5, no parallel paths);
-/// - **wire read ops** (`toc`/`cat`/`extract`/`links`/`root`/`diff`/`resolve`)
-///   — the frozen contract, strict-decoded and served from the bound
-///   workspace's warm engine.
+/// Serve one connection: NDJSON in, one NDJSON response per line (R1: one
+/// vocabulary on the socket). Families by `op`:
+/// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — daemon-
+///   internal, absent from wire `caps`;
+/// - **`hello`** — contract rev, pin, warm, BIND connection (§4; subsumes deleted `attach`);
+/// - **wire ops** — frozen contract from the bound workspace's warm engine.
 fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
-    // The connection's bound workspace (canonical path), set by `hello`.
-    // Per-connection, so concurrent clients target different workspaces.
+    // Bound workspace (canonical), set by `hello`. Per-connection.
     let mut attached: Option<PathBuf> = None;
-    // The connection's negotiated contract rev (one epoch, one rev), set by
-    // `hello` (docs/wire-contract-v3-amendment.md). Defaults to v2 so an
-    // un-negotiated connection is byte-for-byte the frozen contract.
+    // Negotiated contract rev (one epoch, one rev). Default v2 = frozen path.
     let mut rev = Rev::V2;
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        // G11: every decoded frame is a client request, so the activity clock
-        // bumps HERE — before dispatch, and regardless of the verb or whether
-        // it succeeds. A daemon being asked malformed questions is still a
-        // daemon somebody is using, and must not age out underneath them.
+        // Activity clock: every frame counts, before dispatch, success or not.
         registry.note_request();
-        // Set by an ACCEPTED `sub` and by nothing else — see `push_loop`.
+        // Set by an ACCEPTED `sub` only — see `push_loop`.
         let mut armed: Option<u64> = None;
         let out = handle_line(registry, &mut attached, &mut rev, &mut armed, &line);
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
         if let Some(from_seq) = armed {
-            // U20b — THE FRAMING ANSWER. From here this connection carries
-            // Notification frames and nothing else: we return out of the read
-            // loop, so no further inbound line is ever decoded on it and no
-            // frame can be misclassified as a response. The client that wants
-            // both planes opens two connections; the client that never sends
-            // `sub` sees a byte-identical socket. Desync is not avoided here,
-            // it is unrepresentable.
+            // U20b framing: leave the request loop; connection is push-only.
+            // Desync is unrepresentable. Dual planes ⇒ two connections.
             let ws = attached
                 .as_deref()
                 .expect("an accepted sub proves a bound workspace")
@@ -506,25 +471,18 @@ fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -
     Ok(())
 }
 
-/// How often a subscriber looks for frames it has not yet delivered.
+/// How often a subscriber checks for undelivered frames.
 ///
-/// Distinct from [`crate::ring::DETECT_CADENCE`] and deliberately shorter: this
-/// is the cost of NOTICING a frame (a mutex and a seq compare), not of finding
-/// one (a corpus fold). Keeping them separate is what lets many subscribers
-/// share one workspace's folds and still each deliver promptly — a subscriber
-/// that woke only on its own detection cycle would sit on frames another
-/// subscriber's cycle had already produced.
+/// Shorter than [`crate::ring::DETECT_CADENCE`]: noticing a frame (mutex + seq
+/// compare), not finding one (corpus fold). Separate so N subscribers share
+/// folds yet each deliver promptly.
 const PUSH_TICK: Duration = Duration::from_millis(50);
 
-/// The push channel: drive detection, deliver undelivered frames, repeat.
+/// Push channel: detect, deliver undelivered frames, repeat.
 ///
-/// Ends on client disconnect (the write fails — a broken pipe is the normal
-/// end of a subscription, not an error to report), on daemon shutdown, or when
-/// this thread is the last thing holding the connection. The [`SubGuard`] is
-/// what keeps the reaper off this workspace for the whole of that lifetime, and
-/// it releases on EVERY exit path because it releases on drop.
-///
-/// [`SubGuard`]: crate::ring::SubGuard
+/// Ends on client disconnect (broken pipe is normal), daemon shutdown, or drop.
+/// [`SubGuard`](crate::ring::SubGuard) keeps the reaper off this workspace for
+/// the lifetime and releases on every exit path.
 fn push_loop(
     registry: &Registry,
     ws: &Path,
@@ -534,16 +492,12 @@ fn push_loop(
     shutdown: &AtomicBool,
 ) -> io::Result<()> {
     let ring = registry.ring(ws);
-    // Registered BEFORE the first detect: a subscription that could be reaped
-    // between arming and its first cycle is a subscription with a silent hole.
+    // Subscribe before first detect — otherwise a reap can leave a silent hole.
     let _subscribed = ring.subscribe();
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut delivered = from_seq;
     while !shutdown.load(Ordering::SeqCst) {
-        // A detection failure never ends a subscription: an unreadable
-        // workspace is transient (a checkout, a network mount blinking), and
-        // the next cycle re-reads it. Silence would be the wrong answer too —
-        // the operator gets the same stderr line the sidecar's loop emits.
+        // Detection failure never ends the sub; log and retry next cycle.
         if let Err(e) = ring.detect(&ws_root) {
             eprintln!("registry: watch reconcile ({}): {e:?}", ws.display());
         }
@@ -557,15 +511,11 @@ fn push_loop(
     Ok(())
 }
 
-/// Route one frame by its `op` tag and render its response line (`\n`-terminated).
+/// Route one frame by `op` and render the `\n`-terminated response line.
 ///
-/// The wire classes (`hello` + the read/write ops) carry the v3 vocabulary
-/// projection per the connection's negotiated `rev`: a v3 request is re-keyed to
-/// its v2 form BEFORE decode, and the answer is re-shaped `root` → `fingerprint`
-/// on the way out (`hello` caps + every frame class). A v2 connection serializes
-/// the typed `wire::Response` directly — the frozen path, byte-identical. The
-/// admin verbs are daemon-internal, absent from any wire `caps`, and NEVER
-/// projected (the 108da20a v3 proxy sees no change on them).
+/// Wire classes project per negotiated `rev`: v3 re-keys request before decode
+/// and reshapes `root` → `fingerprint` on the way out. v2 serializes the typed
+/// response (frozen path). Admin verbs are never projected.
 fn handle_line(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -586,10 +536,7 @@ fn handle_line(
             message: "request must be a JSON object".into(),
         });
     };
-    // Read the tag as owned so the borrow of `obj` is dropped before the admin
-    // arm consumes it. The tag is read in the base vocabulary: `hello` and the
-    // admin verbs never carry a v3 spelling, and the v3 read/write ops route
-    // through the `_` arm regardless (the `fingerprint` op tag included).
+    // Owned tag so admin arm can consume `obj`. Base vocabulary for routing.
     let op = obj.get("op").and_then(Value::as_str).map(str::to_string);
     match op.as_deref() {
         Some("ping" | "register" | "unregister" | "resolve_ws" | "list") => {
@@ -600,15 +547,12 @@ fn handle_line(
                 }),
             }
         }
-        // `hello` negotiates the rev; its OWN response is then shaped for it (the
-        // caps + binding follow the negotiated vocabulary immediately). The
-        // handshake is intercepted BEFORE the dispatch shell, so it carries no
-        // U7 duration (the daemon measure point is `dispatch_read` alone).
+        // `hello` negotiates rev; response shaped for it. No U7 duration
+        // (measure point is `dispatch_read` alone).
         Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev, None),
         _ => {
-            // v3 connection: re-key the request into its v2 form so the strict
-            // decoder + arms stay v2-only. A v2 spelling passes through untouched
-            // (input leniency); a v2 connection is never re-keyed at all.
+            // v3: re-key to v2 form for the strict decoder. v2 spelling / v2
+            // connection pass through untouched.
             if *rev == Rev::V3 {
                 wire_serve::rev::rename_request(&mut obj);
             }
@@ -619,12 +563,9 @@ fn handle_line(
     }
 }
 
-/// Render one wire response line (`\n`-terminated), shaped per the negotiated
-/// rev. v2 serializes the typed `wire::Response` directly — the frozen path,
-/// byte-identical. v3 projects the serialized frame `root` → `fingerprint` at the
-/// envelope layer (the typed layer never changes), then attaches the in-band
-/// timing block `meta: {duration_us}` when this frame answered a dispatched op
-/// (U7: the daemon measure point is the `dispatch_read` call — engine work only).
+/// Render one wire response line, shaped per negotiated rev.
+/// v2: typed `wire::Response` (frozen). v3: project `root` → `fingerprint`,
+/// attach `meta: {duration_us}` for dispatched ops (U7, engine work only).
 fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> String {
     let mut out = if rev == Rev::V3 {
         let mut v = serde_json::to_value(response).expect("wire response serializes");
@@ -634,8 +575,7 @@ fn wire_line(response: &wire::Response, rev: Rev, duration_us: Option<u64>) -> S
         }
         serde_json::to_string(&v).expect("wire response serializes")
     } else {
-        // A frozen v2 session never grows a field: U11's v3-additive ladder
-        // extras are dropped here, not withheld at mint time.
+        // Frozen v2 never grows a field: drop v3-additive extras here.
         let demoted = wire_serve::rev::demote_v2(response);
         serde_json::to_string(demoted.as_ref().unwrap_or(response))
             .expect("wire response serializes")
@@ -687,15 +627,11 @@ fn dispatch_admin(registry: &Registry, request: Request) -> Response {
 /// The resident daemon's `hello` server identity (v2 §3.2 server name).
 const SERVER_NAME: &str = "meridian-daemon/0.1";
 
-/// The capability set the resident daemon serves (v2 §3.2 discovery honesty):
-/// the wire read ops answered from the resident engine PLUS the write op
-/// (`splice`, W1 — a BARE meridian-fs commit) and, since U20b, `sub` — armed and
-/// advertised in the SAME commit, because an op is in `caps` or answers
-/// `unknown_op`, never both. `hello` itself is answered but is not a cap. Field-only caps (`resolve.content`, `links.require_root`, the
-/// `splice.*` amendments) name the surfaces the arms honor; `splice.verdicts` is
-/// the §11.1 surface, served `[]` (the daemon loads no pack yet). The S2/L22 law
-/// holds: `splice ∈ caps` ⇒ `node_rev` rides every `toc`/`cat`/`extract` node,
-/// which the shared read arms already emit.
+/// Caps the resident daemon serves (§3.2 discovery honesty). An op is in
+/// `caps` or answers `unknown_op`, never both. `hello` is answered but not a
+/// cap. Field-only caps name surfaces the arms honor; `splice.verdicts` is
+/// §11.1, served `[]` (no pack loaded). `splice ∈ caps` ⇒ `node_rev` on every
+/// `toc`/`cat`/`extract` node (shared read arms).
 const CAPS: [&str; 17] = [
     "toc",
     "cat",
@@ -712,23 +648,14 @@ const CAPS: [&str; 17] = [
     "splice.dry",
     "splice.receipt",
     "splice.verdicts",
-    // V2 §Q2 the view-organ path forwarder (daemon-exclusive: the daemon is the
-    // sole persistent builder, OD6). §3.2 discovery honesty — the daemon serves
-    // it, so it advertises it; a sidecar neither advertises it nor serves it
-    // (answers `daemon_only`).
+    // V2 §Q2 path forwarder — daemon-exclusive (OD6 sole builder).
     "view_path",
-    // U20b — the push channel (§4.7). Armed in the same commit that advertises
-    // it. A `sub` turns THIS connection into a push-only channel; a client that
-    // never sends it sees a byte-identical socket.
+    // U20b push channel (§4.7). `sub` converts this connection to push-only.
     "sub",
 ];
 
-/// The resident-engine handshake (§4, U3): strict-decode the `hello` (asserting
-/// the contract rev — an unknown declared rev is `bad_request` at decode), then
-/// resolve the workspace-target, pin its storage, warm its resident engine, and
-/// BIND this connection to it — one round trip. This is the fold that subsumes
-/// the deleted `attach` op (bind + warm) and adds resolve + pin. Renders the
-/// frozen wire `hello` body (echoing `id`).
+/// Resident-engine handshake (§4, U3): decode `hello` (unknown rev ⇒
+/// `bad_request`), pin + warm + BIND the connection. Subsumes deleted `attach`.
 fn hello(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -742,16 +669,11 @@ fn hello(
             workspace,
             ..
         }) => {
-            // Negotiate the connection rev from the DECODED contract (decode
-            // already refused an unknown rev loudly), so this hello response and
-            // every frame after ride the negotiated vocabulary. A failed decode
-            // never negotiates — the connection stays v2, its error serializes
-            // on the frozen path.
+            // Negotiate rev from decoded contract. Failed decode stays v2.
             *rev = Rev::from_contract(contract.as_deref());
             hello_body(registry, attached, workspace)
         }
-        // Only `op == "hello"` frames route here, and their decode is a
-        // `Hello`; any other decoded op is a routing invariant break.
+        // Only `hello` routes here; any other decoded op is a routing break.
         Ok(_) => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
         Err(error) => Err(error),
     };
@@ -769,21 +691,12 @@ fn hello(
     }
 }
 
-/// Pin + warm + bind the connection for a `hello`'s **declared** workspace.
+/// Pin + warm + bind for a `hello` declared workspace.
 ///
-/// A workspace-less hello is a pure version handshake: negotiate `proto` + list
-/// `caps`, bind and pin nothing. With a target, the storage pin reuses the
-/// registry's one canonicalize → deny-ceiling → sentinel path (risk R2, via
-/// [`Registry::pin_declared`]); the warm reflects current disk (U1 residency);
-/// the bind swaps the read ops' corpus source from the deleted `attach` to
-/// `hello`.
-///
-/// `hello.workspace` is a DECLARATION, so it pins exactly
-/// ([`Registry::pin_declared`], never the cwd-shaped
-/// [`Registry::pin_for_cwd`]): the bound root can never widen to an enclosing
-/// registered workspace. The response then NAMES the root that actually bound,
-/// because canonicalization can still rewrite the declared spelling (symlinks,
-/// on-disk case) — the ruling's "never silently" applied to the binding itself.
+/// Workspace-less hello: version handshake only (proto + caps). With a target:
+/// exact pin via [`Registry::pin_declared`] (never cwd-shaped widening), warm
+/// from disk, bind for subsequent ops. Response names the root that actually
+/// bound (canonicalization may rewrite the declared spelling).
 fn hello_body(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -827,12 +740,9 @@ fn hello_body(
     })
 }
 
-/// Strict-decode one wire read op and serve it from the attached workspace's
-/// resident engine, rendering the frozen `wire::Response` frame (echoing `id`).
-///
-/// Returns the response plus the U7 in-band duration: `Some(µs)` exactly when
-/// the frame reached `dispatch_read` (the daemon measure point — engine work
-/// only, success or refusal alike; a decode refusal carries none).
+/// Strict-decode one wire op and serve from the attached workspace. Returns
+/// the response plus U7 duration: `Some(µs)` when the frame reached
+/// `dispatch_read` (decode refusal carries none).
 fn serve_wire(
     registry: &Registry,
     attached: Option<&Path>,
@@ -843,8 +753,7 @@ fn serve_wire(
     let id = obj.get("id").and_then(Value::as_u64);
     let (body, duration_us) = match wire_serve::decode::decode(obj, rev) {
         Ok(op) => {
-            // U7 measure point: the dispatch call alone (after decode, before
-            // the response render) — checked µs, never a lossy `as`.
+            // U7: dispatch call alone (after decode, before render).
             let started = Instant::now();
             let body = dispatch_read(registry, attached, armed, id, op, rev == Rev::V3);
             let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -867,15 +776,10 @@ fn serve_wire(
     (response, duration_us)
 }
 
-/// Route one decoded wire op to its arm against the attached workspace. Reads
-/// (`toc`/`cat`/`extract`/`links`/`root`/`diff`) serve from the resident engine;
-/// `resolve` (§4.5 walk plane) is served COLD from a per-request walk corpus — a
-/// different corpus from the hash-domain warm engine. `splice` (W1) is the
-/// resident WRITE path — a BARE meridian-fs commit through the shared choke-point,
-/// reading + writing disk directly (independent of the warm engine; the next read
-/// rebuilds). `hello` is intercepted upstream (the handshake binds the
-/// connection); `sub` (U20b) arms the push channel and hands the connection to
-/// `push_loop`. `id` rides only into the splice receipt line (§6.1).
+/// Route one decoded wire op against the attached workspace.
+/// Reads from the warm engine; `resolve` is cold (walk-plane corpus, §4.5);
+/// `splice`/`create` write disk via the shared choke-point; `sub` arms push.
+/// `hello` is intercepted upstream. `id` rides only into the splice receipt (§6.1).
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
@@ -888,11 +792,7 @@ fn dispatch_read(
     op: Op,
     v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
-    // V2 §Q2: `view_path` carries its own `cwd`, so it self-resolves the
-    // workspace + drawer and needs NO `hello`-bound workspace — it is routed
-    // before the bound-workspace guard. The daemon is the sole persistent
-    // builder (OD6); `Registry::view_path` publishes under the per-workspace
-    // publish mutex.
+    // V2 §Q2: `view_path` self-resolves `cwd` — routed before the bind guard.
     if let Op::ViewPath { cwd, fresh } = &op {
         return registry.view_path(cwd, (*fresh).unwrap_or(false));
     }
@@ -923,9 +823,7 @@ fn dispatch_read(
                 .ok_or_else(|| file_not_found(&path))?;
             Ok(wire_serve::read::extract(doc, &path, kinds, v3))
         }),
-        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
-        // caps; §3.2 discovery honesty), served from the warm engine at ONE
-        // snapshot (D6 atomicity: file_rev + root from the same borrow).
+        // Composed read — v3-only (§3.2); one warm-engine snapshot (D6).
         Op::Read {
             path,
             frag,
@@ -958,22 +856,10 @@ fn dispatch_read(
             })
         }),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
-            // U20b — the daemon now HOLDS a ring per subscribed workspace, but
-            // `diff` deliberately does not read it yet: serving replay from the
-            // ring is contract surface (§7.3 replay ≡ live at this host) and it
-            // is a NAMED FOLLOW-ON, not this unit's scope. So the answer is
-            // unchanged — a same-root diff is truthfully empty, any other range
-            // is `root_unknown` → full resync. That is a degrade to re-derive,
-            // never wrong data: the ring's frames and a re-derived diff describe
-            // the same bytes, so the only cost of not reading it is a resync the
-            // client would otherwise skip.
-            //
-            // The same holds one line up for `root`'s `seq`, which stays `0`
-            // rather than reporting a ring tip: a client that subscribes from a
-            // stale-low `seq` replays from the retained window (correct) or
-            // falls outside it and resyncs (correct). Both surfaces read the
-            // ring together, or neither does — splitting them is what would
-            // make one of them lie.
+            // `diff` does not read the ring: same-root ⇒ empty; else
+            // `root_unknown` → resync. Degrade to re-derive, never wrong data.
+            // `root.seq` stays 0 for the same reason — both surfaces read the
+            // ring together or neither does.
             let current = engine_root(engine);
             if from_root == current && to_root == current {
                 Ok(ResponseBody::Diff {
@@ -988,19 +874,13 @@ fn dispatch_read(
             r#ref,
             content,
         } => resolve_cold(ws, &from, &r#ref, content.unwrap_or(false)),
-        // Routed before the bound-workspace guard above (it self-resolves `cwd`).
+        // Routed before the bind guard (self-resolves `cwd`).
         Op::ViewPath { .. } => {
             unreachable!("view_path is handled before the bound-workspace guard")
         }
-        // W1: the resident WRITE path — a BARE meridian-fs commit through the ONE
-        // shared `splice → commit` choke-point (`wire_serve::write::splice`). The
-        // daemon holds no rule packs (`&[]` ⇒ `verdicts: []`; pack admission is a
-        // reserved, later unit) and no delta ring (`seq` 0; the emitted frame is
-        // discarded — the ring lands with subscriptions, not the latency-only P2
-        // pre-warm watcher). The commit reads + writes disk
-        // directly, so the warm engine is untouched here; the change is durable in
-        // the disk bytes, and the next read's `warm_or_build` rebuilds from them
-        // (fingerprint moved), reflecting the write.
+        // W1 write path: BARE meridian-fs commit via shared choke-point.
+        // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
+        // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
         Op::Splice {
             path,
             actor,
@@ -1016,9 +896,7 @@ fn dispatch_read(
             let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
             let args = wire_serve::write::SpliceArgs {
                 id,
-                // U10: a wire door — so it enforces fingerprint-or-force, as
-                // EVERY wire door does. Not because of who is behind it: MCP is
-                // the main agent client, never a trust plane of its own.
+                // U10: wire door ⇒ fingerprint-or-force (every wire door).
                 origin: wire_serve::guard::Origin::Wire,
                 path,
                 actor,
@@ -1031,18 +909,11 @@ fn dispatch_read(
                 plan_edits,
                 pin,
             };
-            // S7: this is the ONE host that holds a session, so it is the one
-            // host whose pin gate can answer — the workspace's read-mint ledger
-            // rides in beside the write. The handle is taken outside any engine
-            // borrow (H1: the ledger is not the engine's, and the pin's own
-            // write must not evaporate it).
+            // S7: session host — pin gate answers from the read-mint ledger.
+            // Handle outside any engine borrow (H1).
             let mints = registry.read_mints(ws);
-            // U20b: the write path is now a NUMBERED producer on this
-            // workspace's ring, taken beside the mints and on the same
-            // create-on-first-use terms. The sink is called INSIDE the flock
-            // `splice` holds; the ring advance below happens after that flock
-            // drops, and the detector may have numbered a frame of its own in
-            // between — which is exactly what the ring's allocator makes safe.
+            // U20b: numbered producer on this workspace's ring. Sink inside
+            // flock; advance after flock drops (allocator makes the gap safe).
             let ring = registry.ring(ws);
             let out = wire_serve::write::splice(&ws_root, Some(&*ring), &args, &[], Some(&mints))?;
             if let Some(frame) = out.committed {
@@ -1050,13 +921,8 @@ fn dispatch_read(
             }
             Ok(out.body)
         }
-        // The BIRTH op — v3-ONLY, the resident twin of the sidecar's arm: the
-        // SAME guarded door (`wire_serve::write::create`), the same forwarding
-        // discipline, no second birth path. Like `splice` here it is a BARE
-        // commit (`&[]` — the daemon loads no pack) reading + writing disk
-        // directly; the daemon holds no delta ring, so `seq` is 0 and the
-        // emitted birth frame is discarded. The newborn is durable in the disk
-        // bytes, and the next read's `warm_or_build` rebuilds from them.
+        // Birth op — v3-only; same guarded door as the sidecar (`write::create`).
+        // BARE commit, numbered on the same ring as `splice`.
         Op::Create {
             path,
             body,
@@ -1075,8 +941,7 @@ fn dispatch_read(
                 if_root,
                 dry: dry.unwrap_or(false),
             };
-            // Numbered on the same ring as `splice` above — a birth is a root
-            // advance like any other, so it owes the chain a seq.
+            // Birth is a root advance — owes the chain a seq.
             let ring = registry.ring(ws);
             let out = wire_serve::write::create(&ws_root, Some(&*ring), &args, &[])?;
             if let Some(frame) = out.committed.clone() {
@@ -1084,8 +949,7 @@ fn dispatch_read(
             }
             Ok(wire_serve::write::create_response(path, &out))
         }
-        // M1 U8c the I4 def-conformance verdict — v3-ONLY, served from the
-        // warm engine's doc (read-only: never a write path).
+        // I4 def-conformance — v3-only, warm-engine doc, read-only.
         Op::CheckWrite {
             path,
             target,
@@ -1101,29 +965,10 @@ fn dispatch_read(
                 doc, &target, &actor, &now, &edits,
             ))
         }),
-        // `hello` is intercepted upstream in `handle_line` (the handshake binds
-        // the connection), so it never reaches here. `sub` = P2 is not served yet
-        // — §3.2 discovery honesty: an op is served or answers `unknown_op`.
-        // `read`/`check_write`/`create` land here only on a NON-v3 connection
-        // (the guarded arms above take v3): absent from the frozen v2 caps →
-        // `unknown_op`.
-        // U20b §4.7 — the push channel. The SUBSCRIPTION is armed here and the
-        // connection converts after the ack is written (`serve_conn`); this arm
-        // only decides whether it MAY, and answers the anchor.
-        //
-        // **The gate (S2), and it is structural.** A subscription cannot observe
-        // a workspace a composed read on this connection would refuse, because
-        // both stand behind the same two per-connection facts, both already
-        // established above: the `hello` bind (no bound workspace ⇒ the
-        // `bad_request` this function opens with) and the deny ceiling
-        // (enforced at that bind, so a denied workspace never binds at all).
-        //
-        // **What `sub` deliberately does NOT take: an actor.** Ruled by the
-        // advisor (U20a Q1): the delta stream is not actor-scoped information —
-        // frames carry identities, revs and spans, never content bytes. A
-        // per-connection actor would be the first ambient identity in a decoder
-        // whose own law is "wire input, never ambient". Actor-scoped streams are
-        // a contract amendment for ZT, never an implementation detail.
+        // U20b §4.7 push channel. Arm here; convert after ack (`serve_conn`).
+        // S2: stands behind the same bind + deny ceiling as composed reads.
+        // No actor: delta stream is not actor-scoped (identities/revs/spans only).
+        // v2 `read`/`check_write`/`create` fall through to `unknown_op` below.
         Op::Sub { from_seq } => {
             let ring = registry.ring(ws);
             if !ring.can_anchor(from_seq) {
@@ -1134,20 +979,12 @@ fn dispatch_read(
                 );
                 return Err(Box::new(e));
             }
-            // PRIME BEFORE THE ACK. The watcher's first reconcile adopts the
-            // world silently, so a subscription that acked first would swallow
-            // every edit landing before its first detection cycle — the client
-            // holding an ack, a healthy socket, and no frame for a change that
-            // really happened. Measured: the end-to-end gate failed exactly this
-            // way until the priming moved here.
+            // Prime before ack: first reconcile adopts baseline silently;
+            // ack-then-prime would swallow interim edits.
             let root = ring.prime(&fs::WorkspaceRoot(ws.to_path_buf()))?;
-            // Armed only on the success path: a refused `sub` leaves the
-            // connection an ordinary request channel, which is what lets a
-            // client retry the handshake after a resync.
+            // Armed only on success — refused `sub` leaves a request channel.
             *armed = Some(from_seq);
-            // The §4.7 ack body — the subscription's anchor tense, and now
-            // literally so: `root` is the baseline the priming settled on, so
-            // the first frame's `root_before` is the root this ack named.
+            // §4.7 ack: baseline root so first frame's `root_before` matches.
             Ok(ResponseBody::Root {
                 root,
                 seq: ring.seq(),
@@ -1165,14 +1002,9 @@ fn engine_root(engine: &WorkspaceEngine) -> Root {
     Root(engine.at_fingerprint.0.clone())
 }
 
-/// The composed read (M1 U4a2) over the warm engine: one borrow supplies the
-/// doc, its `file_rev`, and the ambient root — the D6 one-snapshot guarantee.
-///
-/// Stage-2 S6: this is the one host that holds a session, so it hands the arm
-/// the workspace's read-mint ledger ([`Registry::read_mints`]) — a
-/// daemon-derived actor's read mints a receipt there. The handle is taken
-/// BEFORE the engine borrow and lives outside it: the ledger is not the
-/// engine's, and no `warm_or_build` rebuild touches it (H1).
+/// Composed read over the warm engine: one borrow supplies doc, `file_rev`,
+/// and ambient root (D6 one-snapshot). Session host hands the read-mint ledger
+/// ([`Registry::read_mints`]) — taken before the engine borrow (H1).
 fn composed_read_warm(
     registry: &Registry,
     ws: &Path,
@@ -1185,10 +1017,7 @@ fn composed_read_warm(
             .docs
             .get(&path.0)
             .ok_or_else(|| file_not_found(path))?;
-        // Stage-2 S10: this is also the one host that holds a CORPUS, and a
-        // claim-link's color is a fact about the PINNED page, not the page
-        // being read — so the decorations are built here, from the same warm
-        // snapshot the read is served from (D6: one snapshot, one answer).
+        // S10: claim-link colors from the pinned corpus, same warm snapshot (D6).
         let decorations =
             wire_serve::read::page_decorations(&engine.index, &engine.docs, path.0.as_str());
         wire_serve::read::composed_read(
@@ -1202,10 +1031,8 @@ fn composed_read_warm(
     })
 }
 
-/// Warm the resident engine for `canonical` (idempotent — reflects current disk,
-/// reuses the warm corpus when unchanged), then serve the borrowed engine
-/// through `f`. `None` engine after a successful warm means an idle-reap evicted
-/// it in the gap between warm and borrow — a transient the client retries.
+/// Warm for `canonical` (idempotent), then serve through `f`. `None` after a
+/// successful warm means idle-reap won the race — client retries.
 fn warm_engine_read<R>(
     registry: &Registry,
     canonical: &Path,
@@ -1220,10 +1047,8 @@ fn warm_engine_read<R>(
     })
 }
 
-/// wire §4.5 the walk plane, served COLD: build the walk-plane corpus (the
-/// addressable SUPERSET, skip-broken — the app indexes nothing it cannot read)
-/// from the attached workspace, then resolve. A different corpus from the
-/// hash-domain warm engine, so it is never served from resident state.
+/// §4.5 walk plane, served COLD from a per-request walk corpus (not the
+/// hash-domain warm engine).
 fn resolve_cold(
     ws: &Path,
     from: &wire::Path,
@@ -1268,22 +1093,17 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     Box::new(err)
 }
 
-/// G11 the quiet-backoff step function — the half of the fix that is a policy
-/// decision rather than a measurement, so it is pinned here in isolation.
+/// G11 quiet-backoff policy, pinned in isolation.
 #[cfg(test)]
 mod backoff_tests {
     use super::next_prewarm_delay;
     use std::time::Duration;
 
     const BASE: Duration = Duration::from_secs(1);
-    // `Duration::from_days`/`from_mins` are not const-stable at MSRV 1.96, so the
-    // seconds form is the only option (the crate-wide precedent); silence the lint.
+    // `Duration::from_days`/`from_mins` not const-stable at MSRV 1.96.
     #[allow(clippy::duration_suboptimal_units)]
     const CAP: Duration = Duration::from_secs(60);
 
-    /// A daemon nobody is using must get cheaper over time, not stay expensive
-    /// forever. This is what turns a leaked daemon from a permanent cost into a
-    /// decaying one.
     #[test]
     fn quiet_sweeps_double_the_delay_up_to_the_ceiling() {
         let mut delay = BASE;
@@ -1300,9 +1120,6 @@ mod backoff_tests {
         assert_eq!(delay, CAP, "and never climb past it");
     }
 
-    /// The active case must be UNCHANGED: a busy daemon still sweeps at the base
-    /// cadence, so nothing about pre-warm's latency promise moves for a user who
-    /// is actually working.
     #[test]
     fn any_activity_restores_the_base_cadence_in_one_step() {
         assert_eq!(
@@ -1312,8 +1129,6 @@ mod backoff_tests {
         );
     }
 
-    /// A nonsense configuration must not produce a sweep FASTER than the base
-    /// cadence; that would make the fix a regression.
     #[test]
     fn a_ceiling_below_the_base_still_never_sweeps_faster_than_base() {
         assert_eq!(

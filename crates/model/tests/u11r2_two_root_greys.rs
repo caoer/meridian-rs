@@ -1,35 +1,13 @@
-//! **U11 round 2 — the two ROOT greys are distinct causes with distinct words,
-//! asserted at the resolver (S3-R43 / S3-R49).**
+//! U11 r2 — two root greys are distinct causes/words at the resolver
+//! (S3-R43 / S3-R49).
 //!
-//! # S3-R37 — this file IS the constructed population
+//! Declared-but-unreadable is unreachable via `mrd walk` (one pass builds
+//! `MountSet` + corpora together). Population is constructed here: a
+//! `MountSet`/`RootedCorpus` pair that deliberately disagree — name declared,
+//! corpus absent (§ 8 M6). Without this, the arm would compile unexercised.
 //!
-//! The declared-but-unreadable arm of `resolve_ref` is **unreachable through
-//! `mrd walk`**: `walk_cmd::load_mounts` builds its `MountSet` and its corpora
-//! from one pass, so a name it binds always has a corpus. The CLI therefore
-//! **cannot** exhibit this arm, and a gate written only at the CLI would inherit
-//! an empty population — the arm would compile, pass, and mean nothing.
-//!
-//! So the population is CONSTRUCTED here, the same way U8's `undeclared-probe`
-//! root constructs one: a hand-built `MountSet` + `RootedCorpus` **pair that
-//! disagree on purpose** — a name the table declares and the corpus does not
-//! hold. That pairing is exactly what U12 and U13 will build the moment they
-//! project a mount table independently of their corpora, which § 8 M6
-//! contemplates. **The word must exist, and be exercised, before the units that
-//! make the arm reachable are written.**
-//!
-//! # The redden, quoted
-//!
-//! Before the fix, on `9429a5fd`, both arms returned `RefResolution::Unmounted`,
-//! so this file's `path_unseeable` assertions read:
-//!
-//! ```text
-//! left: Unmounted(MountName("sessions"))
-//! right: <a PathUnseeable carrying the path>
-//! ```
-//!
-//! and the teaching rendered for both was *"names a root this machine does not
-//! bind … Fix: declare 'sessions' in ~/MERIDIAN.md"* — **false on this arm, and
-//! prescribing an action already taken.**
+//! Collapse to `Unmounted` for both arms yields a false "declare it" teaching
+//! on an already-declared root.
 
 use addr::{MountName, MountSet};
 use model::{CorpusIndex, Document, RefResolution, RootKind, RootedCorpus};

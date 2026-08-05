@@ -1,23 +1,17 @@
-//! The FROZEN Go-text heading predicate — one engine-side owner (stage-2 S0).
+//! FROZEN Go-text heading predicate — sole engine owner (stage-2 S0).
 //!
-//! `sanitize_heading` is the address law for every heading-derived name the
-//! engine mints. It reproduces meridian-go `internal/body map.go
-//! sanitizeHeading` (and its host mirror `sanitizeHeadingHost`,
-//! `readsidecar.go:350`) byte-for-byte: `strings.TrimSpace`, then `/` → `-`,
-//! then ASCII space → `-`, then empty → `"untitled"`. It is **frozen**: it is
-//! not improved, only reproduced.
+//! `sanitize_heading` is the address law for every heading-derived name.
+//! Byte-for-byte with meridian-go `sanitizeHeading` / `sanitizeHeadingHost`
+//! (`map.go`, `readsidecar.go:350`): `TrimSpace`, `/`→`-`, ASCII space→`-`,
+//! empty→`"untitled"`. Frozen — reproduced, not improved.
 //!
-//! It lives in `model` — not `wire-map` — because it has THREE consumers that
-//! must never drift apart: `wire-map::facts` (the host-face read/toc
-//! addresses), `policy::defs::rebuild` (the defs hpath chain), and, until
-//! stage-2 retires it, the Go host mirror the drift guard pins. `model` is the
-//! shared dep both engine consumers already have (plan D2, no 28th crate).
-//! Law 3 is untouched: this is a frozen character-class primitive, while the
-//! PROJECTION built on it (dewey ordinals, hpath assembly, word counts) still
-//! lives only in `wire-map`.
+//! Lives in `model` (not `wire-map`) so three consumers cannot drift:
+//! `wire-map::facts`, `policy::defs::rebuild`, and (until S2) the Go host
+//! mirror. Frozen character-class primitive only; projection (dewey, hpath
+//! assembly) stays in `wire-map` (law 3).
 //!
-//! `is_go_space` is the trim's character class, pinned as an EXPLICIT table so
-//! no stdlib Unicode revision can skew the set underneath the address law.
+//! `is_go_space` pins the trim character class as an explicit table so stdlib
+//! Unicode revisions cannot skew the address law.
 
 /// Go `unicode.IsSpace`: the Unicode `White_Space` property, as an explicit
 /// pinned table (stable since Unicode 6.3 — U+180E left the property then,

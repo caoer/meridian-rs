@@ -1,11 +1,6 @@
-//! Purity (0003 §1: zero I/O): the sandbox exposes no filesystem or network
-//! capability. The only builtins a rule reaches are the effect-descriptor
-//! constructors (which read nothing and only record inert data) plus the Starlark
-//! standard library (which has no ambient I/O). Any I/O-shaped name is undefined
-//! and faults — it is never linked, never called.
-//!
-//! (The exact global-name surface is asserted as an in-crate unit test in
-//! `kernel.rs`, which can reach `effect_globals()` directly.)
+//! Purity (0003 §1): no filesystem/network. Only descriptor constructors +
+//! Starlark stdlib (no ambient I/O). I/O-shaped names are undefined and fault.
+//! (Closed global surface asserted in-crate in `kernel.rs`.)
 
 use effects::{EffectKind, EvalError, Rule, eval};
 

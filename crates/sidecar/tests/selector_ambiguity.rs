@@ -1,8 +1,6 @@
-//! U2.2 — selector grammar + ambiguity law, END-TO-END through the live serve
-//! loop (`sidecar::serve`): the load-bearing duplicate-headed-section fixture,
-//! the F6 refuse-ambiguous-only fix, node-index disambiguation, the dangling
-//! selector refusal, and taxonomy conformance against
-//! `docs/wire-contract-v2-refusal-amendment.md`.
+//! U2.2 — selector grammar + ambiguity through live serve: duplicate heads,
+//! refuse-ambiguous-only, node-index disambiguation, dangling refuse, taxonomy
+//! (`docs/wire-contract-v2-refusal-amendment.md`).
 
 use std::io::Write as _;
 use std::path::Path;

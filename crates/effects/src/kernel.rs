@@ -1,23 +1,16 @@
-//! The sealed Starlark evaluation bridge: build the closed globals (standard
-//! library + the effect-descriptor builtins, and NOTHING with ambient I/O),
-//! inject the [`ChangeEvent`] as a `event` struct, run one rule's
-//! `on_change(event)` metered under the fuel/mem budget, and record the effect
-//! descriptors it constructs.
+//! Sealed Starlark evaluation bridge: closed globals (stdlib + effect-descriptor
+//! builtins, no ambient I/O), inject event/`ctx`, run metered under fuel/mem,
+//! record constructed descriptors. `pub(crate)`; public surface is `lib.rs`.
 //!
-//! Everything here is `pub(crate)`; the public surface is the types + `eval` in
-//! `lib.rs`. The design mirrors the proven `policy` embedding: `eval.extra`
-//! carries the emit store, `set_max_tick_count` / `set_max_heap_size` meter the
-//! budget with EXACT post-eval accounting, and [`std::panic::catch_unwind`]
-//! converts a resource-overflow panic inside the engine into a clean budget
-//! error so a bomb can never escape and crash the caller.
+//! Metering mirrors `policy`: `eval.extra` holds the emit store;
+//! `set_max_tick_count` / `set_max_heap_size` with exact post-eval accounting;
+//! [`std::panic::catch_unwind`] maps resource-overflow panics to budget errors
+//! so a bomb cannot crash the caller.
 //!
 //! # Purity
-//! The globals are `GlobalsBuilder::standard().with(effect_api)`. The Starlark
-//! standard library has zero ambient I/O — no file, net, os, clock, or random
-//! (research-starlark-mcp §1: "the only capabilities a rule gets are the builtins
-//! you register"). The builtins registered here construct inert descriptors and
-//! read nothing. A rule that names `open`, `print`, `read`, `now`, … reaches a
-//! name the sandbox never bound and faults with [`EvalError::Runtime`].
+//! Globals are `GlobalsBuilder::standard().with(effect_api)`. Stdlib has no
+//! file/net/os/clock/random; builtins construct inert descriptors only. Unbound
+//! names (`open`, `print`, …) fault as [`EvalError::Runtime`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -38,9 +31,8 @@ use crate::{
     Provenance, Rule, RunCtx,
 };
 
-/// An optional string as a Starlark value: the string, or `None`. Absence stays
-/// absence — a missing frontmatter value must not arrive as `""`, or a predicate
-/// cannot tell "the key was empty" from "the key was not there".
+/// Optional string as Starlark: value or `None`. Absence must stay absence —
+/// never coerce missing frontmatter to `""`.
 fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
     match o {
         Some(s) => heap.alloc(s),
@@ -48,28 +40,19 @@ fn opt_str<'v>(heap: Heap<'v>, o: Option<&str>) -> Value<'v> {
     }
 }
 
-/// Max parser NESTING depth — brackets `([{` or a run of consecutive unary
-/// operators (`not`, `-`, `+`, `~`). The Starlark recursive-descent parser
-/// recurses once per nesting level; a deep chain (issue #66: `not not not …`)
-/// overflows the native stack and ABORTS the process — `catch_unwind` cannot
-/// catch a stack overflow, so it must be PREVENTED. Bounding nesting depth BEFORE
-/// parsing is O(1) stack and independent of the parser's (large, debug-inflated)
-/// frame size — the robust guard. 500 is orders of magnitude beyond any real
-/// rule (nesting depth, NOT total size — a large but shallow rule is fine).
+/// Max parser nesting depth (brackets `([{` or consecutive unary `not`/`-`/`+`/
+/// `~`). Deep chains overflow the native stack and abort the process
+/// (`catch_unwind` cannot catch stack overflow) — issue #66. Bound before parse;
+/// 500 ≫ any real rule (depth, not total size).
 pub(crate) const MAX_NESTING_DEPTH: usize = 500;
 
-/// The evaluation thread's stack size. Even with nesting bounded to
-/// [`MAX_NESTING_DEPTH`], 500 debug parse frames plus the bounded runtime
-/// call-stack ([`crate::EvalLimits::max_call_depth`]) exceed a default 2 MiB
-/// thread stack, so evaluation runs on a dedicated 128 MiB stack (virtual
-/// address space, not physically committed until touched) — ample headroom over
-/// the ~10 MiB worst case the depth guard admits.
+/// Eval-thread stack size. [`MAX_NESTING_DEPTH`] debug frames +
+/// [`crate::EvalLimits::max_call_depth`] exceed a default 2 MiB stack; 128 MiB
+/// virtual (not fully committed) covers the depth guard's worst case.
 pub(crate) const EVAL_STACK_BYTES: usize = 128 * 1024 * 1024;
 
-/// Run `f` on a dedicated large-stack thread and return its result. The parse +
-/// eval must run here so pathologically nested source cannot overflow the native
-/// stack and abort the process (see [`EVAL_STACK_BYTES`]). Scoped, so borrowed
-/// `rules`/`event` need no `'static` bound; the thread always joins before return.
+/// Run `f` on a dedicated large-stack thread (see [`EVAL_STACK_BYTES`]). Scoped
+/// so borrows need no `'static`; always joins before return.
 pub(crate) fn on_eval_stack<T, F>(f: F) -> T
 where
     F: FnOnce() -> T + Send,
@@ -86,20 +69,14 @@ where
     })
 }
 
-/// Build the closed rule-language globals: the Starlark standard library plus the
-/// effect-descriptor constructors. This is the ENTIRE capability surface a rule
-/// sees. `standard()` carries no ambient I/O and (verified in tests) no `print` /
-/// `pprint` / `debug` stream builtins.
+/// Closed rule-language globals: Starlark stdlib + effect-descriptor
+/// constructors. Entire capability surface; no ambient I/O, no stream builtins.
 pub(crate) fn effect_globals() -> Globals {
     GlobalsBuilder::standard().with(effect_api).build()
 }
 
-/// The rule dialect: the standard grammar with `load` DISABLED. A rule is a
-/// single self-contained `on_change` definition; module loading (`load(...)`)
-/// would let a rule pull in external symbols — a capability the pure kernel does
-/// not grant. Disabling `enable_load` makes `load` a parse error, so a rule
-/// cannot even express it. (`enable_load_reexport` is moot once load is off, so
-/// it is left at the Standard default.)
+/// Rule dialect: standard grammar with `load` disabled — parse error if used
+/// (no external symbols; pure kernel grants no load capability).
 fn rule_dialect() -> Dialect {
     Dialect {
         enable_load: false,
@@ -107,15 +84,13 @@ fn rule_dialect() -> Dialect {
     }
 }
 
-/// Parse-check every rule without running it — the load gate. Catches authoring
-/// faults (over-long source, unparseable Starlark) once, up front, so per-event
-/// [`crate::eval`] failures are genuine per-event faults.
+/// Load gate: parse-check every rule without running. Separates authoring
+/// faults from per-event [`crate::eval`] faults.
 ///
 /// # Errors
 /// [`EvalError::SourceTooLarge`] or [`EvalError::Parse`] for the first bad rule.
 pub fn validate(rules: &[Rule], limits: EvalLimits) -> Result<(), EvalError> {
-    // Parsing runs on the large evaluation stack for the same reason `eval` does:
-    // pathological nesting must not overflow the native stack.
+    // Same large stack as eval — pathological nesting must not abort.
     on_eval_stack(|| {
         for rule in rules {
             check_source_size(rule, limits)?;
@@ -131,8 +106,7 @@ pub fn validate(rules: &[Rule], limits: EvalLimits) -> Result<(), EvalError> {
     })
 }
 
-/// Refuse a rule whose source exceeds the parse-DoS byte cap before it reaches
-/// the parser.
+/// Refuse source over the parse-DoS byte cap before the parser.
 fn check_source_size(rule: &Rule, limits: EvalLimits) -> Result<(), EvalError> {
     if rule.source.len() > limits.max_source_bytes {
         return Err(EvalError::SourceTooLarge {
@@ -144,16 +118,10 @@ fn check_source_size(rule: &Rule, limits: EvalLimits) -> Result<(), EvalError> {
     Ok(())
 }
 
-/// Refuse a rule whose nesting depth would recurse the parser past
-/// [`MAX_NESTING_DEPTH`] and overflow the native stack (an uncatchable abort).
-///
-/// A single conservative left-to-right byte scan that skips string- and
-/// comment-content (so brackets/operators inside a literal do not count) and
-/// tracks the running bracket-nesting depth and the length of a consecutive
-/// unary-operator run (the issue-#66 vector). A run is only broken by an operand
-/// (identifier / number / literal) or a bracket — whitespace between operators
-/// does not, so `- - - x` counts as depth 3. Over-approximation is safe: it can
-/// only reject the pathological, never a real shallow rule.
+/// Refuse nesting past [`MAX_NESTING_DEPTH`] (uncatchable native-stack abort).
+/// Left-to-right scan skips string/comment content; tracks bracket depth and
+/// consecutive unary runs (issue #66). Whitespace does not break a unary run
+/// (`- - - x` = depth 3). Over-approx is safe: only rejects pathological.
 fn check_nesting_depth(rule: &Rule) -> Result<(), EvalError> {
     let bytes = rule.source.as_bytes();
     let n = bytes.len();
@@ -268,12 +236,9 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-/// The store the effect constructors record into, reached via `Evaluator::extra`.
-/// It carries the emitting rule's id, the plane-typed [`Provenance`] to stamp,
-/// and the event depth, so each constructor records a complete [`Effect`], plus
-/// a per-rule `seq` counter. The `on_change` path always stamps change-plane
-/// provenance (the event's diff fingerprints); a run-plane entry point stamps
-/// [`Provenance::Run`] at construction.
+/// Emit store via `Evaluator::extra`: rule id, plane-typed [`Provenance`],
+/// depth, per-rule `seq`. Change path stamps fingerprints; run path stamps
+/// [`Provenance::Run`].
 #[derive(starlark::any::ProvidesStaticType)]
 struct EmitStore {
     rule_id: String,
@@ -325,11 +290,9 @@ fn insert_opt(args: &mut BTreeMap<String, ArgValue>, key: &str, value: Option<St
     }
 }
 
-/// The effect-descriptor constructors — the ENTIRE rule-language builtin surface.
-/// Every argument is named (`require = named`) so a rule reads as keyword calls
-/// and a positional-shape mistake faults loudly. Each returns `None`; the effect
-/// is the recorded descriptor, not a value. NO constructor performs or exposes
-/// I/O.
+/// Effect-descriptor constructors — entire rule-language builtin surface.
+/// Named args only; each returns `None` (effect is the recorded descriptor).
+/// No constructor performs or exposes I/O.
 #[starlark_module]
 fn effect_api(builder: &mut GlobalsBuilder) {
     /// `md.set_field` — set frontmatter `field` to `value`, with an optional
@@ -417,18 +380,11 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
-    /// `intent(action, target, severity, payload, receipt)` — the reaction
-    /// plane's constructor, in the panel's own noun. `action` names the effect
-    /// kind: a wire identity (`proto.send`) or the one documented alias
-    /// (`notify` ≈ `proto.send`). Every other argument is carried VERBATIM — the
-    /// engine never composes a message, resolves a target, or ranks importance;
-    /// that is the HOW, and it is Go's business.
-    ///
-    /// This grants no capability. It can name any kind, including one the
-    /// convention did not declare — and that is deliberate: the load ceiling can
-    /// only see constructor NAMES, so a kind chosen by a runtime string is caught
-    /// downstream by the capability filter, which drops it and REPORTS it. The two
-    /// layers are complementary, not redundant.
+    /// `intent(action, …)` — reaction-plane constructor. `action` is a wire
+    /// identity or the alias `notify` ≡ `proto.send`; other args carried
+    /// verbatim (engine neither composes messages nor ranks severity).
+    /// Grants no capability: load ceilings see constructor names only; a
+    /// runtime-chosen kind is filtered downstream and reported.
     fn intent(
         #[starlark(require = named)] action: String,
         #[starlark(require = named)] target: Option<String>,
@@ -457,22 +413,14 @@ fn effect_api(builder: &mut GlobalsBuilder) {
         Ok(NoneType)
     }
 
-    /// `receipt_addr(path, rev)` — the address an outcome will be written to,
-    /// minted BEFORE any delivery is attempted (constraint 8). Returns the
-    /// canonical `path#^anchor` string, the contract's own §6.1 spelling.
-    ///
-    /// `path` passes through untouched: the predicate decides WHERE the receipt
-    /// lives. Only the anchor is the engine's, and it is a pure function of
-    /// `(path, rev)` — no clock, no counter, no invented directory layout — so the
-    /// same change re-evaluated names the same address, which is what makes an
-    /// undelivered intent findable rather than merely regrettable.
+    /// `receipt_addr(path, rev)` → `path#^anchor` (§6.1), minted before delivery.
+    /// `path` is caller-chosen; anchor is pure in `(path, rev)` (no clock/counter)
+    /// so re-eval names the same address.
     fn receipt_addr(
         #[starlark(require = pos)] path: String,
         #[starlark(require = pos)] rev: String,
     ) -> anyhow::Result<String> {
-        // A `#` in the path would make `path#^anchor` ambiguous — the address
-        // could not be split back into its two halves. Refuse it here rather than
-        // mint an address nobody can resolve.
+        // `#` in path makes `path#^anchor` unsplittable — refuse.
         if path.is_empty() || path.contains('#') {
             return Err(anyhow::anyhow!(
                 "receipt_addr: path {path:?} is empty or contains `#`, which would make the \
@@ -494,19 +442,14 @@ fn effect_api(builder: &mut GlobalsBuilder) {
     }
 }
 
-/// Peak eval-heap bytes as `u64` (saturating). Peak (not current) is monotonic
-/// and matches the quantity `set_max_heap_size` guards, so the guard's abort and
-/// this post-eval reading agree, and a post-eval GC cannot deflate it.
+/// Peak eval-heap bytes as `u64` (saturating). Peak matches `set_max_heap_size`;
+/// post-eval GC cannot deflate it.
 fn heap_bytes(heap: Heap<'_>) -> u64 {
     u64::try_from(heap.peak_allocated_bytes()).unwrap_or(u64::MAX)
 }
 
-/// The metered outcome of one rule run: its typed result plus the EXACT
-/// post-eval resource accounting (`fuel_used` Starlark ticks, `mem_used` peak
-/// heap bytes) the result was judged against. The corpus-replay harness reads
-/// `fuel_used`/`mem_used` for its per-rule consumption profile; a parse-time or
-/// setup-time failure never reached eval, so both read `0` there. A bomb
-/// terminated by the fuel/mem ceiling reports the ceiling it hit.
+/// Metered outcome of one rule run: typed result + exact post-eval fuel/mem.
+/// Never-reached eval → `0`/`0`; bomb at ceiling reports that ceiling.
 pub(crate) struct RuleRun {
     pub(crate) fuel_used: u64,
     pub(crate) mem_used: u64,
@@ -525,9 +468,8 @@ impl RuleRun {
     }
 }
 
-/// Run ONE rule's `on_change(event)` over the injected event, returning only the
-/// typed effect result — the batch-eval path (`eval_with_limits`) uses this and
-/// discards the metering. See [`run_rule_metered`] for the full contract.
+/// Run one rule's `on_change(event)`; batch path discards metering. See
+/// [`run_rule_metered`].
 pub(crate) fn run_rule(
     globals: &Globals,
     rule: &Rule,
@@ -537,10 +479,8 @@ pub(crate) fn run_rule(
     run_rule_metered(globals, rule, event, limits).outcome
 }
 
-/// Run ONE task's `run(ctx)` over the injected context — the run-plane entry.
-/// Identical machinery to the change plane ([`metered_eval`]): same globals,
-/// same guards, same metering, same panic containment. Only the entry name,
-/// the injected value, and the stamped provenance differ.
+/// Run one task's `run(ctx)` — same machinery as change plane ([`metered_eval`]);
+/// only entry name, injected value, and provenance differ.
 pub(crate) fn run_task(
     globals: &Globals,
     task: &Rule,
@@ -550,10 +490,8 @@ pub(crate) fn run_task(
     metered_eval(globals, task, &EvalEntry::Run(ctx), limits).outcome
 }
 
-/// The plane an evaluation enters on: which hook is called, what value is
-/// injected, and what provenance the emitted effects carry. One entry per
-/// plane — the planes never cross (a wrong-plane source is a typed
-/// [`EvalError::MissingEntry`]).
+/// Eval plane: hook name, injected value, stamped provenance. One entry per
+/// plane; wrong-plane source → [`EvalError::MissingEntry`].
 pub(crate) enum EvalEntry<'a> {
     /// `on_change(event)` — change-plane provenance from the event's diff.
     Change(&'a ChangeEvent),
@@ -609,18 +547,13 @@ impl EvalEntry<'_> {
     }
 }
 
-/// Run ONE rule's `on_change(event)` over the injected event, metered, returning
-/// the typed result AND the exact fuel/mem it spent.
+/// Run one rule's `on_change(event)` metered: typed result + exact fuel/mem.
 ///
-/// Fuel/mem are enforced two ways, mirroring `policy`: Starlark's own
-/// `set_max_*` guards abort a runaway loop/recursion at coarse (~1000-event)
-/// boundaries, and the EXACT post-eval accounting (`get_total_tick_count`, peak
-/// heap bytes) is the authoritative bound the result is judged against. A
-/// non-looping allocation that defeats the coarse guard is still caught by the
-/// exact mem accounting; a pathological allocation that trips a `len overflow`
-/// assert INSIDE the engine is caught by [`std::panic::catch_unwind`] and mapped
-/// to [`EvalError::Budget`] (the only panic reachable inside the metered eval is
-/// resource overflow) — so a bomb terminates, never hangs, never crashes.
+/// Dual enforcement (mirrors `policy`): coarse `set_max_*` guards abort
+/// runaways; exact post-eval ticks/peak-heap is authoritative. Non-looping
+/// oversize alloc still fails exact mem; engine `len overflow` panics map via
+/// [`std::panic::catch_unwind`] to [`EvalError::Budget`]. Bombs terminate —
+/// never hang, never crash.
 pub(crate) fn run_rule_metered(
     globals: &Globals,
     rule: &Rule,
@@ -649,9 +582,7 @@ fn metered_eval(
     let step_guard = limits.fuel.max(1);
     let mem_guard = usize::try_from(limits.mem).unwrap_or(usize::MAX).max(1);
 
-    // AssertUnwindSafe: on panic we discard `store` unread and return a budget
-    // fault, so its interior mutability cannot leak an inconsistent value across
-    // the boundary.
+    // AssertUnwindSafe: panic path discards `store` unread → budget fault.
     let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -664,10 +595,8 @@ fn metered_eval(
             if let Err(e) = eval.set_max_heap_size(mem_guard) {
                 return RuleRun::failed(runtime(rule, e));
             }
-            // Bound recursion DEPTH: unbounded Starlark recursion consumes native
-            // frames and would overflow even the large evaluation stack before the
-            // tick guard fires. The callstack limit stops it at a fixed depth with
-            // a typed `StackOverflow` error (classified as budget below).
+            // Bound call depth: unbounded recursion overflows native frames
+            // before the tick guard; StackOverflow → budget below.
             if let Err(e) = eval.set_max_callstack_size(limits.max_call_depth.max(1)) {
                 return RuleRun::failed(runtime(rule, e));
             }
@@ -696,8 +625,7 @@ fn metered_eval(
                             fault = Some(e.to_string());
                         }
                     }
-                    // No entry for this plane — typed, with the wrong-plane
-                    // diagnosis when the OTHER plane's entry is what exists.
+                    // Missing entry; note wrong-plane if the other hook exists.
                     None => missing = Some(module.get(entry.other()).map(|_| entry.other())),
                 },
                 Err(e) => {
@@ -720,10 +648,7 @@ fn metered_eval(
                     wrong_plane,
                 })
             } else if aborted {
-                // The eval errored: a resource limit (⇒ budget) or a genuine
-                // fault? The coarse tick/heap guards are visible in the exact
-                // accounting; the callstack-depth guard surfaces as a typed
-                // `StackOverflow` — either is a terminated bomb, not a rule fault.
+                // over_budget / StackOverflow → budget; else genuine fault.
                 if over_budget || depth_overflow {
                     Err(budget(limits))
                 } else {
@@ -733,8 +658,7 @@ fn metered_eval(
                     })
                 }
             } else if over_budget {
-                // A non-looping allocation can complete WITHOUT aborting yet
-                // still overrun the exact mem bound — refuse it as budget.
+                // Completed without abort but exact mem still over — budget.
                 Err(budget(limits))
             } else {
                 Ok(effects)
@@ -749,10 +673,7 @@ fn metered_eval(
 
     match evaluated {
         Ok(run) => run,
-        // The only panic reachable inside the metered Starlark eval is a
-        // resource-overflow assert (a multi-GiB allocation tripping a `len
-        // overflow`): a terminated bomb, reported as budget — never a crash.
-        // It hit the fuel/mem ceiling, so the profile records the ceiling.
+        // Only reachable panic: resource-overflow assert → budget at ceiling.
         Err(_panic) => RuleRun {
             fuel_used: limits.fuel,
             mem_used: limits.mem,
@@ -783,8 +704,7 @@ fn runtime(rule: &Rule, e: impl std::fmt::Display) -> EvalError {
     }
 }
 
-/// Allocate the injected `event` value: a struct with the 0003 §3 payload
-/// fields. Lists inject as Starlark lists of strings.
+/// Allocate injected `event` (0003 §3 payload). Lists → Starlark lists of strings.
 fn alloc_event<'v>(heap: Heap<'v>, event: &ChangeEvent) -> Value<'v> {
     let sections: Vec<Value<'v>> = event
         .sections_changed
@@ -819,9 +739,7 @@ fn alloc_event<'v>(heap: Heap<'v>, event: &ChangeEvent) -> Value<'v> {
     ]))
 }
 
-/// Allocate one `{kind, key, old, new, hpath}` change fact. `old`/`new` are
-/// `None` when the value did not exist on that side — absence is a fact a
-/// predicate must be able to see, so it is `None` and never an empty string.
+/// Allocate one `{kind, key, old, new, hpath}` fact. Absence is `None`, never `""`.
 fn alloc_change_fact<'v>(heap: Heap<'v>, fact: &ChangeFact) -> Value<'v> {
     let hpath: Vec<Value<'v>> = fact.hpath.iter().map(|s| heap.alloc(s.as_str())).collect();
     heap.alloc(AllocStruct([
@@ -833,12 +751,8 @@ fn alloc_change_fact<'v>(heap: Heap<'v>, fact: &ChangeFact) -> Value<'v> {
     ]))
 }
 
-/// Allocate the injected `event.facts`: `{path, fm}` and NOTHING else.
-///
-/// `fm` is a dict so a predicate reads `event.facts.fm.get("reviewer")`. The
-/// absences here are the law, not an omission: no actor, no session, no
-/// invocation identity reaches this surface, so an actor-fact WHEN clause is a
-/// `NameError` rather than a policy anyone has to remember to enforce.
+/// Allocate `event.facts` as `{path, fm}` only. No actor/session/invocation —
+/// actor-fact WHEN is a `NameError`, not a soft policy.
 fn alloc_event_facts<'v>(heap: Heap<'v>, facts: &EventFacts) -> Value<'v> {
     let fm = heap.alloc(AllocDict(
         facts
@@ -852,11 +766,8 @@ fn alloc_event_facts<'v>(heap: Heap<'v>, facts: &EventFacts) -> Value<'v> {
     ]))
 }
 
-/// Allocate the injected `ctx` value: the run-plane facts a task sees —
-/// `page`, `task`, `args` (list of strings), `env` (dict of strings). The
-/// provenance facts (`invocation_id`, `root_at_eval`) are deliberately NOT
-/// injected (see [`crate::RunCtx`]): a task's output must not depend on its
-/// invocation identity.
+/// Allocate run-plane `ctx`: `page`/`task`/`args`/`env` only. Provenance facts
+/// deliberately not injected (see [`crate::RunCtx`]).
 fn alloc_ctx<'v>(heap: Heap<'v>, ctx: &RunCtx) -> Value<'v> {
     let args: Vec<Value<'v>> = ctx.args.iter().map(|s| heap.alloc(s.as_str())).collect();
     let env = heap.alloc(AllocDict(
@@ -877,12 +788,7 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// The `EffectKind` ↔ globals tie. A consumer building a capability ceiling
-    /// resolves declared caps to constructor names through
-    /// [`EffectKind::constructor`]; if that mapping drifted from what this kernel
-    /// registers, the ceiling would allow a name no rule can call, or refuse one it
-    /// can. Both directions are pinned: every kind's constructor is registered, and
-    /// every registered constructor belongs to a kind.
+    /// Pin `EffectKind::constructor` ↔ registered globals both ways.
     #[test]
     fn every_effect_kind_constructor_is_registered() {
         let names: HashSet<String> = effect_globals()
@@ -909,12 +815,7 @@ mod tests {
             );
         }
 
-        // The other direction: the standard library is not a capability, so the
-        // registered set MINUS the standard globals must be exactly the derived
-        // set PLUS the reaction vocabulary. `intent` and `receipt_addr` are
-        // builtins that grant no kind, so they belong to neither the standard
-        // library nor `EffectKind` — both sides read `REACTION_VOCAB`, so this
-        // cannot be satisfied by hand-listing the names in two places.
+        // non-standard globals == EffectKind constructors ∪ REACTION_VOCAB.
         let standard: HashSet<String> = GlobalsBuilder::standard()
             .build()
             .names()
@@ -934,9 +835,7 @@ mod tests {
         );
     }
 
-    /// `receipt_addr` is a PURE function of `(path, rev)` — the property the
-    /// armed-not-delivered mechanism rests on, since an intent's address must be
-    /// re-derivable to find out whether its outcome ever landed.
+    /// `receipt_addr` pure in `(path, rev)` — address re-derivable after delivery.
     #[test]
     fn receipt_address_is_pure_and_collision_separated() {
         let a = crate::receipt_address("tasks/t.md", "abc123");
@@ -968,9 +867,7 @@ mod tests {
         );
     }
 
-    /// A path carrying `#` cannot be made into an unambiguous `path#^anchor`
-    /// address, so `receipt_addr` refuses it rather than minting one nobody can
-    /// split back apart.
+    /// Paths with `#` (or empty) refused — would make `path#^anchor` ambiguous.
     #[test]
     fn receipt_addr_refuses_a_path_that_would_make_the_address_ambiguous() {
         let event = ChangeEvent::new("f.md", "a", "b");
@@ -992,8 +889,7 @@ mod tests {
         assert!(ok.is_ok(), "a normal path mints an address: {ok:?}");
     }
 
-    /// `action` resolves the wire identities plus the ONE documented alias, and
-    /// nothing else — an unknown action is a fault, never a guess.
+    /// Wire identities + one alias; unknown action is a fault.
     #[test]
     fn action_kind_resolves_wire_names_and_the_one_alias() {
         assert_eq!(crate::action_kind("notify"), Some(EffectKind::Send));
@@ -1009,9 +905,7 @@ mod tests {
         }
     }
 
-    /// The closed capability surface: every effect constructor is present, and no
-    /// filesystem / network / eval name is — the purity assertion at the source of
-    /// truth (the globals themselves), not merely behaviorally.
+    /// Closed surface: every effect constructor present; no I/O/eval names.
     #[test]
     fn globals_surface_is_the_closed_capability_set() {
         let globals = effect_globals();

@@ -1,6 +1,4 @@
-//! Design validation gates encoded as tests (design §Validation, gates 1, 4-8,
-//! 14, 17, 18). Each gate demonstrates a DDL-enforced invariant of the binding
-//! design against the bundled `DuckDB`.
+//! DDL-enforced design validation gates (binding design §Validation).
 
 use std::collections::BTreeMap;
 
@@ -9,17 +7,11 @@ use duckdb::Connection;
 use model::Document;
 use view::{PublishStamp, create_schema};
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
 fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
 }
 
-/// The corpus fold an ephemeral build is stamped with. In production the caller
-/// hands over the domain's own fold (`fs::domain_snapshot`); these fixtures have
-/// no domain config, so version 0 is that domain.
+/// Corpus fold stamp (version 0 — fixtures declare no domain).
 fn fold(docs: &BTreeMap<String, Document>) -> String {
     let files: Vec<(&str, &[u8])> = docs
         .iter()
@@ -28,14 +20,12 @@ fn fold(docs: &BTreeMap<String, Document>) -> String {
     model::merkle_root(&files, 0).0
 }
 
-/// A fresh in-memory connection with the schema created (no rows).
 fn fresh_schema() -> Connection {
     let conn = Connection::open_in_memory().expect("open :memory:");
     create_schema(&conn).expect("create schema");
     conn
 }
 
-/// Insert one `doc` row so FK-referencing inserts have a valid parent.
 fn insert_doc(conn: &Connection, path: &str) {
     conn.execute(
         "INSERT INTO doc (path, file_rev, line_count, bytes) VALUES (?, 'rev', 1, 1)",
@@ -48,8 +38,7 @@ fn scalar_i64(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).expect("scalar query")
 }
 
-/// The two-doc fixture (gate 18): duplicate-`hpath` sections, a document-level
-/// task, and dangling / resolved / self / external links.
+/// Two-doc fixture (gate 18): dup hpath, doc-level task, link shapes.
 fn fixture() -> BTreeMap<String, Document> {
     let a = "\
 ---

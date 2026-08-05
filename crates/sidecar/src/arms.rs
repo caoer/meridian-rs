@@ -1,18 +1,13 @@
-//! The op arms: one function per armed op, `model`/`fs` in, wire body out.
-//! Wiring only — parsing is `syntax`'s, tree law is `model`'s, projection is
-//! `wire-map`'s, disk is `fs`'s. The shared strict-decode, the read arms, and
-//! the `splice → commit` write choke-point live in `wire-serve` (ONE
-//! implementation with the resident daemon); this module is the sidecar's
-//! per-request driver over them.
+//! Op arms: one fn per armed op, `model`/`fs` in, wire body out. Wiring only —
+//! parse/tree/project/disk live elsewhere. Shared strict-decode, read arms,
+//! and `splice → commit` live in `wire-serve`; this is the sidecar's
+//! per-request driver.
 
 use std::io::ErrorKind;
 
-/// The sidecar's `seq` allocator: one ring, one thread, allocation read from the
-/// LIVE ring at the moment the write path asks — not captured before the call.
-///
-/// The sidecar has exactly one producer, so this cannot race; the sink exists so
-/// both hosts allocate through one seam rather than because this host needs the
-/// protection. The immutable borrow ends before the caller advances the ring.
+/// Sidecar `seq` allocator: live ring at the moment the write path asks.
+/// Single producer (no race); sink is the shared host seam. Immutable borrow
+/// ends before the caller advances the ring.
 struct EpochSink<'a>(&'a wire_serve::ring::RootRing);
 
 impl wire_serve::seq::SeqSink for EpochSink<'_> {
@@ -24,11 +19,10 @@ impl wire_serve::seq::SeqSink for EpochSink<'_> {
 use wire::{ErrorBody, ErrorCode, Op, Path, ResponseBody, Root, SecRef};
 use wire_serve::{ambient_root, domain_snapshot, load_doc};
 
-/// Route one validated request to its arm. `id` is the frame's correlation
-/// token — the splice choke-point records it into the receipt line (§6.1 fact
-/// list); no other arm reads it. `v3` is the session's negotiated rev: the
-/// extract arm enriches heading nodes with the U2 addressing facts under v3
-/// only (v3-additive keys; the frozen v2 bytes never change).
+/// Route one validated request. `id` is the frame correlation token (splice
+/// records it in the receipt, §6.1; no other arm reads it). `v3` is the
+/// session's negotiated rev: extract enriches headings with U2 facts under
+/// v3 only (frozen v2 bytes never change).
 #[expect(
     clippy::too_many_lines,
     reason = "exhaustive op router — one arm per wire op; splitting arms adds indirection, not insight"
@@ -46,8 +40,7 @@ pub(crate) fn dispatch(
         Op::Toc { path } => toc(root, &path),
         Op::Cat { path, sec } => cat(root, &path, sec),
         Op::Extract { path, kinds } => extract(root, &path, kinds, v3),
-        // M1 U4a2 the composed read op — v3-ONLY (absent from the frozen v2
-        // caps; §3.2: an op is in `caps` or answers `unknown_op`).
+        // Composed read — v3-only (absent from frozen v2 caps; §3.2).
         Op::Read {
             path,
             frag,
@@ -70,21 +63,13 @@ pub(crate) fn dispatch(
                     display_path,
                     actor,
                 },
-                // S6: the sidecar builds its state per REQUEST and holds no
-                // session, so there is no daemon-session layer for a read
-                // receipt to live in — it mints none (the registry daemon is
-                // the one host that does).
+                // S6: per-request, no session — mints no read receipt.
                 None,
-                // S10: and it holds no corpus either — one document per
-                // request cannot color a pin whose target is another page, so
-                // it decorates nothing rather than guessing (an undecorated
-                // link claims nothing; a wrongly-colored one lies).
+                // S10: no corpus — no pin decoration (guess would lie).
                 &wire_serve::read::NO_DECORATIONS,
             )
         }
-        // M1 U8c the I4 def-conformance verdict — v3-ONLY (absent from the
-        // frozen v2 caps; §3.2 discovery honesty). Read-only: loads the prev
-        // bytes, never writes.
+        // I4 def-conformance — v3-only (§3.2). Read-only.
         Op::CheckWrite {
             path,
             target,
@@ -110,24 +95,15 @@ pub(crate) fn dispatch(
         Op::Links { path, require_root } => {
             links_op(root, epoch, path.as_ref(), require_root.as_ref())
         }
-        // Armed, but registered at the serve layer (the loop owns the
-        // subscription list) — unreachable through serve; answering internal
-        // (never a panic) keeps a future misroute non-fatal.
+        // Registered at serve layer — unreachable here; `internal` not panic.
         Op::Sub { .. } => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
-        // V2 §Q2 the view-organ path forwarder is DAEMON-ONLY: the daemon is
-        // the sole persistent builder (OD6), and this per-process sidecar
-        // cannot publish — C2 forbids `sidecar`→`view`, and an in-memory
-        // `:memory:` build has no filesystem path to forward. So `view_path`
-        // is refused LOUD with `daemon_only` (the wire code's own sidecar-mode
-        // carve-out), never advertised in the sidecar's caps.
+        // §Q2 view_path is daemon-only (OD6 persistent builder; C2 forbids
+        // sidecar→view). Refuse `daemon_only`; never advertise in caps.
         Op::ViewPath { .. } => Err(Box::new(ErrorBody::new(ErrorCode::DaemonOnly))),
-        // v2 §4.4 the only write op under v2 (D4-SPLICE; v3 adds the `create`
-        // birth arm below), driven through the ONE shared
-        // `splice → commit` choke-point (`wire_serve::write::splice`, W1): load
-        // → §5.1 guard → validate → verdicts → commit, one exchange, one Delta.
-        // The sidecar advances its per-epoch ring with the emitted frame; the
-        // response body is the choke-point's, byte-identical across hosts. The
-        // sidecar admits packs (`rulesets`); the resident daemon hands `&[]`.
+        // v2 §4.4 sole write op (v3 adds `create`): shared `splice → commit`
+        // (`wire_serve::write::splice`). Advances per-epoch ring; body is the
+        // choke-point's (byte-identical across hosts). Sidecar admits packs;
+        // daemon hands `&[]`.
         Op::Splice {
             path,
             actor,
@@ -145,10 +121,8 @@ pub(crate) fn dispatch(
                 Some(&EpochSink(epoch)),
                 &wire_serve::write::SpliceArgs {
                     id,
-                    // U10: the per-process sidecar serves DECODED WIRE FRAMES,
-                    // so it is a wire door exactly like the resident daemon and
-                    // enforces identically. This door is NOT MCP — which is the
-                    // point: the ruling covers every wire door, not a client.
+                    // U10: decoded wire frames → wire door; enforces like the
+                    // daemon. Law binds the door, not the client.
                     origin: wire_serve::guard::Origin::Wire,
                     path,
                     actor,
@@ -162,10 +136,8 @@ pub(crate) fn dispatch(
                     pin,
                 },
                 rulesets,
-                // S7: the per-request sidecar HOLDS NO SESSION, so it holds no
-                // read-receipt ledger. A pin from a session actor therefore
-                // refuses `read_mint_required` here, naming that reason — the
-                // honest answer, since this host cannot know what was read.
+                // S7: no session → no read-receipt ledger; session-actor pin
+                // refuses `read_mint_required`.
                 None,
             )?;
             if let Some(frame) = out.committed {
@@ -173,13 +145,9 @@ pub(crate) fn dispatch(
             }
             Ok(out.body)
         }
-        // The BIRTH op — v3-ONLY (absent from the frozen v2 caps; §3.2
-        // discovery honesty), driven through the SAME guarded door every
-        // in-process caller uses (`wire_serve::write::create`). This arm
-        // FORWARDS: it opens no file, computes no rev, writes no journal row.
-        // That is the whole point — a daemon-side birth would bypass the four
-        // birth guards and leave the newborn with no journal row to date it.
-        // The ring advances on the emitted birth Delta exactly like `splice`.
+        // Birth — v3-only (§3.2). Forwards to `wire_serve::write::create`
+        // (same guarded door); opens no file itself. Ring advances on birth
+        // Delta like `splice`.
         Op::Create {
             path,
             body,
@@ -215,12 +183,10 @@ pub(crate) fn dispatch(
     }
 }
 
-/// v2 §4.6 the edge map under the §10.1 triple, served from `query` over the
-/// domain snapshot (§10.3: facts come from the world model — the §12 hash
-/// domain, not the walk plane's addressable superset). `as_of_root` folds the
-/// EXACT bytes the answer parses; `live_root` is a fresh fold after the
-/// computation — under a concurrent splice the two may differ, which is a
-/// legal frame, never an error (§10.1: no lag bounds are promised, ever).
+/// v2 §4.6 edge map under the §10.1 triple, from `query` over the domain
+/// snapshot (§10.3 / §12 hash domain). `as_of_root` folds the exact bytes
+/// parsed; `live_root` is a fresh post-compute fold — concurrent splice may
+/// diverge (legal; §10.1 promises no lag bounds).
 fn links_op(
     root: &fs::WorkspaceRoot,
     epoch: &crate::ring::RootRing,
@@ -228,18 +194,12 @@ fn links_op(
     require_root: Option<&Root>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let (files, as_of_root) = domain_snapshot(root)?;
-    // The Delta counter at as_of_root (§10.1) — sampled with the snapshot;
-    // §7.1 per-daemon-epoch semantics ride along unchanged.
+    // Delta counter at as_of_root (§10.1), sampled with the snapshot.
     let changes_seq = epoch.seq();
-    // §10.2: the opt-in strictness refusal — checked BEFORE the parse, so a
-    // stale view refuses without paying `build_corpus`.
+    // §10.2 opt-in strictness — before parse, avoid stale `build_corpus`.
     wire_serve::read::require_root_check(require_root, &as_of_root)?;
-    // The fact plane refuses what it cannot parse — loud, never skipped (the
-    // walk plane's skip-broken-files posture is resolve's, §4.5). Parse + build
-    // + index is the shared [`fs::build_corpus`] primitive (the daemon's
-    // resident builder parses the identical bytes — one implementation, no
-    // drift); `invalid_data` is the shared UTF-8 refusal, re-homed to the wire
-    // `invalid_utf8` frame.
+    // Fact plane refuses unparseable files loud (unlike resolve's skip,
+    // §4.5). Shared `fs::build_corpus`; invalid_data → wire `invalid_utf8`.
     let (index, docs) = fs::build_corpus(files).map_err(|e| {
         Box::new(if e.kind() == ErrorKind::InvalidData {
             ErrorBody::new(ErrorCode::InvalidUtf8)
@@ -249,15 +209,13 @@ fn links_op(
             err
         })
     })?;
-    // The edge map + the §10.1 `live_root` (a fresh fold AFTER the computation)
-    // is the shared read arm; `live_root` is sampled only on the success path.
+    // Shared read arm; `live_root` sampled only on success.
     wire_serve::read::links(&index, &docs, path, as_of_root, changes_seq, || {
         Ok(domain_snapshot(root)?.1)
     })
 }
 
-/// v2 §4.7: the current workspace root cursor (computed fresh from disk —
-/// truth over cache while no watcher runs) + this epoch's `seq`.
+/// v2 §4.7: workspace root cursor (fresh from disk) + epoch `seq`.
 fn root_op(
     root: &fs::WorkspaceRoot,
     epoch: &crate::ring::RootRing,
@@ -268,11 +226,8 @@ fn root_op(
     })
 }
 
-/// v2 §4.7/§7.3 replay over this epoch's retained history. Until rung 4
-/// emits batches the history is exactly the current root: same-root diff is
-/// truthfully empty, anything else — stale, evicted, previous-epoch,
-/// backwards — is `root_unknown` → full resync (degrade to re-derive, never
-/// to wrong data).
+/// v2 §4.7/§7.3 replay over retained history. Same-root → empty; else
+/// `root_unknown` → resync (re-derive, never wrong data).
 fn diff_op(
     root: &fs::WorkspaceRoot,
     epoch: &crate::ring::RootRing,
@@ -286,34 +241,29 @@ fn diff_op(
     }
 }
 
-/// v2 §3.2: proto in effect, server name, the complete armed cap set. `root`
-/// is optional in the hello body — present when the walk computes (the first
-/// ambient root), honestly absent on any I/O failure.
+/// v2 §3.2: proto, server name, armed caps. `root` optional — present when
+/// the walk computes, absent on I/O failure.
 fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
     ResponseBody::Hello {
         proto: crate::PROTO,
         server: crate::SERVER_NAME.to_string(),
         caps: crate::CAPS.iter().map(ToString::to_string).collect(),
         root: ambient_root(root).ok(),
-        // The sidecar runs one workspace per process and opens its drawer
-        // client-side; the resident daemon is the one that pins storage (§4).
+        // One workspace per process; drawer is client-side (daemon pins §4).
         storage: None,
-        // Nothing was declared to this process over the wire — its root is its
-        // launch argument, not a `hello` field — so there is no bound root to
-        // report back. The daemon is the arm that answers this.
+        // Root is the launch arg, not a hello field — no bound root to echo.
         workspace: None,
     }
 }
 
-/// v2 §4.1: the map — header `file_rev` (the document root's rev, same family,
-/// whole-file bytes) + ambient `root`, rows from the `wire-map` projection.
+/// v2 §4.1: map — `file_rev` + ambient `root` + `wire-map` rows.
 fn toc(root: &fs::WorkspaceRoot, path: &Path) -> Result<ResponseBody, Box<ErrorBody>> {
     let doc = load_doc(root, path)?;
     Ok(wire_serve::read::toc(&doc, path, &ambient_root(root)?))
 }
 
-/// v2 §4.2: full span bytes (heading-inclusive), rev over precisely those
-/// bytes. `sec` absent → whole file + `file_rev` riding the `node_rev` slot.
+/// v2 §4.2: full span bytes (heading-inclusive), rev over those bytes.
+/// `sec` absent → whole file; `file_rev` in the `node_rev` slot.
 fn cat(
     root: &fs::WorkspaceRoot,
     path: &Path,
@@ -323,9 +273,8 @@ fn cat(
     wire_serve::read::cat(&doc, sec)
 }
 
-/// v2 §4.3: the full node inventory via the `wire-map` projection, `kinds`
-/// filtered (values already validated against the closed enum at decode).
-/// Under v3 the heading nodes carry the U2 addressing facts.
+/// v2 §4.3: node inventory via `wire-map`; `kinds` filtered at decode.
+/// v3 headings carry U2 addressing facts.
 fn extract(
     root: &fs::WorkspaceRoot,
     path: &Path,
@@ -336,12 +285,9 @@ fn extract(
     Ok(wire_serve::read::extract(&doc, path, kinds, enrich))
 }
 
-/// v2 §4.5: the walk plane — best-effort app-compatible two-stage walk over
-/// the whole corpus (stage 1 is a vault-namespace question). Location facts
-/// only; `content:true` additionally returns the fragment bytes, still no
-/// rev. Files that fail to load (unreadable, non-UTF-8) are skipped from the
-/// walk corpus — the app indexes nothing it cannot read, and one broken file
-/// must not kill resolution for the rest.
+/// v2 §4.5 walk plane: best-effort two-stage walk. Location facts only;
+/// `content:true` adds fragment bytes, still no rev. Unreadable/non-UTF-8
+/// files skipped (one broken file must not kill the rest).
 fn resolve(
     root: &fs::WorkspaceRoot,
     from: &Path,

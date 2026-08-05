@@ -1,29 +1,20 @@
-//! The walk plane — Obsidian interop resolution (contract §4.5, decision 013).
+//! Walk plane — Obsidian interop resolution (contract §4.5, decision 013).
 //!
-//! `resolve` alone accepts the app's loose ref algebra; this module reproduces
-//! it **best-effort, app-compatible** (decision 013: a one-way compatibility
-//! floor, not a two-way parity law). Two stages, per the frozen behavior spec:
+//! Best-effort app-compatible (one-way floor, not two-way parity). Two stages:
 //!
-//! - **Stage 1** — `getFirstLinkpathDest(linkpath, from)` parity over the vault
-//!   name/alias index in [`CorpusIndex`]: basename + frontmatter aliases,
-//!   case-insensitive, source-relative shortest-unambiguous, unresolved
-//!   first-class. Empty linkpath ⇒ the source file itself.
-//! - **Stage 2** — the subpath walk: split on `#` only; a heading path walked
-//!   case-insensitively, strictly-deeper-level, anywhere-after (a closing
-//!   heading never stops the walk), generation-skipping, first-match-wins on
-//!   duplicate headings (silent); or a `^id` block lookup, last-wins on
-//!   duplicates (silent) — the app's map-overwrite, contract §2.1.
+//! - **Stage 1** — `getFirstLinkpathDest(linkpath, from)` over [`CorpusIndex`]:
+//!   basename + aliases, case-insensitive, source-relative
+//!   shortest-unambiguous. Empty linkpath ⇒ source file.
+//! - **Stage 2** — subpath on `#`: heading walk (case-insensitive,
+//!   strictly-deeper, anywhere-after, generation-skip, first-match silent) or
+//!   `^id` block (last-wins silent; §2.1).
 //!
-//! The ruled grammar always wins: input outside it never reaches here (the mint
-//! plane refuses `bad_request` first). A `_`-bearing block id, though, is not a
-//! grammar error on this plane — it is simply an id the app never indexes, so
-//! the walk misses (`ref_not_found`, stage 2), reproducing the app's silent
-//! drop. Both dispositions conform (decision 013 consequence 3).
+//! Out-of-grammar input never reaches here (mint `bad_request` first). A
+//! `_`-bearing block id is not a grammar error here — the app never indexes it,
+//! so the walk misses (silent drop; decision 013 consequence 3).
 //!
-//! **D-C2 (frozen §4.5):** the return type carries **location facts only** —
-//! `dest` + `span`, never a `NodeRev`. The mint partition is a type-level fact:
-//! a ref cannot arm a write because the type that carries it cannot express a
-//! rev. The `no_rev_field` compile test pins this.
+//! **D-C2 (§4.5):** return type is location only (`dest` + `span`), never
+//! `NodeRev` — type-level mint partition (`no_rev_field` compile test).
 
 use crate::{ByteSpan, CorpusIndex, Document, Node, NodeKind};
 use std::collections::BTreeMap;

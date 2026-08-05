@@ -1,10 +1,5 @@
-//! D4-SPLICE gate fixtures — the frozen worked exchanges END-TO-END through
-//! the live serve loop: §4.4 E3/E4 (requests, armed responses, disk states,
-//! receipt bytes, roots R0→R1→R2), the §5.2 failure split, the `fm_key` dry
-//! exchange, and the §4.6 live-triple closure (advisor gate 5 — q5's
-//! truthful-0 caveat retires here). Flag-A discipline: every value DERIVED
-//! (real decode → validate → apply → emit → replay), compared to the printed
-//! frames; any byte disagreement fails the suite. Bytes never hand-tuned.
+//! D4-SPLICE end-to-end: §4.4 E3/E4 (armed, disk, receipts, R0→R1→R2), §5.2
+//! failure split, `fm_key` dry, §4.6 live-triple. Values engine-derived.
 
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -61,11 +56,7 @@ fn one(root: &fs::WorkspaceRoot, line: &str) -> Value {
     frames.remove(0)
 }
 
-/// One node's live `node_rev` — the fingerprint U10 makes every wire-origin
-/// content change carry (requirements decision 18). The frozen §4.4 worked
-/// requests already show it on E3; the ruling makes it universal, so the
-/// companions below carry it too. Derived, never hand-typed: same discipline as
-/// every other value in this file.
+/// Live `node_rev` for U10 wire-origin content changes (derived, not typed).
 fn rev_of(root: &fs::WorkspaceRoot, sec: Value) -> String {
     let doc = fs::load(root, std::path::Path::new("notes/plan.md")).expect("load");
     let sec: wire::SecRef = serde_json::from_value(sec).expect("selector decodes");
@@ -83,12 +74,7 @@ fn q4(root: &fs::WorkspaceRoot) -> String {
     rev_of(root, json!({"hpath": [{"h": "Goals"}, {"h": "Q4"}]}))
 }
 
-/// The frozen §4.4 worked requests + companions, ONE serve session (one
-/// epoch): E3, E4, the three §5.2 failures, the `fm_key` dry, the §4.6 links
-/// exchange, the §4.7 root exchange — every request byte as printed.
-/// U10 (decision 18): every content-mutating wire write carries its fingerprint.
-/// The revs are DERIVED from the pre-session document, never typed — `q4_after`
-/// is the one that must be taken after E4 lands, because E4 moves Q4's own rev.
+/// Frozen §4.4 session: E3/E4 + §5.2 failures + dry/links/root. U10 revs derived.
 fn session(root: &fs::WorkspaceRoot) -> String {
     let q3 = q3(root);
     let q4 = q4(root);

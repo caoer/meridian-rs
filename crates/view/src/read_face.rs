@@ -1,58 +1,27 @@
-//! U2.9 — the C1 board-red projections + the locked read face (design 2 §2.1 /
-//! §2.3 / §5.3; plan §3 decision C1 = YES; advisor checklist item 24).
+//! C1 board-red projections + locked read face (d2 §2.1 / §2.3 / §5.3), mounted
+//! over [`crate::facts`] — never a fork of that contract.
 //!
-//! Three things land here, all mounted OVER U2.1's schema-v2 fact tables
-//! ([`crate::facts`]) — never a fork of that contract:
+//! 1. **Pin projection** — pure parse of each page's `meridian-lock` into
+//!    `input_lock` rows ([`page_lock_items`]). Every row carries `src_doc_rev`
+//!    (cache self-invalidates by `doc_rev`; §2.1 / §8).
+//! 2. **`board_red`** — the one red view, reading the colour plane's reds from
+//!    the projected verdict. Default face, no optional pack. Legacy
+//!    `board_drift` / `board_unresolved` retired with the `node_rev` compare.
+//! 3. **[`lock_read_face`]** — `enable_external_access=false` +
+//!    `lock_configuration=true`: SQL packs have no write path and cannot
+//!    re-raise it (A10).
 //!
-//! 1. **The pin projection** — a pure parse (source 1) of each page's declared
-//!    pins into [`input_lock`](READ_FACE_SCHEMA_SQL) rows. ONE form: the
-//!    engine's own `meridian-lock` block (see [`page_lock_items`]). The two
-//!    legacy `^inputs` serializations were retired with the vocabulary (R1.3,
-//!    amending 9.6).
-//!    Every row records the containing page's `doc_rev` (`src_doc_rev`), the
-//!    rev-compare invalidation key: the projection cache self-invalidates by
-//!    `doc_rev`, so no stored second truth exists (§2.1, §8).
-//! 2. **The board-red surface** — `board_red`, the ONE red view, reading the
-//!    colour plane's reds straight off the projected verdict. Board reds are
-//!    computable in the DEFAULT read face with **no optional pack** (checklist
-//!    24; §4.2 "live-rev ≠ armed-rev is ordinary red drift in the default face";
-//!    §5.3 "a doctored verdict … verdicts freeze at close"). The `board_drift`
-//!    and `board_unresolved` views it used to union were the legacy `node_rev`
-//!    compare and are RETIRED (R1.3 / U9c) — R4 leaves no row for them to
-//!    answer.
-//! 3. **The locked read face** — [`lock_read_face`]: `enable_external_access =
-//!    false` + `lock_configuration = true`, so an SQL view pack running over
-//!    this connection **physically has no write path** — no `ATTACH`, no `COPY`,
-//!    no external file read, and it cannot re-raise any of it (A10, adversary
-//!    carry 1; §2.1: "locked down as a capability, not a convention").
+//! `edge`/`claim` are not populated here.
 //!
-//! `edge`/`claim` are NOT populated here — their population is owned by their
-//! source units (pin, run plane). U2.9 reads parse and locks the face only.
+//! # Board colors + residue (d2 §5.3)
+//! - **`board`** — one `green`/`red`/`grey` row per lock edge. Under R4 every
+//!   row carries a verdict; the board reads it and computes none of its own.
+//! - **`board_residue`** — rows `board` cannot colour (NULL verdict matches no
+//!   arm). Count disclosed beside every board answer. Sits at zero with a test
+//!   that it can move.
 //!
-//! # U5.1 — the board-view colors + the trace query (d2 §5.3)
-//! One default-face view rides the locked read face (no face widening — the
-//! blocked-`ATTACH` guard still holds with it loaded):
-//!
-//! - **`board`** — the colors layer: exactly one `green`/`red`/`grey` row per
-//!   lock edge. Under R4 every row carries the color plane's verdict, so the
-//!   board READS that verdict and computes none of its own — two arms, not five.
-//! - **`board_residue`** — every row `board` cannot colour. The collapse above
-//!   means a verdict-less row matches NO arm and would leave the surface
-//!   silently; this view is its only trace, and the count is disclosed beside
-//!   every board answer so absence never has to be inferred. It sits at ZERO,
-//!   with a test proving it can move — a counter that cannot move is a
-//!   decoration.
-//!
-//!   "An ungated close renders grey, never green" (d2 §5.3) still holds, and now
-//!   holds BY CONSTRUCTION rather than by detection: green is COMPUTED from a
-//!   fingerprint recomputed against live content, never granted by a row
-//!   existing, so no row shape earns green without the content matching.
-//!
-//! A second view, `co_edit_trace`, carried the traces layer over the reserved
-//! journal's mechanical write-facts. It died with the journal (ZT 2026-08-02,
-//! remove-no-replacement): its every column came from `receipt_journal`, so with
-//! that table gone there is no trace to project, and a co-edit is no longer
-//! visible convention-free.
+//! "Ungated close renders grey, never green" holds by construction: green is
+//! computed from a live fingerprint recompute, never granted by row existence.
 
 use std::collections::BTreeMap;
 
@@ -65,18 +34,11 @@ use crate::ViewError;
 use crate::facts;
 use crate::walk;
 
-/// The additive read-face DDL: the lock-pin parse projection + the board-red
-/// views. A separate schema from the frozen [`crate::facts`] contract —
-/// additive, never an edit to what U2.1 shipped.
-///
-/// Every `input_lock` ADDRESS column is a source-1 (parse) fact. The three
-/// `verdict_*` columns are the exception, and the exception is named: a
-/// `meridian-lock` pin's color is a blake3 re-hash of the target's bytes, which
-/// this face's SQL cannot express, so the ONE color plane
-/// ([`crate::walk::lock_pin_colors`]) computes it and
-/// [`project_input_locks`] carries the answer into the row. Not a second color
-/// computer, and not a stored verdict: the whole read face is built per query
-/// from the same `docs` snapshot and thrown away with the connection.
+/// Additive read-face DDL (`input_lock` + board views) over frozen
+/// [`crate::facts`]. Address columns are source-1 (parse). `verdict_*` are the
+/// named exception: fingerprint colour is a blake3 re-hash SQL cannot express,
+/// so [`crate::walk::lock_pin_colors`] computes it and [`project_input_locks`]
+/// projects the answer — one colour plane, built per query and discarded.
 pub const READ_FACE_SCHEMA_SQL: &str = r"
 -- NOTE (R1.3 / U9c): the legacy `^inputs` plane is retired, and the arms that
 -- were fenced by `verdict_color IS NULL` — the node_rev compare, board_drift,
@@ -191,41 +153,33 @@ CREATE VIEW board AS
 
 ";
 
-/// Create the additive read-face schema (`input_lock` + board views) against
-/// `conn`. The caller must have created [`crate::facts`]'s schema first (the
-/// board views reference `node`).
+/// Create additive read-face schema. Caller must create [`crate::facts`] first
+/// (board views reference `node`).
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from executing the DDL batch.
+/// Propagates any `DuckDB` error from the DDL batch.
 pub fn create_read_face_schema(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch(READ_FACE_SCHEMA_SQL)
 }
 
-/// Lock the read face as a capability (A10; §2.1). After this call the
-/// connection can only READ: `enable_external_access = false` removes every
-/// write/external path (`ATTACH`, `COPY`, `read_csv`/`read_parquet`,
-/// `INSTALL`/`LOAD`), and `lock_configuration = true` freezes settings so
-/// untrusted SQL cannot re-raise any of it. An SQL view pack over this
-/// connection physically has no write path.
+/// Lock the read face as a capability (A10; §2.1):
+/// `enable_external_access=false` + `lock_configuration=true` — no
+/// `ATTACH`/`COPY`/external read, and settings cannot be re-raised.
 ///
-/// Ordering law: call this AFTER the schema is created and every projection is
-/// inserted — the lock blocks nothing the projector does (ordinary in-memory
-/// INSERTs), only the external/write surface a downstream view pack could reach.
+/// Call AFTER schema + projections are loaded (ordinary INSERTs still work;
+/// only the external/write surface is frozen).
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from applying the two `SET` statements.
+/// Propagates any `DuckDB` error from the two `SET`s.
 pub fn lock_read_face(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch("SET enable_external_access=false;\nSET lock_configuration=true;")
 }
 
-/// Build a locked, board-ready read face over `docs`: project `node` (via
-/// [`crate::facts`]), project the lock blocks into `input_lock`, create
-/// the board-red views, then LOCK the face. The returned connection serves the
-/// default-face board queries and **refuses `ATTACH`/`COPY`/external access**
-/// (the C1 read-face capability).
+/// Locked, board-ready face: project `node` + `input_lock`, create board views,
+/// then lock. Refuses `ATTACH`/`COPY`/external access.
 ///
 /// # Errors
-/// [`ViewError::Duckdb`] on any schema-creation, projection, or lock failure.
+/// [`ViewError::Duckdb`] on schema, projection, or lock failure.
 pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     facts::create_facts_schema(&conn)?;
@@ -236,14 +190,12 @@ pub fn open_board(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewE
     Ok(conn)
 }
 
-/// The paths whose live `doc_rev` no longer matches the rev the projection was
-/// built at — the STALE set (design §2.1 / §8: the cache self-invalidates by
-/// `doc_rev`). A path is stale iff its recorded `node.doc_rev` differs from the
-/// live `docs[path].root.node_rev`, OR the path is absent from the projection.
-/// A non-empty result means the projection must be rebuilt to answer honestly.
+/// Paths whose live `doc_rev` no longer matches the projection (§2.1 / §8).
+/// Stale iff recorded `node.doc_rev` ≠ live root rev, or path absent.
+/// Non-empty ⇒ rebuild before answering.
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from reading the recorded `node` revs.
+/// Propagates any `DuckDB` error reading recorded revs.
 pub fn stale_paths(
     conn: &Connection,
     docs: &BTreeMap<String, Document>,
@@ -264,24 +216,13 @@ pub fn stale_paths(
     Ok(stale)
 }
 
-// ---------------------------------------------------------------------------
-// the lock-pin parse projection
-// ---------------------------------------------------------------------------
-
-/// A `meridian-lock` row's identity — the page it is declared on, its ref
-/// verbatim, and its pinned CID-token. The key both planes address the row by:
-/// a color is a pure function of it (plus the live corpus), so a lookup can
-/// never hand a row the wrong verdict.
+/// Pin identity: `(src_path, declared_ref, fingerprint)`. Colour is a pure
+/// function of this key plus live corpus.
 type PinKey = (String, String, Option<String>);
 
-/// The color of every `meridian-lock` row in `docs`, keyed by [`PinKey`].
-///
-/// This face computes NO color of its own: it asks [`crate::walk::lock_pin_colors`]
-/// — the same `edge_color` a `mrd walk` listing renders — and carries the answer
-/// into the SQL row. A fingerprint verdict is a blake3 re-hash of the target's
-/// bytes, which this face's SQL cannot express, so projecting the one plane's
-/// answer is the only way the board can agree with the walk instead of guessing
-/// beside it.
+/// Colour of every `meridian-lock` row, keyed by [`PinKey`]. Asks
+/// [`crate::walk::lock_pin_colors`] (same `edge_color` as walk) — this face
+/// computes no colour of its own.
 fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
     walk::lock_pin_colors(docs)
         .into_iter()
@@ -289,17 +230,8 @@ fn pin_verdicts(docs: &BTreeMap<String, Document>) -> BTreeMap<PinKey, Color> {
         .collect()
 }
 
-/// Project every page's lock pins into `input_lock` — the `pins:` plane of the
-/// page's own `meridian-lock` block, parsed from the vault bytes alone
-/// (source 1), each row carrying the color plane's verdict ([`pin_verdicts`]).
-///
-/// The lock-REFUSAL row projects too. It is a PAGE-level fact, not a pin
-/// edge — no ref, no target, no pinned rev — and before the `verdict_*` columns
-/// existed the table could only spell it as a declared-unpinned EDGE, the wrong
-/// reason on a row that declares no edge; so it was held back to the color plane
-/// alone. It now spells itself: grey `lock-refused`, carrying the refusal. Its
-/// `to_path` stays EMPTY, so it is still a leaf no walk traverses and no reverse
-/// index reaches.
+/// Project lock pins into `input_lock` (source-1 parse + colour-plane verdict).
+/// Lock-refusal rows project too: grey `lock-refused`, empty `to_path` (leaf).
 fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> duckdb::Result<()> {
     let index = corpus_index(docs);
     let verdicts = pin_verdicts(docs);
@@ -315,18 +247,10 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
             .into_iter()
             .enumerate()
         {
-            // Look the verdict up for exactly the rows the colour plane colours,
-            // through the ONE shared predicate ([`LockItem::is_colourable`]) the
-            // walk's roll-up also reads — never a local re-spelling of it.
-            //
-            // **`.flatten()` IS THE SECOND DOOR TO A NULL VERDICT, and it is not
-            // the same door as the guard.** A row that PASSES the guard still
-            // lands NULL if the lookup MISSES, and no parser invariant touches
-            // that case: the key `(src_path, declared_ref, fingerprint)` matches
-            // only because those two fields are minted ONCE in
-            // [`collect_lock_pins`] and neither resolution wrapper reassigns
-            // them. That is a real guarantee with no test on it, which is why
-            // `board_residue` counts what falls out here rather than trusting it.
+            // Shared predicate with walk ([`LockItem::is_colourable`]).
+            // `.flatten()` is the second door to NULL verdict: colourable but
+            // lookup-miss — key matches only because fields are minted once in
+            // [`collect_lock_pins`]. `board_residue` counts that fallout.
             let verdict = item
                 .is_colourable()
                 .then(|| {
@@ -365,160 +289,62 @@ fn project_input_locks(conn: &Connection, docs: &BTreeMap<String, Document>) -> 
     Ok(())
 }
 
-/// One parsed lock item (source 1). Passengers the engine ignores
-/// (`claim`, `at:`) are not carried — only the columns board reds and the walk
-/// plane compute on.
-///
-/// Public because the walk plane ([`crate::walk`]) consumes the SAME parser this
-/// board projection uses: one owner for the lock grammar (design "one
-/// owner per fact"), never a second reader that could drift.
+/// One parsed lock item (source 1). Public so walk and board share one parser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockItem {
-    /// The `ref` field, verbatim (the declared ref) — the bytes the projection
-    /// writes and a verdict joins on. EMPTY on a [`LockItem::lock_refusal`] row
-    /// — a refused lock declares no ref, and the listing names the page from
-    /// its own context instead.
+    /// Declared `ref`, verbatim. Empty on a [`LockItem::lock_refusal`] row.
     pub declared_ref: String,
-    /// The same ref, PARSED ([`addr::Addr`]) — **the structural owner** (U10).
-    ///
-    /// Every consumer that needs the root, the path or the selector reads THIS;
-    /// nothing re-splits [`LockItem::declared_ref`]. `None` means there is no
-    /// address to read: a refusal row (which declares no ref), or a spelling
-    /// outside the address grammar (`docs/address-grammar.md` § 4). The option
-    /// is what makes "not an address" impossible to mistake for one.
+    /// Parsed address ([`addr::Addr`]) — structural owner (U10). Consumers
+    /// read this; nothing re-splits `declared_ref`. `None` = refusal or
+    /// out-of-grammar spelling.
     pub declared_addr: Option<addr::Addr>,
-    /// The `to` page path — the `ref` path when `to` is absent. EMPTY on a
-    /// [`LockItem::lock_refusal`] row: a refused lock names no target, so the
-    /// row is a leaf the walk never traverses and never reverses into.
+    /// Target page path (`ref` path when `to` absent). Empty on refusal (leaf).
     pub to_path: String,
-    /// The `to` selector, verbatim after the first `#` (`""` = the page/doc root).
+    /// Selector after first `#` (`""` = page/doc root).
     pub to_sel: String,
-    /// The `rev` field — `None` = declared-only (grey).
+    /// Pinned rev — `None` = declared-only (grey under legacy; unused under R4).
     pub pinned_rev: Option<String>,
-    /// The `rev_class` field — `content` | `object` (`None` = unstated).
+    /// `content` | `object` (`None` = unstated).
     pub rev_class: Option<String>,
-    /// The containing block's `hash-algo:` header (`None` = absent). A value
-    /// other than [`model::NODE_REV_ALGO`] means the pinned rev was minted under
-    /// an algo this engine does not compute, so it stays outside the node-rev
-    /// compare. Per-block, stamped onto every item of the block. A form-3
-    /// (`meridian-lock`) pin writes no header — the label is derived from its
-    /// self-describing token ([`fingerprint_algo`]).
-    ///
-    /// **The label renders nothing.** It once drove a grey `superseded-algo`
-    /// board arm (U3.4); that arm collapsed with the legacy `^inputs` plane
-    /// (R1.3/U9c) and no board arm reads this column now. A row's colour comes
-    /// from `verdict_color` alone. DECISION 22 (ZT, 2026-08-04).
+    /// Algo label (header or derived from fingerprint token). Projected only —
+    /// no board arm reads it; colour is `verdict_color` alone (D22).
     pub hash_algo: Option<String>,
-    /// The `meridian-lock` `fingerprint` — a full `fp1.…` CID-token, verbatim.
-    /// The typed slot a verdict computer reads:
-    /// `model::fingerprint::verify_content` consumes THIS, never a re-parse of
-    /// the lock block.
+    /// `fp1.…` CID-token. Verdict computers consume this, never a lock re-parse.
     pub fingerprint: Option<String>,
-    /// **R4's structural selector — `path` XOR `properties`, verbatim.**
-    ///
-    /// This is the STRUCTURAL owner of the claim's address, and it exists because
-    /// [`LockItem::to_sel`] cannot be one. `to_sel` is the `/`-joined display
-    /// spelling, and joining is LOSSY in exactly the case R4's array was chosen
-    /// to carry: a heading whose own text contains `/` (`["A/B", "leaf"]`) joins
-    /// to `A/B/leaf` and re-splits into three segments naming a section that does
-    /// not exist. Every verdict computer reads THIS and re-splits nothing.
-    ///
-    /// `None` only on a [`LockItem::lock_refusal`] row, which declares no claim.
+    /// R4 structural selector (`path` XOR `properties`). Owner of the claim
+    /// address — `to_sel` is the lossy `/`-joined display. Verdict computers
+    /// read this and re-split nothing. `None` only on refusal.
     pub selector: Option<lock::Selector>,
-    /// R4's `object` — the wiki-link inner text, verbatim, the target's vault
-    /// path WITHOUT `.md`. Empty on a [`LockItem::lock_refusal`] row.
-    ///
-    /// Carried beside [`LockItem::to_path`] rather than re-derived from it
-    /// because the transcript class needs it: a `session#seq-N` ref's session id
-    /// is the OBJECT, and re-deriving it by stripping `.md` from `to_path` is the
-    /// string surgery R4's structure exists to end.
+    /// Wiki-link object (path without `.md`). Needed for transcript
+    /// `session#seq-N` classification; not re-derived from `to_path`.
     pub object: String,
-    /// Set on the ONE row a page projects when its `meridian-lock` block
-    /// REFUSED to parse ([`lock::LockError`], verbatim): malformed, or more than
-    /// one block on the page. Every other field is the empty/absent case — this
-    /// row declares no edge, it declares that the page's edges are UNREADABLE.
-    ///
-    /// It exists so a corrupt lock cannot read as "no pins": before it, a
-    /// refusal projected ZERO rows and a damaged page was indistinguishable from
-    /// a page that never pinned anything. The row renders grey `lock-refused`
-    /// (grey = outside sight), never green and never red.
+    /// Page-level lock parse refusal ([`lock::LockError`]). Declares no edge —
+    /// greys as `lock-refused` so corrupt ≠ "no pins".
     pub lock_refusal: Option<String>,
-    /// The canonical root this edge RESOLVED INTO, when it resolved into a
-    /// mounted root rather than the ambient one. `None` = the ambient root (the
-    /// majority case, unchanged).
-    ///
-    /// [`LockItem::to_path`] is the path INSIDE that root, so a consumer
-    /// fetching bytes must read this to know which corpus to fetch from —
-    /// resolving `to_path` against the ambient corpus is exactly FINDING 03's
-    /// wrong-bytes success.
+    /// Mounted root this edge resolved into (`None` = ambient). `to_path` is
+    /// inside that root — ambient lookup is wrong-bytes success.
     pub to_root: Option<addr::MountName>,
-    /// Set when this edge's ROOT could not be resolved to a readable corpus —
-    /// carrying the computed grey reason itself, not merely the fact that
-    /// something was wrong.
-    ///
-    /// **It carries the REASON because the causes must stay distinct (S3-R50).**
-    /// A root nothing declares and a root that is declared but unreadable are
-    /// different facts with different fixes, and a carrier that recorded only
-    /// "unresolved" would force the renderer to guess which — which is how one
-    /// of them ended up prescribing an action the user had already taken.
-    ///
-    /// Distinct from [`LockItem::lock_refusal`]: a refused lock is unreadable
-    /// HERE, an unresolvable root is unreachable FROM here.
+    /// Root could not be resolved — carries the grey reason (causes stay
+    /// distinct; S3-R50). Distinct from `lock_refusal` (unreadable HERE vs
+    /// unreachable FROM here).
     pub root_refusal: Option<model::selector::GreyReason>,
-    /// Set when the address's root WAS bound, readable and loaded, and that
-    /// root's corpus holds no [`LockItem::to_path`] — a measured absence (U21).
-    ///
-    /// **A separate slot from [`LockItem::root_refusal`] because it is a
-    /// separate fact.** `root_refusal` says the root could not be reached;
-    /// this says the root was reached and the file is not in it. One is a
-    /// refusal to claim (grey), the other is a claim (red), and a carrier that
-    /// held both in one slot would force the renderer to guess the tone.
+    /// Root was reached; file not in it — measured absence (U21). Separate
+    /// from `root_refusal` (grey refuse vs red claim).
     pub root_absence: Option<addr::MountName>,
 }
 
 impl LockItem {
-    /// **Can the colour law answer this row at all?** True when the row carries
-    /// evidence to verify ([`LockItem::fingerprint`]) or a stated failure to read
-    /// it ([`LockItem::lock_refusal`]). A row with NEITHER names no evidence and
-    /// reports no failure, so no compare on either plane has anything to answer
-    /// with — that is the `uncolourable` class the walk plane renders.
-    ///
-    /// **ONE DEFINITION, deliberately, and this is the whole point of it.** Two
-    /// projections read this predicate: the walk's colour roll-up
-    /// ([`crate::walk::lock_pin_colors_rooted`], which SKIPS a row that fails
-    /// it) and the board projection ([`project_input_locks`], which writes a
-    /// NULL verdict for one). They must agree, because the board's residue
-    /// disclosure counts exactly the rows the walk skipped.
-    ///
-    /// It was previously written TWICE, once in each file, as exact negations of
-    /// each other — which is why the duplication survived so long: **negated
-    /// copies do not look like copies**. Nothing tested that the two agreed. If
-    /// they ever disagreed, a well-formed row would take a verdict on one plane
-    /// and a NULL on the other, nothing would fail, and the row would simply stop
-    /// being counted. One definition is cheaper than the test that would have
-    /// caught the divergence, and it cannot be forgotten.
+    /// Whether the colour law can answer this row: has fingerprint evidence or
+    /// a stated refusal. Walk skips non-colourable; board writes NULL verdict.
+    /// **One definition** so residue counts exactly the rows walk skipped.
     #[must_use]
     pub fn is_colourable(&self) -> bool {
         self.fingerprint.is_some() || self.lock_refusal.is_some()
     }
 }
 
-/// Parse every lock pin declared in `doc`, document order (source 1). The SHARED
-/// reader for the board projection ([`project_input_locks`]) and the walk plane
-/// ([`crate::walk`]) — one owner for the lock grammar.
-///
-/// **One form, not three.** A page's pins are the `pins:` plane of its
-/// ` ```meridian-lock ` block ([`collect_lock_pins`]) and nothing else. The two
-/// legacy `^inputs` serializations this reader also carried — form-1 (the
-/// `^inputs` fence-info token, `items:` + flow-mappings) and form-2 (a plain
-/// yaml block trailed by an `^inputs` block-anchor, `- ref:`/`hash:` rows under a
-/// `hash-algo:` header) — are **retired**: R1.3 kills `inputs` as vocabulary AND
-/// as storage key, amending 9.6's storage-key clause.
-///
-/// With one form there is no disjointness to maintain. The double-count the old
-/// reader guarded against — a `meridian-lock` fence trailed by an `^inputs`
-/// anchor, projected once per pass with two different verdicts — is not fixed
-/// here, it is unrepresentable: only one pass remains.
+/// Parse every lock pin in `doc` (source 1). Shared reader for board and walk —
+/// one form: the `meridian-lock` `pins:` plane ([`collect_lock_pins`]).
 #[must_use]
 pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     let mut out = Vec::new();
@@ -526,10 +352,7 @@ pub fn page_lock_items(doc: &Document) -> Vec<LockItem> {
     out
 }
 
-/// Build the corpus [`CorpusIndex`] over `docs` — the vault name/alias index the
-/// form-2 wikilink resolution needs (`getFirstLinkpathDest` parity, contract
-/// §4.5). One owner: both the board projection ([`project_input_locks`]) and the
-/// walk plane ([`crate::walk`]) build it from the SAME `docs`.
+/// Corpus [`CorpusIndex`] over `docs` — shared by board and walk.
 #[must_use]
 pub fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     let mut index = CorpusIndex::new();
@@ -539,14 +362,8 @@ pub fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     index
 }
 
-/// Parse `doc`'s lock items, then RESOLVE each item's `to_path` against
-/// the corpus (the U3.4 wikilink wiring). A form-2 ref is a `[[wikilink]]`-by-NAME
-/// (`llm-wiki-skill-compilation`), not a vault path, so the raw `to_path` matches
-/// no `node.path` and the board/walk cannot find the target. This maps the name to
-/// a real path via [`resolve_to_path`], so a native-algo form-2 pin verifies
-/// green against its live target (Go resolves these; mrd must too, or Gate B
-/// agreement fails). A form-1 path (already a real `node.path`) passes through
-/// unchanged; an unresolvable ref keeps its bare name and renders red/unresolved.
+/// Parse lock items then resolve each `to_path` against the corpus (wikilink
+/// name → vault path). Unresolvable keeps bare name → red/unresolved.
 #[must_use]
 pub fn page_lock_items_in_corpus(
     src_path: &str,
@@ -563,20 +380,9 @@ pub fn page_lock_items_in_corpus(
     )
 }
 
-/// [`page_lock_items_in_corpus`] against a ROOT-KEYED corpus and a mount table —
-/// **resolution is a mount lookup** (U11).
-///
-/// Each item's `to_path` is resolved through the one address owner, and the
-/// outcome is recorded STRUCTURALLY rather than folded into the path string:
-///
-/// - resolved in a mounted root → `to_root` names it, `to_path` is the path
-///   inside THAT root;
-/// - the named root is not bound → `unmounted` names it and the row renders grey;
-/// - anything else → the ambient behaviour, unchanged.
-///
-/// The unresolvable-ref fallback is unchanged: the spelling comes back verbatim
-/// and the edge renders red `selector-unresolved`. **An unmounted root does NOT
-/// take that path** — that is the conflation this function exists to prevent.
+/// Root-keyed form: resolution is a mount lookup (U11). Outcomes are structural:
+/// mounted → `to_root` + in-root path; unbound → grey `unmounted`; else ambient.
+/// Unmounted does **not** take the red `selector-unresolved` path.
 #[must_use]
 pub fn page_lock_items_in_rooted_corpus(
     src_path: &str,
@@ -600,17 +406,10 @@ pub fn page_lock_items_in_rooted_corpus(
                 item.root_refusal =
                     Some(model::selector::GreyReason::PathUnseeable { root, path, detail });
             }
-            // A miss INSIDE a mounted root is a measured absence, and it is
-            // recorded structurally like every other rooted outcome. `to_root`
-            // is set as well as `root_absence`: the target is named
-            // root-qualified (never as a bare path that reads as the ambient
-            // file), and the walk keeps it a LEAF by construction, since the
-            // ambient corpus holds no key spelled `root:path`.
-            // `to_path` becomes the path INSIDE the root, exactly as it does on
-            // the resolving arm — the resolver hands the peeled path back, and
-            // it is not the declared spelling. Leaving the spelling in place
-            // renders `sessions:sessions:absent.md`, because `to_root` is then
-            // prefixed onto an address that already carries its root.
+            // Miss inside a mounted root: measured absence. Set `to_root` +
+            // peeled `to_path` so naming is root-qualified (not ambient decoy)
+            // and walk treats it as a leaf. Leaving declared spelling yields
+            // doubled root prefix.
             model::RefResolution::NotFound {
                 root: Some(root),
                 path,
@@ -620,9 +419,7 @@ pub fn page_lock_items_in_rooted_corpus(
                 item.to_path = path;
                 item.root_absence = Some(root);
             }
-            // An AMBIENT miss and a malformed spelling both keep the declared
-            // spelling, which is what the red `selector-unresolved` render
-            // reports. Unchanged, and deliberately so.
+            // Ambient miss / malformed: keep declared spelling for red render.
             model::RefResolution::NotFound { root: None, .. }
             | model::RefResolution::Malformed(_) => {}
         }
@@ -630,21 +427,9 @@ pub fn page_lock_items_in_rooted_corpus(
     items
 }
 
-/// Resolve a lock item's `to_path` to a real corpus path through the ONE address
-/// owner ([`CorpusIndex::resolve_ref`]) — exact key, then key + `.md`, then
-/// `getFirstLinkpathDest` parity. This function holds no precedence of its own:
-/// a second copy of the address grammar is how the pin plane and the decoration
-/// plane came to hash two different documents for one ref.
-///
-/// An unresolvable ref returns its bare input unchanged — unresolved is
-/// first-class (the edge then renders red `selector-unresolved`, never a false
-/// green), exactly as a genuinely missing target should. That fallback is the
-/// only thing this wrapper adds: the read face reports the spelling it could not
-/// place, where a caller needing the absence itself reads the `Option`.
-///
-/// Public so the U3.4 supersede tool resolves a ref to the SAME path this reader
-/// does — no reader/writer drift on which node a `[[ref]]` names (the swept
-/// `node_rev` must match what the board reads).
+/// Resolve `to_path` via the one address owner ([`CorpusIndex::resolve_ref`]).
+/// Unresolvable returns bare input (first-class unresolved). Public so writers
+/// resolve to the same path the board reads.
 #[must_use]
 pub fn resolve_to_path(
     to_path: &str,
@@ -661,15 +446,8 @@ pub fn resolve_to_path(
     )
 }
 
-/// [`resolve_to_path`] against a ROOT-KEYED corpus and a mount table — the
-/// cross-root form, and the one the walk plane uses.
-///
-/// The bare-input fallback is unchanged and stays deliberate: an unresolvable
-/// ref reports the spelling it could not place. **A `root:`-bearing ref to an
-/// UNMOUNTED root therefore reports its address verbatim rather than the ambient
-/// root's same-basename file** — the caller distinguishes the two by asking
-/// [`model::CorpusIndex::resolve_ref`] directly, which is what
-/// `walk::steps_from` does to reach the grey.
+/// Root-keyed [`resolve_to_path`]. Unmounted `root:` refs report the address
+/// verbatim (not ambient same-basename); caller uses `resolve_ref` for grey.
 #[must_use]
 pub fn resolve_to_path_rooted(
     to_path: &str,
@@ -684,34 +462,13 @@ pub fn resolve_to_path_rooted(
         .map_or_else(|| to_path.to_string(), str::to_owned)
 }
 
-// ---------------------------------------------------------------------------
-// form-3 — the `meridian-lock` block (the engine's own lockfile)
-// ---------------------------------------------------------------------------
-
-/// The algo label for a form-3 pin whose token does not parse as a fingerprint.
-/// Outside the engine-native set by construction, so an unreadable token can
-/// never be compared against a live `node_rev` (no false green, no false red).
+/// Algo label when a fingerprint token does not parse — outside native set so
+/// it never enters a node-rev compare.
 const FP_ALGO_UNKNOWN: &str = "fp-unknown";
 
-/// Append the `meridian-lock` `pins:` of `doc` to `out` (block order).
-///
-/// Form-3 is the ENGINE's own lockfile (`crates/lock`, decision #8), and it
-/// shared nothing with the retired `^inputs` forms: no `^inputs` anchor, no
-/// `hash-algo:` header, and its pinned value is a full `fp1.…` CID-token
-/// (`docs/norm-v2-spec.md` §2), never a `node_rev`. Before this reader a real
-/// meridian-lock pin was a SILENT absence here — the page projected zero rows
-/// and read as if it declared no inputs.
-///
-/// [`lock::find`] is the only parser: one owner for the lock grammar, and the
-/// crate's own predicate decides which fence is a lock (never a second
-/// language list here). `find` is fail-loud — a malformed block, or more than
-/// one on a page, is an `Err`; a READ face cannot refuse, so it projects the
-/// refusal as ONE grey row ([`LockItem::lock_refusal`]) rather than swallowing
-/// it. Projecting nothing would make a CORRUPT lock read as "no pins" —
-/// indistinguishable from a page that never pinned anything, which is the one
-/// answer a drift face must never give. The row carries the reason and colors
-/// grey `lock-refused` (grey = outside sight); repairing the block is not this
-/// face's job.
+/// Append `meridian-lock` `pins:` of `doc` to `out`. [`lock::find`] is the only
+/// parser. Fail-loud: malformed / multi-block projects ONE grey
+/// [`LockItem::lock_refusal`] row — corrupt must not read as "no pins".
 fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
     let found = match lock::find(doc) {
         Ok(Some(found)) => found,
@@ -729,9 +486,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
                 selector: None,
                 object: String::new(),
                 lock_refusal: Some(refusal.to_string()),
-                // Set by resolution, never by the parser: a DECLARED ref carries
-                // its root in the spelling, and which root it RESOLVED into is a
-                // mount-table fact this seam has not consulted yet.
+                // Resolution fills to_root; parser has not consulted mounts.
                 to_root: None,
                 root_refusal: None,
                 root_absence: None,
@@ -740,12 +495,7 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
         }
     };
     for pin in found.lock.pins {
-        // **The one-time conversion door, read side.** R4 carries STRUCTURE —
-        // `object` plus a selector ARRAY — and the joined `page#A/B` spelling
-        // exists only for humans and the wire echo. So the joined form is minted
-        // HERE, once, for display and for the address-grammar consumers that
-        // still need it; every verdict computer reads `selector` instead and
-        // re-splits nothing. This is U8's `pin_row` seam in reverse.
+        // One-time mint of display spelling; verdict computers read `selector`.
         let to_path = format!("{}.md", pin.object);
         let to_sel = display_selector(&pin.selector);
         let declared_ref = if to_sel.is_empty() {
@@ -758,20 +508,13 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
             declared_ref,
             to_path,
             to_sel,
-            // The pinned value AS WRITTEN — the token; the typed slot below is
-            // what a verdict computer reads.
             pinned_rev: Some(pin.fingerprint.clone()),
-            // Structural, not a written field: `pins:` IS the claim plane, so a
-            // pin is content-class.
-            rev_class: Some("content".to_string()),
+            rev_class: Some("content".to_string()), // pins: is the claim plane
             hash_algo: Some(fingerprint_algo(&pin.fingerprint)),
             fingerprint: Some(pin.fingerprint),
             selector: Some(pin.selector),
             object: pin.object,
-            lock_refusal: None, // this lock parsed — the refusal row is the Err arm
-            // Set by resolution, never by the parser: a DECLARED ref carries
-            // its root in the spelling, and which root it RESOLVED into is a
-            // mount-table fact this seam has not consulted yet.
+            lock_refusal: None,
             to_root: None,
             root_refusal: None,
             root_absence: None,
@@ -779,17 +522,8 @@ fn collect_lock_pins(doc: &Document, out: &mut Vec<LockItem>) {
     }
 }
 
-/// The `/`-joined DISPLAY spelling of an R4 selector — the human plane only.
-///
-/// `Path([])` is the whole body and spells empty (the page root), `Path(["^id"])`
-/// spells the anchor, and a heading array joins on `/`. A `properties` selector
-/// has no fragment spelling in the address grammar at all — the frontmatter is
-/// not a body node — so it spells empty too, and the projection's `to_path`
-/// carries the whole claim.
-///
-/// **This is lossy on purpose and must never be re-split.** A heading containing
-/// `/` joins ambiguously here; [`LockItem::selector`] is the structural answer
-/// and is what every verdict computer reads.
+/// `/`-joined display spelling of an R4 selector — human plane only; **lossy,
+/// never re-split**. Verdict computers read [`LockItem::selector`].
 fn display_selector(selector: &lock::Selector) -> String {
     match selector {
         lock::Selector::Path(segments) => segments.join("/"),
@@ -797,36 +531,17 @@ fn display_selector(selector: &lock::Selector) -> String {
     }
 }
 
-/// The algo label a form-3 row carries: the fingerprint token's own VERSION
-/// field (`fp1`). A `meridian-lock` block writes no `hash-algo:` header because
-/// the token is self-describing (#4 §2), so the label is derived, never invented.
-///
-/// Both this label and [`FP_ALGO_UNKNOWN`] sit outside the engine-native set
-/// ([`model::is_native_algo`] — `{node-rev, v2}`), and that is now the SAFE
-/// FALLBACK rather than the answer: a form-3 row's color comes from its
-/// projected verdict on both planes (the walk's `edge_color` routes a
-/// fingerprint to `model::selector::classify_pin`; the `board` view reads
-/// `verdict_color`).
-///
-/// **What the label buys, stated as what it actually does.** It cannot make a
-/// row render: the grey `superseded-algo` arm it once fed collapsed with the
-/// legacy `^inputs` plane (R1.3/U9c), and a row reaching SQL without a verdict
-/// matches no `board` arm at all — `board_residue` counts it and the count is
-/// disclosed. What staying outside the native set buys is the NEGATIVE: no
-/// node-rev compare, present or later, can be handed this label and call the
-/// row green. DECISION 22 (ZT, 2026-08-04).
+/// Algo label from fingerprint token version. Outside native set so no node-rev
+/// compare can call the row green (D22). Colour comes from projected verdict.
 fn fingerprint_algo(token: &str) -> String {
     match model::fingerprint::parse_fingerprint(token) {
-        // A hand-written token could spell a version that collides with the
-        // native set (`v2.span2.b3.…`). A fingerprint is never node-rev-
-        // comparable, so a collision falls back to the unknown label rather
-        // than inviting the node-rev compare to call it green.
+        // Collision with native version spelling → unknown (never node-rev green).
         Some(parts) if !model::is_native_algo(&parts.version) => parts.version,
         _ => FP_ALGO_UNKNOWN.to_string(),
     }
 }
 
-/// `usize` → `u64`, saturating (never truncates on a 32-bit target).
+/// `usize` → `u64`, saturating.
 fn u64c(x: usize) -> u64 {
     u64::try_from(x).unwrap_or(u64::MAX)
 }
@@ -839,18 +554,11 @@ mod tests {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// The R4 blob hash every fixture pin carries. R4 makes `hash` MANDATORY —
-    /// *"if hash is missing, we lost the explicit target meaning"* — so there is
-    /// no fixture pin without one, and the retired `objects:` table these
-    /// fixtures used to set has no successor to set.
+    /// R4 blob hash — mandatory on every fixture pin.
     const FIXTURE_HASH: &str = "9ae3f1deadbeef";
 
-    /// A lock page carrying one R4 pin per `(ref-spelling, fingerprint)` pair.
-    ///
-    /// The spelling is a CONVENIENCE for the fixture only — it is split into the
-    /// `object` and the selector ARRAY here, at the fixture's own door, exactly
-    /// as the production read door mints the joined form. Nothing downstream sees
-    /// a joined string.
+    /// Fixture page with one R4 pin per `(ref-spelling, fingerprint)`.
+    /// Spelling is split to object + selector array at this door only.
     fn lock_page(pins: &[(&str, &str)]) -> String {
         let mut l = lock::Lock::new();
         for (spelling, fingerprint) in pins {
@@ -877,14 +585,12 @@ mod tests {
         )
     }
 
-    /// A full, well-formed CID-token (`fp1.span2.b3.<64hex>`).
+    /// Well-formed CID-token (`fp1.span2.b3.<64hex>`).
     fn fp(nibble: &str) -> String {
         format!("fp1.span2.b3.{}", nibble.repeat(32))
     }
 
-    /// THE regression: a meridian-lock pin projects a row. Before S3 this page
-    /// projected ZERO items — a real pin read as "this page declares no inputs"
-    /// (a silent absence, `mrd walk` printed `(nothing)` and exited 0/clean).
+    /// meridian-lock pin projects a row (not silent absence).
     #[test]
     fn meridian_lock_pin_is_no_longer_a_silent_absence() {
         let token = fp("ab");
@@ -922,17 +628,8 @@ mod tests {
         );
     }
 
-    /// The board sees it AND judges it: a meridian-lock-only page projects an
-    /// `input_lock` row carrying the color plane's verdict, and the board renders
-    /// that verdict. `fp("cd")` is a well-formed token holding the WRONG digest,
-    /// so the honest answer is `red content-drifted` — and the same pin at the
-    /// target's LIVE token is green, proving the red is measured, not blanket.
-    ///
-    /// SUPERSEDES S3's `lock_only_page_is_visible_to_the_board_as_grey`, which
-    /// asserted `grey superseded-algo` and `board_red` empty. That was honest
-    /// while `input_lock` had no verdict column — the board could see the pin but
-    /// not judge it — and dishonest the moment the walk plane could say red
-    /// (S9): two planes, two colors, one question.
+    /// Board projects lock pin + colour-plane verdict; wrong digest is measured
+    /// red, live token greens.
     #[test]
     fn lock_only_page_renders_its_pin_verdict_on_the_board() {
         let target = "# Target\n\nbody\n";
@@ -965,8 +662,7 @@ mod tests {
             ("red", "content-drifted"),
             "the wrong digest is measured drift — the same word `mrd walk` prints",
         );
-        // The ONE red surface agrees: a reader asking board_red "is anything
-        // red?" is not told no while `board` says red.
+        // board_red agrees with board (no under-report).
         let reds: i64 = conn
             .query_row(
                 "SELECT count(*) FROM board_red WHERE src_path='effect.md' AND reason='content-drifted'",
@@ -976,8 +672,7 @@ mod tests {
             .unwrap();
         assert_eq!(reds, 1, "a measured fingerprint drift IS a board red");
 
-        // The same pin at the target's LIVE token greens — the red above is a
-        // measurement, never a blanket verdict on the form.
+        // Live token greens — red above is measured, not blanket.
         let live = model::fingerprint::fingerprint(&doc(target), &doc(target).root)
             .expect("the fixture target has content")
             .into_string();
@@ -1005,14 +700,7 @@ mod tests {
     #[test]
     fn refused_lock_block_projects_one_refusal_row_not_silence() {
         let malformed = "# A\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
-        // The precondition names WHICH refusal. `is_err()` could not tell the
-        // MALFORMED rule from the version gate — and a pre-R4 `version: 1`
-        // fixture refuses on VERSION, which is exactly the drift that would
-        // leave the assertion below measuring a refusal it never named.
-        //
-        // The reason STRING is deliberately not repeated here: the assertion
-        // immediately below already pins it in full, and a second spelling is a
-        // second thing to drift. This pins the variant and the LINE.
+        // Pin Malformed@line 3 (not the version gate).
         assert!(
             matches!(
                 lock::find(&doc(malformed)),
@@ -1061,17 +749,7 @@ mod tests {
         );
     }
 
-    /// The refusal row reaches the SQL board and spells itself correctly: grey
-    /// `lock-refused`, carrying WHY, with no ref and no target — so it is
-    /// visible without ever being readable as an edge. It is NOT a board red
-    /// (nothing was measured) and NOT `declared-unpinned` (the page did not
-    /// decline to pin; its pins are unreadable).
-    ///
-    /// SUPERSEDES S3's `refusal_row_is_not_projected_into_the_input_lock_table`,
-    /// which asserted zero rows. Holding the row back was right while the table
-    /// could only spell it as a declared-unpinned EDGE — the wrong reason. With
-    /// `verdict_*` the row spells itself, and zero rows would make a CORRUPT
-    /// lock byte-identical, on the board, to a page that never pinned anything.
+    /// Refusal reaches board as grey `lock-refused` (not red, not silent).
     #[test]
     fn refusal_row_projects_one_grey_lock_refused_row() {
         let malformed = "# A\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
@@ -1117,10 +795,7 @@ mod tests {
         assert_eq!(reds, 0, "an unreadable lock measures nothing — never red");
     }
 
-    /// The algo label is derived, and it can never collide with the native set:
-    /// an unparseable token, and a hand-written token spelling a native version,
-    /// both fall back to the unknown label. Either way the row stays outside the
-    /// `node_rev` compare — no false green.
+    /// Derived algo label stays outside native set — no false node-rev green.
     #[test]
     fn derived_algo_label_never_collides_with_the_native_set() {
         assert_eq!(fingerprint_algo(&fp("ab")), "fp1");
@@ -1138,29 +813,13 @@ mod tests {
         }
     }
 
-    /// **NARROWED (U10).** This test was named
-    /// `lock_ref_grammar_has_one_owner_and_is_root_prefix_learnable` and its
-    /// comment claimed a later `root:` prefix would be *"a change to that one
-    /// function"*. FINDING 02 measured sixteen sites re-splitting the same
-    /// string, and this test never proved otherwise: it exercised exactly one
-    /// other function, asserted only `declared_ref` for its colon-bearing
-    /// fixture, and **never `to_path`** — had it asserted `to_path` it would
-    /// have printed the literal-path misreading and contradicted its own
-    /// comment. "ONE owner" was not tested at all.
-    ///
-    /// What is now true, and what this asserts: the address is a TYPE parsed at
-    /// the ingress, so the root is STRUCTURAL rather than glued to a path, and
-    /// the projection columns are byte-identical to what the string convention
-    /// produced. The claim is exactly the size of its proof.
+    /// Address is a typed parse at ingress; projection columns match structure.
     #[test]
     fn a_lock_ref_is_a_parsed_address_and_the_projection_is_byte_identical() {
-        // The projection columns, minted from R4's STRUCTURE at the read door —
-        // what `split_address` used to do by string surgery over a joined
-        // spelling that no longer exists on the pin row.
         for (spelling, want_path, want_sel) in [
             ("wiki/page.md", "wiki/page.md", ""),
             ("wiki/page.md#Design", "wiki/page.md", "Design"),
-            // A block-id keeps its caret — it is the `node.selector` verbatim.
+            // Block-id keeps caret (`node.selector` verbatim).
             ("wiki/page.md#^claim-1", "wiki/page.md", "^claim-1"),
         ] {
             let items = page_lock_items(&doc(&lock_page(&[(spelling, &fp("34"))])));
@@ -1171,11 +830,7 @@ mod tests {
             );
         }
 
-        // THE assertion the old test omitted. The row carries the ref verbatim
-        // AND `to_path` — and `to_path` still prints the whole spelling, root
-        // included. Peeling it here would resolve a cross-root ref onto the
-        // ambient root's same-basename file, which is FINDING 03. U11 owns the
-        // root-keyed lookup that makes peeling safe.
+        // Cross-root: to_path keeps full spelling (no ambient peel here).
         let items = page_lock_items(&doc(&lock_page(&[("sessions:notes.md#Design", &fp("34"))])));
         assert_eq!(items[0].declared_ref, "sessions:notes.md#Design");
         assert_eq!(

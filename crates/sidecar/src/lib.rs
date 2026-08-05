@@ -1,31 +1,20 @@
-//! Thin NDJSON serve loop — ONE of the two HOSTS of the shared typed edge
-//! (`wire-serve`; the resident `registry` daemon is the other), wiring only
-//! (law 3 as re-attested 2026-07-24, `docs/laws.md`).
+//! Thin NDJSON serve loop — one of two hosts of the shared typed edge
+//! (`wire-serve`; the resident `registry` daemon is the other). Wiring only
+//! (law 3, `docs/laws.md`).
 //!
-//! # Charter
-//! **Owns:** the typed edge: untyped `transport` frames validated into `wire`
-//! types (the hand-rolled strict-decode pass — v2 §3.2 server law: unknown
-//! request fields and unknown enum values are rejected loudly, because serde's
-//! `deny_unknown_fields` does not compose with `flatten`), dispatched to
-//! `model`/`fs`, results projected back to wire shapes at the `wire-map` seam.
-//! The bin (`main.rs`) stays process wiring only.
+//! **Owns:** transport frames → strict-decode into `wire` types (v2 §3.2:
+//! unknown fields/enum values rejected; serde `deny_unknown_fields` does not
+//! compose with `flatten`) → `model`/`fs` → `wire-map` projection. The bin
+//! is process wiring only.
 //!
-//! **Never does:** anything a crate could own — parsing (`syntax`), tree law
-//! (`model`), projection behavior (`wire-map`), disk (`fs`), framing meaning
-//! (`transport`). Growth pressure here is the signal a capability is missing
-//! its crate; the serve/decode wiring targets a few hundred auditable lines.
+//! **Never:** parse (`syntax`), tree law (`model`), projection (`wire-map`),
+//! disk (`fs`), frame meaning (`transport`).
 //!
 //! # Frame law (v2 §3.1)
-//! One JSON object per line; stdout carries frames only, logs go to stderr.
-//! The raw `id` lexeme is scanned BEFORE any typed decode (B2 law,
-//! `transport::scan_id`): a non-conforming id answers `bad_request` with
-//! `id:null` and the offending lexeme verbatim in `id_raw` — never echoed as
-//! a valid id, never reclassified as a notification.
-//!
-//! # Rungs
-//! Rung 2 (D2-DISPATCH): `hello`/`toc`/`cat`/`extract`/`resolve` arms +
-//! strict decode; ops known to the wire but not yet armed answer `unknown_op`
-//! (§3.2 discovery honesty). Rung 3+ adds arms, not structure.
+//! One JSON object per line; stdout = frames only, logs → stderr. Raw `id`
+//! is scanned before typed decode (B2, `transport::scan_id`): a bad id answers
+//! `bad_request` with `id:null` and the lexeme in `id_raw` — never as a valid
+//! id, never as a notification.
 
 use std::io::{self, BufRead, Write};
 
@@ -36,36 +25,27 @@ use wire::{ErrorBody, ErrorCode, Response, ResponsePayload};
 mod arms;
 mod demand;
 mod policy_bridge;
-/// The delta plane, lifted to `wire-serve` by U20b so the registry shares one
-/// retention law and one classifier. Re-exported at the old path: this crate's
-/// ring is still a per-serve-lifetime epoch and every existing caller reads the
-/// same.
+/// Delta plane (shared retention/classifier with registry). Re-exported: this
+/// crate's ring remains a per-serve-lifetime epoch.
 pub use wire_serve::ring;
 use wire_serve::watch;
 
-// The v3 vocabulary projection lives in `wire-serve`, the shared typed-edge home
-// both hosts project through (arch map A6: "lift, don't duplicate"). Imported as
-// `rev` so the serve loop reads the same as before.
+// v3 vocabulary projection — shared typed-edge home (lift, don't duplicate).
 use wire_serve::rev;
 
-/// Admit a rule pack sidecar-mode (P6-VERDICTS): compile through policy's load
-/// gate over the REAL parse→facts plane, refusing a corpus-class pack LOUD
-/// (`daemon_only`, §8/§11.3). The admitted [`policy::CompiledRuleset`]s are the
-/// `serve` rulesets whose findings ride splice `verdicts`.
+/// Admit a rule pack sidecar-mode: compile over the real parse→facts plane;
+/// refuse corpus-class LOUD (`daemon_only`, §8/§11.3). Admitted rulesets feed
+/// splice `verdicts`.
 pub use policy_bridge::admit;
 
-/// v2 §3.2: the server name in the `hello` body.
+/// v2 §3.2: server name in the `hello` body.
 pub const SERVER_NAME: &str = "meridian-sidecar/2.0";
-/// v2 §3.2: the one protocol this sidecar speaks (proto-1 retained).
+/// v2 §3.2: protocol this sidecar speaks (proto-1 retained).
 pub const PROTO: u32 = 1;
-/// The ARMED op set — exactly the frozen §3.2 printed list, COMPLETE:
-/// T5-SUB armed `sub` and deleted the D4-SPLICE subtraction, so the caps
-/// fixture is now the naked §3.2 full-list ≡ (P6-VERDICTS re-asserts it as
-/// its own pack acceptance row). Every entry is TRUE of this build — armed
-/// ops + dotted field amendments (`splice.verdicts` names the verdicts
-/// surface, served `[]` from birth; variants are P6's). `hello` answers but
-/// is not itself a cap. S2/L22 law is LIVE: `splice ∈ caps` ⇒ `node_rev`
-/// MUST on every `toc`/`cat`/`extract` node (pinned in the caps fixture).
+/// Armed op set — frozen §3.2 printed list, complete. Armed ops + dotted field
+/// amendments (`splice.verdicts` served `[]` from birth). `hello` answers but
+/// is not a cap. S2/L22: `splice ∈ caps` ⇒ `node_rev` MUST on every
+/// `toc`/`cat`/`extract` node.
 pub const CAPS: [&str; 16] = [
     "toc",
     "cat",
@@ -85,37 +65,30 @@ pub const CAPS: [&str; 16] = [
     "sub",
 ];
 
-/// The stdin loop: raw-id scan → strict decode → dispatch → exactly one
-/// response frame, flushed per frame (shell-pipe debuggability is a contract
-/// property) — then the push path (T5-SUB, the serve loop's ONE structural
-/// change, still wiring-only): every ring frame not yet delivered to an
-/// active subscription is written as a Notification frame after the
-/// response. Malformed input answers `bad_frame`/`bad_request`; the sidecar
-/// never terminates because of a bad frame. EOF: in-flight work finished,
-/// output flushed, `Ok(())`.
+/// Stdin loop: raw-id scan → strict decode → dispatch → one response frame
+/// (flushed per frame), then the push path: undelivered ring frames as
+/// Notification frames after the response. Malformed input →
+/// `bad_frame`/`bad_request`; never terminate on a bad frame. EOF: finish
+/// in-flight work, flush, `Ok(())`.
 ///
-/// `rulesets` are the admitted rule packs (P6-VERDICTS) whose findings ride every
-/// splice response's `verdicts` (§11.1); empty = no packs loaded, so verdicts stay
-/// `[]`. Where the daemon SOURCES packs is Go's business (§11, row 8: loaded-pack
-/// listing is a Go surface) — this loop only evaluates what it is handed.
+/// `rulesets` feed splice `verdicts` (§11.1); empty → `[]`. Pack sourcing is
+/// the daemon's (§11 row 8); this loop only evaluates what it is handed.
 ///
 /// # Errors
-/// I/O failure on the streams themselves — never a content condition.
+/// Stream I/O failure only — never a content condition.
 pub fn serve(
     root: &fs::WorkspaceRoot,
     mut input: impl BufRead,
     mut output: impl Write,
     rulesets: &[policy::CompiledRuleset],
 ) -> io::Result<()> {
-    // One serve lifetime = one daemon EPOCH (§7.1 late law): the ring and its
-    // seq are born here and die here; nothing persists across restarts —
-    // subscriptions included (a restart is a new epoch; catch up diff-by-root).
+    // One serve lifetime = one daemon epoch (§7.1): ring + seq die with the
+    // process; restart = new epoch; catch up by diff-by-root.
     let mut epoch = ring::RootRing::new();
     let mut subs: Vec<SubState> = Vec::new();
     let mut watch = watch::WatchState::new(root);
-    // Per-serve-session contract rev (one epoch, one rev), negotiated at
-    // `hello` (docs/wire-contract-v3-amendment.md). Defaults to v2 so an
-    // un-negotiated session is byte-for-byte the frozen contract.
+    // Per-session contract rev, negotiated at `hello`
+    // (docs/wire-contract-v3-amendment.md). Default v2 = frozen contract.
     let mut rev = rev::Rev::V2;
     let mut line = String::new();
     loop {
@@ -126,16 +99,11 @@ pub fn serve(
         if line.trim().is_empty() {
             continue; // blank lines ignored per frame layer
         }
-        // Decode BEFORE the reconcile — the loop cannot know what this line
-        // costs until it knows which op it holds (the demand law,
-        // `demand::observes_ring`). A line answered at the frame layer runs no
-        // arm, so it observes nothing and owes no fold at all.
+        // Decode before reconcile: demand law needs the op
+        // (`demand::observes_ring`). Frame-layer answers observe nothing.
         let decoded = decode_line(&mut rev, &line);
-        // F5-WATCH reconcile BEFORE dispatch, ON DEMAND: an external change is
-        // emitted (and pushed) before this request's answer reads the ring —
-        // for the lines that read the ring, plus every line of a subscribed
-        // session (a standing observer of the delta stream). A reconcile error
-        // never fails the request — stderr, retry next cycle.
+        // Reconcile before dispatch, on demand: ring readers + subscribed
+        // sessions. Reconcile error never fails the request — stderr, retry.
         if (decoded.observes_ring() || !subs.is_empty())
             && let Err(e) = watch::reconcile(root, &mut epoch, &mut watch)
         {
@@ -145,33 +113,27 @@ pub fn serve(
         let advances = decoded.advances_ring();
         let (response, duration_us) = respond(root, &mut epoch, &mut subs, rulesets, rev, decoded);
         write_response(&mut output, &response, rev, duration_us)?;
-        // Post-dispatch reconcile: an internal commit syncs the baseline
-        // silently (so the next external delta chains from the commit, not
-        // from the root it replaced); an external landing mid-dispatch is
-        // emitted here for the subscribers who are waiting on it.
+        // Post-dispatch: internal commit rebases baseline; mid-dispatch
+        // external changes emit for waiting subscribers.
         if (advances || !subs.is_empty())
             && let Err(e) = watch::reconcile(root, &mut epoch, &mut watch)
         {
             eprintln!("watch reconcile: {e:?}");
         }
-        // The push path: ok first, THEN Notification frames (§4.7 order) —
-        // a fresh subscription's replay and every live emission ride the
-        // same flush, so replay ≡ live holds at the transport too.
+        // Push: ok first, then Notification frames (§4.7) — replay ≡ live.
         flush_subs(&mut output, &epoch, &mut subs, rev)?;
         output.flush()?;
     }
 }
 
-/// One active subscription: the highest `delta.seq` already delivered.
-/// Registered by the `sub` arm at `from_seq` — the first flush replays the
-/// retained frames above it (§4.7: "ok, then Notification frames").
+/// Active subscription: highest `delta.seq` delivered. Registered at
+/// `from_seq`; first flush replays retained frames above it (§4.7).
 struct SubState {
     delivered: u64,
 }
 
-/// Write every undelivered ring frame to each subscription, in emission
-/// order, through the ONE shared push serializer (`ring::write_frame` — U20b
-/// lifted it so both hosts emit the same bytes from the same code).
+/// Emit undelivered ring frames per sub, in order, via shared
+/// `ring::write_frame`.
 fn flush_subs(
     output: &mut impl Write,
     epoch: &ring::RootRing,
@@ -187,12 +149,9 @@ fn flush_subs(
     Ok(())
 }
 
-/// Write one response frame, shaped per the negotiated rev. v2 serializes the
-/// typed `wire::Response` directly — the frozen path, byte-identical. v3
-/// projects the serialized frame `root` → `fingerprint` at the envelope layer
-/// (the typed layer never changes), then attaches the in-band timing block
-/// `meta: {duration_us}` when this frame answered a dispatched op (U7: the
-/// sidecar measure point is the `arms::dispatch` call — engine work only).
+/// One response frame for the negotiated rev. v2: typed `wire::Response`
+/// (frozen, byte-identical). v3: envelope `root` → `fingerprint`, plus
+/// `meta: {duration_us}` on dispatched ops (measure point: `arms::dispatch`).
 fn write_response(
     output: &mut impl Write,
     response: &Response,
@@ -207,23 +166,18 @@ fn write_response(
         }
         serde_json::to_writer(&mut *output, &v)?;
     } else {
-        // A frozen v2 session never grows a field: U11's v3-additive ladder
-        // extras are dropped here, not withheld at mint time.
+        // Frozen v2 session never grows a field: v3-additive extras demoted
+        // here, not withheld at mint.
         let demoted = rev::demote_v2(response);
         serde_json::to_writer(&mut *output, demoted.as_ref().unwrap_or(response))?;
     }
     output.write_all(b"\n")
 }
 
-/// v2 §4.7 `sub`, live at T5-SUB. The §7.1 late law's residue: `from_seq`
-/// catchup is valid only WITHIN this epoch — anchorable positions are
-/// `current` (live-only) and anything the retained ring can replay from;
-/// everything else (evicted, ahead, a prior epoch's counter) answers
-/// `root_unknown` → resync, catch up by diff-by-root (the only
-/// restart-durable handle). Never wrong data, never a cross-epoch seq
-/// comparison — the old counter died with its ring. The ack reuses the
-/// §4.7 `{root, seq}` body: the subscription's anchor tense (advisor-ruled;
-/// no frozen frame prints an ack body).
+/// v2 §4.7 `sub`. `from_seq` catchup is valid only within this epoch
+/// (§7.1): `current` or retained-ring positions; else `root_unknown` →
+/// resync by diff-by-root. Never wrong data, never cross-epoch seq compare.
+/// Ack body is §4.7 `{root, seq}` (subscription anchor tense).
 fn subscribe(
     root: &fs::WorkspaceRoot,
     epoch: &ring::RootRing,
@@ -248,19 +202,13 @@ fn subscribe(
     })
 }
 
-/// What one input line turned out to be. The split exists so the loop can
-/// price the line before it runs it: only a decoded op can be classified
-/// against the demand law, and a frame-layer verdict — which reaches no arm —
-/// costs nothing at all.
+/// One input line, classified so the loop can price it before run
+/// (`demand::*`). Frame-layer verdicts reach no arm and cost nothing.
 enum Decoded {
-    /// Answered at the frame layer (§3.1 classification, B2 id law). No arm
-    /// runs, so nothing observes the ring. BOXED: a `Response` carries the whole
-    /// error envelope, so by-value it would make every decoded line as wide as
-    /// the widest refusal.
+    /// Frame-layer answer (§3.1 / B2). No arm; ring not observed. Boxed so
+    /// every line stays pointer-wide.
     Answer(Box<Response>),
-    /// A validated op beside its correlation token. BOXED for the same reason
-    /// as `Answer`: both arms stay pointer-wide, so one line's classification
-    /// never costs the width of the widest op.
+    /// Validated op + correlation id. Boxed for the same width reason.
     Op(Option<u64>, Box<wire::Op>),
 }
 
@@ -274,28 +222,25 @@ impl Decoded {
     }
 }
 
-/// One frame in → one verdict (§3.1). Order is law: the raw `id` lexeme
-/// verdict comes BEFORE typed decode (B2), so no typed decode can rescue or
-/// corrupt frame classification. Negotiating the session rev happens here too
-/// — at the `hello` declaration, before any frame is shaped by it.
+/// One frame → one verdict (§3.1). Order is law: raw `id` before typed decode
+/// (B2). Session rev negotiates at `hello`, before any frame is shaped by it.
 fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
     let id = match scan_id(line) {
-        // not a JSON object → the channel is broken for this line
+        // not a JSON object → channel broken for this line
         Err(_) => {
             return Decoded::Answer(Box::new(error_frame(
                 None,
                 ErrorBody::new(ErrorCode::BadFrame),
             )));
         }
-        // §3.1 emission: id:null + the offending lexeme verbatim in id_raw
+        // §3.1: id:null + offending lexeme in id_raw
         Ok(IdScan::BadId(lexeme)) => {
             let mut e = ErrorBody::new(ErrorCode::BadRequest);
             e.id_raw = Some(lexeme);
             return Decoded::Answer(Box::new(error_frame(None, e)));
         }
         Ok(IdScan::Request(n)) => Some(n),
-        // id key absent: a legal id-less request if `op` rides the frame
-        // (shell-pipe debuggability), else an inbound notification — misuse.
+        // id absent: legal id-less request if `op` present; else misuse.
         Ok(IdScan::Notification) => None,
     };
     // scan_id proved the line is a JSON object.
@@ -306,24 +251,22 @@ fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
         )));
     };
     if !obj.contains_key("op") {
-        // Inbound frames that aren't requests (responses, notifications) are
-        // protocol misuse → bad_frame; un-correlatable by design.
+        // Non-request inbound (response/notification) → bad_frame.
         return Decoded::Answer(Box::new(error_frame(
             None,
             ErrorBody::new(ErrorCode::BadFrame),
         )));
     }
-    // v3 session: re-key the request into its v2 form so the strict decoder
-    // and every arm stay v2-only. `hello` itself always arrives in the base
-    // vocabulary + the `contract` knob, so a not-yet-negotiated session (still
-    // v2 here) never mangles it.
+    // v3 session: re-key request to v2 form so decoder/arms stay v2-only.
+    // `hello` always arrives in base vocabulary + `contract`, so a still-v2
+    // session never mangles it.
     if *rev == rev::Rev::V3 {
         rev::rename_request(&mut obj);
     }
     match wire_serve::decode::decode(&obj, *rev) {
         Ok(op) => {
-            // Negotiate the session rev from the hello declaration, so THIS
-            // hello response (and every frame after) is shaped for it.
+            // Negotiate session rev from hello so this hello and later frames
+            // are shaped for it.
             if let wire::Op::Hello { contract, .. } = &op {
                 *rev = rev::Rev::from_contract(contract.as_deref());
             }
@@ -333,12 +276,10 @@ fn decode_line(rev: &mut rev::Rev, line: &str) -> Decoded {
     }
 }
 
-/// One decoded line → one response frame. Returns the response plus the U7
-/// in-band duration: `Some(µs)` exactly when the frame reached `arms::dispatch`
-/// (the sidecar measure point — engine work only, success or refusal alike).
-/// Frame-layer verdicts and the serve-layer `sub` never carry one, and the
-/// demand-driven reconcile is deliberately OUTSIDE the timer: the fold budget
-/// is proven by counting folds, never by reading a clock.
+/// Decoded line → response + optional U7 duration (`Some(µs)` only when the
+/// frame reached `arms::dispatch`). Frame-layer and serve-layer `sub` carry
+/// none. Demand-driven reconcile is outside the timer: fold budget is a count,
+/// not a clock.
 fn respond(
     root: &fs::WorkspaceRoot,
     epoch: &mut ring::RootRing,
@@ -349,8 +290,7 @@ fn respond(
 ) -> (Response, Option<u64>) {
     let (id, op) = match decoded {
         Decoded::Answer(response) => return (*response, None),
-        // The push-path op registers at the serve layer — the loop owns the
-        // subscription list; everything else routes to the arms.
+        // `sub` registers at the serve layer; other ops go to arms.
         Decoded::Op(id, op) => match *op {
             wire::Op::Sub { from_seq } => {
                 return match subscribe(root, epoch, subs, from_seq) {
@@ -368,8 +308,7 @@ fn respond(
             op => (id, op),
         },
     };
-    // U7 measure point: the dispatch call alone (after decode, before the
-    // response write) — checked µs, never a lossy `as`.
+    // U7 measure point: dispatch alone — checked µs, never lossy `as`.
     let started = std::time::Instant::now();
     let outcome = arms::dispatch(root, epoch, id, op, rulesets, rev == rev::Rev::V3);
     let duration_us = Some(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));

@@ -1,7 +1,5 @@
-//! Fuzz the rule SOURCE: arbitrary bytes as Starlark, over a fixed event. The
-//! invariant is liveness — eval must TERMINATE and RETURN (`Ok` or a typed
-//! `EvalError`), never panic, never hang, never abort the process. libfuzzer
-//! reports any panic / timeout / crash as a finding.
+//! Fuzz rule source (fixed event): eval must terminate and return — never
+//! panic, hang, or abort.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

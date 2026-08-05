@@ -1,15 +1,7 @@
 //! G11 design gates that do NOT assert on `fs::fold_count`.
 //!
-//! The gap this file exists for was found by inversion — one binary, zero
-//! client traffic, two corpora — and measured **28.6% of a core against a 20 GB
-//! vault versus 0.07% against one file**. The mechanism was a pre-warm sweep
-//! that re-read and re-folded every byte of the corpus once a second, behind a
-//! comment claiming a quiet sweep was cheap because it did not PARSE.
-//!
-//! They live apart from `prewarm_quiet.rs` for a mechanical reason: `fold_count`
-//! is process-global and cargo runs a test binary's tests in parallel threads, so
-//! a fold-difference assertion is only sound in a binary where nothing else folds.
-//! Splitting the files splits the processes.
+//! Split from `prewarm_quiet.rs`: `fold_count` is process-global, so
+//! fold-difference assertions need a dedicated binary.
 
 use std::fs;
 use std::path::{Path, PathBuf};

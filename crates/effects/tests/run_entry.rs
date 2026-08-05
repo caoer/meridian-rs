@@ -1,7 +1,6 @@
-//! The run-plane entry (verdict rulings 1/8): `run(ctx)` evaluates in the SAME
-//! sealed sandbox as `on_change` — same closed globals, same fuel/mem/depth
-//! metering — stamps `Provenance::Run`, carries no idempotency key, and can
-//! never spawn a process (starlark-invokes-bash is a permanent no).
+//! Run-plane entry: `run(ctx)` in the same sealed sandbox as `on_change`
+//! (same globals, fuel/mem/depth metering). Stamps `Provenance::Run`, no
+//! idempotency key; no process spawn.
 
 use std::collections::BTreeMap;
 
@@ -85,8 +84,7 @@ fn ctx_does_not_expose_invocation_identity() {
 
 #[test]
 fn task_id_ctx_task_divergence_is_refused() {
-    // f9542789 U3-gate: error provenance (task.id) and effect provenance
-    // (ctx.task) must be ONE identity — a divergent pair is refused.
+    // task.id (errors) and ctx.task (effects) must be one identity.
     let t = Rule::new("other-name", "def run(ctx):\n    pass\n");
     let err = eval_run(&t, &ctx(), EvalLimits::default()).unwrap_err();
     let EvalError::Runtime { rule_id, reason } = err else {

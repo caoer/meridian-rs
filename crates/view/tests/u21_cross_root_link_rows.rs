@@ -1,13 +1,6 @@
-//! **U21 Q7(B) — the cross-root link row, and the two-place clause that decides
-//! whether a working cross-vault link reads as broken.**
-//!
-//! The `dangling` view is `dest_path IS NULL AND dest_root IS NULL`. The second
-//! clause is the whole point: a resolved cross-root edge has `dest_path = NULL`
-//! BY CONSTRUCTION — its target is not a path in this corpus, and `dest_path`
-//! carries an enforced foreign key into `doc` — so without that clause every
-//! working cross-vault link is reported broken.
-//!
-//! The Leader's condition 2: that clause gets a RED TEST rather than a comment.
+//! U21: cross-root link row. `dangling` is `dest_path IS NULL AND dest_root IS
+//! NULL` — second clause stops resolved cross-root (`NULL` `dest_path` by FK) from
+//! reading as broken.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +10,6 @@ fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
 }
 
-/// The ambient workspace, the mounted root's corpus, and the mount table.
 fn fixture() -> (BTreeMap<String, Document>, BTreeMap<String, Document>) {
     let mut ambient = BTreeMap::new();
     ambient.insert(
@@ -25,8 +17,7 @@ fn fixture() -> (BTreeMap<String, Document>, BTreeMap<String, Document>) {
         doc("# Claim\n\n[[sessions:notes.md]]\n[[local.md]]\n[[nowhere.md]]\n"),
     );
     ambient.insert("local.md".to_owned(), doc("# Local\n"));
-    // THE DECOY: the ambient corpus holds its own `notes.md`. A cross-root edge
-    // that resolved onto THIS file is FINDING 03's wrong-bytes success.
+    // Ambient decoy: wrong-bytes success if cross-root resolves here.
     ambient.insert(
         "notes.md".to_owned(),
         doc("# Ambient notes — the wrong one\n"),
@@ -37,9 +28,7 @@ fn fixture() -> (BTreeMap<String, Document>, BTreeMap<String, Document>) {
     (ambient, sessions)
 }
 
-/// The corpus fold an ephemeral build is stamped with — in production the
-/// caller's domain fold (`fs::domain_snapshot`); these fixtures declare no
-/// domain, so version 0 is that domain.
+/// Corpus fold stamp (version 0 — fixtures declare no domain).
 fn fold(docs: &BTreeMap<String, Document>) -> String {
     let files: Vec<(&str, &[u8])> = docs
         .iter()
@@ -56,8 +45,7 @@ fn one_text(conn: &duckdb::Connection, sql: &str) -> Vec<String> {
         .collect()
 }
 
-/// **A resolved cross-root edge is NOT dangling** — the clause under test — and
-/// it lands in its own two columns rather than in `dest_path`.
+/// Resolved cross-root is not dangling; lands in `dest_root`/`dest_root_path`.
 #[test]
 fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
     let (ambient, sessions) = fixture();
@@ -71,7 +59,6 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
     let conn =
         view::build_memory_rooted(&ambient, &corpus, &mounts, &fold(&ambient)).expect("view");
 
-    // The cross-root edge resolved, into its own columns.
     assert_eq!(
         one_text(
             &conn,
@@ -81,7 +68,6 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
         vec!["sessions|notes.md"],
         "the cross-root destination is two columns, joined only for this assertion",
     );
-    // And NOT into dest_path — which would have pointed at the ambient decoy.
     assert_eq!(
         one_text(
             &conn,
@@ -91,9 +77,7 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
         "dest_path means 'a path in THIS corpus', always — never only sometimes",
     );
 
-    // **THE CLAUSE UNDER TEST.** Delete `AND dest_root IS NULL` from the
-    // `dangling` view and this row appears — a working cross-vault link
-    // reported broken.
+    // Clause under test: without `AND dest_root IS NULL` this row is false-dangling.
     assert_eq!(
         one_text(&conn, "SELECT target_raw FROM dangling ORDER BY target_raw"),
         vec!["nowhere.md"],

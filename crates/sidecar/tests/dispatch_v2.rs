@@ -1,11 +1,7 @@
-//! D2-DISPATCH gate fixtures (impl-taskpack §5, gates 1–5) + the §3.1 raw-id
-//! emission set — all through the LIVE serve loop, byte-in/frame-out.
-//!
-//! Gate 1 rides the §0.3 wsfix S0 worked exchanges (contract §4.1/§4.2),
-//! workspace materialized from the committed `data/wsfix` fixture bytes; the
-//! ambient `root` asserts the frozen R0 against the real
-//! `model::merkle_root` corpus fold (M3-MERKLE surface — the D2 staged-item-1
-//! closer, LIVE).
+//! D2-DISPATCH gates 1–5 + §3.1 raw-id emission through live serve
+//! (byte-in/frame-out). Gate 1: §0.3 S0 toc/cat goldens + frozen R0 via real
+//! corpus fold. Also: strict decode, caps ≡ armed set, S2/L22 `node_rev`,
+//! CHARSET mint, resolve, root/diff epoch law.
 
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -206,12 +202,7 @@ fn gate2_bad_path_refused() {
 // Gate 3 — hello caps ≡ the ARMED set exactly (§3.2 discovery honesty)
 // ---------------------------------------------------------------------------
 
-/// The §3.2 caps assertion, COMPLETE: T5-SUB armed `sub` and deleted the
-/// D4-SPLICE-era subtraction exactly as its closure note promised — this is
-/// now the naked frozen §3.2 full-list ≡ (P6-VERDICTS re-asserts it as its
-/// own pack acceptance row). Every printed entry is truthfully served,
-/// dotted field amendments included (`splice.verdicts`: the surface rides
-/// every splice response as `[]` from birth; variants are P6's).
+/// §3.2 caps ≡ frozen full armed list (including dotted field amendments).
 #[test]
 fn gate3_hello_caps_equal_frozen_full_list() {
     let (_d, root) = s0();
@@ -219,8 +210,6 @@ fn gate3_hello_caps_equal_frozen_full_list() {
         &root,
         r#"{"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}"#,
     );
-    // The frozen §3.2 printed list, verbatim and COMPLETE (the T5-SUB
-    // closure: the d4-splice subtraction filter is gone).
     let frozen_printed = [
         "toc",
         "cat",
@@ -248,10 +237,7 @@ fn gate3_hello_caps_equal_frozen_full_list() {
     assert_eq!(frame, expected);
 }
 
-/// S2/L22 law, LIVE from this rung (frozen §3.2): "`node_rev` is MUST on
-/// every `toc`/`cat`/`extract` node whenever `splice ∈ caps`." Pinned in the
-/// caps fixture's own served world: the same sidecar that advertises
-/// `splice` serves `node_rev` on every node. (Advisor rider, d4-splice.)
+/// S2/L22: `splice ∈ caps` ⇒ `node_rev` MUST on every toc/cat/extract node.
 #[test]
 fn gate3_s2l22_node_rev_must_when_splice_in_caps() {
     let (_d, root) = s0();
@@ -556,9 +542,7 @@ fn d3_root_op_serves_current_root_and_epoch_seq() {
     assert_eq!(got, json!({"id":90,"ok":true,"body":{"root":R0,"seq":0}}));
 }
 
-/// §7.3 truthfulness until rung 4 emits: same-root diff is EMPTY batches
-/// (nothing happened between R0 and R0); any other range is outside this
-/// epoch's retained history → `root_unknown` → resync.
+/// §7.3: same-root diff → empty batches; else `root_unknown` → resync.
 #[test]
 fn d3_diff_empty_or_root_unknown_truthfully() {
     let (_d, root) = s0();
@@ -578,17 +562,13 @@ fn d3_diff_empty_or_root_unknown_truthfully() {
     assert_eq!(stale["error"]["recovery"], "resync");
 }
 
-/// Gate 6 (§7.1 late law): a restart opens a NEW epoch — two serve lifetimes
-/// over the same workspace never correlate: seq is 0 again and the fresh
-/// epoch retains only the current root; no cross-epoch seq comparison is
-/// representable, no epoch fact persists anywhere.
+/// §7.1: restart = new epoch; seq resets; no cross-epoch correlation.
 #[test]
 fn d3_restart_boundary_never_correlates_epochs() {
     let (_d, root) = s0();
-    // epoch 1
     let e1 = one(&root, r#"{"id":1,"op":"root"}"#);
     assert_eq!(e1["body"]["seq"], 0);
-    // the restart: epoch 1's serve loop is gone; epoch 2 is a fresh call
+    // restart: fresh serve call
     let e2 = one(&root, r#"{"id":2,"op":"root"}"#);
     assert_eq!(e2["body"]["seq"], 0, "seq is born 0 in every epoch");
     let same = one(

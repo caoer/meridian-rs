@@ -1,31 +1,16 @@
-//! **R31 — the empty-span fingerprint class.**
-//!
-//! The invariant, verbatim and non-negotiable:
+//! R31 — empty-span fingerprint class.
 //!
 //! > A fingerprint must not be able to match content it does not cover.
 //!
-//! `blake3` of empty input is a *universal match*: every empty-normalizing span
-//! in every document mints the identical token, so such a pin can never drift.
-//! It is the purest false green there is — a permanent green that no edit
-//! anywhere can turn red, in the module whose entire product is that green
-//! means green.
+//! `blake3("")` is a universal match (identical token for every empty span) —
+//! a permanent false green. This file:
 //!
-//! # What this file proves, and in which order
-//!
-//! 1. **The enumeration is derived from a TYPE, not written as prose** — the
-//!    ref-form door set IS [`Selector`]'s variants, and the `match` in
-//!    [`disposition`] is exhaustive, so a new selector class cannot ship
-//!    without dispositioning itself here (R35(c): *wherever a door set can be
-//!    derived from a type, derive it and assert it; the matrix is the fallback,
-//!    not the goal*). A prose table in a card falls out of date silently; this
-//!    cannot.
-//! 2. **Every form's disposition carries a WITNESS** — a can-normalize-empty
-//!    form shows a document where it does; a structurally-non-empty form shows
-//!    the bytes that survive, so "it cannot happen" is measured, never asserted.
-//! 3. **The assert is the REFUSAL, not the colour** (R31's test shape). A fix
-//!    that renders an empty-span pin grey and still accepts it would pass a
-//!    colour assertion and ship a pin that cannot drift. So the mint asserts
-//!    `Err(EmptySpan)` and the verdict asserts a never-green *verdict arm*.
+//! 1. Enumerates ref forms from [`Selector`] (exhaustive `match` in
+//!    [`disposition`]; R35(c)).
+//! 2. Witnesses each disposition (can-empty shows a doc; non-empty shows
+//!    surviving bytes).
+//! 3. Asserts the **refusal**, not a colour — mint `Err(EmptySpan)`, verdict
+//!    never-green arm (a grey-and-accept fix would still ship an undriftable pin).
 
 use model::fingerprint::{ContentVerdict, EmptySpan, fingerprint_span};
 use model::selector::{Color, RedReason, Selector, classify_pin, resolve_selector};
@@ -65,33 +50,19 @@ enum Disposition {
     /// Some instance of this form normalizes to nothing. This is the class R31
     /// closes, and every such form needs a live witness below.
     CanNormalizeEmpty,
-    /// No instance can, and the reason is structural — not "we could not think
-    /// of one". Needs a witness showing which bytes survive.
+    /// Structurally cannot normalize empty. Needs a witness of surviving bytes.
     StructurallyNonEmpty,
     /// Never reaches the fingerprint plane at all — grey before resolution.
     NeverResolved,
 }
 
-/// **THE ENUMERATION.** Exhaustive over [`Selector`] by construction: adding a
-/// fifth ref form breaks this `match` at compile time, so the class cannot be
-/// re-opened by a new address class without someone dispositioning it.
+/// Exhaustive over [`Selector`] — a new class must disposition here at compile time.
 ///
-/// - [`Selector::Page`] — resolves to the document ROOT. **This is the form the
-///   ruling did not predict.** R31 enumerated fragment forms (bare anchor,
-///   heading-only section, anchor on a blank line); the fragment-LESS whole-page
-///   ref reaches the same hasher, and an empty file (or one whose whole content
-///   is own-line anchors) normalizes to nothing.
-/// - [`Selector::Heading`] — the section span starts at the heading LINE, whose
-///   `#` bytes no removal rule can reach (`anchor_removals` removes only anchor
-///   markers plus at most one preceding space, or a whole own-line anchor line;
-///   R2b reaches back over at most a `\r\n`). So a heading section always keeps
-///   its heading. The ruling's predicted "heading-only section with no body"
-///   form therefore does NOT normalize empty — witnessed below.
-/// - [`Selector::Block`] — resolves to the anchor's HOST LINE
-///   (`model::anchor_host_span`, terminator-excluded). An OWN-LINE anchor's R2
-///   removal covers that whole line plus its terminator, so the intersection is
-///   the entire span: empty. An inline/tail anchor keeps its host text.
-/// - [`Selector::ImmutableRoot`] — grey `immutable-root` before any resolution.
+/// - [`Selector::Page`] — document root; empty/own-line-anchor-only files normalize empty.
+/// - [`Selector::Heading`] — section includes heading line (`#` unreachable by
+///   removals); never empty.
+/// - [`Selector::Block`] — host line; own-line R2 removal empties the span; inline keeps host.
+/// - [`Selector::ImmutableRoot`] — grey before resolution.
 fn disposition(sel: &Selector) -> Disposition {
     match sel {
         Selector::Page | Selector::Block(_) => Disposition::CanNormalizeEmpty,
@@ -115,7 +86,7 @@ fn rows() -> Vec<Row> {
     let heading =
         |segs: &[&str]| Selector::Heading(segs.iter().map(|s| (*s).to_string()).collect());
     vec![
-        // ── Block: the own-line anchor, in all three shapes norm-v2 can remove
+        // Block: own-line anchor (R2/R2b empty)
         Row {
             name: "bare #^anchor, own line mid-file (R2)",
             raw: "# H\n\n^guideline\n\nbody\n",
@@ -134,7 +105,7 @@ fn rows() -> Vec<Row> {
             sel: block("guideline"),
             empties: true,
         },
-        // ── Block: the inline forms, which keep their host text
+        // Block: inline forms keep host text
         Row {
             name: "#^anchor hosted by a list item (R1)",
             raw: "# H\n\n- item text ^listanchor\n",
@@ -147,7 +118,7 @@ fn rows() -> Vec<Row> {
             sel: block("tail"),
             empties: false,
         },
-        // ── Heading: every shape the ruling suspected, all structurally safe
+        // Heading: never empty (heading line survives)
         Row {
             name: "heading-only section, no body",
             raw: "# H\n\n## Empty\n\n## Next\nx\n",
@@ -172,7 +143,7 @@ fn rows() -> Vec<Row> {
             sel: heading(&[""]),
             empties: false,
         },
-        // ── Page: THE UNPREDICTED FORM
+        // Page grain can empty
         Row {
             name: "whole-page ref over an empty file",
             raw: "",

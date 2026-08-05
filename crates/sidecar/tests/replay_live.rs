@@ -1,21 +1,10 @@
-//! D4-DELTAS-LIVE gate 1 — **the named replay ≡ live test** (frozen §7.3;
-//! retires A6 fix-at-freeze flag 4 by making the "tested" claim executable):
-//! drive S0→S1→S2 through the REAL commit path (validate → `fs::apply_batch`
-//! → delta computation → `ring.advance`) using the frozen §4.4 worked
-//! requests, capture the two LIVE Deltas, and assert the replay range
-//! `(R0, R2)` returns byte-identical objects.
-//!
-//! Flag-A discipline (D3 precedent): every asserted value is DERIVED by the
-//! engine — real parse, real fold, real atomic write — and compared to the
-//! printed §7.1 frames; any byte disagreement fails the suite (the STOP
-//! condition). Bytes are never hand-tuned.
+//! D4-DELTAS-LIVE: replay ≡ live (§7.3). S0→S1→S2 via real commit path;
+//! `(R0, R2)` batches byte-identical to live Deltas. Values engine-derived.
 
 use serde_json::{Value, json};
 use std::io::Write as _;
 
-/// The epoch ring as an allocator, exactly as `sidecar::arms` wires it in
-/// production — this test drives the REAL commit path, so it must number frames
-/// the real way rather than hand a literal to the seam.
+/// Epoch ring as allocator (production seam; real commit path).
 struct EpochSink<'a>(&'a sidecar::ring::RootRing);
 
 impl wire_serve::seq::SeqSink for EpochSink<'_> {
@@ -29,10 +18,7 @@ impl wire_serve::seq::SeqSink for EpochSink<'_> {
     }
 }
 
-/// The flock `commit_batch` now demands as its allocation witness. A direct
-/// caller took no lock before this seam existed; it takes one here for the same
-/// reason `splice` does — and the acquire itself is a real serialization, not a
-/// formality, so it must outlive the call it witnesses.
+/// Write lock for `commit_batch` allocation witness (must outlive the call).
 fn flock(root: &fs::WorkspaceRoot) -> fs::WriteLock {
     fs::WriteLock::acquire(root).expect("the test workspace's write lock is free")
 }

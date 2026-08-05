@@ -1,13 +1,11 @@
-//! The round-1 view schema — 8 physical tables + 4 SQL views, verbatim from the
-//! binding design (`tournament-duckdb/team-a/design.md` §Q1). Every table is a
-//! disposable projection of the resident engine's parsed corpus, rebuilt on
-//! fingerprint change (view-never-store). The DDL is the contract: DDL-enforced
-//! identities (singleton `_meridian_view`, task→section identity FK), a derived
-//! `resolved` generated column, the C1 locator triple on every fact row.
+//! Round-1 view schema — 8 physical tables + 4 SQL views (binding design §Q1).
+//! Disposable projections of the parsed corpus, rebuilt on fingerprint change
+//! (view-never-store). DDL is the contract: singleton `_meridian_view`,
+//! task→section identity FK, derived `resolved`, C1 locator triple on every
+//! fact row.
 
-/// The full round-1 DDL. `_meridian_view` (singleton stamp) + 7 fact tables
-/// = 8 physical tables, then 4 convenience SQL views. Copied EXACTLY from
-/// design §Q1 — do not edit without leader approval (the design is binding).
+/// Full round-1 DDL: singleton stamp + 7 fact tables + 4 views. Binding design —
+/// do not edit without leader approval.
 pub const SCHEMA_SQL: &str = r#"
 -- View-never-store: every table is a disposable projection of the resident engine's parsed corpus,
 -- rebuilt on fingerprint change. Ordinals are UBIGINT (source counters are usize); a narrower type
@@ -146,15 +144,14 @@ CREATE VIEW tag_all AS                             -- B2: the union — inline +
     SELECT path, tag, 'frontmatter' AS source, span_start, span_end, node_rev FROM frontmatter_tag;
 "#;
 
-/// The schema version stamped into `_meridian_view.schema_version`. A reader whose
-/// current version differs treats the view as ABSENT (delete-don't-migrate).
+/// Schema version in `_meridian_view.schema_version`. Mismatch ⇒ treat view as
+/// ABSENT (delete-don't-migrate).
 pub const SCHEMA_VERSION: i32 = 1;
 
-/// Run the full round-1 DDL against `conn`, creating the 8 tables + 4 views.
+/// Run the full round-1 DDL against `conn` (8 tables + 4 views).
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from executing the DDL batch (a parse or bind
-/// failure means the schema is malformed — gate 1 asserts a clean parse).
+/// Propagates any `DuckDB` error from the DDL batch.
 pub fn create_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
     conn.execute_batch(SCHEMA_SQL)
 }

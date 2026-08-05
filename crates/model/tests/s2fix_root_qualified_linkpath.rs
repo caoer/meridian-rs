@@ -1,24 +1,9 @@
-//! **R44 item 3 (fix3) — the qualifier arm that only a ROOT-LEVEL path exercises.**
+//! R44/fix3 — root-level path arm of `resolve_linkpath` subpath narrowing.
 //!
-//! `CorpusIndex::resolve_linkpath` narrows a basename-collision set to the paths
-//! that carry the whole subpath. A subpath `a/b` addresses a path ENDING in
-//! `a/b.md` — and "ending in" has two shapes, not one:
-//!
-//! - nested (`c/a/b.md`), matched by the `/a/b.md` suffix;
-//! - **at the vault root (`a/b.md`), which carries no leading separator** and is
-//!   matched by the `lower == qualified` arm alone.
-//!
-//! Commit `a70994fb` names that arm finding 18's root cause; its redden proof
-//! reverted BOTH shapes together, so it proved the pair and not this half. The
-//! shipped fixture (`resolve_linkpath_honors_subpath_over_basename_collision`)
-//! qualifies against `sources/git/caveman/CAVEMAN.md` — nested — so the suffix
-//! arm answers it alone and the root arm can be reverted under it in silence.
-//! `resolve_ref` cannot cover the gap either: its rule 2 (`spelling + ".md"` is a
-//! corpus key) short-circuits on exactly the fixture that would reach here.
-//!
-//! This file addresses that arm and nothing else: a corpus holding BOTH
-//! `guide/setup.md` at the root and `setup.md` beside it, where the two shapes
-//! answer differently and only the root arm gives the right answer.
+//! Subpath `a/b` matches paths ending in `a/b.md`: nested (`/a/b.md` suffix) or
+//! vault-root (`lower == qualified`, no leading separator). Nested-only fixtures
+//! leave the root arm unguarded; `resolve_ref` rule 2 short-circuits before it.
+//! Corpus here: both `guide/setup.md` and `setup.md`.
 
 use model::CorpusIndex;
 
