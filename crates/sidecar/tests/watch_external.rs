@@ -1,11 +1,6 @@
-//! F5-WATCH gate fixtures — external changes through the LIVE serve loop.
-//! A scripted input source mutates the workspace BETWEEN lines (the
-//! deterministic stand-in for "a human editing in Obsidian"), and the
-//! line-boundary reconcile detects, emits, and pushes. The §7.1 law core
-//! under test: external deltas carry `actor`/`now` ABSENT — key-absence,
-//! never null — with `seq` assigned at detection; rename classification per
-//! the advisor-ruled byte-identity form (pinned AS DATA, ledgered copy-edge
-//! recorded in `src/watch.rs`).
+//! F5-WATCH: external changes through live serve (mutate between lines).
+//! External deltas: `actor`/`now` key-absent (never null); `seq` at detection;
+//! rename by byte-identity (pinned as data).
 
 use serde_json::Value;
 use std::io::{self, BufRead, Read, Write as _};

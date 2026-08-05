@@ -1,25 +1,10 @@
-//! Adversarial-harness Class-4 wire probes (`p4-regression-probes.json`,
-//! vendored under `testsuite/data/harness/`) against the LIVE
-//! dispatch — the D2 harness-conformance law from the unit card.
+//! Class-4 wire probes (`p4-regression-probes.json`) against live dispatch.
 //!
-//! Rung disposition: MP-1..4 + MP-8 bound
-//! at rung 2; MP-5..7 are `splice` probes — they answered `unknown_op` while
-//! splice was unarmed and are BOUND since D4-SPLICE: MP-5 (raw linktext as a
-//! write target — W2 kill), MP-6 (client span field — decision-007 kill)
-//! refuse at the strict decode; MP-7 (guardless splice, "state s0") is served
-//! against the wsfix S0 workspace the probe assumes and is REFUSED there —
-//! `guard_required`, a semantic write refusal, decision 007 AMENDED by
-//! requirements decision 18 (U10's fingerprint-or-force door). Its frame stays
-//! LEGAL, which is 007's surviving schema half; the probe pack's recorded
-//! `expect.ok:true` is the superseded behavioural half and the deviation stays
-//! loud in the provenance, exactly as MP-8's does. **This sentence said MP-7
-//! "must SUCCEED at the wire" while `assert_mp7_007_plus_write` below asserted
-//! the refusal — corrected under DECISION 22 (ZT, 2026-08-04).** MP-9 is a
-//! GT-provenance check, not a wire frame. MP-8's recorded
-//! `expect.ok:true` predates the frozen D-C5 law — the runner asserts the
-//! TEXT-lawful answer (`bad_request{unknown_kinds:["block_anchor"]}`; the
-//! closed §4.3 enum spells the kind `anchor`) and the deviation stays loud
-//! in the provenance.
+//! Pins: MP-1..4 + MP-8 at decode/read; MP-5/6 alien fields → `bad_request`;
+//! MP-7 guardless splice → `guard_required` (frame legal; pack's
+//! `expect.ok:true` is superseded, deviation loud); MP-8 `block_anchor` →
+//! `bad_request{unknown_kinds}` (D-C5; pack expect superseded). MP-9 skipped
+//! (GT-provenance, not a wire frame).
 
 use serde_json::Value;
 
@@ -66,9 +51,7 @@ fn answer(root: &fs::WorkspaceRoot, request: &Value) -> Value {
     serde_json::from_str(text.lines().next().expect("one frame")).expect("frame parses")
 }
 
-/// MP-5 (raw linktext as a write target — W2 kill) and MP-6 (client span
-/// field — decision-007 kill) refuse at the strict decode, the refusal
-/// naming the alien field (`ref` / `span`).
+/// MP-5/6: alien write fields (`ref`/`span`) refuse at strict decode.
 fn assert_splice_decode_kill(id: &str, frame: &Value) {
     assert_eq!(frame["ok"], false, "{id}: {frame}");
     assert_eq!(frame["error"]["code"], "bad_request", "{id}: {frame}");
@@ -84,17 +67,10 @@ fn assert_splice_decode_kill(id: &str, frame: &Value) {
     );
 }
 
-/// MP-7, class `007+write` — decision 007 AMENDED by requirements decision 18.
-/// Both halves are asserted here, which is why it lives in its own function:
-/// the surviving SCHEMA half (a guardless splice is a legal frame that decodes)
-/// and the superseded BEHAVIOURAL half (the write is now refused semantically).
-///
-/// Implementing this refusal as a FRAME rejection would make guard fields
-/// effectively required at the schema and resurrect the ceremony 007 exists to
-/// kill — so the negatives below are the load-bearing assertions, not decoration.
+/// MP-7: guardless splice — write refused (`guard_required`); frame legal
+/// (not `bad_frame`/`bad_request`). Schema-optional guards must stay optional.
 fn assert_mp7_007_plus_write(id: &str, request: &Value) {
-    // This probe declares "state s0", so it runs against the wsfix S0 workspace
-    // rather than the walkvault the other rungs share.
+    // Probe assumes "state s0" (wsfix S0), not walkvault.
     let (_d, s0_root) = s0_workspace();
     let frame = answer(&s0_root, request);
     assert_eq!(frame["ok"], false, "{id}: the WRITE is refused: {frame}");
@@ -102,8 +78,7 @@ fn assert_mp7_007_plus_write(id: &str, request: &Value) {
         frame["error"]["code"], "guard_required",
         "{id}: a SEMANTIC write refusal: {frame}"
     );
-    // 007's surviving half, asserted as a NEGATIVE: whatever else is
-    // true, the frame must never be called malformed.
+    // Frame must never be called malformed.
     for illegal in ["bad_frame", "bad_request", "unknown_op"] {
         assert_ne!(
             frame["error"]["code"], illegal,
@@ -115,9 +90,7 @@ fn assert_mp7_007_plus_write(id: &str, request: &Value) {
         frame["error"]["recovery"], "fix",
         "{id}: fix class — change the request, not the channel: {frame}"
     );
-    // It DECODED and reached the WRITE path: the refusal names the
-    // target file, a fact only the post-decode guard can fill in —
-    // a frame rejection has no path to echo.
+    // Reached write path: refusal names the target file.
     assert_eq!(
         frame["error"]["path"], request["path"],
         "{id}: the refusal comes from the write path, so the frame \
@@ -141,11 +114,8 @@ fn p4_probes_applicable_at_rung_2() {
                 assert_eq!(frame["ok"], false, "{id}: {frame}");
                 assert_eq!(frame["error"]["code"], "ref_not_found", "{id}: {frame}");
             }
-            // duplicate block id: the mint plane refuses loud, never last-wins.
-            // Advisor-ruled shape: `candidates` stays type-level SecRef and
-            // EMPTY (`[]` — no §2.1 spelling distinguishes two identical ids;
-            // prose in the grammar field would violate the one-grammar law),
-            // the human message carries the count.
+            // Duplicate block id: loud refuse; `candidates` = [] (no §2.1
+            // spelling distinguishes identical ids); message carries count.
             "MP-2" => {
                 assert_eq!(frame["ok"], false, "{id}: {frame}");
                 assert_eq!(frame["error"]["code"], "ambiguous_ref", "{id}: {frame}");
@@ -191,21 +161,10 @@ fn p4_probes_applicable_at_rung_2() {
                     assert!(!body.contains_key(key), "{id}: no `{key}`: {frame}");
                 }
             }
-            // splice probes, BOUND at D4-SPLICE — split runner below.
             "MP-5" | "MP-6" => assert_splice_decode_kill(id, &frame),
-            // decision 007, BOUND at D4-SPLICE — AMENDED 2026-08-03 under the
-            // ZT ruling. The probe now asserts 007's SURVIVING half and the
-            // ruling's supersession of the other, which is the SAME exchange
-            // read at a finer grain:
-            //   - the frame is LEGAL and DECODES (guard fields schema-optional);
-            //   - the WRITE is refused SEMANTICALLY (`guard_required`), never as
-            //     frame-illegality.
-            // The distinction is load-bearing: implementing this refusal as a
-            // frame rejection would make guards required AT THE SCHEMA and
-            // resurrect the ceremony 007 exists to kill.
+            // Frame legal + write refused (not schema-required guards).
             "MP-7" => assert_mp7_007_plus_write(id, &probe["request"]),
-            // TEXT-LAWFUL answer (D-C5) — deviation from the probe file's
-            // recorded expect, documented in the provenance note
+            // D-C5 text-lawful answer; pack expect is superseded.
             "MP-8" => {
                 assert_eq!(frame["ok"], false, "{id}: {frame}");
                 assert_eq!(frame["error"]["code"], "bad_request", "{id}: {frame}");

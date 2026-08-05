@@ -1,14 +1,10 @@
-//! U-SPEC golden fixtures for `docs/norm-v2-spec.md` — the hash-domain law of
-//! the fingerprint plane, pinned executable BEFORE any production hashing code
-//! (plan U-SPEC; decision 2026-07-24-fingerprint-cid-representation).
+//! U-SPEC golden fixtures for `docs/norm-v2-spec.md` (fingerprint hash domain;
+//! decision 2026-07-24-fingerprint-cid-representation).
 //!
-//! `reference` is the spec-verbatim implementation of norm-v2 (§4) and the
-//! fingerprint token (§2). The PRODUCTION implementation (U10:
-//! `syntax::{anchor_removals, norm_v2_slice, norm_v2}` +
-//! `model::fingerprint`) is asserted against reference AND golden in every
-//! test — three independent spellings of one law. The golden DATA (canonical
-//! bytes, digest hex, token literals) is the contract — moving it is a
-//! hash-domain migration (a new codec prefix), never an edit.
+//! `reference` = spec-verbatim norm-v2 (§4) + token (§2). Production
+//! (`syntax::{anchor_removals,norm_v2_slice,norm_v2}` + `model::fingerprint`)
+//! asserted against reference and golden — three spellings of one law. Golden
+//! data is the contract (move = new codec prefix, not an edit).
 
 use model::{Node, NodeKind, build};
 
@@ -149,9 +145,7 @@ mod reference {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Golden canonicalization table (spec §7). (name, input, expected canonical)
-// ---------------------------------------------------------------------------
+// Golden canonicalization table (spec §7): (name, input, expected canonical)
 
 const CANONICAL_GOLDENS: &[(&str, &str, &str)] = &[
     ("tail_anchor", "para one ^goal\n", "para one\n"),
@@ -347,9 +341,7 @@ fn anchor_host_block_grain() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Token grammar (spec §2)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn token_mint_and_roundtrip() {

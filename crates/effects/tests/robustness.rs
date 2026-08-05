@@ -1,9 +1,5 @@
-//! Robustness fuzz layer (0003 § Testing methodology): the stable-runnable
-//! counterpart to the cargo-fuzz targets under `fuzz/`. proptest throws arbitrary
-//! and semi-structured Starlark source plus arbitrary events at the kernel; every
-//! case must TERMINATE and RETURN (`Ok` or a typed `EvalError`) — never panic,
-//! never hang, never crash. If any case looped, the suite would hang; if any
-//! panicked, proptest would fail — so a green run IS the liveness proof.
+//! Robustness (proptest counterpart to `fuzz/`): arbitrary source + events must
+//! terminate and return (`Ok` or typed `EvalError`) — never panic/hang/crash.
 
 use effects::{ChangeEvent, EvalLimits, EventFacts, Rule, eval_with_limits};
 use proptest::prelude::*;

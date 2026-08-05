@@ -1,56 +1,16 @@
-//! **U27 — the frozen-v2 key-set pin suite (LIVE plane).**
+//! U27 — frozen-v2 key-set pins (LIVE plane).
 //!
-//! One exhaustive key-set pin per response shape in the frozen v2 op list
-//! (`docs/wire-contract-v2.md` §3.2 caps + §4 op definitions), taken from the
-//! REAL serve loop on a v2 session (no `contract` in `hello`, so `rev::Rev::V2`
-//! by default).
+//! One exhaustive sorted-key `assert_eq!` per response shape in the frozen v2
+//! op list, from the real serve loop on a v2 session (no `contract` in
+//! `hello`). Full key lists only — subset/`contains` cannot catch a v3 field
+//! on a v2 envelope. `Option`+`skip_serializing_if` is not a version gate;
+//! value sweeps miss field growth.
 //!
-//! # Why this file exists
-//!
-//! A v3-additive response field riding a v2 envelope has been found three times
-//! (All-Hands #1: `read`/`extract` fields; U20b: `NotificationRoot`; U20b again:
-//! `body.armed.effects`) — every time by a worker reading a surface, never by a
-//! gate. The standing instruments cannot see the class:
-//!
-//! - `Option` + `skip_serializing_if` is NOT a version gate. It skips on a none
-//!   VALUE, never on a v2 SESSION, so any path that POPULATES a v3-additive
-//!   field serializes it onto a v2 wire.
-//! - `pf_frozen_sweep` pins worked VALUES (spans, revs, roots). Sweep-green is
-//!   true for values and FALSE for fields: a v3-only key in a v2 envelope passes
-//!   it untouched.
-//!
-//! # What makes these pins detectors and not decorations
-//!
-//! Every assertion is `assert_eq!` on the FULL sorted key list. A `contains`
-//! or subset check would pass while a v3 field rode the envelope — a test that
-//! cannot fail for the reason it exists (All-Hands #3: a control that cannot
-//! distinguish the two worlds is a decoration). The two worlds these pins tell
-//! apart are "the v2 envelope carries exactly its frozen keys" and "the v2
-//! envelope grew (or lost) one" — an added key, a removed key, and a changed
-//! POPULATION RULE on an existing `Option` all move the list.
-//!
-//! This is the LIVE half of the pair. [`crates/wire/tests/u27_frozen_key_sets.rs`]
-//! pins the same shapes at the TYPE with every optional field populated: it
-//! catches a field added to the struct even when no live path populates it yet,
-//! which this file cannot see. Neither half subsumes the other.
-//!
-//! # Where the live key set and the printed frame disagree
-//!
-//! Two shapes disagreed with `docs/wire-contract-v2.md` when this suite was
-//! minted, and they were dispositioned in opposite directions:
-//!
-//! - `armed.file_rev_after` — RATIFIED on v2 (requirements decision 21, ZT,
-//!   2026-08-04): the prose was stale, the fixtures were right. Pinned as
-//!   served; see [`armed_key_set_as_served_on_v2`].
-//! - `root_mismatch.changed` — specified in §5.1 and the §18 ledger, asserted
-//!   by an exhaustive fixture that hand-builds an `ErrorBody`, and never
-//!   served by the engine. Pinned as served, with the contract's answer kept
-//!   `#[ignore]`d beside it so the shape cannot be quietly ratified by a
-//!   passing test.
-//!
-//! The rule the pair encodes: a pin records what the wire does, and a defect
-//! is never converted into a regression lock by a green test that agrees with
-//! it. Whether the doc or the wire is wrong is a ruling, not a test's call.
+//! Live half of the pair with `crates/wire/tests/u27_frozen_key_sets.rs` (type
+//! plane). Known dispositions: `armed.file_rev_after` pinned as served on v2
+//! (ratified); `root_mismatch.changed` pinned as served + contract shape
+//! `#[ignore]`d (never served). Pins record the wire; defects are not locked
+//! green.
 
 use policy::{PackFiles, RulesetPin};
 use serde_json::Value;
@@ -58,7 +18,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 
 // ---------------------------------------------------------------------------
-// Harness (dispatch_v2.rs conventions, verbatim)
+// Harness
 // ---------------------------------------------------------------------------
 
 fn workspace(files: &[(&str, &str)]) -> (tempfile::TempDir, fs::WorkspaceRoot) {
@@ -106,9 +66,7 @@ fn one(root: &fs::WorkspaceRoot, line: &str) -> Value {
     frames.remove(0)
 }
 
-/// **The pin primitive.** EXHAUSTIVE `assert_eq!` on the full sorted key list of
-/// one JSON object — never a subset or `contains` check, which is the only form
-/// that can fail for the reason this suite exists.
+/// Exhaustive sorted key-list pin — not subset/`contains`.
 #[track_caller]
 fn pin_keys(value: &Value, expected: &[&str], what: &str) {
     let obj = value
@@ -128,8 +86,7 @@ const Q3_REV: &str = "33d5b0e1b27cb48b";
 const Q4_REV: &str = "4b8bc385a58da0e0";
 const R0: &str = "b3:74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
 
-/// The frozen §4.4 guarded E3 write, receipt included — the one exchange that
-/// exercises the whole splice response shape (armed + receipt + root advance).
+/// Frozen §4.4 guarded E3 write (armed + receipt + root advance).
 fn e3_splice() -> String {
     format!(
         r#"{{"id":42,"op":"splice","path":"notes/plan.md","actor":"agent:b0864fb2","now":"2026-07-18T20:31:04Z","receipt":{{"path":"receipts/2026-07-18.md","anchor":"r-000042"}},"edits":[{{"target":{{"hpath":[{{"h":"Goals"}},{{"h":"Q3"}}]}},"edit":{{"match":{{"old":"ship by August","new":"ship by September"}}}},"if_node_rev":"{Q3_REV}"}}]}}"#
@@ -140,9 +97,7 @@ fn e3_splice() -> String {
 // Frame envelope (§3.1) — every response, ok and error
 // ---------------------------------------------------------------------------
 
-/// §3.1: a response frame is exactly `{id, ok, body}` or `{id, ok, error}`.
-/// A v3 session additionally carries `meta` (U7 timing); a v2 session must
-/// never grow it, and this pin is what says so for EVERY frame in the suite.
+/// §3.1: ok/error frames are exactly `{id, ok, body|error}` — no v3 `meta`.
 #[test]
 fn frame_envelope_key_set_is_id_ok_and_exactly_one_payload() {
     let (_d, root) = s0();
@@ -156,10 +111,7 @@ fn frame_envelope_key_set_is_id_ok_and_exactly_one_payload() {
 // hello (§3.2)
 // ---------------------------------------------------------------------------
 
-/// Frozen §3.2 hello body: `proto`, `server`, `caps`, `root`. The type admits
-/// two more OPTIONAL additive fields (`storage`, `workspace`, both daemon-only
-/// bindings); the sidecar populates neither, and this pin is what fails if a
-/// future path starts emitting one onto a v2 handshake.
+/// Frozen §3.2 hello: `proto`/`server`/`caps`/`root` (no storage/workspace).
 #[test]
 fn hello_body_key_set_is_the_frozen_four() {
     let (_d, root) = s0();
@@ -178,13 +130,7 @@ fn hello_body_key_set_is_the_frozen_four() {
 // toc (§4.1) — body + every row class the contract works
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.1: the toc body is `path` + `file_rev` + ambient `root` + `nodes`,
-/// and each row class carries exactly the kit the contract prints —
-/// frontmatter rows carry `keys`, heading rows carry `level`/`hpath`/
-/// `content_span`, anchor rows carry `anchor` and their HOST kind.
-///
-/// The row pins are where a v3-additive addressing field (`n`, `hpath_text`,
-/// `words` — all present on the node types) would surface on a v2 wire.
+/// Frozen §4.1 toc body + row classes (no v3 addressing fields on v2).
 #[test]
 fn toc_body_and_row_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -218,9 +164,7 @@ fn toc_body_and_row_key_sets_are_frozen() {
     pin_keys(seg, &["h"], "toc heading row hpath segment");
 }
 
-/// The §4.1 worked ANCHOR row: a block id echoes as its HOST kind keyed by
-/// `anchor`, carrying its own `node_rev` over the block-leaf span. Reached the
-/// only way it exists — after a receipt append mints the block.
+/// §4.1 anchor row after receipt append mints the block.
 #[test]
 fn toc_anchor_row_key_set_is_frozen() {
     let (_d, root) = s0();
@@ -249,8 +193,7 @@ fn toc_anchor_row_key_set_is_frozen() {
 // cat (§4.2)
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.2: `span` + `node_rev` + `content`, sectioned and whole-file
-/// alike — one shape, no `path`, no `root`.
+/// Frozen §4.2 cat: `span`/`node_rev`/`content` (sectioned and whole-file).
 #[test]
 fn cat_body_key_set_is_frozen_both_forms() {
     let (_d, root) = s0();
@@ -271,10 +214,7 @@ fn cat_body_key_set_is_frozen_both_forms() {
 // extract (§4.3)
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.3: the node inventory is `path` + `nodes`, and a node is
-/// `kind`/`span`/`text_prefix_16b`/`node_rev` plus per-kind extras — NEVER the
-/// v3-additive host-face trio (`n`, `hpath_text`, `words`) that lives on the
-/// same struct.
+/// Frozen §4.3 extract: no v3 host-face keys (`n`/`hpath_text`/`words`).
 #[test]
 fn extract_body_and_node_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -308,9 +248,7 @@ fn extract_body_and_node_key_sets_are_frozen() {
 // resolve (§4.5)
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.5: location facts only — `dest` + `span`, and NO rev field exists
-/// to return (D-C2, the mint partition as a type-level fact). `content` rides
-/// only when the request asked for it.
+/// Frozen §4.5: location only (`dest`/`span`); no rev (D-C2).
 #[test]
 fn resolve_body_key_sets_are_frozen_both_forms() {
     let (_d, root) = s0();
@@ -334,9 +272,7 @@ fn resolve_body_key_sets_are_frozen_both_forms() {
 // links (§4.6) + the §10.1 staleness triple
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.6: the staleness triple (`as_of_root`, `live_root`,
-/// `changes_seq`) plus `files`, whose values are the `resolved`/`unresolved`
-/// edge maps — both always serialized, a link-less file being `{}`/`{}`.
+/// Frozen §4.6: staleness triple + `files` (`resolved`/`unresolved` always).
 #[test]
 fn links_body_and_file_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -369,11 +305,7 @@ fn links_body_and_file_key_sets_are_frozen() {
 // splice (§4.4) — the ONE write response shape, real and dry
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.4 splice body: `armed`, `receipt` (iff the request named one and
-/// the batch hit disk), `root_before`, `root_after`, `seq`, `verdicts`.
-///
-/// `pin` (stage-2 S7) also lives on this type and is v3-only at decode — a v2
-/// session cannot mint one, and this pin is what fails if that ever changes.
+/// Frozen §4.4 splice body (no v3-only `pin` on a v2 session).
 #[test]
 fn splice_body_receipt_and_edit_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -405,26 +337,9 @@ fn splice_body_receipt_and_edit_key_sets_are_frozen() {
     pin_keys(&edits[0]["target"], &["hpath"], "splice armed edit target");
 }
 
-/// **`armed` — v2 §4.4 AS AMENDED (requirements decision 21, ZT, 2026-08-04;
-/// personal freeze authority per v2 §18).**
-///
-/// The printed §4.4 frame shows `armed` as `{path, edits}`; the field arrived
-/// in ZT's own commit `9365455a` (2026-07-21, W-5) and was reflected in the
-/// fixtures, not the prose. Decision 21 ratifies it ON V2 — intentional law,
-/// never a leak. ZT's semantics, recorded verbatim-grade:
-///
-/// > `body.armed.file_rev_after` is the whole-file rev AFTER a committed
-/// > splice, so a client learns the new file rev WITHOUT A FOLLOW-UP TOC.
-/// > Latency only; correctness stays fingerprint and `root_after`. ABSENT ON
-/// > DRY, because nothing was written. Same family as
-/// > `DeltaFile.file_rev_after` and a subsequent `toc` `file_rev`.
-///
-/// The "absent on dry" half is executable next door:
-/// [`splice_dry_body_key_set_is_frozen`] pins the dry `armed` at
-/// `{edits, path}`. Together the two pins are the whole ruling — the field
-/// rides a committed write and only a committed write.
-///
-/// Not demoted, not v3-split, no reserved-registry row: v2 law now.
+/// `armed.file_rev_after` on committed v2 splice (ratified on v2). Absent on
+/// dry — see [`splice_dry_body_key_set_is_frozen`]. Whole-file rev after write
+/// so client skips a follow-up toc; correctness stays fingerprint/`root_after`.
 #[test]
 fn armed_key_set_as_served_on_v2() {
     let (_d, root) = s0();
@@ -436,8 +351,7 @@ fn armed_key_set_as_served_on_v2() {
     );
 }
 
-/// Frozen §4.4 dry law: same response shape, `root_after:null`, no receipt
-/// written — and `dry:true` rides. `seq` is absent because no batch committed.
+/// Frozen §4.4 dry: `root_after:null`, no receipt/`seq`; dry `armed` = path+edits.
 #[test]
 fn splice_dry_body_key_set_is_frozen() {
     let (_d, root) = s0();
@@ -470,8 +384,7 @@ fn splice_dry_body_key_set_is_frozen() {
 // root · sub · diff (§4.7)
 // ---------------------------------------------------------------------------
 
-/// Frozen §4.7: `{root, seq}` — the world-grain cursor. `sub`'s ack reuses the
-/// same body (the subscription's anchor tense), so both are pinned here.
+/// Frozen §4.7: `{root, seq}` for `root` and `sub` ack.
 #[test]
 fn root_and_sub_ack_body_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -481,8 +394,7 @@ fn root_and_sub_ack_body_key_sets_are_frozen() {
     pin_keys(&ack["body"], &["root", "seq"], "sub ack body");
 }
 
-/// Frozen §4.7/§7.3: the replay body is exactly `batches`, each batch being a
-/// notification frame body — there is no second diff dialect.
+/// Frozen §4.7/§7.3: diff body is exactly `batches`.
 #[test]
 fn diff_body_key_set_is_frozen() {
     let (_d, root) = s0();
@@ -497,10 +409,7 @@ fn diff_body_key_set_is_frozen() {
 // The Delta noun on the notification plane (§7.1)
 // ---------------------------------------------------------------------------
 
-/// Frozen §7.1: the notification frame carries `delta` (plus the
-/// amendment-declared `effects` sibling, omitted when empty), and the Delta is
-/// `seq`/`root_before`/`root_after`/`actor`/`now`/`files` with node-grain
-/// entries. This is the surface U20b's `NotificationRoot` sighting rode.
+/// Frozen §7.1 notification: `delta` (+ empty-omitted `effects`); Delta keys.
 #[test]
 fn delta_notification_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -564,14 +473,8 @@ fn delta_notification_key_sets_are_frozen() {
 // The §8 error envelope — per worked code
 // ---------------------------------------------------------------------------
 
-/// §5.2 the failure split: `cas_mismatch` carries `{code, recovery, expected,
-/// actual}` on a v2 session and NOTHING else.
-///
-/// This is the standing detector for All-Hands #1's own sighting: U11's
-/// mismatch-recovery ladder authors four v3-additive extras (`rung`, `diff`,
-/// `new_content`, `new_fingerprint`) plus a teaching `message`/`path` on this
-/// very envelope, and `rev::demote_v2` is the only thing keeping them off a v2
-/// wire. If that demotion is bypassed, this pin reddens.
+/// §5.2 `cas_mismatch`: `{code, recovery, expected, actual}` only on v2
+/// (`rev::demote_v2` drops v3 ladder extras).
 #[test]
 fn cas_mismatch_error_key_set_is_frozen() {
     let (_d, root) = s0();
@@ -594,8 +497,7 @@ fn cas_mismatch_error_key_set_is_frozen() {
     );
 }
 
-/// §5.2: rev PASSED and the old string did not — provably the caller's typo.
-/// `matches` is the occurrence count and the only extra.
+/// §5.2 `no_match` / `not_unique`: `matches` is the only extra.
 #[test]
 fn no_match_and_not_unique_error_key_sets_are_frozen() {
     let (_d, root) = s0();
@@ -649,10 +551,7 @@ fn no_match_and_not_unique_error_key_sets_are_frozen() {
     );
 }
 
-/// **`root_mismatch` as the v2 wire ACTUALLY serves it.** §5.1 and §18 ledger
-/// row 2 both spell `{expected, actual, changed}`; the live envelope omits
-/// `changed` (U27 finding 2 — a contract field ABSENT, the mirror image of a
-/// leak, and equally invisible to a value sweep).
+/// `root_mismatch` as served: no `changed` (contract §5.1 spells three fields).
 #[test]
 fn root_mismatch_error_key_set_as_served_on_v2_today() {
     let (_d, root) = s0();
@@ -676,9 +575,7 @@ fn root_mismatch_error_key_set_as_served_on_v2_today() {
     );
 }
 
-/// **The CONTRACT's answer for `root_mismatch`, red today.** §5.1 prints
-/// `root_mismatch{expected,actual,changed}` and §18 row 2 re-states the
-/// three-field shape while waiving only the `scope` drop. Ignored, not deleted.
+/// Contract §5.1 shape including `changed` — ignored until disposition.
 #[test]
 #[ignore = "U27 finding 2 — frozen §5.1 `changed` never served; needs a disposition card"]
 fn contract_root_mismatch_carries_changed() {
@@ -701,8 +598,7 @@ fn contract_root_mismatch_carries_changed() {
     );
 }
 
-/// §4.5: `dest` rides every stage-2 outcome, success or failure; a stage-1 miss
-/// has no dest to name.
+/// §4.5 `ref_not_found`: stage-2 carries `dest`; stage-1 does not.
 #[test]
 fn ref_not_found_error_key_sets_are_frozen_both_stages() {
     let (_d, root) = s0();
@@ -726,9 +622,7 @@ fn ref_not_found_error_key_sets_are_frozen_both_stages() {
     );
 }
 
-/// The remaining §8 envelopes the frozen contract works: the D-C5 loud
-/// `unknown_kinds`, the §3.1 raw-lexeme `id_raw` (beside `id:null`), the §4.4
-/// disjointness refusal, `unsupported_proto`, and the two path classes.
+/// Remaining §8 envelopes: `unknown_kinds`, `id_raw`, overlap, proto, path classes.
 #[test]
 fn remaining_frozen_error_key_sets_are_pinned() {
     let (_d, root) = s0();
@@ -992,25 +886,11 @@ fn toc_rev(root: &fs::WorkspaceRoot, sec: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// The pin primitive's own control (All-Hands #43)
+// pin_keys self-control (twin of wire/tests/u27)
 // ---------------------------------------------------------------------------
 
-/// **`pin_keys` exists twice — here and in `crates/wire/tests/u27_frozen_key_sets.rs`
-/// — and this test is why that is safe.**
-///
-/// The two copies cannot be merged into one: this one takes a `&Value` already
-/// off the wire, the other takes any `Serialize` and serializes it first, and a
-/// shared signature would be a lowest common denominator of both. So they are
-/// two definitions of one predicate, which is the shape that drifts silently
-/// (#43: a duplicate is dangerous exactly in proportion to how little it looks
-/// like one — differing signatures in different crates hide this one well).
-///
-/// Rather than share the code, each copy is ANCHORED TO ITS OWN MEASUREMENT:
-/// this test proves the helper REJECTS a superset, so if anyone weakens it to a
-/// subset or `contains` check — the one edit that would quietly disarm every pin
-/// in this file — this fails. The twin test in the other file does the same for
-/// its copy. Two definitions, each independently held to the contract, instead
-/// of two definitions that merely agree today.
+/// `pin_keys` must reject a superset — a subset/`contains` weaken would disarm
+/// every pin in this file. (Live-plane copy; type-plane twin is separate.)
 #[test]
 fn the_pin_primitive_rejects_a_superset() {
     let one_extra = serde_json::json!({"a": 1, "b": 2});

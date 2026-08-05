@@ -1,40 +1,32 @@
-//! The **fingerprint plane** — attestation content identity as a
-//! self-describing CID-token (`docs/norm-v2-spec.md`; decision
-//! 2026-07-24-fingerprint-cid-representation, "#4").
+//! Fingerprint plane — attestation content identity as a self-describing
+//! CID-token (`docs/norm-v2-spec.md`; decision
+//! 2026-07-24-fingerprint-cid-representation).
 //!
-//! # The three hash planes, never conflated (spec §1)
-//! One hash family (BLAKE3-256), three domains with distinct jobs:
+//! # Three hash planes, never conflated (spec §1)
+//! One hash family (BLAKE3-256), three domains:
 //!
-//! - **`node_rev`** ([`crate::NodeRev`]) — RAW span bytes, 16 hex, the CAS
-//!   race detector. Unchanged by this module.
-//! - **The workspace tree merkle** ([`crate::merkle_root`]) — RAW file bytes
-//!   composed to the 32-byte guard/freshness cursor (`b3:` spelling).
-//!   Unchanged by this module.
-//! - **fingerprint** (HERE) — `fp1.span2.b3.<64hex>`: BLAKE3 over the node's
-//!   span bytes canonicalized by **norm-v2** (anchor-token removal,
-//!   [`syntax::anchor_removals`]). The rev a pin holds.
+//! - **`node_rev`** ([`crate::NodeRev`]) — RAW span bytes, 16 hex, CAS race
+//!   detector. Unchanged here.
+//! - **Workspace merkle** ([`crate::merkle_root`]) — RAW file bytes → 32-byte
+//!   guard cursor (`b3:`). Unchanged here.
+//! - **fingerprint** — `fp1.span2.b3.<64hex>`: BLAKE3 over **norm-v2**
+//!   span bytes ([`syntax::anchor_removals`]). The rev a pin holds.
 //!
-//! The planes split exactly at anchor promotion (#6 §2): pin writing
-//! ` ^block-id` into a target MOVES `node_rev` and the workspace root (the
-//! bytes really changed — CAS and guard must see it) and NEVER moves the
-//! fingerprint (no false drift — the honesty doctrine, #4 §4).
+//! Anchor promotion (#6 §2): writing ` ^block-id` moves `node_rev` and the
+//! workspace root (bytes changed) and never moves the fingerprint (no false
+//! drift).
 //!
 //! # No hash-time graph walk (spec §3, §6)
-//! `span2` hashes the span's own bytes: an `![[embed]]` contributes its LINK
-//! bytes, never the embedded content. Cross-document transitivity is carried
-//! by lock-is-content (#8 §5): a page's fingerprint covers its
-//! `meridian-lock` block, which holds its targets' fingerprints — drift
-//! propagates at pin-update time, not at hash time. This supersedes the
-//! pre-marathon `compose_rev` scheme (hash-of-`node_rev`-hex leaf, hash-time
-//! embed expansion, cycle sentinel, dangling refusal, 16-hex truncation) —
-//! with no recursion there is nothing to dangle or cycle.
+//! `span2` hashes the span's own bytes — an `![[embed]]` contributes link
+//! bytes only. Cross-document transitivity is lock-is-content (#8 §5): a
+//! page's fingerprint covers its `meridian-lock`, which holds targets'
+//! fingerprints; drift propagates at pin-update time.
 //!
 //! # `RevClass` — one hasher, two classes
-//! - [`RevClass::Content`] — a fingerprint token, the engine's blake3 over
-//!   norm-v2 bytes (the default; the ONE engine hasher).
-//! - [`RevClass::Object`] — the git object id at `commit:location`, a
-//!   source-2 fact carried verbatim and verified by **equality**; the engine
-//!   never computes it (git owns that content-addressing).
+//! - [`RevClass::Content`] — fingerprint token (blake3 over norm-v2; sole
+//!   engine hasher).
+//! - [`RevClass::Object`] — git object id at `commit:location`, verified by
+//!   equality; engine never computes it.
 
 use crate::{ByteSpan, Document, Node};
 
@@ -45,30 +37,13 @@ pub const CODEC_SPAN2: &str = "span2";
 /// The live hash fn: BLAKE3-256, digest = exactly 64 lowercase hex (§2.3).
 pub const HASHFN_B3: &str = "b3";
 
-/// A full fingerprint token — `version.codec.hashfn.digest`, e.g.
-/// `fp1.span2.b3.<64hex>`. Full-length tokens live in `meridian-lock` blocks
-/// and receipts (#4 §5); render planes abbreviate the DIGEST field
-/// (`@40b167ed`-style, the #6 §4 view grammar).
+/// Fingerprint token — `version.codec.hashfn.digest` (e.g. `fp1.span2.b3.<64hex>`).
+/// Full-length in `meridian-lock` / receipts (#4 §5); renderers abbreviate the
+/// digest (`@40b167ed`, #6 §4).
 ///
-/// # The field is PRIVATE, and that is the other half of R31
-///
-/// [`fingerprint_span`] is fallible so that no caller can mint over an empty
-/// normalized span. A public constructor would leave that guard discharged but
-/// holed: `Fingerprint(some_string)` reintroduces exactly the token the owner
-/// refuses to produce, and the type would then mean only *"the digest came from
-/// `fingerprint_span`, because nobody currently bypasses it"* — a property of
-/// today's call sites rather than of the type. Sealing makes it a property of
-/// the type: **the only way to hold a `Fingerprint` is to have minted one, and
-/// the only mint refuses the empty span.**
-///
-/// This is a MAINTAINER-facing invariant, not an attacker-facing door — the
-/// engine is not defending against its own crates. It earns its keep at stage
-/// 3, where receipt unification and cross-root both touch fingerprints and a
-/// future author would otherwise reach for the tuple constructor without ever
-/// meeting the rule.
-///
-/// Read the token with [`Fingerprint::as_str`], take it with
-/// [`Fingerprint::into_string`].
+/// **Field private (R31):** the only constructor path is mint; mint refuses an
+/// empty normalized span. A public constructor would reintroduce tokens the
+/// owner refuses. Read via [`Fingerprint::as_str`] / [`Fingerprint::into_string`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint(String);
 
@@ -105,25 +80,12 @@ pub struct FingerprintParts {
     pub digest: String,
 }
 
-/// The one condition under which a fingerprint cannot exist: the span's
-/// norm-v2 canonicalization is **empty** (R31).
+/// Empty norm-v2 span — fingerprint cannot exist (R31).
 ///
-/// `blake3` of empty input is a *universal match* — every empty-normalizing
-/// span in every document mints the identical token — so such a token carries
-/// zero information about the content it names. That voids the fingerprint's
-/// whole contract:
-///
-/// > **A fingerprint must not be able to match content it does not cover.**
-///
-/// An empty normalized span is therefore not a thing to hash. It is a typed
-/// refusal at mint time and a verdict that can never read green
-/// ([`ContentVerdict::EmptySpan`]).
-///
-/// This is a **unit error on purpose**. There is exactly one way to void the
-/// contract, and naming it as a TYPE — rather than a bool a caller may ignore —
-/// is what makes every door discharge it or fail to compile (R5: *a boolean
-/// helper a caller may ignore is not a guard; a type a caller must discharge
-/// is*).
+/// `blake3("")` is a universal match (identical token for every empty span),
+/// so it covers nothing: **a fingerprint must not match content it does not
+/// cover.** Typed refusal at mint; verdict never green
+/// ([`ContentVerdict::EmptySpan`]). Unit error so callers must discharge it (R5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmptySpan;
 
@@ -152,19 +114,10 @@ pub fn fingerprint_with_removals(
     fingerprint_span(doc, &node.span, removals)
 }
 
-/// [`fingerprint_with_removals`] over a resolved SPAN rather than a `&Node`
-/// handle. `span2` hashes the span's own bytes (spec §3), so the node
-/// contributes nothing else — a caller holding a resolved [`crate::Target`]
-/// mints without a second tree walk. THE owner of the mint expression; the
-/// `&Node` forms delegate here.
-///
-/// **THE owner of the empty-span invariant, too** (R31). This is the single
-/// place norm-v2 bytes meet the hasher — [`syntax::norm_v2_slice`] has exactly
-/// one caller, this one — so refusing here closes the CLASS rather than any one
-/// ref form that happens to normalize away. Which forms those are is not this
-/// function's business and deliberately so: it guards the *property*, so a
-/// future ref form, dialect rule, or codec that reduces to nothing is closed the
-/// day it lands, with no enumeration to remember to update.
+/// Mint over a resolved span (spec §3). Sole owner of the mint expression and
+/// the empty-span refuse (R31): only place norm-v2 bytes meet the hasher
+/// ([`syntax::norm_v2_slice`] has this sole caller). Guards the property, not
+/// an enumerated ref-form list. `&Node` forms delegate here.
 ///
 /// # Errors
 /// [`EmptySpan`] when `norm_v2_slice` yields no bytes.
@@ -240,24 +193,11 @@ pub enum ContentVerdict {
     },
     /// Not a fingerprint token.
     Malformed,
-    /// The live span normalizes to NOTHING, so no fingerprint exists to compare
-    /// the pinned token against ([`EmptySpan`]). **Never green** — and that is
-    /// structural, not a policy choice: [`ContentVerdict::Green`] is reachable
-    /// only through a recomputed token, and [`fingerprint_span`] cannot produce
-    /// one here.
-    ///
-    /// **This is the LOAD-BEARING arm of R31.** The empty-span class is
-    /// unreachable through `mrd pin` (every ref form refuses at mint — see the
-    /// mint door in `wire_serve::write`), so the class arrives only in a HAND-
-    /// or TOOL-AUTHORED lock block. That makes the verdict side, not the mint,
-    /// the place the guard has to bite: before this arm, a stored pin over an
-    /// empty-normalizing span read GREEN in every document and no edit anywhere
-    /// could ever turn it red.
-    ///
-    /// A pinned token whose digest happens to BE `blake3("")` needs no special
-    /// case: over an empty span it lands here, and over a non-empty span it
-    /// reddens as ordinary drift. Either way it is never green — which is why
-    /// the guard is a property of the recompute and not a forbidden constant.
+    /// Live span normalizes empty ([`EmptySpan`]) — no fingerprint to compare.
+    /// **Never green** (R31): `Green` requires a recomputed token;
+    /// [`fingerprint_span`] cannot produce one. Mint refuses empty spans, so
+    /// this arm bites hand-/tool-authored pins. A digest equal to `blake3("")`
+    /// needs no special case — empty → here, non-empty → ordinary red.
     EmptySpan,
 }
 
@@ -364,50 +304,29 @@ pub fn verify_object(pinned: &str, observed_git_oid: &str) -> bool {
     pinned == observed_git_oid
 }
 
-// ── The property arm of the fingerprint plane (R4 18a.2) ───────────────────
-//
-// A `meridian-lock` pin selects EITHER body path segments OR frontmatter
-// property keys (R4, `path` XOR `properties`). The body arm is `span2` above.
-// This is the property arm, and it exists here rather than in `lock` for two
-// reasons: [`Fingerprint`]'s field is sealed (R31), and blake3 is the engine's
-// ONE hasher — a second mint site in another crate would hold both properties
-// only by convention.
+// Property arm (R4 18a.2): lock pin is path XOR properties; body arm is
+// `span2` above. Lives here so sealed [`Fingerprint`] mint and the sole blake3
+// hasher stay one site.
 
-/// The codec token a PROPERTY fingerprint carries — **distinct from
-/// [`CODEC_SPAN2`], and that distinctness is the point.**
+/// Property-fingerprint codec — **distinct from [`CODEC_SPAN2`]**.
 ///
-/// A properties digest is not span bytes, so under never-conflate-hash-planes
-/// it is a different digest domain and must be self-describing as one. The
-/// consequence that earns it: [`verify_content`] compares the codec field and
-/// answers [`ContentVerdict::Unverifiable`] for anything it does not implement,
-/// so a props token handed to the span verifier **refuses loudly** instead of
-/// recomputing span bytes and reporting a confident wrong answer. A shared
-/// token would have made that failure silent — the one silent failure in a
-/// schema whose every other refusal is loud.
-///
-/// Ruled 2026-08-03 (advisor `c2e19632`): ZT's typed blocks in `86449b4e` spell
-/// a codec only on the PATH arm; for the properties arm he typed *"the
-/// fingerprint would be the wire format of such objects"* (17:36) and later
-/// ruled the canonical-keyed-map digest. No token was ever ratified, so the
-/// governing laws decide and there is nothing here overruled.
+/// Properties are a different digest domain (never-conflate-hash-planes).
+/// [`verify_content`] matches codec and returns
+/// [`ContentVerdict::Unverifiable`] for unknowns, so a props token on the span
+/// verifier refuses loudly instead of a silent wrong recompute.
 pub const CODEC_PROPS1: &str = "props1";
 
-/// Domain separation for the property arm: the first bytes of every canonical
-/// property serialization.
+/// Domain-separation prefix for property canonical bytes.
 ///
-/// Belt AND braces with [`CODEC_PROPS1`]. The token says which domain a digest
-/// claims; this says which domain the HASHER actually ran over. Separating in
-/// the bytes as well as in the label means a props digest cannot equal a span
-/// digest even if some future caller mislabels one.
+/// Complements [`CODEC_PROPS1`]: label claims domain; these bytes are what the
+/// hasher actually ran over — so a props digest cannot equal a span digest
+/// under mislabeling.
 pub const PROPS_DOMAIN: &str = "props1\n";
 
-/// The state of one frontmatter property — **three states, and all three
-/// fingerprint differently** (R4 18a.2, re-extracted from session `86449b4e`).
+/// Frontmatter property state — three states, three fingerprints (R4 18a.2).
 ///
-/// The distinction is not academic: Obsidian's own property editor produces
-/// bare `status:` routinely, so a page that never had the key and a page whose
-/// key was cleared in the UI are different facts about the page. A fixed-column
-/// table collapses the first into the second; a keyed map cannot.
+/// Absent (key missing) ≠ null (bare `status:` / null spellings). Fixed-column
+/// tables collapse them; a keyed map cannot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropValue {
     /// The key is omitted from the map entirely.
@@ -421,12 +340,8 @@ pub enum PropValue {
     Scalar(String),
 }
 
-/// Every spelling of YAML null, pinned as data rather than as parser behavior.
-///
-/// This crate hand-parses frontmatter (no-serde crate law), so "bare `status:`
-/// is null" is OUR rule to keep true. The pinned list is what the
-/// parser-behavior tests assert against, so a future library swap that
-/// disagrees fails a test instead of silently re-collapsing a state.
+/// YAML-null spellings, pinned as data (no-serde hand-parse). Tests assert
+/// against this list so a parser swap cannot silently re-collapse states.
 pub const NULL_SPELLINGS: [&str; 5] = ["", "~", "null", "Null", "NULL"];
 
 /// Classify `key` in `map` into its [`PropValue`] state.
@@ -445,18 +360,13 @@ pub fn classify_property(map: &crate::YamlMap, key: &str) -> PropValue {
     }
 }
 
-/// The canonical keyed-map serialization a property fingerprint hashes.
+/// Canonical keyed-map bytes a property fingerprint hashes.
 ///
-/// - **Keyed map, never a fixed-column table** (R4): each entry names its key,
-///   so [`PropValue::Absent`] is a value the map can hold rather than a row
-///   that is missing.
-/// - **Sorted keys**, so selector order is irrelevant BY CONSTRUCTION rather
-///   than by a caller remembering to sort.
-/// - **Length-prefixed** key and value, so no key or value byte sequence can
-///   forge a delimiter and make two different maps serialize identically.
+/// - Keyed map (R4): [`PropValue::Absent`] is an explicit value, not a missing row.
+/// - Sorted keys — selector order irrelevant by construction.
+/// - Length-prefixed key/value — no delimiter forgery across maps.
 ///
-/// An empty `keys` selects ALL keys in the map — R4's `[]` = all, symmetric
-/// with the path arm's `[]` = the whole body.
+/// Empty `keys` ⇒ all keys (R4 `[]` = all; path arm same).
 #[must_use]
 pub fn canonical_property_bytes(map: &crate::YamlMap, keys: &[String]) -> String {
     let mut selected: Vec<&str> = if keys.is_empty() {
@@ -486,15 +396,11 @@ pub fn canonical_property_bytes(map: &crate::YamlMap, keys: &[String]) -> String
     out
 }
 
-/// Mint the property fingerprint of `keys` in `map` (R4's `properties` arm).
+/// Property fingerprint of `keys` in `map` (R4 `properties` arm).
 ///
-/// Infallible, unlike [`fingerprint_span`]: [`PROPS_DOMAIN`] means the hashed
-/// input is never empty, so the universal-match hazard R31 guards against
-/// cannot arise here. A selection that resolves to no keys is a real, distinct
-/// statement about the page rather than an uninformative token.
-///
-/// Duplicate keys in the selector are the CALLER's refusal (`lock` refuses them
-/// per R4, never dedupes) — this function is given a validated selection.
+/// Infallible: [`PROPS_DOMAIN`] keeps the hash input non-empty (R31 hazard
+/// cannot arise). Empty selection is a distinct statement. Caller must refuse
+/// duplicate selector keys (R4); this assumes a validated selection.
 #[must_use]
 pub fn properties_fingerprint(map: &crate::YamlMap, keys: &[String]) -> Fingerprint {
     Fingerprint(format!(

@@ -1,24 +1,21 @@
-//! The `DuckDB` **view-organ** — a write-only leaf that projects the warm parsed
-//! corpus into a disposable, fingerprint-stamped `DuckDB` file.
+//! `DuckDB` **view-organ** — write-only leaf projecting the warm parsed corpus
+//! into a disposable, fingerprint-stamped `DuckDB` file.
 //!
-//! # Charter (design: `tournament-duckdb/team-a/design.md`)
-//! **Owns:** the rung-5 SQL *projection* of the fact corpus. A pure walk of the
-//! resident engine's `BTreeMap<path, Document>` into 8 physical tables + 4 SQL
-//! views ([`schema`]). Nothing reads it as truth — disk and fingerprints are
-//! correctness, the DB is advisory ([[0003-extension-kernel]] §6).
+//! # Charter
+//! **Owns:** rung-5 SQL projection of the fact corpus: walk
+//! `BTreeMap<path, Document>` into 8 tables + 4 views ([`schema`]). Disk and
+//! fingerprints are correctness; the DB is advisory.
 //!
-//! **Never does:** re-parse (it walks already-parsed `model::Document`s), read
-//! its own output back into a fact path (view-never-store, enforced by the C2
-//! crate-topology test), or write anything on the daemonless path
+//! **Never does:** re-parse, read its own output into a fact path
+//! (view-never-store; C2 topology gate), or write on the daemonless path
 //! ([`build_memory`] is `:memory:`-only).
 //!
-//! # Two entry points, split by writer authority (OD6)
-//! - [`build_memory`] — daemonless `mrd`: an in-process `:memory:` build for one
-//!   query, `built_epoch`/`built_seq` both NULL, **writes nothing to disk**.
-//! - [`publish`] — the daemon (sole persistent writer): build a temp file →
-//!   `CHECKPOINT` → assert no `.wal` → `chmod 0444` → `fsync` → atomic rename into
-//!   the shared drawer. The per-workspace publish mutex is the **caller's**
-//!   responsibility (OD6: zero flock code here).
+//! # Entry points (OD6 writer authority)
+//! - [`build_memory`] — daemonless: in-process `:memory:`, epoch/seq NULL,
+//!   **writes nothing to disk**.
+//! - [`publish`] — daemon sole persistent writer: temp → `CHECKPOINT` → no
+//!   `.wal` → `chmod 0444` → `fsync` → atomic rename. Publish mutex is the
+//!   **caller's** (zero flock code here).
 
 pub mod facts;
 pub mod read_face;
@@ -39,38 +36,31 @@ pub use read_face::{
 };
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 
-/// The stamp a daemon `publish` writes into the singleton `_meridian_view` row.
-/// The daemon is the sole persistent writer, so it carries the authoritative
-/// `as_of_fingerprint` (its warm `at_fingerprint`), the workspace path, and the
-/// epoch/seq pair (both set — a daemon build, never a daemonless `:memory:` one).
+/// Daemon `publish` stamp for the singleton `_meridian_view` row: authoritative
+/// `as_of_fingerprint`, workspace, and epoch/seq (both set — never daemonless).
 #[derive(Debug, Clone)]
 pub struct PublishStamp {
-    /// Canonical workspace path (advisory in the stamp; identity is the drawer).
+    /// Canonical workspace path (advisory; identity is the drawer).
     pub workspace: String,
-    /// The workspace content fingerprint the projection was built at
-    /// (`MerkleRoot.0`, `"b3:"+hex`) — the durable freshness authority.
+    /// Workspace content fingerprint at build (`MerkleRoot.0`) — freshness authority.
     pub as_of_fingerprint: String,
-    /// The daemon epoch (pairs with `seq`; a daemon build sets both).
+    /// Daemon epoch (pairs with `seq`).
     pub epoch: String,
-    /// The wire `changes_seq` at build time (pairs with `epoch`).
+    /// Wire `changes_seq` at build time (pairs with `epoch`).
     pub seq: u64,
 }
 
-/// A view-organ failure. `publish` is the only fallible-on-I/O entry; the
-/// variants map the design's abort points (a surviving `.wal`, an ephemeral
-/// drawer that cannot persist).
+/// View-organ failure. `publish` is the only fallible-on-I/O entry.
 #[derive(Debug)]
 pub enum ViewError {
-    /// A `DuckDB` error from schema creation, projection, or `CHECKPOINT`.
+    /// `DuckDB` error from schema, projection, or `CHECKPOINT`.
     Duckdb(duckdb::Error),
-    /// A filesystem error (temp create, `chmod`, `fsync`, rename, WAL removal).
+    /// Filesystem error (temp, `chmod`, `fsync`, rename, WAL removal).
     Io(std::io::Error),
-    /// A `.wal` sidecar survived the clean `CHECKPOINT` (build-side) or beside
-    /// the destination (pre-rename) and could not be removed — the publish is
-    /// **aborted, last-good retained**, never a torn/replayed generation.
+    /// `.wal` survived clean `CHECKPOINT` or pre-rename cleanup — publish
+    /// **aborted, last-good retained**.
     WalPresent(PathBuf),
-    /// `publish` requires a disk drawer; an ephemeral drawer writes nothing.
-    /// Daemonless callers must use [`build_memory`] instead.
+    /// `publish` needs a disk drawer; use [`build_memory`] for ephemeral.
     EphemeralDrawer,
 }
 
@@ -106,21 +96,16 @@ impl From<std::io::Error> for ViewError {
     }
 }
 
-/// Build an ephemeral `:memory:` view over `docs` for one query (daemonless
-/// `mrd`, OD6). Creates the schema, projects the corpus, and stamps the
-/// singleton `_meridian_view` with `built_epoch`/`built_seq` **both NULL**.
-/// **Writes nothing to disk.**
+/// Ephemeral `:memory:` view over `docs` (daemonless `mrd`, OD6). Stamps
+/// `_meridian_view` with epoch/seq **both NULL**. **Writes nothing to disk.**
 ///
-/// `as_of` is the caller's authoritative corpus fold for exactly these `docs` —
-/// the `model::MerkleRoot` token `fs::domain_snapshot` returned beside the bytes
-/// this projection was built from. The view crate does not refold it: a refold
-/// here is blind to the domain (its filter AND its `version` prefix, §12.3), so
-/// it stamps a `b3:` token in a `b3b:` workspace and a freshness comparison
-/// against the live fold then reports STALE over identical content (G14).
+/// `as_of` is the caller's authoritative corpus fold for these `docs` (from
+/// `fs::domain_snapshot`). This crate must not refold: a refold is blind to
+/// the domain filter and `version` prefix (§12.3), so it stamps `b3:` in a
+/// `b3b:` workspace and freshness reports STALE over identical content (G14).
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from opening the in-memory database, creating the
-/// schema, or inserting the projected rows.
+/// Propagates any `DuckDB` error from open, schema, or insert.
 pub fn build_memory(
     docs: &BTreeMap<String, Document>,
     as_of: &str,
@@ -140,18 +125,13 @@ pub fn build_memory(
     Ok(conn)
 }
 
-/// [`build_memory`] against a ROOT-KEYED corpus and a mount table — the
-/// cross-root form (U21).
+/// [`build_memory`] against a root-keyed corpus and mount table (U21).
 ///
-/// A cross-root edge lands in `link.dest_root` + `link.dest_root_path`, never
-/// in `dest_path`: that column carries an enforced foreign key into `doc`, and
-/// a cross-root destination is not a key in THIS corpus. So `dest_path` means
-/// "a path in this corpus" always, rather than only sometimes.
+/// Cross-root edges land in `link.dest_root` + `link.dest_root_path`, never
+/// `dest_path` (FK into `doc`; cross-root dest is not a key in this corpus).
 ///
-/// **The ambient entry point passes NO mount authority rather than an empty
-/// table**, for the reason `query::links_with` states: an empty table is a
-/// machine that binds nothing, while a caller that never consulted one has not
-/// looked. Only the second is true of a caller that has no table to give.
+/// Ambient callers pass **no** mount authority, not an empty table: empty
+/// means "looked and bound nothing"; absent means "never consulted".
 ///
 /// # Errors
 /// As [`build_memory`].
@@ -176,24 +156,17 @@ pub fn build_memory_rooted(
     Ok(conn)
 }
 
-/// Publish a persistent view for the daemon (the sole persistent writer, OD6).
+/// Publish a persistent view (daemon sole writer, OD6).
 ///
-/// Builds a fresh `DuckDB` at `view.<epoch>.<seq>.building` in the drawer, then
-/// runs the design's atomic-publication sequence (§Atomic publication + B1):
-/// `CHECKPOINT` + close → **assert `<temp>.wal` absent** → `chmod 0444` → `fsync`
-/// → **remove any pre-existing destination `view.duckdb.wal`** (`fsync` drawer +
-/// assert absent) → `rename(temp, view.duckdb)` → `fsync(drawer)`. On any WAL or
-/// I/O abort the last-good `view.duckdb` is retained.
+/// Atomic sequence: build `view.<epoch>.<seq>.building` → `CHECKPOINT`+close →
+/// assert no temp `.wal` → `chmod 0444` → `fsync` → remove dest `.wal` + assert
+/// absent → `rename` → `fsync(drawer)`. On WAL/I/O abort, last-good retained.
 ///
-/// **The per-workspace publish mutex is the CALLER's responsibility** (daemon
-/// side, V2). `publish` assumes it runs under that mutex and adds no flock
-/// (OD6: zero flock code). Returns the published `view.duckdb` path.
+/// Publish mutex is the **caller's** (zero flock here). Returns published path.
 ///
 /// # Errors
-/// [`ViewError::EphemeralDrawer`] if `drawer` has no disk directory;
-/// [`ViewError::Duckdb`] on schema/projection/checkpoint failure;
-/// [`ViewError::WalPresent`] if a `.wal` sidecar survives; [`ViewError::Io`] on
-/// any filesystem step (create, `chmod`, `fsync`, WAL removal, rename).
+/// [`ViewError::EphemeralDrawer`] / [`ViewError::Duckdb`] /
+/// [`ViewError::WalPresent`] / [`ViewError::Io`].
 pub fn publish(
     docs: &BTreeMap<String, Document>,
     drawer: &CacheDrawer,
@@ -205,12 +178,11 @@ pub fn publish(
     let temp_wal = wal_path(&temp);
     let dest_wal = wal_path(&dest);
 
-    // A stale temp from a crashed prior publish must never be reused.
+    // Stale temp from a crashed prior publish must never be reused.
     remove_if_present(&temp)?;
     remove_if_present(&temp_wal)?;
 
-    // 1. Build the candidate into the temp file, then CHECKPOINT + close so it
-    //    is self-contained (the WAL folds in).
+    // 1. Build candidate, CHECKPOINT + close (WAL folds in).
     {
         let conn = Connection::open(&temp)?;
         create_schema(&conn)?;
@@ -228,43 +200,33 @@ pub fn publish(
         conn.close().map_err(|(_, e)| ViewError::Duckdb(e))?;
     }
 
-    // 2. B1 build-side: a clean CHECKPOINT leaves no `<temp>.wal`. A surviving
-    //    sidecar aborts the publish (keep last-good), never a replayed generation.
+    // 2. B1: surviving temp `.wal` aborts (keep last-good).
     if temp_wal.exists() {
         let _ = std::fs::remove_file(&temp);
         return Err(ViewError::WalPresent(temp_wal));
     }
 
-    // 3. chmod 0444 (read-only, no writable bit) + fsync the candidate. A managed
-    //    reader proves no in-place writer can mutate it via this mode check.
+    // 3. chmod 0444 + fsync candidate (managed readers check mode).
     chmod_readonly(&temp)?;
     fsync_path(&temp)?;
 
-    // 4. Remove any pre-existing destination `view.duckdb.wal` (a stale sidecar a
-    //    bare rename of `view.duckdb` would strand for the next reader to replay),
-    //    fsync the drawer, and assert it is absent — abort + expose on failure.
+    // 4. Remove dest `.wal` (bare rename would strand it for replay), fsync
+    //    drawer, assert absent — abort on failure.
     remove_if_present(&dest_wal)?;
     fsync_dir(dir)?;
     if dest_wal.exists() {
         return Err(ViewError::WalPresent(dest_wal));
     }
 
-    // 5. Atomic same-dir rename, then fsync the drawer so the new inode is durable.
+    // 5. Atomic same-dir rename + fsync drawer.
     std::fs::rename(&temp, &dest)?;
     fsync_dir(dir)?;
     Ok(dest)
 }
 
-// ---------------------------------------------------------------------------
-// projection — the pure walk of docs into rows
-// ---------------------------------------------------------------------------
-
-/// Project every document into the fact tables in FK order: all `doc` rows
-/// first, then `frontmatter`, `section`, `link`, `tag`, `frontmatter_tag`,
-/// `task`. Ordinals are document-order `UBIGINT`s (a pre-order walk of the
-/// span-sorted containment tree yields ascending `span.start`). Links resolve
-/// same-corpus via `model::CorpusIndex::resolve_linkpath`; an unresolved vault
-/// ref is `dest_path = NULL` (first-class dangling).
+/// Project documents into fact tables in FK order. Ordinals are document-order
+/// `UBIGINT`s. Links resolve via `CorpusIndex::resolve_linkpath`; unresolved
+/// vault ref ⇒ `dest_path = NULL` (first-class dangling).
 fn project(
     conn: &Connection,
     docs: &BTreeMap<String, Document>,
@@ -279,8 +241,8 @@ fn project(
     rows.insert(conn)
 }
 
-/// Build the corpus name index (basename + frontmatter-alias) over `docs` — the
-/// same stage-1 resolver the engine uses, so round-1 link resolution matches.
+/// Corpus name index (basename + frontmatter-alias) — same stage-1 resolver
+/// the engine uses, so link resolution matches.
 fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     let mut index = CorpusIndex::new();
     for (path, doc) in docs {
@@ -289,7 +251,7 @@ fn corpus_index(docs: &BTreeMap<String, Document>) -> CorpusIndex {
     index
 }
 
-/// A document-order counter set: each fact table's next ordinal.
+/// Document-order counters per fact table.
 #[derive(Default)]
 struct Counters {
     section: u64,
@@ -298,7 +260,7 @@ struct Counters {
     task: u64,
 }
 
-/// The projected rows, staged per table then bulk-inserted in FK order.
+/// Projected rows, staged then bulk-inserted in FK order.
 #[derive(Default)]
 struct Rows {
     doc: Vec<Vec<Value>>,
@@ -310,22 +272,21 @@ struct Rows {
     task: Vec<TaskRow>,
 }
 
-/// A `section` row — the `hpath` list column is bound via a dynamic `list_value`
-/// expression, so it is carried apart from the scalar params.
+/// `section` row — `hpath` bound via dynamic `list_value`, apart from scalars.
 struct SectionRow {
     scalars_before: Vec<Value>, // path, node_seq
     hpath: Vec<String>,
     scalars_after: Vec<Value>, // heading, level, node_rev, span_start, span_end
 }
 
-/// A `task` row — `hpath` is a nullable list (NULL when document-level).
+/// `task` row — `hpath` nullable (NULL when document-level).
 struct TaskRow {
     scalars_before: Vec<Value>, // path, seq, checked, depth, section_seq
     hpath: Option<Vec<String>>,
     scalars_after: Vec<Value>, // text, span_start, span_end, node_rev
 }
 
-/// Emit the `doc` row and walk the node tree for one document.
+/// Emit `doc` row and walk the node tree.
 fn collect_doc(
     path: &str,
     doc: &Document,
@@ -360,8 +321,7 @@ fn collect_doc(
     );
 }
 
-/// Walk one node, emitting its fact row(s), then recurse into children carrying
-/// the governing section identity (`section_seq`) down to any task descendant.
+/// Walk one node (emit fact rows), recurse with governing `section_seq` for tasks.
 #[allow(clippy::too_many_arguments)]
 fn walk(
     node: &Node,
@@ -469,9 +429,8 @@ fn walk(
     }
 }
 
-/// Emit `frontmatter` rows (one per key, first-occurrence-wins via `YamlMap`) and
-/// the B2 `frontmatter_tag` rows for the `tag`/`tags` keys. All rows of a doc
-/// share the enclosing Frontmatter node's C1 locator triple.
+/// Emit `frontmatter` rows (first-occurrence-wins via `YamlMap`) and B2
+/// `frontmatter_tag` for `tag`/`tags`. All share the Frontmatter C1 locator.
 fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Rows) {
     let (span_start, span_end) = (u64c(node.span.start), u64c(node.span.end));
     let node_rev = node.node_rev.0.clone();
@@ -501,7 +460,7 @@ fn emit_frontmatter(node: &Node, path: &str, map: &model::YamlMap, rows: &mut Ro
     }
 }
 
-/// Emit one `section` row (identity `(path, node_seq)`; `hpath` advisory).
+/// Emit one `section` row — identity `(path, node_seq)`; `hpath` advisory.
 fn emit_section(node: &Node, path: &str, heading: &str, level: u8, node_seq: u64, rows: &mut Rows) {
     rows.section.push(SectionRow {
         scalars_before: vec![Value::Text(path.to_string()), Value::UBigInt(node_seq)],
@@ -516,8 +475,8 @@ fn emit_section(node: &Node, path: &str, heading: &str, level: u8, node_seq: u64
     });
 }
 
-/// Emit one `link` row (kind ∈ wikilink/embed/link; `resolved` is generated,
-/// never inserted). `dest_path` is the same-corpus resolution or NULL.
+/// Emit one `link` row. `resolved` is generated, never inserted. Schema CHECKs
+/// make "both dests set" and "root without path" unrepresentable.
 #[allow(clippy::too_many_arguments)]
 fn emit_link(
     node: &Node,
@@ -541,9 +500,7 @@ fn emit_link(
         opt_text(heading),
         opt_text(block),
         opt_text(alias),
-        // THREE COLUMNS, ONE DESTINATION. The CHECK constraints in the schema
-        // make "both set" and "root without its path" unrepresentable, so this
-        // match is the only shape that can reach the table.
+        // Three columns, one destination (schema CHECK enforces exclusivity).
         match dest {
             Some(Dest::Ambient(p)) => Value::Text(p.clone()),
             Some(Dest::Rooted { .. }) | None => Value::Null,
@@ -562,7 +519,7 @@ fn emit_link(
     ]);
 }
 
-/// Emit one inline `tag` row (`Tag.name`, no leading `#`; a real node span).
+/// Emit one inline `tag` row (`Tag.name`, no leading `#`).
 fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: &mut Rows) {
     let seq = counters.tag;
     counters.tag += 1;
@@ -576,8 +533,7 @@ fn emit_tag(node: &Node, path: &str, name: &str, counters: &mut Counters, rows: 
     ]);
 }
 
-/// Emit one `task` row. `section_seq` is the governing section identity (NULL =
-/// document-level); `text` is the trimmed task line (identity-bearing, bounded).
+/// Emit one `task` row. `section_seq` NULL = document-level; `text` is trimmed.
 #[allow(clippy::too_many_arguments)]
 fn emit_task(
     node: &Node,
@@ -615,18 +571,11 @@ fn emit_task(
     });
 }
 
-/// Resolve a wikilink/embed target to its destination, kept STRUCTURAL rather
-/// than folded into one string: `Ambient(path)` for a same-corpus doc,
-/// `Rooted { root, path }` for a cross-root one, `None` for first-class
-/// dangling. A self-ref `[[#H]]` / `[[#^blk]]` (empty target with a heading or
-/// block) resolves to the source doc.
+/// Resolve wikilink/embed to structural dest: `Ambient` / `Rooted` / `None`
+/// (dangling). Self-ref `[[#H]]` / `[[#^blk]]` → source doc.
 ///
-/// **The split is the same lexical question the link plane asks** —
-/// `addr::head_carries_root_separator`. A non-rooted spelling keeps
-/// `resolve_linkpath` byte-for-byte, so the ambient projection is unchanged;
-/// a rooted one goes to the address owner. With NO mount authority (`None`) a
-/// rooted spelling stays dangling, exactly as it did before U21 — the daemon's
-/// discipline, for the same reason: not having looked is not a finding.
+/// Split mirrors the link plane (`addr::head_carries_root_separator`). No mount
+/// authority ⇒ rooted spelling stays dangling (not having looked ≠ finding).
 fn resolve_dest(
     index: &CorpusIndex,
     target: &str,
@@ -648,24 +597,19 @@ fn resolve_dest(
             root: root.to_string(),
             path,
         }),
-        // Every refusal projects as DANGLING here, and that is deliberate: the
-        // view is a fact table, not a refusal surface. `mrd links` is where a
-        // refusal is rendered and rides exit 1.
+        // Refusals project as dangling: this is a fact table, not a refusal surface.
         _ => None,
     }
 }
 
-/// One link's destination — two facts when it is cross-root, never one joined
-/// `root:path` string (U21 Q5).
+/// Link destination — two facts when cross-root, never a joined `root:path` (U21 Q5).
 enum Dest {
     Ambient(String),
     Rooted { root: String, path: String },
 }
 
-/// Scalar-parse a `tag`/`tags` frontmatter value into normalized tags (B2): strip
-/// surrounding `[ ]`, split on `,`, then per item trim, strip surrounding quotes
-/// and a leading `#`, and drop empties. A block-list value (`''`) yields **0
-/// rows** — fail-closed (never wrong rows).
+/// B2 scalar-parse of `tag`/`tags`: strip `[ ]`, split on `,`, trim/unquote/
+/// strip `#`, drop empties. Empty / block-list ⇒ **0 rows** (fail-closed).
 fn parse_fm_tags(value: &str) -> Vec<String> {
     let trimmed = value.trim();
     let inner = trimmed
@@ -683,7 +627,7 @@ fn parse_fm_tags(value: &str) -> Vec<String> {
 }
 
 impl Rows {
-    /// Bulk-insert all staged rows in FK order (parent `doc` before children).
+    /// Bulk-insert staged rows in FK order.
     fn insert(&self, conn: &Connection) -> duckdb::Result<()> {
         insert_rows(
             conn,
@@ -735,8 +679,7 @@ impl Rows {
     }
 }
 
-/// A `list_value(?, ?, …)` expression with `n` placeholders, or an empty
-/// `VARCHAR[]` literal for `n == 0`.
+/// `list_value(?, …)` with `n` placeholders, or empty `VARCHAR[]` when `n == 0`.
 fn list_expr(n: usize) -> String {
     if n == 0 {
         return "[]::VARCHAR[]".to_string();
@@ -745,8 +688,7 @@ fn list_expr(n: usize) -> String {
     format!("list_value({marks})")
 }
 
-/// Splice scalar-before params, the list elements, and scalar-after params into
-/// one positional param vector matching a `list_value` INSERT.
+/// Scalar-before + list elements + scalar-after for a `list_value` INSERT.
 fn chain_list(before: &[Value], list: &[String], after: &[Value]) -> Vec<Value> {
     let mut params = before.to_vec();
     params.extend(list.iter().map(|s| Value::Text(s.clone())));
@@ -754,7 +696,7 @@ fn chain_list(before: &[Value], list: &[String], after: &[Value]) -> Vec<Value> 
     params
 }
 
-/// Prepare `sql` once and execute it per staged row.
+/// Prepare `sql` once; execute per staged row.
 fn insert_rows(conn: &Connection, sql: &str, rows: &[Vec<Value>]) -> duckdb::Result<()> {
     let mut stmt = conn.prepare(sql)?;
     for row in rows {
@@ -763,9 +705,8 @@ fn insert_rows(conn: &Connection, sql: &str, rows: &[Vec<Value>]) -> duckdb::Res
     Ok(())
 }
 
-/// Insert the singleton `_meridian_view` stamp row. `epoch`/`seq` are both set
-/// (daemon build) or both NULL (daemonless `:memory:` build) — the DDL CHECK
-/// enforces the pairing.
+/// Insert singleton `_meridian_view` stamp. epoch/seq both set or both NULL
+/// (DDL CHECK enforces pairing).
 fn write_stamp(
     conn: &Connection,
     as_of_fingerprint: &str,
@@ -797,18 +738,14 @@ fn write_stamp(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// filesystem helpers (publish side)
-// ---------------------------------------------------------------------------
-
-/// The `<path>.wal` sidecar path `DuckDB` would write beside `path`.
+/// `<path>.wal` sidecar path `DuckDB` would write beside `path`.
 fn wal_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".wal");
     PathBuf::from(s)
 }
 
-/// Remove `path` if it exists; a missing file is not an error.
+/// Remove `path` if present; missing is ok.
 fn remove_if_present(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -817,7 +754,7 @@ fn remove_if_present(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// `chmod 0444` — read-only, no writable bit (managed readers verify this mode).
+/// `chmod 0444` — managed readers verify this mode.
 fn chmod_readonly(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
@@ -832,29 +769,27 @@ fn chmod_readonly(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// `fsync` a file's contents to disk.
 fn fsync_path(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.sync_all()
 }
 
-/// `fsync` a directory so a create/rename/unlink within it is durable.
+/// `fsync` a directory so create/rename/unlink within it is durable.
 fn fsync_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
 
-/// Current unix time in whole seconds (never panics; `0` before the epoch).
+/// Current unix seconds (`0` before epoch; never panics).
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-/// `usize` → `u64`, saturating (never truncates on a 32-bit target).
+/// `usize` → `u64`, saturating.
 fn u64c(x: usize) -> u64 {
     u64::try_from(x).unwrap_or(u64::MAX)
 }
 
-/// An optional string as a `DuckDB` `Value` (`Text` or `Null`).
 fn opt_text(s: Option<&str>) -> Value {
     s.map_or(Value::Null, |s| Value::Text(s.to_string()))
 }
@@ -891,10 +826,7 @@ mod tests {
         assert_eq!(n, 0);
     }
 
-    /// The ephemeral stamp is the CALLER's fold, verbatim — not a refold this
-    /// crate computes. A refold cannot see the workspace domain's `version`
-    /// prefix (§12.3), so in a `b3b:` workspace it stamps `b3:` and the freshness
-    /// comparison reports STALE over identical content (G14).
+    /// Stamp is the caller's fold verbatim — not a refold (G14 / §12.3).
     #[test]
     fn build_memory_stamps_the_callers_fold_verbatim() {
         let mut docs = BTreeMap::new();
@@ -902,8 +834,7 @@ mod tests {
             "a.md".to_owned(),
             model::build("# A\n".to_owned(), syntax::parse("# A\n")),
         );
-        // A version-2 token: what `fs::domain_snapshot` hands over in a workspace
-        // whose `mdfs_config.yaml` declares `version: 2`.
+        // Version-2 fold (`b3b:`), as `fs::domain_snapshot` would hand over.
         let files = [("a.md", "# A\n".as_bytes())];
         let as_of = model::merkle_root(&files, 2).0;
         assert!(as_of.starts_with("b3b:"), "fixture is a version-2 fold");

@@ -1,6 +1,5 @@
-//! Hostility (0003 § heavily tested): malformed Starlark, wrong-typed arguments,
-//! and descriptor-forgery attempts all resolve to TYPED errors — never a panic,
-//! never a silent wrong effect.
+//! Hostility: malformed Starlark, wrong-typed args, forgery → typed errors;
+//! never panic or silent wrong effect.
 
 use effects::{EvalError, Rule, eval};
 

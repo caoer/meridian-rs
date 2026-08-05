@@ -1,6 +1,4 @@
-//! Fuzz BOTH the rule source and the change event together (via `arbitrary`).
-//! Same liveness invariant as `eval_source`: always terminates and returns,
-//! never panics / hangs / crashes.
+//! Fuzz source + event together. Liveness as `eval_source`: terminate and return.
 #![no_main]
 
 use arbitrary::Arbitrary;

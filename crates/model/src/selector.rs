@@ -1,53 +1,38 @@
-//! U2.2 — the selector grammar (four classes), the edge-color law, and the
-//! ambiguity teaching refusal.
+//! Selector grammar (four classes), edge-color law, ambiguity teaching refusal
+//! (U2.2).
 //!
-//! # The one selector grammar (d2 §2.2)
-//! One grammar across core, verbs, and packs — four classes:
+//! # Grammar (d2 §2.2)
+//! One grammar — four classes:
 //!
-//! | class | form | color disposition |
+//! | class | form | color |
 //! |---|---|---|
-//! | [`Selector::Page`] | `page` | resolves to the document root |
-//! | [`Selector::Heading`] | `page#Heading` (`/`-joined path) | resolves a section |
-//! | [`Selector::Block`] | `page#^block-id` | resolves a block anchor |
+//! | [`Selector::Page`] | `page` | document root |
+//! | [`Selector::Heading`] | `page#Heading` (`/`-joined) | section |
+//! | [`Selector::Block`] | `page#^block-id` | block anchor |
 //! | [`Selector::ImmutableRoot`] | `session-id#seq-N` | grey `immutable-root`, never resolved |
 //!
-//! The transcript class (`session-id#seq-N`) is an ADDITIVE parse-level class
-//! (d2 §2.2, E6): the engine RECOGNIZES the form (source 1 — parse), stores it
-//! as opaque data, and renders such hops **grey `immutable-root`** — honest,
-//! because the engine has not verified them and the address class cannot drift
-//! by construction. It is never a write target and is never privately re-parsed
-//! per verb.
+//! Transcript class is parse-level additive (E6): recognized, stored opaque,
+//! rendered grey (unverified; cannot drift by construction). Never a write
+//! target; never re-parsed per verb.
 //!
-//! # The edge-color law (d2 §2.3; decision #9)
-//! Per edge, computed never stored: **green** (`live_rev == pinned_rev`),
-//! **red** (resolves but drifted, or the address fails to resolve), **grey**
-//! (the ledger cannot verify). Decision #9 splits the address-failure reds off
-//! from the content-drift red so they are never conflated:
+//! # Edge-color law (d2 §2.3; decision #9)
+//! Per edge, computed never stored: **green** (live == pinned), **red**
+//! (resolves-but-drifted or address fails), **grey** (ledger cannot verify).
+//! Address-failure reds are distinct from content-drift:
 //!
-//! - [`RedReason::Drifted`] — the address resolves, the content moved.
-//! - [`RedReason::DanglingAnchor`] — a pinned `^block-id` whose target vanished.
-//! - [`RedReason::SelectorUnresolved`] — a pinned heading/page that resolves to
-//!   nothing.
+//! - [`RedReason::Drifted`] — resolves, content moved.
+//! - [`RedReason::DanglingAnchor`] — pinned `^block-id` vanished.
+//! - [`RedReason::SelectorUnresolved`] — heading/page resolves to nothing.
 //!
-//! Both address-failure reds carry a **nearest-candidate hint** (d1 § selector
-//! ambiguity F6b): the live toc's nearest names, a hint an author confirms by
-//! re-pinning — never an auto-repair (the engine holds no rename history).
+//! Address failures carry nearest-candidate hints (d1 F6b) — never auto-repair.
 //!
 //! # ONE compare, ONE color law
-//! The law splits into an ADDRESS half and a COMPARE half. [`resolve_selector`]
-//! owns the address half; ONE compare is built on it, and there is no second
-//! color computer:
+//! Address half: [`resolve_selector`]. Compare: [`classify_pin`] via
+//! [`crate::fingerprint::verify_content_span`] (green / red drift / grey
+//! unverifiable|malformed / red empty-span R31).
 //!
-//! - [`classify_pin`] — the `meridian-lock` plane: the pinned `fp1.…`
-//!   CID-token through [`crate::fingerprint::verify_content_span`], whose five
-//!   arms map onto these same tones (green / red `content-drifted` / grey
-//!   `unverifiable-fingerprint` / grey `malformed-fingerprint` / red
-//!   `content-drifted` for an empty normalized span, R31).
-//!
-//! **Grey never renders green.** Every grey means the ledger did not measure
-//! this edge — an unverified claim dressed as attested is the one dishonest
-//! color, so an unknown codec, an unreadable token, and a refused lock block all
-//! stay grey no matter what their digest says.
+//! **Grey never green** — ledger did not measure; unknown codec, unreadable
+//! token, refused lock stay grey regardless of digest.
 
 use crate::fingerprint::ContentVerdict;
 use crate::{Document, Node, NodeKind, Ref, ResolveError, Target, resolve};
@@ -140,88 +125,43 @@ pub enum GreyReason {
     /// never green (an unverified claim dressed as attested) and never red (a
     /// drift nobody measured).
     UnverifiableFingerprint { unknown: Vec<&'static str> },
-    /// **A cross-root address naming a root this machine does not bind** — or
-    /// binds without being able to read (`docs/address-grammar.md` § 8 M6).
+    /// Cross-root address naming a root this machine does not bind
+    /// (`docs/address-grammar.md` § 8 M6). **Grey, never red** — outside sight,
+    /// nothing drifted (`2026-07-24-cross-root-addressing.md` §1a). Distinct from
+    /// `file_not_found` (measured absence in a mounted root). Carries the name
+    /// so the refusal can teach the fix (D8).
     ///
-    /// **Grey, never red:** nothing drifted; the ledger cannot see from here
-    /// (`2026-07-24-cross-root-addressing.md` §1a). Carries the missing name so
-    /// the refusal can teach the fix (D8), and it is a DISTINCT class from
-    /// `file_not_found` — a missing file in a MOUNTED root is a measured
-    /// absence, while an unmounted root is outside sight. Conflating them is the
-    /// false negative this variant exists to prevent.
-    ///
-    /// **R-3 — grey OUTRANKS red.** A cross-root pin that was green and whose
-    /// root is later unmounted becomes grey, never red. The inverse (grey → exit
-    /// 0) is refused categorically: it would make unmounting a root a way to
-    /// convert a red into a pass through an edit to `~/MERIDIAN.md`, which cannot
-    /// itself be attested (S3-R7 ③).
-    ///
-    /// **D8a — deliberately NOT unified with `mrd check`'s cannot-assess.** Two
-    /// subsystems, ONE shared meaning: this is the *address* plane, routed
-    /// through the reason-carrying grey model; cannot-assess is a verb-level
-    /// exit state on the *validity* plane. What they share is the law — outside
-    /// sight never renders as verified (R26) — not the type.
+    /// **R-3 — grey outranks red:** unmounting a formerly-green root goes grey,
+    /// never red. Grey → exit 0 is refused (would launder red via `~/MERIDIAN.md`,
+    /// S3-R7 ③). Not unified with `mrd check` cannot-assess (address vs validity
+    /// plane; shared law R26 only).
     Unmounted {
-        /// The canonical root name the address named and this machine does not
-        /// bind.
+        /// Canonical root name this machine does not bind.
         root: addr::MountName,
     },
-    /// **A cross-root address naming a root the file DECLARES but this machine
-    /// cannot READ** — the path is absent, unreadable, or holds no corpus
-    /// (`docs/address-grammar.md` § 8 M6).
-    ///
-    /// **A DIFFERENT cause from [`GreyReason::Unmounted`], and S3-R43 rules it a
-    /// different reason word.** Both are grey and both refuse on exit 1; what
-    /// separates them is what a reader must DO. `Unmounted`'s refusal says
-    /// *"declare it in `~/MERIDIAN.md`"*; here the root **is** declared, so that
-    /// sentence is false and its fix is already done. This one names **the
-    /// PATH** — the thing that is actually wrong.
-    ///
-    /// > A teaching refusal that prescribes a COMPLETED ACTION is worse than a
-    /// > bare class: it spends the user's trust AND their time, and leaves no
-    /// > signal pointing at the real cause.
-    ///
-    /// S3-R6 does not license collapsing the two: it established
-    /// `grey(unmounted)` and `grey(cannot-assess)` as TWO words inside ONE
-    /// vocabulary at ONE exit code. It forbids re-spelling one CONCEPT across
-    /// crates; it does not require two CAUSES to share one word.
+    /// Root declared but path unreadable / absent / empty corpus
+    /// (`docs/address-grammar.md` § 8 M6). Different cause and reason word from
+    /// [`GreyReason::Unmounted`] (S3-R43): unmounted teaches "declare it"; here
+    /// the root is declared — refusal names the **path**.
     PathUnseeable {
-        /// The canonical name the file declares.
+        /// Canonical name the file declares.
         root: addr::MountName,
-        /// The path it is declared at — what the refusal tells a reader to check.
+        /// Declared path — what the refusal tells the reader to check.
         path: String,
-        /// The underlying reason, verbatim.
+        /// Underlying reason, verbatim.
         detail: String,
     },
-    /// A `meridian-lock` pin whose pinned value is not a fingerprint token at
-    /// all ([`crate::fingerprint::ContentVerdict::Malformed`]). Unreadable, so
-    /// it was never measured — grey, never red.
+    /// Pinned value is not a fingerprint token
+    /// ([`crate::fingerprint::ContentVerdict::Malformed`]). Grey, never red.
     MalformedFingerprint,
-    /// The page's whole `meridian-lock` block REFUSED to parse — malformed, or
-    /// more than one block on one page. The lock is outside sight, so the page
-    /// projects THIS row instead of zero rows: a corrupt lock must never read
-    /// as "no pins". Carries the refusal reason verbatim.
+    /// Whole `meridian-lock` refused parse (malformed / multi-block). Projects
+    /// this row rather than zero pins — corrupt lock must not read as "no pins".
     LockRefused { reason: String },
-    /// **The fail-closed sentinel: a lock row carrying NEITHER a fingerprint NOR
-    /// a refusal.** Such a row names no evidence and reports no failure to read
-    /// it, so no compare on either plane can answer it. Grey, because the ledger
-    /// did not measure the edge — never green, which would be an unmeasured edge
-    /// dressed as attested.
-    ///
-    /// **IF THIS EVER RENDERS, THE RENDER IS ITSELF THE FINDING.** It does not
-    /// report a fact about the pinned target; it reports that something upstream
-    /// produced a row the color law cannot classify. The rendered line says so
-    /// in its own words ([`crate::selector`]'s consumers render the detail), so
-    /// whoever meets it learns that from the output rather than from this doc.
-    ///
-    /// **GUARDED AT ONE POINT — not impossible.** Every R4 pin row carries a
-    /// fingerprint and every refusal carries its reason, so no live input
-    /// reaches here. That invariant is enforced by ONE PARSER RULE with ONE TEST
-    /// on it: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`
-    /// (`crates/lock/src/lib.rs`). It is a single point of failure stated as
-    /// one, and the next reader should inherit "guarded at one point" rather
-    /// than a belief that the case cannot arise. Delete this arm and the
-    /// fall-through becomes green.
+    /// Fail-closed: lock row with neither fingerprint nor refusal. Grey — no
+    /// measure. **If this renders, the render is the finding** (unclassifiable
+    /// row). Guarded by one parser rule
+    /// (`lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`); not
+    /// impossible — delete this arm and fall-through becomes green.
     Uncolourable,
 }
 
@@ -240,40 +180,24 @@ pub enum RedReason {
     /// A pinned heading/page selector that resolves to NOTHING (rename/move
     /// beyond recognition). Carries the live toc's nearest heading candidates.
     SelectorUnresolved { candidates: Vec<String> },
-    /// A cross-root address whose root this machine BINDS AND READS, and whose
-    /// path names nothing in that root's corpus — a MEASURED ABSENCE (U21).
-    ///
-    /// **It is red, and the distinction from grey is the whole point.** Grey is
-    /// *outside sight*: the ledger cannot measure, so it declines to claim. Here
-    /// the engine looked, inside a corpus it holds, and the file is not there.
-    /// That is a claim, and reporting it grey is the false negative
-    /// [`GreyReason::Unmounted`] exists to prevent, read from the other side.
-    ///
-    /// **It is not [`SelectorUnresolved`].** That word asserts the PAGE resolved
-    /// and the selector did not. For a cross-vault miss the page itself is
-    /// absent, so `selector-unresolved` names the wrong cause in the engine's
-    /// own voice — which is exactly what shipped before U21.
+    /// Measured absence (U21): root bound+readable, path missing in corpus.
+    /// **Red, not grey** — engine looked and the file is not there (grey =
+    /// outside sight; see [`GreyReason::Unmounted`]). Not
+    /// [`SelectorUnresolved`] (that asserts page resolved, selector failed).
     ///
     /// [`SelectorUnresolved`]: RedReason::SelectorUnresolved
     FileNotFound {
-        /// The root the miss happened inside — never the ambient root.
+        /// Root of the miss — never the ambient root.
         root: addr::MountName,
-        /// The path that is missing INSIDE that root.
+        /// Path missing inside that root.
         path: String,
-        /// The selector as the page declared it (`None` = page grain). Carried
-        /// so the refusal can echo the address the author wrote; the parts are
-        /// joined at the render door and nowhere else (R1.6).
+        /// Selector as declared (`None` = page grain). Joined at render only (R1.6).
         selector: Option<String>,
     },
 }
 
-/// The tone of a color (`green` / `grey` / `red`) — the stable output word.
-///
-/// It lives beside the [`Color`] it names so there is ONE vocabulary, exactly
-/// as there is one color law: the walk/status render (`view::walk::color_tone`
-/// re-exports this) and the stage-2 claim-link decorator are different surfaces
-/// answering the same question, and a second `match` would be a second answer
-/// waiting to disagree.
+/// Color tone word (`green` / `grey` / `red`) — sole vocabulary for all surfaces
+/// (walk/status, claim-link); a second `match` would be a second answer.
 #[must_use]
 pub fn color_tone(color: &Color) -> &'static str {
     match color {
@@ -291,37 +215,27 @@ pub fn color_reason(color: &Color) -> Option<&'static str> {
         Color::Green => None,
         Color::Grey(GreyReason::ImmutableRoot) => Some("immutable-root"),
         Color::Grey(GreyReason::Ambiguous) => Some("ambiguous"),
-        // The fail-closed sentinel. Its APPEARANCE is the finding, so the word
-        // names the defect rather than a property of the pinned target.
+        // Fail-closed sentinel — appearance is the finding.
         Color::Grey(GreyReason::Uncolourable) => Some("uncolourable"),
         Color::Grey(GreyReason::UnverifiableFingerprint { .. }) => Some("unverifiable-fingerprint"),
         Color::Grey(GreyReason::MalformedFingerprint) => Some("malformed-fingerprint"),
         Color::Grey(GreyReason::LockRefused { .. }) => Some("lock-refused"),
-        // S3-R6's vocabulary, not a local spelling: `grey(unmounted)` renders
-        // here as the reason word `unmounted` behind the `grey` tone, which
-        // `color_label` composes into `grey unmounted (root 'x')`. The same
-        // ruling binds u14i, U14 and U15 — do not re-spell it.
+        // S3-R6 shared vocabulary — do not re-spell.
         Color::Grey(GreyReason::Unmounted { .. }) => Some("unmounted"),
-        // S3-R49 — the BARE form of the ONE shared word. `config`'s mount plane
-        // wraps the same const as `grey(path-unseeable)`; this plane takes it
-        // bare and `color_label` wraps. The two agree by construction: a
-        // compile-time assertion in `config` fails the BUILD if they drift.
+        // S3-R49: bare shared word (`addr::PATH_UNSEEABLE_REASON_WORD`); config
+        // compile-assert fails the build on drift.
         Color::Grey(GreyReason::PathUnseeable { .. }) => Some(addr::PATH_UNSEEABLE_REASON_WORD),
         Color::Red(RedReason::Drifted) => Some("content-drifted"),
         Color::Red(RedReason::DanglingAnchor { .. }) => Some("dangling-anchor"),
         Color::Red(RedReason::SelectorUnresolved { .. }) => Some("selector-unresolved"),
-        // U21 — the cross-root MEASURED ABSENCE. It is the hyphenated plane
-        // spelling of the word `wire::ErrorCode::FileNotFound` already ships
-        // (address-grammar § 10 row 2), REUSED and never minted: a synonym
-        // here would be the cross-crate re-spelling S3-R6 forbids.
+        // U21: reuse wire `file-not-found` spelling (S3-R6 — no synonym).
         Color::Red(RedReason::FileNotFound { .. }) => Some("file-not-found"),
     }
 }
 
-/// The detail a reason carries beyond its word (`None` when the word says it
-/// all) — WHICH fingerprint-triple member is unknown, or WHY the lock refused.
-/// Split from [`color_reason`] so the reason stays a stable enum-like token for
-/// machines while the human render still names the specific damage.
+/// Extra detail beyond the reason word (`None` when the word is enough) —
+/// unknown fingerprint-triple members, lock refusal why, etc. Stable reason
+/// token stays in [`color_reason`]; humans get the specific damage here.
 #[must_use]
 pub fn color_detail(color: &Color) -> Option<String> {
     match color {
@@ -329,26 +243,17 @@ pub fn color_detail(color: &Color) -> Option<String> {
             Some(format!("unknown {}", unknown.join(", ")))
         }
         Color::Grey(GreyReason::LockRefused { reason }) => Some(reason.clone()),
-        // The missing mount NAME is the detail that lets the human line teach
-        // (D8). The full teaching refusal is `selector::render_unmounted`; this
-        // is the one-line form the listing carries, and it still names the root
-        // — a refusal that cannot say WHICH mount is missing teaches nothing.
+        // Mount name so the listing teaches (D8); full text is `render_unmounted`.
         Color::Grey(GreyReason::Unmounted { root }) => Some(format!("root '{root}'")),
-        // The PATH is the detail here, never the mount entry — the entry is
-        // already correct, which is the whole distinction S3-R43 draws.
+        // Path (not mount entry) — S3-R43 distinction.
         Color::Grey(GreyReason::PathUnseeable { path, detail, .. }) => {
             Some(format!("{path} ({detail})"))
         }
-        // BOTH halves are the detail here. The root alone would not say what is
-        // missing, and the path alone would read as an ambient file — which is
-        // the misreading the root qualification exists to stop.
+        // Root + path: root alone omits what is missing; path alone reads ambient.
         Color::Red(RedReason::FileNotFound { root, path, .. }) => {
             Some(format!("root '{root}' holds no '{path}'"))
         }
-        // **CONDITION 3 of the bronze act — the render says so itself.** A
-        // sentinel whose appearance is a defect must announce that to whoever
-        // meets it, rather than leaving the fact in a doc comment the reader of
-        // the output will never see.
+        // Sentinel announces itself in the render (VERBATIM refusal-string anchor).
         Color::Grey(GreyReason::Uncolourable) => Some(
             "this row carried neither a fingerprint nor a refusal; \
              its appearance here is itself the defect — report it"
@@ -358,26 +263,10 @@ pub fn color_detail(color: &Color) -> Option<String> {
     }
 }
 
-/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
-/// reason word already says everything.
+/// Full teaching refusal when the reason word is not enough; `None` otherwise.
 ///
-/// **S3-R51 — this is the output path `render_unmounted` did not have.** Round 1
-/// shipped a pinned teaching-refusal exemplar that NOTHING called: the walk
-/// rendered [`color_label`] and the refusal existed only as a `const` and its
-/// tests. That is S3-R23(4)'s weakened middle — an assertion claiming a wording
-/// no user could ever see.
-///
-/// **WIRED rather than struck**, and the reason is that the two options are not
-/// symmetric. D8 requires a *teaching* refusal naming the missing mount, and it
-/// is a gate on this unit's card; striking the renderer would have left that gate
-/// satisfied only in its weaker half — the reason word names the mount, but
-/// nothing teaches the fix — and narrowing a criterion is the Advisor's pen
-/// (R27), not an implementer's. Wiring closes the weakened middle AND discharges
-/// D8 in full, so it strictly dominates. The two never collided, so nothing
-/// routed up.
-///
-/// `address` is the ref as the page DECLARED it — the refusal echoes what the
-/// author wrote, not what resolution made of it.
+/// Wired so exemplars are not dead consts (S3-R51 / D8). `address` is the ref
+/// as declared (echo author text, not resolution output).
 #[must_use]
 pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
     match color {
@@ -385,12 +274,8 @@ pub fn color_teaching(color: &Color, address: &str) -> Option<String> {
         Color::Grey(GreyReason::PathUnseeable { root, path, detail }) => {
             Some(render_path_unseeable(root, path, detail))
         }
-        // U21 — WIRED at birth, for the reason S3-R51 records: a pinned
-        // teaching refusal nothing calls is an assertion claiming a wording no
-        // user can ever see. The parts go in separately and are joined inside
-        // the renderer; `address` is deliberately NOT forwarded, because a
-        // caller-supplied address string is the one way this refusal could name
-        // a root that disagrees with the root that actually missed.
+        // Parts joined inside the renderer; do not forward `address` (root must
+        // match the miss, not a caller-supplied spelling).
         Color::Red(RedReason::FileNotFound {
             root,
             path,
@@ -468,47 +353,26 @@ pub fn resolve_selector<'a>(
     }
 }
 
-/// Compute a **`meridian-lock` pin's** color: the address law
-/// ([`resolve_selector`]), then the FINGERPRINT compare.
-///
-/// `pinned_token` is the lock's `fingerprint` CID-token verbatim. A `fp1.…`
-/// token is not `node_rev`-comparable in either direction — which is why the
-/// retired `node_rev` compare could only ever have produced a false red or a
-/// grey for one; the
-/// verdict belongs to [`fingerprint::verify_content_span`], whose four arms map
-/// onto this one color model:
+/// `meridian-lock` pin color: address ([`resolve_selector`]) then fingerprint
+/// compare on `pinned_token` via [`fingerprint::verify_content_span`].
 ///
 /// | verdict | color |
 /// |---|---|
 /// | `Green` | green |
 /// | `Red{actual}` | red `content-drifted` |
-/// | `Unverifiable` | grey `unverifiable-fingerprint`, NAMING the unknown triple member |
+/// | `Unverifiable` | grey `unverifiable-fingerprint` (names unknown members) |
 /// | `Malformed` | grey `malformed-fingerprint` |
 /// | `EmptySpan` | red `content-drifted` |
 ///
-/// Both unverifiable arms are grey and NEVER green — an unreadable or
-/// unimplemented pin was never measured, so claiming it verified would be the
-/// one dishonest color (grey = outside sight).
+/// Unverifiable arms are grey, never green (unmeasured ≠ attested).
 ///
-/// **R31 — why the empty-span arm is RED and not grey.** Grey means "outside
-/// sight"; this is inside it. The address resolved, the engine read the live
-/// bytes, and they canonicalize to nothing — so the content this pin claims to
-/// cover is measurably not there. A pinned token can never have been minted
-/// over an empty span ([`fingerprint::fingerprint_span`] refuses), so the pin is
-/// wrong about its target, which is exactly `content-drifted`. It reuses that
-/// existing reason deliberately: the class is a *false green being closed*, not
-/// a new colour to teach, so no reason code, render label, or golden row moves.
-/// The consequence to know: `realise` converges an ordinary `red(drifted)` pin,
-/// but converging THIS one would have to re-mint over the empty span, so it
-/// refuses at the mint door instead — honestly, and by the same owner.
+/// **R31 empty-span is red, not grey:** address resolved and live bytes
+/// canonicalize empty — content the pin claims is measurably absent. Mint
+/// refuses empty spans, so the pin is wrong (`content-drifted`). `realise`
+/// cannot re-mint over empty; refuses at the mint door.
 ///
-/// **D8:** a target that no longer resolves is red-with-reason
-/// (`dangling-anchor` / `selector-unresolved`), never grey and never green —
-/// [`resolve_selector`]'s answer, unchanged for this plane.
-///
-/// **D12:** the verdict is content-addressed and per-pin — the token and the
-/// target's own bytes, nothing root-scoped. A later `root:` prefix changes which
-/// document the caller hands in, never this computation.
+/// **D8:** unresolved target → red-with-reason (never grey/green).
+/// **D12:** content-addressed per-pin; `root:` only chooses which document.
 #[must_use]
 pub fn classify_pin(selector: &Selector, pinned_token: &str, target: Option<&Document>) -> Color {
     let (doc, resolved) = match resolve_selector(selector, target) {
@@ -638,15 +502,10 @@ fn bigram_overlap(a: &str, b: &str) -> usize {
     shared
 }
 
-// ---------------------------------------------------------------------------
-// The ambiguity teaching refusal (d1 § selector ambiguity — carried VERBATIM)
-// ---------------------------------------------------------------------------
+// Ambiguity teaching refusal (d1 — VERBATIM anchor)
 
-/// The d1 teaching-refusal exemplar, carried VERBATIM as the provenance anchor
-/// (design-1.md § "Selector ambiguity — the law", the ruling §5 engine-owned
-/// teaching refusal). [`render_ambiguity`] reproduces this wording with the real
-/// selector and candidates interpolated; this const pins the exemplar so a drift
-/// in the wording is a visible test failure.
+/// d1 teaching-refusal exemplar (VERBATIM provenance anchor).
+/// [`render_ambiguity`] interpolates real selector/candidates; drift fails tests.
 pub const D1_TEACHING_REFUSAL_EXEMPLAR: &str = "refused: selector 'Task/Objective' is ambiguous — 2 matches: n=1.2 (^a1b2c3), n=1.5 (^d4e5f6). Unambiguous writes to this file remain served. Fix: address the duplicate by block id or node index and rename one heading; see [[selector-grammar]].";
 
 /// One ambiguous candidate: its 1-based node index (the occurrence `n=`, the
@@ -684,60 +543,19 @@ pub fn render_ambiguity(selector: &str, candidates: &[AmbiguityCandidate]) -> St
     )
 }
 
-// ---------------------------------------------------------------------------
-// The cross-vault MEASURED-ABSENCE refusal (U21 — carried VERBATIM)
-// ---------------------------------------------------------------------------
+// Cross-vault measured-absence refusal (U21 — VERBATIM anchors)
 
-/// The resolve plane's partial-state disclosure — the THIRD such clause, beside
-/// `config::NO_PARTIAL_LOAD_CLAUSE` and `wire_serve::NO_PARTIAL_WRITE_CLAUSE`.
-///
-/// **Minted rather than reused, and the exception was ruled** (U21 Q4). The
-/// reuse rule forbids a second SPELLING of one plane; it does not forbid a
-/// clause for a NEW plane. Neither existing clause is true here: nothing was
-/// loaded and no batch was attempted — a REF failed to resolve, and what a
-/// reader needs to know is that this one ref produced nothing while the rest of
-/// the page is untouched.
+/// Resolve-plane partial-state clause (with config/wire-serve siblings). Own
+/// wording: a ref failed; nothing loaded, no batch — other refs unaffected.
 pub const NO_PARTIAL_RESOLVE_CLAUSE: &str = "Nothing was resolved for this ref and no rev was minted; every other ref on this page is unaffected.";
 
-/// The cross-vault measured-absence refusal, carried VERBATIM as the provenance
-/// anchor. [`render_file_not_found`] reproduces this wording with the real root
-/// and path interpolated; this const pins the exemplar so a drift in the wording
-/// is a visible test failure — the same shape as
-/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
-///
-/// **Why this is RED and not grey.** Grey means *outside sight*; this root is
-/// bound, readable, and its corpus loaded. The engine looked and the file is not
-/// there — a MEASURED ABSENCE, which is a claim, where grey is a refusal to
-/// claim. Conflating them is the false negative `GreyReason::Unmounted` exists
-/// to prevent, read from the other direction.
-///
-/// **Why it is not `selector-unresolved`.** That word asserts the PAGE resolved
-/// and the SELECTOR did not. For a cross-vault miss the page itself is absent,
-/// so `selector-unresolved` reports the wrong cause in the engine's own voice —
-/// which is exactly what shipped before U21.
+/// Cross-vault measured-absence refusal (VERBATIM anchor).
+/// [`render_file_not_found`] interpolates root/path. **Red not grey** (measured
+/// absence vs outside sight). Not `selector-unresolved` (page itself missing).
 pub const RED_FILE_NOT_FOUND_REFUSAL_EXEMPLAR: &str = "red(file-not-found): the address 'sessions:24-01-retro/notes.md#Design' names root 'sessions', which this machine binds and reads — and that root's corpus holds no '24-01-retro/notes.md'. The root is visible, so this is a measured absence, not grey. Nothing was resolved for this ref and no rev was minted; every other ref on this page is unaffected. Fix: check the path inside 'sessions' — `mrd config` names where it is mounted — or repoint the link; see [[address-grammar]].";
 
-/// Render the cross-vault measured-absence refusal, naming the root, the path
-/// that is missing inside it, and the act that fixes it.
-///
-/// `md_only` adds the v1 limit sentence when the missing path is not markdown.
-/// **A refusal that would otherwise IMPLY absence instead NAMES THE LIMIT** —
-/// the corpus holds only `.md`, so "that root's corpus holds no
-/// `media/logo.png`" is true and misleading: the file may well be on disk. This
-/// is the one place silence would produce a confidently wrong sentence.
-/// **The parts arrive separately and are joined HERE, at the render door.** The
-/// caller never hands in a pre-joined address string — that is the U14 /
-/// decision-14 shape (`render::address_text`): a joined human spelling is
-/// derived where it is displayed and nowhere else. It also removes the only way
-/// this function could lie, which is a caller passing an `address` whose root
-/// disagrees with `root`.
-/// **Does this missing path fall outside the markdown-only v1 corpus?** — the
-/// ONE owner of the md-only question, so the refusal's teaching leg and any
-/// later caller cannot answer it two ways.
-///
-/// A path with NO extension is markdown as far as this engine is concerned: the
-/// second of the three rules appends `.md`, so `sessions:notes` addresses
-/// `notes.md` and its absence is an ordinary miss, not a v1 limit.
+/// Whether `path` is outside the markdown-only v1 corpus (sole owner of this
+/// question). No extension ⇒ treated as markdown (`.md` append rule).
 #[must_use]
 pub fn target_is_non_markdown(path: &str) -> bool {
     std::path::Path::new(path)
@@ -757,9 +575,7 @@ pub fn render_file_not_found(
     } else {
         ""
     };
-    // The SUBJECT is the address as the author wrote it, selector included —
-    // that is what they must find on the page. The ABSENCE is the page path,
-    // because the selector is not what is missing.
+    // Subject = address as written; absence = page path (not the selector).
     let address = match selector {
         Some(sel) => format!("{root}:{missing}#{sel}"),
         None => format!("{root}:{missing}"),
@@ -774,29 +590,15 @@ pub fn render_file_not_found(
     )
 }
 
-// ---------------------------------------------------------------------------
-// The unmounted-root teaching refusal (D8 — carried VERBATIM)
-// ---------------------------------------------------------------------------
+// Unmounted-root teaching refusal (D8 — VERBATIM anchor)
 
-/// The unmounted-root teaching refusal, carried VERBATIM as the provenance
-/// anchor (`2026-07-24-cross-root-addressing.md` §1a). [`render_unmounted`]
-/// reproduces this wording with the real root and address interpolated; this
-/// const pins the exemplar so a drift in the wording is a visible test failure —
-/// the same shape as [`D1_TEACHING_REFUSAL_EXEMPLAR`].
-///
-/// It **names the missing mount** and **teaches the fix** (D8), and it carries
-/// §1a's ratified sentence — *"Not red: nothing drifted, you just cannot see
-/// from here"* — rather than paraphrasing it.
+/// Unmounted-root teaching refusal (VERBATIM anchor;
+/// `2026-07-24-cross-root-addressing.md` §1a). Names mount + fix (D8); carries
+/// §1a "Not red: nothing drifted…" wording.
 pub const GREY_UNMOUNTED_REFUSAL_EXEMPLAR: &str = "grey(unmounted): root 'assets' is not mounted — the address 'assets:domains/media/logo.md#Design' names a root this machine does not bind. Not red: nothing drifted, you just cannot see from here. Refs to mounted roots remain served. Fix: declare 'assets' in ~/MERIDIAN.md as a mount entry (name / path / kind); see [[address-grammar]].";
 
-/// Render the D8 teaching refusal for an address naming an unmounted root,
-/// naming the missing mount and the offending address. The wording is carried
-/// verbatim from [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`] with the real values
-/// spliced in — refuse-unmounted-only: *"Refs to mounted roots remain served."*
-///
-/// The leading reason word is **`grey(unmounted)`** — S3-R6's vocabulary, shared
-/// with `grey(cannot-assess)` and distinct from `red(...)`. It is not re-spelled
-/// locally: the same ruling binds u14i, U14 and U15.
+/// D8 teaching refusal for an unmounted root. Wording from
+/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`]. Leading word `grey(unmounted)` (S3-R6).
 #[must_use]
 pub fn render_unmounted(root: &addr::MountName, address: &str) -> String {
     format!(
@@ -808,31 +610,13 @@ pub fn render_unmounted(root: &addr::MountName, address: &str) -> String {
     )
 }
 
-/// The DECLARED-but-unreadable teaching refusal, carried VERBATIM as the
-/// provenance anchor (S3-R43 / S3-R49). [`render_path_unseeable`] reproduces
-/// this wording with the real root, path and reason interpolated; this const
-/// pins the exemplar so a drift in the wording is a visible test failure — the
-/// same shape as [`D1_TEACHING_REFUSAL_EXEMPLAR`] and
-/// [`GREY_UNMOUNTED_REFUSAL_EXEMPLAR`].
-///
-/// **The word is REUSED, not minted (S3-R49).** Round 2 was ruled a new word,
-/// `root-unreachable`; the enumeration this unit was obliged to run found that
-/// `config::mount::MountState::PathUnseeable` already ships
-/// **`grey(path-unseeable)`** for the same observed state, citing the same M6
-/// row, with a teaching that already names the path. The bare word is
-/// [`addr::PATH_UNSEEABLE_REASON_WORD`] — **one source**, wrapped by each plane's
-/// own renderer rather than spelled twice.
-///
-/// **It names the PATH, never the mount entry**, because the mount entry is
-/// already correct — that is the whole distinction S3-R43 draws.
+/// Declared-but-unreadable teaching refusal (VERBATIM anchor; S3-R43/R49).
+/// Word reused from [`addr::PATH_UNSEEABLE_REASON_WORD`] (not minted). Names
+/// the **path**, never the mount entry.
 pub const GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR: &str = "grey(path-unseeable): root 'assets' is declared, but the path it binds could not be read: /Volumes/media/assets (No such file or directory (os error 2)). Not red: nothing drifted, you just cannot see from here. Refs to readable roots remain served. Fix: check that /Volumes/media/assets exists and is readable, or change the mount entry's path; see [[address-grammar]].";
 
-/// Render the S3-R43 teaching refusal for an address naming a DECLARED root this
-/// machine cannot read. Wording carried verbatim from
-/// [`GREY_PATH_UNSEEABLE_REFUSAL_EXEMPLAR`].
-///
-/// **Deliberately never says "declare it".** The root IS declared; prescribing
-/// the declaration again is the defect this refusal exists to remove.
+/// S3-R43 teaching refusal for a declared root that cannot be read. Never says
+/// "declare it" — root is already declared.
 #[must_use]
 pub fn render_path_unseeable(root: &addr::MountName, path: &str, detail: &str) -> String {
     let word = addr::PATH_UNSEEABLE_REASON_WORD;
@@ -1128,10 +912,9 @@ mod tests {
         assert_eq!(first_anchor_in_span(&d, &span), Some("a1b2c3".to_string()));
     }
 
-    // ── the `meridian-lock` pin plane (`classify_pin`) ───────────────────────
+    // meridian-lock pin plane (`classify_pin`)
 
-    /// The live fingerprint token of a resolvable selector — what a correct pin
-    /// holds (mint through the SAME owner the verdict recomputes with).
+    /// Live fingerprint token of a resolvable selector (same mint as verdict).
     fn live_token(d: &Document, sel: &Selector) -> String {
         let (_, t) = resolve_selector(sel, Some(d)).expect("resolves");
         crate::fingerprint::fingerprint_span(d, &t.span, &syntax::anchor_removals(&d.raw))

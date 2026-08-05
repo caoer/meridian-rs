@@ -1,10 +1,6 @@
-//! T5-SUB gate fixtures — the push path through the live serve loop: the
-//! §4.7 reserved shape live (`sub` → Root-shaped ack, then Notification
-//! frames), replay ≡ live at the TRANSPORT (gate 1: pushed frames
-//! byte-identical to `diff`'s batches — one shape, two transports, §7.3),
-//! and the §7.1 late-law residue executable (gate 3: stale `from_seq` →
-//! `root_unknown`, the ruled shape — pinned as data, no frozen worked value
-//! exercises the boundary grain).
+//! T5-SUB push path: §4.7 `sub` ack + Notification frames; replay ≡ live at
+//! transport (pushed frames ≡ `diff` batches); stale `from_seq` →
+//! `root_unknown` (§7.1).
 
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -147,9 +143,7 @@ fn mid_epoch_sub_replays_then_goes_live() {
     assert_eq!(frames[4].1["delta"]["seq"], 2);
 }
 
-/// `from_seq == current` is legal, live-only: no replay frames precede the
-/// next commit's push. (Boundary grain pinned AS DATA — no frozen worked
-/// value exercises it; advisor ledger.)
+/// `from_seq == current` is legal, live-only (no replay).
 #[test]
 fn from_seq_at_current_is_live_only() {
     let (_d, root) = s0();
@@ -168,11 +162,7 @@ fn from_seq_at_current_is_live_only() {
     );
 }
 
-/// GATE 3 — the §7.1 late-law residue, executable: a `from_seq` this
-/// epoch's ring cannot anchor (ahead of current — a prior epoch's counter
-/// or invention) answers `root_unknown` → resync, catch up by diff-by-root.
-/// Never wrong data, never a cross-epoch seq comparison; the refusal
-/// registers NO subscription (a later commit pushes nothing).
+/// §7.1: unanchorable `from_seq` → `root_unknown` resync; no sub registered.
 #[test]
 fn stale_from_seq_refuses_root_unknown_resync() {
     let (_d, root) = s0();
@@ -199,9 +189,7 @@ fn stale_from_seq_refuses_root_unknown_resync() {
     );
 }
 
-/// Repeated `sub` in one session ADDS a subscription (advisor-ledgered as
-/// data: refusing or replacing would invent a restriction — the duplicate
-/// frames are the client's own request): one commit, two Notifications.
+/// Repeated `sub` adds a subscription: one commit → two Notifications.
 #[test]
 fn repeated_sub_adds_a_subscription() {
     let (_d, root) = s0();

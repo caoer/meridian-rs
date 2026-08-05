@@ -1,46 +1,26 @@
-//! The effect kernel — pure Starlark evaluation: rules in, effect descriptors
-//! out, **zero I/O, zero integration**, advisory-only (decisions/0003,
-//! decision #7 rename-and-demote).
+//! Pure Starlark effect kernel: [`Rule`]s + [`ChangeEvent`] → deterministic
+//! `Vec<`[`Effect`]`>` descriptors. Zero I/O, zero integration; advisory-only
+//! (0003). Fuel-limited, depth-capped, panic-safe.
 //!
-//! # Charter
-//! **Owns:** turning a semantic [`ChangeEvent`] plus a set of [`Rule`]s (fenced
-//! Starlark) into a deterministic `Vec<`[`Effect`]`>` — a pure function of
-//! `(rules, event)`. Fuel-limited, depth-capped, panic-safe. The rule language
-//! surface is the effect-descriptor builtins ([`set_field`], [`send`], … — see
-//! the `kernel` module) over the Starlark standard library and nothing else: no
-//! file, no network, no clock, no os. The only capabilities a rule reaches are
-//! the descriptor constructors registered here.
+//! **Owns:** evaluate fenced Starlark over a semantic change event. Rule surface
+//! is the descriptor constructors in `kernel` plus the Starlark stdlib — no
+//! file, net, clock, or os.
 //!
-//! **Never does:** read or write disk, open a socket, apply an effect, watch a
-//! tree, or talk to the daemon/wire. Effects are DESCRIPTORS — inert data a
-//! consumer executes. This crate runs parallel to the resident-daemon spine and
-//! touches nothing it owns (no splice choke point, no wire, no daemon) — and
-//! never will: the crate is advisory-only by charter (decision #7). The
-//! splice-point carve-in is DEAD, not reserved — this kernel will never gain a
-//! correctness path. (The wire `effects[]` field remains a reserved later unit,
-//! 0003 § reserved.)
+//! **Never does:** disk, sockets, apply effects, watch trees, daemon/wire I/O.
+//! Effects are inert data a consumer executes. No correctness path; does not
+//! touch the resident-daemon spine.
 //!
-//! # The advisory law (0003 §6)
-//! Effects are latency / UX, never correctness. An undelivered effect is lost
-//! latency, never lost truth. Disk and fingerprints are correctness; the wire is
-//! not. Nothing in this crate can change what is on disk.
+//! # Advisory law (0003 §6)
+//! Effects are latency/UX, never correctness. Undelivered effect = lost latency,
+//! not lost truth. Disk and fingerprints are correctness; nothing here mutates
+//! disk.
 //!
-//! # Acknowledged limitation — cursor replay collapses intermediate transitions
-//! At-least-once delivery is fingerprint-cursor replay (0003 §4), not a queue: on
-//! reconnect a consumer presents its last fully-executed fingerprint and the
-//! engine re-emits `diff(cursor, live)`. An outage between cursor and live
-//! replays the **net** diff — `todo→review→done` re-emits as `todo→done`, and the
-//! "entered review" transition **never fires**. This is lost by design and
-//! accepted under the advisory law. The documented escape: a rule that must
-//! record every transition writes its record INTO the tree at write time
-//! (`append_section` / an `md.*` effect) — disk carries the history, the wire
-//! never does.
-//!
-//! # Naming is not frozen
-//! Descriptor kinds and their argument names are a SETTLED-direction sketch, not
-//! a freeze: alignment with 108da20a's fused stage-2 winner may rename them
-//! (0003 § reserved). Under delete-don't-migrate that is cheap — do not build a
-//! migration layer against these names.
+//! # Cursor-replay limitation (0003 §4)
+//! At-least-once delivery is fingerprint-cursor replay, not a queue: reconnect
+//! re-emits `diff(cursor, live)`. Intermediate transitions collapse
+//! (`todo→review→done` → `todo→done`) by design. Escape: write history into the
+//! tree at write time (`append_section` / `md.*`) — disk holds history, wire does
+//! not.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,12 +30,9 @@ mod kernel;
 
 pub use kernel::validate;
 
-/// One rule's metered outcome over a single event: its typed result plus the
-/// EXACT fuel (Starlark ticks) and peak-heap bytes it spent. The corpus-replay
-/// harness reads these for its per-rule consumption profile and dead-rule
-/// detection. A rule that never reached eval (unparseable source, over the
-/// source cap) reports `fuel_used`/`mem_used` of `0` and the typed authoring
-/// fault; a bomb terminated at the ceiling reports the ceiling it hit.
+/// One rule's metered outcome: typed result plus exact fuel (Starlark ticks)
+/// and peak-heap bytes. Never-reached eval → `0`/`0` + authoring fault; bomb
+/// at ceiling → reports that ceiling.
 #[derive(Debug, Clone)]
 pub struct RuleTelemetry {
     /// The rule this run measured — its `id`.
@@ -68,20 +45,12 @@ pub struct RuleTelemetry {
     pub outcome: Result<Vec<Effect>, EvalError>,
 }
 
-/// Evaluate each rule INDEPENDENTLY over one `event` under explicit `limits`,
-/// returning a metered outcome per rule (in slice order).
-///
-/// Unlike [`eval_with_limits`], this NEVER aborts the batch on the first
-/// offending rule — every rule runs and reports its own typed outcome plus the
-/// exact fuel/mem it spent. This is the corpus-replay contract: one bad rule
-/// must not hide the fire counts of the rest, and the fuel profile needs
-/// per-rule accounting the batch path discards. Determinism is unchanged (the
-/// kernel is a pure function of `(rule, event, limits)`), so replaying the same
-/// history twice yields byte-identical telemetry.
-///
-/// The cascade depth cap matches [`eval_with_limits`]: when
-/// `event.depth >= limits.max_depth`, a rule's cascading `md.*` effects are
-/// suppressed (only its terminal `daemon.*` / `proto.*` effects survive).
+/// Evaluate each rule independently over one `event` under `limits`, returning
+/// metered outcomes in slice order. Unlike [`eval_with_limits`], never aborts
+/// the batch on the first fault — every rule reports its own outcome + fuel/mem
+/// (corpus-replay contract). Pure function of `(rule, event, limits)`.
+/// Cascade depth cap matches [`eval_with_limits`]: at/beyond `max_depth`,
+/// cascading `md.*` effects are suppressed.
 #[must_use]
 pub fn eval_telemetry(
     rules: &[Rule],
@@ -125,11 +94,8 @@ pub enum Domain {
     Proto,
 }
 
-/// A namespaced effect descriptor kind. The `kind` a consumer routes by
-/// capability. The string form (`md.set_field`, `proto.send`, …) is the wire /
-/// snapshot identity.
-///
-/// NAMING IS NOT FROZEN (see crate docs): fused-winner alignment may rename.
+/// Namespaced effect-descriptor kind. Consumers route by capability; the string
+/// form (`md.set_field`, `proto.send`, …) is the wire/snapshot identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EffectKind {
     /// `md.set_field` — set a frontmatter field.
@@ -149,8 +115,7 @@ pub enum EffectKind {
 }
 
 impl EffectKind {
-    /// Every descriptor kind, in a stable order — the "declare all capabilities"
-    /// convenience and the source of truth for the closed surface.
+    /// Every descriptor kind, stable order — closed surface source of truth.
     pub const ALL: [EffectKind; 7] = [
         EffectKind::SetField,
         EffectKind::AppendSection,
@@ -187,15 +152,10 @@ impl EffectKind {
         }
     }
 
-    /// The Starlark constructor name a rule calls to mint this descriptor — the
-    /// wire identity minus its domain prefix (`proto.send` → `send`).
-    ///
-    /// A consumer that enforces a capability ceiling at LOAD time (the HOOK
-    /// declaration in `policy`) resolves declared caps to the exact global names a
-    /// predicate may reach for. That set must be the one the kernel actually
-    /// registers, so the mapping lives here beside the registration and is pinned
-    /// to it by `kernel`'s `every_effect_kind_constructor_is_registered` — never
-    /// re-derived by a caller splitting [`EffectKind::as_str`] on the dot.
+    /// Starlark constructor name (`proto.send` → `send`). Load-time capability
+    /// ceilings must use this mapping (pinned by
+    /// `every_effect_kind_constructor_is_registered`) — never re-derive by
+    /// splitting [`EffectKind::as_str`].
     #[must_use]
     pub fn constructor(self) -> &'static str {
         match self {
@@ -209,33 +169,23 @@ impl EffectKind {
         }
     }
 
-    /// The [`EffectKind`] a wire identity names (`"proto.send"` → [`EffectKind::Send`]),
-    /// or `None` when the string is not one of the seven — the closed surface is the
-    /// vocabulary, so an unknown name is denied rather than guessed at.
+    /// Wire identity → kind (`"proto.send"` → [`EffectKind::Send`]), or `None`
+    /// if unknown — closed surface; never guess.
     #[must_use]
     pub fn from_wire_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.as_str() == name)
     }
 }
 
-/// The reaction plane's vocabulary — builtins that are NOT capabilities and grant
-/// no effect kind.
-///
-/// A capability ceiling built from [`EffectKind`] must admit these unconditionally,
-/// exactly as it admits the Starlark standard library: `intent` is the panel's noun
-/// for emitting a descriptor the caps still gate, and `receipt_addr` computes an
-/// address. Neither can do anything a declared cap does not already permit.
-///
-/// One exported source so a consumer's allow-set and this kernel's registered
-/// globals cannot drift — pinned in both directions by `kernel`'s
+/// Reaction-plane builtins that are not capabilities and grant no effect kind.
+/// Capability ceilings must admit these unconditionally (like the Starlark
+/// stdlib): `intent` emits a descriptor the caps still gate; `receipt_addr`
+/// computes an address. Single source pinned by
 /// `every_effect_kind_constructor_is_registered`.
 pub const REACTION_VOCAB: [&str; 2] = ["intent", "receipt_addr"];
 
-/// The [`EffectKind`] an `intent(action = …)` names: a wire identity
-/// (`"proto.send"`), or the ONE documented alias — the panel writes
-/// `action = "notify"` where the shipped kernel writes `proto.send`, and the design
-/// states they are the same thing at two names. No other alias exists; an unknown
-/// action is a loud fault, never a guess.
+/// `intent(action = …)` → kind: wire identity (`"proto.send"`) or the one alias
+/// `"notify"` ≡ `proto.send`. Unknown action is a fault, never a guess.
 #[must_use]
 pub fn action_kind(action: &str) -> Option<EffectKind> {
     match action {
@@ -244,15 +194,10 @@ pub fn action_kind(action: &str) -> Option<EffectKind> {
     }
 }
 
-/// The receipt address for `(path, rev)` in the contract's `path#^anchor` spelling
-/// (§6.1: ordinary markdown inside the hash domain — any md path plus a block
-/// anchor).
-///
-/// Pure in its inputs and free of any clock or counter, so the same change
-/// re-evaluated names the same address. The anchor is `r-` plus the first 16 hex of
-/// `blake3(path \0 rev)` — inside the one block-id charset (`[A-Za-z0-9-]`,
-/// decision 011 / contract §2.4), and separator-delimited so
-/// `("a", "bc")` and `("ab", "c")` cannot collide.
+/// Receipt address for `(path, rev)` as `path#^anchor` (§6.1). Pure in inputs
+/// (no clock/counter): same change re-eval → same address. Anchor is `r-` +
+/// first 16 hex of `blake3(path \0 rev)` (`[A-Za-z0-9-]`); `\0` separator so
+/// `("a","bc")` ≠ `("ab","c")`.
 #[must_use]
 pub fn receipt_address(path: &str, rev: &str) -> String {
     let mut hasher = blake3::Hasher::new();
@@ -270,9 +215,8 @@ impl Serialize for EffectKind {
     }
 }
 
-/// One descriptor argument value: a scalar string or a list of strings. The
-/// closed value shape a rule can hand a constructor — no numbers, no nested
-/// maps; a descriptor is flat, inert data.
+/// Descriptor argument: scalar string or list of strings. Closed shape — no
+/// numbers, no nested maps; flat inert data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ArgValue {
@@ -282,40 +226,34 @@ pub enum ArgValue {
     List(Vec<String>),
 }
 
-/// The plane an effect descriptor was produced on — its typed provenance. The
-/// two planes carry DIFFERENT facts and one can never impersonate the other: a
-/// change-plane effect was produced against a semantic diff and carries its
-/// fingerprints (the cursor coordinates); a run-plane effect was produced by an
-/// explicit invocation (`mrd run`) and carries the invocation identity plus the
-/// tree root it evaluated against. Serialized with an explicit `plane` tag —
-/// the public JSON surface states the plane from day one rather than
-/// overloading fingerprint fields with run-plane values.
+/// Typed provenance of an effect. Planes carry different facts and cannot
+/// impersonate each other: change-plane carries diff fingerprints (cursor
+/// coords); run-plane carries invocation id + root at eval. Serialized with an
+/// explicit `plane` tag — never overload fingerprint fields with run values.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "plane", rename_all = "lowercase")]
 pub enum Provenance {
-    /// Change-plane: emitted by `on_change` over a semantic diff (0003 §3).
+    /// Change-plane: `on_change` over a semantic diff (0003 §3).
     Change {
-        /// The pre-change fingerprint of the diff.
+        /// Pre-change fingerprint.
         fingerprint_before: String,
-        /// The post-change fingerprint of the diff — the cursor coordinate.
+        /// Post-change fingerprint — the cursor coordinate.
         fingerprint_after: String,
     },
-    /// Run-plane: emitted by an explicit task invocation. There is no diff and
-    /// no cursor — a re-run is new intent, never a replay.
+    /// Run-plane: explicit task invocation. No diff/cursor — re-run is new
+    /// intent, never a replay.
     Run {
-        /// The caller-supplied invocation id (the engine mints no identity).
+        /// Caller-supplied invocation id (engine mints none).
         invocation_id: String,
-        /// The workspace root fingerprint at evaluation time.
+        /// Workspace root fingerprint at evaluation time.
         root_at_eval: String,
     },
 }
 
-/// One effect descriptor — inert data a consumer executes. Carries the routing
-/// `kind`, its flat `args`, the emitting `rule_id`, its plane-typed
-/// [`Provenance`], its per-rule `seq`, and the cascade `depth`.
-///
-/// The idempotency key for executor dedup is `(rule_id, fingerprint_after, seq)`
-/// (0003 §4), defined on the change plane only — see [`Effect::idempotency_key`].
+/// One effect descriptor — inert data a consumer executes: routing `kind`, flat
+/// `args`, emitting `rule_id`, plane-typed [`Provenance`], per-rule `seq`,
+/// cascade `depth`. Dedup key `(rule_id, fingerprint_after, seq)` (0003 §4) is
+/// change-plane only — see [`Effect::idempotency_key`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Effect {
     /// The routing kind (`md.set_field`, `proto.send`, …).
@@ -334,11 +272,9 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// The executor-dedup idempotency key `(rule_id, fingerprint_after, seq)`
-    /// (0003 §4) — `Some` only on the change plane, stable across re-evaluation
-    /// of the same `(rules, event)`. A run-plane effect has NO dedup key: dedup
-    /// exists for cursor replay, and a re-run is new intent — suppressing it as
-    /// a replay would silently drop requested work.
+    /// Dedup key `(rule_id, fingerprint_after, seq)` (0003 §4) — `Some` only on
+    /// the change plane (stable for cursor replay). Run-plane has none: re-run
+    /// is new intent; suppressing it would drop requested work.
     #[must_use]
     pub fn idempotency_key(&self) -> Option<IdempotencyKey> {
         match &self.provenance {
@@ -354,9 +290,8 @@ impl Effect {
     }
 }
 
-/// The executor-dedup key of a change-plane [`Effect`] (0003 §4): a replayed
-/// effect carrying a key the executor already applied is dropped. Run-plane
-/// effects have no key (see [`Effect::idempotency_key`]).
+/// Executor-dedup key of a change-plane [`Effect`] (0003 §4). Run-plane effects
+/// have none (see [`Effect::idempotency_key`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct IdempotencyKey {
     /// The emitting rule.
@@ -367,9 +302,8 @@ pub struct IdempotencyKey {
     pub seq: u32,
 }
 
-/// What one [`ChangeFact`] is about. The founding reaction predicate's own
-/// discriminator (`delta.kind != "frontmatter"`), so it is a closed two-value
-/// vocabulary rather than a free string.
+/// What one [`ChangeFact`] is about — closed two-value vocabulary, not a free
+/// string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChangeFactKind {
@@ -390,16 +324,9 @@ impl ChangeFactKind {
     }
 }
 
-/// One thing that changed, WITH its values — the fact `fields_changed` (names
-/// only) could not express.
-///
-/// A frontmatter fact carries `key` plus `old`/`new`; absence is real, so a key
-/// that did not exist before has `old: None` and a deleted key has `new: None`.
-///
-/// A section fact carries `hpath` and **no body text, ever**. A subscription
-/// classifies on small values; section bodies are unbounded, and putting one in a
-/// reaction payload would make every large edit an expensive event. What changed
-/// is addressable; a consumer that wants the content reads it.
+/// One change with values — what `fields_changed` (names only) cannot express.
+/// Frontmatter: `key` + `old`/`new` (`None` = absence). Section: `hpath` only
+/// — **no body text** (bodies are unbounded; content is read by consumers).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChangeFact {
     /// Whether this is a frontmatter key or a section.
@@ -414,14 +341,9 @@ pub struct ChangeFact {
     pub hpath: Vec<String>,
 }
 
-/// The world-model facts a reaction may read: the changed document as it NOW
-/// stands. This is how a reaction reads its target off the card (ZT 24-01 — the
-/// card defines the notification target).
-///
-/// **What is deliberately absent is the point.** There is no actor, no session,
-/// no invocation identity here, and there must never be: a WHEN clause naming an
-/// actor fact is refused, and the engine must not observe the observer. The
-/// derivation drops `actor` even though the change plane carries it.
+/// World-model facts a reaction may read: the changed document as it now stands.
+/// Deliberately absent: actor, session, invocation identity — the engine must
+/// not observe the observer; actor-fact WHEN clauses are refused.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct EventFacts {
     /// The document's path.
@@ -430,15 +352,10 @@ pub struct EventFacts {
     pub frontmatter: Vec<(String, String)>,
 }
 
-/// The semantic change event — one `on_change` payload (0003 §3). Meridian diffs
-/// semantically, so a rule filters on payload granularity (which sections, which
-/// fields) rather than "file changed". There is exactly one hook; there is no
-/// `on_section_change` kind.
-///
-/// `changes` and `facts` are the reaction plane's additions: `fields_changed`
-/// names WHICH keys moved, `changes` says what they moved FROM and TO, and
-/// `facts` carries the document those keys live on. The entry did not change —
-/// `on_change(event)` is still the one change-plane entry; its argument grew.
+/// Semantic change event — one `on_change` payload (0003 §3). Rules filter on
+/// sections/fields, not "file changed"; single hook (no `on_section_change`).
+/// `fields_changed` = which keys; `changes` = from/to values; `facts` = document
+/// as it now stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ChangeEvent {
     /// The changed file's workspace path.
@@ -461,8 +378,7 @@ pub struct ChangeEvent {
 }
 
 impl ChangeEvent {
-    /// A depth-0 (user-originated) event. Convenience for the common case and
-    /// for callers that do not model cascade themselves.
+    /// Depth-0 (user-originated) event.
     #[must_use]
     pub fn new(
         file: impl Into<String>,
@@ -482,16 +398,11 @@ impl ChangeEvent {
     }
 }
 
-/// The run-plane context — one `run(ctx)` invocation's inert facts, ALL
-/// caller-supplied (§9: the engine invents no identity and no time; nothing
-/// here is read from a clock or minted in-kernel).
-///
-/// The sandbox sees `ctx.page`, `ctx.task`, `ctx.args`, `ctx.env` and nothing
-/// else. `invocation_id` / `root_at_eval` are the Run-plane provenance facts
-/// stamped onto every emitted effect ([`Provenance::Run`]) — deliberately NOT
-/// injected: a task's output must not depend on its invocation identity, so a
-/// re-run with the same inputs emits byte-identical effects and only the
-/// provenance distinguishes the invocations.
+/// Run-plane context — one `run(ctx)` invocation's inert facts, all
+/// caller-supplied (§9: engine invents no identity/time). Sandbox sees
+/// `page`/`task`/`args`/`env` only. `invocation_id`/`root_at_eval` stamp
+/// [`Provenance::Run`] but are not injected — task output must not depend on
+/// invocation identity (same inputs → byte-identical payloads).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunCtx {
     /// The addressed page's workspace path.
@@ -508,11 +419,9 @@ pub struct RunCtx {
     pub root_at_eval: String,
 }
 
-/// A rule: a caller-assigned `id` (its provenance — stamped onto every effect it
-/// emits) plus its fenced-free Starlark `source` (a `def on_change(event):`
-/// definition on the change plane, a `def run(ctx):` definition on the run
-/// plane). Loading rule files from disk is the CALLER's job (that is the
-/// I/O this crate refuses); the crate takes the loaded source and parses it.
+/// A rule: caller-assigned `id` (stamped on every emitted effect) + Starlark
+/// `source` (`def on_change(event):` or `def run(ctx):`). Loading files is the
+/// caller's job — this crate takes source only.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     /// Rule provenance — the effect `rule_id`. Also the idempotency-key prefix.
@@ -532,10 +441,9 @@ impl Rule {
     }
 }
 
-/// The effect kinds a consumer declared executable — capability declaration
-/// rides `hello` (0003 §2). The engine emits ALL effects deterministically; a
-/// [`CapabilitySet`] is the downstream routing filter, kept separate so eval
-/// stays a pure function of `(rules, event)` (cursor replay depends on that).
+/// Effect kinds a consumer declared executable (0003 §2). Engine emits all
+/// effects deterministically; this is the downstream routing filter — kept
+/// separate so eval stays pure in `(rules, event)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CapabilitySet(BTreeSet<EffectKind>);
 
@@ -573,9 +481,8 @@ impl CapabilitySet {
         self.0.contains(&effect.kind)
     }
 
-    /// Partition effects into `(admitted, rejected)` by capability, preserving
-    /// order in each. Routing is a filter over the deterministic effect set —
-    /// it never changes which effects were produced.
+    /// Partition into `(admitted, rejected)` by capability, order preserved.
+    /// Filter only — never changes which effects were produced.
     #[must_use]
     pub fn route(&self, effects: Vec<Effect>) -> (Vec<Effect>, Vec<Effect>) {
         effects.into_iter().partition(|e| self.admits(e))
@@ -588,13 +495,10 @@ impl FromIterator<EffectKind> for CapabilitySet {
     }
 }
 
-/// Deterministic bounds on one evaluation (0003 §1: fuel-limited, depth-capped).
-/// Exceeding `fuel` (Starlark steps), `mem` (eval-heap bytes), or `max_call_depth`
-/// (recursion depth) terminates the rule with [`EvalError::Budget`]; a runaway
-/// loop, recursion bomb, or huge allocation can never hang. `max_depth` caps the
-/// cascade: at or beyond it, the cascading `md.*` effects are suppressed.
-/// `max_source_bytes` bounds parse cost (a `DoS` guard against pathological
-/// source; the parser recurses per nesting level).
+/// Deterministic eval bounds (0003 §1). Exceeding `fuel` / `mem` /
+/// `max_call_depth` → [`EvalError::Budget`] (no hang). `max_depth` suppresses
+/// cascading `md.*` at/beyond the ceiling. `max_source_bytes` is the parse-DoS
+/// guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EvalLimits {
     /// Max Starlark step (tick) count per rule.
@@ -616,22 +520,18 @@ impl Default for EvalLimits {
             mem: 64 * 1024 * 1024,
             max_call_depth: 1000,
             max_depth: 8,
-            // 64 KiB is generous for a single rule file (real rules are ~1 KiB)
-            // and stays within the parse-recursion budget the fixed evaluation
-            // stack provides (see `kernel::EVAL_STACK_BYTES`). Raising this
-            // requires a proportionally larger evaluation stack.
+            // Sized for the fixed eval stack (`kernel::EVAL_STACK_BYTES`);
+            // raising this needs a proportionally larger stack.
             max_source_bytes: 64 * 1024,
         }
     }
 }
 
-/// Why an evaluation did not produce effects. Every hostile input — a runaway
-/// bomb, malformed Starlark, a wrong-typed argument, a forged descriptor — lands
-/// as one of these typed errors; nothing panics, nothing hangs.
+/// Why eval produced no effects. Hostile input lands as a typed error — no
+/// panic, no hang.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
-    /// The rule exhausted its per-eval `{fuel, mem}` budget (runaway loop,
-    /// recursion, or allocation). Terminated, never hung.
+    /// Per-eval `{fuel, mem}` exhausted — terminated, never hung.
     Budget {
         /// The fuel bound that was exceeded (or is the ceiling).
         fuel: u64,
@@ -645,17 +545,14 @@ pub enum EvalError {
         /// The parser's message.
         reason: String,
     },
-    /// The rule parsed but faulted at eval: no `on_change(event)` defined, a
-    /// raised error, a wrong-typed argument to a constructor, an out-of-range
-    /// index, or an attempt to reach a name the sandbox does not provide.
+    /// Parsed but faulted at eval (raised error, bad arg type, unbound name, …).
     Runtime {
         /// The rule that faulted.
         rule_id: String,
         /// The fault message.
         reason: String,
     },
-    /// The rule source exceeded [`EvalLimits::max_source_bytes`] — refused
-    /// before parsing (parse `DoS` guard).
+    /// Source exceeded [`EvalLimits::max_source_bytes`] — refused before parse.
     SourceTooLarge {
         /// The offending rule.
         rule_id: String,
@@ -664,10 +561,8 @@ pub enum EvalError {
         /// The configured limit.
         limit: usize,
     },
-    /// The source parsed and evaluated but defines no entry for the plane it
-    /// was addressed on — or defines the OTHER plane's entry (an `on_change`
-    /// rule addressed as a task, or a `run` task fed a change event). One
-    /// entry per plane; the planes never cross.
+    /// No entry for the addressed plane, or the other plane's entry is present.
+    /// One entry per plane; planes never cross.
     MissingEntry {
         /// The offending rule/task.
         rule_id: String,
@@ -716,61 +611,43 @@ impl std::fmt::Display for EvalError {
 
 impl std::error::Error for EvalError {}
 
-/// Evaluate `rules` over one `event`, under [`EvalLimits::default`], returning the
-/// deterministic effect descriptor set — the pure kernel function of
-/// `(rules, event)`.
-///
-/// See [`eval_with_limits`] for the full contract; this is the default-limits
-/// convenience.
+/// Evaluate `rules` over one `event` under [`EvalLimits::default`]. See
+/// [`eval_with_limits`].
 ///
 /// # Errors
-/// The first rule to fail returns its typed [`EvalError`] — see
-/// [`eval_with_limits`].
+/// First failing rule's typed [`EvalError`].
 pub fn eval(rules: &[Rule], event: &ChangeEvent) -> Result<Vec<Effect>, EvalError> {
     eval_with_limits(rules, event, EvalLimits::default())
 }
 
 /// Evaluate `rules` over one `event` under explicit `limits`.
 ///
-/// Determinism: rules run in slice order; within a rule, effects are recorded in
-/// execution order with a per-rule `seq` (0, 1, …). Starlark is deterministic
-/// (insertion-ordered dicts, no clock, no random), so the output is byte-identical
-/// across runs and thread counts. The result is a pure function of
-/// `(rules, event, limits)` — nothing observes the consumer, so cursor replay
-/// (0003 §4) reproduces effects exactly.
+/// Determinism: rules in slice order; per-rule `seq` in execution order. Pure
+/// function of `(rules, event, limits)` — no clock/random/consumer observation;
+/// cursor replay (0003 §4) is byte-identical.
 ///
-/// Depth cap: when `event.depth >= limits.max_depth`, the cascading `md.*`
-/// effects are suppressed (they would re-trigger `on_change`); terminal `daemon.*`
-/// / `proto.*` effects still emit. A rule still runs and spends fuel — only its
-/// tree-mutating descriptors are withheld past the cap.
+/// Depth cap: at `event.depth >= limits.max_depth`, cascading `md.*` are
+/// suppressed; terminal `daemon.*`/`proto.*` still emit. Rule still runs and
+/// spends fuel.
 ///
 /// # Errors
-/// Fails loud on the FIRST offending rule — [`EvalError::Parse`] (malformed
-/// source), [`EvalError::SourceTooLarge`], [`EvalError::Runtime`] (no
-/// `on_change`, a raised error, a wrong-typed / forged argument), or
-/// [`EvalError::Budget`] (a bomb terminated by the fuel/mem limits). Validate
-/// rules once at load with [`validate`] to separate authoring faults from
-/// per-event faults.
+/// First offending rule: [`EvalError::Parse`], [`EvalError::SourceTooLarge`],
+/// [`EvalError::Runtime`], or [`EvalError::Budget`]. Load-gate with [`validate`]
+/// to separate authoring from per-event faults.
 pub fn eval_with_limits(
     rules: &[Rule],
     event: &ChangeEvent,
     limits: EvalLimits,
 ) -> Result<Vec<Effect>, EvalError> {
-    // The whole evaluation runs on a dedicated large-stack thread: the Starlark
-    // recursive-descent parser can otherwise overflow the native stack on
-    // pathologically nested source (research-starlark-mcp §1, issue #66) — an
-    // uncatchable process abort that `catch_unwind` cannot contain. The large
-    // virtual stack plus the source-size cap bounds parse recursion. The thread
-    // makes no observable difference to the result (determinism preserved).
+    // Large-stack thread: pathologically nested source must not overflow the
+    // native stack (uncatchable abort; issue #66). No effect on determinism.
     kernel::on_eval_stack(|| {
         let globals = kernel::effect_globals();
         let mut out = Vec::new();
         for rule in rules {
             out.extend(kernel::run_rule(&globals, rule, event, limits)?);
         }
-        // Depth cap (0003 §5): past the cascade ceiling, withhold the
-        // tree-mutating (cascading) effects so a rule chain cannot loop forever
-        // through the engine.
+        // Depth cap (0003 §5): withhold cascading md.* past the ceiling.
         if event.depth >= limits.max_depth {
             out.retain(|e| e.kind.domain() != Domain::Md);
         }
@@ -778,29 +655,21 @@ pub fn eval_with_limits(
     })
 }
 
-/// Evaluate one task's `run(ctx)` — the run-plane entry (verdict rulings 1/8)
-/// — under explicit `limits`, in the SAME sealed sandbox as `on_change`: the
-/// same [`kernel::effect_globals`] closed builtin surface, the same fuel / mem
-/// / call-depth metering, the same panic containment. There is no second
-/// sandbox and no wider one — `run(ctx)` cannot spawn a process, read a clock,
-/// or touch I/O any more than `on_change` can (starlark-invokes-bash is a
-/// permanent no).
+/// Evaluate one task's `run(ctx)` under `limits` in the same sealed sandbox as
+/// `on_change` (same globals, fuel/mem/depth metering, panic containment). No
+/// process spawn, clock, or I/O.
 ///
-/// Emitted effects carry [`Provenance::Run`] (from `ctx.invocation_id` /
-/// `ctx.root_at_eval`), `rule_id = ctx.task`, `depth = 0`, and NO idempotency
-/// key — a re-run is new intent, never a replay. Determinism: the result is a
-/// pure function of `(task, ctx, limits)`; the provenance facts are stamped,
-/// never injected, so the effect PAYLOAD depends only on
+/// Effects carry [`Provenance::Run`], `rule_id = ctx.task`, `depth = 0`, no
+/// idempotency key (re-run is new intent). Pure in `(task, ctx, limits)`;
+/// provenance is stamped not injected, so payload depends only on
 /// `(page, task, args, env)`.
 ///
 /// # Errors
-/// The same typed surface as [`eval_with_limits`], plus
-/// [`EvalError::MissingEntry`] when the source defines no `run(ctx)` — with
-/// the wrong-plane detail when it defines `on_change` instead.
+/// Same surface as [`eval_with_limits`], plus [`EvalError::MissingEntry`] when
+/// no `run(ctx)` (wrong-plane detail if `on_change` is defined instead).
 pub fn eval_run(task: &Rule, ctx: &RunCtx, limits: EvalLimits) -> Result<Vec<Effect>, EvalError> {
-    // One identity per invocation (f9542789 U3-gate): `task.id` is the error
-    // provenance, `ctx.task` the effect provenance — a divergence would let
-    // the same failed run report two names. Refused, never reconciled.
+    // One identity per invocation: task.id (errors) must equal ctx.task
+    // (effects). Divergence refused, never reconciled.
     if task.id != ctx.task {
         return Err(EvalError::Runtime {
             rule_id: task.id.clone(),
@@ -898,9 +767,7 @@ mod tests {
 
     #[test]
     fn provenance_serializes_with_an_explicit_plane_tag() {
-        // The public JSON surface is plane-typed from day one: change-plane
-        // effects carry fingerprints, run-plane effects carry invocation
-        // identity — flattened, tagged, never overloaded into each other.
+        // Plane-typed JSON: fingerprints vs invocation identity — never mixed.
         let change = serde_json::to_value(effect(EffectKind::Notice, "r", "fpA", 0)).unwrap();
         assert_eq!(change["plane"], "change");
         assert_eq!(change["fingerprint_before"], "before");

@@ -1,7 +1,5 @@
-//! Determinism invariants (0003 §1 + § Testing methodology, proptest): the same
-//! `(rules, event)` yields the byte-identical effect set across repeated runs and
-//! across thread counts, and the idempotency keys are stable (cursor replay
-//! depends on this).
+//! Determinism (0003 §1): same `(rules, event)` → byte-identical effects across
+//! runs/threads; idempotency keys stable (cursor replay).
 
 mod support;
 
@@ -105,10 +103,8 @@ fn probe_task(ctx: &RunCtx) -> Rule {
 }
 
 proptest! {
-    /// The re-eval stability contract holds on BOTH planes (f9542789 U1-review
-    /// gate): Run-plane effects are byte-identical across re-evaluation even
-    /// though they carry NO idempotency key — stability comes from eval being
-    /// a pure function of `(task, ctx, limits)`, not from dedup.
+    /// Run-plane re-eval is byte-identical without an idempotency key — purity
+    /// of `(task, ctx, limits)`, not dedup.
     #[test]
     fn run_plane_re_eval_is_byte_identical(ctx in any_ctx()) {
         let task = probe_task(&ctx);

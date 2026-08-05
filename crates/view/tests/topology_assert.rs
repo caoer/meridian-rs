@@ -1,14 +1,9 @@
-//! C2 crate-topology gate — view-never-store as a build gate (design §Crate
-//! topology). `crates/view` is a **write-only leaf**: it reads the parsed corpus
-//! and writes `DuckDB`, and **no correctness crate may depend on it**, so a DB row
-//! can never re-enter a fact/model correctness path (`use view::` is impossible
-//! from a fact-answering crate). Mirrors `perfsuite/tests/inventory_assert.rs`:
-//! a structural unit test parsing each crate's `Cargo.toml`.
+//! C2 topology: view is a write-only leaf — no correctness crate may depend on
+//! it (view-never-store).
 
 use std::path::PathBuf;
 
-/// The correctness crates that MUST NEVER list `view` as a dependency (design
-/// §Crate topology: "the forbidden Cargo directions, the enforced line").
+/// Correctness crates that must never list `view` as a dependency.
 const FORBIDDEN_DEPENDERS: &[&str] = &[
     "model",
     "query",
@@ -19,7 +14,6 @@ const FORBIDDEN_DEPENDERS: &[&str] = &[
     "wire-serve",
 ];
 
-/// Dependency tables a forbidden edge could hide in.
 const DEP_TABLES: &[&str] = &["dependencies", "dev-dependencies", "build-dependencies"];
 
 fn crate_manifest(name: &str) -> PathBuf {

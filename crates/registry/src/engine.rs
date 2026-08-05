@@ -1,25 +1,12 @@
-//! The resident per-workspace query engine (decision 0002 spine root, U1).
+//! Resident per-workspace query engine (U1).
 //!
-//! The daemon holds a warm [`WorkspaceEngine`] per workspace — the parsed
-//! corpus (`model::CorpusIndex` + document map) plus the corpus content hash it
-//! was built at. [`Registry::warm_or_build`](crate::Registry::warm_or_build)
-//! rebuilds a workspace's engine ONLY when its corpus content hash changes; an
-//! unchanged hash reuses the warm state and parses nothing.
+//! Warm [`WorkspaceEngine`] per workspace: parsed corpus + content hash it was
+//! built at. [`Registry::warm_or_build`](crate::Registry::warm_or_build)
+//! rebuilds only when the hash changes; else reuses and parses nothing.
 //!
-//! # Doctrine (decision 0002)
-//! Resident state is a disposable projection of disk: no persistence, no
-//! recovery machinery. A cold daemon holds no engines; the first
-//! `warm_or_build` for a workspace rebuilds from disk. Eviction is NOT
-//! engineered here — the daemon's existing idle-reap (one-hour `last_use`
-//! horizon,
-//! [`Registry::reap`](crate::Registry::reap)) drops a warm engine when it drops
-//! the workspace's registration (risk R4: generous residency, no memory budget).
-//!
-//! # The reuse key (risk R5)
-//! The fingerprint is the corpus CONTENT hash — `fs::domain_snapshot`'s folded
-//! `model::MerkleRoot`, the world-grain the commit guards and `diff` already
-//! compute fresh from disk. It is NOT the (unimplemented) workspace-identity
-//! Merkle; U1 never builds that.
+//! Disposable projection of disk — no persistence. Eviction is idle-reap
+//! ([`Registry::reap`](crate::Registry::reap)), not a separate policy (R4).
+//! Reuse key is the corpus CONTENT hash (R5), not workspace-identity Merkle.
 
 use std::collections::BTreeMap;
 
@@ -38,20 +25,12 @@ pub struct WorkspaceEngine {
     pub at_fingerprint: model::MerkleRoot,
 }
 
-/// Whether `warm_or_build` reused the warm engine or rebuilt it.
-///
-/// This is the parse-count evidence the U1/U2 gates assert on: `Built { docs }`
-/// reports the number of documents parsed (one `syntax::parse` per doc), and
-/// `Reused` PROVES zero parses ran — the parse-heavy `fs::build_corpus` is only
-/// reached on the rebuild branch, so a `Reused` result cannot have parsed.
-/// In-process evidence only: `hello` warms the engine but reports the handshake
-/// facts (proto/caps/root/storage), never this trace, over the frozen wire.
+/// Whether `warm_or_build` reused or rebuilt. `Reused` proves zero parses
+/// (`build_corpus` is rebuild-only). In-process evidence; not on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WarmOutcome {
-    /// The corpus content hash was unchanged; the warm engine was reused and
-    /// nothing was parsed.
+    /// Content hash unchanged; warm engine reused, nothing parsed.
     Reused,
-    /// The corpus content hash changed (or the workspace was cold); the engine
-    /// was rebuilt. `docs` is the number of documents parsed.
+    /// Hash changed or cold; rebuilt. `docs` = documents parsed.
     Built { docs: usize },
 }

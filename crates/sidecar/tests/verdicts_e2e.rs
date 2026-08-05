@@ -1,14 +1,5 @@
-//! P6-VERDICTS pack-verbatim gates (impl-taskpack §9): verdicts ride BOTH the dry
-//! and real splice responses, and a corpus-class pack loaded sidecar-mode is refused
-//! LOUD (`daemon_only`). Driven end-to-end through `sidecar::serve` + `sidecar::admit`
-//! — the real composition edge (policy + the real parse pipeline).
-//!
-//! The §11.1 worked verdict (`blurb-required`, span `[20,150]`, `node_rev`
-//! `5a8faa717fbcdb04`) is the CONTRACT law asserted against a REAL exchange: a single
-//! batch splice takes the wsfix `s0` workspace to the `s2` state (the frozen Q3 match +
-//! Q4 append, disjoint targets), so the touched doc's post-batch state IS `s2` and the
-//! finding carries `Goals`'s wire coordinates verbatim. The production path never
-//! hard-codes them — they fall out of `model::build` over the committed bytes.
+//! P6-VERDICTS: verdicts on dry + real splice; corpus-class pack →
+//! `daemon_only` via admit. §11.1 worked verdict asserted on real s0→s2 exchange.
 
 use std::collections::HashMap;
 use std::io::Write as _;

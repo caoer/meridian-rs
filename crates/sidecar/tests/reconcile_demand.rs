@@ -1,23 +1,6 @@
-//! The DEMAND LAW gates — what a line costs, and what it still observes.
-//!
-//! The serve loop used to reconcile before AND after every dispatched line, so
-//! a `cat` of a 1 KiB file paid two full corpus folds for a ring it never
-//! reads. `sidecar::watch::observes_ring` prices the line instead. These gates
-//! prove BOTH halves, because only one of them is easy:
-//!
-//! - **The budget is asserted as a COUNT** (`fs::fold_count`), never a
-//!   stopwatch. A timing test proves a machine was fast once; a fold that
-//!   creeps back into the read path would still pass it on a small fixture.
-//! - **Freshness is unchanged**, arm by arm: every ring reader still reconciles
-//!   immediately before reading the ring, a live subscription still receives
-//!   its Delta on a `cat` line, and the write path still folds fresh — its
-//!   `if_root` guard refuses a stale root that no reconcile ever looked at.
-//!
-//! The one tense that DOES move is pinned here as data, not left to drift: the
-//! epoch baseline is primed at the first ring observation rather than the first
-//! line, so a `diff` anchored on a root learned from a ring-blind op before
-//! that point answers `root_unknown` → resync (the §7.1 late law's existing
-//! category, degrade to re-derive, never to wrong data).
+//! Demand-law gates: budget as fold COUNT (not timing); freshness unchanged
+//! for ring readers/subs/writes. Baseline primes at first ring observation —
+//! `diff` on a root from a prior ring-blind op may `root_unknown` (§7.1).
 
 use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Write as _};
@@ -61,10 +44,7 @@ fn with_node_rev(frame: &str, root: &fs::WorkspaceRoot) -> String {
     v.to_string()
 }
 
-/// `fs::fold_count` is process-global, so EVERY test in this file takes this
-/// guard — the counting gates measure differences, and a freshness gate folding
-/// on another thread lands inside that difference. One process per
-/// integration-test file, so the guard covers everything that can race here.
+/// Process-global fold counter — serialize all tests in this file.
 static COUNTER: Mutex<()> = Mutex::new(());
 
 fn counter_guard() -> MutexGuard<'static, ()> {

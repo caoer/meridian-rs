@@ -1,11 +1,7 @@
-//! Contract-rev negotiation gate (docs/wire-contract-v3-amendment.md), through
-//! the LIVE serve loop. Two sessions, one hard rule: a v2 session emits `root`
-//! and never `fingerprint`; a v3 session emits `fingerprint` and never `root`,
-//! in every message class that carried it. No dual-emit within one rev.
-//!
-//! The frozen v2 goldens live in `dispatch_v2.rs` and `crates/wire/tests/
-//! contract_v2.rs` — this file proves v2 is byte-identical to them AND that v3
-//! is the fingerprint re-shaping, negotiated per session.
+//! Contract-rev negotiation (docs/wire-contract-v3-amendment.md) via live serve.
+//! v2 session: `root`, never `fingerprint`. v3 session: `fingerprint`, never
+//! `root`. No dual-emit within one rev. Also pins U7 meta, U2 extract facts,
+//! and frozen v2 extract key-set.
 
 use serde_json::{Value, json};
 use std::io::Write as _;
@@ -45,9 +41,7 @@ fn serve_raw(root: &fs::WorkspaceRoot, input: &str) -> String {
     String::from_utf8(out).expect("frames are UTF-8")
 }
 
-/// One serve session, `input` lines in, parsed frames out (order preserved) —
-/// the negotiated rev is per-session, so a hello and its follow-ups must ride
-/// ONE call.
+/// One serve session (rev is per-session — hello + follow-ups in one call).
 fn serve(root: &fs::WorkspaceRoot, input: &str) -> Vec<Value> {
     serve_raw(root, input)
         .lines()
@@ -78,12 +72,10 @@ fn frame_keys(v: &Value) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// v2 session (no `contract`): root present, fingerprint NEVER, byte-identical
+// v2 session (no `contract`): root present, fingerprint never
 // ---------------------------------------------------------------------------
 
-/// A v2 session (contract absent) is the frozen contract, unchanged: hello,
-/// toc and root all carry `root` and no `fingerprint`/`contract` key — the raw
-/// bytes match the pre-change goldens.
+/// v2 session = frozen contract: `root`, no `fingerprint`/`contract`.
 #[test]
 fn v2_session_emits_root_never_fingerprint() {
     let (_d, root) = s0();
@@ -126,17 +118,14 @@ fn raw_input_v2() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// v3 session (contract:"v3"): fingerprint present, root NEVER, every class
+// v3 session (contract:"v3"): fingerprint present, root never
 // ---------------------------------------------------------------------------
 
-/// A v3 session re-shapes every fingerprint-bearing message: hello (body key +
-/// caps + echoed `contract`), toc, the renamed `fingerprint` op, and a dry
-/// splice's before/after — none of them spell `root`.
+/// v3 re-shapes fingerprint-bearing messages; none spell `root`.
 #[test]
 fn v3_session_emits_fingerprint_never_root() {
     let (_d, root) = s0();
-    // U10: a dry run refuses exactly where the real write does, so the rehearsal
-    // carries the section's fingerprint too — read it from the `toc` first.
+    // U10: dry needs the section fingerprint too — from toc.
     let q3_rev = toc_node_rev(&root, "Q3");
     let input = format!(
         "{{\"id\":1,\"op\":\"hello\",\"proto\":1,\"contract\":\"v3\"}}\n\
@@ -155,7 +144,7 @@ fn v3_session_emits_fingerprint_never_root() {
     );
     let frames = serve(&root, input);
 
-    // hello: body key renamed, caps re-spelled, contract echoed
+    // hello: renamed key, re-spelled caps, echoed contract
     let hello = &frames[0];
     assert_eq!(hello["body"]["fingerprint"], json!(R0));
     assert_eq!(hello["body"]["contract"], json!("v3"));
@@ -172,22 +161,17 @@ fn v3_session_emits_fingerprint_never_root() {
     assert!(!caps.contains(&"root"));
     assert!(!caps.contains(&"splice.if_root"));
     assert!(!caps.contains(&"links.require_root"));
-    // S3 U1 (R23): the v3-era splice amendments are advertised as dotted
-    // `op.field` caps. A v3 session HONOURS `pin`, so it says so — the frozen
-    // v2 caps golden above must never gain it (a v2 session refuses `pin`).
+    // v3 advertises splice.pin / plan_edits; frozen v2 caps must not.
     assert!(
         caps.contains(&"splice.pin"),
         "a v3 session honours `pin`, so its caps advertise `splice.pin`: {caps:?}"
     );
     assert!(caps.contains(&"splice.plan_edits"));
 
-    // toc: the ambient key is fingerprint
     assert_eq!(frames[1]["body"]["fingerprint"], json!(R0));
     assert!(frames[1]["body"].as_object().unwrap().get("root").is_none());
 
-    // the renamed op returns the fingerprint body (plus the U7 in-band timing
-    // block — nondeterministic value, so it is asserted by shape and peeled
-    // before the exact comparison)
+    // Renamed op + U7 meta (shape only; peel before exact compare).
     let mut cursor_frame = frames[2].clone();
     let meta = cursor_frame
         .as_object_mut()
@@ -200,7 +184,7 @@ fn v3_session_emits_fingerprint_never_root() {
         json!({"id":3,"ok":true,"body":{"fingerprint":R0,"seq":0}})
     );
 
-    // dry splice: before/after re-spelled, after literally null
+    // dry splice: before/after re-spelled; after null
     let splice = &frames[3]["body"];
     assert_eq!(splice["fingerprint_before"], json!(R0));
     assert!(
@@ -214,9 +198,7 @@ fn v3_session_emits_fingerprint_never_root() {
     assert!(splice.as_object().unwrap().get("root_after").is_none());
 }
 
-/// v3 links: the §10.1 triple re-spelled (`as_of_fingerprint`/`live_fingerprint`),
-/// and the `require_fingerprint` knob accepted on input — the corpus map keys
-/// beneath are NEVER re-keyed.
+/// v3 links: §10.1 triple re-spelled; map keys never re-keyed.
 #[test]
 fn v3_links_triple_and_require_knob() {
     let (_d, root) = s0();
@@ -233,9 +215,7 @@ fn v3_links_triple_and_require_knob() {
     assert_eq!(frames[1]["ok"], json!(true));
 }
 
-/// v3 error codes follow the vocabulary: a failed `if_fingerprint` world guard
-/// is `fingerprint_mismatch` (resync), and a diff over an unknown range is
-/// `fingerprint_unknown` — the recovery class is unchanged, only the spelling.
+/// v3 error codes re-spell the root family; recovery class unchanged.
 #[test]
 fn v3_error_codes_respell_root_family() {
     let (_d, root) = s0();
@@ -266,8 +246,7 @@ fn v3_error_codes_respell_root_family() {
 // Unknown rev: loud typed error, never a silent fallback
 // ---------------------------------------------------------------------------
 
-/// An unknown declared rev is refused LOUD at hello — a `bad_request` (fix),
-/// never a silent downgrade to v2.
+/// Unknown contract rev → `bad_request` (fix), never silent v2 fallback.
 #[test]
 fn unknown_contract_rev_is_typed_error() {
     let (_d, root) = s0();
@@ -292,10 +271,7 @@ fn unknown_contract_rev_is_typed_error() {
 // U7 in-band timing: v3 dispatch frames carry meta.duration_us, v2 never
 // ---------------------------------------------------------------------------
 
-/// A v3 session's dispatched frames — success AND refusal alike — carry the
-/// in-band timing block `meta: {duration_us}` (integer µs, the sidecar
-/// measure point is `arms::dispatch`). The body/error shape is untouched:
-/// meta is a top-level sibling.
+/// v3 dispatch frames (ok and error) carry top-level `meta.duration_us`.
 #[test]
 fn v3_dispatch_frames_carry_meta_duration_us() {
     let (_d, root) = s0();
@@ -332,14 +308,8 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
 // U2 addressing facts: v3 extract enriches headings, v2 never
 // ---------------------------------------------------------------------------
 
-/// A v3 session's `extract` carries the host-face addressing facts on every
-/// heading node — dewey `n` and subtree `words` — the facts ccc-statusd
-/// re-derived host-side (U2). Non-heading nodes carry none.
-///
-/// **U14 removed `hpath_text` from this enrichment** (ZT decision 14: no string
-/// address forms on machine surfaces). The address is asserted here in the form
-/// the node has always carried it — `hpath`, as SEGMENTS — which is the
-/// spelling that round-trips into `put`.
+/// v3 extract: headings carry `n`/`words`/`hpath` (segments); no `hpath_text`
+/// (U14: no string address forms on machine surfaces). Non-headings carry none.
 #[test]
 fn v3_extract_enriches_heading_nodes() {
     let (_d, root) = s0();
@@ -371,7 +341,7 @@ fn v3_extract_enriches_heading_nodes() {
         ],
         "the address is the SEGMENT array (U14), never a joined string"
     );
-    // U14 tripwire: the joined address must not come back on this face.
+    // U14: no joined address on this face.
     for h in &headings {
         assert!(
             h.get("hpath_text").is_none(),
@@ -380,7 +350,6 @@ fn v3_extract_enriches_heading_nodes() {
              it needs a ruling, not a field: {h}"
         );
     }
-    // non-heading nodes never carry the addressing keys
     for n in nodes.iter().filter(|n| n["kind"] != json!("heading")) {
         for key in ["n", "words"] {
             assert!(
@@ -391,11 +360,7 @@ fn v3_extract_enriches_heading_nodes() {
     }
 }
 
-/// D-Actor/B (review C4): the daemon-derived `actor` RIDES the composed
-/// read request — decode accepts it (same §9 law as splice's actor slot)
-/// and the op serves normally. M1 mints no read receipt; the test pins that
-/// the wire already carries the provenance stage-2 read-mint consumes, so
-/// receipts land additively, never as an op re-shape.
+/// Composed read accepts `actor` (§9); serves normally (no receipt mint yet).
 #[test]
 fn v3_read_carries_the_derived_actor() {
     let (_d, root) = s0();
@@ -415,10 +380,7 @@ fn v3_read_carries_the_derived_actor() {
     );
 }
 
-/// A v2 session's `extract` is the frozen shape: ZERO addressing keys anywhere
-/// in the frame. `hpath_text` stays in this list although U14 deleted the field
-/// — the assert is about what a v2 SESSION may receive, so it must keep failing
-/// if a future unit reintroduces the key under any owner.
+/// v2 extract: zero addressing keys (list includes retired `hpath_text`).
 #[test]
 fn v2_extract_never_carries_addressing_keys() {
     let (_d, root) = s0();
@@ -435,30 +397,9 @@ fn v2_extract_never_carries_addressing_keys() {
     }
 }
 
-/// **The KEY-SET detector, cloned from U11's
-/// `a_frozen_v2_session_never_grows_a_field_from_the_ladder`** (Leader
-/// all-hands #1, 2026-08-03).
-///
-/// `Option` + `skip_serializing_if` is NOT a version gate: it skips on a `None`
-/// VALUE, never on a v2 SESSION. `pf_frozen_sweep` pins worked VALUES — spans,
-/// revs, roots — so a v3-only FIELD in a v2 envelope moves no value it watches
-/// and it stays green and blind. Only an EXACT KEY SET fails on a new key.
-///
-/// U14's own surface is v3-only and unreachable from v2 — established, not
-/// assumed:
-///
-/// - `ReadRow` / `ReadSectionOut` ride `ResponseBody::Read` alone, and `read`
-///   answers `unknown_op` on a v2 session at BOTH hosts (`sidecar::arms` gates
-///   on `!v3`; `registry::server` lands `Op::Read` in the `unknown_op` arm),
-///   with `read` absent from the frozen v2 caps.
-/// - `PinFact` rides a splice response, and `pin` is in `SPLICE_V3_FIELDS`
-///   only — a v2 splice carrying it is refused at `check_fields`, so no v2
-///   session can cause one to be minted.
-/// - `hpath_text` was REMOVED, and a removal cannot grow a v2 frame.
-///
-/// This pins the reachable neighbour anyway, which is the point of a detector:
-/// the v2 `extract` node key set, exactly. It is the frozen §5.2 node shape,
-/// and any key a later unit adds to `wire::Node` lands here first.
+/// Frozen v2 extract node key set — exact allow-list (not subset). Catches
+/// v3-additive fields on a v2 session; `skip_serializing_if` is not a version
+/// gate.
 #[test]
 fn a_frozen_v2_extract_node_never_grows_a_field() {
     let (_d, root) = s0();
@@ -475,10 +416,7 @@ fn a_frozen_v2_extract_node_never_grows_a_field() {
             .map(String::as_str)
             .collect();
         got.sort_unstable();
-        // The frozen v2 §5.2 node: the always-present trio, plus the
-        // conditional keys the frozen contract itself defines. Nothing else
-        // may appear on a v2 session — not `n`, not `words`, not any
-        // v3-additive field a future unit mints.
+        // Frozen v2 §5.2 node keys only.
         let allowed = [
             "hpath",
             "info",
@@ -499,8 +437,7 @@ fn a_frozen_v2_extract_node_never_grows_a_field() {
     }
 }
 
-/// A v2 session NEVER emits a `meta` key — the frozen contract is
-/// byte-identical, and timing is a v3-only additive slot.
+/// v2 session never emits `meta` / `duration_us`.
 #[test]
 fn v2_session_never_emits_meta() {
     let (_d, root) = s0();
@@ -520,7 +457,7 @@ fn v2_session_never_emits_meta() {
     );
 }
 
-/// `contract:"v2"` is explicitly the frozen vocabulary — same as absent.
+/// `contract:"v2"` ≡ absent (frozen vocabulary).
 #[test]
 fn explicit_v2_contract_is_the_frozen_vocabulary() {
     let (_d, root) = s0();
@@ -534,8 +471,7 @@ fn explicit_v2_contract_is_the_frozen_vocabulary() {
     );
 }
 
-/// One heading's live `node_rev` from a `toc` frame — the fingerprint U10 makes
-/// every wire-origin content change carry.
+/// Live `node_rev` of a heading from toc (U10 fingerprint for wire writes).
 fn toc_node_rev(root: &fs::WorkspaceRoot, heading: &str) -> String {
     let frames = serve(
         root,

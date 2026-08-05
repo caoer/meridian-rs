@@ -1,7 +1,4 @@
-//! Golden fixtures (0003 § Testing methodology — insta snapshots): a committed
-//! rule + a change event → the EXACT effect descriptor set. The `.snap` files
-//! are the frozen contract; any change to the emitted descriptors is a visible
-//! diff a reviewer must accept.
+//! Golden fixtures: committed rule + event → exact effect set (insta snapshots).
 
 mod support;
 

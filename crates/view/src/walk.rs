@@ -1,35 +1,21 @@
-//! U2.3 — the walk plane: the context-assembly listing (d2 §2.4 / §3).
+//! Walk plane — context-assembly listing over the declared pin graph
+//! (d2 §2.4 / §3). **Per query, never stored.**
 //!
-//! The walk computes — **per query, never stored** — the reachability listing
-//! over the declared pin graph: every edge [`crate::read_face::page_lock_items`]
-//! parses (the engine's own `meridian-lock` block — the legacy `^inputs`
-//! form-1/form-2 readers were retired with the vocabulary, R1.3, and
-//! the engine's own `meridian-lock` block). One traversal, two directions:
+//! Edges from [`crate::read_face::page_lock_items`] (`meridian-lock` only).
+//! - **[`Direction::Up`]** — ancestors (what the root draws from).
+//! - **[`Direction::Down`]** — descendants / blast radius (`--depth 1` = direct).
 //!
-//! - **[`Direction::Up`]** — ancestors: what the root draws from, transitively —
-//!   d2 §2.4's context-assembly walk (the retired "pack" noun avoided).
-//! - **[`Direction::Down`]** — descendants: who pins the root — the dependents
-//!   renderer and dry-run blast radius (`--depth 1` = the direct dependents).
-//!
-//! Each reached edge is one [`WalkEntry`] `{selector, rev, color, depth}`, its
-//! color computed by [`model::selector::classify_pin`] (U2.2). Every report
-//! cites the doc revs it read ([`WalkReport::revs_read`]) — the honesty law
-//! (§2.4: every answer cites the doc revs it read; a walk output is itself a
-//! pinnable fact). In-snapshot cycles are errors ([`WalkError::Cycle`]).
+//! Each entry is `{selector, rev, color, depth}` via
+//! [`model::selector::classify_pin`]. Report cites doc revs read
+//! ([`WalkReport::revs_read`]; §2.4 honesty). In-snapshot cycles are errors.
 //!
 //! # Grain
-//! U2.3 traverses at PAGE grain: the root is a page (a `#fragment` in the arg is
-//! stripped), and a hop follows a page's whole pin set. Each entry still
-//! carries the full SELECTOR of the reached edge (`page` or `page#sel`), so the
-//! listing is selector-accurate even though the traversal key is the page.
-//! Selector-grain traversal is deferred to the wire leg (U3.1).
+//! Page grain: root is a page (`#fragment` stripped); hop follows whole pin set.
+//! Entries still carry full selector. Selector-grain deferred to wire.
 //!
 //! # Never stored
-//! [`walk`] is a pure function of a SHARED-borrowed corpus (`&BTreeMap`) with no
-//! writer, no `Connection`, and no filesystem handle in its signature — it
-//! cannot persist anything by construction, and it is idempotent (no
-//! memoization). The engine mints no receipt and writes no row for a walk
-//! (§2.4 / §3: "computed per query, never stored; no verb memoizes a walk").
+//! Pure function of shared-borrowed corpus — no writer, Connection, or fs
+//! handle; cannot persist by construction.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -38,17 +24,17 @@ use model::selector::{Color, GreyReason, RedReason, Selector, classify_pin};
 
 use crate::read_face::{LockItem, corpus_index, page_lock_items_in_rooted_corpus};
 
-/// Which way the walk runs over the lock pin graph.
+/// Walk direction over the lock pin graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// Ancestors — what the root draws from (the context-assembly walk).
+    /// Ancestors — what the root draws from.
     Up,
-    /// Descendants — who pins the root (dependents / blast radius).
+    /// Descendants — who pins the root (blast radius).
     Down,
 }
 
 impl Direction {
-    /// The stable lowercase label (`up` / `down`) for output.
+    /// Stable lowercase label (`up` / `down`).
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -58,66 +44,54 @@ impl Direction {
     }
 }
 
-/// One entry in the context-assembly listing (d2 §2.4 / §3): a reached edge,
-/// depth-tagged, color-computed, never stored.
+/// One reached edge: depth-tagged, color-computed, never stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkEntry {
-    /// The canonical selector of the reached end — the TARGET drawn from for
-    /// [`Direction::Up`], the DEPENDENT that pins the root for [`Direction::Down`]
-    /// (`page` for a page-root ref, else `page#sel`).
+    /// Canonical selector of the reached end (target for Up, dependent for Down).
     pub selector: String,
-    /// The edge's pinned rev — `None` for a declared-only (grey) item.
+    /// Pinned rev (`None` = declared-only / grey).
     pub rev: Option<String>,
-    /// The edge's computed color (green / red / grey, each with its reason).
+    /// Computed color with reason.
     pub color: Color,
-    /// Hops from the root (a direct edge is depth `1`).
+    /// Hops from root (direct edge = 1).
     pub depth: u32,
 }
 
-/// One doc rev the walk read — the honesty citation (§2.4).
+/// Doc rev the walk read — §2.4 honesty citation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevCitation {
-    /// The page path.
     pub path: String,
-    /// The page's document-root rev at read time.
+    /// Document-root rev at read time.
     pub doc_rev: String,
 }
 
-/// A completed walk — the listing plus its rev citations (§2.4). Owned by the
-/// caller; the engine stores none of it.
+/// Completed walk — listing + rev citations. Caller-owned; engine stores none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalkReport {
-    /// The direction walked.
     pub direction: Direction,
-    /// The root page the walk started from.
     pub root: String,
-    /// The depth bound applied (`None` = unbounded); no entry exceeds it.
+    /// Depth bound (`None` = unbounded); no entry exceeds it.
     pub depth_bound: Option<u32>,
-    /// The listing — BFS order, ascending depth then discovery order.
+    /// BFS order: ascending depth then discovery.
     pub entries: Vec<WalkEntry>,
-    /// Every doc rev the listing rests on, path order (§2.4 honesty law).
+    /// Doc revs the listing rests on, path order (§2.4).
     pub revs_read: Vec<RevCitation>,
 }
 
-/// A walk that cannot answer.
+/// Walk that cannot answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalkError {
-    /// The root page is not in the corpus.
+    /// Root page not in corpus.
     RootNotFound(String),
-    /// An in-snapshot cycle reachable from the root in the walk direction
-    /// (§2.4). Carries the page loop (`start … back-to-start`) for the refusal.
+    /// In-snapshot cycle reachable from root (§2.4). Page loop for the refusal.
     Cycle(Vec<String>),
 }
 
-/// Walk the lock pin graph from `root` in `direction`, bounded to
-/// `depth_bound` hops (`None` = unbounded). Computed per query, never stored.
-///
-/// `root` is a page path; a trailing `#fragment` is stripped (U2.3 page grain).
+/// Walk lock pin graph from `root` in `direction`, optional `depth_bound`.
+/// Per query, never stored. `#fragment` stripped (page grain).
 ///
 /// # Errors
-/// [`WalkError::RootNotFound`] when `root`'s page is not in `docs`;
-/// [`WalkError::Cycle`] when the pin graph has a cycle reachable from `root` in
-/// `direction` (§2.4: in-snapshot cycles are errors).
+/// [`WalkError::RootNotFound`] / [`WalkError::Cycle`].
 pub fn walk(
     docs: &BTreeMap<String, Document>,
     root: &str,
@@ -133,12 +107,8 @@ pub fn walk(
     )
 }
 
-/// [`walk`] against a ROOT-KEYED corpus and a mount table — the cross-root form.
-///
-/// The walk root itself is always an AMBIENT page (it is a workspace-relative
-/// path the user names); what becomes root-aware is every EDGE it reaches. An
-/// edge into a mounted root is colored against that root's documents, and an
-/// edge into an unmounted one renders grey `unmounted` with the missing name.
+/// [`walk`] against root-keyed corpus + mount table. Root is ambient; edges
+/// are root-aware (mounted root coloured against that root; unmounted → grey).
 ///
 /// # Errors
 /// As [`walk`].
@@ -155,32 +125,22 @@ pub fn walk_rooted(
         return Err(WalkError::RootNotFound(root_page));
     }
 
-    // Parse every page's pins ONCE (the shared parser), so both directions
-    // read the SAME edge facts. `forward[src] = src's declared edges`.
+    // Shared parser once — both directions read the same edge facts.
     let forward = forward_edges(corpus, mounts);
 
-    // Cycle check on the page-level adjacency in the walk direction (§2.4),
-    // before emitting — an in-snapshot cycle is an error, not a silent stop.
+    // In-snapshot cycle is an error, not a silent stop (§2.4).
     if let Some(cycle) = find_cycle(&page_adjacency(&forward, docs, direction), &root_page) {
         return Err(WalkError::Cycle(cycle));
     }
 
     let mut entries = Vec::new();
-    // The listing's rev citations: the root always, plus every page the listing
-    // names and every live target a color rested on (§2.4).
+    // Citations: root + every named page + every live colour target (§2.4).
     let mut read: BTreeSet<String> = BTreeSet::new();
     read.insert(root_page.clone());
 
-    // BFS, page-keyed traversal; entries deduped by the ROW they would print —
-    // `(selector, rev, color_label)` — at min depth (BFS visits shallower first,
-    // so the first sighting is the min depth).
-    //
-    // The key is the whole row, never the selector alone: two pins on ONE ref
-    // (one live, one drifted) share a canonical selector and carry DIFFERENT
-    // verdicts, and a selector-keyed dedupe dropped the second one — so a
-    // measured red vanished behind a green and the listing exited 0 while
-    // `mrd status` rolled the same corpus up red. A dedupe may collapse rows
-    // that say the same thing; it may never collapse a verdict.
+    // BFS, page-keyed; dedupe by whole row `(selector, rev, color_label)` at min
+    // depth. Selector alone would collapse two pins on one ref with different
+    // verdicts (measured red vanishing behind green).
     let mut queue: VecDeque<(String, u32)> = VecDeque::new();
     let mut enqueued: BTreeSet<String> = BTreeSet::new();
     let mut emitted: BTreeSet<(String, Option<String>, String)> = BTreeSet::new();
@@ -190,7 +150,7 @@ pub fn walk_rooted(
     while let Some((page, depth)) = queue.pop_front() {
         let next_depth = depth + 1;
         if depth_bound.is_some_and(|bound| next_depth > bound) {
-            continue; // the bound is reached — do not expand this page further
+            continue;
         }
         for step in steps_from(corpus, &forward, &page, direction) {
             read.insert(step.color_target.clone());
@@ -233,30 +193,19 @@ pub fn walk_rooted(
     })
 }
 
-/// One `meridian-lock` row with its computed color — the row shape a status
-/// surface rolls up, and the surface a link decorator reads a pin's color from.
+/// One `meridian-lock` row with its computed color (status roll-up / decorator).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinColor {
-    /// The page whose `meridian-lock` block declares this row.
     pub src_path: String,
-    /// The pin's declared ref, verbatim — EMPTY on a lock-refusal row (which
-    /// declares no ref; `color` then carries the refusal).
+    /// Declared ref verbatim; empty on lock-refusal.
     pub declared_ref: String,
-    /// The pinned `fp1.…` CID-token — `None` on a lock-refusal row.
+    /// Pinned `fp1.…` token; `None` on lock-refusal.
     pub fingerprint: Option<String>,
-    /// The computed color, reason-carrying ([`color_label`] renders it).
     pub color: Color,
 }
 
-/// Every `meridian-lock` (form-3) row in `docs` with its color — corpus order,
-/// then block order. THE surface for a whole-corpus pin roll-up (`mrd status`)
-/// and for per-pin decoration; it colors through the same [`edge_color`] the
-/// walk uses, so no second computer can disagree with a walk listing.
-///
-/// One form only: the legacy `^inputs` readers were retired with the
-/// vocabulary (R1.3), so there is no second plane to exclude. A page whose lock
-/// REFUSED contributes its one grey `lock-refused` row — a corrupt lock is
-/// visible here, never silently absent.
+/// Every `meridian-lock` row with colour — same [`edge_color`] as walk. Refused
+/// lock contributes one grey `lock-refused` (never silent absence).
 #[must_use]
 pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
     lock_pin_colors_rooted(
@@ -265,26 +214,9 @@ pub fn lock_pin_colors(docs: &BTreeMap<String, Document>) -> Vec<PinColor> {
     )
 }
 
-/// [`lock_pin_colors`] against a ROOT-KEYED corpus and the REAL mount table —
-/// **the computer**, of which [`lock_pin_colors`] is the ambient-only case.
-///
-/// # Why the mount table had to become a parameter (F6)
-/// Resolution is a mount lookup (U11), and this roll-up resolved every row
-/// against `MountSet::default()` — an EMPTY table — while `mrd walk` one call
-/// away resolved the same rows against the loaded one. The consequence was not
-/// disagreement, which a comparison would have caught: it was
-/// **INSENSITIVITY**. On a BOUND root a cross-root pin answered
-/// `grey(unmounted)` when its target MATCHED, when it had DRIFTED, and when it
-/// was RESTORED — three states, one answer, from the plane sitting under the
-/// pre-commit fence. *An axis whose instrument cannot vary on that axis is
-/// unevidenced (S3-R72), and a fence reading it inherits the blindness.*
-///
-/// The one-computer structure is unchanged and is why this was one edit: there
-/// is still exactly one place a pin colour is computed, and `check`, `status`
-/// and `walk` still agree BY CONSTRUCTION. **What was wrong was its INPUT, not
-/// its shape** — the two blind arguments were the item resolution (an empty
-/// mount table) and the target lookup (an ambient-only corpus), and both are
-/// supplied by the caller now.
+/// [`lock_pin_colors`] with real mount table — **the** colour computer.
+/// Caller supplies mounts + rooted corpus so cross-root pins are not
+/// insensitively greyed as `unmounted` (F6).
 #[must_use]
 pub fn lock_pin_colors_rooted(
     corpus: &model::RootedCorpus<'_>,
@@ -296,16 +228,8 @@ pub fn lock_pin_colors_rooted(
     for (path, doc) in docs {
         for item in page_lock_items_in_rooted_corpus(path, doc, &index, corpus, mounts) {
             if !item.is_colourable() {
-                // Unreachable under R4 — every pin row carries a fingerprint and
-                // every refusal carries its reason. Kept as a fail-CLOSED guard:
-                // a row that somehow carried neither is uncolourable, and
-                // skipping it is the honest answer, not colouring it green.
-                //
-                // The predicate is [`LockItem::is_colourable`] and NOT a local
-                // spelling of it: the board projection reads the SAME one to
-                // decide which rows get a verdict, and its residue disclosure
-                // counts exactly the rows skipped here. Two copies of this
-                // condition could drift with nothing failing.
+                // Fail-closed: uncolourable is skip, never green. Same predicate
+                // as board projection so residue counts exactly these rows.
                 continue;
             }
             out.push(PinColor {
@@ -319,45 +243,19 @@ pub fn lock_pin_colors_rooted(
     out
 }
 
-/// One RETRIEVAL-plane row of a page's `meridian-lock` block — a blob sha the
-/// lock references, with the page and object that reference it.
-///
-/// The retrieval plane (#8 §2, git's world) is whole-file blob shas, never
-/// fingerprints. It answers a different question from the CLAIM plane
-/// [`PinColor`] carries — not "did the content drift" but "does this blob still
-/// exist anywhere durable" — so it is projected separately and carries no color.
-///
-/// **R4 retired the shared `objects:` table**; the blob sha now rides the pin row
-/// as its `hash`, so this projection reads the same `pins:` plane the colors read
-/// and no page can carry a blob its pins do not account for.
+/// Retrieval-plane row: blob sha a lock references (git world, no colour).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockObject {
-    /// The page whose `meridian-lock` block declares this object.
     pub src_path: String,
-    /// The pin's `object` — the wiki-link inner text, verbatim (what the blob is
-    /// FOR). The target's vault path WITHOUT `.md`.
+    /// Pin `object` (path without `.md`).
     pub key: String,
-    /// The blob sha, verbatim — an object id in git's world, not the engine's.
+    /// Blob sha (git object id).
     pub blob_sha: String,
 }
 
-/// Every blob a `meridian-lock` block in `docs` pins — corpus order, then pin
-/// order. THE surface for a whole-corpus reachability gauge (`mrd status`'s
-/// vibe-debt meter), which asks git whether each of these blobs is reachable
-/// from a commit.
-///
-/// [`lock::find`] is the parser, exactly as it is for the colors — one owner for
-/// the lock grammar, so a page's blobs and its pins can never be read by two
-/// disagreeing readers. A page whose lock REFUSED contributes NOTHING here: its
-/// plane is unreadable, and that damage is already named by the grey
-/// `lock-refused` row [`lock_pin_colors`] projects for the same page.
-///
-/// # One blob, one row (R4)
-/// R4 moved the sha onto the pin row, so the whole-file lock — `path: []` and
-/// `properties: []` on one object — pins the SAME blob twice. Deduped by
-/// `(src_path, object, hash)`: two rows naming one blob would make the vibe-debt
-/// meter count one debt as two, and `check::layer0` would report one orphan as
-/// two findings.
+/// Every blob pinned by a `meridian-lock` in `docs`. Same parser as colours.
+/// Refused lock contributes nothing (damage named by grey lock-refused).
+/// Deduped by `(src_path, object, hash)` — whole-file lock pins same blob twice.
 #[must_use]
 pub fn lock_objects(docs: &BTreeMap<String, Document>) -> Vec<LockObject> {
     let mut out = Vec::new();
@@ -380,8 +278,7 @@ pub fn lock_objects(docs: &BTreeMap<String, Document>) -> Vec<LockObject> {
     out
 }
 
-/// Whether the listing carries any red edge — the finding signal (a broken pin
-/// in the context, or a dependent whose pin no longer resolves).
+/// Whether the listing carries any red edge (finding signal).
 #[must_use]
 pub fn has_red(report: &WalkReport) -> bool {
     report
@@ -390,28 +287,14 @@ pub fn has_red(report: &WalkReport) -> bool {
         .any(|e| matches!(e.color, Color::Red(_)))
 }
 
-/// The tone of a color (`green` / `grey` / `red`) — the stable output word.
-///
-/// Re-exported from [`model::selector::color_tone`], where it sits beside the
-/// `Color` it names: stage-2 S10's claim-link decorator needs the same word on
-/// a crate that cannot depend on this one, and two `match`es over one enum is
-/// how a board and a walk start disagreeing.
+/// Color tone (`green` / `grey` / `red`). Re-exported from model so board and
+/// walk cannot disagree via two matches.
 pub use model::selector::color_tone;
 
-/// The reason word behind a non-green color (`None` for green) — the stable
-/// output reason, shared by the human render and the `--json` shape.
-/// **The full TEACHING REFUSAL for a color that has one** — `None` when the
-/// reason word already says everything.
-///
-/// Re-exported from [`model::selector`] for the SAME reason [`color_tone`] is:
-/// the §4.6 link plane's refusal rows are minted in `wire-serve`, which cannot
-/// depend on this crate, and two `match`es over one enum is how a board and a
-/// walk start disagreeing about one address.
+/// Reason / detail / teaching words — same re-export rationale as [`color_tone`].
 pub use model::selector::{color_detail, color_reason, color_teaching};
 
-/// The full color label (`green`, `red content-drifted`, `grey immutable-root`,
-/// `grey unverifiable-fingerprint (unknown version)`, …) — tone, reason, and the
-/// reason's detail when it carries one. The human-render word.
+/// Full human color label: tone, reason, optional detail.
 #[must_use]
 pub fn color_label(color: &Color) -> String {
     let tone = color_tone(color);
@@ -422,30 +305,17 @@ pub fn color_label(color: &Color) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// internals
-// ---------------------------------------------------------------------------
-
-/// One reachable hop the BFS emits and follows.
+/// One BFS hop.
 struct Step {
-    /// The canonical selector reported in the entry (target for up, dependent
-    /// page for down).
     selector: String,
-    /// The pinned rev of the edge (`None` = declared-only / grey).
     pinned_rev: Option<String>,
-    /// The edge's computed color.
     color: Color,
-    /// The live target whose rev the color rested on (the pinned page).
+    /// Live target the colour rested on.
     color_target: String,
-    /// The page to traverse next in the walk direction.
     next_page: String,
 }
 
-/// Parse every page's declared pin edges once (the shared parser — all three
-/// forms), each edge's `to_path` resolved against the corpus so a form-2
-/// `[[wikilink]]`-by-NAME ref points at a real `node.path` (the U3.4 wikilink
-/// wiring — else the target is unfindable and a native-algo form-2 pin can never
-/// verify green).
+/// Parse every page's pins once (shared parser), `to_path` resolved.
 fn forward_edges(
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
@@ -462,13 +332,7 @@ fn forward_edges(
         .collect()
 }
 
-/// The hops out of `page` in `direction`.
-///
-/// - **Up**: `page`'s own declared edges — each points at a target it draws
-///   from. The entry names the target; the next hop follows the target page.
-/// - **Down**: the reverse — every `(src, edge)` whose edge targets `page`. The
-///   entry names the dependent `src`; the color rests on the pinned target
-///   (`page`); the next hop follows `src`.
+/// Hops out of `page`: Up = own edges; Down = reverse ambient edges only.
 fn steps_from(
     corpus: &model::RootedCorpus<'_>,
     forward: &BTreeMap<String, Vec<LockItem>>,
@@ -484,8 +348,7 @@ fn steps_from(
                 selector: step_selector(page, edge),
                 pinned_rev: edge.pinned_rev.clone(),
                 color: edge_color(corpus, edge),
-                // Root-qualified, so a cross-root target is a leaf and is never
-                // confused with an ambient file of the same path.
+                // Root-qualified so cross-root is a leaf, not ambient same-path.
                 color_target: edge_page(edge),
                 next_page: edge_page(edge),
             })
@@ -494,9 +357,7 @@ fn steps_from(
             let mut steps = Vec::new();
             for (src, edges) in forward {
                 for edge in edges {
-                    // Only an AMBIENT edge reverses into an ambient page: a
-                    // cross-root edge whose in-root path happens to equal an
-                    // ambient path names a different document entirely.
+                    // Ambient-only reverse: cross-root same path is a different doc.
                     if edge.to_root.is_none() && edge.root_refusal.is_none() && edge.to_path == page
                     {
                         steps.push(Step {
@@ -514,40 +375,22 @@ fn steps_from(
     }
 }
 
-/// The listing name of one hop out of `src`: the edge's canonical target
-/// address, or — for a lock-refusal row, which declares no target — the PAGE
-/// whose lock refused, so the entry says WHICH page is unreadable instead of
-/// rendering a blank address. The refusal row's empty `to_path` also keeps it
-/// out of the reverse index and the page adjacency by construction: a refused
-/// lock names no edge, so it is a leaf the walk never traverses.
+/// Listing name of one hop: canonical target, or the page on lock-refusal
+/// (refusal is a leaf — empty `to_path` keeps it out of reverse/adjacency).
 fn step_selector(src: &str, edge: &LockItem) -> String {
     if edge.lock_refusal.is_some() {
         return src.to_string();
     }
-    // An UNMOUNTED edge never resolved, so it is named by the address the page
-    // declared — the only honest name available, and the one the refusal teaches
-    // against.
+    // Unmounted: name by declared address (only honest name).
     if edge.root_refusal.is_some() {
         return edge.declared_ref.clone();
     }
     edge_address(edge)
 }
 
-/// One edge's canonical, ROOT-QUALIFIED address: `root:path[#sel]` for an edge
-/// that resolved into a mounted root, `path[#sel]` for an ambient one.
-///
-/// **The qualification is load-bearing, not cosmetic.** A cross-root target
-/// resolves to a path INSIDE its own root — `notes.md` in the `sessions` root —
-/// and the ambient corpus may hold its own `notes.md`. An unqualified name would
-/// (a) print an address that reads as the ambient file, and (b) let the BFS
-/// traverse into the ambient corpus at that key, which is FINDING 03 reappearing
-/// one layer up: the right verdict on the right bytes, followed by a walk into
-/// the wrong document.
-///
-/// Qualifying makes a cross-root target a LEAF by construction: the ambient
-/// corpus holds no key spelled `root:path`, so `docs.contains_key` is false and
-/// the page is never expanded or reversed into. Walking INTO another root's own
-/// pin graph is a separate capability no Core unit asks for.
+/// Canonical root-qualified address. Qualification is load-bearing: without it
+/// BFS walks ambient same-path (wrong document). Cross-root is a leaf by
+/// construction (`root:path` absent from ambient keys).
 fn edge_address(edge: &LockItem) -> String {
     let canonical = canonical_ref(&edge.to_path, &edge.to_sel);
     match &edge.to_root {
@@ -556,8 +399,7 @@ fn edge_address(edge: &LockItem) -> String {
     }
 }
 
-/// The PAGE an edge points at, root-qualified — [`edge_address`] without the
-/// selector. The BFS traverses on this, so it carries the same leaf property.
+/// Page an edge points at, root-qualified — BFS key; same leaf property.
 fn edge_page(edge: &LockItem) -> String {
     match &edge.to_root {
         Some(root) => format!("{root}:{}", edge.to_path),
@@ -565,51 +407,22 @@ fn edge_page(edge: &LockItem) -> String {
     }
 }
 
-/// Color one edge: parse the target selector, resolve it against the root the
-/// address named, and answer on the FINGERPRINT plane.
+/// Colour one edge on the fingerprint plane.
 ///
-/// Three rows are answered before the fingerprint compare, each because it
-/// declares no verifiable edge at all:
-///
-/// - a **lock-refusal row** ([`LockItem::lock_refusal`]) — the page's whole
-///   `meridian-lock` block is unreadable, so it is grey `lock-refused` with the
-///   refusal carried;
-/// - an **unmounted / unseeable root** ([`LockItem::root_refusal`]) — grey
-///   outranks red (R-3), because nothing drifted; the ledger stopped being able
-///   to measure; and
-/// - a **`meridian-lock` pin** (form-3), which pins a `fp1.…` CID-token
-///   answered by [`model::selector::classify_pin`] over
-///   [`LockItem::fingerprint`], the typed slot.
-///
-/// **The retired foreign-algo short-circuit.** A pin minted under a `hash-algo`
-/// this engine does not compute used to render grey `superseded-algo` ahead of
-/// the `node_rev` compare. R4 removed both: every pin now carries a
-/// self-describing `fp1.…` token, so the FINGERPRINT plane owns that case and
-/// spells it `unverifiable-fingerprint`, NAMING which triple member is unknown.
-/// The subject moved planes; it was not dropped.
+/// Pre-compare arms: lock-refusal → grey; unmounted root → grey (R-3, first);
+/// root absence → red `file-not-found`; else `classify_pin` on fingerprint.
 fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(reason) = &edge.lock_refusal {
         return Color::Grey(GreyReason::LockRefused {
             reason: reason.clone(),
         });
     }
-    // **R-3 — grey OUTRANKS red, and it is checked FIRST.** An address naming an
-    // unmounted root is grey WHATEVER ELSE IS TRUE of the target: a cross-root
-    // pin that was green and whose root is later unmounted becomes grey, never
-    // red. Nothing drifted — the ledger simply stopped being able to measure.
-    //
-    // Ordering matters here rather than being incidental. Every arm below
-    // classifies against a target document, and the target document of an
-    // unmounted root is ABSENT — which classifies as red `selector-unresolved`.
-    // Checking grey second would therefore render exactly the plausible-looking
-    // wrong answer this unit exists to remove.
+    // R-3: grey outranks red — checked FIRST. Unmounted target is ABSENT to
+    // later arms (would mis-classify as red selector-unresolved).
     if let Some(reason) = &edge.root_refusal {
         return Color::Grey(reason.clone());
     }
-    // U21 — the root was REACHED and the file is not in it. This must be read
-    // before the target lookup below, because that lookup finds nothing and
-    // classifies as red `selector-unresolved` — the plausible-looking wrong
-    // cause, asserting that the page resolved when the page is what is absent.
+    // U21: root reached, file absent — before ambient miss → wrong red cause.
     if let Some(root) = &edge.root_absence {
         return Color::Red(RedReason::FileNotFound {
             root: root.clone(),
@@ -617,21 +430,14 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
             selector: (!edge.to_sel.is_empty()).then(|| edge.to_sel.clone()),
         });
     }
-    // The target's bytes come from the root the address RESOLVED INTO — never
-    // the ambient corpus. Reading the ambient one here is FINDING 03's wrong
-    // success wearing a verdict.
+    // Bytes from the resolved root — never ambient (wrong-bytes success).
     let target = match &edge.to_root {
         Some(root) => corpus
             .root(root)
             .and_then(|mounted| mounted.docs().get(&edge.to_path)),
         None => corpus.ambient_docs().get(&edge.to_path),
     };
-    // **STRUCTURE, never the joined string.** R4's selector is an array, and
-    // `Selector::parse` on the `/`-joined display spelling re-splits it — which
-    // turns a heading whose own text contains `/` into two headings naming a
-    // section that does not exist. The structural arm is read whenever the row
-    // carries one; the joined parse survives only for rows that never had an
-    // array to begin with.
+    // Structure, never joined string (heading with `/` must not re-split).
     let selector = match &edge.selector {
         Some(structural) => model_selector(&edge.object, structural),
         None => Selector::parse(&canonical_ref(&edge.to_path, &edge.to_sel)),
@@ -639,64 +445,18 @@ fn edge_color(corpus: &model::RootedCorpus<'_>, edge: &LockItem) -> Color {
     if let Some(token) = &edge.fingerprint {
         return classify_pin(&selector, token, target);
     }
-    // **THE FAIL-CLOSED TAIL.** Arms 1-3 are the whole colour law for a lock
-    // row: a refusal, an unmounted root, or a fingerprint. Reaching here means
-    // the row carried NONE of them — it names no evidence and reports no failure
-    // to read any, so neither plane has a compare that can answer it.
-    //
-    // **GUARDED AT ONE POINT — not impossible.** Every R4 pin row carries a
-    // fingerprint and every refusal carries its reason, which is what makes this
-    // unreachable from live input. That invariant is ONE PARSER RULE with ONE
-    // TEST on it:
-    // `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`
-    // (`crates/lock/src/lib.rs`). One rule, one carrier — a single point of
-    // failure stated as one, so the next reader inherits "guarded at one point"
-    // rather than "cannot happen".
-    //
-    // **DO NOT DELETE THIS ARM AS DEAD CODE.** Its live population is zero
-    // because arms 1 and 3 are jointly exhaustive over the two `LockItem`
-    // producers (`read_face::collect_lock_pins`) — that answers "can a row reach
-    // here TODAY", NOT "is the tail unreachable in principle". Two of
-    // `edge_color`'s three callers (`steps_from`, both directions) do not filter,
-    // so the arm is structurally reachable; and the function must yield a
-    // `Color`, so removing it makes the fall-through green — a fail-OPEN default
-    // on a reachable path, reporting success.
+    // FAIL-CLOSED TAIL. Live population zero under R4 (parser refuses missing
+    // fields) but structurally reachable — callers do not all filter. Deleting
+    // this arm makes fall-through green: fail-OPEN on a reachable path.
+    // Guard: `lock::a_pin_row_missing_a_mandatory_field_refuses_at_parse`.
     Color::Grey(GreyReason::Uncolourable)
 }
 
-/// Translate R4's structural selector into the model's address selector — the
-/// TRANSLATION LAYER `classify_pin` needs, not a change to its signature.
-///
-/// The three arms are R4's own, and each is named in the schema:
-/// - `path: []` — the whole body without frontmatter, which is the document root;
-/// - `path: ["^id"]` — the ANCHOR pin: a `^id` as the SOLE element, block-grain,
-///   never widened to the host section (R4 provenance note 2). A `^` reaching
-///   here in any other position was refused at mint (U8: mixed arrays are
-///   unruled and refused loudly), so the sole-element test is the whole rule;
-/// - `path: [...]` — a heading chain, carried SEGMENT FOR SEGMENT. Nothing is
-///   split and nothing is joined, so a heading containing `/` survives — the
-///   case the array form exists for.
-///
-/// `properties:` has no analogue in the address enum: the frontmatter is not a
-/// body node. It maps to the document root, where its `props1` token meets the
-/// SPAN verifier and is refused loudly as unverifiable rather than being answered
-/// wrongly — the never-conflate-hash-planes law doing its job at read time.
-///
-/// # The transcript arm is why this takes the `object`
-/// `Selector::parse` recognized `session#seq-N` as [`Selector::ImmutableRoot`]
-/// from the FRAGMENT — a class that is *recognized, stored opaque, rendered grey
-/// `immutable-root`, and never resolved* (d2 §2.2). Read structurally without the
-/// object, `path: ["seq-160"]` is indistinguishable from a heading named
-/// `seq-160`, and a transcript pin would classify as an unresolved HEADING —
-/// **grey turning into red**, a false finding on a ref the engine is ruled never
-/// to resolve. The object carries the session id, so the arm needs both halves.
-/// # Why this is PUBLIC (U22)
-/// The lost-pin repair asks the colour question of HISTORICAL bytes rather than
-/// live ones, and it asks it through the same [`model::selector::classify_pin`]
-/// this file's [`edge_color`] calls. That compare takes a `model` selector, so a
-/// second caller needs a lock-row-to-selector projection — and a second COPY of
-/// this one would be a second reading of R4's array grammar, with the transcript
-/// and anchor arms above free to drift apart. One definition, two call sites.
+/// R4 structural selector → model address selector (translation for
+/// `classify_pin`). Arms: `path:[]` → Page; sole `^id` → Block; sole `seq-N` +
+/// object → `ImmutableRoot` (needs object — without it, grey becomes false red);
+/// else Heading segment-for-segment. `properties:` → Page (span verifier
+/// refuses). Public (U22) so historical repair shares one grammar reading.
 #[must_use]
 pub fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
     let lock::Selector::Path(segments) = selector else {
@@ -723,9 +483,8 @@ pub fn model_selector(object: &str, selector: &lock::Selector) -> Selector {
     }
 }
 
-/// The page-level adjacency in the walk direction, for the cycle check — only
-/// corpus-present pages (transcript / unmanaged targets are leaves, never
-/// traversed, so they can never close a cycle).
+/// Page-level adjacency for cycle check — corpus-present pages only (leaves
+/// never close a cycle).
 fn page_adjacency(
     forward: &BTreeMap<String, Vec<LockItem>>,
     docs: &BTreeMap<String, Document>,
@@ -752,8 +511,7 @@ fn page_adjacency(
     adj
 }
 
-/// Find a cycle reachable from `start` in `adj` (DFS with a gray on-stack set);
-/// returns the page loop (`node … back-to-node`) or `None` for a DAG.
+/// Cycle reachable from `start` (DFS gray set) → page loop, or `None` for DAG.
 fn find_cycle(adj: &BTreeMap<String, Vec<String>>, start: &str) -> Option<Vec<String>> {
     let mut gray: BTreeSet<String> = BTreeSet::new();
     let mut black: BTreeSet<String> = BTreeSet::new();
@@ -772,7 +530,7 @@ fn dfs_cycle(
     path.push(node.to_string());
     for next in adj.get(node).into_iter().flatten() {
         if gray.contains(next) {
-            // Back-edge to a node on the current stack — close the loop.
+            // Back-edge on stack — close the loop.
             let from = path.iter().position(|p| p == next).unwrap_or(0);
             let mut cycle = path[from..].to_vec();
             cycle.push(next.clone());
@@ -790,13 +548,12 @@ fn dfs_cycle(
     None
 }
 
-/// The page part of a selector (`a.md#Heading` → `a.md`, `a.md` → `a.md`).
+/// Page part of a selector (`a.md#Heading` → `a.md`).
 fn page_of(selector: &str) -> &str {
     selector.split_once('#').map_or(selector, |(page, _)| page)
 }
 
-/// Canonical `page#sel` (or bare `page` for the doc root) — the full ref
-/// [`Selector::parse`] classifies and the entry reports.
+/// Canonical `page#sel` (or bare `page` for doc root).
 fn canonical_ref(to_path: &str, to_sel: &str) -> String {
     if to_sel.is_empty() {
         to_path.to_string()
@@ -813,15 +570,7 @@ mod tests {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// The three-doc chain fixture `a.md -> b.md -> c.md`, every pin GREEN, in
-    /// R4 `meridian-lock` form: build `c`, pin its LIVE fingerprint token in
-    /// `b`'s lock block, build `b`, pin `b`'s live token in `a`, build `a`.
-    /// Returns the corpus + the three pinned TOKENS so a test asserts byte-exact
-    /// entries.
-    ///
-    /// Pre-R4 this chain was two `^inputs` blocks pinning `node_rev`s. The rev
-    /// plane is retired with the vocabulary (R1.3), so the chain now greens
-    /// through the FINGERPRINT compare — the same law, the surviving carrier.
+    /// `a.md → b.md → c.md` chain, every pin green via live fingerprint tokens.
     fn three_doc_chain() -> (BTreeMap<String, Document>, String, String, String) {
         let c_raw = "# C\n\nleaf body\n".to_string();
         let c_token = live_token(&c_raw);
@@ -839,8 +588,7 @@ mod tests {
         (docs, a_token, b_token, c_token)
     }
 
-    /// One whole-body pin on `object` at `token` — `path: []` is the body
-    /// without frontmatter, which is the document root the token was minted over.
+    /// Whole-body pin on `object` at `token` (`path: []` = document root).
     fn chain_block(object: &str, token: &str) -> String {
         let mut l = lock::Lock::new();
         l.upsert_pin(lock::PinEntry::new(
@@ -852,9 +600,7 @@ mod tests {
         lock::render(&l)
     }
 
-    /// The Test (gate 1): the three-doc chain's `walk` up-output is byte-expected
-    /// — ordered `{selector, rev, color, depth}` entries with depth tags, plus
-    /// the rev citations for every doc the listing rests on (§2.4 honesty).
+    /// Gate 1: three-doc up-walk is byte-expected + §2.4 rev citations.
     #[test]
     fn three_doc_chain_up_is_byte_expected() {
         let (docs, _a_token, b_rev, c_rev) = three_doc_chain();
@@ -879,10 +625,7 @@ mod tests {
             "up = the context walk, depth-tagged: b at 1, c at 2"
         );
 
-        // Every answer cites the doc revs it read (§2.4): root a, plus b and c.
-        // A citation is the containing doc's NODE REV — distinct from the pin
-        // TOKEN the entry carries above, and the two must not be conflated: the
-        // citation says which bytes were read, the token says what was claimed.
+        // §2.4: citations are doc node revs (not pin tokens).
         let doc_rev = |p: &str| docs[p].root.node_rev.0.clone();
         assert_eq!(
             report.revs_read,
@@ -903,16 +646,11 @@ mod tests {
         );
     }
 
-    /// The Test (gate 2): `--down --depth 1` returns EXACTLY the direct
-    /// dependents — no transitive leak. The unbounded down walk returns the
-    /// transitive dependents too, proving the bound is load-bearing: if the
-    /// depth bound did not fire, the `depth 1` walk would also carry `a.md` and
-    /// this assertion would FAIL.
+    /// Gate 2: `--down --depth 1` is direct dependents only (bound load-bearing).
     #[test]
     fn down_depth_one_is_exactly_direct_dependents() {
         let (docs, _a, _b, c_rev) = three_doc_chain();
 
-        // Direct dependents of c: exactly b (b pins c). Never a (transitive).
         let direct = walk(&docs, "c.md", Direction::Down, Some(1)).expect("walk down d1");
         assert_eq!(
             direct.entries,
@@ -925,8 +663,7 @@ mod tests {
             "--down --depth 1 = exactly the direct dependents, no transitive leak"
         );
 
-        // Unbounded down: b at depth 1 AND a at depth 2 — the bound above dropped
-        // exactly this transitive `a`, so the bound demonstrably fires.
+        // Unbounded includes transitive a@2 — proves the bound fired above.
         let full = walk(&docs, "c.md", Direction::Down, None).expect("walk down full");
         let reached: Vec<(&str, u32)> = full
             .entries
@@ -936,12 +673,10 @@ mod tests {
         assert_eq!(reached, vec![("b.md", 1), ("a.md", 2)]);
     }
 
-    /// A red pin in the context surfaces as a red entry and is the finding signal.
-    /// Edit c after b pinned it: b's pin drifts (`red content-drifted`).
+    /// Drifted pin is red and a finding.
     #[test]
     fn drifted_pin_renders_red_and_is_a_finding() {
         let (mut docs, ..) = three_doc_chain();
-        // Rewrite c.md so its live root rev no longer matches b's pin.
         docs.insert("c.md".to_string(), doc("# C\n\nEDITED body — drift\n"));
 
         let report = walk(&docs, "a.md", Direction::Up, None).expect("walk");
@@ -954,12 +689,10 @@ mod tests {
         assert!(has_red(&report), "a drifted pin is a walk finding (exit 1)");
     }
 
-    /// An in-snapshot cycle is an error (§2.4), never an infinite walk: `x` pins
-    /// `y`, `y` pins `x`.
+    /// In-snapshot cycle is an error (§2.4), never infinite walk.
     #[test]
     fn in_snapshot_cycle_is_an_error() {
-        // The pins need not be GREEN — a cycle is a traversal fact, and the walk
-        // must refuse to loop whatever colour the edges carry.
+        // Cycle is a traversal fact — colour irrelevant.
         let hex = "0".repeat(64);
         let x = doc(&format!(
             "# X\n\ndraws from y\n\n{}\n",
@@ -986,15 +719,10 @@ mod tests {
         assert!(loop_pages.contains(&"y.md".to_string()));
     }
 
-    /// A transcript ref (`session#seq-N`) renders `grey immutable-root` and is a
-    /// walk leaf — recognized, never resolved, never traversed (§2.2 / §2.4).
+    /// Transcript `session#seq-N` → grey immutable-root leaf (§2.2 / §2.4).
     #[test]
     fn transcript_input_renders_grey_immutable_root() {
-        // R4 spells this as the object `22-01-session` with `path: ["seq-160"]`.
-        // Read WITHOUT the object the array is indistinguishable from a heading
-        // named `seq-160`, and this pin would render red `selector-unresolved` —
-        // a false finding on a ref the engine is ruled never to resolve. That is
-        // why `model_selector` takes the object.
+        // model_selector needs object: without it seq-N looks like a heading.
         let token = "fp1.span2.b3.".to_string() + &"0".repeat(64);
         let mut block = lock::Lock::new();
         block.upsert_pin(pin_from_spelling("22-01-session#seq-160", &token));
@@ -1039,9 +767,7 @@ mod tests {
         );
     }
 
-    /// The fail-closed sentinel renders its own indictment, not a fact about a
-    /// target — condition 3 of the bronze act. A reader who meets this line must
-    /// learn from the LINE that it is a defect, without consulting a doc comment.
+    /// Uncolourable render names itself as the defect (not a target fact).
     #[test]
     fn uncolourable_render_says_its_appearance_is_the_defect() {
         let label = color_label(&Color::Grey(GreyReason::Uncolourable));
@@ -1059,16 +785,7 @@ mod tests {
         );
     }
 
-    /// S3 (form-3): a page whose ONLY declared inputs live in a `meridian-lock`
-    /// block is visible to the walk. Pre-S3 this walk was a SILENT ABSENCE — the
-    /// listing was empty, `mrd walk` printed `(nothing)` and exited 0 (clean),
-    /// so a real pin looked like a page with no inputs at all.
-    ///
-    /// The edge is now VERIFIED, not greyed: S9 routes a row carrying a
-    /// `fingerprint` to the fingerprint plane, so a token that does not equal
-    /// the target's live fingerprint is measured drift. (S3 asserted grey
-    /// `superseded-algo` here — the placeholder this unit replaced, which could
-    /// never distinguish a correct pin from a drifted one.)
+    /// meridian-lock-only page is visible; mismatched token is measured drift.
     #[test]
     fn meridian_lock_page_is_visible_to_the_walk() {
         let token = format!("fp1.span2.b3.{}", "ab".repeat(32));
@@ -1102,8 +819,6 @@ mod tests {
             "a pin that no longer matches its target IS a finding",
         );
 
-        // And the reverse direction sees it too: the target's dependents now
-        // include the page that pinned it (the blast radius was blind pre-S3).
         let down =
             walk(&docs, "sources/target-page.md", Direction::Down, Some(1)).expect("walk down d1");
         assert_eq!(
@@ -1115,16 +830,12 @@ mod tests {
         );
     }
 
-    // ── S9: the `meridian-lock` pin color (green / red / grey) ───────────────
-
-    /// A corpus of one effect page pinning `sources/target.md` at `token`, and
-    /// the target page built from `target_raw`.
+    /// Effect page pins `sources/target.md` at `token`.
     fn pinned_corpus(token: &str, target_raw: &str) -> BTreeMap<String, Document> {
         pinned_corpus_ref("sources/target.md", token, target_raw)
     }
 
-    /// [`pinned_corpus`] with the declared ref spelled explicitly (so a test can
-    /// pin a selector, or a target that is not there at all).
+    /// [`pinned_corpus`] with explicit declared ref.
     fn pinned_corpus_ref(
         declared_ref: &str,
         token: &str,
@@ -1142,11 +853,7 @@ mod tests {
         docs
     }
 
-    /// Mint an R4 pin from a `page[#A/B]` ref SPELLING — a fixture convenience
-    /// only. The spelling is split into the `object` and the selector ARRAY
-    /// here, at the fixture's own door; nothing downstream ever sees the joined
-    /// form. `^id` and `seq-N` fragments stay single-element arrays, which is
-    /// what makes them the anchor and transcript arms.
+    /// Fixture: split `page[#A/B]` spelling into object + selector array.
     fn pin_from_spelling(spelling: &str, token: &str) -> lock::PinEntry {
         let (target, fragment) = match spelling.split_once('#') {
             Some((t, f)) => (t, f),
@@ -1161,14 +868,13 @@ mod tests {
         lock::PinEntry::new(object, "9ae3f1deadbeef", selector, token)
     }
 
-    /// The one entry a single-pin corpus walks up to.
     fn only_entry(docs: &BTreeMap<String, Document>) -> WalkEntry {
         let report = walk(docs, "effect.md", Direction::Up, None).expect("walk up");
         assert_eq!(report.entries.len(), 1, "one pin, one entry");
         report.entries[0].clone()
     }
 
-    /// The live fingerprint token of a page root — what a CORRECT pin holds.
+    /// Live fingerprint of a page root (correct pin).
     fn live_token(raw: &str) -> String {
         let d = doc(raw);
         model::fingerprint::fingerprint(&d, &d.root)
@@ -1176,10 +882,7 @@ mod tests {
             .into_string()
     }
 
-    /// GATE 1 — the five rendered states are DISTINCT: no two of green /
-    /// red(drifted) / red(dangling) / grey(unverifiable) / grey(malformed) share
-    /// a label, and each names its own reason. A drift face whose states collide
-    /// cannot be acted on.
+    /// Gate 1: five pin states render distinct labels.
     #[test]
     fn the_five_pin_states_each_render_distinctly() {
         let body = "# Target\n\nbody v1\n";
@@ -1216,8 +919,7 @@ mod tests {
             "two states collided: {labels:?}"
         );
 
-        // The tones roll up honestly: the two reds are findings, the two greys
-        // are not (grey = never measured, so never a claim of breakage either).
+        // Reds are findings; greys are not (never measured).
         assert_eq!(
             labels
                 .iter()
@@ -1227,10 +929,7 @@ mod tests {
         );
     }
 
-    /// GATE 2 (LOAD-BEARING) — grey never renders green. Each token below
-    /// carries the target's CORRECT live digest under a version / codec / hashfn
-    /// this build does not implement, plus the superseded bare-digest spelling.
-    /// A digest that happens to match is not a verification.
+    /// Gate 2 (load-bearing): unverifiable pin never greens (matched digest ≠ verify).
     #[test]
     fn an_unverifiable_pin_never_renders_green() {
         let body = "# Target\n\nbody v1\n";
@@ -1253,14 +952,11 @@ mod tests {
             assert_ne!(entry.color, Color::Green, "{token} rendered a false green");
         }
 
-        // The control: the SAME digest under the implemented triple is green —
-        // the greys above are about the triple, not about a broken compare.
+        // Control: same digest under implemented triple is green.
         assert_eq!(only_entry(&pinned_corpus(&live, body)).color, Color::Green);
     }
 
-    /// GATE 3 — an `fp9.span2.b3` grey NAMES the version as the unknown member.
-    /// Reporting only `codec=span2, hashfn=b3` (both live-looking) could not say
-    /// which member this build does not implement.
+    /// Gate 3: unverifiable grey names which triple member is unknown.
     #[test]
     fn the_unverifiable_grey_names_the_unknown_triple_member() {
         let body = "# Target\n\nbody v1\n";
@@ -1289,14 +985,12 @@ mod tests {
         }
     }
 
-    /// D8 — an unreadable target is RED with its reason, never grey and never
-    /// green: the vanished-anchor and vanished-page cases both.
+    /// Unreadable target is red (never grey/green): vanished anchor and page.
     #[test]
     fn a_dangling_pin_target_renders_red_never_green() {
         let hex64 = "0".repeat(64);
         let token = format!("fp1.span2.b3.{hex64}");
 
-        // The pinned anchor is gone from a live page.
         let gone = only_entry(&pinned_corpus_ref(
             "sources/target.md#^goal",
             &token,
@@ -1307,7 +1001,6 @@ mod tests {
             Color::Red(RedReason::DanglingAnchor { .. })
         ));
 
-        // The pinned PAGE is not in the corpus at all.
         let mut lock_block = lock::Lock::new();
         lock_block.upsert_pin(pin_from_spelling("sources/vanished.md#^goal", &token));
         let mut docs = BTreeMap::new();
@@ -1319,10 +1012,7 @@ mod tests {
         assert_eq!(color_label(&entry.color), "red dangling-anchor");
     }
 
-    /// GATE 2b — a MALFORMED lock renders grey `lock-refused`, NOT absent.
-    /// Before this, `lock::find`'s refusal projected zero rows, so a corrupt
-    /// lock and a page that never pinned anything were the same walk output:
-    /// `(nothing)`, exit 0.
+    /// Malformed lock → grey `lock-refused`, not silent absence.
     #[test]
     fn a_malformed_lock_renders_grey_not_absent() {
         let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
@@ -1341,14 +1031,11 @@ mod tests {
         );
         assert!(entry.rev.is_none(), "a refusal pins nothing");
 
-        // Grey, so it is not a finding — the ledger measured nothing here.
         let report = walk(&docs, "effect.md", Direction::Up, None).expect("walk");
         assert!(!has_red(&report));
     }
 
-    /// GATE 2b — TWO lock blocks on one page renders grey `lock-refused`, NOT
-    /// absent. `lock::find` calls two blocks corruption; the read face reports
-    /// that verdict rather than guessing which block is the lock.
+    /// Two lock blocks → grey `lock-refused`, not silent absence.
     #[test]
     fn a_double_block_lock_renders_grey_not_absent() {
         let block = lock::render(&{
@@ -1374,10 +1061,7 @@ mod tests {
         );
     }
 
-    /// A refusal row declares NO edge: it never enters the reverse index, never
-    /// enters the page adjacency, and is never traversed. Without this a
-    /// refusal row pointing at its own page would make every walk over that page
-    /// refuse as an in-snapshot cycle.
+    /// Refusal is a leaf: no reverse index, no adjacency, no traversal (else cycle).
     #[test]
     fn a_refusal_row_is_a_leaf_never_an_edge() {
         let malformed = "# Effect\n\n```meridian-lock\nversion: 2\ngarbage here\n```\n";
@@ -1385,38 +1069,23 @@ mod tests {
         docs.insert("effect.md".to_string(), doc(malformed));
         docs.insert("sources/target.md".to_string(), doc("# T\n\nbody\n"));
 
-        // Up terminates (no cycle refusal) at depth 1 and expands no further.
         let up = walk(&docs, "effect.md", Direction::Up, None).expect("up must not cycle");
         assert_eq!(up.entries.len(), 1);
         assert_eq!(up.entries[0].depth, 1);
 
-        // Down from any page never sees the refusal — it names no target.
         let down = walk(&docs, "sources/target.md", Direction::Down, None).expect("down");
         assert!(down.entries.is_empty(), "a refusal is nobody's dependent");
         let down_self = walk(&docs, "effect.md", Direction::Down, None).expect("down self");
         assert!(down_self.entries.is_empty());
     }
 
-    // ── S11: the retrieval plane (R4: the per-pin `hash`) ───────────────────
-
-    /// [`lock_objects`] projects the blob every pin references, corpus order,
-    /// key and sha verbatim — and **deduped by `(page, object, hash)`**.
-    ///
-    /// The dedup is the R4 law, not an optimisation. R4 retired the shared
-    /// `objects:` table and moved the sha onto the pin row, so the whole-file
-    /// lock — `path: []` and `properties: []` on ONE object — references the same
-    /// blob twice. Two rows for one blob would make the vibe-debt meter count one
-    /// debt as two and `check::layer0` report one orphan as two findings, which
-    /// is the "naming one defect twice" trap that plane already refuses.
-    ///
-    /// The positive control is in the fixture: `effect.md` carries the two-row
-    /// whole-file lock AND a distinct second object, so a dedup that collapsed
-    /// too much would drop `second` and fail here.
+    /// [`lock_objects`] dedupes by `(page, object, hash)` — whole-file lock
+    /// pins same blob twice; two rows would double-count debt.
     #[test]
     fn lock_objects_dedupes_one_blob_per_object_never_per_pin() {
         let token = format!("fp1.span2.b3.{}", "0".repeat(64));
         let mut whole_file = lock::Lock::new();
-        // The whole-file lock: body and frontmatter, two pins, ONE blob.
+        // Whole-file: body + frontmatter pins, one blob.
         whole_file.upsert_pin(lock::PinEntry::new(
             "vibe",
             &"a".repeat(40),
@@ -1429,7 +1098,7 @@ mod tests {
             lock::Selector::Properties(Vec::new()),
             &token,
         ));
-        // A genuinely different object — the control that keeps the dedup honest.
+        // Control: distinct object must survive dedup.
         whole_file.upsert_pin(lock::PinEntry::new(
             "second",
             &"b".repeat(40),

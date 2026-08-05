@@ -1,12 +1,5 @@
-//! The no-break constraint as its own end-to-end trace: drive the REAL sidecar
-//! binary over stdin/stdout as a live sidecarv2 consumer (ccc-statusd's path).
-//!
-//! The session sends NO `contract` field in `hello`, so it is contract v2. The
-//! frozen v2 vocabulary must arrive byte-for-byte: `root` on the hello body and
-//! the read, `root_before`/`root_after` on the write — and the token
-//! `fingerprint` must appear NOWHERE in the whole session. This is the
-//! phase-integration guard for wire v3: the rename ships only under a declared
-//! v3 rev, and a v2 consumer is untouched (decision 0001 round 6).
+//! v2 consumer e2e via real sidecar binary: no `contract` in hello → v2.
+//! Frozen vocabulary byte-for-byte; `fingerprint` nowhere in the session.
 
 use std::io::Write;
 use std::process::{Command, Stdio};

@@ -1,33 +1,19 @@
-//! The in-memory world model: governed node tree (`kind/span/node_rev/hpath`),
-//! resolve, CAS-splice validation, Merkle roots — deliberately non-serializable.
+//! In-memory world model: governed tree (`kind/span/node_rev/hpath`), resolve,
+//! CAS-splice validation, Merkle roots — deliberately non-serializable.
 //!
 //! # Charter
-//! **Owns:** the derived world model. From `syntax`'s flat dialect stream it
-//! builds the governed tree (sections govern children, hpath chains — the node
-//! model policy-schema-design §2 guarantees; that doc is the contract, not
-//! restated here), computes `node_rev` hashes and Merkle roots, resolves
-//! `#hpath` / `#^anchor` refs to targets, validates CAS splices, and diffs at
-//! node level. The corpus name index lives here too — derived, disposable —
-//! and `query`/`policy` *borrow* it, never own it. Since stage-2 S0 it also
-//! owns the FROZEN Go-text heading predicate ([`gotext`]) — the one address
-//! law `wire-map`'s projection and `policy`'s defs rebuild both call, so they
-//! cannot drift apart.
+//! **Owns:** derived world model from `syntax`'s dialect stream — governed tree
+//! (policy-schema §2), `node_rev` / Merkle roots, `#hpath`/`#^anchor` resolve,
+//! CAS splice validation, node-level diff. Corpus name index (derived,
+//! disposable; `query`/`policy` borrow). FROZEN Go-text heading predicate
+//! ([`gotext`]) shared by `wire-map` and `policy` so they cannot drift.
 //!
-//! **Never does:** file I/O (that's `fs`), persistence of any kind (law 2: Rust
-//! memory is disposable; cold rebuild is the recovery path), protocol types
+//! **Never:** file I/O (`fs`), persistence (law 2: cold rebuild), protocol types
 //! (law 3), body formatting.
 //!
-//! # Law enforcement (candidate thesis, this crate's part)
-//! **No serde derives on any public type in this crate — by design, permanently**
-//! (rust-analyzer's "ide types are not serializable by design"). The wire cannot
-//! leak inward: whoever wants a model fact on the wire must go through `sidecar`,
-//! the one crate that sees `wire` and `model` together. That makes law 3
-//! ("nothing Go-facing beyond the wire") a compile error, not a convention.
-//!
-//! # Rungs
-//! Rung 1: tree build + hpath. Rung 2: `resolve` + splice validation + revs.
-//! Rung 3: roots + guard. Rung 4: node-level diff feeds the change feed.
-//! Rung 5: the corpus index `query` borrows.
+//! # Law enforcement
+//! **No serde on any public type** — wire cannot leak inward; model facts reach
+//! the wire only via `sidecar`. Law 3 is a compile error, not a convention.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -44,52 +30,30 @@ pub mod walk;
 /// serializable span on purpose — converting between them is `sidecar`'s job.
 pub type ByteSpan = Range<usize>;
 
-/// The `hash-algo` label this engine mints and computes — `blake3-256(span
-/// bytes)[:16]` (contract v2 §1; node-rev-merkle-spec §1). A label that is
-/// anything else names a rev this engine cannot recompute, so it stays OUT of
-/// the node-rev compare ([`is_native_algo`]) and can never be called green.
-/// One owner for the label so `pin` (writer) and `view` (reader) never drift.
-///
-/// **It no longer names a rendering.** The `^inputs` plane it used to render
-/// grey `superseded-algo` on is retired (R1.3/U9c), and under R4 the
-/// foreign-algo case is answered by the FINGERPRINT plane and spelled
-/// `unverifiable-fingerprint` (wire-contract-v2-colors-amendment § Colors —
-/// the subject moved planes; it was not dropped). DECISION 22 (ZT,
-/// 2026-08-04).
+/// Engine-minted `hash-algo` label — `blake3-256(span bytes)[:16]` (contract v2
+/// §1; node-rev-merkle-spec §1). Non-native labels stay out of node-rev compare
+/// ([`is_native_algo`]) and can never be green. Sole owner so `pin`/`view` agree.
+/// Foreign-algo rendering is fingerprint-plane `unverifiable-fingerprint` (R4).
 pub const NODE_REV_ALGO: &str = "node-rev";
 
-/// The effect-page `hash-algo` label the v1→v2 supersede stamps (design-2 §6.3:
-/// "`hash-algo: v2` = merkle-v1's composition law verbatim, two swaps: sha256 →
-/// blake3; norm-v1 → raw bytes"). For a whole-page ref that swap yields exactly
-/// this engine's `node_rev` (`blake3(raw bytes)[:16]`), so a `v2` pin is
-/// verified through the SAME node-rev compare as a native `node-rev` pin — the
-/// supersede keeps the value and re-labels it under the effect-page `vN`
-/// data-contract convention (SCHEMA.md). One owner for the label.
+/// Effect-page `hash-algo` for the v1→v2 supersede (design-2 §6.3: merkle-v1
+/// composition with sha256→blake3, norm-v1→raw bytes). Whole-page `v2` pins
+/// verify through the same node-rev compare as native `node-rev`.
 pub const SUPERSEDE_ALGO_V2: &str = "v2";
 
-/// Whether `algo` is an engine-native `hash-algo` — one whose rev this engine's
-/// node-rev compare can verify to green or red. The native set is
-/// `{node-rev, v2}`: `node-rev` is what `pin` mints; `v2` is the design-2 §6.3
-/// supersede label carrying the same node-rev value under the effect-page `vN`
-/// convention. Any other label (v1/merkle-v1, statusd-file-rev, read-rev, …)
-/// names a rev this engine cannot recompute.
-///
-/// **This is a FENCE, not a renderer.** It states which labels the node-rev
-/// compare may touch, so a non-native label can never buy a false green; it
-/// says nothing about what any plane renders. DECISION 22 (ZT, 2026-08-04).
+/// Whether `algo` is engine-native (`node-rev` | `v2`) for green/red node-rev
+/// compare. Other labels (v1, statusd-file-rev, …) are not recomputable here.
+/// Fence only — not a renderer.
 #[must_use]
 pub fn is_native_algo(algo: &str) -> bool {
     algo == NODE_REV_ALGO || algo == SUPERSEDE_ALGO_V2
 }
 
-/// Node content hash — the CAS token's model-side form. Opaque; algorithm is a
-/// rung-2 wire amendment (meridian's xxhash64 `sec_rev` is the migration donor;
-/// the mapping must be stated when the amendment lands).
+/// Node content hash — CAS token model-side form. Opaque.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeRev(pub String);
 
-/// Merkle root over a file or the corpus (rung 3). Go keeps one of these — a
-/// 32-byte cursor — as its only markdown-derived state.
+/// Merkle root over a file or the corpus. 32-byte guard/freshness cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleRoot(pub String);
 
@@ -533,14 +497,11 @@ fn kind_ordinal(kind: &NodeKind) -> u8 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// resolve (rung 2)
-// ---------------------------------------------------------------------------
+// resolve
 
-/// One hpath segment — a heading text plus an optional 1-based occurrence index
-/// among identical raw texts at that containment position (contract §2.1). The
-/// model-side twin of `wire::HpathSeg`; the crates never share a type (no-serde
-/// law), the sidecar converts between them.
+/// One hpath segment — heading text + optional 1-based occurrence among
+/// identical siblings (contract §2.1). Model twin of `wire::HpathSeg` (no shared
+/// type; sidecar converts).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HpathSeg {
     /// Heading text, matched **byte-exactly** against the containment tree
@@ -926,9 +887,7 @@ pub fn fm_upsert_before(doc: &Document, key: &str) -> Target {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CAS-splice validation (rung 2) — validation here, execution in `fs`
-// ---------------------------------------------------------------------------
+// CAS-splice validation — here; execution in `fs`
 
 /// Where a `put` writes within its resolved target (contract §4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -992,24 +951,13 @@ pub struct SpliceRequest {
     pub engine: Option<EngineEdit>,
 }
 
-/// An **engine-minted** span edit riding inside the batch (stage-2 S7): the
-/// exact pre-batch byte span to replace and its replacement bytes, minted by
-/// the engine itself instead of resolved from a caller [`Ref`].
-///
-/// # Why a span, when request-side spans are banned (D-C1)
-/// Its one inhabitant is the `meridian-lock` block, whose span comes from
-/// `lock::find` (authoritative, fence-to-fence) or the page's EOF birth point,
-/// and whose bytes come from `lock::render`. A fenced code block carries no
-/// heading path, no block id, and no frontmatter key, so the §2.1 ref grammar
-/// cannot address it — and the engine is its SOLE writer (#8 §3), so no caller
-/// needs to. No wire shape lowers to this field: the wire carries `edits` /
-/// `plan_edits`, both of which produce [`Edit`]s, so a client can never mint one.
-///
-/// # It is validated exactly like a resolved edit
-/// The span joins the planned set before the batch-wide rungs, so
-/// char-alignment, disjointness against the caller's edits, and the one
-/// simulated reparse all cover it. That is strictly MORE guarding than the M1
-/// `lock_write` path had (its own flock, hand-rolled splice, no validation).
+/// Engine-minted span edit inside the batch (stage-2 S7) — not resolved from a
+/// caller [`Ref`]. Sole inhabitant: `meridian-lock` (span from `lock::find` /
+/// EOF birth; bytes from `lock::render`). §2.1 grammar cannot address a fenced
+/// lock block; engine is sole writer (#8 §3). No wire shape produces this —
+/// clients cannot mint one (D-C1: request-side spans banned; this is not
+/// request-side). Validated with planned edits (char-align, disjointness,
+/// reparse).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineEdit {
     /// The pre-batch byte span these bytes replace (empty span = an insert).
@@ -1086,14 +1034,9 @@ pub enum SpliceVerdict {
     MultibyteSplit,
 }
 
-/// A batch that passed validation against a live `Document`. Only `model` can
-/// mint one (the private `_sealed` field — external crates cannot name it, so
-/// cannot construct the struct even though its data fields are public), and
-/// `fs` accepts only one. An unvalidated batch cannot reach disk by
-/// construction; the pipeline (validate here, execute in `fs`) is enforced by
-/// types, not review. The receipt append rides INSIDE (§6.1).
-///
-/// The seal is a compile-level fact — no external crate can mint one:
+/// Batch that passed validation. Only `model` mints (private `_sealed`); `fs`
+/// accepts only this type — unvalidated batches cannot reach disk. Receipt
+/// rides inside (§6.1).
 ///
 /// ```compile_fail
 /// // `_sealed` is private, so this fails to compile outside `model`.
@@ -1113,25 +1056,10 @@ pub struct ValidatedBatch {
     _sealed: (),
 }
 
-/// The document a write is ABOUT TO LAND — the write plane's candidate, sealed
-/// the way [`ValidatedBatch`] and [`fingerprint::Fingerprint`] are sealed: the
-/// inner `Document` is PRIVATE, so no crate outside `model` can wrap an
-/// arbitrary document in this type. The only way to hold one is to have minted
-/// it from the bytes that are about to reach disk
-/// ([`candidate_of_body`] / [`candidate_of_batch`]), and `fs`'s three
-/// byte-landing primitives accept nothing else.
-///
-/// # Why the type, and not a convention
-/// Before the seal, every write door built an "after doc", gated it, and then
-/// handed `fs` a `&str` or a `ValidatedBatch` — so *whether the gated document
-/// and the landed bytes were the same object* was a property of today's call
-/// sites, never of the code. Four doors happened to build one; `lock_write`,
-/// `commit_batch`, the pin promotion and `mrd realise --truth file` did not, and
-/// nothing said so. R5's rule applies verbatim: **a boolean helper a caller may
-/// ignore is not a guard; a type a caller must discharge is.** Retyping the `fs`
-/// primitives converts the door enumeration from prose into a compile error.
-///
-/// The seal is a compile-level fact — no external crate can mint one:
+/// Write-plane candidate — bytes about to land. Inner `Document` is private;
+/// only mint path is [`candidate_of_body`] / [`candidate_of_batch`]. `fs`
+/// byte-landing primitives accept nothing else (R5: type discharge, not
+/// convention). Seal is compile-level:
 ///
 /// ```compile_fail
 /// // The field is private, so this fails to compile outside `model`.
@@ -1139,9 +1067,8 @@ pub struct ValidatedBatch {
 /// let _ = model::CandidateDocument(doc);
 /// ```
 ///
-/// Read the document with [`CandidateDocument::document`], its bytes with
-/// [`CandidateDocument::raw`], take it with
-/// [`CandidateDocument::into_document`].
+/// Access via [`CandidateDocument::document`] / [`raw`](CandidateDocument::raw) /
+/// [`into_document`](CandidateDocument::into_document).
 #[derive(Debug, Clone)]
 pub struct CandidateDocument(Document);
 
@@ -1506,28 +1433,18 @@ fn apply_regions(raw: &str, planned: &[PlannedEdit]) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// integrity (rung 3) + corpus index (rung 5 borrow surface)
-// ---------------------------------------------------------------------------
+// integrity + corpus index
 
-/// The corpus Merkle root over the hash domain (contract §12.2), minted as the
-/// prefixed `Root` token (§12.3). `files` is the domain-filtered set — each
-/// entry a vault-relative path and the file's **raw bytes**. The leaf hashes
-/// raw bytes, so the parse tree plays no part in the root; membership (which
-/// files are in the domain) is `fs`'s call — F3-DOMAIN's `Domain::contains` —
-/// and this crate hashes exactly the set it is handed.
+/// Corpus Merkle root over the hash domain (contract §12.2), as prefixed `Root`
+/// token (§12.3). `files` = domain-filtered vault paths + **raw bytes** (leaf =
+/// raw hash; parse tree plays no part). Membership is `fs`'s call.
 ///
-/// `version` is the domain's prefix counter (`Domain::version()`, riding
-/// `mdfs_config.yaml`, §12.3): `0` ⇒ `b3:`, `1` ⇒ `b3a:`, … A domain-rule
-/// change bumps it so a `b3:` cursor can never silently match a `b3a:` world —
-/// the token carries the prefix even when the hex repeats. Taking the version
-/// as a plain integer keeps `model` blind to `fs` (no dependency inversion:
-/// the caller reads `Domain::version()` and passes the number).
+/// `version` = domain prefix counter (`0`⇒`b3:`, `1`⇒`b3a:`, …) so domain-rule
+/// bumps cannot silently match. Plain integer keeps `model` fs-blind.
 ///
-/// Encoding (§12.2, verbatim): leaf = `blake3(raw file)` full 32 B; interior =
-/// `blake3` over children sorted by raw name bytes, each
-/// `uleb128(len(name)) ‖ name ‖ type_byte (0x00 file / 0x01 dir) ‖ hash32`;
-/// empty dirs pruned; the workspace root's own name is never hashed.
+/// Encoding (§12.2): leaf `blake3(raw)` 32 B; interior `blake3` over children
+/// sorted by name bytes, each `uleb128(len)‖name‖type(0x00/0x01)‖hash32`; empty
+/// dirs pruned; workspace root name not hashed.
 #[must_use]
 pub fn merkle_root(files: &[(&str, &[u8])], version: u32) -> MerkleRoot {
     let mut tree = MerkleDir::default();
@@ -1713,21 +1630,10 @@ impl CorpusIndex {
             .by_basename
             .get(&base)
             .or_else(|| self.by_alias.get(&key))?;
-        // A linkpath WITH subdirs (`a/b`) addresses a path ENDING in `a/b.md`, not
-        // just any file named `b` — getFirstLinkpathDest matches the fuller path
-        // (§4.5). Narrow the basename candidates to those whose path carries the
-        // whole subpath suffix; only fall back to the bare-basename set when the
-        // qualifier matches nothing (a stale subpath still resolves best-effort).
-        // Without this, `[[a/b]]` collides with every other `b.md` in the vault.
+        // Subdir linkpath (`a/b`) ⇒ path ending in `a/b.md` (§4.5), not every
+        // `b.md`. Match vault-root (`a/b.md`) or nested (`c/a/b.md`); fall back
+        // to bare basename only if no qualifier hit (stale subpath best-effort).
         if key.contains('/') {
-            // The subpath matches a path that ENDS in `a/b.md` — either nested
-            // under something (`c/a/b.md`) or at the vault root, where the path
-            // IS `a/b.md` and carries no leading separator. Matching only the
-            // separator form dropped the root case, so `[[a/b]]` in a corpus
-            // holding both `a/b.md` and `b.md` fell through to the bare-basename
-            // set and answered `b.md` — the wrong document, and a different one
-            // from the answer the exact-path step of `CorpusIndex::resolve_ref`
-            // gives, which is how one address grew two owners.
             let qualified = format!("{key}.md");
             let suffix = format!("/{qualified}");
             let narrowed: Vec<String> = candidates
@@ -1745,45 +1651,25 @@ impl CorpusIndex {
         pick_source_relative(candidates, from)
     }
 
-    /// THE address owner: resolve one REF SPELLING — a `meridian-lock` `ref`, a
-    /// body wikilink target, any address a plane hashes a document by — to the
-    /// corpus path it names, or `None` when it names nothing here.
+    /// Sole address owner: resolve a REF spelling (`meridian-lock` ref,
+    /// wikilink, etc.) to a corpus path. Every plane that turns a spelling into
+    /// a document calls this — two owners hash two documents.
     ///
-    /// Precedence, in order:
-    /// 1. the spelling IS a corpus key (a full vault path carrying its `.md`);
-    /// 2. the spelling + `.md` is a corpus key (a full-path ref written without
-    ///    the extension, `a/b` → `a/b.md`);
-    /// 3. [`CorpusIndex::resolve_linkpath`] — `getFirstLinkpathDest` parity for
-    ///    a spelling by basename/alias.
+    /// Precedence:
+    /// 1. spelling is a corpus key (full vault path with `.md`);
+    /// 2. spelling + `.md` is a corpus key;
+    /// 3. [`CorpusIndex::resolve_linkpath`] (basename/alias).
     ///
-    /// **One owner, because two owners hash two documents.** The pin plane and
-    /// the decoration plane once each carried their own copy of this precedence;
-    /// they disagreed on `a/b` in a corpus holding both `a/b.md` and `b.md`, so
-    /// the `@fp` tone word was minted over one document while the walk color was
-    /// measured on another — one question, two answers. Every plane that turns a
-    /// spelling into a document calls THIS.
+    /// **D12 (U11):** resolution is a mount lookup — parse address, peel root,
+    /// mount table selects which corpus the three rules run against (not a
+    /// flat-map ride of `root:` inside the spelling).
     ///
-    /// **D12, as U11 settles it.** The old note here said a `root:` prefix
-    /// *"rides inside the spelling and resolves by the same three rules"* — the
-    /// RIDE story, and it was unimplementable as written: all three rules are
-    /// lookups into ONE flat map, so `root:page.md` missed all three and
-    /// rendered `red selector-unresolved`. **Resolution is a MOUNT LOOKUP**: the
-    /// address is parsed, its root peeled, and the mount table decides which
-    /// corpus the three rules then run against.
+    /// **D4a:** mount table injected (`mounts: &MountSet`); corpus is
+    /// root-keyed ([`RootedCorpus`]). Stays in `model`; type is upstream
+    /// `addr` so `model` never names `config`.
     ///
-    /// **D4a — the mount table is INJECTED as a parameter**, and the corpus
-    /// parameter is root-keyed ([`RootedCorpus`]). Resolution stays HERE, in
-    /// `model`, which owns *"the single address law its two dependents share"*;
-    /// relocating it would break that charter. The injected type is
-    /// [`addr::MountSet`], defined in the upstream `std`-only leaf, so `model`
-    /// never names `config` — which is DOWNSTREAM of it (§ 7.2). Both D4 and D4a
-    /// hold, unmodified.
-    ///
-    /// **Two parameters, two different facts, deliberately not merged.**
-    /// `mounts` is which names this machine BINDS (the `MERIDIAN.md` authority);
-    /// `corpus` is which roots' documents are LOADED here. A root can be bound
-    /// with its documents unreadable (§ 8 M6) — that is grey, not a parse
-    /// failure, and not `file_not_found`.
+    /// `mounts` = names this machine binds; `corpus` = roots loaded. Bound but
+    /// unreadable ⇒ grey (§ 8 M6), not parse failure / `file_not_found`.
     #[must_use]
     pub fn resolve_ref(
         &self,
@@ -1798,8 +1684,7 @@ impl CorpusIndex {
         };
 
         let Some(root) = addr.root().cloned() else {
-            // The ambient root — the overwhelming majority of refs, and its
-            // behaviour is byte-for-byte what it was before U11.
+            // Ambient root — majority path.
             return match self.three_rules(spelling, from, corpus.ambient_docs()) {
                 Some(path) => RefResolution::Ambient(path),
                 None => RefResolution::NotFound {
@@ -1810,17 +1695,8 @@ impl CorpusIndex {
             };
         };
 
-        // (a) The mount table is the authority, and it answers TWO questions,
-        //     not one — S3-R43. A name it does not know at all is GREY
-        //     `unmounted`, and the fix is to declare it. A name it DECLARES but
-        //     cannot read is a different cause with a different fix: the entry
-        //     is already right, so the refusal must name the PATH.
-        //
-        //     Round 1 collapsed these, and the collapse was not theoretical —
-        //     `mrd walk` told a user to declare a root that `mrd config`, one
-        //     command away, was already reporting as declared-and-unreadable.
-        //     A teaching refusal that prescribes a COMPLETED ACTION spends the
-        //     user's trust and their time and points at nothing.
+        // S3-R43: unknown name → grey unmounted (declare it); declared-but-
+        // unreadable → different cause, name the PATH (do not prescribe declare).
         if !mounts.is_bound(&root) {
             return match mounts.unreachable(&root) {
                 Some(u) => RefResolution::PathUnseeable {
@@ -1832,10 +1708,7 @@ impl CorpusIndex {
             };
         }
 
-        // (b) The table says bound, but this process holds no corpus for it.
-        //     That is a caller inconsistency rather than a machine fact, and it
-        //     is reported as unreachable — never as UNDECLARED, which is the one
-        //     thing it demonstrably is not.
+        // Bound in table but no corpus loaded here — unreachable, never undeclared.
         let Some(mounted) = corpus.root(&root) else {
             return RefResolution::PathUnseeable {
                 root,
@@ -1846,10 +1719,7 @@ impl CorpusIndex {
             };
         };
 
-        // (c) An OPAQUE root has no parse and no sections, so a `#selector`
-        //     addresses nothing (§ 10.1, G-1). RESOLUTION-time, because a root's
-        //     kind is a mount-table fact — this is the constructor that variant
-        //     ships with.
+        // Opaque root: no sections; `#selector` is resolution-time refuse (§ 10.1 G-1).
         if let RootKind::Opaque(kind) = &mounted.kind
             && addr.has_selector()
         {
@@ -1860,23 +1730,15 @@ impl CorpusIndex {
             });
         }
 
-        // (d) POST-RESOLUTION CONFINEMENT. `path_confined` is purely lexical and
-        //     confinement used to come from joining onto the ONE workspace root;
-        //     multi-root removes that ambient guarantee, so the path portion is
-        //     re-confined to the mount it resolved to. Without this a `root:`
-        //     prefix is an escape from the only confinement the engine has.
+        // Re-confine path to the resolved mount (multi-root has no ambient join).
         if !addr::confined(addr.path()) {
             return RefResolution::Malformed(AddrError::AmbiguousColon {
                 found: addr.path().to_owned(),
             });
         }
 
-        // (e) The three rules, run against the TARGET root's own corpus and its
-        //     own index — never the ambient one. C-2: a rooted address never
-        //     falls back to the ambient root. If the path names nothing in THAT
-        //     root, it is `file_not_found` scoped to that root — a distinct
-        //     class from grey, and conflating them is the false negative the
-        //     unmounted class exists to prevent.
+        // Three rules on TARGET root only (C-2: no ambient fallback). Miss ⇒
+        // file_not_found scoped to that root (not grey).
         match mounted.index.three_rules(addr.path(), from, mounted.docs) {
             Some(path) => RefResolution::Rooted { root, path },
             None => RefResolution::NotFound {
@@ -1887,13 +1749,8 @@ impl CorpusIndex {
         }
     }
 
-    /// The three rules, over ONE root's corpus: the spelling IS a key; the
-    /// spelling + `.md` is a key; then `getFirstLinkpathDest` parity.
-    ///
-    /// Factored out so the ambient arm and the mounted arm of [`resolve_ref`]
-    /// run the SAME precedence. Two copies of this order is how the pin plane
-    /// and the decoration plane came to hash two different documents for one
-    /// ref; the whole point of one owner is that there is one copy.
+    /// Three rules over one root's corpus (key / key+`.md` / linkpath). Shared by
+    /// ambient and mounted arms of [`resolve_ref`] — one copy of the precedence.
     fn three_rules(
         &self,
         spelling: &str,
@@ -2012,89 +1869,51 @@ impl<'a> RootedCorpus<'a> {
     }
 }
 
-/// What an address resolved to — the ROOT-AWARE answer.
+/// Root-aware resolution outcome.
 ///
-/// The classes are kept distinct on purpose. Collapsing [`Unmounted`] into
-/// [`NotFound`] is the false negative this type exists to prevent: an unmounted
-/// root is *outside sight* (grey — nothing drifted, the ledger cannot measure
-/// from here), while a missing file in a MOUNTED root is a measured absence
-/// (`file_not_found`). One is a refusal to claim; the other is a claim.
+/// Keep [`Unmounted`] distinct from [`NotFound`]: unmounted = outside sight
+/// (grey); missing file in a mounted root = measured absence (`file_not_found`).
 ///
 /// [`Unmounted`]: RefResolution::Unmounted
 /// [`NotFound`]: RefResolution::NotFound
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefResolution {
-    /// Resolved in the AMBIENT root, to this corpus path.
+    /// Ambient root → corpus path.
     Ambient(String),
-    /// Resolved inside a MOUNTED root, to that root's corpus path. The bytes
-    /// come from THAT root — never the ambient root's same-basename file.
+    /// Mounted root → path inside THAT root (never ambient same-basename).
     Rooted {
-        /// The canonical root name the address named.
+        /// Canonical root the address named.
         root: MountName,
-        /// The corpus path inside that root.
+        /// Corpus path inside that root.
         path: String,
     },
-    /// The address names a root **nothing declares** — the mount table has never
-    /// heard of it. **GREY, never red and never `file_not_found`.** Its refusal
-    /// teaches the declaration.
+    /// Root undeclared. **Grey**, never red / `file_not_found`.
     Unmounted(MountName),
-    /// The address names a root the file **DECLARES** but this machine cannot
-    /// read. Also grey, also exit 1 — but a **different cause with a different
-    /// fix**, so S3-R43 gives it its own reason word and a refusal naming the
-    /// PATH. Telling a user to declare a root they have already declared is the
-    /// defect this variant exists to remove.
+    /// Root declared but unreadable (S3-R43). Grey; refusal names the PATH.
     PathUnseeable {
-        /// The canonical name the file declares.
         root: MountName,
-        /// The path it binds — what the refusal tells a reader to check. Empty
-        /// only in the caller-inconsistency case, where no path is known.
+        /// Bound path; empty only when the caller loaded no corpus for a bound root.
         path: String,
-        /// The underlying reason, verbatim.
         detail: String,
     },
-    /// Well-formed, its root (if any) bound and readable — but the path names
-    /// nothing in THAT root's corpus.
-    ///
-    /// **It carries the root the miss happened INSIDE, and that field is the
-    /// whole point.** `docs/address-grammar.md` § 5.2 row F4 requires
-    /// `file_not_found` SCOPED TO THAT ROOT — never the ambient root's
-    /// same-basename file — and a caller holding a bare `NotFound` cannot
-    /// author that refusal, because it cannot say which root "THAT" was. The
-    /// doc sentence above named a root the type then discarded.
-    ///
-    /// Measured consequence of the bare form: a cross-vault miss rendered red
-    /// `selector-unresolved` with zero candidates, which asserts the PAGE
-    /// resolved and the SELECTOR did not — the wrong cause, in the engine's own
-    /// voice, on a root the engine could see perfectly well.
-    /// **It carries the PATH and SELECTOR for the same reason it carries the
-    /// root**, and the reason is R1.6, not convenience. The refusal names the
-    /// path that is missing and echoes the address the author wrote; the only
-    /// other way for a caller to obtain those is to re-split the spelling it
-    /// handed in — a joined string address taken apart in a machine surface,
-    /// which is the construction decision 14 disapproves and the one U21 is
-    /// landing the residue of. The resolver has the parsed address in hand, so
-    /// it hands the PARTS out and nothing downstream re-parses.
+    /// Well-formed, root bound+readable, path missing in THAT root's corpus.
+    /// Carries root/path/selector so the refusal can scope `file_not_found` to
+    /// the miss (address-grammar § 5.2 F4; R1.6) — bare `NotFound` forced wrong
+    /// `selector-unresolved` on cross-vault misses. Parts from the parsed
+    /// address; callers must not re-split joined spellings (decision 14).
     NotFound {
-        /// The root the miss happened inside — `None` for the ambient root.
+        /// Root of the miss — `None` = ambient.
         root: Option<MountName>,
-        /// The path that names nothing in that root's corpus.
         path: String,
-        /// The selector as the address carried it (`None` = page grain).
+        /// Selector as carried (`None` = page grain).
         selector: Option<String>,
     },
-    /// The spelling is not a well-formed address, or is one the resolver
-    /// refuses (an opaque root carrying a selector).
+    /// Malformed address, or opaque root with a selector.
     Malformed(AddrError),
 }
 
 impl RefResolution {
-    /// The corpus path this resolved to, if it resolved at all — the projection
-    /// a caller that only needs "which document" reads.
-    ///
-    /// **Deliberately loses the root.** A caller holding only this cannot tell
-    /// an ambient hit from a rooted one, which is correct for callers that
-    /// already know which corpus they are indexing into and wrong for anything
-    /// that must fetch bytes — those read the variant.
+    /// Corpus path if resolved. Drops root — callers that need root read the variant.
     #[must_use]
     pub fn path(&self) -> Option<&str> {
         match self {
@@ -2103,11 +1922,7 @@ impl RefResolution {
         }
     }
 
-    /// Did this address name a root **nothing declares**?
-    ///
-    /// Deliberately NOT true for [`RefResolution::PathUnseeable`]: that root
-    /// IS declared, and a caller that treats the two alike reproduces exactly
-    /// the false teaching S3-R43 removed.
+    /// Undeclared root, if any. Not true for [`PathUnseeable`] (declared; S3-R43).
     #[must_use]
     pub fn unmounted(&self) -> Option<&MountName> {
         match self {
@@ -2424,26 +2239,14 @@ mod tests {
         assert_eq!(independent, "fb49e9df2257fab8"); // frozen §4.4 node_rev_after
     }
 
-    // -----------------------------------------------------------------------
     // U2.11 — frontmatter multi-line block-sequence write grain
-    // -----------------------------------------------------------------------
-    //
-    // Fixture = the LIVE pinned specimen: the a475ccfc cross-review frontmatter
-    // at file rev df4198ba8ba4ab02 (rev verified via ccc-statusd read before
-    // transcription). `inputs:` is a multi-line block SEQUENCE (11 items),
-    // `tags:` a single-line FLOW sequence, `finalized_at:` the block's trailing
-    // sibling. At the pinned rev the LIVE file is CORRUPTED: `finalized_at:` sits
-    // wedged BETWEEN `inputs:` and its items (see `SPECIMEN_FM_WEDGED`) — the exact
-    // silent corruption this unit fixes. `SPECIMEN_FM_CLEAN` is the pre-corruption
-    // shape (finalized_at as the trailing sibling), the byte-stable block the
-    // grain must round-trip.
+    // Clean: `inputs:` block seq + trailing `finalized_at:`. Wedged: live
+    // corruption at df4198ba8ba4ab02 with `finalized_at:` between `inputs:` and items.
 
-    /// The pre-corruption specimen frontmatter — `inputs:` a well-formed block
-    /// sequence, `finalized_at:` its trailing sibling.
+    /// Pre-corruption specimen — well-formed `inputs:` block sequence.
     const SPECIMEN_FM_CLEAN: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\nfinalized_at: 2026-07-23T00:20-04:00\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
 
-    /// The LIVE bytes at df4198ba8ba4ab02 — `finalized_at:` wedged between
-    /// `inputs:` and its block items (the in-the-wild silent corruption).
+    /// Live bytes at df4198ba8ba4ab02 — `finalized_at:` wedged under `inputs:`.
     const SPECIMEN_FM_WEDGED: &str = "---\ntype: review\nsession: 22-01-meridian-attestation-module\nowner: \"[[a475ccfc]]\"\nrole: adversary (team-3, workflow-first arm)\nstatus: final\ncreated_at: 2026-07-22T23:45-04:00\ntags: [type/review, round2, cross-review, adversary]\ninputs:\nfinalized_at: 2026-07-23T00:20-04:00\n  - \"results/round2/design-1.md@d8536666b42dc8fd\"\n  - \"results/round2/design-2.md@a895cd0c580edf7b\"\n  - \"results/round2/design-3.md@32ed1508fb3396fa\"\n  - \"decisions/2026-07-22-meridian-go-end-state.md\"\n  - \"decisions/2026-07-22-pin-vocabulary-and-gating.md\"\n  - \"results/design-law-brief.md\"\n  - \"results/round-1-report.md\"\n  - \"results/engine-analysis.md\"\n  - \"[[substrate]]\"\n  - \"[[reconciliation]]\"\n  - \"[[attestation-tournament]]\"\n---\n\n# Cross-review — a475ccfc (team-3 adversary)\n\nbody\n";
 
     fn specimen_clean() -> Document {
@@ -2453,10 +2256,8 @@ mod tests {
         )
     }
 
-    /// U2.11 grain: a multi-line block-sequence value grows the `fm_key` leaf over
-    /// the WHOLE value (key line + every indented item), while a single-line flow
-    /// or scalar value keeps its frozen one-line grain (§1 leaf law). The old
-    /// line-oriented grain stopped at the key line, orphaning the block on replace.
+    /// U2.11: block-sequence `fm_key` grain spans full value (key + indented
+    /// items); flow/scalar keep one-line grain (§1 leaf). Line-only grain orphaned blocks.
     #[test]
     fn fm_key_multiline_block_sequence_grain_spans_full_value() {
         let doc = specimen_clean();
@@ -2571,12 +2372,8 @@ mod tests {
         );
     }
 
-    /// U2.11 LIVE pinned witness (df4198ba8ba4ab02): on the corrupted specimen the
-    /// wedged `finalized_at:` splits `inputs:` from its items — `inputs` resolves
-    /// to an EMPTY grain and the 11 items misattribute to `finalized_at`'s grain.
-    /// The corrected grain attributes lines to the nearest preceding column-0 key
-    /// exactly as YAML block scope does, making the corruption visible instead of
-    /// silent.
+    /// U2.11: wedged `finalized_at:` empties `inputs` grain; items hang off
+    /// `finalized_at`. Corrected grain follows YAML block scope (nearest column-0 key).
     #[test]
     fn fm_wedged_specimen_at_pinned_rev_grain() {
         let doc = build(
@@ -2597,11 +2394,9 @@ mod tests {
         assert!(grain.ends_with("  - \"[[attestation-tournament]]\""));
     }
 
-    /// DERIVED DATA (advisor 44870138 classification): the full-terminator trim
-    /// (`\n` ⇒ 1, `\r\n` ⇒ 2, terminator-less ⇒ 0) is the correct mechanical
-    /// reading of the §1 leaf law, but NO frozen worked value exercises `\r\n` —
-    /// so these fixtures pin DATA, not law. TRIPWIRE: if any future frozen worked
-    /// value contradicts them, STOP and report (do not silently re-pin).
+    /// Full-terminator trim (`\n`⇒1, `\r\n`⇒2, none⇒0) — §1 leaf law mechanics.
+    /// No frozen worked value exercises `\r\n`; fixtures pin data, not law.
+    /// Tripwire: a contradicting frozen value must stop and report, not re-pin.
     #[test]
     fn trim_terminator_excludes_full_terminator_derived_data() {
         let lf = b"title: Plan\n";
@@ -2699,12 +2494,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // validate_batch (rung 4) — §4.4 batch grammar + §5 CAS/failure split
-    // -----------------------------------------------------------------------
+    // validate_batch — §4.4 batch grammar + §5 CAS/failure split
 
-    /// S2 plan (`plan_v2`): "ship by September" at Q3, "- new item" appended to
-    /// Q4 — the state the §5.2 worked failures run against.
+    /// S2 plan (`plan_v2`) — state for §5.2 worked failures.
     fn plan_s2() -> Document {
         let raw = merkle_fixtures().plan_v2;
         build(raw.clone(), syntax::parse(&raw))
@@ -3241,11 +3033,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // merkle_root (rung 3) — §12.2 encoding + §12.3 prefix bump
-    // -----------------------------------------------------------------------
+    // merkle_root — §12.2 encoding + §12.3 prefix bump
 
-    // Frozen hex ground truth (independently recomputed, 69/69).
+    // Frozen hex ground truth (independently recomputed).
     const R0_HEX: &str = "74162a12ff0b323b52be37359cf5144fcc254ecf8801958402514a763829b5e9";
     const R1_HEX: &str = "10769ae1c77f5646750f3f52df2d055156b411145a02b8361ecd32af1357a1b7";
     const R2_HEX: &str = "83b4ba591c0291d9f2a05428cac38e5820858fbb9c47720ab352344ddccc8f68";

@@ -1,34 +1,23 @@
-//! The d2 §2.1 fact-table surface — the fact tables (`node`, `edge`, `claim`)
-//! as `DuckDB` **projections over parse, never a second store**.
+//! d2 §2.1 fact tables (`node`, `edge`, `claim`) as `DuckDB` **projections over
+//! parse, never a second store**.
 //!
-//! # The admission test, encoded as columns
-//! Every column carries its derivation-source class — the admission-test
-//! classes, NOT design lineage (d2 §1.1):
-//! - **1 parse** — computable from the vault's bytes alone.
-//! - **2 rev-comparison** — equality of content-addressed revs (incl. repo
-//!   refs of the vault's own repo).
-//! - **3 engine's-own-acts** — facts the strict writer records about writes it
-//!   itself performed (A5-bounded: write-mechanics only).
+//! # Admission-test column classes (d2 §1.1)
+//! - **1 parse** — computable from vault bytes alone.
+//! - **2 rev-comparison** — equality of content-addressed revs.
+//! - **3 engine's-own-acts** — A5-bounded write-mechanics the strict writer
+//!   recorded about its own writes.
 //!
-//! Each column comment below is tagged `[1]`/`[2]`/`[3]`.
-//!
-//! # These are projections, not a store
-//! `node` is projected from the parsed corpus. A fourth table, `receipt_journal`,
-//! projected the ONE reserved journal page here until the journal was removed
-//! (ZT 2026-08-02, remove-no-replacement); it is gone, not emptied — a table that
-//! can never have a row is not a contract. `edge` and `claim` are defined here as
-//! the contract; their
-//! projections are populated by the units that own their source facts — `edge`
-//! by the pin/lock manifest reader, `claim` by the run plane — and are left
-//! empty here rather than half-projected (honest, stated).
+//! Column comments are tagged `[1]`/`[2]`/`[3]`. `node` is projected here from
+//! the parsed corpus; `edge`/`claim` are fixed as contract and populated by
+//! their source units (pin reader / run plane), left empty rather than
+//! half-projected.
 
 use duckdb::Connection;
 use duckdb::types::Value;
 use model::{Document, Node, NodeKind};
 
-/// The d2 §2.1 fact-table DDL: `node` · `edge` · `claim`.
-/// A separate schema from the frozen round-1 view schema ([`crate::schema`]) —
-/// additive, never an edit to what ships. Every column tags its source class.
+/// d2 §2.1 fact-table DDL (`node` · `edge` · `claim`). Additive over the frozen
+/// round-1 view schema ([`crate::schema`]); never an edit to what ships.
 pub const FACTS_SCHEMA_SQL: &str = r"
 -- node — one row per addressable span (the selector grammar's spans: page,
 -- page#Heading, page#^block-id, frontmatter). A projection of the parsed tree.
@@ -74,25 +63,23 @@ CREATE TABLE claim (
 
 ";
 
-/// The facts-schema version. A reader whose version differs treats the facts
-/// projection as ABSENT (delete-don't-migrate, mirroring [`crate::schema`]).
+/// Facts-schema version. Mismatch ⇒ treat projection as ABSENT (delete-don't-
+/// migrate, mirroring [`crate::schema`]).
 pub const FACTS_SCHEMA_VERSION: i32 = 1;
 
 /// Create the fact tables against `conn`.
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from executing the DDL batch.
+/// Propagates any `DuckDB` error from the DDL batch.
 pub fn create_facts_schema(conn: &Connection) -> duckdb::Result<()> {
     conn.execute_batch(FACTS_SCHEMA_SQL)
 }
 
-/// Build an in-memory fact-table projection over `docs`: the `node` table from
-/// the parsed corpus. `edge`/`claim` exist (the contract) but are not populated
-/// here (owned by later units — stated in the module docs).
+/// In-memory fact-table projection: `node` from the parsed corpus. `edge`/
+/// `claim` exist (contract) but are not populated here.
 ///
 /// # Errors
-/// Propagates any `DuckDB` error from opening the database, creating the schema,
-/// or inserting the projected rows.
+/// Propagates any `DuckDB` error from open, schema, or insert.
 pub fn build_facts_memory(
     docs: &std::collections::BTreeMap<String, Document>,
 ) -> duckdb::Result<Connection> {
@@ -102,14 +89,12 @@ pub fn build_facts_memory(
     Ok(conn)
 }
 
-/// Project every document's addressable spans into `node` rows: the document
-/// root, each section, the frontmatter node, and each block anchor — exactly
-/// the spans the selector grammar (§2.2) addresses. Inline nodes (wikilinks,
-/// tags) carry no independent selector and are not node rows.
+/// Project addressable spans into `node` rows: document root, sections,
+/// frontmatter, block anchors — the selector grammar (§2.2) spans. Inline
+/// nodes (wikilinks, tags) are not node rows.
 ///
-/// `pub(crate)` so the U2.9 read face ([`crate::read_face`]) can project `node`
-/// into the SAME connection as its lock-pin/board projections (board reds join
-/// `input_lock` against `node`), never a second store.
+/// `pub(crate)` so the read face projects `node` into the same connection as
+/// lock-pin/board projections (never a second store).
 pub(crate) fn project_nodes(
     conn: &Connection,
     docs: &std::collections::BTreeMap<String, Document>,
@@ -129,7 +114,7 @@ pub(crate) fn project_nodes(
     Ok(())
 }
 
-/// Walk one node tree, emitting a `node` row for each addressable span.
+/// Emit a `node` row per addressable span, then recurse.
 fn collect_nodes(node: &Node, path: &str, doc_rev: &str, rows: &mut Vec<Vec<Value>>) {
     let entry = match &node.kind {
         NodeKind::Document { .. } => Some(("document", String::new())),
@@ -156,7 +141,7 @@ fn collect_nodes(node: &Node, path: &str, doc_rev: &str, rows: &mut Vec<Vec<Valu
     }
 }
 
-/// `usize` → `u64`, saturating (never truncates on a 32-bit target).
+/// `usize` → `u64`, saturating.
 fn u64c(x: usize) -> u64 {
     u64::try_from(x).unwrap_or(u64::MAX)
 }
@@ -171,8 +156,7 @@ mod tests {
         model::build(raw.to_string(), syntax::parse(raw))
     }
 
-    /// The four fact tables exist as a projection (parse), and `node` carries
-    /// one row per addressable span — the doc root, sections, and frontmatter.
+    /// Fact tables exist; `node` has one row per addressable span.
     #[test]
     fn node_projects_addressable_spans() {
         let mut docs = BTreeMap::new();
@@ -182,7 +166,6 @@ mod tests {
         );
         let conn = build_facts_memory(&docs).expect("facts build");
 
-        // the fact tables exist (the contract).
         for t in ["node", "edge", "claim"] {
             let n: i64 = conn
                 .query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
