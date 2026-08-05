@@ -1,8 +1,8 @@
-//! End-to-end gates for the `mrd` CLI, driving the REAL binary
-//! (`CARGO_BIN_EXE_mrd`) over its process boundary with an overridden cache root
-//! (`XDG_CACHE_HOME`) and `HOME`. This is the phase integration evidence: the
-//! landed `workspace` / `cache` / `registry` crates wired into the settled verb
-//! surface, exercised as an operator would.
+//! End-to-end gates for the `mrd` CLI, driving the REAL binary (`CARGO_BIN_EXE_mrd`) over its
+//! process boundary with an overridden cache root (`XDG_CACHE_HOME`) and `HOME`. This is the
+//! phase integration evidence: the landed `workspace` / `cache` / `registry` crates wired into
+//! the settled verb surface, exercised as an operator would.
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -494,15 +494,15 @@ fn graceful_kill(child: &mut std::process::Child) {
     }
 }
 
-// ===========================================================================
-// P1 (decision 0002 §3): the engine-client path — `mrd links` auto-spawns the
-// resident daemon on first use and degrades to an in-process ephemeral engine.
-// ===========================================================================
+// P1 (decision 0002 §3): the engine-client path — `mrd links` auto-spawns the resident daemon
+// on first use and degrades to an in-process ephemeral engine.
+//
+//
 
 impl Sandbox {
-    /// An ANCHORED workspace `tmp/<name>` (a `.git` entry, so the ladder answers
-    /// git-root and never needs a daemon) seeded with `files`. Returns its
-    /// canonical path.
+    /// An ANCHORED workspace `tmp/<name>` (a `.git` entry, so the ladder answers git-root and never
+    /// needs a daemon) seeded with `files`. Returns its canonical path.
+    ///
     fn anchored_ws(&self, name: &str, files: &[(&str, &str)]) -> PathBuf {
         let ws = self.dir(name);
         std::fs::create_dir_all(ws.join(".git")).expect("git anchor");
@@ -523,10 +523,10 @@ impl Sandbox {
         self.wait_daemon_pid_since(None, timeout)
     }
 
-    /// Like [`Self::wait_daemon_pid`], but when `exclude` is set, poll until the
-    /// pidfile names a DIFFERENT pid — so a respawn is not confused with the
-    /// killed daemon's stale pidfile (SIGKILL leaves it behind until the fresh
-    /// daemon overwrites it).
+    /// Like [`Self::wait_daemon_pid`], but when `exclude` is set, poll until the pidfile names a
+    /// DIFFERENT pid — so a respawn is not confused with the killed daemon's stale pidfile (SIGKILL
+    /// leaves it behind until the fresh daemon overwrites it).
+    ///
     fn wait_daemon_pid_since(&self, exclude: Option<i32>, timeout: Duration) -> Option<i32> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -577,9 +577,9 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
     // Cold: no daemon running. `mrd links` must auto-spawn one and answer.
     let warm = sb.run(&ws, &["links", "--json"]);
 
-    // Reap the auto-spawned resident daemon BEFORE asserting, so a failed
-    // assertion never leaks it. It is detached (reparented to init), so we
-    // signal it by the pid it wrote to its own pidfile.
+    // Reap the auto-spawned resident daemon BEFORE asserting, so a failed assertion never leaks
+    // it. It is detached (reparented to init), so we signal it by the pid it wrote to its own
+    // pidfile.
     let pid = sb.wait_daemon_pid(Duration::from_secs(5));
     if let Some(pid) = pid {
         signal(pid, libc::SIGTERM);
@@ -620,10 +620,10 @@ fn e2e_links_cold_auto_spawns_and_answers_warm() {
         "warm and degrade answers must not drift"
     );
 
-    // And both speak the v3 vocabulary the CLI negotiated (`contract:v3`): the
-    // degrade body carries the `fingerprint` staleness triple, never `root`. A
-    // positive+negative check, so a SYMMETRIC regression of both paths back to
-    // `root` (which the equality above would not catch) fails here.
+    // And both speak the v3 vocabulary the CLI negotiated (`contract:v3`): the degrade body
+    // carries the `fingerprint` staleness triple, never `root`. A positive+negative check, so a
+    // SYMMETRIC regression of both paths back to `root` (which the equality above would not catch)
+    // fails here.
     assert!(
         cold["links"]["as_of_fingerprint"].is_string()
             && cold["links"]["live_fingerprint"].is_string(),
@@ -651,9 +651,9 @@ fn e2e_links_spawn_impossible_degrades_and_answers_correctly() {
         ],
     );
 
-    // No daemon is running, and spawning one is impossible (the override names a
-    // binary that does not exist), so `ensure_daemon` fails and the client
-    // degrades — the run still succeeds.
+    // No daemon is running, and spawning one is impossible (the override names a binary that does
+    // not exist), so `ensure_daemon` fails and the client degrades — the run still succeeds.
+    //
     let out = sb
         .base(mrd_bin())
         .env("MERIDIAN_DAEMON_BIN", "/nonexistent/mrd-daemon")
@@ -711,9 +711,9 @@ fn e2e_links_respawns_after_daemon_sigkill() {
         "the killed daemon exits"
     );
 
-    // The next client sees the stale socket, respawns a FRESH daemon (d2), and
-    // answers correctly — d2 rebuilds the engine from disk (fingerprint
-    // recovery), never from d1's lost in-memory state.
+    // The next client sees the stale socket, respawns a FRESH daemon (d2), and answers correctly —
+    // d2 rebuilds the engine from disk (fingerprint recovery), never from d1's lost in-memory
+    // state.
     let second = sb.run(&ws, &["links", "--json"]);
     let pid2 = sb
         .wait_daemon_pid_since(Some(pid1), Duration::from_secs(5))

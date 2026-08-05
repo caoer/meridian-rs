@@ -1,38 +1,38 @@
-//! The rules walk — the disk edge that feeds tag-indexed registration.
+//! The rules walk — the disk edge that feeds tag-indexed registration. Why this lives here and
+//! not in `policy` `policy` is the WHEN plane and is I/O-free by charter (docs/laws.md), so
+//! [`policy::RuleIndex`] reads a caller-supplied page feed. This module is that caller: it
+//! enumerates the ladders roots on disk, reads each page, and offers it to the index one page
+//! at a time ([`policy::RuleIndex::offer`]) so registering a vault costs one page of memory
+//! rather than the whole corpus. Why the CLI is the caller, and the door is not The door never
+//! walks. It reads the ONE attested armed-set artifact and takes its rows (`policy::index`s
+//! O(armed) law) — re-walking to learn the armed set is exactly what attestation replaces.
+//! Walking is the SWEEP/inspect side: what is registered here, what shadows what. Those are CLI
+//! verbs, so the walk sits beside them.
 //!
-//! # Why this lives here and not in `policy`
-//! `policy` is the WHEN plane and is I/O-free by charter (docs/laws.md), so
-//! [`policy::RuleIndex`] reads a caller-supplied page feed. This module is that
-//! caller: it enumerates the ladder's roots on disk, reads each page, and offers it
-//! to the index one page at a time ([`policy::RuleIndex::offer`]) so registering a
-//! vault costs one page of memory rather than the whole corpus.
 //!
-//! # Why the CLI is the caller, and the door is not
-//! The door never walks. It reads the ONE attested armed-set artifact and takes its
-//! rows (`policy::index`'s O(armed) law) — re-walking to learn the armed set is
-//! exactly what attestation replaces. Walking is the SWEEP/inspect side: what is
-//! registered here, what shadows what. Those are CLI verbs, so the walk sits beside
-//! them.
 //!
-//! # The ladder (ruling § 3)
-//! Outermost to innermost: **user space** → **workspace root** → **folder/session
-//! tree**. The last two are ONE layer separated by depth — a session-tree page is
-//! simply a deeper workspace page — so the walk enumerates two roots, and
-//! [`policy::Scope`] separates the inner two by mount depth.
 //!
-//! # The walk offers EVERY candidate, and narrows nothing
-//! Resolution is narrowed to the pages mounted at-or-above the evaluated path
-//! (ruling § 3, amended 2026-08-01), and narrowing is a CONSUMER step through
-//! [`policy::Registration::mount_dir`] before `resolve()`. A walk that narrowed
-//! would make the override chain unprintable (§ 7) — the shadowed candidates it
-//! dropped are exactly what `mrd rules` must show. So this walk gathers all three
-//! layers whole, and every consumer narrows for itself.
 //!
-//! # A rule page lives in the hash domain
-//! Pages are enumerated through [`fs::hash_domain`], not [`fs::walk`]: dot-directory
-//! files are addressable but sit OUTSIDE the hash domain, and law that cannot be
-//! hashed cannot be attested (the same rule the convention loader spells as "never a
-//! dot-dir"). A page the domain excludes is not a rule page.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,21 +41,21 @@ use fs::WorkspaceRoot;
 use fs::domain::Domain;
 use policy::{PageRef, RuleIndex, ScopeLayer};
 
-/// The `MERIDIAN.md` the user rung is anchored on, resolved through the bootstrap
-/// chain (`MERIDIAN_CONFIG`, else `$HOME/MERIDIAN.md`).
+/// The `MERIDIAN.md` the user rung is anchored on, resolved through the bootstrap chain
+/// (`MERIDIAN_CONFIG`, else `$HOME/MERIDIAN.md`). This resolves the ANCHOR only. Whether it
+/// exists, what lives beside it, and what counts as a user rule page are all
+/// [`fs::user_rule_pages`]s law — one function for the whole rung, called by this walk and by
+/// `mrd rules`, never forked into two enumerations that could disagree about a users rules.
 ///
-/// This resolves the ANCHOR only. Whether it exists, what lives beside it, and what
-/// counts as a user rule page are all [`fs::user_rule_pages`]'s law — one function
-/// for the whole rung, called by this walk and by `mrd rules`, never forked into
-/// two enumerations that could disagree about a user's rules.
+///
 #[must_use]
 pub fn user_anchor(env: &config::Env) -> Option<PathBuf> {
     config::resolve_path(env).ok()
 }
 
-/// One page the walk could not offer. Reading a vault touches files that are
-/// unreadable or not UTF-8; neither is a registration verdict, and neither may
-/// un-register the rest of the workspace, so they are collected rather than raised.
+/// One page the walk could not offer. Reading a vault touches files that are unreadable or not
+/// UTF-8; neither is a registration verdict, and neither may un-register the rest of the
+/// workspace, so they are collected rather than raised.
 #[derive(Debug)]
 pub struct UnreadablePage {
     /// The page's path, relative to its layer's root.
@@ -76,9 +76,9 @@ pub struct RulesWalk {
 }
 
 impl RulesWalk {
-    /// The discovery index — every page that registered, plus every page that
-    /// offered itself and was refused. Call [`policy::RuleIndex::resolve`] on it
-    /// (after narrowing, if the consumer narrows).
+    /// The discovery index — every page that registered, plus every page that offered itself and
+    /// was refused. Call [`policy::RuleIndex::resolve`] on it (after narrowing, if the consumer
+    /// narrows).
     #[must_use]
     pub fn index(&self) -> &RuleIndex {
         &self.index
@@ -90,8 +90,8 @@ impl RulesWalk {
         self.index
     }
 
-    /// The roots this walk enumerated, outermost rung first. A layer whose root did
-    /// not exist is absent here — what was walked is a fact the caller can print.
+    /// The roots this walk enumerated, outermost rung first. A layer whose root did not exist is
+    /// absent here — what was walked is a fact the caller can print.
     #[must_use]
     pub fn roots(&self) -> &[(ScopeLayer, PathBuf)] {
         &self.roots
@@ -177,8 +177,8 @@ fn offer_root(
     walk.roots.push((layer, root.to_path_buf()));
 
     for rel in pages {
-        // Page paths are the addressing the ARM artifact and the print verb render,
-        // so they are `/`-separated regardless of the platform's separator.
+        // Page paths are the addressing the ARM artifact and the print verb render, so they are
+        // `/`-separated regardless of the platform's separator.
         let page = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy())
@@ -295,12 +295,12 @@ mod tests {
         );
     }
 
-    /// **The anchor law, at this walk's surface.** `MERIDIAN.md` declares the user
-    /// scope; without it there is no scope for user rules to be a sibling of. The
-    /// rule itself is [`fs::user_rule_pages`]'s (it returns empty), and what is
-    /// tested HERE is that the walk does not invent a layer around that emptiness:
-    /// no user root is reported, and a `rules/` folder sitting beside the absent
-    /// anchor registers nothing.
+    /// **The anchor law, at this walks surface.** `MERIDIAN.md` declares the user scope; without it
+    /// there is no scope for user rules to be a sibling of. The rule itself is
+    /// [`fs::user_rule_pages`]s (it returns empty), and what is tested HERE is that the walk does
+    /// not invent a layer around that emptiness: no user root is reported, and a `rules/` folder
+    /// sitting beside the absent anchor registers nothing.
+    ///
     #[test]
     fn an_absent_meridian_md_anchor_is_an_empty_user_layer() {
         let tmp = tempfile::tempdir().expect("tmp");

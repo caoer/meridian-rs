@@ -1,16 +1,16 @@
-//! **U11 — criterion 3, BOTH HALVES, driven through the REAL `mrd walk`.**
+//! **U11 — criterion 3, BOTH HALVES, driven through the REAL `mrd walk`.** `mrd read` may NOT
+//! be cited for a per-item verdict (plan §9.1: its only colour channel is daemon-only, carries
+//! tone but no reason, and is skipped exactly in the unresolvable-target case).
 //!
-//! `mrd read` may NOT be cited for a per-item verdict (plan §9.1: its only colour
-//! channel is daemon-only, carries tone but no reason, and is skipped exactly in
-//! the unresolvable-target case). `mrd walk` is the per-item surface, and it
-//! dials no daemon — but `HOME` and `XDG_CACHE_HOME` are sandboxed anyway so the
-//! mount table read here is this fixture's and never the operator's.
 //!
-//! The fixture is built around FINDING 03's trap: **the ambient root holds a
-//! `notes.md` of its own**, with different bytes from the `sessions` root's
-//! `notes.md`. Every assertion below would be satisfied by the shipped
-//! mis-resolution if it only checked that the ref *resolves* — so the gates
-//! check WHICH BYTES the verdict rested on, by editing one root at a time.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -32,12 +32,12 @@ fn live_fingerprint(raw: &str) -> String {
         .into_string()
 }
 
-/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits —
-/// so these gates depend on the CLI's own READER, never on the writer that made
-/// them. `object` keeps its `root:` prefix: the canonical agent-plane spelling.
+/// One whole-body R4 pin, hand-written in the exact bytes `lock::render` emits — so these gates
+/// depend on the CLI's own READER, never on the writer that made them. `object` keeps its
+/// `root:` prefix: the canonical agent-plane spelling. NOTE FOR REVIEWERS: `version: 2` is the
+/// LOCK FILE schema version, not the wire protocol version.
 ///
-/// NOTE FOR REVIEWERS: `version: 2` is the LOCK FILE schema version, not the
-/// wire protocol version.
+///
 fn lock_block(object: &str, fingerprint: &str) -> String {
     format!(
         "```meridian-lock\nversion: 2\npins:\n  - object: \"[[{object}]]\"\n    \
@@ -168,15 +168,15 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// **CRITERION 3, HALF ONE — the resolved BYTES come from the TARGET ROOT**,
-/// proven by editing the file in that root and observing the change, and by
-/// editing the ambient decoy and observing NO change.
+/// **CRITERION 3, HALF ONE — the resolved BYTES come from the TARGET ROOT**, proven by editing
+/// the file in that root and observing the change, and by editing the ambient decoy and
+/// observing NO change.
 ///
-/// The second edit is what makes this a proof rather than a coincidence. A
-/// cross-root wikilink already "resolves" on shipped code — to the ambient
-/// root's same-basename file — so an assertion that the ref resolves, or even
-/// that it goes green, is satisfied by the defect. Only the pair of edits
-/// separates the two documents.
+///
+///
+///
+///
+///
 #[test]
 fn the_resolved_bytes_come_from_the_target_root_not_the_ambient_decoy() {
     let sb = sandbox();
@@ -198,9 +198,9 @@ fn the_resolved_bytes_come_from_the_target_root_not_the_ambient_decoy() {
     );
     assert!(out.status.success(), "a green walk exits 0");
 
-    // (b) THE CONTROL, FIRST — edit the AMBIENT DECOY. If the engine were
-    //     resolving onto the ambient file (FINDING 03), THIS is the edit that
-    //     would move the verdict. It must not.
+    // (b) THE CONTROL, FIRST — edit the AMBIENT DECOY. If the engine were resolving onto the
+    // ambient file (FINDING 03), THIS is the edit that would move the verdict. It must not.
+    //
     std::fs::write(
         sb.ws.join("notes.md"),
         "# Notes\n\n## Design\n\nDECOY EDITED.\n",
@@ -239,21 +239,21 @@ fn the_resolved_bytes_come_from_the_target_root_not_the_ambient_decoy() {
     );
 }
 
-/// **CRITERION 3, HALF TWO — an UNMOUNTED root renders GREY with a teaching
-/// refusal naming the missing mount**, never red and never `file_not_found`.
+/// **CRITERION 3, HALF TWO — an UNMOUNTED root renders GREY with a teaching refusal naming the
+/// missing mount**, never red and never `file_not_found`. The pin is otherwise IDENTICAL to the
+/// green case above — same ref, same rev, same bytes on disk. Only the mount table changed.
+/// That isolation is the point (S3-R28(c): when two facts are cited as one risk, measure which
+/// one carries it) — here the mount table alone carries the verdict.
 ///
-/// The pin is otherwise IDENTICAL to the green case above — same ref, same rev,
-/// same bytes on disk. Only the mount table changed. That isolation is the point
-/// (S3-R28(c): when two facts are cited as one risk, measure which one carries
-/// it) — here the mount table alone carries the verdict.
+///
 #[test]
 fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
     let sb = sandbox();
     sb.claim("sessions:notes", &live_fingerprint(TARGET));
 
-    // It is GREEN while mounted — the acceptance half, asserted in the same
-    // breath (S3-R8(c)). A build that renders EVERYTHING grey passes the rest of
-    // this test and ships nothing.
+    // It is GREEN while mounted — the acceptance half, asserted in the same breath (S3-R8(c)). A
+    // build that renders EVERYTHING grey passes the rest of this test and ships nothing.
+    //
     let (_out, color, _r, _d, _s) = sb.walk_entry();
     assert_eq!(color, "green", "mounted and matching — green");
 
@@ -299,15 +299,15 @@ fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
         text.contains("sessions"),
         "and it names the missing mount: {text}",
     );
-    // The TONE is what must not be red — asserted on the entry row's colour
-    // label, not by hunting the substring "red" in the whole output.
+    // The TONE is what must not be red — asserted on the entry row's colour label, not by hunting
+    // the substring "red" in the whole output. The crude form of this assertion FAILED once the
+    // teaching refusal gained its output path, because the refusal's own wording carries
     //
-    // The crude form of this assertion FAILED once the teaching refusal gained
-    // its output path, because the refusal's own wording carries the ratified
-    // sentence "Not red: nothing drifted". That was the instrument crying wolf
-    // at correct behaviour — S3-R23(1): a check that cannot tell its true
-    // positive from its false one is deleted by the next person it inconveniences,
-    // and then the invariant has no guard at all.
+    //
+    //
+    //
+    //
+    //
     let entry_row = text
         .lines()
         .find(|l| l.contains("sessions:notes.md"))
@@ -322,10 +322,10 @@ fn an_unmounted_root_renders_grey_with_a_teaching_refusal_naming_the_mount() {
     );
 }
 
-/// **GATE 2 — unmounted and missing-file are DISTINCT CLASSES.** A
-/// mounted-root-missing-file must NOT render grey `unmounted`: it is a measured
-/// absence inside a root this machine CAN see. Conflating the two is the false
-/// negative the grey class exists to prevent.
+/// **GATE 2 — unmounted and missing-file are DISTINCT CLASSES.** A mounted-root-missing-file
+/// must NOT render grey `unmounted`: it is a measured absence inside a root this machine CAN
+/// see. Conflating the two is the false negative the grey class exists to prevent.
+///
 #[test]
 fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
     let sb = sandbox();
@@ -347,20 +347,20 @@ fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
          absence, rendered red: {}",
         stdout(&out),
     );
-    // **U21 CHANGED THIS WORD, and the change is the unit's whole point.**
+    // **U21 CHANGED THIS WORD, and the change is the unit's whole point.** U11 asserted
+    // `selector-unresolved` here because that was the only red word the type could reach:
+    // `RefResolution::NotFound` was a unit variant, so no caller could say WHICH root missed, and
+    // the row fell through to the arm that classifies an absent target document.
     //
-    // U11 asserted `selector-unresolved` here because that was the only red
-    // word the type could reach: `RefResolution::NotFound` was a unit variant,
-    // so no caller could say WHICH root missed, and the row fell through to the
-    // arm that classifies an absent target document. The word was WRONG in the
-    // engine's own voice — `selector-unresolved` asserts the PAGE resolved and
-    // the SELECTOR did not, while here the page itself is what is absent.
     //
-    // This is not a loosened assertion. It is strictly stronger: the class is
-    // still red and still not grey (both asserted above, unchanged), and the
-    // row now also names the root the miss happened inside, which
-    // `selector-unresolved` structurally could not do — address-grammar § 5.2
-    // row F4's actual requirement.
+    //
+    //
+    //
+    //
+    //
+    //
+    //
+    //
     assert_eq!(
         reason,
         "file-not-found",
@@ -368,9 +368,9 @@ fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
          selector plane's, which would claim the page resolved: {}",
         stdout(&out),
     );
-    // The half U11 could not assert: the refusal is SCOPED to the root that
-    // missed. Its grey sibling has named its root since U11; this one could not
-    // until the type carried it.
+    // The half U11 could not assert: the refusal is SCOPED to the root that missed. Its grey
+    // sibling has named its root since U11; this one could not until the type carried it.
+    //
     let (_out, _c, _r, detail, _s) = sb.walk_entry();
     assert!(
         detail.contains("sessions"),
@@ -378,13 +378,13 @@ fn a_missing_file_in_a_mounted_root_is_not_the_unmounted_grey() {
     );
 }
 
-/// **GATE 4 — the basename fallback PEELS AND REFUSES, on FINDING 03's input
-/// VERBATIM.** `[[sessions:24-01-retro/notes.md#Design]]` must never answer the
-/// ambient root's `notes.md`, with `sessions` unbound.
+/// **GATE 4 — the basename fallback PEELS AND REFUSES, on FINDING 03's input VERBATIM.**
+/// `[[sessions:24-01-retro/notes.mdDesign]]` must never answer the ambient root's `notes.md`,
+/// with `sessions` unbound. This is the shipped defect's exact spelling, including the slash
+/// the defect needs — the control in FINDING 03 is why that matters: the shortest test case is
+/// the one that behaves correctly.
 ///
-/// This is the shipped defect's exact spelling, including the slash the defect
-/// needs — the control in FINDING 03 is why that matters: the shortest test case
-/// is the one that behaves correctly.
+///
 #[test]
 fn finding_03s_verbatim_input_peels_and_refuses() {
     let sb = sandbox();
@@ -406,9 +406,9 @@ fn finding_03s_verbatim_input_peels_and_refuses() {
     );
     assert_eq!(out.status.code(), Some(1), "grey refuses on exit 1");
 
-    // **C-4 — one address, one answer.** The no-slash spelling is the control
-    // that survived the shipped defect by behaving correctly; after U11 the two
-    // spellings must CONVERGE, and that convergence is the assert.
+    // **C-4 — one address, one answer.** The no-slash spelling is the control that survived the
+    // shipped defect by behaving correctly; after U11 the two spellings must CONVERGE, and that
+    // convergence is the assert.
     sb.claim("sessions:notes", &live_fingerprint(DECOY));
     let (_out, color2, reason2, _d, _s) = sb.walk_entry();
     assert_eq!(

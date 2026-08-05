@@ -60,10 +60,10 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .expect("spawn mrd")
 }
 
-/// Best-effort reap of a resident auto-spawned by this sandbox. Pidfile path,
-/// never process-table substring — same law as the multiroot fixture and the
-/// fleet reap script. Soft (no panic) so Drop can call it; the control target
-/// `perf_daemon_teardown` is the asserted path.
+/// Best-effort reap of a resident auto-spawned by this sandbox. Pidfile path, never
+/// process-table substring — same law as the multiroot fixture and the fleet reap script. Soft
+/// (no panic) so Drop can call it; the control target `perf_daemon_teardown` is the asserted
+/// path.
 fn try_teardown_daemon(sb: &Sandbox) {
     let pidfile = sb
         .cache_home
@@ -120,11 +120,11 @@ fn rule_page(id: &str) -> String {
     )
 }
 
-/// Arm `ids` into `meridian/armed-rules.md` at each page's live rev and plant the
-/// once-armed marker. Every row is FRESH, so `status` does the full O(armed)
-/// re-hash — which is the work this budget is measured over. The artifact is
-/// MINTED by `policy::armed::arm`, never hand-typed: a fixture artifact the
-/// arming act never approved would measure a read production cannot perform.
+/// Arm `ids` into `meridian/armed-rules.md` at each pages live rev and plant the once-armed
+/// marker. Every row is FRESH, so `status` does the full O(armed) re-hash — which is the work
+/// this budget is measured over. The artifact is MINTED by `policy::armed::arm`, never
+/// hand-typed: a fixture artifact the arming act never approved would measure a read production
+/// cannot perform.
 fn arm_rules(ws: &Path, ids: &[String]) {
     let pages: Vec<(String, String)> = ids
         .iter()
@@ -162,12 +162,12 @@ fn arm_rules(ws: &Path, ids: &[String]) {
     std::fs::write(ws.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("once-armed marker");
 }
 
-/// **The <1s wall-time gate (the merge budget, U3.6).** A 3k-doc corpus with a
-/// handful of armed rules: `status` reads ONE artifact file + the once-armed
-/// marker + O(armed) rule-page re-hashes + the journal + the git refs — NEVER the
-/// 3k docs. So its
-/// wall-time is independent of corpus size and stays well under the 1s hard
-/// budget. The measured milliseconds are printed for the card record.
+/// **The <1s wall-time gate (the merge budget, U3.6).** A 3k-doc corpus with a handful of armed
+/// rules: `status` reads ONE artifact file + the once-armed marker + O(armed) rule-page
+/// re-hashes + the journal + the git refs — NEVER the 3k docs. So its wall-time is independent
+/// of corpus size and stays well under the 1s hard budget. The measured milliseconds are
+/// printed for the card record.
+///
 #[test]
 fn status_wall_time_under_1s_on_3k_corpus() {
     let sb = sandbox();

@@ -1,13 +1,13 @@
-//! `mrd unfold <preset> [--dry] [--actor A] [--now T]` (U5.3): materialize a
-//! preset's declared scaffold — every `# Unfold` file is born through the U2.6
-//! guarded create, so each carries a birth receipt; an occupied path refuses via
-//! the `if_absent` CAS and is left byte-untouched. A local CLIENT of
-//! `preset::unfold` (docs/laws.md charter).
+//! `mrd unfold <preset> [--dry] [--actor A] [--now T]` (U5.3): materialize a presets declared
+//! scaffold — every `Unfold` file is born through the U2.6 guarded create, so each carries a
+//! birth receipt; an occupied path refuses via the `if_absent` CAS and is left byte-untouched.
 //!
-//! Exit codes (§4 preamble; `docs/status.md`): 0 = every scaffold file born (or a
-//! `--dry` would-birth), 1 = a finding — one or more paths already existed (CAS
-//! refused), 2 = a tool failure (bad usage, unreadable workspace, the preset is
-//! not a def, a faulting write).
+//!
+//!
+//!
+//!
+//!
+//!
 
 use preset::{BirthOptions, FileOutcome, UnfoldReport};
 use serde_json::json;
@@ -20,12 +20,12 @@ fn findings(message: String) -> Fail {
     Fail::findings(message)
 }
 
-/// Run `mrd unfold <preset> [--dry] [--actor A] [--now T] [--json]`.
+/// Run `mrd unfold <preset> [--dry] [--actor A] [--now T] [--json]`. Errors A tool failure
+/// (exit 2) — bad usage, an unreadable workspace, a preset that is not a def, or a faulting
+/// write — or a findings exit (1) when a declared scaffold path already existed.
 ///
-/// # Errors
-/// A tool failure (exit 2) — bad usage, an unreadable workspace, a preset that is
-/// not a def, or a faulting write — or a findings exit (1) when a declared
-/// scaffold path already existed.
+///
+///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;

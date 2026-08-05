@@ -109,9 +109,9 @@ fn declare_root(dir: &Path, name: &str) {
     .expect("root declaration");
 }
 
-/// One `meridian-mount` block. `kind` is deliberately a parameter: the anchoring
-/// law is ONE law, so a `git-folder` root and a `vault` root are asked the same
-/// question of their own object stores.
+/// One `meridian-mount` block. `kind` is deliberately a parameter: the anchoring law is ONE
+/// law, so a `git-folder` root and a `vault` root are asked the same question of their own
+/// object stores.
 fn mount_block(name: &str, path: &Path, kind: &str) -> String {
     let vault = if kind == "vault" {
         format!("vault: {name}\n")
@@ -201,9 +201,9 @@ impl Sandbox {
     }
 }
 
-/// The sandbox tree: an ambient workspace, plus the roots named in `mounts`
-/// bound through a sandboxed `MERIDIAN.md`. `HOME` is sandboxed too, so the
-/// mount table read here is this fixture's and never the operator's.
+/// The sandbox tree: an ambient workspace, plus the roots named in `mounts` bound through a
+/// sandboxed `MERIDIAN.md`. `HOME` is sandboxed too, so the mount table read here is this
+/// fixtures and never the operators.
 fn sandbox(mounts: &[(&str, &Path, &str)]) -> Sandbox {
     let tmp = tempfile::tempdir().expect("tempdir");
     let home = tmp.path().join("home");
@@ -237,14 +237,14 @@ fn sandbox(mounts: &[(&str, &Path, &str)]) -> Sandbox {
     sb
 }
 
-/// **GATE 1 + 2 — six roots, six object stores, one law, proven across THREE
-/// distinct stores in ONE reading.**
+/// **GATE 1 + 2 — six roots, six object stores, one law, proven across THREE distinct stores in
+/// ONE reading.** Per-root anchoring is a per-CRITERION claim, so one root proving its own
+/// surface would not be a proof of it.
 ///
-/// Per-root anchoring is a per-CRITERION claim, so one root proving its own
-/// surface would not be a proof of it. Two object ids each appear under two
-/// roots here and answer differently in each, which is a statement about the
-/// STORE and nothing else — an implementation asking one repository for every
-/// entry cannot reproduce the count or the byte sum.
+///
+///
+///
+///
 #[test]
 fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -282,9 +282,9 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     distinct.dedup();
     assert_eq!(distinct.len(), 4, "four distinct blobs: {distinct:?}");
 
-    // BASELINE — the ambient arm ALONE, so the instrument is shown reading a
-    // measured value before the rooted keys are added. Without this, the reading
-    // below could not be told from a gauge that only ever reports one number.
+    // BASELINE — the ambient arm ALONE, so the instrument is shown reading a measured value before
+    // the rooted keys are added. Without this, the reading below could not be told from a gauge
+    // that only ever reports one number.
     std::fs::write(sb.ws.join("effect.md"), lock_page(&[("local", &oid_d)])).expect("write");
     let (ambient, code) = sb.gauge();
     assert_eq!(code, 0, "the exit triad is unchanged by any gauge reading");
@@ -339,13 +339,13 @@ fn the_anchoring_check_runs_against_that_roots_own_object_store() {
     );
 }
 
-/// **GATE 3 — a mounted root that is NOT a git repository degrades honestly.**
+/// **GATE 3 — a mounted root that is NOT a git repository degrades honestly.** The existing
+/// `Repo` convention: `GitFail::NotARepo`, surfaced as the gauges `unknown` with the ROOT NAMED
+/// — never a fabricated sha, and never a silent fall back to the ambient store, which would
+/// answer a different repositorys question in this roots name. The degradation is ASSERTED, not
+/// merely the absence of a crash.
 ///
-/// The existing `Repo` convention: `GitFail::NotARepo`, surfaced as the gauge's
-/// `unknown` with the ROOT NAMED — never a fabricated sha, and never a silent
-/// fall back to the ambient store, which would answer a different repository's
-/// question in this root's name. The degradation is ASSERTED, not merely the
-/// absence of a crash.
+///
 #[test]
 fn a_mounted_root_that_is_not_a_git_repo_degrades_honestly() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -389,18 +389,18 @@ fn a_mounted_root_that_is_not_a_git_repo_degrades_honestly() {
     );
 }
 
-/// **A root the mount table does not bind is unmeasurable, never ambient.**
+/// **A root the mount table does not bind is unmeasurable, never ambient.** The false negative
+/// this closes: silently resolving `ghost:payload.md` in the ambient store would ask the WRONG
+/// object database and answer confidently — `never-anchored` for a blob that is anchored where
+/// it actually lives. The gauge says it cannot be asked, and teaches the declaration.
 ///
-/// The false negative this closes: silently resolving `ghost:payload.md` in the
-/// ambient store would ask the WRONG object database and answer confidently —
-/// `never-anchored` for a blob that is anchored where it actually lives. The
-/// gauge says it cannot be asked, and teaches the declaration.
+///
 #[test]
 fn an_unbound_root_is_unmeasurable_never_silently_ambient() {
     let sb = sandbox(&[]);
-    // The blob IS present in the ambient store, so a silent fall back would
-    // produce a confident reading rather than a visible refusal — the fixture
-    // is built to make the wrong answer LOOK right.
+    // The blob IS present in the ambient store, so a silent fall back would produce a confident
+    // reading rather than a visible refusal — the fixture is built to make the wrong answer LOOK
+    // right.
     let oid = eager_blob(&sb.ws, "payload.md", PENDING_IN_PROJECT);
     std::fs::write(
         sb.ws.join("effect.md"),
@@ -424,21 +424,21 @@ fn an_unbound_root_is_unmeasurable_never_silently_ambient() {
 }
 
 /// **A key that is not an address names no store — so git cannot be asked.**
+/// `addr::Addr::parse` refuses a malformed root rather than reading it as a literal path,
+/// precisely so a typo cannot degrade into a confident lookup somewhere else. That refusal is
+/// carried into the gauge as the SAME reading a malformed sha produces, because it is the same
+/// reading: the question cannot be put to git.
 ///
-/// `addr::Addr::parse` refuses a malformed root rather than reading it as a
-/// literal path, precisely so a typo cannot degrade into a confident lookup
-/// somewhere else. That refusal is carried into the gauge as the SAME reading a
-/// malformed sha produces, because it is the same reading: the question cannot
-/// be put to git.
+///
 #[test]
 fn a_key_that_names_no_store_is_unknown_not_ambient() {
     let sb = sandbox(&[]);
     let oid = eager_blob(&sb.ws, "payload.md", PENDING_IN_PROJECT);
-    // Two colons in the head — refused by the address grammar, never
-    // reinterpreted. The `.md` is kept ON PURPOSE where every other object in
-    // this file drops it: the subject here is a spelling that is NOT an address,
-    // so there is no vault path to canonicalize, and the parser carries the
-    // object's inner text verbatim — the reading must name it exactly as written.
+    // Two colons in the head — refused by the address grammar, never reinterpreted. The `.md` is
+    // kept ON PURPOSE where every other object in this file drops it: the subject here is a
+    // spelling that is NOT an address, so there is no vault path to canonicalize, and the parser
+    // carries the objects inner text verbatim — the reading must name it exactly as written.
+    //
     std::fs::write(
         sb.ws.join("effect.md"),
         lock_page(&[("a:b:payload.md", &oid)]),

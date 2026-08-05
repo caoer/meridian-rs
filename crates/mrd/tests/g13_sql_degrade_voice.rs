@@ -164,9 +164,9 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-// ---------------------------------------------------------------------------
 // Gate 1: the degrade speaks — and says both things a reader needs.
-// ---------------------------------------------------------------------------
+//
+//
 
 #[test]
 fn g13_degraded_sql_voices_the_source_on_stderr() {
@@ -190,9 +190,9 @@ fn g13_degraded_sql_voices_the_source_on_stderr() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Gate 2 + 3: the A/B. Warm is silent; degraded speaks; stdout is IDENTICAL.
-// ---------------------------------------------------------------------------
+//
+//
 
 #[test]
 fn g13_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
@@ -228,13 +228,13 @@ fn g13_warm_is_silent_and_stdout_is_byte_identical_to_the_degrade() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Gate 3b: the ERROR path — the most expensive silence the dogfood measured.
-// ---------------------------------------------------------------------------
+//
+//
 
-/// A refused query degraded 0.70s → 99s with stderr byte-identical, so the
-/// worst case was the mute one. The refusal text and the exit code must survive
-/// unchanged; the voice is additive.
+/// A refused query degraded 0.70s → 99s with stderr byte-identical, so the worst case was the
+/// mute one. The refusal text and the exit code must survive unchanged; the voice is additive.
+///
 #[test]
 fn g13_the_error_path_degrade_speaks_without_changing_the_refusal() {
     let sb = sandbox();
@@ -272,14 +272,14 @@ fn g13_the_error_path_degrade_speaks_without_changing_the_refusal() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Gate 4: tier-4 bare is NOT a degrade, and stays silent.
-// ---------------------------------------------------------------------------
+//
+//
 
-/// `:memory:` is tier-4's designed path (§tier-4 — never the daemon, never a
-/// drawer). Crying degrade on every correct run in an unregistered directory
-/// would teach a reader to filter the line out, which costs the voice exactly
-/// where it matters.
+/// `:memory:` is tier-4's designed path (§tier-4 — never the daemon, never a drawer). Crying
+/// degrade on every correct run in an unregistered directory would teach a reader to filter the
+/// line out, which costs the voice exactly where it matters.
+///
 #[test]
 fn g13_tier4_bare_is_the_designed_path_and_says_nothing() {
     let sb = sandbox();
@@ -293,28 +293,28 @@ fn g13_tier4_bare_is_the_designed_path_and_says_nothing() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Gate 4b: the `--json` face — voiced on stderr, OD9 document UNTOUCHED.
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **The one policy fork this unit had, ruled by ZT-proxy (supervisor,
-/// overnight 2026-08-05): RULING A.** `mrd read --json` already carried
-/// `"source"` before G1, so G1 never added a field — it only voiced the human
-/// face. `mrd sql --json` has no such field, and minting one would be a new
-/// surface on a VERSIONED document with existing consumers: architecture, which
-/// this unit has PARKED. So the machine face gets the same stderr voice and its
-/// OD9 stdout stays byte-for-byte what it was. A structural `source` field, if
-/// it is ever wanted, is a deliberate OD9 amendment.
+/// **The one policy fork this unit had, ruled by ZT-proxy (supervisor, overnight ): RULING A.**
+/// `mrd read --json` already carried `"source"` before G1, so G1 never added a field — it only
+/// voiced the human face. `mrd sql --json` has no such field, and minting one would be a new
+/// surface on a VERSIONED document with existing consumers: architecture, which this unit has
+/// PARKED. So the machine face gets the same stderr voice and its OD9 stdout stays
+/// byte-for-byte what it was. A structural `source` field, if it is ever wanted, is a
+/// deliberate OD9 amendment.
 ///
-/// **What this gate found, and why it does not compare raw bytes.** The two
-/// `--json` documents were ALREADY not byte-identical before this unit: OD9
-/// omits `changes_seq` on any daemonless path because there is no epoch to
-/// report, so a warm run carries `"changes_seq": 0` and a degraded one carries
-/// the key not at all. That is a pre-existing designed difference, and it means
-/// the machine face was never quite as mute as the human one — a reader who
-/// knew to look could infer the degrade from an absent key. So the gate holds
-/// the document equal MODULO that one key, which pins the real invariant: this
-/// unit added no delta of its own, and minted no field.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn g13_json_face_is_voiced_on_stderr_with_the_od9_document_unchanged() {
     let sb = sandbox();
@@ -366,14 +366,14 @@ fn g13_json_face_is_voiced_on_stderr_with_the_od9_document_unchanged() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Gate 5: the named cause — a socket path no daemon can bind.
-// ---------------------------------------------------------------------------
+//
+//
 
-/// The exact hazard G1 and G13 were both found through: an `XDG_CACHE_HOME`
-/// long enough that `<cache>/meridian/registry/daemon.sock` exceeds `sun_path`.
-/// No daemon can bind it and none can be dialled, so starting one is not the
-/// fix — and the voice must say which fix is. This is the 248× case.
+/// The exact hazard G1 and G13 were both found through: an `XDG_CACHE_HOME` long enough that
+/// `<cache>/meridian/registry/daemon.sock` exceeds `sun_path`. No daemon can bind it and none
+/// can be dialled, so starting one is not the fix — and the voice must say which fix is. This
+/// is the 248× case.
 #[test]
 fn g13_over_long_socket_path_names_the_sun_path_limit() {
     let deep: String = std::iter::repeat_n("averylongcachedirectorysegment", 6)

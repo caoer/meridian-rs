@@ -1,19 +1,19 @@
-//! Per-verb help, over the process boundary (issue 22).
+//! Per-verb help, over the process boundary (issue 22). What this file holds the CLI to Before
+//! this surface existed, `mrd put --help` answered `unknown flag: --help` and exit 2, so the
+//! only way to learn a verbs grammar was to invoke it wrong and read the refusal. Three
+//! propositions are gated here: 1. **Every verb answers `--help`** — exit 0, on stdout, naming
+//! its own synopsis.
 //!
-//! # What this file holds the CLI to
-//! Before this surface existed, `mrd put --help` answered `unknown flag:
-//! --help` and exit 2, so the only way to learn a verb's grammar was to invoke
-//! it wrong and read the refusal. Three propositions are gated here:
 //!
-//! 1. **Every verb answers `--help`** — exit 0, on stdout, naming its own
-//!    synopsis. The list is derived from the CLI's own listing, so a verb added
-//!    later is covered the day it is added, without editing this file.
-//! 2. **A caller can tell a read from a write before running it.** The gutter
-//!    mark is the classification, and it is legible in the help of the verb
-//!    itself, not only in the full listing.
-//! 3. **A refusal leads with its reason.** `mrd nope` used to print 239 lines
-//!    of help and put `unknown subcommand: nope` underneath, where a terminal
-//!    scrolled it away.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::process::{Command, Output};
 
@@ -91,18 +91,18 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 
 // ── 1. every verb answers ─────────────────────────────────────────────────────
 
-/// **The gate the card names.** Every verb in the listing answers `--help` with
-/// exit 0 on stdout, and the page it prints names that verb's own synopsis. The
-/// verb list is read out of `mrd --help` rather than typed here, so this cannot
-/// pass by being kept in step with the CLI by hand.
+/// **The gate the card names.** Every verb in the listing answers `--help` with exit 0 on
+/// stdout, and the page it prints names that verbs own synopsis. The verb list is read out of
+/// `mrd --help` rather than typed here, so this cannot pass by being kept in step with the CLI
+/// by hand.
 #[test]
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    // 27 in the landing assembly: U9b's `lock migrate` and U23's `retire` each
-    // added one, on branches that could not see each other. DECISION 26 (ZT
-    // 2026-08-04) deleted `lock migrate` with its crate, so it went back to 26 —
-    // and U22's `repair`, the lost-pin repair, makes it 27 again.
+    // 27 in the landing assembly: U9bs `lock migrate` and U23s `retire` each added one, on
+    // branches that could not see each other. DECISION 26 deleted `lock migrate` with its crate,
+    // so it went back to 26 — and U22s `repair`, the lost-pin repair, makes it 27 again.
+    //
     assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
@@ -149,9 +149,9 @@ fn the_short_flag_opens_the_same_page() {
     assert_eq!(stdout(&short), stdout(&long));
 }
 
-/// A verb spelled with more than one word answers on its own, and its PARENT
-/// answers with every child. `mrd cache --help` is what a caller types when
-/// they have forgotten whether it is `clean` or `clear`.
+/// A verb spelled with more than one word answers on its own, and its PARENT answers with every
+/// child. `mrd cache --help` is what a caller types when they have forgotten whether it is
+/// `clean` or `clear`.
 #[test]
 fn a_parent_verb_answers_with_all_of_its_children() {
     let page = stdout(&mrd(&["cache", "--help"]));
@@ -175,9 +175,9 @@ fn a_verb_with_two_tiers_prints_both() {
     assert!(page.contains("mrd test --history WORKSPACE"), "{page}");
 }
 
-/// An operand between the verb and the flag does not hide the verb: `mrd read
-/// notes.md --help` is what a caller types when the invocation they just ran
-/// refused and they want the grammar.
+/// An operand between the verb and the flag does not hide the verb: `mrd read notes.md --help`
+/// is what a caller types when the invocation they just ran refused and they want the grammar.
+///
 #[test]
 fn an_operand_before_the_flag_still_resolves_the_verb() {
     let out = mrd(&["read", "some-page.md", "--help"]);
@@ -185,10 +185,10 @@ fn an_operand_before_the_flag_still_resolves_the_verb() {
     assert!(stdout(&out).contains("mrd read <PATH>"), "{}", stdout(&out));
 }
 
-/// The page carries only the options its own verb owns. `--json` is real for
-/// most verbs but is NOT offered under `mrd skill hook`, whose description says
-/// in its own words that no such face exists — a help page that advertised it
-/// would be teaching a lie.
+/// The page carries only the options its own verb owns. `--json` is real for most verbs but is
+/// NOT offered under `mrd skill hook`, whose description says in its own words that no such
+/// face exists — a help page that advertised it would be teaching a lie.
+///
 #[test]
 fn a_page_carries_its_own_options_and_no_false_promises() {
     let run = stdout(&mrd(&["run", "--help"]));
@@ -199,12 +199,12 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
         "--rule belongs to test, not run:\n{run}"
     );
 
-    // The claim is about what the page OFFERS, not about the letters on it: this
-    // verb's own description says "There is no --json face", so the string is in
-    // the prose either way. Only the options block can promise a flag.
-    // Probe a span that does NOT cross a line break — the listing wraps this
-    // sentence between "There is no" and "--json face", so the phrase a reader
+    // The claim is about what the page OFFERS, not about the letters on it: this verbs own
+    // description says "There is no --json face", so the string is in the prose either way. Only
+    // the options block can promise a flag. Probe a span that does NOT cross a line break — the
+    // listing wraps this sentence between "There is no" and "--json face", so the phrase a reader
     // sees is not a substring of the page.
+    //
     let hook = stdout(&mrd(&["skill", "hook", "--help"]));
     assert!(
         hook.contains("--json face — the document is markdown"),
@@ -316,9 +316,9 @@ fn a_page_is_self_contained() {
     );
 }
 
-/// A `--` separator hands the rest of the line to the task, so `mrd run PAGE
-/// TASK -- --help` must reach the run plane rather than printing this CLI's
-/// help. Whatever the run refuses, it is not a help page on stdout.
+/// A `--` separator hands the rest of the line to the task, so `mrd run PAGE TASK -- --help`
+/// must reach the run plane rather than printing this CLIs help. Whatever the run refuses, it
+/// is not a help page on stdout.
 #[test]
 fn a_separator_passes_the_flag_through() {
     let out = mrd(&["run", "no-such-page.md", "task", "--", "--help"]);
@@ -331,9 +331,9 @@ fn a_separator_passes_the_flag_through() {
 
 // ── 2. a caller can tell a read from a write ──────────────────────────────────
 
-/// The write mark is part of the listing, so it travels into the per-verb page
-/// with the line. A caller who asks about one verb learns whether it writes
-/// without reading all 26.
+/// The write mark is part of the listing, so it travels into the per-verb page with the line. A
+/// caller who asks about one verb learns whether it writes without reading all 26.
+///
 #[test]
 fn the_write_mark_travels_into_the_verb_page() {
     let writer = stdout(&mrd(&["put", "--help"]));
@@ -417,9 +417,9 @@ fn the_write_classification_is_thirteen_of_twenty_seven() {
     );
 }
 
-/// `mrd test` writes only into temporary directories, and `mrd sql` reads a
-/// published view — both are unmarked, and both are the calls a hurried reader
-/// would get wrong. Pinned so the reasoning is not re-litigated silently.
+/// `mrd test` writes only into temporary directories, and `mrd sql` reads a published view —
+/// both are unmarked, and both are the calls a hurried reader would get wrong. Pinned so the
+/// reasoning is not re-litigated silently.
 #[test]
 fn the_tempdir_and_read_only_verbs_are_not_marked() {
     let listing = listing();
@@ -433,9 +433,9 @@ fn the_tempdir_and_read_only_verbs_are_not_marked() {
 
 // ── 3. a refusal leads with its reason ────────────────────────────────────────
 
-/// **The gate the card names.** The diagnostic is the FIRST line of stderr. It
-/// used to be the last, under 239 lines of help, which is off the screen on any
-/// terminal a person actually uses.
+/// **The gate the card names.** The diagnostic is the FIRST line of stderr. It used to be the
+/// last, under 239 lines of help, which is off the screen on any terminal a person actually
+/// uses.
 #[test]
 fn an_unknown_subcommand_puts_its_error_first() {
     let out = mrd(&["nope"]);
@@ -514,9 +514,9 @@ fn the_bare_help_verb_still_prints_everything() {
 /// to a verb written next year fails here without this file being edited.
 #[test]
 fn no_internal_unit_tag_reaches_a_help_page() {
-    /// The docket's tag shape: `U`, a digit, a dot, then an alphanumeric —
-    /// `U5.3`, `U3.5b`, `U2.11`. Scanned by hand; a regex crate is a dependency
-    /// this workspace does not take for one predicate.
+    /// The dockets tag shape: `U`, a digit, a dot, then an alphanumeric — `U5.3`, `U3.5b`, `U2.11`.
+    /// Scanned by hand; a regex crate is a dependency this workspace does not take for one
+    /// predicate.
     fn unit_tags(text: &str) -> Vec<String> {
         let bytes: Vec<char> = text.chars().collect();
         let mut found = Vec::new();

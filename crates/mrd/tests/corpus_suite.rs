@@ -1,19 +1,19 @@
-//! End-to-end gates for `mrd test --corpus` — the U1.5 tier-2 corpus runner.
+//! End-to-end gates for `mrd test --corpus` — the U1.5 tier-2 corpus runner. Drives the REAL
+//! `mrd` binary over committed corpus-test specs and the 18-02 governed tree
+//! (`tests/corpus/tree/` — real 18-02 session task pages, verbatim) and asserts the three
+//! signals the pre-arming gate rests on: - **fire-where-expected** — the fixture rule PAGE
+//! fires exactly where the expected-fire manifest declares (owner-self-close fires,
+//! reviewer-close / external-edit / out-of-scope pass); a WRONG
 //!
-//! Drives the REAL `mrd` binary over committed corpus-test specs and the 18-02
-//! governed tree (`tests/corpus/tree/` — real 18-02 session task pages, verbatim)
-//! and asserts the three signals the pre-arming gate rests on:
 //!
-//! - **fire-where-expected** — the fixture rule PAGE fires exactly where the
-//!   expected-fire manifest declares (owner-self-close fires, reviewer-close /
-//!   external-edit / out-of-scope pass); a WRONG `expect` is caught as a mismatch.
-//! - **zero dead rules** — a healthy run reports none; a declared citation the
-//!   corpus never fires is reported DEAD (over a one-citation page AND over a
-//!   two-citation page with a genuinely-present-but-never-fired citation).
-//! - **fuel + heap budgets** — every run reports p50/p99/max over its in-scope
-//!   evals.
 //!
-//! The exit-code convention (0 clean / 1 findings / 2 tool failure) is pinned too.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -60,8 +60,8 @@ fn run_human_path(path: PathBuf) -> (i32, String) {
     )
 }
 
-/// Run `mrd test --corpus <spec> --json`, returning `(exit_code, parsed_report)`.
-/// A malformed spec emits no JSON, so this is for the specs that produce a report.
+/// Run `mrd test --corpus <spec> --json`, returning `(exit_code, parsed_report)`. A malformed
+/// spec emits no JSON, so this is for the specs that produce a report.
 fn run_json(name: &str) -> (i32, Value) {
     run_json_path(spec(name))
 }
@@ -216,9 +216,9 @@ fn dead_citation_on_a_two_citation_page_is_reported() {
 
 #[test]
 fn fire_mismatch_is_caught_and_exits_one() {
-    // The load-bearing negative: a case declaring `expect: pass` over a change
-    // that actually FIRES is reported as a mismatch — fire-where-expected is
-    // enforced, not vacuous.
+    // The load-bearing negative: a case declaring `expect: pass` over a change that actually FIRES
+    // is reported as a mismatch — fire-where-expected is enforced, not vacuous.
+    //
     let (code, report) = run_json("fire-mismatch");
     assert_eq!(code, 1, "a fire mismatch is a findings exit (1): {report}");
     assert_eq!(report["summary"]["mismatches"], 1);
@@ -239,8 +239,8 @@ fn fire_mismatch_is_caught_and_exits_one() {
 
 #[test]
 fn surprise_rule_fired_but_undeclared_is_reported() {
-    // A citation the rule emitted that the manifest never declared is a surprise
-    // finding — an under-declared expected-fire manifest cannot pass silently.
+    // A citation the rule emitted that the manifest never declared is a surprise finding — an
+    // under-declared expected-fire manifest cannot pass silently.
     let (code, report) = run_json("surprise-rule");
     assert_eq!(code, 1, "a surprise rule is a findings exit (1): {report}");
     assert_eq!(
@@ -313,10 +313,10 @@ fn hook_fuel_breach_is_named_and_fails() {
     );
 }
 
-/// The trigger graph the cyclic pair really has. Both rules react to the same field
-/// and both write it, so each rule re-triggers itself as well as its peer. The
-/// self-edges are real trigger edges — their work is idempotent and terminates, but
-/// the edge exists and the proof does not hide it.
+/// The trigger graph the cyclic pair really has. Both rules react to the same field and both
+/// write it, so each rule re-triggers itself as well as its peer. The self-edges are real
+/// trigger edges — their work is idempotent and terminates, but the edge exists and the proof
+/// does not hide it.
 fn cyclic_edges() -> Value {
     serde_json::json!([
         {"from":"cycle-alpha","to":"cycle-alpha"},
@@ -353,10 +353,10 @@ fn deliberately_cyclic_hooks_fail_only_quiescence() {
 
 #[test]
 fn two_seeded_lineages_still_prove_the_cycle() {
-    // The gate-2 reproducer: two initial cases seed DISTINCT lineages into the same
-    // cyclic pair. A global work cache retires one lineage's item before the other
-    // lineage's descendant can close its ancestry, and the run exits 0 claiming
-    // `acyclic` with both edges present. Recurrence is per lineage, so it cannot.
+    // The gate-2 reproducer: two initial cases seed DISTINCT lineages into the same cyclic pair. A
+    // global work cache retires one lineage's item before the other lineage's descendant can close
+    // its ancestry, and the run exits 0 claiming `acyclic` with both edges present. Recurrence is
+    // per lineage, so it cannot.
     let (code, report) = run_hook_json("two-entry-cycle");
     assert_eq!(code, 1, "a reachable cycle must fail quiescence: {report}");
     assert_eq!(report["summary"]["cases"], 2);
@@ -376,10 +376,10 @@ fn two_seeded_lineages_still_prove_the_cycle() {
 
 #[test]
 fn converging_acyclic_branches_are_not_a_cycle() {
-    // The opposite false-positive class: two peers emit the IDENTICAL generation from
-    // the IDENTICAL state, so their branches converge on a byte-identical downstream
-    // work item carried by two different lineages. No lineage returns to one of its
-    // own ancestors, so the verdict is acyclic.
+    // The opposite false-positive class: two peers emit the IDENTICAL generation from the
+    // IDENTICAL state, so their branches converge on a byte-identical downstream work item carried
+    // by two different lineages. No lineage returns to one of its own ancestors, so the verdict is
+    // acyclic.
     let (code, report) = run_hook_json("acyclic-convergence");
     assert_eq!(code, 0, "converging branches are not a cycle: {report}");
     assert_eq!(report["quiescence"]["verdict"], "acyclic");
@@ -397,14 +397,14 @@ fn converging_acyclic_branches_are_not_a_cycle() {
 
 #[test]
 fn a_terminating_convergent_cascade_is_not_a_fuel_exhaustion() {
-    // N1. Two peers per level emit the IDENTICAL generation, so the graph's branches
-    // reconverge at every level: `2^(d+1) − 2` causal PATHS over `d` states. A proof
-    // that enumerates paths pays the first number and reports `fuel_exhausted` on a
-    // convention set with no cycle at all — measured at depth 8, where 510 paths breach
-    // the 256 budget. A pre-arming gate that fails good conventions blocks arming.
+    // N1. Two peers per level emit the IDENTICAL generation, so the graph's branches reconverge at
+    // every level: `2^(d+1) − 2` causal PATHS over `d` states.
     //
-    // Both depths must certify, and the step counts must stay proportional to the
-    // STATE space (2 per level), never to the path count.
+    //
+    //
+    //
+    //
+    //
     for (spec, steps) in [
         ("convergent-cascade-depth-8", 16),
         ("convergent-cascade-depth-12", 24),
@@ -435,15 +435,15 @@ fn a_terminating_convergent_cascade_is_not_a_fuel_exhaustion() {
 
 #[test]
 fn a_divergent_cascade_still_exhausts_fuel() {
-    // The direction-of-failure rail on the N1 repair (advisor requirement). The defect
-    // it repairs false-FAILS good conventions, which is the SAFE direction for a
-    // pre-arming gate; the repair must never buy that back by flipping the gate toward
-    // false-ACCEPT.
+    // The direction-of-failure rail on the N1 repair (advisor requirement). The defect it repairs
+    // false-FAILS good conventions, which is the SAFE direction for a pre-arming gate; the repair
+    // must never buy that back by flipping the gate toward false-ACCEPT.
     //
-    // Here the two peers append DIFFERENT lines to one section, so no two causal paths
-    // ever meet: the state space really is exponential and the cascade never settles.
-    // Nothing recurs, so no ancestry check can fire — the graph fuel is the only thing
-    // that stops it, and a completed-work memo must leave it stopping.
+    //
+    //
+    //
+    //
+    //
     let (code, report) = run_hook_json("divergent-cascade");
     assert_eq!(code, 1, "a never-settling cascade must fail: {report}");
     assert_eq!(report["quiescence"]["verdict"], "fuel_exhausted");
@@ -461,11 +461,11 @@ fn a_divergent_cascade_still_exhausts_fuel() {
 
 #[test]
 fn a_live_hook_cannot_vouch_for_a_same_named_check_citation() {
-    // The MIRROR of `a_check_citation_cannot_vouch_for_a_same_named_hook`, over the
-    // same two pages and the same collided name, running the other way: here the HOOK
-    // fires and the CHECK citation of that name never does. One merged `declared_rules`
-    // list with a hook-wins rule closes only the named direction; two typed namespaces
-    // close both.
+    // The MIRROR of `a_check_citation_cannot_vouch_for_a_same_named_hook`, over the same two pages
+    // and the same collided name, running the other way: here the HOOK fires and the CHECK
+    // citation of that name never does. One merged `declared_rules` list with a hook-wins rule
+    // closes only the named direction; two typed namespaces close both.
+    //
     let (code, report) = run_hook_json("hook-liveness-mirror");
     assert_eq!(
         code, 1,
@@ -515,8 +515,8 @@ fn a_later_silent_hook_is_dead_even_beside_a_live_one() {
 
 #[test]
 fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
-    // The CHECK cites `task-status-notify`, which is also the sibling HOOK's slug.
-    // One merged set makes the silent HOOK look live; two namespaces cannot.
+    // The CHECK cites `task-status-notify`, which is also the sibling HOOK's slug. One merged set
+    // makes the silent HOOK look live; two namespaces cannot.
     let (code, report) = run_hook_json("citation-collision");
     assert_eq!(code, 1, "the same-named silent HOOK is dead: {report}");
     let row = case(&report, "collide");
@@ -541,11 +541,11 @@ fn a_check_citation_cannot_vouch_for_a_same_named_hook() {
 
 #[test]
 fn one_generation_is_one_batch_that_names_no_identity() {
-    // Production applies a mixed frontmatter+section emission as ONE atomic batch,
-    // and such a batch has no addressable Delta container — the one synthesized event
-    // names neither the field nor the section. A proof that split the generation into
-    // independent single-edit writes would derive two rich events and fabricate the
-    // downstream fire this watcher is waiting for.
+    // Production applies a mixed frontmatter+section emission as ONE atomic batch, and such a
+    // batch has no addressable Delta container — the one synthesized event names neither the field
+    // nor the section. A proof that split the generation into independent single-edit writes would
+    // derive two rich events and fabricate the downstream fire this watcher is waiting for.
+    //
     let (code, report) = run_hook_json("mixed-generation");
     assert_eq!(code, 1, "the watcher must go dead: {report}");
     assert_eq!(
@@ -566,9 +566,9 @@ fn one_generation_is_one_batch_that_names_no_identity() {
 
 #[test]
 fn narrowed_reporting_is_byte_identical_in_both_corpus_modes() {
-    // `counterfactual: true` widens which caps a DECLARATION may carry. It must not
-    // change how a result is projected or reported by one byte, so the same denied
-    // ordinary descriptor renders identically in both modes.
+    // `counterfactual: true` widens which caps a DECLARATION may carry. It must not change how a
+    // result is projected or reported by one byte, so the same denied ordinary descriptor renders
+    // identically in both modes.
     let (production_code, production) = run_hook_json("narrowed-production");
     let (counterfactual_code, counterfactual) = run_hook_json("narrowed-counterfactual");
     assert_eq!(production_code, 0, "{production}");
@@ -587,9 +587,9 @@ fn narrowed_reporting_is_byte_identical_in_both_corpus_modes() {
 
 #[test]
 fn a_forged_receipt_is_refused_in_both_corpus_modes() {
-    // The ORDINARY production corpus branch is the one an armed HOOK will travel, so
-    // it is the one that must carry the guard — and the counterfactual twin proves
-    // widening the cap ceiling did not weaken it.
+    // The ORDINARY production corpus branch is the one an armed HOOK will travel, so it is the one
+    // that must carry the guard — and the counterfactual twin proves widening the cap ceiling did
+    // not weaken it.
     for spec in ["forged-receipt", "forged-receipt-counterfactual"] {
         let out: Output = mrd()
             .arg("test")
@@ -613,10 +613,10 @@ fn a_forged_receipt_is_refused_in_both_corpus_modes() {
 
 #[test]
 fn raw_md_descriptors_cannot_bypass_canonical_validation() {
-    // R13's negative half: a direct `set_field` constructor carries no canonical
-    // action and no receipt. Production HOOK projection rejects it, and the
-    // counterfactual branch now rejects it identically — the proof validates the same
-    // production-shaped intent a real armed hook would, or it proves nothing.
+    // R13's negative half: a direct `set_field` constructor carries no canonical action and no
+    // receipt. Production HOOK projection rejects it, and the counterfactual branch now rejects it
+    // identically — the proof validates the same production-shaped intent a real armed hook would,
+    // or it proves nothing.
     let out: Output = mrd()
         .arg("test")
         .arg("--corpus")
@@ -637,10 +637,10 @@ fn raw_md_descriptors_cannot_bypass_canonical_validation() {
 
 #[test]
 fn a_canonical_md_intent_reaches_the_production_executor() {
-    // R13's positive half: a canonical `md.append_section` intent crosses the `run`
-    // adapter into the production batch executor. The watcher fires on the EXECUTOR's
-    // own synthesized event, which it can only do if the append really landed against
-    // the isolated proof corpus with production section semantics.
+    // R13's positive half: a canonical `md.append_section` intent crosses the `run` adapter into
+    // the production batch executor. The watcher fires on the EXECUTOR's own synthesized event,
+    // which it can only do if the append really landed against the isolated proof corpus with
+    // production section semantics.
     let (code, report) = run_hook_json("canonical-md-adapter");
     assert_eq!(
         code, 0,
@@ -702,13 +702,13 @@ fn duplicate_identical_cases_are_acyclic_but_the_real_cycle_still_bites() {
 #[test]
 fn a_case_can_drive_a_content_reading_check() {
     // The tier's CONTENT reach, and the reason this gate exists: a CHECK reading
-    // `change.sections_changed` / `change.doc.nodes[].text` is a rule a markdown
-    // engine must be able to test, and until a case could write the BODY it was
-    // unreachable by construction — reported dead over every case form the grammar
-    // had. The case's change half is the PRODUCTION edit grammar (the ratified
-    // tier-1 split: JSON for the change, in the exact op format production uses),
-    // so an `hpath` target and a `put at:end` reach the body the same way a real
-    // write does.
+    // `change.sections_changed` / `change.doc.nodes[].text` is a rule a markdown engine must be
+    // able to test, and until a case could write the BODY it was unreachable by construction —
+    // reported dead over every case
+    //
+    //
+    //
+    //
     let (code, report) = run_json("body-content");
     assert_eq!(
         code, 0,
@@ -739,9 +739,9 @@ fn a_case_can_drive_a_content_reading_check() {
 
 #[test]
 fn an_unknown_case_key_is_a_tool_failure() {
-    // The silence that hid the content gap: an author reaching for a verb the
-    // grammar does not carry used to get a green-looking run over a case that
-    // mutated nothing. An unknown key is now the authoring fault it always was.
+    // The silence that hid the content gap: an author reaching for a verb the grammar does not
+    // carry used to get a green-looking run over a case that mutated nothing. An unknown key is
+    // now the authoring fault it always was.
     let out = mrd()
         .arg("test")
         .arg("--corpus")

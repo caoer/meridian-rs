@@ -1,17 +1,17 @@
-//! U12 retirement gates — the superseded pin/attest impl is DELETED, not
-//! shimmed (plan D-Remove).
+//! U12 retirement gates — the superseded pin/attest impl is DELETED, not shimmed (plan
+//! D-Remove). Stage-2 S7 amends the `pin` half of this gate — deliberately M1 deleted the OLD
+//! `pin`/`attest` implementation (`^inputs` + `pin_lock`) and pinned that deletion here, naming
+//! its own successor: "the replacement surface is the stage-2 pin behavior over `crates/lock` +
+//! `model::fingerprint`".
 //!
-//! # Stage-2 S7 amends the `pin` half of this gate — deliberately
-//! M1 deleted the OLD `pin`/`attest` implementation (`^inputs` + `pin_lock`) and
-//! pinned that deletion here, naming its own successor: "the replacement surface
-//! is the stage-2 pin behavior over `crates/lock` + `model::fingerprint`". Stage
-//! 2 §4 S7 builds exactly that verb, and exit criterion 2 is "`mrd pin` mints a
-//! real meridian-lock pin" — so "`pin` must not parse" has served its purpose and
-//! is now superseded BY THE PLAN, not worked around.
 //!
-//! What still holds, and is still asserted: `attest` does not parse at all, the
-//! new `pin` is NOT a shim for the retired one (it refuses the old invocation
-//! shape and speaks the lock grammar instead), and USAGE teaches no retired verb.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::process::{Command, Output};
 
@@ -30,10 +30,10 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).to_string()
 }
 
-/// `mrd pin` is the STAGE-2 verb, and it is not a shim for the retired one: the
-/// old single-page invocation (`mrd pin <PAGE>`, which resolved that page's
-/// `^inputs`) is refused exit 2, teaching the lock grammar instead of quietly
-/// doing something else with the same arguments.
+/// `mrd pin` is the STAGE-2 verb, and it is not a shim for the retired one: the old single-page
+/// invocation (`mrd pin <PAGE>`, which resolved that pages `^inputs`) is refused exit 2,
+/// teaching the lock grammar instead of quietly doing something else with the same arguments.
+///
 #[test]
 fn mrd_pin_is_the_stage_2_verb_not_a_shim_for_the_retired_one() {
     let out = mrd(&["pin", "some-page.md"]);
@@ -49,9 +49,9 @@ fn mrd_pin_is_the_stage_2_verb_not_a_shim_for_the_retired_one() {
     );
 }
 
-/// `mrd attest` is retired with no alias and no shim. (`attest` = pin + check +
-/// receipt; the composite verb returns only once the pin, the check, and the
-/// receipt each exist on the new surface.)
+/// `mrd attest` is retired with no alias and no shim. (`attest` = pin + check + receipt; the
+/// composite verb returns only once the pin, the check, and the receipt each exist on the new
+/// surface.)
 #[test]
 fn mrd_attest_no_longer_parses() {
     let out = mrd(&["attest", "some-page.md", "--dry"]);
@@ -63,9 +63,9 @@ fn mrd_attest_no_longer_parses() {
     );
 }
 
-/// USAGE teaches the retired verbs' successors, never the retired verbs: no
-/// `mrd attest` at all, and the `pin` line is the stage-2 grammar (two operands,
-/// `TARGET#SELECTOR`) rather than the retired one-page form.
+/// USAGE teaches the retired verbs successors, never the retired verbs: no `mrd attest` at all,
+/// and the `pin` line is the stage-2 grammar (two operands, `TARGETSELECTOR`) rather than the
+/// retired one-page form.
 #[test]
 fn usage_teaches_the_new_pin_grammar_and_no_retired_verb() {
     let out = mrd(&["attest", "x"]);
@@ -84,16 +84,16 @@ fn usage_teaches_the_new_pin_grammar_and_no_retired_verb() {
     );
 }
 
-/// **`mrd hook` is retired with no alias and no shim** (hook-rework ruling,
-/// 2026-07-29). The install / uninstall / status plane wrote into `$GIT_DIR` and
-/// carried an uninstaller, a lock, a downgrade guard and an ownership check to do
-/// it safely; `mrd skill hook` emits the document that says what to place instead,
-/// and the reader places it.
+/// **`mrd hook` is retired with no alias and no shim** (hook-rework ruling, The install /
+/// uninstall / status plane wrote into `$GIT_DIR` and carried an uninstaller, a lock, a
+/// downgrade guard and an ownership check to do it safely; `mrd skill hook` emits the document
+/// that says what to place
 ///
-/// The refusal is the CLI's own — the verb name resolves to nothing, so USAGE
-/// prints and the successor is one line away. A shim that quietly emitted the
-/// document for `mrd hook install` would leave an operator believing a file had
-/// been written.
+///
+///
+///
+///
+///
 #[test]
 fn mrd_hook_no_longer_parses_and_usage_teaches_the_emitter() {
     for args in [
@@ -137,15 +137,15 @@ fn usage_teaches_the_emitter_and_no_retired_hook_grammar() {
     );
 }
 
-/// **`mrd journal` is retired with no alias and no shim** (ZT 2026-08-03:
-/// *"Engine does not have memory. It should not have. History is pin to git when
-/// we lock. Anything between locks is not history."*). The verb existed to reset
-/// a ledger the engine kept of its own writes; that ledger is gone, so there is
-/// nothing to reset and no successor verb — the successor is git.
+/// **`mrd journal` is retired with no alias and no shim** . The verb existed to reset a ledger
+/// the engine kept of its own writes; that ledger is gone, so there is nothing to reset and no
+/// successor verb —
 ///
-/// A shim would be worse here than anywhere else in this file: `journal genesis`
-/// MOVED rows and truncated a file, so an operator who typed it and saw success
-/// would believe an archive exists.
+///
+///
+///
+///
+///
 #[test]
 fn mrd_journal_no_longer_parses_and_usage_teaches_where_history_lives() {
     for args in [
@@ -168,9 +168,9 @@ fn mrd_journal_no_longer_parses_and_usage_teaches_where_history_lives() {
     }
 }
 
-/// USAGE teaches no retired JOURNAL grammar, and the history tier's line says
-/// where history actually lives. A reader who only reads USAGE must not be able
-/// to conclude that the engine still keeps a ledger.
+/// USAGE teaches no retired JOURNAL grammar, and the history tiers line says where history
+/// actually lives. A reader who only reads USAGE must not be able to conclude that the engine
+/// still keeps a ledger.
 #[test]
 fn usage_teaches_git_history_and_no_retired_journal_grammar() {
     let out = mrd(&["attest", "x"]);
@@ -193,11 +193,11 @@ fn usage_teaches_git_history_and_no_retired_journal_grammar() {
     );
 }
 
-/// USAGE teaches no retired MARKER either (marker-retirement ruling,
-/// 2026-07-26). `mrd init`'s line sold `.meridian.toml` — a file the engine now
-/// reads nowhere — so the help text was advertising a contract that had died.
-/// It must name what init actually writes: the root's own `MERIDIAN.md`
+/// USAGE teaches no retired MARKER either (marker-retirement ruling, `mrd init`s line sold
+/// `.meridian.toml` — a file the engine now reads nowhere — so the help text was advertising a
+/// contract that had died. It must name what init actually writes: the roots own `MERIDIAN.md`
 /// self-declaration.
+///
 #[test]
 fn usage_teaches_the_root_declaration_and_no_retired_marker() {
     let out = mrd(&["attest", "x"]);

@@ -1,35 +1,35 @@
-//! U4.4 floor rules — the full enumerated suite, gated across the two surviving
-//! `mrd test` tiers, plus the refusals whose TEXT no tier can assert and the
-//! genesis reading the retired scenario tier used to own.
+//! U4.4 floor rules — the full enumerated suite, gated across the two surviving `mrd test`
+//! tiers, plus the refusals whose TEXT no tier can assert and the genesis reading the retired
+//! scenario tier used to own. The six floor rules live under `tests/floors/rules/<id>.md` — one
+//! PAGE each, tag-registered and identified by frontmatter `id:`. This file: - **corpus tier**
+//! — drives `mrd test --corpus` over the six committed specs
+//! (`tests/floors/corpus/specs/*.md`): fire-where-expected + zero dead rules, exit 0 each. -
+//! **genesis** — the reader-side semantics of a NEVER-ARMED workspace: absent artifact + absent
+//! marker is unarmed, the door is a bit-for-bit no-op, and the write still lands and is still
+//! grey.
 //!
-//! The six floor rules live under `tests/floors/rules/<id>.md` — one PAGE each,
-//! tag-registered and identified by frontmatter `id:`. This file:
 //!
-//! - **corpus tier** — drives `mrd test --corpus` over the six committed specs
-//!   (`tests/floors/corpus/specs/*.md`): fire-where-expected + zero dead rules,
-//!   exit 0 each.
-//! - **genesis** — the reader-side semantics of a NEVER-ARMED workspace: absent
-//!   artifact + absent marker is unarmed, the door is a bit-for-bit no-op, and
-//!   the write still lands and is still grey.
-//! - **history tier** — builds a fresh temp git workspace, seeds the
-//!   `reviewer-not-owner` floor PAGE + three authored commits, and drives
-//!   `mrd test --history`:
-//!   the owner-self-close history row is a would-refuse item, declared in a
-//!   GOLDEN list.
-//! - **message-naming** — loads the `claim-cas` and `verdict-reviewer-bind`
-//!   floors through the SAME `policy` registration + loader the door uses and
-//!   asserts the refusal NAMES the winner (gate 2) and the bound reviewer
-//!   (gate 6).
 //!
-//! # What retired here, and where it went (ruling D3)
-//! The scenario tier is gone: its fixture space was `conventions/<slug>/scenarios/`,
-//! addressed by a folder name that is no longer an identity. Its two suite-level
-//! scenarios were carried rather than dropped — `bounce-approve-lands` into the
-//! `close-verdict` corpus spec plus a byte-exact unit test on the production
-//! writer, and `first-arm-genesis-grey` REWRITTEN here against the artifact +
-//! marker pair, which is what its subject (`conventions/INDEX.md`'s birth)
-//! became. Its 14 per-floor scenarios and 6 base files are redundant against the
-//! corpus specs and the governed tree they run over.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -89,9 +89,9 @@ fn corpus_specs_all_fire_where_expected() {
     }
 }
 
-/// The `close-verdict` spec carries the BOUNCE cases ported from the retired
-/// scenario tier: a re-decision written through the same `put at:upsert` is
-/// admitted by the floor rather than refused as a duplicate.
+/// The `close-verdict` spec carries the BOUNCE cases ported from the retired scenario tier: a
+/// re-decision written through the same `put at:upsert` is admitted by the floor rather than
+/// refused as a duplicate.
 #[test]
 fn the_bounce_re_decision_is_admitted_by_the_close_verdict_floor() {
     let spec = floors("corpus/specs/close-verdict.md");
@@ -120,22 +120,22 @@ fn the_bounce_re_decision_is_admitted_by_the_close_verdict_floor() {
 /// The bytes a genesis write lands.
 const GENESIS_PAGE: &str = "# Genesis\n\nthe first write on a never-armed workspace.\n";
 
-/// Gate 7, REWRITTEN — the genesis epoch, read from the artifact + marker pair.
+/// Gate 7, REWRITTEN — the genesis epoch, read from the artifact + marker pair. The retired
+/// scenarios subject was the birth of `conventions/INDEX.md`, a file this cutover deletes. The
+/// BEHAVIOUR it guarded is unchanged, so it is re-expressed against what replaced that file:
+/// `meridian/armed-rules.md` plus the `meridian/attested` marker.
 ///
-/// The retired scenario's subject was the birth of `conventions/INDEX.md`, a file
-/// this cutover deletes. The BEHAVIOUR it guarded is unchanged, so it is
-/// re-expressed against what replaced that file: `meridian/armed-rules.md` plus
-/// the `meridian/attested` marker. On a workspace where BOTH are absent —
 ///
-/// - the resolved law is **never-armed**, not an empty armed set and not a fault;
-/// - the door is therefore a bit-for-bit no-op, so an ordinary write LANDS;
-/// - it is still JOURNALED (ungated is not unrecorded);
-/// - and it carries NO enforcement verdict — GREY is the ABSENCE of a green
-///   verdict, never a token.
 ///
-/// Scope, as ruled: this is the READER side only. The ACT of first arming is the
-/// writer's test and is owed at the ARM disk edge; nothing here writes either
-/// half of the pair.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
     let dir = tempfile::tempdir().expect("tmpdir");
@@ -185,16 +185,16 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
         out.verdicts
     );
 
-    // LOST, and deliberately: "ungated is not UNRECORDED" used to be asserted
-    // here by reading the write's row out of the receipt journal. ZT ruled the
-    // engine keeps no memory (2026-08-03) — an ungated write between two locks is
-    // not history at all — so there is no in-engine record to assert and the
-    // proof dies with the plane it read. It is NOT re-pointed at git: git records
-    // commits, and asserting that would test git rather than the engine, which is
-    // a different claim wearing this test's name.
+    // LOST, and deliberately: "ungated is not UNRECORDED" used to be asserted here by reading the
+    // writes row out of the receipt journal. ZT ruled the engine keeps no memory ( — an ungated
+    // write between two locks is not history at all — so there is no in-engine record to assert
+    // and
     //
-    // The test's subject survives whole: a never-armed write is UNGATED (asserted
-    // above) and it LANDS (asserted below).
+    //
+    //
+    //
+    //
+    //
 
     // And the bytes really landed.
     let landed =
@@ -202,10 +202,10 @@ fn the_genesis_epoch_is_unarmed_ungated_and_grey() {
     assert!(landed.contains("Genesis"), "the genesis bytes are on disk");
 }
 
-/// The control that makes the genesis reading load-bearing: the pivot is the
-/// MARKER, not the artifact. Plant the marker alone and the SAME absent artifact
-/// stops being genesis and becomes a fault — otherwise "no artifact ⇒ unarmed"
-/// would be a silent disarm anyone could perform with `rm`.
+/// The control that makes the genesis reading load-bearing: the pivot is the MARKER, not the
+/// artifact. Plant the marker alone and the SAME absent artifact stops being genesis and
+/// becomes a fault — otherwise "no artifact ⇒ unarmed" would be a silent disarm anyone could
+/// perform with `rm`.
 #[test]
 fn the_marker_alone_turns_an_absent_artifact_into_a_fault() {
     let dir = tempfile::tempdir().expect("tmpdir");
@@ -327,18 +327,18 @@ fn verdict_bind_refusal_names_the_reviewer() {
     assert_eq!(r[0].passing_scenario, "bound-verdict");
 }
 
-/// Ruling D, asserted rather than reviewed: **no floor refusal cites a page that
-/// is absent from the tree.** Every `passing =` used to be a
-/// `scenarios/<name>.md` path into the tier that retired, so after the deletion
-/// each of those citations named a file nobody could open — a refusal whose legal
-/// path teaches nothing.
+/// Ruling D, asserted rather than reviewed: **no floor refusal cites a page that is absent from
+/// the tree.** Every `passing =` used to be a `scenarios/<name>.md` path into the tier that
+/// retired, so after the deletion each of those citations named a file nobody could open — a
+/// refusal whose legal path teaches nothing.
 ///
-/// The check is deliberately shaped as "no citation is path-like" rather than
-/// "every cited file exists": the ruling did not move the pages, it changed WHAT
-/// a citation is. A citation is a corpus CASE id now, and the case-existence half
-/// is enforced where cases live — a citation naming no case is reported DEAD by
-/// `corpus_specs_all_fire_where_expected`, and a case expecting no citation is a
-/// fire mismatch in the same run.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn no_floor_refusal_cites_a_page_that_is_not_in_the_tree() {
     let ids = [
@@ -358,9 +358,9 @@ fn no_floor_refusal_cites_a_page_that_is_not_in_the_tree() {
             };
             let citation = rest.trim_end_matches("\",").trim_end_matches('"');
             seen += 1;
-            // Path-shaped means a separator or a markdown extension in ANY case —
-            // a citation is a case-sensitive id, but a `.MD` that slipped past
-            // would name a page just as surely as a `.md`.
+            // Path-shaped means a separator or a markdown extension in ANY case — a citation is a
+            // case-sensitive id, but a `.MD` that slipped past would name a page just as surely as a
+            // `.md`.
             assert!(
                 !citation.contains('/') && !citation.to_ascii_lowercase().ends_with(".md"),
                 "{id} cites `{citation}` — a path-shaped citation names a page, and the pages it \
@@ -407,12 +407,12 @@ fn write(dir: &Path, rel: &str, body: &str) {
     std::fs::write(path, body).unwrap();
 }
 
-/// Commit the whole working tree AS `author` — the actor of the write.
+/// Commit the whole working tree AS `author` — the actor of the write. The author is the point,
+/// not decoration: history is git , so the commit author IS the acting writer the rule compares
+/// against a tasks `owner:`. It used to be an `actor=` token the engine wrote into a journal
+/// row itself.
 ///
-/// The author is the point, not decoration: history is git (ZT 2026-08-03), so
-/// the commit author IS the acting writer the rule compares against a task's
-/// `owner:`. It used to be an `actor=` token the engine wrote into a journal row
-/// itself.
+///
 fn commit_as(dir: &Path, author: &str, message: &str) {
     git(dir, &["add", "-A"]);
     git(
@@ -428,9 +428,9 @@ fn commit_as(dir: &Path, author: &str, message: &str) {
     );
 }
 
-/// The full commit id of `HEAD` — half of an item id (`<commit>:<path>`), which
-/// is what a golden list declares against now that rows have no `^r-NNNNNN`
-/// anchor to be named by.
+/// The full commit id of `HEAD` — half of an item id (`<commit>:<path>`), which is what a
+/// golden list declares against now that rows have no `^r-NNNNNN` anchor to be named by.
+///
 fn head(dir: &Path) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -449,12 +449,12 @@ const FIX_CLOSED: &str =
 const FIX_NOTE: &str =
     "---\ntype: task\nstatus: closed\nowner: worker-a\n---\n\n# Fix parser\n\nbody\n\n- reviewed\n";
 
-/// Seed a temp git workspace with the reviewer-not-owner FLOOR page and three
-/// commits: C0 a create by worker-b, C1 an owner-self-close by worker-a
-/// (would-refuse), C2 a reviewer edit by reviewer-b (passes).
+/// Seed a temp git workspace with the reviewer-not-owner FLOOR page and three commits: C0 a
+/// create by worker-b, C1 an owner-self-close by worker-a (would-refuse), C2 a reviewer edit by
+/// reviewer-b (passes). Returns the workspace and C1s commit id, because C1 is the row the
+/// golden list has to name.
 ///
-/// Returns the workspace and C1's commit id, because C1 is the row the golden
-/// list has to name.
+///
 fn seeded_workspace() -> (tempfile::TempDir, String) {
     let dir = tempfile::tempdir().expect("tmpdir");
     let ws = dir.path();
@@ -507,15 +507,15 @@ fn run_history(ws: &Path, extra: &[&str]) -> (i32, Value) {
     (code, report)
 }
 
-/// The history tier reconstructs the workspace's GIT history, fires the
-/// owner-self-close as an UNDECLARED would-refuse (exit 1), then a GOLDEN
-/// declaration flips it to a declared exception (exit 0). This is the
-/// `--history` tier recording.
+/// The history tier reconstructs the workspaces GIT history, fires the owner-self-close as an
+/// UNDECLARED would-refuse (exit 1), then a GOLDEN declaration flips it to a declared exception
+/// (exit 0). This is the `--history` tier recording.
 ///
-/// **This is the Q2 equivalence gate.** The same corpus, the same rule, the same
-/// three writes and the same verdicts — one undeclared would-refuse at C1, two
-/// full-bytes reconstructions, one structural — as when the enumerator read
-/// journal rows. Only the enumerator changed; the evaluation is the evaluation.
+///
+///
+///
+///
+///
 #[test]
 fn history_owner_self_close_is_a_would_refuse_then_declared() {
     let (dir, c1) = seeded_workspace();
@@ -542,11 +542,11 @@ fn history_owner_self_close_is_a_would_refuse_then_declared() {
         "C0 create is structural"
     );
 
-    // Declare it in the GOLDEN list — a `golden` fence in a SPEC page that names
-    // the rule it excepts (D2a). The spec is passed with `--spec`; nothing about
-    // where it sits binds it to the rule, the `rule:` reference does.
-    // The item id is `<commit>:<path>` — git's two facts about one write, since
-    // there is no `^r-NNNNNN` anchor to name any more.
+    // Declare it in the GOLDEN list — a `golden` fence in a SPEC page that names the rule it
+    // excepts (D2a). The spec is passed with `--spec`; nothing about where it sits binds it to the
+    // rule, the `rule:` reference does. The item id is `<commit>:<path>` — gits two facts about
+    // one write, since there is no `^r-NNNNNN` anchor to name any more.
+    //
     let golden = format!(
         "---\nrule: ../rules/reviewer-not-owner.md\n---\n\n# Golden list\n\n\
          ```golden\n\

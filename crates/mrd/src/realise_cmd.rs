@@ -66,10 +66,10 @@ const DEFAULT_BOARD_DIR: &str = "board";
 /// The actor this verb records on every write it drives through the run plane.
 const REALISE_ACTOR: &str = "mrd:realise";
 
-/// Run `mrd realise <tail>`.
+/// Run `mrd realise <tail>`. Errors [`Fail`] on the triads 1/2 legs — see the module docs for
+/// the mapping.
 ///
-/// # Errors
-/// [`Fail`] on the triad's 1/2 legs — see the module docs for the mapping.
+///
 pub(crate) fn run(args: &[String]) -> Result<(), Fail> {
     let parsed = Parsed::parse(args)?;
     let root = crate::preset_cmd::resolve_root()?;
@@ -105,10 +105,10 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
         env: BTreeMap::new(),
     });
 
-    // `realise.rule` names the rule this claim realises, BY ID. A pending-agent
-    // card references it and never copies its body (decision 8) — so the id is
-    // validated against the registration grammar here, at the page edge, rather
-    // than minting a card that points at nothing parseable.
+    // `realise.rule` names the rule this claim realises, BY ID. A pending-agent card references it
+    // and never copies its body (decision 8) — so the id is validated against the registration
+    // grammar here, at the page edge, rather than minting a card that points at nothing parseable.
+    //
     let rule = match fm_scalar(&doc, "realise.rule") {
         None => None,
         Some(id) => {
@@ -137,11 +137,11 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     let (invocation_id, now) = mint_identity()?;
     let scratch = root.0.join(".meridian/scratch").join(&invocation_id);
     std::fs::create_dir_all(&scratch).map_err(|e| Fail::tool(format!("scratch dir: {e}")))?;
-    // `resolve_root` has already committed to a workspace (ladder, daemon
-    // adoption, or ephemeral), so unlike `mrd run` there is no unanswered case
-    // to represent here — this root is the one that declares. Substituting the
-    // declaration for the retired marker keeps today's behavior: the same
-    // directory is consulted, only the filename and the parse law change.
+    // `resolve_root` has already committed to a workspace (ladder, daemon adoption, or ephemeral),
+    // so unlike `mrd run` there is no unanswered case to represent here — this root is the one
+    // that declares. Substituting the declaration for the retired marker keeps todays behavior:
+    // the same directory is consulted, only the filename and the parse law change.
+    //
     let declaring_root = Some(root.0.clone());
     let timeout = run::exec::configured_timeout(declaring_root.as_deref())
         .map_err(|e| Fail::tool(e.to_string()))?;
@@ -168,9 +168,9 @@ fn realise_page(root: &fs::WorkspaceRoot, page: &str, parsed: &Parsed) -> Result
     exit_for(state)
 }
 
-/// The parity-vocabulary terminal state, derived from the engine's A4 classifier
-/// plus the apply count (the engine collapses `converged`/`drifted-fixed`, which
-/// the legacy vocabulary splits by whether an apply fired).
+/// The parity-vocabulary terminal state, derived from the engines A4 classifier plus the apply
+/// count (the engine collapses `converged`/`drifted-fixed`, which the legacy vocabulary splits
+/// by whether an apply fired).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     /// `--dry`: the phases that WOULD run; nothing executed, zero caps.
@@ -259,9 +259,9 @@ fn render(format: Format, page: &str, state: State, applies: u32, receipts: &[St
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Read a scalar frontmatter value off a parsed document (the public
-/// [`model::YamlMap`] surface) — dotted keys (`realise.field`) are ordinary map
-/// entries, exactly as `mrd run` reads `task.<name>`.
+/// Read a scalar frontmatter value off a parsed document (the public [`model::YamlMap`]
+/// surface) — dotted keys (`realise.field`) are ordinary map entries, exactly as `mrd run`
+/// reads `task.<name>`.
 fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
     fn find(node: &model::Node) -> Option<&model::YamlMap> {
         if let model::NodeKind::Frontmatter { map } = &node.kind {
@@ -274,14 +274,14 @@ fn fm_scalar(doc: &model::Document, key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
-/// Mint the realise identity at the §9 boundary: a unique, path-safe invocation
-/// id and an RFC3339 time fact.
+/// Mint the realise identity at the §9 boundary: a unique, path-safe invocation id and an
+/// RFC3339 time fact. The clock is read HERE, once, and passed in — the engine reads none
+/// (`wire::now_is_rfc3339` validates, never generates), so every surface downstream
 ///
-/// The clock is read HERE, once, and passed in — the engine reads none
-/// (`wire::now_is_rfc3339` validates, never generates), so every surface
-/// downstream renders deterministically from an argument. Unix seconds are the
-/// invocation id's business, never a timestamp a human or a governed page sees
-/// (verdict 15.7).
+///
+///
+///
+///
 fn mint_identity() -> Result<(String, String), Fail> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -295,11 +295,11 @@ fn mint_identity() -> Result<(String, String), Fail> {
     Ok((id, rfc3339_utc(secs)))
 }
 
-/// Format unix seconds as an RFC3339 UTC date-time (`YYYY-MM-DDTHH:MM:SSZ`) —
-/// the `now` format law transcribed in `wire::now_is_rfc3339`, from the other
-/// side. Pure and dependency-free (the workspace carries no date crate); the
-/// civil-date split is Hinnant's `civil_from_days` algorithm, exact for every
-/// day in the proleptic Gregorian calendar.
+/// Format unix seconds as an RFC3339 UTC date-time (`YYYY-MM-DDTHH:MM:SSZ`) — the `now` format
+/// law transcribed in `wire::now_is_rfc3339`, from the other side. Pure and dependency-free
+/// (the workspace carries no date crate); the civil-date split is Hinnants `civil_from_days`
+/// algorithm, exact for every day in the proleptic Gregorian calendar.
+///
 fn rfc3339_utc(secs: u64) -> String {
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);

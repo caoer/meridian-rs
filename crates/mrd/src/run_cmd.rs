@@ -57,16 +57,16 @@ const EXIT_RUN: u8 = 1;
 /// nothing, and a fixed id keeps dry output byte-stable run over run.
 const DRY_INVOCATION: &str = "dry";
 
-/// The S1 ruleset the CLI hands the runner: EMPTY, always (u7-gate forward
-/// condition). Cascade applies are receipt-less by phase-2 scoping, so S1
-/// must short-circuit the cascade before any apply — the runner's vacuous
-/// stop on an empty ruleset is that short-circuit, and the CLI surface has
-/// no rules input to widen it.
+/// The S1 ruleset the CLI hands the runner: EMPTY, always (u7-gate forward condition). Cascade
+/// applies are receipt-less by phase-2 scoping, so S1 must short-circuit the cascade before any
+/// apply — the runners vacuous stop on an empty ruleset is that short-circuit, and the CLI
+/// surface has no rules input to widen it.
+///
 const S1_RULES: &[effects::Rule] = &[];
 
-/// The workspace-relative receipt file `mrd run` appends to (executor
-/// convention: address policy is the caller's; the executor scans every
-/// `.md` beside it for foreign-edit anchors).
+/// The workspace-relative receipt file `mrd run` appends to (executor convention: address
+/// policy is the callers; the executor scans every `.md` beside it for foreign-edit anchors).
+///
 const RECEIPT_FILE: &str = "receipts/run.md";
 
 /// A run-plane refusal (exit 1) — distinct from [`Fail::tool`]'s exit 2.
@@ -79,10 +79,10 @@ fn fail_address(e: &AddressError) -> Fail {
     Fail::tool(e.to_string())
 }
 
-/// Cap faults split by leg: a bash fence under a read-only convention is the
-/// PLANE refusing a well-formed invocation (exit 1); malformed declarations and
-/// a root `MERIDIAN.md` that does not read as a root declaration are
-/// authoring/tool faults (exit 2).
+/// Cap faults split by leg: a bash fence under a read-only convention is the PLANE refusing a
+/// well-formed invocation (exit 1); malformed declarations and a root `MERIDIAN.md` that does
+/// not read as a root declaration are authoring/tool faults (exit 2).
+///
 fn fail_caps(e: &CapsError) -> Fail {
     match e {
         CapsError::BashFenceRefused { .. } => fail_run(e.to_string()),
@@ -92,18 +92,18 @@ fn fail_caps(e: &CapsError) -> Fail {
     }
 }
 
-/// Executor refusals all land on the run leg (exit 1). The two named legs of
-/// the triad review: `ForeignEdit` (decision #26 refusal, never a silent
-/// overwrite) and `WorkspaceBusy` (decision #9, the `LOCK_NB` refusal) — both
-/// carry their typed `Display` and exit 1.
+/// Executor refusals all land on the run leg (exit 1). The two named legs of the triad review:
+/// `ForeignEdit` (decision 26 refusal, never a silent overwrite) and `WorkspaceBusy` (decision
+/// 9, the `LOCK_NB` refusal) — both carry their typed `Display` and exit 1.
+///
 fn fail_exec(e: &ExecError) -> Fail {
     fail_run(e.to_string())
 }
 
-/// Map a runner refusal onto the triad. Pre-eval faults (addressing,
-/// contract) are invocation faults (exit 2); everything past the gate is the
-/// run plane refusing (exit 1), with `ExecError` legs routed through
-/// [`fail_exec`].
+/// Map a runner refusal onto the triad. Pre-eval faults (addressing, contract) are invocation
+/// faults (exit 2); everything past the gate is the run plane refusing (exit 1), with
+/// `ExecError` legs routed through [`fail_exec`].
+///
 fn fail_runner(e: &RunnerError) -> Fail {
     match e {
         RunnerError::Address(e) => fail_address(e),
@@ -136,9 +136,9 @@ struct RunArgs {
 }
 
 impl RunArgs {
-    /// Parse the tail after `run`. Unknown flags, a malformed / duplicate
-    /// `--env`, or a third positional refuse loudly (exit 2) — nothing is
-    /// silently ignored.
+    /// Parse the tail after `run`. Unknown flags, a malformed / duplicate `--env`, or a third
+    /// positional refuse loudly (exit 2) — nothing is silently ignored.
+    ///
     fn parse(tail: &[String]) -> Result<Self, Fail> {
         let mut page = None;
         let mut task = None;
@@ -213,26 +213,26 @@ impl RunArgs {
     }
 }
 
-/// Run `mrd run <tail>`.
+/// Run `mrd run <tail>`. Errors [`Fail`] on the triads 1/2 legs — see the module docs for the
+/// mapping.
 ///
-/// # Errors
-/// [`Fail`] on the triad's 1/2 legs — see the module docs for the mapping.
+///
 pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     let parsed = RunArgs::parse(tail)?;
     let cwd = current_dir()?;
     let answer = workspace::resolve(&cwd)
         .map_err(|e| Fail::tool(format!("workspace resolution failed: {e:?}")))?;
-    // `root_or_cwd` preserves today's behavior exactly: an unanchored tree runs
-    // against the cwd. Whether `mrd run` should instead REFUSE a cwd-default
-    // answer is the run-plane/surfaces card's call, not this one's — the
-    // accessor is here so that acceptance is visible in the source and
+    // `root_or_cwd` preserves todays behavior exactly: an unanchored tree runs against the cwd.
+    // Whether `mrd run` should instead REFUSE a cwd-default answer is the run-plane/surfaces cards
+    // call, not this ones — the accessor is here so that acceptance is visible in the source and
     // greppable, rather than inherited from a struct field.
+    //
     let root = fs::WorkspaceRoot(answer.root_or_cwd().to_path_buf());
-    // The two roots answer different questions and are deliberately not the same
-    // expression: `root_or_cwd` above is WHERE FILES ARE READ, `answer.root()`
-    // here is WHETHER ANYTHING IS ENTITLED TO DECLARE POLICY. They coincide
-    // whenever the ladder answered; on a cwd default the first still runs and the
-    // second is `None`, so no convention ceiling is in force.
+    // The two roots answer different questions and are deliberately not the same expression:
+    // `root_or_cwd` above is WHERE FILES ARE READ, `answer.root()` here is WHETHER ANYTHING IS
+    // ENTITLED TO DECLARE POLICY. They coincide whenever the ladder answered; on a cwd default the
+    // first still runs and the second is `None`, so no convention ceiling is in force.
+    //
     let declaring_root = answer.root();
     let doc = address::load_page(&root, Path::new(&parsed.page)).map_err(|e| fail_address(&e))?;
     let (conventions, _source) =
@@ -276,10 +276,10 @@ pub(crate) fn dispatch(tail: &[String]) -> Result<(), Fail> {
     execute(&root, declaring_root, &parsed, task)
 }
 
-/// The execute leg: compose the run through the U7 runner (empty ruleset —
-/// see [`S1_RULES`]), render the U9 report, and map the outcome onto the
-/// exit triad. The CLI is the §9 boundary: it mints the invocation id and
-/// the time fact here, and nowhere below does.
+/// The execute leg: compose the run through the U7 runner (empty ruleset — see [`S1_RULES`]),
+/// render the U9 report, and map the outcome onto the exit triad. The CLI is the §9 boundary:
+/// it mints the invocation id and the time fact here, and nowhere below does.
+///
 fn execute(
     root: &fs::WorkspaceRoot,
     declaring_root: Option<&Path>,
@@ -336,18 +336,18 @@ fn execute(
     exit_leg(&report)
 }
 
-/// The exit leg for a run the runner carried to a report: a bash phase-2
-/// refusal is a run-plane failure even though the report rendered — exit 1,
-/// except a signaled step, which exits 128+signal (130 on SIGINT, plan §5).
+/// The exit leg for a run the runner carried to a report: a bash phase-2 refusal is a run-plane
+/// failure even though the report rendered — exit 1, except a signaled step, which exits
+/// 128+signal (130 on SIGINT, plan §5).
 fn exit_leg(report: &runner::RunReport) -> Result<(), Fail> {
     let TaskOutcome::Bash(outcome) = &report.outcome else {
         return Ok(());
     };
     let cause = match &outcome.phase2 {
         Phase2::Applied { .. } => return Ok(()),
-        // G3b: the effects refused, the run was recorded. Both halves are said,
-        // in that order — the operator's next move follows from the exit code,
-        // not from the receipt.
+        // G3b: the effects refused, the run was recorded. Both halves are said, in that order — the
+        // operators next move follows from the exit code, not from the receipt.
+        //
         Phase2::RefusedExecFailed { .. } => match &outcome.status {
             ExecStatus::Exited { code } => format!(
                 "bash exited {code} — no effect applied; the run is recorded with its exit code"
@@ -423,9 +423,9 @@ fn cap_strings(resolution: &CapResolution) -> Vec<String> {
         .collect()
 }
 
-/// `--list`: every declared task with its language, guarantee class,
-/// contract, and resolved caps. A broken binding shows its typed error as
-/// the row — one broken declaration never hides the rest and never vanishes.
+/// `--list`: every declared task with its language, guarantee class, contract, and resolved
+/// caps. A broken binding shows its typed error as the row — one broken declaration never hides
+/// the rest and never vanishes.
 fn list_tasks(
     _root: &fs::WorkspaceRoot,
     page: &str,
@@ -544,10 +544,10 @@ fn dry(
     }
 }
 
-/// Starlark `--dry`: END-TO-END descriptor truth. The hermetic kernel
-/// evaluates the block (U5 `evaluate` seam — the SAME pure half the real run
-/// uses) and the full effect set prints. Nothing applies; an eval fault is a
-/// run-plane failure (exit 1).
+/// Starlark `--dry`: END-TO-END descriptor truth. The hermetic kernel evaluates the block (U5
+/// `evaluate` seam — the SAME pure half the real run uses) and the full effect set prints.
+/// Nothing applies; an eval fault is a run-plane failure (exit 1).
+///
 fn dry_starlark(
     root: &fs::WorkspaceRoot,
     parsed: &RunArgs,
@@ -609,14 +609,14 @@ fn dry_starlark(
     Ok(())
 }
 
-/// Bash `--dry`: show the block and REFUSE to exec — bash under `--dry`
-/// produces NO descriptors (running it would; inventing them would be fiction,
-/// decision #18). Exit 0: the dry inspection succeeded, and the refusal to exec
-/// is its content, not a failure.
+/// Bash `--dry`: show the block and REFUSE to exec — bash under `--dry` produces NO descriptors
+/// (running it would; inventing them would be fiction, decision 18).
 ///
-/// It takes no authority, and there is nothing to pass it: a bash block is an
-/// unsandboxed shell with undeclared effects (`docs/laws.md` § Amendment), so
-/// the two facts below are the whole honest description.
+///
+///
+///
+///
+///
 fn dry_bash(parsed: &RunArgs, resolved: &ResolvedTask) {
     let task = &resolved.binding.name;
     let class = TaskLanguage::Bash.guarantee_class().as_str();
@@ -697,10 +697,10 @@ mod tests {
         }
     }
 
-    /// u7-gate forward condition: the CLI invocation of the runner uses the
-    /// EMPTY ruleset — cascade applies are receipt-less by phase-2 scoping,
-    /// so S1 short-circuits the cascade via the runner's vacuous stop. The
-    /// call site is pinned to [`S1_RULES`]; this test pins [`S1_RULES`].
+    /// u7-gate forward condition: the CLI invocation of the runner uses the EMPTY ruleset — cascade
+    /// applies are receipt-less by phase-2 scoping, so S1 short-circuits the cascade via the
+    /// runners vacuous stop. The call site is pinned to [`S1_RULES`]; this test pins [`S1_RULES`].
+    ///
     #[test]
     fn cli_hands_the_runner_an_empty_ruleset() {
         assert!(S1_RULES.is_empty(), "S1 must not evaluate cascade rules");

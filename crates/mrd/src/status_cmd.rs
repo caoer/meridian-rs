@@ -127,11 +127,11 @@ use crate::{Fail, Format, current_dir};
 /// carries a live drift or a faulted armed-rules artifact.
 const EXIT_FINDING: u8 = 1;
 
-/// Run `mrd status [--json] [--cwd PATH]`.
+/// Run `mrd status [--json] [--cwd PATH]`. Errors [`Fail`] exit 2 on a bad invocation or an
+/// unresolvable / unreadable workspace; exit 1 when the summary carries a finding (drift, or a
+/// faulted INDEX).
 ///
-/// # Errors
-/// [`Fail`] exit 2 on a bad invocation or an unresolvable / unreadable workspace;
-/// exit 1 when the summary carries a finding (drift, or a faulted INDEX).
+///
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let (format, cwd_arg) = parse(tail)?;
     let cwd = match cwd_arg {
@@ -151,11 +151,11 @@ pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
         ))
     })?;
 
-    // The resolution is reported, never assumed: the ruling requires every
-    // answer to name which rung answered and which root it named. `status` used
-    // to print the path alone, which is exactly the silence being retired. The
-    // label is the ladder's own word (`resolve::Source`), so this surface cannot
-    // drift from the tier vocabulary.
+    // The resolution is reported, never assumed: the ruling requires every answer to name which
+    // rung answered and which root it named. `status` used to print the path alone, which is
+    // exactly the silence being retired. The label is the ladder's own word (`resolve::Source`),
+    // so this surface cannot drift from the tier vocabulary.
+    //
     let report = gather(&workspace, resolved.source.label());
 
     match format {
@@ -202,43 +202,43 @@ fn parse(tail: &[String]) -> Result<(Format, Option<PathBuf>), Fail> {
     Ok((format, cwd))
 }
 
-/// What the forced-since-realise axis says now that nothing observes it. One
-/// constant, used by BOTH faces, so the human line and the `--json` face cannot
-/// drift into disagreeing about what was checked.
+/// What the forced-since-realise axis says now that nothing observes it. One constant, used by
+/// BOTH faces, so the human line and the `--json` face cannot drift into disagreeing about what
+/// was checked.
 const FORCED_NOT_TRACKED: &str = "not-tracked";
 
-/// Why it is not tracked, in the words of the law that made it so. Rendered, not
-/// implied: a reader meeting a missing axis needs the reason in front of them,
-/// not in a changelog.
+/// Why it is not tracked, in the words of the law that made it so. Rendered, not implied: a
+/// reader meeting a missing axis needs the reason in front of them, not in a changelog.
+///
 const FORCED_NOT_TRACKED_WHY: &str = "the engine keeps no memory by design — \
                                       a forced write between two locks is not history; look in git";
 
-/// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of.
+/// The `meridian-lock` axis (U6.2) — the corpus's lock pins rolled up worst-of. **Its
+/// relationship to [`StatusReport::pin_rollup`] is ORTHOGONAL, never merged.** The two read
+/// different sources and answer different questions: `pin` rolls up the ARMED SET's evidence
+/// drift (each armed convention's live `CHECK.md` rev vs its pinned `armed_rev`, from
+/// `conventions/INDEX.md`); `lock` rolls up the FINGERPRINT verdicts of every `meridian-lock`
+/// pin in the corpus.
 ///
-/// **Its relationship to [`StatusReport::pin_rollup`] is ORTHOGONAL, never
-/// merged.** The two read different sources and answer different questions:
-/// `pin` rolls up the ARMED SET's evidence drift (each armed convention's live
-/// `CHECK.md` rev vs its pinned `armed_rev`, from `conventions/INDEX.md`);
-/// `lock` rolls up the FINGERPRINT verdicts of every `meridian-lock` pin in the
-/// corpus. Neither can subsume the other, `pin_rollup`'s own worst-of
-/// (red-if-any-drifted, else green) is unchanged by this axis, and a green on
-/// one axis never colors the other — the U6.2 composed legend renders them side
-/// by side, each rolled up independently.
 ///
-/// **Currency is NOT folded into the tone.** Origin tip-compare is a
-/// REPOSITORY-level fact, and a lock verdict is per-pin and content-addressed
-/// (D12) — folding a repo fact into a per-pin color would both merge two axes
-/// and re-root a root-independent computation. Currency therefore stays on the
-/// `anchor` axis this line already renders: `lock` says whether the pinned
-/// content still matches the working copy, `anchor` says how current that
-/// working copy is against origin's tip. Read together, never multiplied.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LockAxis {
     /// Lock rows colored — pins plus any page-level lock-refusal row.
     rows: usize,
-    /// The worst-of color across those rows — `None` when there are none. Not a
-    /// color: a vault with no lock pins has nothing to verify, and rendering
-    /// green there would claim an attestation nobody made.
+    /// The worst-of color across those rows — `None` when there are none. Not a color: a vault with
+    /// no lock pins has nothing to verify, and rendering green there would claim an attestation
+    /// nobody made.
     rollup: Option<Color>,
     /// Set when the corpus itself could not be read — the lock plane is out of
     /// sight, reported as such rather than as an empty (falsely clean) axis.
@@ -246,10 +246,10 @@ struct LockAxis {
 }
 
 impl LockAxis {
-    /// Roll up `colors` worst-of: red (a measured defect) over grey (never
-    /// measured) over green. **Grey above green is load-bearing** — a roll-up
-    /// that let one unverifiable pin hide inside a green fleet would render the
-    /// exact false green the color law forbids.
+    /// Roll up `colors` worst-of: red (a measured defect) over grey (never measured) over green.
+    /// **Grey above green is load-bearing** — a roll-up that let one unverifiable pin hide inside a
+    /// green fleet would render the exact false green the color law forbids.
+    ///
     fn roll_up(colors: &[Color]) -> LockAxis {
         let rollup = colors.iter().max_by_key(|c| Self::severity(c)).cloned();
         LockAxis {
@@ -268,9 +268,9 @@ impl LockAxis {
         }
     }
 
-    /// The axis word: the worst-of label plus the row count, or the honest empty
-    /// / unreadable case. Never a bare tone. The count is bracketed because a
-    /// reason already carries its own parenthesized detail.
+    /// The axis word: the worst-of label plus the row count, or the honest empty / unreadable case.
+    /// Never a bare tone. The count is bracketed because a reason already carries its own
+    /// parenthesized detail.
     fn render(&self) -> String {
         if let Some(detail) = &self.unreadable {
             return format!("unreadable ({detail})");
@@ -283,24 +283,24 @@ impl LockAxis {
     }
 }
 
-/// The vibe-debt gauge (U6.2) — how much of the corpus's retrieval plane is
-/// held by nothing but this machine.
+/// The vibe-debt gauge (U6.2) — how much of the corpus's retrieval plane is held by nothing but
+/// this machine. A `--vibe` pin writes its blob eagerly (`git hash-object -w`) so the pin can
+/// be verified before the file is committed. That blob is reachable from no ref, so it survives
+/// only until `git gc` ages it past the repository's local `gc.pruneExpire`
+/// ([`receipt::anchor::PENDING_ANCHOR_TTL`], named residual G1).
 ///
-/// A `--vibe` pin writes its blob eagerly (`git hash-object -w`) so the pin can
-/// be verified before the file is committed. That blob is reachable from no ref,
-/// so it survives only until `git gc` ages it past the repository's local
-/// `gc.pruneExpire` ([`receipt::anchor::PENDING_ANCHOR_TTL`], named residual
-/// G1). The debt is exactly that population: the lock-referenced blobs git HAS
-/// but no commit reaches, counted and summed in bytes.
 ///
-/// **It is a METER, never a gate.** Debt never enters
-/// [`StatusReport::has_findings`], never refuses a write, and never warns as an
-/// error — the gauge reports the size of the window, it does not shorten it.
 ///
-/// **What it does NOT count:** a blob absent from the object database
-/// (`never-anchored` — pruned past the TTL, or a fresh clone) is not debt but
-/// past debt: nothing local can pay it, and its bytes no longer exist to sum. A
-/// blob a commit reaches is not debt at all.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VibeDebt {
     /// Distinct lock-referenced blobs present in the object database and
@@ -308,9 +308,9 @@ struct VibeDebt {
     blobs: usize,
     /// Their total size, git's own byte count.
     bytes: u64,
-    /// Set when reachability could not be measured (no git, not a repository,
-    /// an unreadable corpus, or a root whose object store cannot be named or
-    /// asked): the gauge reports unknown, never a false `0`.
+    /// Set when reachability could not be measured (no git, not a repository, an unreadable corpus,
+    /// or a root whose object store cannot be named or asked): the gauge reports unknown, never a
+    /// false `0`.
     unknown: Option<String>,
 }
 
@@ -325,9 +325,9 @@ impl VibeDebt {
         }
     }
 
-    /// Unmeasurable — the reachability question could not be asked. Never
-    /// collapsed into `0`: a false clean is the one reading this gauge exists
-    /// to prevent.
+    /// Unmeasurable — the reachability question could not be asked. Never collapsed into `0`: a
+    /// false clean is the one reading this gauge exists to prevent.
+    ///
     fn unknown(detail: String) -> VibeDebt {
         VibeDebt {
             blobs: 0,
@@ -357,10 +357,10 @@ struct StatusReport {
     armed: usize,
     /// Count of armed conventions whose live `CHECK.md` rev ≠ pinned `armed_rev`.
     drifted: usize,
-    /// The armed-rules artifact's fault detail, when the workspace's armed law
-    /// cannot be trusted: a corrupt artifact, or an artifact missing on a
-    /// workspace the once-armed marker says HAS been armed. Absent artifact AND
-    /// absent marker is genesis — unarmed, and not a fault.
+    /// The armed-rules artifact's fault detail, when the workspace's armed law cannot be trusted: a
+    /// corrupt artifact, or an artifact missing on a workspace the once-armed marker says HAS been
+    /// armed. Absent artifact AND absent marker is genesis — unarmed, and not a fault.
+    ///
     artifact_fault: Option<String>,
     /// The pin-color axis roll-up — `Green` all-fresh, `Red(Drifted)` any-drift.
     pin_rollup: Color,
@@ -395,12 +395,12 @@ impl StatusReport {
         format!("{} drifted", self.drifted)
     }
 
-    /// The composed multi-axis line — armed-pin color · meridian-lock color ·
-    /// anchor state · armed mode · vibe debt, side by side, never
-    /// merged (U6.2 composed legend). `lock` sits beside `anchor` on purpose:
-    /// the pin verdict and the currency qualifier that reads it are one glance
-    /// apart. `vibe-debt` is the fifth question — not a color and not a verdict,
-    /// but a quantity — so it rides the tail rather than splitting that pair.
+    /// The composed multi-axis line — armed-pin color · meridian-lock color · anchor state · armed
+    /// mode · vibe debt, side by side, never merged (U6.2 composed legend). `lock` sits beside
+    /// `anchor` on purpose: the pin verdict and the currency qualifier that reads it are one glance
+    /// apart. `vibe-debt` is the fifth question — not a color and not a verdict, but a quantity —
+    /// so it rides the tail rather than splitting that pair.
+    ///
     fn composed_line(&self) -> String {
         format!(
             "pin {} · lock {} · anchor {} · armed {} · vibe-debt {}",
@@ -442,11 +442,11 @@ impl StatusReport {
             "armed_rules": {
                 "armed": self.armed,
                 "drifted": self.drifted,
-                // The count key and its `boundary` are REMOVED, not zeroed and
-                // not nulled: a 0 reads as "checked, none found" and a null as
-                // "checked, no answer", and both are lies about a property
-                // nothing observes. What replaces them is a string that cannot
-                // be mistaken for a count, carrying its own reason.
+                // The count key and its `boundary` are REMOVED, not zeroed and not nulled: a 0 reads as
+                // "checked, none found" and a null as "checked, no answer", and both are lies about a property
+                // nothing observes. What replaces them is a string that cannot be mistaken for a count,
+                // carrying its own reason.
+                //
                 "forced_since_realise": {
                     "tracked": false,
                     "state": FORCED_NOT_TRACKED,
@@ -457,9 +457,9 @@ impl StatusReport {
             "composed": {
                 "pin_color": color_tone(&self.pin_rollup),
                 "pin_label": color_label(&self.pin_rollup),
-                // The meridian-lock axis, ALWAYS emitted (no conditional omit):
-                // an empty vault reports 0 pins and a null color, never an
-                // absent field a reader could mistake for "not checked".
+                // The meridian-lock axis, ALWAYS emitted (no conditional omit): an empty vault reports 0 pins
+                // and a null color, never an absent field a reader could mistake for "not checked".
+                //
                 "lock": {
                     "pins": self.lock.rows,
                     "color": self.lock.rollup.as_ref().map(color_tone),
@@ -470,10 +470,10 @@ impl StatusReport {
                 },
                 "anchor": self.anchor_axis,
                 "armed_mode": self.mode_rollup.as_str(),
-                // The vibe-debt gauge, ALWAYS emitted (no conditional omit): a
-                // corpus with nothing owed reports 0 blobs and 0 bytes, because
-                // a gauge that hides at zero is not a gauge — an absent field
-                // reads as "not measured", which is the `unknown` case instead.
+                // The vibe-debt gauge, ALWAYS emitted (no conditional omit): a corpus with nothing owed
+                // reports 0 blobs and 0 bytes, because a gauge that hides at zero is not a gauge — an absent
+                // field reads as "not measured", which is the `unknown` case instead.
+                //
                 "vibe_debt": {
                     "blobs": self.vibe_debt.blobs,
                     "bytes": self.vibe_debt.bytes,
@@ -490,17 +490,17 @@ impl StatusReport {
     }
 }
 
-/// Gather the status summary over a canonical workspace path. The impure edge: it
-/// reads the armed-rules artifact, the once-armed marker, the armed rule PAGES,
-/// and the git refs — every read frozen, none
-/// re-evaluated. It never fails: every
-/// absent / unreadable frozen fact degrades to its honest empty case (genesis,
-/// unverified), so status always renders a summary.
+/// Gather the status summary over a canonical workspace path. The impure edge: it reads the
+/// armed-rules artifact, the once-armed marker, the armed rule PAGES, and the git refs — every
+/// read frozen, none re-evaluated.
 ///
-/// `source` is how the caller resolved `workspace` — carried in rather than
-/// re-derived, because this half is pure over a path and the ladder's answer is
-/// the caller's fact. It is a parameter, not a settable field, so no render can
-/// reach a report whose provenance was never filled in.
+///
+///
+///
+///
+///
+///
+///
 fn gather(workspace: &Path, source: &str) -> StatusReport {
     // 1. The armed set — ONE artifact read plus the marker probe (O(armed)).
     let (armed, artifact_fault) = read_armed(workspace);
@@ -541,20 +541,20 @@ fn gather(workspace: &Path, source: &str) -> StatusReport {
     }
 }
 
-/// Read both `meridian-lock` planes of the workspace over ONE corpus build: the
-/// claim plane's pin colors rolled up worst-of ([`LockAxis`]) and the retrieval
-/// plane's unreachable blobs ([`VibeDebt`]).
+/// Read both `meridian-lock` planes of the workspace over ONE corpus build: the claim plane's
+/// pin colors rolled up worst-of ([`LockAxis`]) and the retrieval plane's unreachable blobs
+/// ([`VibeDebt`]). This is the ONE place status leaves the O(armed) set: the lock lives in the
+/// corpus's pages, so it costs one corpus build (`fs::domain_snapshot` + `fs::build_corpus` —
+/// the same builder `mrd walk` uses, so status and walk can never disagree
 ///
-/// This is the ONE place status leaves the O(armed) set: the lock lives in the
-/// corpus's pages, so it costs one corpus build (`fs::domain_snapshot` +
-/// `fs::build_corpus` — the same builder `mrd walk` uses, so status and walk can
-/// never disagree about a pin). Both planes read that ONE build; a second build
-/// would let the two axes describe two different corpora. It stays sub-second on
-/// the 3k-doc corpus: the build reads and parses bytes without resolving
-/// anything, the coloring is O(pins) and the gauge O(objects), never O(corpus).
 ///
-/// Honest degradation, like every other frozen-fact read here: an unreadable
-/// corpus reports `unreadable` / `unknown`, never an empty (falsely clean) axis.
+///
+///
+///
+///
+///
+///
+///
 fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     let docs = match crate::walk_cmd::build_docs(workspace) {
         Ok(docs) => docs,
@@ -590,17 +590,17 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
 }
 
-/// Which object store one pinned blob belongs to: the ambient
-/// workspace (`None`), or a named root (`Some`).
+/// Which object store one pinned blob belongs to: the ambient workspace (`None`), or a named
+/// root (`Some`). **U13 — per-root anchoring, ratified `-cross-root-addressing.md` §4:** *"the
+/// blob-anchoring check runs against THAT root's git repo — six roots, six object stores, one
+/// law.
 ///
-/// **U13 — per-root anchoring, ratified `2026-07-24-cross-root-addressing.md`
-/// §4:** *"the blob-anchoring check runs against THAT root's git repo — six
-/// roots, six object stores, one law."* The pin's `object` is an agent-plane
-/// address (§2: lock addresses use the canonical `root:` form),
-/// so its root names the repository whose object database holds the blob. The
-/// write path already carries the prefix through untouched (`wire-serve`'s
-/// `set_object` — "the key is the target's path spelling VERBATIM … so a later
-/// `root:` prefix rides through"); this is the reader that honours it.
+///
+///
+///
+///
+///
+///
 type StoreKey = Option<addr::MountName>;
 
 /// Measure the vibe debt: the lock-referenced blobs git holds that no commit
@@ -630,10 +630,10 @@ type StoreKey = Option<addr::MountName>;
 /// same class for the same reason: the question is *which* git to ask, and an
 /// unanswerable one is reported, never guessed.
 fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
-    // Distinct blob ids PER STORE, first-sighting order: one blob referenced by
-    // two pages is ONE object on disk, and counting it twice would double its
-    // bytes — but the same oid under two roots is TWO objects in two databases,
-    // so the dedupe is keyed by store and never globally.
+    // Distinct blob ids PER STORE, first-sighting order: one blob referenced by two pages is ONE
+    // object on disk, and counting it twice would double its bytes — but the same oid under two
+    // roots is TWO objects in two databases, so the dedupe is keyed by store and never globally.
+    //
     let mut seen: HashSet<(StoreKey, String)> = HashSet::new();
     let mut stores: Vec<(StoreKey, Vec<String>)> = Vec::new();
     let mut malformed: Vec<String> = Vec::new();
@@ -644,11 +644,11 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
             malformed.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
         }
-        // `Addr::parse` REFUSES a malformed root rather than reading it as a
-        // literal path, and that refusal is carried here rather than swallowed:
-        // falling back to the ambient store would ask the WRONG database and
-        // answer confidently — a wrong SUCCESS, which is the one shape this
+        // `Addr::parse` REFUSES a malformed root rather than reading it as a literal path, and that
+        // refusal is carried here rather than swallowed: falling back to the ambient store would ask
+        // the WRONG database and answer confidently — a wrong SUCCESS, which is the one shape this
         // gauge must never produce.
+        //
         let Ok(addr) = addr::Addr::parse(&object.key) else {
             unaddressable.push(format!("{} pin `{}`", object.src_path, object.key));
             continue;
@@ -675,9 +675,9 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
         return VibeDebt::clear();
     }
 
-    // The mount table is read ONCE, and only when a key actually names a root:
-    // a corpus whose every key is ambient asks the config plane nothing, so a
-    // single-root machine's gauge is byte-for-byte what it was before U13.
+    // The mount table is read ONCE, and only when a key actually names a root: a corpus whose
+    // every key is ambient asks the config plane nothing, so a single-root machine's gauge is
+    // byte-for-byte what it was before U13.
     let table = if stores.iter().any(|(store, _)| store.is_some()) {
         load_mount_table()
     } else {
@@ -693,9 +693,9 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
                 Err(detail) => return VibeDebt::unknown(detail),
             },
         };
-        // ONE handle per root. Both facts below come from THIS handle, in this
-        // iteration, so a store's reachable set can never be read against
-        // another store's presence answer.
+        // ONE handle per root. Both facts below come from THIS handle, in this iteration, so a store's
+        // reachable set can never be read against another store's presence answer.
+        //
         let repo = git::Repo::at(root);
         let reachable = match repo.reachable_objects() {
             Ok(set) => set,
@@ -712,9 +712,9 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
                 object_present: info.is_some(),
                 reachable_from_commit: reachable.contains(oid),
             };
-            // `PendingAnchor` alone is debt: present, reachable from nothing.
-            // The size is git's own byte count, so the sum costs no second git
-            // call.
+            // `PendingAnchor` alone is debt: present, reachable from nothing. The size is git's own byte
+            // count, so the sum costs no second git call.
+            //
             if ObjectAnchor::classify(&facts) == ObjectAnchor::PendingAnchor
                 && let Some(present) = info
             {
@@ -726,14 +726,14 @@ fn vibe_debt(workspace: &Path, docs: &BTreeMap<String, Document>) -> VibeDebt {
     debt
 }
 
-/// The local path of the git repository backing ONE named root — the ratified
-/// §4 lookup, and it is a MOUNT LOOKUP and nothing more (U11's settlement of
-/// D12): the table maps canonical name → local path, and `git::Repo::at` takes
-/// it from there.
+/// The local path of the git repository backing ONE named root — the ratified §4 lookup, and it
+/// is a MOUNT LOOKUP and nothing more (U11's settlement of D12): the table maps canonical name
+/// → local path, and `git::Repo::at` takes
 ///
-/// Every failure arm is an honest degradation naming the root — never a
-/// fabricated sha and never a silent fall back to the ambient store, which would
-/// answer a different repository's question in this one's name.
+///
+///
+///
+///
 fn store_path(
     name: &addr::MountName,
     table: Option<&config::mount::MountTable>,
@@ -748,11 +748,11 @@ fn store_path(
             "root `{name}` is not mounted here, so its object store cannot be asked. Fix: declare it in MERIDIAN.md"
         ));
     };
-    // DECLARED but unusable is a DIFFERENT CAUSE with a different fix, and
-    // telling an operator to declare a root they have already declared is the
-    // false teaching S3-R43 removed. The mount plane's own sentence is carried
-    // verbatim, so this gauge and `mrd config` say the same thing about the same
-    // root rather than two spellings of it.
+    // DECLARED but unusable is a DIFFERENT CAUSE with a different fix, and telling an operator to
+    // declare a root they have already declared is the false teaching S3-R43 removed. The mount
+    // plane's own sentence is carried verbatim, so this gauge and `mrd config` say the same thing
+    // about the same root rather than two spellings of it.
+    //
     if mount.state().refuses() {
         return Err(format!(
             "root `{name}` is declared but its object store cannot be asked: {}",
@@ -767,25 +767,25 @@ fn store_path(
     Ok(path.to_path_buf())
 }
 
-/// The bound mount table, or `None` when this machine has none to read.
+/// The bound mount table, or `None` when this machine has none to read. Absence is the topology
+/// working as designed (§8 M6) and never a failure of the gauge: a machine with no
+/// `MERIDIAN.md` binds no roots, so a rooted key has no store to ask — which [`store_path`]
+/// then says in words. The same never-fail shape `mrd walk`'s loader uses, for the same reason.
 ///
-/// Absence is the topology working as designed (§8 M6) and never a failure of
-/// the gauge: a machine with no `MERIDIAN.md` binds no roots, so a rooted key
-/// has no store to ask — which [`store_path`] then says in words. The same
-/// never-fail shape `mrd walk`'s loader uses, for the same reason.
+///
 fn load_mount_table() -> Option<config::mount::MountTable> {
     let resolution = config::resolve(&config::Env::from_process()).ok()?;
     let cfg = resolution.config()?;
     config::mount::bind(cfg).ok()
 }
 
-/// A git failure while asking ONE store, with the root named.
+/// A git failure while asking ONE store, with the root named. The ambient arm keeps the pre-U13
+/// wording byte-for-byte — a single-root machine's `unknown` detail did not become a different
+/// sentence because the engine grew roots. A named root prefixes its own name, because "not a
+/// git repository" is only actionable once the reader knows WHICH repository was asked (§5's
+/// per-root row: honest degradation, never a fabricated sha).
 ///
-/// The ambient arm keeps the pre-U13 wording byte-for-byte — a single-root
-/// machine's `unknown` detail did not become a different sentence because the
-/// engine grew roots. A named root prefixes its own name, because "not a git
-/// repository" is only actionable once the reader knows WHICH repository was
-/// asked (§5's per-root row: honest degradation, never a fabricated sha).
+///
 fn store_fail(store: &StoreKey, fail: &git::GitFail) -> String {
     match store {
         None => fail.to_string(),
@@ -793,15 +793,15 @@ fn store_fail(store: &StoreKey, fail: &git::GitFail) -> String {
     }
 }
 
-/// The `unknown` detail for pinned blobs git cannot be asked about — the
-/// count, the reason clause, and the first offender's page and key, so the
-/// reading names WHERE the retrieval plane is damaged instead of just refusing
-/// to answer. `None` when there are no offenders.
+/// The `unknown` detail for pinned blobs git cannot be asked about — the count, the reason
+/// clause, and the first offender's page and key, so the reading names WHERE the retrieval
+/// plane is damaged instead of just refusing to answer. `None` when there are no offenders.
 ///
-/// One helper for both causes on purpose: an entry whose VALUE is not an object
-/// id and one whose KEY names no store are the same reading — the question
-/// cannot be put to git — and two spellings of one reading is how a reader comes
-/// to believe they are two different states.
+///
+///
+///
+///
+///
 fn cannot_ask_detail(offenders: &[String], because: &str) -> Option<String> {
     let first = offenders.first()?;
     let n = offenders.len();
@@ -809,27 +809,27 @@ fn cannot_ask_detail(offenders: &[String], because: &str) -> Option<String> {
     Some(format!("{n} pinned {unit} {because} (first: {first})"))
 }
 
-/// One armed row read from the artifact: which PAGE was attested, at which rev,
-/// and in which mode. Flattened out of [`policy::armed::ArmedRow`] because status
-/// keeps no policy value alive past the read — it renders counts, not law.
+/// One armed row read from the artifact: which PAGE was attested, at which rev, and in which
+/// mode. Flattened out of [`policy::armed::ArmedRow`] because status keeps no policy value
+/// alive past the read — it renders counts, not law.
 struct ArmedPage {
     page: String,
     mode: Mode,
     attested_rev: String,
 }
 
-/// Read the attested armed-rules artifact into the armed set.
+/// Read the attested armed-rules artifact into the armed set. The GENESIS reading is the whole
+/// subtlety, and it pivots on the MARKER, never on the artifact: absent artifact AND absent
+/// marker is a never-armed workspace — nothing armed, no fault, clean.
 ///
-/// The GENESIS reading is the whole subtlety, and it pivots on the MARKER, never
-/// on the artifact: absent artifact AND absent marker is a never-armed workspace —
-/// nothing armed, no fault, clean. An absent artifact on a workspace that HAS been
-/// armed is the silent-disarm attack, so it fails CLOSED to a named fault; and a
-/// present-but-corrupt artifact does too, because a page that will not parse must
-/// never read as an empty, gate-disabling armed set.
 ///
-/// Both reads come from [`wire_serve::armed_disk`], which is the same pair the
-/// write door and the reaction feeder use — a workspace that disagreed with
-/// itself about whether it is armed is exactly what one reader prevents.
+///
+///
+///
+///
+///
+///
+///
 fn read_armed(workspace: &Path) -> (Vec<ArmedPage>, Option<String>) {
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
     let ever_armed = wire_serve::armed_disk::once_armed(&root);
@@ -864,10 +864,10 @@ fn read_armed(workspace: &Path) -> (Vec<ArmedPage>, Option<String>) {
     }
 }
 
-/// Whether an armed row's live PAGE rev differs from the rev the artifact pinned
-/// (the arming drift gate, read-only). A missing page — the pinned evidence
-/// vanished — counts as drift (fail-closed: the armed law can no longer be
-/// verified at its rev).
+/// Whether an armed row's live PAGE rev differs from the rev the artifact pinned (the arming
+/// drift gate, read-only). A missing page — the pinned evidence vanished — counts as drift
+/// (fail-closed: the armed law can no longer be verified at its rev).
+///
 fn page_drifted(workspace: &Path, page: &str, attested_rev: &str) -> bool {
     match std::fs::read_to_string(workspace.join(page)) {
         Ok(text) => page_rev(&text) != attested_rev,
@@ -875,11 +875,11 @@ fn page_drifted(workspace: &Path, page: &str, attested_rev: &str) -> bool {
     }
 }
 
-/// Render the anchor-qualified tip axis (U2.7) for the workspace, plus any nudge
-/// hint. Fetch-less: `run_observed` is ALWAYS false, so the state is never
-/// `verified` and never renders a bare `at-tip` (the W-C1 invariant). Returns a
-/// custom "no origin ref" render when the remote-tracking ref is absent (no tip to
-/// compare) rather than a misleading bare position.
+/// Render the anchor-qualified tip axis (U2.7) for the workspace, plus any nudge hint.
+/// Fetch-less: `run_observed` is ALWAYS false, so the state is never `verified` and never
+/// renders a bare `at-tip` (the W-C1 invariant). Returns a custom "no origin ref" render when
+/// the remote-tracking ref is absent (no tip to compare) rather than a misleading bare
+/// position.
 fn anchor_axis(workspace: &Path) -> (String, Option<&'static str>) {
     let branch = git(workspace, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let head = git(workspace, &["rev-parse", "HEAD"]);
@@ -944,9 +944,9 @@ fn now_unix() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Run `git -C workspace <args>` and return trimmed stdout on success, or `None`
-/// on any failure (missing ref, no repo, non-zero exit). The tip axis degrades
-/// honestly — a git failure renders `unverified`, never a fabricated position.
+/// Run `git -C workspace <args>` and return trimmed stdout on success, or `None` on any failure
+/// (missing ref, no repo, non-zero exit). The tip axis degrades honestly — a git failure
+/// renders `unverified`, never a fabricated position.
 fn git(workspace: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -974,19 +974,19 @@ mod tests {
 
     // ── the grey render fixtures (U6.2 full color law) ───────────────────────
 
-    /// A grey renders through the composed line's pin-color axis carrying its
-    /// contract label (colors amendment § Colors), not a bare tone. The render
-    /// function carries the FULL color law, not just the armed set's green/red.
+    /// A grey renders through the composed line's pin-color axis carrying its contract label
+    /// (colors amendment § Colors), not a bare tone. The render function carries the FULL color
+    /// law, not just the armed set's green/red. **This test asserts no COUNT, and its name must not
+    /// acquire one.
     ///
-    /// **This test asserts no COUNT, and its name must not acquire one.** Whether
-    /// every `GreyReason` variant HAS a label is a different question, and it is
-    /// already owned by the compiler: `view::walk::color_reason` is an exhaustive
-    /// match with no wildcard arm, so a new variant cannot land without breaking
-    /// the build there. A second exhaustive match here would be a COPY of that
-    /// guarantee, which `view::walk`'s own doc comment names as the defect —
-    /// *"two `match`es over one enum is how a board and a walk start
-    /// disagreeing"*. The cases below are a sample of the render path, not a
-    /// census of the enum.
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
     #[test]
     fn a_grey_renders_through_the_composed_line_with_its_contract_label() {
         let cases = [
@@ -1006,9 +1006,9 @@ mod tests {
         }
     }
 
-    /// The composed multi-axis line renders every axis side by side, never
-    /// merged — armed-pin color, meridian-lock color, anchor state, armed
-    /// mode (U6.2).
+    /// The composed multi-axis line renders every axis side by side, never merged — armed-pin
+    /// color, meridian-lock color, anchor state, armed mode (U6.2).
+    ///
     #[test]
     fn composed_line_shows_every_axis_side_by_side() {
         let line = compose(
@@ -1129,9 +1129,9 @@ mod tests {
         );
     }
 
-    /// `json()` ALWAYS emits the lock fields — an empty vault reports 0 pins and
-    /// a null color, never an absent field a reader could mistake for
-    /// "not checked". The armed-set `pin_*` fields are untouched beside them.
+    /// `json()` ALWAYS emits the lock fields — an empty vault reports 0 pins and a null color,
+    /// never an absent field a reader could mistake for "not checked". The armed-set `pin_*` fields
+    /// are untouched beside them.
     #[test]
     fn json_always_emits_the_lock_axis_beside_the_untouched_pin_rollup() {
         let empty: Value = serde_json::from_str(
@@ -1176,10 +1176,10 @@ mod tests {
 
     // ── S11: the vibe-debt gauge (U6.2, a quantity not a color) ─────────────
 
-    /// ZERO RENDERS — the half of the gate that is easiest to miss. With nothing
-    /// owed the gauge still occupies its segment on the human line and still
-    /// emits its fields in `--json`: `0`, never an absent field a reader could
-    /// mistake for "not measured".
+    /// ZERO RENDERS — the half of the gate that is easiest to miss. With nothing owed the gauge
+    /// still occupies its segment on the human line and still emits its fields in `--json`: `0`,
+    /// never an absent field a reader could mistake for "not measured".
+    ///
     #[test]
     fn the_vibe_debt_gauge_renders_zero_as_a_reading_not_a_silence() {
         assert_eq!(VibeDebt::clear().render(), "0 blobs (0 bytes)");
@@ -1279,9 +1279,9 @@ mod tests {
         assert_eq!(debt["label"], json!("unknown (not a git repository: /ws)"));
     }
 
-    /// METER, NOT A GATE — debt never becomes a finding: the exit triad is
-    /// unchanged by any reading, and `findings` stays false. The armed mode is not
-    /// in this stage at all.
+    /// METER, NOT A GATE — debt never becomes a finding: the exit triad is unchanged by any
+    /// reading, and `findings` stays false. The armed mode is not in this stage at all.
+    ///
     #[test]
     fn vibe_debt_is_never_a_finding() {
         let owed = report_with_debt(
@@ -1305,16 +1305,16 @@ mod tests {
 
     // ── the forced-since-realise DISCLOSURE (ZT 2026-08-03) ──────────────────
 
-    /// **The disclosure constants are WELL-FORMED PROSE, asserted.** They ship
-    /// verbatim to both faces, so a stray run of whitespace is not cosmetic — it
-    /// is malformed output on the one line the advisor ruled mandatory, and it
-    /// reads as carelessness about exactly the claim being made carefully.
+    /// **The disclosure constants are WELL-FORMED PROSE, asserted.** They ship verbatim to both
+    /// faces, so a stray run of whitespace is not cosmetic — it is malformed output on the one line
+    /// the advisor ruled mandatory, and it reads as carelessness about exactly the claim being made
+    /// carefully.
     ///
-    /// This exists because it happened: the `why` constant shipped with a
-    /// six-space run in the middle of a sentence, in both the human line and the
-    /// JSON value, and neither a compiler, `-D warnings`, nor a reviewer reading
-    /// the source caught it — a broken string LOOKS fine in source and only
-    /// shows up rendered.
+    ///
+    ///
+    ///
+    ///
+    ///
     #[test]
     fn the_disclosure_constants_are_well_formed() {
         for (name, text) in [
@@ -1357,9 +1357,9 @@ mod tests {
         );
     }
 
-    /// The `--json` face carries the same disclosure, and carries NO count and
-    /// NO violations array. An absent key reads as "not checked"; a `0` or an
-    /// empty array would read as "checked, none found", which is the lie.
+    /// The `--json` face carries the same disclosure, and carries NO count and NO violations array.
+    /// An absent key reads as "not checked"; a `0` or an empty array would read as "checked, none
+    /// found", which is the lie.
     #[test]
     fn the_json_face_discloses_rather_than_zeroing() {
         let report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);
@@ -1385,9 +1385,9 @@ mod tests {
         );
     }
 
-    /// A forced write cannot move the exit code any more, because nothing
-    /// observes one. The predicate is drift and artifact fault only — asserted
-    /// so a later edit cannot quietly re-add a source nothing feeds.
+    /// A forced write cannot move the exit code any more, because nothing observes one. The
+    /// predicate is drift and artifact fault only — asserted so a later edit cannot quietly re-add
+    /// a source nothing feeds.
     #[test]
     fn the_finding_predicate_is_drift_and_fault_only() {
         let mut report = report(Color::Green, LockAxis::roll_up(&[]), "at-tip", Mode::Off);

@@ -82,12 +82,12 @@ use crate::{Fail, Format, current_dir};
 /// The fence a spec page keeps its golden list in (D2a).
 const GOLDEN_FENCE: &str = "golden";
 
-/// Run `mrd test --history WORKSPACE --rule PAGE [--spec PAGE] [--json]`.
+/// Run `mrd test --history WORKSPACE --rule PAGE [--spec PAGE] [--json]`. Errors [`Fail`] —
+/// exit 2 (bad usage, an unreadable workspace / rule page / spec page, a spec whose `rule:`
+/// names another page, a git failure, or a faulting CHECK) or exit 1 (an undeclared
+/// would-refuse item).
 ///
-/// # Errors
-/// [`Fail`] — exit 2 (bad usage, an unreadable workspace / rule page / spec
-/// page, a spec whose `rule:` names another page, a git failure, or a faulting
-/// CHECK) or exit 1 (an undeclared would-refuse item).
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let mut workspace: Option<String> = None;
     let mut rule: Option<String> = None;
@@ -149,8 +149,8 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// Load the rule page, read the golden list from the named spec, enumerate the
-/// recorded writes off git, run the CHECK, and fold the outcomes into a report.
+/// Load the rule page, read the golden list from the named spec, enumerate the recorded writes
+/// off git, run the CHECK, and fold the outcomes into a report.
 fn run_history(
     workspace_arg: &Path,
     page: &str,
@@ -158,10 +158,10 @@ fn run_history(
 ) -> Result<HistoryReport, Fail> {
     let workspace = resolve_workspace(workspace_arg)?;
 
-    // 1. Load the rule from its in-tree PAGE, through the registration + load pair
-    //    the door uses. The page path is workspace-relative and mount-confined:
-    //    `--rule` names a page inside the workspace being calibrated, never one
-    //    outside it.
+    // 1. Load the rule from its in-tree PAGE, through the registration + load pair the door uses.
+    // The page path is workspace-relative and mount-confined: `--rule` names a page inside the
+    // workspace being calibrated, never one outside it.
+    //
     let rel = confine(page).map_err(|message| Fail::tool(format!("--rule {page:?}: {message}")))?;
     let page_abs = workspace.join(&rel);
     let bytes = std::fs::read_to_string(&page_abs).map_err(|e| {
@@ -259,12 +259,12 @@ enum Verdict {
     Error { detail: String },
 }
 
-/// One recorded write, as the enumerator hands it to the evaluator: what git
-/// says happened, plus the bytes on each side of it.
+/// One recorded write, as the enumerator hands it to the evaluator: what git says happened,
+/// plus the bytes on each side of it. This is the tiers whole coupling to where history lives.
+/// Everything below it — the rebuild, the derivation, the CHECK, the verdict, the golden
+/// compare — reads these fields and never asks where they came from.
 ///
-/// This is the tier's whole coupling to where history lives. Everything below it
-/// — the rebuild, the derivation, the CHECK, the verdict, the golden compare —
-/// reads these fields and never asks where they came from.
+///
 struct HistoryRow {
     /// The item id a golden list declares: `<commit>:<path>`.
     anchor: String,
@@ -291,11 +291,11 @@ struct HistoryRow {
 fn enumerate(workspace: &Path) -> Result<Vec<HistoryRow>, Fail> {
     let repo = git::Repo::at(workspace);
 
-    // The tier's OWN precondition, stated here rather than left to git's
-    // message: the helper cannot know what the caller wanted git for, so a
-    // bubbled-up failure names the mechanism and never the requirement that was
-    // not met (issue-19). Only this caller knows the history tier needs
+    // The tiers OWN precondition, stated here rather than left to gits message: the helper cannot
+    // know what the caller wanted git for, so a bubbled-up failure names the mechanism and never
+    // the requirement that was not met (issue-19). Only this caller knows the history tier needs
     // committed history, so only this caller can say it.
+    //
     let changes = repo.path_history(&[]).map_err(|e| {
         Fail::tool(format!(
             "the history tier replays COMMITTED changes, and this workspace could not \
@@ -316,9 +316,9 @@ fn enumerate(workspace: &Path) -> Result<Vec<HistoryRow>, Fail> {
         .blobs_at(&refs)
         .map_err(|e| Fail::tool(format!("cannot read the recorded bytes: {e}")))?;
 
-    // Non-UTF-8 bytes collapse to `None` exactly like an unresolvable side: the
-    // tier reconstructs markdown documents, and bytes it cannot read as text are
-    // a side it did not recover.
+    // Non-UTF-8 bytes collapse to `None` exactly like an unresolvable side: the tier reconstructs
+    // markdown documents, and bytes it cannot read as text are a side it did not recover.
+    //
     let text = |side: &Option<Vec<u8>>| -> Option<String> {
         side.clone().and_then(|bytes| String::from_utf8(bytes).ok())
     };
@@ -418,8 +418,8 @@ fn process_row(rule: &Rule, golden: &BTreeMap<String, String>, row: &HistoryRow)
     }
 }
 
-/// Map a journal op string to the change op the derivation records. An unknown op
-/// falls back to `splice` (the op only sets `change.op`; the CHECK reads facts).
+/// Map a journal op string to the change op the derivation records. An unknown op falls back to
+/// `splice` (the op only sets `change.op`; the CHECK reads facts).
 fn op_of(op: &str) -> ChangeOp {
     match op {
         "create" => ChangeOp::Create,
@@ -476,19 +476,19 @@ fn resolve_page_ref(spec_rel: &str, spelled: &str) -> Result<String, String> {
     Ok(segs.join("/"))
 }
 
-/// Read the spec page named by `--spec` and parse its `golden` fence into an
-/// `anchor → reason` map. No spec at all is the empty map (nothing declared yet).
+/// Read the spec page named by `--spec` and parse its `golden` fence into an `anchor → reason`
+/// map. No spec at all is the empty map (nothing declared yet). The spec must name the
+/// calibrated rule through its `rule:` frontmatter reference.
 ///
-/// The spec must name the calibrated rule through its `rule:` frontmatter
-/// reference. That check is the whole point of the D2a shape: the relationship is
-/// DECLARED in the page, not inferred from where the page sits, so a spec pointed
-/// at the wrong rule fails loudly instead of silently excusing another law's
-/// findings.
 ///
-/// # Errors
-/// The spec path escapes the mount, is unreadable, declares no `rule:`, names a
-/// page other than the one under calibration, or carries an exception row with no
-/// declared reason.
+///
+///
+///
+///
+///
+///
+///
+///
 fn load_golden(
     workspace: &Path,
     spec: Option<&str>,
@@ -508,9 +508,9 @@ fn load_golden(
         ))
     })?;
 
-    // The declared join: the spec says which rule it excepts, and it must be this
-    // one. An absent `rule:` is as malformed as a wrong one — an unattributed
-    // golden list excuses findings for a law it never named.
+    // The declared join: the spec says which rule it excepts, and it must be this one. An absent
+    // `rule:` is as malformed as a wrong one — an unattributed golden list excuses findings for a
+    // law it never named.
     let spelled = parse_frontmatter(&text)
         .get("rule")
         .filter(|value| !value.is_empty())
@@ -602,17 +602,17 @@ struct HistoryReport {
     rows: Vec<RowResult>,
     /// CHECK faults on real history (each collapses the run to exit 2).
     errors: Vec<String>,
-    /// The spec page the golden list was read from, or `None` when the run
-    /// declared no `--spec`. Reported rather than derived: a reader who has to go
-    /// declare an exception needs the page the run actually read.
+    /// The spec page the golden list was read from, or `None` when the run declared no `--spec`.
+    /// Reported rather than derived: a reader who has to go declare an exception needs the page the
+    /// run actually read.
     golden_spec: Option<String>,
 }
 
 impl HistoryReport {
-    /// How the report names where an exception would be declared. Without a
-    /// `--spec` there is no page to name, and saying so is the honest report: the
-    /// operator's next move is to write the spec, not to edit a file we invented
-    /// a path for.
+    /// How the report names where an exception would be declared. Without a `--spec` there is no
+    /// page to name, and saying so is the honest report: the operators next move is to write the
+    /// spec, not to edit a file we invented a path for.
+    ///
     fn golden_source(&self) -> String {
         match &self.golden_spec {
             Some(spec) => format!("golden spec `{spec}`"),
@@ -643,9 +643,9 @@ impl HistoryReport {
             golden_spec: None,
         };
         for r in &report.rows {
-            // The verdict drives the pass/declared/undeclared/error tallies; grey is
-            // counted from the fidelity pass below (a grey verdict IS an in-scope
-            // grey fidelity — counting it here too would double it).
+            // The verdict drives the pass/declared/undeclared/error tallies; grey is counted from the
+            // fidelity pass below (a grey verdict IS an in-scope grey fidelity — counting it here too
+            // would double it).
             match &r.verdict {
                 Verdict::OutOfScope | Verdict::Grey => {}
                 Verdict::Pass => report.passed += 1,
@@ -871,9 +871,9 @@ Prose bullets without item= are skipped:
         assert!(err.contains("reason"), "names the missing reason: {err}");
     }
 
-    /// The fence is the home (D2a). A row written in the page BODY is prose, and
-    /// prose does not excuse a finding — otherwise the ruled home would be
-    /// decorative and an exception could be declared anywhere on the page.
+    /// The fence is the home (D2a). A row written in the page BODY is prose, and prose does not
+    /// excuse a finding — otherwise the ruled home would be decorative and an exception could be
+    /// declared anywhere on the page.
     #[test]
     fn a_row_outside_the_golden_fence_declares_nothing() {
         let page = "\
@@ -937,9 +937,9 @@ rule: ../rules/reviewer-not-owner.md
         assert_eq!(extract_reason("item=r-1 no reason"), None);
     }
 
-    /// The enumerator reads the workspace's own git history: one row per
-    /// (commit, path), the op word from git's status letter, the actor from the
-    /// commit author, and both sides' bytes recovered.
+    /// The enumerator reads the workspaces own git history: one row per (commit, path), the op word
+    /// from gits status letter, the actor from the commit author, and both sides bytes recovered.
+    ///
     #[test]
     fn the_enumerator_reads_writes_out_of_git() {
         let tmp = tempfile::tempdir().unwrap();

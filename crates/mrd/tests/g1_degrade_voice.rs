@@ -1,21 +1,21 @@
-//! G1 gates: the silent ephemeral degrade gets a VOICE on the human face.
-//!
-//! `--json` has always carried `"source"`, so a machine reader could see that
-//! an answer came from the in-process degrade rather than the resident daemon.
-//! `mrd read`'s human face prints the rendered projection and nothing else, so
-//! a person got a correct answer from a slower path with no signal at all —
-//! and roughly twenty measurements taken on this engine were measurements of
+//! G1 gates: the silent ephemeral degrade gets a VOICE on the human face. `--json` has always
+//! carried `"source"`, so a machine reader could see that an answer came from the in-process
+//! degrade rather than the resident daemon. `mrd read`'s human face prints the rendered
+//! projection and nothing else, so a person got a correct answer from a slower path with no
+//! signal at all — and roughly twenty measurements taken on this engine were measurements of
 //! the wrong path, unknowably.
 //!
-//! These gates pin the fix and its two constraints together, because either one
-//! alone would be satisfiable by a wrong change:
 //!
-//! 1. degraded → stderr names the source, the timing caveat, and (when that is
-//!    the cause) the `sun_path` limit;
-//! 2. daemon-backed → nothing at all;
-//! 3. **stdout is byte-identical across the two**, so the voice can never be
-//!    accused of changing the answer it reports on. That is why the voice rides
-//!    stderr: `mrd read` output is piped and diffed.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

@@ -1,22 +1,22 @@
-//! **U21 — the LINK plane, driven through the real `mrd links`.**
+//! **U21 — the LINK plane, driven through the real `mrd links`.** This file is the promotion of
+//! `/tmp/u21repro`, the scratch fixture that MEASURED the defect before anything was written:
+//! `mrd links` reported a cross-vault link `unresolved` at exit 0 while its root was bound,
+//! readable, and holding the file — and its answer was BYTE-IDENTICAL whether the root was
+//! bound or unbound, with a fresh `XDG_CACHE_HOME` on each arm so a stale daemon table could
+//! not explain it.
 //!
-//! This file is the promotion of `/tmp/u21repro`, the scratch fixture that
-//! MEASURED the defect before anything was written: `mrd links` reported a
-//! cross-vault link `unresolved` at exit 0 while its root was bound, readable,
-//! and holding the file — and its answer was BYTE-IDENTICAL whether the root
-//! was bound or unbound, with a fresh `XDG_CACHE_HOME` on each arm so a stale
-//! daemon table could not explain it. `mrd walk`, one plane over, distinguished
-//! on the same fixture.
 //!
-//! Every assertion below was watched RED against pre-fix code (`ac19596d`)
-//! before the fix existed. A test written after the fix proves only that it
-//! agrees with what was just built.
 //!
-//! **The fixture carries FINDING 03's trap.** The ambient root holds a
-//! `notes.md` of its own, with different bytes from the `sessions` root's
-//! `notes.md`. An assertion that the cross-vault link merely *resolves* is
-//! satisfied by the wrong document, so the gates below check WHICH ROOT the
-//! answer names — never just that an answer exists.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -152,16 +152,16 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The whole rendered answer — stdout and stderr together, since a refusal
-/// rides stderr and the edge map rides stdout, and a two-arm diff must compare
-/// BOTH or it compares half the instrument.
+/// The whole rendered answer — stdout and stderr together, since a refusal rides stderr and the
+/// edge map rides stdout, and a two-arm diff must compare BOTH or it compares half the
+/// instrument.
 fn whole_answer(out: &Output) -> String {
     format!("{}{}", stdout(out), stderr(out))
 }
 
-// ---------------------------------------------------------------------------
 // F3 — the cross-vault link RESOLVES, into the TARGET root
-// ---------------------------------------------------------------------------
+//
+//
 
 /// **The headline, promoted.** `sessions` is bound, readable, and holds
 /// `notes.md`; the link plane must resolve `[[sessions:notes.md]]` INTO that
@@ -206,9 +206,9 @@ fn a_cross_vault_link_resolves_into_the_target_root() {
         stdout(&out)
     );
 
-    // THE DECOY CONTROL. The ambient root holds its own `notes.md`. If the
-    // answer named a bare `notes.md`, the link plane resolved to the wrong
-    // document — the FINDING 03 success this unit exists to prevent.
+    // THE DECOY CONTROL. The ambient root holds its own `notes.md`. If the answer named a bare
+    // `notes.md`, the link plane resolved to the wrong document — the FINDING 03 success this unit
+    // exists to prevent.
     assert!(
         entry["resolved"]["notes.md"].is_null(),
         "the cross-vault link must never answer the ambient decoy: {}",
@@ -216,15 +216,15 @@ fn a_cross_vault_link_resolves_into_the_target_root() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The two-arm check — the instrument must MOVE when the world does
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **All-Hands #3, applied to the surface that failed it.** State the two
-/// worlds, run both, diff them. The shipped `mrd links` answered byte-identical
-/// bytes with `sessions` bound and unbound — which is what proved it blind to
-/// the mount table. After the fix the two arms must DIFFER, and each must be
-/// separately correct.
+/// **All-Hands 3, applied to the surface that failed it.** State the two worlds, run both, diff
+/// them. The shipped `mrd links` answered byte-identical bytes with `sessions` bound and
+/// unbound — which is what proved it blind to the mount table. After the fix the two arms must
+/// DIFFER, and each must be separately correct.
+///
 #[test]
 fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
     let sb = sandbox();
@@ -249,9 +249,9 @@ fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
         "bound arm: {bound_answer}"
     );
 
-    // Unbound: GREY `unmounted`, never red and never a silent `unresolved`.
-    // R-3 — an unmounted root is OUTSIDE SIGHT; claiming absence there is the
-    // false negative the grey class exists to prevent.
+    // Unbound: GREY `unmounted`, never red and never a silent `unresolved`. R-3 — an unmounted
+    // root is OUTSIDE SIGHT; claiming absence there is the false negative the grey class exists to
+    // prevent.
     assert_eq!(
         unbound_entry["refused"]["sessions:notes.md"]["color"], "grey",
         "unbound arm is grey, never red: {unbound_answer}"
@@ -269,17 +269,17 @@ fn the_link_plane_distinguishes_a_bound_root_from_an_unbound_one() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // F4 — the refusal names the root, with its own reason word
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **The assertion `u11_cross_root_walk_e2e.rs:316-342` does not make.** A
-/// cross-vault target that is absent inside a root the machine binds and reads
-/// is a MEASURED ABSENCE: red `file-not-found`, scoped to that root.
+/// **The assertion `u11_cross_root_walk_e2e.rs:316-342` does not make.** A cross-vault target
+/// that is absent inside a root the machine binds and reads is a MEASURED ABSENCE: red
+/// `file-not-found`, scoped to that root. It must NOT be `selector-unresolved` — that word
+/// asserts the page resolved and the selector did not, which is the wrong cause in the engines
+/// own voice. It must NOT be grey — the root is visible.
 ///
-/// It must NOT be `selector-unresolved` — that word asserts the page resolved
-/// and the selector did not, which is the wrong cause in the engine's own
-/// voice. It must NOT be grey — the root is visible.
+///
 #[test]
 fn an_absent_cross_vault_target_refuses_with_its_own_reason_word() {
     let sb = sandbox();
@@ -309,9 +309,9 @@ fn an_absent_cross_vault_target_refuses_with_its_own_reason_word() {
         "and it names the path that is missing: {answer}"
     );
 
-    // Q3(a) — a cross-vault dangling link is a believed mount relationship that
-    // does not hold, so it rides exit 1. Ambient dangling stays first-class
-    // (the next test).
+    // Q3(a) — a cross-vault dangling link is a believed mount relationship that does not hold, so
+    // it rides exit 1. Ambient dangling stays first-class (the next test).
+    //
     assert_eq!(
         out.status.code(),
         Some(1),
@@ -319,10 +319,10 @@ fn an_absent_cross_vault_target_refuses_with_its_own_reason_word() {
     );
 }
 
-/// **The asymmetry, asserted rather than assumed.** An ambient dangling link is
-/// an ordinary authoring state in a working vault: first-class, non-refusing,
-/// exit 0. Without this pin, Q3(a)'s ruling could be satisfied by a resolver
-/// that refuses everything.
+/// **The asymmetry, asserted rather than assumed.** An ambient dangling link is an ordinary
+/// authoring state in a working vault: first-class, non-refusing, exit 0. Without this pin,
+/// Q3(a)s ruling could be satisfied by a resolver that refuses everything.
+///
 #[test]
 fn an_ambient_dangling_link_stays_first_class_and_does_not_refuse() {
     let sb = sandbox();
@@ -346,22 +346,22 @@ fn an_ambient_dangling_link_stays_first_class_and_does_not_refuse() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // GATE 3 — one address, one answer, whichever path served it
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **The gate the advisor added to option (C), and the one that decides whether
-/// the degrade is honest.** `mrd links` is normally served by the resident
-/// daemon, whose warm state is ONE ambient corpus — it holds no mounted corpora
-/// and cannot answer a cross-root address. Option (C) degrades to in-process
-/// exactly when the page may carry one.
+/// **The gate the advisor added to option (C), and the one that decides whether the degrade is
+/// honest.** `mrd links` is normally served by the resident daemon, whose warm state is ONE
+/// ambient corpus — it holds no mounted corpora and cannot answer a cross-root address. Option
+/// (C) degrades to in-process exactly when the page may carry one.
 ///
-/// If the gate ever fails to fire, the daemon answers a rooted address from an
-/// ambient corpus and the SAME address returns a different answer depending on
-/// which path served it — one address, two answers, which is the C-4 defect the
-/// address grammar exists to prevent and that U11 was spent closing.
 ///
-/// So the pin is: a page carrying a rooted spelling is NEVER served warm.
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_page_carrying_a_rooted_spelling_is_never_served_by_the_daemon() {
     let sb = sandbox();
@@ -388,18 +388,18 @@ fn a_page_carrying_a_rooted_spelling_is_never_served_by_the_daemon() {
     );
 }
 
-/// **The slip fixture.** `Sessions:notes.md` — capital `S`, so `MountName`
-/// refuses it and `Addr::parse` fails. A degrade gate built on parse-SUCCESS
-/// (`may_carry_cross_root`) answers false here, the daemon serves the page, and
-/// the answer is `unresolved` at exit 0 — while in-process would have REFUSED.
-/// One address, two answers, decided by which path served it: gate 3 violated
-/// from inside the fix for the defect gate 3 exists to prevent.
+/// **The slip fixture.** `Sessions:notes.md` — capital `S`, so `MountName` refuses it and
+/// `Addr::parse` fails. A degrade gate built on parse-SUCCESS (`may_carry_cross_root`) answers
+/// false here, the daemon serves the page, and the answer is `unresolved` at exit 0 — while
+/// in-process would have REFUSED.
 ///
-/// The degrade gate is therefore LEXICAL (`addr::head_carries_root_separator`),
-/// which admits refusals as well as resolutions. A write-side question asks
-/// *"does this have a stored form?"* and is rightly parse-gated; the read-side
-/// question asks *"could the address plane change this answer?"*, and a refusal
-/// is a changed answer.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_malformed_rooted_spelling_also_degrades_and_refuses() {
     let sb = sandbox();
@@ -425,14 +425,14 @@ fn a_malformed_rooted_spelling_also_degrades_and_refuses() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // The acceptance half — the ambient plane is byte-unchanged
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **Without this, every pin above is satisfied by a resolver that refuses
-/// everything.** An ordinary corpus of ambient links must produce exactly the
-/// edge map it produced before U21 — resolved edges resolved, dangling edges
-/// dangling, no new keys, exit 0.
+/// **Without this, every pin above is satisfied by a resolver that refuses everything.** An
+/// ordinary corpus of ambient links must produce exactly the edge map it produced before U21 —
+/// resolved edges resolved, dangling edges dangling, no new keys, exit 0.
+///
 #[test]
 fn an_ordinary_ambient_corpus_answers_exactly_as_before() {
     let sb = sandbox();
@@ -471,14 +471,14 @@ fn an_ordinary_ambient_corpus_answers_exactly_as_before() {
     assert_eq!(out.status.code(), Some(0), "exit 0: {answer}");
 }
 
-// ---------------------------------------------------------------------------
 // The md-only teaching leg
-// ---------------------------------------------------------------------------
+//
+//
 
-/// v1 is markdown-only and the corpus the three rules search holds only `.md`.
-/// A refusal that said only *"that root's corpus holds no `media/logo.png`"*
-/// would be true and misleading — the file may well be there. It names the
-/// LIMIT instead.
+/// v1 is markdown-only and the corpus the three rules search holds only `.md`. A refusal that
+/// said only *"that roots corpus holds no `media/logo.png`"* would be true and misleading — the
+/// file may well be there. It names the LIMIT instead.
+///
 #[test]
 fn a_non_markdown_cross_vault_target_names_the_v1_limit() {
     let sb = sandbox();

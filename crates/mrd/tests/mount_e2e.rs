@@ -1,23 +1,23 @@
-//! The mount table end to end, against the REAL binary (U7).
-//!
-//! Criterion 2 — *"the mount table is the single authority for the three-way
-//! translation … verified through a user-reachable verb"* — is measured HERE,
-//! on `mrd config`, because that is the verb that publishes the table. Two
-//! others were measured out before it: `mrd read` elides `meridian-*` blocks and
+//! The mount table end to end, against the REAL binary (U7). Criterion 2 — *"the mount table is
+//! the single authority for the three-way translation … verified through a user-reachable
+//! verb"* — is measured HERE, on `mrd config`, because that is the verb that publishes the
+//! table. Two others were measured out before it: `mrd read` elides `meridian-*` blocks and
 //! `mrd resolve` answers the workspace-identity sense of the word.
 //!
-//! # Every case asserts BOTH arms, in one run (S3-R8(c))
-//! A guard proven only by what it blocks is indistinguishable from one that
-//! blocks everything, and here the risk is concrete: a build that greyed every
-//! root would satisfy every refusal below. So each test drives the refusing
-//! state **and then the bound state of the same root**, and asserts the verdict
-//! **changed** (R40) rather than merely existed.
 //!
-//! # The sandbox is the ceiling's subject too
-//! `HOME` is set to the test's own tempdir through `Command::env`, so
-//! `workspace::deny_reason` treats THAT directory as `$HOME`. The ceiling case
-//! below is therefore deterministic and touches nothing real — it is the
-//! process-boundary counterpart of the unit gate, not a second copy of it.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -83,13 +83,13 @@ fn state_of(out: &Output) -> String {
         .to_string()
 }
 
-/// **Gate 4 at the verb, both arms.** An undeclared root renders
-/// `grey(undeclared)` — in the human line AND in `--json`, the same spelling —
-/// and it **refuses on exit 1**, per S3-R6. Then the root declares itself, and
-/// the same config binds on exit 0.
+/// **Gate 4 at the verb, both arms.** An undeclared root renders `grey(undeclared)` — in the
+/// human line AND in `--json`, the same spelling — and it **refuses on exit 1**, per S3-R6.
+/// Then the root declares itself, and the same config binds on exit 0. The assert is the
+/// transition. A build that always greyed, and a build that always bound, each fail exactly one
+/// half.
 ///
-/// The assert is the transition. A build that always greyed, and a build that
-/// always bound, each fail exactly one half.
+///
 #[test]
 fn an_undeclared_root_greys_on_exit_one_and_binds_once_it_declares() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -142,10 +142,10 @@ fn an_undeclared_root_greys_on_exit_one_and_binds_once_it_declares() {
     assert_eq!(state_of(&run(home.path(), &["--json"])), "bound");
 }
 
-/// **Gate 1 at the verb.** A mount binding `$HOME` fails the WHOLE parse, and
-/// the verb publishes **no table at all** — not a partial one with the legal
-/// root in it. The legal root is declared first precisely so a partial build
-/// would have something to print.
+/// **Gate 1 at the verb.** A mount binding `$HOME` fails the WHOLE parse, and the verb
+/// publishes **no table at all** — not a partial one with the legal root in it. The legal root
+/// is declared first precisely so a partial build would have something to print.
+///
 #[test]
 fn a_mount_binding_home_fails_the_whole_verb_and_publishes_no_table() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -175,32 +175,32 @@ fn a_mount_binding_home_fails_the_whole_verb_and_publishes_no_table() {
         stdout(&out)
     );
 
-    // The acceptance half: with the poisoned block gone, the same legal root
-    // binds and the table publishes. So the refusal above is the ceiling, not
-    // the fixture.
+    // The acceptance half: with the poisoned block gone, the same legal root binds and the table
+    // publishes. So the refusal above is the ceiling, not the fixture.
+    //
     write_config(home.path(), &vault_mount("field-notes", &legal, None));
     let clean = run(home.path(), &[]);
     assert_eq!(clean.status.code(), Some(0), "{}", stderr(&clean));
     assert!(stdout(&clean).contains("mounts (1):"));
 }
 
-/// **Gate 5 at the verb — mount-as-claim, end to end.** A mount pins the root it
-/// declares; the verb reports it **bound** on exit 0. The root's declaration is
-/// then edited out of band, and the same config reports `red(content-drifted)`
-/// on exit 1, in both faces.
+/// **Gate 5 at the verb — mount-as-claim, end to end.** A mount pins the root it declares; the
+/// verb reports it **bound** on exit 0.
 ///
-/// This is the ratified mitigation working on real bytes through the real
-/// binary: `~/MERIDIAN.md` cannot itself be attested, so a mount's pin is how
-/// the table says anything checkable about the roots it binds.
+///
+///
+///
+///
+///
 #[test]
 fn a_pinned_root_binds_and_reddens_when_its_declaration_drifts() {
     let home = tempfile::tempdir().expect("tempdir");
     let root = make_root(home.path(), "field-notes");
     declare(&root, "field-notes");
 
-    // The pin is minted from the declaration's own bytes by the shipped law —
-    // read back out of the verb rather than hand-computed here, so the test
-    // cannot pin a value the engine would never produce.
+    // The pin is minted from the declarations own bytes by the shipped law — read back out of the
+    // verb rather than hand-computed here, so the test cannot pin a value the engine would never
+    // produce.
     let raw = std::fs::read_to_string(root.join("MERIDIAN.md")).expect("read");
     let doc = model::build(raw.clone(), syntax::parse(&raw));
     let pin = model::fingerprint::fingerprint(&doc, &doc.root)
@@ -252,10 +252,10 @@ fn a_pinned_root_binds_and_reddens_when_its_declaration_drifts() {
     );
 }
 
-/// **Gate 2 and gate 6 at the verb.** One tree bound twice under two names —
-/// reached through a symlink, which is the measured topology on this machine —
-/// fails the whole parse. Then the second mount is pointed at a genuinely
-/// different tree and the same config binds both.
+/// **Gate 2 and gate 6 at the verb.** One tree bound twice under two names — reached through a
+/// symlink, which is the measured topology on this machine — fails the whole parse. Then the
+/// second mount is pointed at a genuinely different tree and the same config binds both.
+///
 #[test]
 fn one_tree_under_two_names_refuses_and_two_trees_bind() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -301,11 +301,11 @@ fn one_tree_under_two_names_refuses_and_two_trees_bind() {
     assert!(stdout(&clean).contains("mounts (2):"), "{}", stdout(&clean));
 }
 
-/// **Gate 3 and gate 7 at the verb, together.** A declared-vs-bound mismatch
-/// fails loud and names both spellings; an unseeable root greys and the table
-/// **stays loaded** around it. The two are asserted in one test because the
-/// distinction between them is the point: one is a statement the roots disagree
-/// about, the other is a root this machine simply cannot see.
+/// **Gate 3 and gate 7 at the verb, together.** A declared-vs-bound mismatch fails loud and
+/// names both spellings; an unseeable root greys and the table **stays loaded** around it. The
+/// two are asserted in one test because the distinction between them is the point: one is a
+/// statement the roots disagree about, the other is a root this machine simply cannot see.
+///
 #[test]
 fn a_mismatch_fails_loud_while_an_unseeable_root_only_greys() {
     let home = tempfile::tempdir().expect("tempdir");

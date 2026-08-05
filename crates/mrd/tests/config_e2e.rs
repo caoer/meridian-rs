@@ -1,44 +1,44 @@
-//! `mrd config` end to end, against the REAL binary (U6).
+//! `mrd config` end to end, against the REAL binary (U6). This is the user-reachable surface
+//! criterion 1s evidence is measured on. Two others were measured OUT before it was written,
+//! and neither was ruled out by reading a `--help` line: - `mrd read` routes through the render
+//! face, which elides every `meridian-*` block — it prints the configs prose
 //!
-//! This is the user-reachable surface criterion 1's evidence is measured on.
-//! Two others were measured OUT before it was written, and neither was ruled
-//! out by reading a `--help` line:
 //!
-//! - `mrd read` routes through the render face, which elides every
-//!   `meridian-*` block — it prints the config's prose and none of its mounts.
-//! - `mrd resolve` is the WORKSPACE-identity sense of the word: a path to a
-//!   workspace and a cache drawer, no mount table.
 //!
-//! Every invocation carries its own `HOME` and `MERIDIAN_CONFIG` through
-//! `Command::env`, so no test reads or writes the real ones and the four
-//! resolution states are driven as STATES, through the process boundary.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// The two-root config, over roots that live INSIDE the sandbox and really
-/// declare themselves.
+/// The two-root config, over roots that live INSIDE the sandbox and really declare
+/// themselves. **Changed by U7, stated rather than absorbed.** This fixture used to name
+/// `/Users/Shared/projects/field-notes` and `/Users/Shared/repos/archive` literally. Binding
+/// now canonicalizes every mount path, passes it through the `workspace` deny ceiling, and
+/// reads each roots own declaration — so absolute machine paths made the verbs exit depend
+/// on what happened to be checked out on the runner, and both roots refused
+/// (`grey(undeclared)`, `grey(path-unseeable)`). Sandbox roots keep every assertion below
+/// measuring what it was written to measure, and remove a machine dependency that was
+/// always latent. The LINE LAYOUT is unchanged on purpose: `line 13` is asserted verbatim
+/// by [`a_malformed_config_refuses_on_exit_one_and_publishes_nothing`], so only the path
+/// values differ from the original.
 ///
-/// **Changed by U7, stated rather than absorbed.** This fixture used to name
-/// `/Users/Shared/projects/field-notes` and `/Users/Shared/repos/archive`
-/// literally. Binding now canonicalizes every mount path, passes it through the
-/// `workspace` deny ceiling, and reads each root's own declaration — so absolute
-/// machine paths made the verb's exit depend on what happened to be checked out
-/// on the runner, and both roots refused (`grey(undeclared)`,
-/// `grey(path-unseeable)`). Sandbox roots keep every assertion below measuring
-/// what it was written to measure, and remove a machine dependency that was
-/// always latent.
 ///
-/// The LINE LAYOUT is unchanged on purpose: `line 13` is asserted verbatim by
-/// [`a_malformed_config_refuses_on_exit_one_and_publishes_nothing`], so only the
-/// path values differ from the original.
+///
+///
+///
 fn single(home: &Path) -> String {
     single_named(home, "field-notes", "archive")
 }
 
-/// The same fixture with either root renamed — and the root's own declaration
-/// renamed with it, since a canonical name the root does not declare is a
-/// declared-vs-bound mismatch and fails loud by design (D7).
+/// The same fixture with either root renamed — and the roots own declaration renamed with it,
+/// since a canonical name the root does not declare is a declared-vs-bound mismatch and fails
+/// loud by design (D7).
 fn single_named(home: &Path, vault_name: &str, folder_name: &str) -> String {
     let vault = declare_root(home, vault_name);
     let folder = declare_root(home, folder_name);
@@ -87,12 +87,12 @@ fn run(home: &Path, meridian_config: Option<&Path>, args: &[&str]) -> Output {
     run_bridged(home, meridian_config, args, None, None)
 }
 
-/// The same invocation with the two BRIDGED variables driven explicitly (U9).
+/// The same invocation with the two BRIDGED variables driven explicitly (U9). `run` clears
+/// both, so every other test in this file measures a determinate `unset` bridge rather than
+/// inheriting whatever the runner exports — the developer machine really does export
+/// `CCC_LLM_WIKI_PATH`, which would otherwise make the bridge section of this verbs output
+/// depend on who ran it.
 ///
-/// `run` clears both, so every other test in this file measures a determinate
-/// `unset` bridge rather than inheriting whatever the runner exports — the
-/// developer machine really does export `CCC_LLM_WIKI_PATH`, which would
-/// otherwise make the bridge section of this verb's output depend on who ran it.
 fn run_bridged(
     home: &Path,
     meridian_config: Option<&Path>,
@@ -127,10 +127,10 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// The acceptance: the verb PUBLISHES the parsed mount table, in document
-/// order, with the config's own rev and fingerprint beside it. Without this
-/// half, every refusal assertion below is satisfied by a build that refuses
-/// everything (S3-R8(c)).
+/// The acceptance: the verb PUBLISHES the parsed mount table, in document order, with the
+/// configs own rev and fingerprint beside it. Without this half, every refusal assertion below
+/// is satisfied by a build that refuses everything (S3-R8(c)).
+///
 #[test]
 fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -181,11 +181,11 @@ fn the_verb_publishes_the_parsed_mount_table_and_the_config_rev() {
         "the git-folder root STATES its absent vault leg: {text}"
     );
 
-    // U7: the CANONICAL path is published beside the declared one whenever the
-    // two differ — and on this runner they do, because the sandbox lives under
-    // `/var`, a symlink to `/private/var`. That is the mount law's collapse made
-    // visible at the verb rather than only asserted in a unit test: an operator
-    // reading this line sees which tree the name is actually bound to.
+    // U7: the CANONICAL path is published beside the declared one whenever the two differ — and on
+    // this runner they do, because the sandbox lives under `/var`, a symlink to `/private/var`.
+    // That is the mount laws collapse made visible at the verb rather than only asserted in a unit
+    // test: an operator reading this line sees which tree the name is actually bound to.
+    //
     let canonical =
         std::fs::canonicalize(roots.join("field-notes")).expect("the sandbox root canonicalizes");
     if canonical != roots.join("field-notes") {
@@ -225,12 +225,12 @@ fn rev_line(text: &str) -> String {
         .to_string()
 }
 
-/// The ONE output line for a mount, by canonical root name.
+/// The ONE output line for a mount, by canonical root name. Returned whole so an assertion pins
+/// a cell **at its leg**. A `contains` over the entire output would also pass when the token
+/// turned up in some other roots row, in the tools list, or in the bridge section — which is
+/// the difference between measuring the row and measuring the page.
 ///
-/// Returned whole so an assertion pins a cell **at its leg**. A `contains` over
-/// the entire output would also pass when the token turned up in some other
-/// root's row, in the tools list, or in the bridge section — which is the
-/// difference between measuring the row and measuring the page.
+///
 fn mount_row(text: &str, name: &str) -> String {
     text.lines()
         .find(|l| l.trim_start().starts_with(&format!("{name}  ")))
@@ -266,10 +266,10 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
     assert_eq!(out.status.code(), Some(0), "clean: {}", stderr(&out));
     let text = stdout(&out);
 
-    // The refusal half. `ends_with` rather than `contains`, so the assertion
-    // fails on a blank cell AND on a marker rendered at the wrong leg — an
-    // assertion a blank could satisfy is not the assertion (S3-R29's
-    // insensitivity class).
+    // The refusal half. `ends_with` rather than `contains`, so the assertion fails on a blank cell
+    // AND on a marker rendered at the wrong leg — an assertion a blank could satisfy is not the
+    // assertion (S3-R29s insensitivity class).
+    //
     let folder = mount_row(&text, "archive");
     assert!(
         folder.ends_with("  vault:(none)  bound"),
@@ -288,9 +288,9 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
          that calls every vault absent: {vault}"
     );
 
-    // S3-R37: the population this arm iterates is asserted non-empty, so the
-    // fixture losing its git-folder root retires the coverage loudly instead of
-    // silently.
+    // S3-R37: the population this arm iterates is asserted non-empty, so the fixture losing its
+    // git-folder root retires the coverage loudly instead of silently.
+    //
     assert_eq!(
         text.matches("vault:(none)").count(),
         1,
@@ -298,14 +298,14 @@ fn a_structurally_absent_vault_leg_renders_a_marker_never_a_blank() {
     );
 }
 
-/// **The `--json` face is NOT changed by the marker, and this is the guard that
-/// keeps it that way.**
+/// **The `--json` face is NOT changed by the marker, and this is the guard that keeps it that
+/// way.** `null` at a **present key** is already the statement there; *dropping* the key would
+/// have been the omission.
 ///
-/// `null` at a **present key** is already the statement there; *dropping* the
-/// key would have been the omission. The human marker is a spelling for
-/// readers, and a client that string-compared `vault` would read `(none)` as a
-/// vault actually named that — so the marker must not reach the machine face at
-/// all, at any key.
+///
+///
+///
+///
 #[test]
 fn the_json_face_states_absence_as_null_and_never_carries_the_human_marker() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -332,9 +332,9 @@ fn the_json_face_states_absence_as_null_and_never_carries_the_human_marker() {
     );
 }
 
-/// State A: no config file. Not an error and not a warning — every machine
-/// starts here, and the verb says so rather than printing a bare empty table a
-/// reader would take for a failure.
+/// State A: no config file. Not an error and not a warning — every machine starts here, and the
+/// verb says so rather than printing a bare empty table a reader would take for a failure.
+///
 #[test]
 fn an_absent_config_exits_clean_and_says_what_absent_means() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -388,10 +388,10 @@ fn a_malformed_config_refuses_on_exit_one_and_publishes_nothing() {
     );
 }
 
-/// State C: `MERIDIAN_CONFIG` naming a path that is not a readable regular
-/// file refuses — it never silently falls back to `~/MERIDIAN.md`. The home
-/// default is a perfectly good config here, so a build that falls back looks
-/// completely healthy; that is what makes this the load-bearing case.
+/// State C: `MERIDIAN_CONFIG` naming a path that is not a readable regular file refuses — it
+/// never silently falls back to `~/MERIDIAN.md`. The home default is a perfectly good config
+/// here, so a build that falls back looks completely healthy; that is what makes this the
+/// load-bearing case.
 #[test]
 fn a_stated_path_that_cannot_be_honoured_never_falls_back() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -419,9 +419,9 @@ fn a_stated_path_that_cannot_be_honoured_never_falls_back() {
     assert!(stdout(&out).contains("sessions  vault"), "{}", stdout(&out));
 }
 
-/// `--json` is the house grammar's machine face, and it carries the same facts
-/// as the human one — a JSON surface that dropped the rev would make the
-/// agent-facing plane blinder than the human-facing one.
+/// `--json` is the house grammars machine face, and it carries the same facts as the human one
+/// — a JSON surface that dropped the rev would make the agent-facing plane blinder than the
+/// human-facing one.
 #[test]
 fn the_json_face_carries_the_same_facts() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -453,20 +453,20 @@ fn the_json_face_carries_the_same_facts() {
     );
 }
 
-/// **U33.** The verb publishes the resolution's ORIGIN — which rung of the
-/// bootstrap chain supplied the path — and it does so **where the two rungs
-/// resolve to the SAME path**, which is the only case the printed path cannot
-/// answer on its own.
+/// **U33.** The verb publishes the resolutions ORIGIN — which rung of the bootstrap chain
+/// supplied the path — and it does so **where the two rungs resolve to the SAME path**, which
+/// is the only case the printed path cannot answer on its own. Measured before this was
+/// written: `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd config` and `mrd config` with the variable
+/// unset produced **byte-identical output**.
 ///
-/// Measured before this was written: `MERIDIAN_CONFIG=$HOME/MERIDIAN.md mrd
-/// config` and `mrd config` with the variable unset produced **byte-identical
-/// output**. Two environments differing in exactly the variable the chain is
-/// made of were indistinguishable at the only surface that publishes the chain
-/// — so an operator debugging a stale exported override had nothing to read,
-/// and criterion 1's claim is about the CHAIN, not about its endpoint.
 ///
-/// The assert is the DIFFERENCE between the two runs. A build that hardcoded
-/// either word would pass one half and fail the other.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn the_verb_names_which_rung_supplied_the_path_even_when_both_agree() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -511,9 +511,9 @@ fn the_verb_names_which_rung_supplied_the_path_even_when_both_agree() {
         serde_json::from_str(&stdout(&run(home.path(), None, &["--json"]))).expect("json");
     assert_eq!(json_default["origin"], "$HOME/MERIDIAN.md");
 
-    // State A reports its origin too: the chain still ran and still answered,
-    // and WHICH rung resolved a path that holds no file is exactly what an
-    // operator staring at an unexpected `absent` needs.
+    // State A reports its origin too: the chain still ran and still answered, and WHICH rung
+    // resolved a path that holds no file is exactly what an operator staring at an unexpected
+    // `absent` needs.
     let empty = tempfile::tempdir().expect("tempdir");
     let absent = run(empty.path(), None, &[]);
     assert_eq!(absent.status.code(), Some(0));
@@ -540,20 +540,20 @@ fn a_bad_invocation_is_exit_two() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // The bridge period, end to end (U9)
-// ---------------------------------------------------------------------------
+//
+//
 
-/// **BOTH arms through the process boundary** (S3-R8(c)).
+/// **BOTH arms through the process boundary** (S3-R8(c)). Agreement binds **silently** and
+/// names the mount it resolved onto; divergence prints its note, the FILE WINS, and **the exit
+/// code does not move** — a bridge period whose mismatch is fatal is not a bridge,
 ///
-/// Agreement binds **silently** and names the mount it resolved onto;
-/// divergence prints its note, the FILE WINS, and **the exit code does not
-/// move** — a bridge period whose mismatch is fatal is not a bridge, and the
-/// exit code is the fact that would brick every machine exporting the variable.
 ///
-/// The agreeing spelling is deliberately the **symlinked** one: it is the
-/// spelling that only canonicalize-at-bind can resolve, and it is the measured
-/// shape of `/Users/Shared/repos/field-notes` on this machine.
+///
+///
+///
+///
+///
 #[test]
 fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
     let home = tempfile::tempdir().expect("tempdir");
@@ -575,10 +575,10 @@ fn the_bridge_agrees_silently_diverges_loudly_and_never_moves_the_exit_code() {
         "the symlinked spelling resolves onto the bound root, and the STATE CHANGE is \
          named — which mount now exists for this variable (R40): {text}"
     );
-    // Asserted on the BRIDGE's own words, not on the token `note:`. This verb
-    // already prints a render-face elision note on every run, so a bare
-    // `!contains("note:")` is a check that fails for a reason unrelated to the
-    // thing it names — measured here, on the first run of this gate.
+    // Asserted on the BRIDGEs own words, not on the token `note:`. This verb already prints a
+    // render-face elision note on every run, so a bare `!contains("note:")` is a check that fails
+    // for a reason unrelated to the thing it names — measured here, on the first run of this gate.
+    //
     assert!(
         !text.contains("the FILE WINS"),
         "agreement is SILENT — a note on every agreement is what gets the variable unset: {text}"

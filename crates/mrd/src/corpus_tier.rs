@@ -92,13 +92,13 @@ use wire_serve::write::{SpliceArgs, splice};
 use crate::test_cmd::{confine, parse_frontmatter, scan_blocks};
 use crate::{Fail, Format};
 
-/// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its rule pages,
-/// run every case over the corpus, and render the report.
+/// Run `mrd test --corpus <SPEC> [--json]`: load the spec, load its rule pages, run every case
+/// over the corpus, and render the report. Errors [`Fail`] — exit 2 (a malformed spec, an
+/// unreadable corpus/rule page, or a per-case authoring fault) or exit 1 (a fire mismatch, a
+/// dead/surprise rule, or a rule eval fault).
 ///
-/// # Errors
-/// [`Fail`] — exit 2 (a malformed spec, an unreadable corpus/rule page, or a
-/// per-case authoring fault) or exit 1 (a fire mismatch, a dead/surprise rule,
-/// or a rule eval fault).
+///
+///
 pub(crate) fn run(spec_path: &str, format: Format) -> Result<(), Fail> {
     let spec_file = Path::new(spec_path);
     let text = std::fs::read_to_string(spec_file)
@@ -139,34 +139,34 @@ struct Spec {
     cases: Vec<CaseSpec>,
 }
 
-/// Where a spec's rule comes from: ONE markdown page, resolved from the spec dir.
+/// Where a spec's rule comes from: ONE markdown page, resolved from the spec dir. There is no
+/// `Seed` arm any more and no folder arm: `policy::seed` died with the loader, and a rule that
+/// is a page cannot be addressed by a directory name. A fixture rule now lives in the fixture
+/// tree as a page like any other, which is also why the tier stopped needing an injected file
+/// accessor — it reads ONE file.
 ///
-/// There is no `Seed` arm any more and no folder arm: `policy::seed` died with the
-/// loader, and a rule that is a page cannot be addressed by a directory name. A
-/// fixture rule now lives in the fixture tree as a page like any other, which is
-/// also why the tier stopped needing an injected file accessor — it reads ONE file.
 struct RulePageRef {
-    /// The path exactly as the spec spelled it, relative to the spec dir.
+    /// The path exactly as the spec spelled it, relative to the spec dir. This is both the
+    /// provenance the report prints and the page path handed to registration. A corpus spec loads a
+    /// page directly, outside any workspace, so there is no mount ladder to site it on and no
+    /// workspace-relative spelling to derive — inventing one would put a fact in the report that
+    /// the spec never stated.
     ///
-    /// This is both the provenance the report prints and the page path handed to
-    /// registration. A corpus spec loads a page directly, outside any workspace,
-    /// so there is no mount ladder to site it on and no workspace-relative
-    /// spelling to derive — inventing one would put a fact in the report that the
-    /// spec never stated.
+    ///
     spelled: String,
     /// The resolved on-disk path the bytes are read from.
     path: PathBuf,
 }
 
-/// One synthetic-change case: a mutation applied to a corpus doc, plus the
-/// outcome the run must observe.
+/// One synthetic-change case: a mutation applied to a corpus doc, plus the outcome the run must
+/// observe. Unknown keys are the author's fault, never a dropped clause `deny_unknown_fields`
+/// is load-bearing, not hygiene.
 ///
-/// # Unknown keys are the author's fault, never a dropped clause
-/// `deny_unknown_fields` is load-bearing, not hygiene. Without it a case reaching
-/// for a verb the grammar does not carry (`append_section`, `body`) ran as if the
-/// author had written nothing — a green-looking row over a case that mutated
-/// nothing. That silence is how the tier's missing CONTENT half went unnoticed
-/// long enough to be mistaken for a lost design.
+///
+///
+///
+///
+///
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaseSpec {
@@ -188,12 +188,12 @@ struct CaseSpec {
     /// Frontmatter keys to remove in the AFTER state.
     #[serde(default)]
     remove: Vec<String>,
-    /// The write's edits in the PRODUCTION op format — the same `wire::Edit`
-    /// array a real `splice` carries, applied as ONE batch through the real
-    /// writer. This is the half of the change surface `set`/`remove` cannot
-    /// reach: an `hpath` or `anchor` target moves document CONTENT, so a CHECK
-    /// reading `change.sections_changed` or `change.doc.nodes` is testable here
-    /// rather than dead by construction.
+    /// The write's edits in the PRODUCTION op format — the same `wire::Edit` array a real `splice`
+    /// carries, applied as ONE batch through the real writer. This is the half of the change
+    /// surface `set`/`remove` cannot reach: an `hpath` or `anchor` target moves document CONTENT,
+    /// so a CHECK reading `change.sections_changed` or `change.doc.nodes` is testable here rather
+    /// than dead by construction.
+    ///
     #[serde(default)]
     edits: Vec<Edit>,
     /// The rule id(s) the change must fire, or `"pass"` for no fire.
@@ -227,9 +227,9 @@ impl Expected {
 }
 
 impl Spec {
-    /// Parse a spec's frontmatter + fenced blocks. A missing `rule` / `corpus`,
-    /// an unparseable `case` JSON, or a case that declares no `expect` is a
-    /// malformed spec (exit 2).
+    /// Parse a spec's frontmatter + fenced blocks. A missing `rule` / `corpus`, an unparseable
+    /// `case` JSON, or a case that declares no `expect` is a malformed spec (exit 2).
+    ///
     fn parse(text: &str, spec_dir: &Path) -> Result<Self, Fail> {
         let fm = parse_frontmatter(text);
         let name = fm
@@ -309,9 +309,9 @@ impl Spec {
     }
 }
 
-/// One spec-relative rule page reference. Nothing is validated here: identity is
-/// the page's own `id:`, which only registration can read, and a missing file is
-/// reported by the loader with the path the author wrote.
+/// One spec-relative rule page reference. Nothing is validated here: identity is the page's own
+/// `id:`, which only registration can read, and a missing file is reported by the loader with
+/// the path the author wrote.
 fn rule_page_ref(base: &Path, value: &str) -> RulePageRef {
     RulePageRef {
         spelled: value.to_owned(),
@@ -329,14 +329,14 @@ fn resolve_rel(base: &Path, rel: &str) -> PathBuf {
     }
 }
 
-/// A spec's loaded rules, in the ONE mode the spec declared.
+/// A spec's loaded rules, in the ONE mode the spec declared. The two arms are the two LOADERS,
+/// not two evaluators: `counterfactual: true` widens which caps a HOOK declaration may carry so
+/// quiescence can be falsified, and [`CounterfactualRule`] is the
 ///
-/// The two arms are the two LOADERS, not two evaluators: `counterfactual: true`
-/// widens which caps a HOOK declaration may carry so quiescence can be falsified,
-/// and [`CounterfactualRule`] is the type seal that keeps a widened declaration
-/// out of ordinary policy evaluation. Everything below projects the two
-/// identically — a widened proof that reported differently would be proving
-/// something production never runs (R12).
+///
+///
+///
+///
 enum LoadedRules {
     Production(Vec<Rule>),
     Counterfactual(Vec<CounterfactualRule>),
@@ -402,10 +402,10 @@ impl<'a> RuleView<'a> {
     }
 }
 
-/// One HOOK's evaluation over one event, in the SAME canonical projection for both
-/// loader modes: admitted intents, narrowed intents rendered `rule:action`, typed
-/// findings, exact meters. Production and counterfactual differ in which caps a
-/// declaration may carry — never in how the result is projected or reported (R12).
+/// One HOOK's evaluation over one event, in the SAME canonical projection for both loader
+/// modes: admitted intents, narrowed intents rendered `rule:action`, typed findings, exact
+/// meters. Production and counterfactual differ in which caps a declaration may carry — never
+/// in how the result is projected or reported (R12).
 struct HookRun {
     rule_id: String,
     fired: bool,
@@ -464,12 +464,12 @@ fn read_rule_page(reference: &RulePageRef) -> Result<String, Fail> {
     })
 }
 
-/// Register one rule page: does it carry a `rules/*` tag and a legal `id:`.
+/// Register one rule page: does it carry a `rules/*` tag and a legal `id:`. Registration and
+/// loadability are different questions and this is the first — a page that does not offer
+/// itself to registration was named by a spec that believes it is a rule, so the refusal has to
+/// say so rather than read as a missing file.
 ///
-/// Registration and loadability are different questions and this is the first —
-/// a page that does not offer itself to registration was named by a spec that
-/// believes it is a rule, so the refusal has to say so rather than read as a
-/// missing file.
+///
 fn register_rule_page(reference: &RulePageRef, bytes: &str) -> Result<policy::Registration, Fail> {
     register_page(PageRef {
         layer: ScopeLayer::Workspace,
@@ -491,18 +491,18 @@ fn register_rule_page(reference: &RulePageRef, bytes: &str) -> Result<policy::Re
     })
 }
 
-/// Load a spec's rule pages through either the production loader or the opaque
-/// counterfactual proof loader. A widened declaration never becomes a [`Rule`].
+/// Load a spec's rule pages through either the production loader or the opaque counterfactual
+/// proof loader. A widened declaration never becomes a [`Rule`]. Errors [`Fail::tool`] — an
+/// unreadable page, a page that does not register, or a registered page whose declaration does
+/// not load.
 ///
-/// # Errors
-/// [`Fail::tool`] — an unreadable page, a page that does not register, or a
-/// registered page whose declaration does not load.
+///
 fn load_spec_rules(spec: &Spec) -> Result<LoadedRules, Fail> {
     let limits = CheckLimits::default();
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    // The duplicate check is on the resolved `id:`, not on the path: two spellings
-    // of one page, and two pages sharing an id, are the same authoring fault — the
-    // tier would otherwise run one law twice and report its fuel twice.
+    // The duplicate check is on the resolved `id:`, not on the path: two spellings of one page,
+    // and two pages sharing an id, are the same authoring fault — the tier would otherwise run one
+    // law twice and report its fuel twice.
     let mut guard = |id: &str, spelled: &str| -> Result<(), Fail> {
         if !seen.insert(id.to_owned()) {
             return Err(Fail::tool(format!(
@@ -577,8 +577,8 @@ struct CaseResult {
     /// One exact metering sample per in-scope capability evaluation.
     fuel: Vec<u64>,
     mem: Vec<u64>,
-    /// CHECK citation ids this case fired. Kept in its OWN namespace: a citation id
-    /// that happens to equal a HOOK's id must never make that HOOK look live (R14).
+    /// CHECK citation ids this case fired. Kept in its OWN namespace: a citation id that happens to
+    /// equal a HOOK's id must never make that HOOK look live (R14).
     fired_checks: BTreeSet<String>,
     /// HOOK ids this case fired.
     fired_hooks: BTreeSet<String>,
@@ -586,8 +586,8 @@ struct CaseResult {
     emissions: Vec<Emission>,
     /// The initial case's post-mutation bytes, used only by counterfactual chaining.
     after_md: String,
-    /// The landed change's plane facts, carried through to the adapted descriptors —
-    /// a `policy::Intent` records no provenance, and the proof invents none.
+    /// The landed change's plane facts, carried through to the adapted descriptors — a
+    /// `policy::Intent` records no provenance, and the proof invents none.
     provenance: Provenance,
     /// Complete descriptors denied by the declared capability ceiling.
     narrowed_effects: Vec<String>,
@@ -606,17 +606,17 @@ impl CaseResult {
     }
 }
 
-/// One liveness subject: a declared name IN one namespace.
+/// One liveness subject: a declared name IN one namespace. The two namespaces are different
+/// questions about different things — a CHECK cites a passing CASE, a HOOK is named by its rule
+/// id — so a name that exists in both is TWO subjects, each answered only by its own leg
+/// firing.
 ///
-/// The two namespaces are different questions about different things — a CHECK cites
-/// a passing CASE, a HOOK is named by its rule id — so a name that exists in both is
-/// TWO subjects, each answered only by its own leg firing. One merged list lets
-/// whichever leg is live vouch for the other's silence, in whichever direction the
-/// collision happens to run (R14 and its mirror).
 ///
-/// The namespace is part of the reported name, because the two directions are
-/// otherwise indistinguishable in the report: a bare `task-status-notify` under dead
-/// rules cannot tell an author whether the CHECK citation or the HOOK went silent.
+///
+///
+///
+///
+///
 struct Subject<'a> {
     namespace: Namespace,
     id: &'a str,
@@ -666,11 +666,11 @@ impl<'a> Subject<'a> {
     }
 }
 
-/// Run every case over the corpus and fold into a [`Report`].
+/// Run every case over the corpus and fold into a [`Report`]. Errors [`Fail::tool`] — a case
+/// names an unreadable / non-UTF-8 corpus doc, a path that escapes the corpus mount, or a
+/// quiescence proof whose own workspace failed.
 ///
-/// # Errors
-/// [`Fail::tool`] — a case names an unreadable / non-UTF-8 corpus doc, a path that
-/// escapes the corpus mount, or a quiescence proof whose own workspace failed.
+///
 fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
     let views = rules.views();
     let mut results = Vec::with_capacity(spec.cases.len());
@@ -680,10 +680,10 @@ fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
 
     let quiescence = prove_quiescence(rules, &results)?;
 
-    // TWO namespaces, never one set (R14). A CHECK cites a passing CASE; a HOOK is
-    // named by its rule id. One merged set lets whichever leg is live vouch for the
-    // other's silence — in EITHER direction, which is why the answer below is per
-    // namespace rather than a disambiguation rule that picks a winner.
+    // TWO namespaces, never one set (R14). A CHECK cites a passing CASE; a HOOK is named by its
+    // rule id. One merged set lets whichever leg is live vouch for the other's silence — in EITHER
+    // direction, which is why the answer below is per namespace rather than a disambiguation rule
+    // that picks a winner.
     let mut fired_checks: BTreeSet<String> = BTreeSet::new();
     let mut fired_hooks: BTreeSet<String> = quiescence.fired_hooks.clone();
     for result in &results {
@@ -699,13 +699,13 @@ fn run_corpus(rules: &LoadedRules, spec: &Spec) -> Result<Report, Fail> {
         .filter(|rule| rule.has_hook())
         .map(|rule| rule.id().to_owned())
         .collect();
-    // A fence name is a CHECK citation subject. The one exception is the redundant
-    // HOOK declaration: a spec that loads no CHECK has nothing that could ever cite a
-    // name, so a fence entry naming a loaded HOOK there is that HOOK's declaration
-    // repeated, not a citation the corpus failed to fire. Where a CHECK IS loaded the
-    // name is BOTH subjects, and each namespace answers for itself — which is what
-    // stops a live HOOK vouching for a dead citation, and a live citation vouching for
-    // a dead HOOK (R14 in both directions).
+    // A fence name is a CHECK citation subject. The one exception is the redundant HOOK
+    // declaration: a spec that loads no CHECK has nothing that could ever cite a name, so a fence
+    // entry naming a loaded HOOK there is that HOOK's declaration repeated, not a citation the
+    // corpus failed to fire. Where a CHECK IS loaded the name is BOTH subjects, and each namespace
+    // answers for itself — which is what stops a live HOOK vouching for a dead citation, and a
+    // live citation vouching for a dead HOOK (R14 in both directions).
+    //
     let citable = views.iter().copied().any(RuleView::has_check);
     let declared_checks: Vec<&String> = spec
         .declared_rules
@@ -898,8 +898,8 @@ impl CaseFold {
         }
     }
 
-    /// `expect` names a rule by id, whichever leg raised it — the fire signal reads
-    /// the union. Liveness does not: the two namespaces stay separate above.
+    /// `expect` names a rule by id, whichever leg raised it — the fire signal reads the union.
+    /// Liveness does not: the two namespaces stay separate above.
     fn observed(&self) -> Observed {
         if !self.errors.is_empty() {
             return Observed::Error {
@@ -921,9 +921,9 @@ impl CaseFold {
     }
 }
 
-/// The `md.*` half of one emission — the only intents the Markdown adapter carries.
-/// `proto.*` intents are terminal: they mutate no corpus state, so they add no
-/// trigger-graph edge, which is what keeps slice 1 explicitly acyclic.
+/// The `md.*` half of one emission — the only intents the Markdown adapter carries. `proto.*`
+/// intents are terminal: they mutate no corpus state, so they add no trigger-graph edge, which
+/// is what keeps slice 1 explicitly acyclic.
 fn md_intents(intents: Vec<Intent>) -> Vec<Intent> {
     intents
         .into_iter()
@@ -933,17 +933,17 @@ fn md_intents(intents: Vec<Intent>) -> Vec<Intent> {
 
 const QUIESCENCE_FUEL: usize = 256;
 
-/// Where the isolated proof corpus lands its executor receipts. A real production
-/// receipt in a throwaway workspace: never the live tree, and never the triggering
-/// write's own page — the proof may not target the page it is reacting to.
+/// Where the isolated proof corpus lands its executor receipts. A real production receipt in a
+/// throwaway workspace: never the live tree, and never the triggering write's own page — the
+/// proof may not target the page it is reacting to.
 const PROOF_RECEIPT_PATH: &str = "receipts/corpus-proof.md";
 
 /// The task name the proof's receipts are actored by (`run:<task>`).
 const PROOF_TASK: &str = "corpus-proof";
 
-/// The procedure-hash the proof's receipts attest. Fixed and inert: the receipt
-/// lands only in the throwaway proof workspace, and a wall-clock or random value
-/// would break the report's byte-identical re-run law.
+/// The procedure-hash the proof's receipts attest. Fixed and inert: the receipt lands only in
+/// the throwaway proof workspace, and a wall-clock or random value would break the report's
+/// byte-identical re-run law.
 const PROOF_TASK_REV: &str = "b3:corpus-proof";
 
 struct Quiescence {
@@ -957,10 +957,10 @@ struct Quiescence {
     fired_hooks: BTreeSet<String>,
     fuel_samples: Vec<u64>,
     mem_samples: Vec<u64>,
-    /// Complete descriptors the declared capability ceiling denied DURING the
-    /// cascade. A case's own denials are its row's; these belong to no case, and
-    /// dropping them left the advertised denial record silent about every generation
-    /// past the first (N5).
+    /// Complete descriptors the declared capability ceiling denied DURING the cascade. A case's own
+    /// denials are its row's; these belong to no case, and dropping them left the advertised denial
+    /// record silent about every generation past the first (N5).
+    ///
     narrowed_effects: Vec<String>,
 }
 
@@ -1007,44 +1007,44 @@ struct Frame {
     successors: VecDeque<PendingGeneration>,
 }
 
-/// Follow only reachable `md.*` generations from the declared synthetic cases.
+/// Follow only reachable `md.*` generations from the declared synthetic cases. Each generation
+/// is executed through the PRODUCTION batch executor against an isolated proof corpus, and the
+/// executor's own single synthesized event is what the next round of HOOKs reads. Why the walk
+/// is depth-first over a GRAPH, not a fan-out over paths A generation's successors are a pure
+/// function of its signature — the same emitter, page, bytes and intents apply and evaluate
+/// identically every time — so the thing being decided is whether the reachable SIGNATURE GRAPH
+/// has a cycle. A breadth-first fan-out that carries an ancestor set per item instead
+/// enumerates causal PATHS, and a graph whose branches reconverge has `O(b^d)` of those over an
+/// `O(d)` state space. That is a false `fuel_exhausted` on a strictly terminating convention
+/// set, and a pre-arming gate that fails good conventions blocks arming (N1, measured at depth
+/// 8). So the walk keeps exactly two sets, which are R10's own two halves: - **on the path** —
+/// the signatures of the frames currently on the stack.
 ///
-/// Each generation is executed through the PRODUCTION batch executor against an
-/// isolated proof corpus, and the executor's own single synthesized event is what
-/// the next round of HOOKs reads.
 ///
-/// # Why the walk is depth-first over a GRAPH, not a fan-out over paths
-/// A generation's successors are a pure function of its signature — the same emitter,
-/// page, bytes and intents apply and evaluate identically every time — so the thing
-/// being decided is whether the reachable SIGNATURE GRAPH has a cycle. A breadth-first
-/// fan-out that carries an ancestor set per item instead enumerates causal PATHS, and
-/// a graph whose branches reconverge has `O(b^d)` of those over an `O(d)` state space.
-/// That is a false `fuel_exhausted` on a strictly terminating convention set, and a
-/// pre-arming gate that fails good conventions blocks arming (N1, measured at depth 8).
 ///
-/// So the walk keeps exactly two sets, which are R10's own two halves:
 ///
-/// - **on the path** — the signatures of the frames currently on the stack. This IS
-///   the causal ancestry, and a signature recurring in it is the one proof of a
-///   deterministic cycle. Unchanged.
-/// - **settled** — signatures whose whole reachable subgraph has been walked to
-///   exhaustion and carried no cycle. Only these are skipped.
 ///
-/// That distinction is the R10 defect's absence, not its return: the deleted cache
-/// retired work that was still IN FLIGHT, so a second lineage could be waved past an
-/// item whose own descendants had not yet closed the ancestry. Work in flight is on
-/// the path here, and reaching it again is a cycle, never a skip. Skipping settled
-/// work cannot hide a cycle either: a cycle through a settled signature would have
-/// closed while that signature was still on the path.
 ///
-/// Terminal `proto.*` intents add no graph edge, which keeps slice 1 explicitly
-/// acyclic. The graph fuel stays flat and now bounds distinct STATES rather than
-/// paths — a genuinely divergent cascade, whose state space really is exponential,
-/// still exhausts it.
 ///
-/// # Errors
-/// [`Fail::tool`] — the proof's own workspace failed (exit 2). A production refusal
-/// is not that: it is a fact about the subject, and lands in `fault` (exit 1).
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Result<Quiescence, Fail> {
     let nodes = rules
         .views()
@@ -1076,8 +1076,8 @@ fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Result<Quies
             None => roots.pop_front(),
         };
         let Some(pending) = next else {
-            // The top frame is exhausted, so its whole reachable subgraph is: settle
-            // it and leave the path. An empty stack with no roots left ends the walk.
+            // The top frame is exhausted, so its whole reachable subgraph is: settle it and leave the
+            // path. An empty stack with no roots left ends the walk.
             let Some(done) = stack.pop() else { break };
             on_path.remove(&done.signature);
             settled.insert(done.signature);
@@ -1097,14 +1097,14 @@ fn prove_quiescence(rules: &LoadedRules, results: &[CaseResult]) -> Result<Quies
     Ok(proof)
 }
 
-/// Walk into one generation, or decline to.
-///
-/// Returns whether the walk continues: `false` ends it with a cycle, an exhausted
-/// budget, or an evaluation fault already recorded on `proof`.
-///
-/// # Errors
-/// [`Fail::tool`] — the proof workspace failed, which is not a fact about the
+/// Walk into one generation, or decline to. Returns whether the walk continues: `false` ends it
+/// with a cycle, an exhausted budget, or an evaluation fault already recorded on `proof`.
+/// Errors [`Fail::tool`] — the proof workspace failed, which is not a fact about the
 /// conventions under test (N2).
+///
+///
+///
+///
 fn descend(
     pending: &PendingGeneration,
     rules: &LoadedRules,
@@ -1165,20 +1165,20 @@ fn pending_signature(pending: &PendingGeneration) -> String {
     .expect("counterfactual signature serializes")
 }
 
-/// Apply one generation and evaluate the reactions to it, returning the successors it
-/// armed. Edges, fired HOOKs and meters are recorded here whether or not the caller
-/// goes on to walk into any of them, so the reported graph is the whole reachable one.
+/// Apply one generation and evaluate the reactions to it, returning the successors it armed.
+/// Edges, fired HOOKs and meters are recorded here whether or not the caller goes on to walk
+/// into any of them, so the reported graph is the whole reachable one.
 ///
-/// The successor unit is per EMITTER: two HOOKs reacting to one event produce two
-/// generations, because production applies each hook's emission as its own atomic
-/// batch (R9). **The resident cascade of phase 2 does not exist yet, so there is no
-/// production semantics to diverge from — but if it merges all emitters' effects for
-/// one event into a single batch, this assumption must be re-checked against it or
-/// the proof re-acquires R9 one level up** (N3). The convergence and lineage-separation
-/// fixtures both rest on per-emitter batching.
 ///
-/// # Errors
-/// [`Fail::tool`] — the proof workspace failed (N2).
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn advance_generation(
     pending: &PendingGeneration,
     rules: &LoadedRules,
@@ -1188,8 +1188,8 @@ fn advance_generation(
     let applied = match apply_generation(pending) {
         Ok(applied) => applied,
         Err(ProofFault::Refused(refusal)) => {
-            // Production refuses this reaction. That is a fact about the proof's
-            // subject, not a harness crash: report it as the quiescence fault it is.
+            // Production refuses this reaction. That is a fact about the proof's subject, not a harness
+            // crash: report it as the quiescence fault it is.
             proof.fault = Some(refusal);
             return Ok(successors);
         }
@@ -1232,8 +1232,8 @@ fn advance_generation(
     Ok(successors)
 }
 
-/// Record the trigger edge one reaction produced, and return the generation it armed
-/// — `None` when the reaction emitted nothing, or nothing that mutates corpus state.
+/// Record the trigger edge one reaction produced, and return the generation it armed — `None`
+/// when the reaction emitted nothing, or nothing that mutates corpus state.
 fn emitted_generation(
     pending: &PendingGeneration,
     rule_id: &str,
@@ -1305,13 +1305,13 @@ enum ProofFault {
 /// touched. The receipts are REAL executor receipts of production shape; what makes
 /// them proof receipts is where they land — a receipt file inside the isolated
 /// corpus, never the triggering write's own page — and that they claim nothing about
-/// delivery, which is out of scope pre-arming.
 ///
-/// Returns the post-apply bytes and the executor's ONE synthesized event, or `None`
-/// when the batch changed nothing (a terminal branch).
 ///
-/// # Errors
-/// [`ProofFault`] — a production refusal, or a failure of the proof workspace itself.
+///
+///
+///
+///
+///
 fn apply_generation(
     pending: &PendingGeneration,
 ) -> Result<Option<(String, ChangeEvent)>, ProofFault> {
@@ -1337,11 +1337,11 @@ fn apply_generation(
         pending.depth,
     )
     .map_err(|error| ProofFault::Refused(error.to_string()))?;
-    // A fixed allowlist of the two `md.*` actions the adapter carries — WIDER than a
-    // declaration carrying only one of them, and deliberately not derived from it.
-    // Nothing is lost by that: `caps.route` already narrowed the emission on the
-    // policy side before the executor sees it, so this ceiling is the executor's
-    // choke point, not the declaration's.
+    // A fixed allowlist of the two `md.*` actions the adapter carries — WIDER than a declaration
+    // carrying only one of them, and deliberately not derived from it. Nothing is lost by that:
+    // `caps.route` already narrowed the emission on the policy side before the executor sees it,
+    // so this ceiling is the executor's choke point, not the declaration's.
+    //
     let authority = Authority::granted(
         CapSet::parse("md.set_field md.append_section")
             .map_err(|error| ProofFault::Workspace(format!("proof corpus caps: {error}")))?,
@@ -1380,12 +1380,12 @@ fn apply_generation(
     Ok(Some((after_md, event)))
 }
 
-/// The receipt address the proof's batch rides with: the canonical anchor the
-/// intents already carry, landed in the isolated corpus's own receipt file.
+/// The receipt address the proof's batch rides with: the canonical anchor the intents already
+/// carry, landed in the isolated corpus's own receipt file. The anchor is the intents' —
+/// receipt data maps to the `ReceiptAddr` of the same request, no separate plumbing. The PATH
+/// is the proof's, because the triggering write's page is not an admissible target of the proof
+/// batch.
 ///
-/// The anchor is the intents' — receipt data maps to the `ReceiptAddr` of the same
-/// request, no separate plumbing. The PATH is the proof's, because the triggering
-/// write's page is not an admissible target of the proof batch.
 fn proof_receipt_addr(intents: &[Intent]) -> Result<ReceiptAddr, String> {
     let canonical = intents
         .first()
@@ -1404,15 +1404,15 @@ fn proof_receipt_addr(intents: &[Intent]) -> Result<ReceiptAddr, String> {
     })
 }
 
-/// Build a synthetic before/after pair through production semantics, in the ONE
-/// order a case is read in: `remove`, then `set`, then `edits`.
+/// Build a synthetic before/after pair through production semantics, in the ONE order a case is
+/// read in: `remove`, then `set`, then `edits`. Sets use the live splice writer, one key at a
+/// time — the shorthand predates the production grammar and stays byte-for-byte what the specs
 ///
-/// Sets use the live splice writer, one key at a time — the shorthand predates the
-/// production grammar and stays byte-for-byte what the specs written against it
-/// expect. Removals use the production model's exact fm-key grain because the wire
-/// has no delete-property verb; no Markdown or YAML parser lives here. `edits` is
-/// the production op format and travels as production does: ONE batch, every target
-/// resolved against the pre-batch state.
+///
+///
+///
+///
+///
 fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<String, Fail> {
     let mut after = before.to_owned();
     for field in &case.remove {
@@ -1426,10 +1426,10 @@ fn apply_case_mutation(path: &str, before: &str, case: &CaseSpec) -> Result<Stri
                 )));
             }
         };
-        // `remove` describes the synthetic AFTER state, not an effect or a wire
-        // operation. The current writer intentionally has no delete-property verb.
-        // Use the production model's full fm-key grain (including multiline YAML
-        // continuations) and remove exactly that span; no second parser is involved.
+        // `remove` describes the synthetic AFTER state, not an effect or a wire operation. The current
+        // writer intentionally has no delete-property verb. Use the production model's full fm-key
+        // grain (including multiline YAML continuations) and remove exactly that span; no second
+        // parser is involved.
         after.replace_range(target.span, "");
     }
     for (field, value) in &case.set {
@@ -1518,9 +1518,9 @@ fn apply_production_edit(
     })
 }
 
-/// Derive the `rulepack-api@2` change for a synthetic frontmatter mutation over
-/// the corpus doc — op `splice`, no edits (the change facts come from the
-/// before/after STATES), no declared evidence.
+/// Derive the `rulepack-api@2` change for a synthetic frontmatter mutation over the corpus doc
+/// — op `splice`, no edits (the change facts come from the before/after STATES), no declared
+/// evidence.
 fn synth_change(before: &Document, after: &Document, case: &CaseSpec) -> Change {
     derive_change(
         before,
@@ -1576,10 +1576,10 @@ impl Budget {
     }
 }
 
-/// Nearest-rank percentile of a SORTED (ascending) sample: `rank = ceil(p * n /
-/// 100)` (1-based), clamped into range. Integer arithmetic — no float rounding —
-/// so the corpus profile is a deterministic, pure function of `(rule pages,
-/// corpus, spec)`.
+/// Nearest-rank percentile of a SORTED (ascending) sample: `rank = ceil(p * n / 100)`
+/// (1-based), clamped into range. Integer arithmetic — no float rounding — so the corpus
+/// profile is a deterministic, pure function of `(rule pages, corpus, spec)`.
+///
 fn percentile(sorted: &[u64], p: usize) -> u64 {
     let n = sorted.len();
     if n == 0 {
@@ -1598,9 +1598,9 @@ struct Report {
     name: String,
     /// Each loaded rule's `id:`, in spec order.
     rule_ids: Vec<String>,
-    /// Each rule page as the spec spelled it — the provenance column. Kept
-    /// spec-relative rather than absolute so the report stays a pure function of
-    /// its inputs on any machine.
+    /// Each rule page as the spec spelled it — the provenance column. Kept spec-relative rather
+    /// than absolute so the report stays a pure function of its inputs on any machine.
+    ///
     rule_sources: Vec<String>,
     corpus_root: String,
     scopes: Vec<Vec<String>>,
@@ -1627,8 +1627,8 @@ impl Report {
             .count()
     }
 
-    /// The number of findings — the exit-1 signal. A run is clean (exit 0) iff
-    /// every case matched, no declared rule is dead, and no surprise rule fired.
+    /// The number of findings — the exit-1 signal. A run is clean (exit 0) iff every case matched,
+    /// no declared rule is dead, and no surprise rule fired.
     fn findings(&self) -> usize {
         self.mismatches()
             + self.dead_rules.len()
@@ -1777,8 +1777,8 @@ impl Report {
         {
             let _ = writeln!(out, "- budget finding: `{finding}`");
         }
-        // The denial record is every denial, whichever phase raised it: a case's own,
-        // then the cascade's (which belongs to no case and used to be dropped, N5).
+        // The denial record is every denial, whichever phase raised it: a case's own, then the
+        // cascade's (which belongs to no case and used to be dropped, N5).
         for narrowed in self
             .results
             .iter()
@@ -1946,8 +1946,8 @@ mod tests {
         })
     }
 
-    /// A production refusal, asserted to be one — the N2 split means a workspace
-    /// failure reaching this path would be a different fault with a different exit.
+    /// A production refusal, asserted to be one — the N2 split means a workspace failure reaching
+    /// this path would be a different fault with a different exit.
     fn refusal_of(fault: ProofFault) -> String {
         match fault {
             ProofFault::Refused(message) => message,
@@ -1984,9 +1984,9 @@ mod tests {
         );
     }
 
-    /// R8 — `md.append_section` names ONE exact heading text. A section name that
-    /// appears twice is ambiguous, and production refuses rather than silently
-    /// picking; the proof must observe the same refusal.
+    /// R8 — `md.append_section` names ONE exact heading text. A section name that appears twice is
+    /// ambiguous, and production refuses rather than silently picking; the proof must observe the
+    /// same refusal.
     #[test]
     fn proof_append_section_refuses_an_ambiguous_heading() {
         let refusal = refusal_of(
@@ -2003,9 +2003,9 @@ mod tests {
         );
     }
 
-    /// R8 — the descriptor's `section` is one exact heading TEXT, never a `/`-joined
-    /// heading path. The proof used to invent that grammar and accept `B/Notes`;
-    /// production has no such section, so the proof must now refuse.
+    /// R8 — the descriptor's `section` is one exact heading TEXT, never a `/`-joined heading path.
+    /// The proof used to invent that grammar and accept `B/Notes`; production has no such section,
+    /// so the proof must now refuse.
     #[test]
     fn proof_append_section_refuses_a_slash_spelled_heading_path() {
         let refusal = refusal_of(
@@ -2039,10 +2039,10 @@ mod tests {
         );
     }
 
-    /// R9 — one emitted generation is ONE atomic batch synthesizing ONE event. A
-    /// mixed frontmatter+section batch has no addressable Delta container, so the
-    /// event names no field and no section: a downstream HOOK cannot fire on it, and
-    /// the proof cannot invent a cascade production would never produce.
+    /// R9 — one emitted generation is ONE atomic batch synthesizing ONE event. A mixed
+    /// frontmatter+section batch has no addressable Delta container, so the event names no field
+    /// and no section: a downstream HOOK cannot fire on it, and the proof cannot invent a cascade
+    /// production would never produce.
     #[test]
     fn proof_mixed_generation_is_one_batch_with_no_addressable_identities() {
         let before = "---\nstatus: open\n---\n\n# Card\n\n## Log\n\nfirst\n";
@@ -2074,17 +2074,17 @@ mod tests {
         );
     }
 
-    /// **The byte half of the retired `bounce-approve-lands` scenario.**
+    /// **The byte half of the retired `bounce-approve-lands` scenario.** A Verdict is recorded
+    /// create-OR-REPLACE: `put at:upsert` on the `verdict` key. A bounce — reject, rework,
+    /// re-approve — must LAND its second decision through that same upsert, so the page reads
+    /// `approve` afterwards and is never stuck at `reject`.
     ///
-    /// A Verdict is recorded create-OR-REPLACE: `put at:upsert` on the `verdict`
-    /// key. A bounce — reject, rework, re-approve — must LAND its second decision
-    /// through that same upsert, so the page reads `approve` afterwards and is
-    /// never stuck at `reject`. The scenario tier asserted this on landed bytes;
-    /// the corpus tier's fire/pass signal cannot (it records which rule fired, not
-    /// what the page says), so the byte claim lives here, over the SAME production
-    /// splice writer the tier mutates through. Its LAW half — that the re-decision
-    /// is admitted rather than refused as a duplicate — is the `bounce-reject` /
-    /// `bounce-approve-lands` case pair on the `close-verdict` corpus spec.
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
     #[test]
     fn a_bounce_re_upsert_replaces_the_earlier_verdict() {
         let before =
@@ -2116,8 +2116,8 @@ mod tests {
         );
     }
 
-    /// R2 — `remove` uses the production model's fm-key grain, so a multiline YAML
-    /// value is removed whole rather than leaving orphaned continuation lines.
+    /// R2 — `remove` uses the production model's fm-key grain, so a multiline YAML value is removed
+    /// whole rather than leaving orphaned continuation lines.
     #[test]
     fn case_remove_uses_the_production_model_grain_for_multiline_frontmatter() {
         let before = "---\nlabels:\n  - alpha\n  - beta\nstatus: open\n---\n# Card\n";
@@ -2133,10 +2133,10 @@ mod tests {
         };
         let after = apply_case_mutation(CARD, before, &case).expect("the removal applies");
         println!("POPULATION removed -> {after:?}");
-        // The node's SPAN is what goes — its whole multiline value, continuation
-        // lines included. The blank line left behind is the §1 span law (a block
-        // leaf's span excludes its final terminator), not a stranded continuation:
-        // measured, not assumed, because a hand-rolled YAML remover would differ here.
+        // The node's SPAN is what goes — its whole multiline value, continuation lines included. The
+        // blank line left behind is the §1 span law (a block leaf's span excludes its final
+        // terminator), not a stranded continuation: measured, not assumed, because a hand-rolled YAML
+        // remover would differ here.
         assert_eq!(
             after, "---\n\nstatus: open\n---\n# Card\n",
             "the whole multiline node goes, continuation lines included"

@@ -1,13 +1,13 @@
-//! The per-invocation resolution flow (decision 0001 rounds 4-5, spec §1).
+//! The per-invocation resolution flow (decision 0001 rounds 4-5, spec §1). The ladder's
+//! answered rungs are pure filesystem functions ([`workspace::resolve`]); a root opens the
+//! hashed drawer directly.
 //!
-//! The ladder's answered rungs are pure filesystem functions
-//! ([`workspace::resolve`]); a root opens the hashed drawer directly. When the
-//! ladder answers nothing — [`workspace::Answer::root`] is `None`, the cwd
-//! default — this asks a running daemon whether the cwd sits inside a
-//! registered ancestor: a socket answer adopts it, silence or a miss degrades
-//! to an ephemeral, per-invocation store that writes NOTHING and never fails
-//! (shipped `NewStore("")` precedent). An unanchored tree is never silently
-//! registered here.
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 
@@ -32,10 +32,10 @@ pub(crate) enum Source {
 }
 
 impl Source {
-    /// A stable lowercase label for JSON / human output.
+    /// A stable lowercase label for JSON / human output. The ladder's own words are reused
+    /// ([`Tier::word`]) rather than restated here, so the CLI cannot drift from the tier vocabulary
+    /// it reports.
     ///
-    /// The ladder's own words are reused ([`Tier::word`]) rather than restated
-    /// here, so the CLI cannot drift from the tier vocabulary it reports.
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Source::Direct(tier) => tier.word(),

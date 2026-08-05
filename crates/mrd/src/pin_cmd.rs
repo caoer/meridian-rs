@@ -35,12 +35,12 @@ use wire_serve::write::{SpliceArgs, splice};
 
 use crate::{Fail, Format, current_dir, engine};
 
-/// Run `mrd pin <PAGE> <TARGET>#<SELECTOR> [flags]`.
+/// Run `mrd pin <PAGE> <TARGET><SELECTOR> [flags]`. Errors [`Fail`] — exit 2 on a bad
+/// invocation (missing or malformed positionals, unknown flags, a `bad_request` refusal); exit
+/// 1 on any other engine refusal, message verbatim.
 ///
-/// # Errors
-/// [`Fail`] — exit 2 on a bad invocation (missing or malformed positionals,
-/// unknown flags, a `bad_request` refusal); exit 1 on any other engine refusal,
-/// message verbatim.
+///
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Pin::parse(args)?;
     let cwd = current_dir()?;
@@ -76,15 +76,15 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         plan_edits: Vec::new(),
         pin: Some(PinSpec {
             target: WirePath(parsed.target.clone()),
-            // **The CLI coat's ingress door (U14).** The wire carries a tagged
-            // selector; this is where the human string a person typed becomes
-            // one, and it is the only place that conversion happens.
+            // **The CLI coats ingress door (U14).** The wire carries a tagged selector; this is where the
+            // human string a person typed becomes one, and it is the only place that conversion happens.
             //
-            // The coat keeps its known limit: `ReadSel::parse` splits on `/`,
-            // so a heading whose own RAW text contains `/` is pinnable through
-            // the WIRE ARRAY (agents, MCP) but not through this string sugar.
-            // That is ZT's input-coat vs carried-canonical split; widening the
-            // coat is C2, and C2 stays reserved.
+            //
+            //
+            //
+            //
+            //
+            //
             selector: wire::ReadSel::parse(&parsed.selector),
             vibe: parsed.vibe.then_some(true),
         }),
@@ -117,14 +117,14 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-/// The engine's refusal with its `cause` carried, in the same `class (cause)`
-/// shape [`crate::status_cmd`] degrades in (`unknown (not a git repository: …)`).
+/// The engines refusal with its `cause` carried, in the same `class (cause)` shape
+/// [`crate::status_cmd`] degrades in (`unknown (not a git repository: …)`).
 ///
-/// [`engine::refusal_fail`] renders `message` and the ref-carrying extras, but
-/// an `io_error` names its reason in `cause` alone (v2 §8) — so the
-/// `--vibe`-without-git refusal, whose whole content is that cause, printed a
-/// bare `mrd: io_error` and threw the explanation away. This header promises the
-/// engine's message verbatim; carrying the cause is what keeps that promise.
+///
+///
+///
+///
+///
 fn refusal_with_cause(error: &wire::ErrorBody) -> Fail {
     let mut fail = engine::refusal_fail(error);
     if let Some(cause) = &error.cause {
@@ -143,9 +143,9 @@ fn print_human(parsed: &Pin, body: &Value) {
             .unwrap_or("?")
     };
     let verb = if parsed.dry { "would pin" } else { "pinned" };
-    // U14: `declared_ref` — the joined `page#selector` echo — is gone from the
-    // wire fact. The human line is composed from the two fields that carry the
-    // same address structurally, which is also what the caller typed.
+    // U14: `declared_ref` — the joined `pageselector` echo — is gone from the wire fact. The human
+    // line is composed from the two fields that carry the same address structurally, which is also
+    // what the caller typed.
     println!(
         "{verb} {}#{} into {}",
         field("target"),
@@ -246,8 +246,8 @@ impl Pin {
 #[cfg(test)]
 mod tests {
     //! Invocation parsing only — the pin BEHAVIOR is gated engine-side
-    //! (`crates/wire-serve/tests/s7_pin.rs`), where a real workspace and a real
-    //! read-mint ledger exist.
+    //! (`crates/wire-serve/tests/s7_pin.rs`), where a real workspace and a real read-mint ledger
+    //! exist.
 
     use super::*;
 

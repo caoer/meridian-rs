@@ -1,16 +1,16 @@
-//! `mrd daemon` — run the registry+engine server, and the client-side
-//! auto-spawn that starts it detached on first use (decision 0002 §3, the
-//! watchman model).
+//! `mrd daemon` — run the registry+engine server, and the client-side auto-spawn that starts it
+//! detached on first use (decision 0002 §3, the watchman model). Two entry points share this
+//! module: - [`run`] is the daemon body: bind the socket, write a pidfile, and block on a
+//! signal loop until SIGINT/SIGTERM.
 //!
-//! Two entry points share this module:
-//! - [`run`] is the daemon body: bind the socket, write a pidfile, and block on
-//!   a signal loop until SIGINT/SIGTERM. It is what `mrd daemon` runs in the
-//!   foreground AND what an auto-spawned detached child runs.
-//! - [`spawn_detached`] is the client side: launch `mrd daemon` in a NEW session
-//!   (`setsid`) with its stdio at `/dev/null`, so the resident daemon outlives
-//!   the client that started it. The client then polls the socket for readiness
-//!   ([`crate::engine`]); a spawn that never comes up degrades to the in-process
-//!   ephemeral engine — the daemon is an optimization, never a hard dependency.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -28,14 +28,14 @@ use crate::Fail;
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
 
 /// The pidfile name, beside the socket in the registry directory. Written by the
-/// singleton-winning daemon so an operator (or a test) can signal the resident
-/// daemon without hunting the process table; removed on graceful shutdown.
+/// singleton-winning daemon so an operator (or a test) can signal the resident daemon without
+/// hunting the process table; removed on graceful shutdown.
 const PID_NAME: &str = "daemon.pid";
 
-/// Environment override for the binary [`spawn_detached`] launches as the daemon
-/// (default: the running executable). A packager points it at a dedicated daemon
-/// binary; a test points it at a nonexistent path to force the spawn-impossible
-/// degrade.
+/// Environment override for the binary [`spawn_detached`] launches as the daemon (default: the
+/// running executable). A packager points it at a dedicated daemon binary; a test points it at
+/// a nonexistent path to force the spawn-impossible degrade.
+///
 const DAEMON_BIN_ENV: &str = "MERIDIAN_DAEMON_BIN";
 
 extern "C" fn on_signal(_sig: libc::c_int) {
@@ -77,10 +77,10 @@ pub(crate) fn run() -> Result<(), Fail> {
     );
     eprintln!("press Ctrl-C to stop");
 
-    // G11: two ways out — a signal, or the idle-exit horizon the reaper watches.
-    // A detached daemon is reparented to init and nothing else will ever end it,
-    // so without the second condition every isolated run leaves one behind
-    // forever. Teardown is identical either way; only the reason differs.
+    // G11: two ways out — a signal, or the idle-exit horizon the reaper watches. A detached daemon
+    // is reparented to init and nothing else will ever end it, so without the second condition
+    // every isolated run leaves one behind forever. Teardown is identical either way; only the
+    // reason differs.
     while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
         thread::sleep(Duration::from_millis(200));
     }
@@ -96,20 +96,20 @@ fn pid_path(socket_path: &Path) -> PathBuf {
     socket_path.with_file_name(PID_NAME)
 }
 
-/// Auto-spawn the resident daemon DETACHED (decision 0002 §3): launch
-/// `mrd daemon` in a new session with null stdio, so it survives this client's
-/// exit. Returns as soon as the child is launched — the caller polls the socket
-/// for readiness (a launched daemon that never binds is a caller-side timeout,
-/// then a degrade).
+/// Auto-spawn the resident daemon DETACHED (decision 0002 §3): launch `mrd daemon` in a new
+/// session with null stdio, so it survives this clients exit. Returns as soon as the child is
+/// launched — the caller polls the socket for readiness (a launched daemon that never binds is
+/// a caller-side timeout, then a degrade).
 ///
-/// The child inherits this process's environment (so it resolves the SAME cache
-/// root and binds the socket the client dials). `setsid` in the pre-exec hook
-/// detaches it from the client's session, so a terminal SIGHUP never reaps it.
 ///
-/// # Errors
-/// The daemon binary cannot be located ([`std::env::current_exe`] fails and no
-/// [`DAEMON_BIN_ENV`] override is set), or the child cannot be spawned (the
-/// override names a nonexistent binary) — both degrade to the in-process engine.
+///
+///
+///
+///
+///
+///
+///
+///
 pub(crate) fn spawn_detached() -> io::Result<()> {
     let bin = match std::env::var_os(DAEMON_BIN_ENV) {
         Some(path) => PathBuf::from(path),

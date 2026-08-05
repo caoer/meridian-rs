@@ -1,119 +1,119 @@
-//! The commit fence, READ — what is standing in this checkout's hook doors.
+//! The commit fence, READ — what is standing in this checkout's hook doors. THE PLANE IS A
+//! READER NOW, AND THE CONTRACT IS A DOCUMENT Nothing here writes. `mrd skill hook` emits
+//! `skills/hook.md` — what to place, where, when to refuse to place it, how to verify — and the
+//! agent reading that document does the placing. This module is the other half: it reads the
+//! doors back, so `mrd check` can say what a checkout is actually fenced by (row 21). **The
+//! install plane was deleted, not shimmed.** A verb that wrote into `$GIT_DIR/hooks` had to
+//! carry an uninstaller that refused a file it did not write, a `flock` held across a
+//! read-decide-write section spawning `git` three times inside it, a downgrade guard with its
+//! own environment escape, and a partial-coverage migration state — four planes of imperative
+//! machinery encoding rules that are, in the end, prose. They are now legible content of the
+//! emitted document rather than code paths that have to be trusted, and the ONE thing that
+//! cannot be prose — reading bytes off a disk to say what generation is standing there — is
+//! what stayed. THE DOOR IS A CLASS, AND THE SET IS A CLAIM ABOUT COVERAGE (row 20)
+//! `pre-commit` is not the only hook git dispatches for a commit it builds from a prepared
+//! index. The set is [`FENCED_HOOKS`] — `pre-commit`, `pre-merge-commit` and `pre-applypatch` —
+//! and **one body serves all three**: each fires with the index already holding what would be
+//! committed, so the fence's question is the same at every one. A set of one left `git merge`
+//! and `git am` landing commits past a fence that printed nothing, which is why [`Coverage`]
+//! reports `installed-partial` as its own word rather than folding it into `installed`. THE
+//! COVERAGE IS PER-CHECKOUT AND OPT-IN, PERMANENTLY (row 21) `$GIT_DIR/hooks` is never a
+//! tracked path, so no clone, fetch or pull can transport the fence. That is git's design and
+//! the fix cannot be "make the fence clonable". The automatic route — a global
+//! `init.templateDir` — was measured working and is **refused on its collateral**: it fences
+//! every unrelated repository the operator ever clones or inits, which abolishes the opt-in
+//! premise the fence body's no-membership-test design rests on. **The defect to close was the
+//! SILENCE, not the absence** — hence this reader, and the fence line in `mrd check` that
+//! spends it.
 //!
-//! # THE PLANE IS A READER NOW, AND THE CONTRACT IS A DOCUMENT
-//! Nothing here writes. `mrd skill hook` emits `skills/hook.md` — what to place,
-//! where, when to refuse to place it, how to verify — and the agent reading that
-//! document does the placing. This module is the other half: it reads the doors
-//! back, so `mrd check` can say what a checkout is actually fenced by (row 21).
 //!
-//! **The install plane was deleted, not shimmed.** A verb that wrote into
-//! `$GIT_DIR/hooks` had to carry an uninstaller that refused a file it did not
-//! write, a `flock` held across a read-decide-write section spawning `git` three
-//! times inside it, a downgrade guard with its own environment escape, and a
-//! partial-coverage migration state — four planes of imperative machinery
-//! encoding rules that are, in the end, prose. They are now legible content of
-//! the emitted document rather than code paths that have to be trusted, and the
-//! ONE thing that cannot be prose — reading bytes off a disk to say what
-//! generation is standing there — is what stayed.
 //!
-//! # THE DOOR IS A CLASS, AND THE SET IS A CLAIM ABOUT COVERAGE (row 20)
-//! `pre-commit` is not the only hook git dispatches for a commit it builds from a
-//! prepared index. The set is [`FENCED_HOOKS`] — `pre-commit`, `pre-merge-commit`
-//! and `pre-applypatch` — and **one body serves all three**: each fires with the
-//! index already holding what would be committed, so the fence's question is the
-//! same at every one. A set of one left `git merge` and `git am` landing commits
-//! past a fence that printed nothing, which is why [`Coverage`] reports
-//! `installed-partial` as its own word rather than folding it into `installed`.
 //!
-//! # THE COVERAGE IS PER-CHECKOUT AND OPT-IN, PERMANENTLY (row 21)
-//! `$GIT_DIR/hooks` is never a tracked path, so no clone, fetch or pull can
-//! transport the fence. That is git's design and the fix cannot be "make the
-//! fence clonable". The automatic route — a global `init.templateDir` — was
-//! measured working and is **refused on its collateral**: it fences every
-//! unrelated repository the operator ever clones or inits, which abolishes the
-//! opt-in premise the fence body's no-membership-test design rests on.
-//! **The defect to close was the SILENCE, not the absence** — hence this reader,
-//! and the fence line in `mrd check` that spends it.
 //!
-//! # THE VERSION LINE IS A DATUM, NOT A COMMENT (rows 23 + 26)
-//! `# mrd-hook-fence <n>` is parsed by [`parse_fence_version`] and compared
-//! against this engine's [`FENCE_VERSION`]. The relation it yields is
-//! [`Currency`], and it is **three-valued on purpose**: the placed bytes can be
-//! older than, equal to, or NEWER than the engine asking. A byte-equality test
-//! collapses *older* and *newer* into one `false`, and the teaching then asserts
-//! a direction the comparison never measured.
 //!
-//! **`Ahead` is the whole skew, and it is the state where the remedy inverts.**
-//! An old `mrd` first on PATH answering about a fence a new engine's document
-//! placed must not be told to re-place it: `mrd skill hook` resolves the OLD
-//! engine, which emits the OLD document, silently restoring whatever defect the
-//! newer generation removed. Every other word on this surface means *"re-place
-//! the fence"*; that one means *"do not"*, so it outranks them all in
-//! [`Coverage::word`].
 //!
-//! # AND THE SKEW RUNS BOTH WAYS
-//! A fence placed from a NEW engine's document can be run against an OLD `mrd` on
-//! `PATH`, because the hook resolves the engine at commit time and never bakes
-//! one in (that is what makes one file correct for N worktrees). The old engine
-//! then answers `unknown flag`, exit 2, and the fence refuses EVERY commit —
-//! **the ordinary state of a cutover**, so the emitted body handles exit 2 with a
-//! teaching refusal that names the skew and the commands that decide it. It still
-//! fails CLOSED: falling back to an unscoped `mrd check` would restore exactly
-//! the false green the scoped question removed.
 //!
-//! # Why this module is public
-//! The design tests for `mrd skill hook` hold the emitted document to this
-//! engine's constants — the generation it declares, the doors it names, the
-//! marker it carries. That is a claim about two artifacts agreeing, so the test
-//! has to be able to name both.
 //!
-//! # The three senses of "root" meet here, and this module names them apart
-//! - the **meridian workspace root** — what `mrd check` resolves and reads;
-//! - the **worktree top-level** — `git rev-parse --show-toplevel`;
-//! - the **common git dir** — `git rev-parse --git-common-dir`, where `hooks/`
-//!   actually lives.
 //!
-//! **RULED (D11): the fence is placed per common dir, and this reader refuses to
-//! report on a root whose meridian workspace root is not the worktree
-//! top-level.** N linked worktrees are N meridian workspaces sharing ONE hook
-//! directory, so the fence is placed once and reads its worktree from git's
-//! working directory at commit time — it never bakes a path in.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The ownership marker, on the fence's second line. A file carrying it is one
-/// this engine's document produced; a file without it belongs to another tool
-/// and is reported as [`HookHere::Foreign`], never counted as coverage.
+/// The ownership marker, on the fence's second line. A file carrying it is one this engine's
+/// document produced; a file without it belongs to another tool and is reported as
+/// [`HookHere::Foreign`], never counted as coverage.
 pub const HOOK_MARKER: &str = "mrd-hook-fence";
 
-/// The generation this engine's document declares, and the datum every placed
-/// fence is judged by.
+/// The generation this engine's document declares, and the datum every placed fence is judged
+/// by. **Bump this whenever the emitted body changes behaviour**, because an unbumped body
+/// change makes a stale fence report as current while doing something this engine does not do.
+/// `crates/mrd/tests/skill_hook_emit.rs` holds this number and the document's own
+/// `mrd-hook-fence <n>` line to each other.
 ///
-/// **Bump this whenever the emitted body changes behaviour**, because an unbumped
-/// body change makes a stale fence report as current while doing something this
-/// engine does not do. `crates/mrd/tests/skill_hook_emit.rs` holds this number
-/// and the document's own `# mrd-hook-fence <n>` line to each other.
+///
 pub const FENCE_VERSION: u32 = 4;
 
-/// Every door git offers a veto on for a commit it builds from a prepared index.
+/// Every door git offers a veto on for a commit it builds from a prepared index. **Not a list
+/// of names — a claim about coverage.** Each of the three is a pre-hook, is veto-capable, and
+/// fires with the index already holding what would be committed, so one body serves them all
+/// and a checkout carrying fewer than three is partially fenced rather than fenced.
 ///
-/// **Not a list of names — a claim about coverage.** Each of the three is a
-/// pre-hook, is veto-capable, and fires with the index already holding what would
-/// be committed, so one body serves them all and a checkout carrying fewer than
-/// three is partially fenced rather than fenced.
+///
 pub const FENCED_HOOKS: [&str; 3] = ["pre-commit", "pre-merge-commit", "pre-applypatch"];
 
 // ---------------------------------------------------------------------------
 // the version line, read
 // ---------------------------------------------------------------------------
 
-/// Read the generation a placed fence declares for itself.
+/// Read the generation a placed fence declares for itself. **A report of the FILE's own
+/// declaration, never of the asking engine's expectation.** `None` when the line is absent or
+/// its number unparseable — the engine's own [`FENCE_VERSION`] is never substituted, because a
+/// fence that cannot say what it is has not said it is current.
 ///
-/// **A report of the FILE's own declaration, never of the asking engine's
-/// expectation.** `None` when the line is absent or its number unparseable — the
-/// engine's own [`FENCE_VERSION`] is never substituted, because a fence that
-/// cannot say what it is has not said it is current.
+///
 #[must_use]
 pub fn parse_fence_version(body: &str) -> Option<u32> {
     body.lines().find_map(|line| {
@@ -130,44 +130,44 @@ pub fn parse_fence_version(body: &str) -> Option<u32> {
 // the per-root verdict
 // ---------------------------------------------------------------------------
 
-/// Why one root has no door plane to read. **Every variant names the OBSERVED
-/// state, never a guessed cause** — an unreadable root is named, never silently
-/// reported as unfenced, which is the same absence wearing a false word.
+/// Why one root has no door plane to read. **Every variant names the OBSERVED state, never a
+/// guessed cause** — an unreadable root is named, never silently reported as unfenced, which is
+/// the same absence wearing a false word.
 #[derive(Debug)]
 pub enum Unfenceable {
-    /// The root is not a git repository. **Marker-beats-git makes this a
-    /// SUPPORTED workspace state, not an error condition**: there is simply
-    /// nowhere for a hook to live.
+    /// The root is not a git repository. **Marker-beats-git makes this a SUPPORTED workspace state,
+    /// not an error condition**: there is simply nowhere for a hook to live.
+    ///
     NotAGitRepo {
         /// The root asked about.
         root: PathBuf,
     },
     /// The root is a submodule of a superproject (D12). Its hooks live at
-    /// `<super>/.git/modules/<name>/hooks`, which nothing in this engine
-    /// computes — a loud refusal beats a silent mis-read.
+    /// `<super>/.git/modules/<name>/hooks`, which nothing in this engine computes — a loud refusal
+    /// beats a silent mis-read.
     Submodule {
         /// The root asked about.
         root: PathBuf,
         /// The superproject's working tree, as git reports it.
         superproject: PathBuf,
     },
-    /// `core.hooksPath` redirects hooks away from the common dir, so the doors
-    /// under `$GIT_COMMON_DIR/hooks` are not the ones git would run and reading
-    /// them would answer about files with no effect.
+    /// `core.hooksPath` redirects hooks away from the common dir, so the doors under
+    /// `$GIT_COMMON_DIR/hooks` are not the ones git would run and reading them would answer about
+    /// files with no effect.
     HooksPathRedirected {
         /// The root asked about.
         root: PathBuf,
         /// Where git will actually look for hooks.
         hooks_path: PathBuf,
-        /// The redirect target's own `pre-commit`, when it already has one —
-        /// the reason this refusal is stronger than "hooks are redirected":
-        /// placing a fence anyway would write into ANOTHER repository's hook
-        /// directory.
+        /// The redirect target's own `pre-commit`, when it already has one — the reason this refusal is
+        /// stronger than "hooks are redirected": placing a fence anyway would write into ANOTHER
+        /// repository's hook directory.
+        ///
         occupied_by: Option<PathBuf>,
     },
-    /// The meridian workspace root is not the worktree top-level, so "this
-    /// workspace" and "this repository" name different directories and a
-    /// per-root reading would be guessing which the operator meant (D11).
+    /// The meridian workspace root is not the worktree top-level, so "this workspace" and "this
+    /// repository" name different directories and a per-root reading would be guessing which the
+    /// operator meant (D11).
     WorkspaceNotToplevel {
         /// The meridian workspace root.
         workspace: PathBuf,
@@ -185,13 +185,13 @@ pub enum Unfenceable {
 }
 
 impl Unfenceable {
-    /// The reason word — the OBSERVED state, one spelling per state.
-    ///
-    /// Measured free against the engine's existing reason-word set before
-    /// minting (S3-R49): none collides with any word in `crates/*/src`, and none
-    /// is a re-spelling of an existing concept — these describe a CHECKOUT's
-    /// configuration, not a corpus verdict, so they neither borrow nor shadow
+    /// The reason word — the OBSERVED state, one spelling per state. Measured free against the
+    /// engine's existing reason-word set before minting (S3-R49): none collides with any word in
+    /// `crates/*/src`, and none is a re-spelling of an existing concept — these describe a
+    /// CHECKOUT's configuration, not a corpus verdict, so they neither borrow nor shadow
     /// `grey(...)` / `red(...)`.
+    ///
+    ///
     #[must_use]
     pub fn word(&self) -> &'static str {
         match self {
@@ -418,13 +418,13 @@ pub enum HookHere {
     },
 }
 
-/// The observed relation between a placed fence's declared generation and this
-/// engine's [`FENCE_VERSION`].
+/// The observed relation between a placed fence's declared generation and this engine's
+/// [`FENCE_VERSION`]. **Three-valued, because the file can be older than, equal to, or NEWER
+/// than the engine asking.** A byte-equality test collapses *older* and *newer* into one
+/// `false`, and a teaching built on it then asserts a direction the comparison never measured.
 ///
-/// **Three-valued, because the file can be older than, equal to, or NEWER than
-/// the engine asking.** A byte-equality test collapses *older* and *newer* into
-/// one `false`, and a teaching built on it then asserts a direction the
-/// comparison never measured.
+///
+///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Currency {
     /// The placed generation is the one this engine's document declares.
@@ -435,9 +435,9 @@ pub enum Currency {
         /// The generation the file declares.
         installed: u32,
     },
-    /// **Newer than this engine.** The remedy inverts: the `mrd` answering is the
-    /// one that is behind, and re-placing from ITS document would downgrade the
-    /// fence.
+    /// **Newer than this engine.** The remedy inverts: the `mrd` answering is the one that is
+    /// behind, and re-placing from ITS document would downgrade the fence.
+    ///
     Ahead {
         /// The generation the file declares.
         installed: u32,
@@ -498,12 +498,12 @@ impl Door {
     }
 }
 
-/// What the whole door set looks like on disk.
-///
-/// **A set's state is not any one door's state.** "Two of three doors carry a
-/// current fence" is a distinct fact from "installed", and R40 requires it be
-/// reported apart — it is exactly the state a checkout fenced from an older
+/// What the whole door set looks like on disk. **A set's state is not any one door's state.**
+/// "Two of three doors carry a current fence" is a distinct fact from "installed", and R40
+/// requires it be reported apart — it is exactly the state a checkout fenced from an older
 /// document is in.
+///
+///
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Coverage {
     /// One entry per [`FENCED_HOOKS`] name, in that order.
@@ -511,13 +511,13 @@ pub struct Coverage {
 }
 
 impl Coverage {
-    /// The one word for the whole set.
+    /// The one word for the whole set. **Precedence is the design.** A foreign file is named first
+    /// because it is the state nothing else explains. The version relations come next, and
+    /// `installed-ahead` before the rest, because it is the only state whose remedy is the OPPOSITE
+    /// of every other one's — every other word means "re-place the fence from `mrd skill hook`",
+    /// and that word means "do not".
     ///
-    /// **Precedence is the design.** A foreign file is named first because it is
-    /// the state nothing else explains. The version relations come next, and
-    /// `installed-ahead` before the rest, because it is the only state whose
-    /// remedy is the OPPOSITE of every other one's — every other word means
-    /// "re-place the fence from `mrd skill hook`", and that word means "do not".
+    ///
     #[must_use]
     pub fn word(&self) -> &'static str {
         if self.foreign().is_some() {

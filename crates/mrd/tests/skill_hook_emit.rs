@@ -75,12 +75,12 @@ fn document() -> String {
     stdout(&out)
 }
 
-/// The fence body, extracted the way the document says to extract it: **the one
-/// fenced block, and it is the file**.
+/// The fence body, extracted the way the document says to extract it: **the one fenced block,
+/// and it is the file**. The extraction is deliberately naive — an agent following the document
+/// does exactly this — so a document that grew a second fenced block breaks it, which is the
+/// point of [`exactly_one_fenced_block_so_the_extraction_is_unambiguous`].
 ///
-/// The extraction is deliberately naive — an agent following the document does
-/// exactly this — so a document that grew a second fenced block breaks it, which
-/// is the point of [`exactly_one_fenced_block_so_the_extraction_is_unambiguous`].
+///
 fn fence_body(doc: &str) -> String {
     let mut lines = doc.lines();
     let mut body = String::new();
@@ -104,12 +104,12 @@ fn fence_body(doc: &str) -> String {
 
 // ── the stream is the artifact ───────────────────────────────────────────────
 
-/// **Stdout carries the document and nothing else, and stderr stays empty.**
+/// **Stdout carries the document and nothing else, and stderr stays empty.** A caller pipes
+/// this into a file or into an agents context. One `emitting…` line, one trailing byte count,
+/// one blank line of politeness, and the artifact is corrupt — so the arm asserts the stream
+/// EQUALS the document rather than merely containing it.
 ///
-/// A caller pipes this into a file or into an agent's context. One `emitting…`
-/// line, one trailing byte count, one blank line of politeness, and the artifact
-/// is corrupt — so the arm asserts the stream EQUALS the document rather than
-/// merely containing it.
+///
 #[test]
 fn the_document_is_the_whole_of_stdout_and_stderr_stays_empty() {
     let out = mrd(&["skill", "hook"]);
@@ -132,14 +132,14 @@ fn the_document_is_the_whole_of_stdout_and_stderr_stays_empty() {
     );
 }
 
-/// **The emitter touches no disk and needs no world.** It runs in a directory
-/// that is not a git repository, not a meridian workspace, and holds nothing —
-/// and leaves it holding nothing.
+/// **The emitter touches no disk and needs no world.** It runs in a directory that is not a git
+/// repository, not a meridian workspace, and holds nothing — and leaves it holding nothing.
 ///
-/// This is the contract's central simplification, so it is measured rather than
-/// promised: the retired plane's whole hazard surface (a lock file in someone's
-/// git dir, a hook written where git would not run it) is unreachable when the
-/// verb writes nowhere.
+///
+///
+///
+///
+///
 #[test]
 fn the_emitter_writes_nothing_and_needs_neither_repository_nor_workspace() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -176,14 +176,14 @@ fn the_emitter_writes_nothing_and_needs_neither_repository_nor_workspace() {
 
 // ── the document and the engine are one fact ─────────────────────────────────
 
-/// The generation the document declares is the one `crates/mrd/src/hook.rs`
-/// judges placed fences by.
+/// The generation the document declares is the one `crates/mrd/src/hook.rs` judges placed
+/// fences by. **This is the arm a body change without a bump fails on.
 ///
-/// **This is the arm a body change without a bump fails on.** The engine reports
-/// a placed fence's currency by comparing the two numbers; if the document ships
-/// new behaviour under the old number, every already-placed fence reports as
-/// current while doing something this engine does not do — and nothing can prompt
-/// an operator to re-place it.
+///
+///
+///
+///
+///
 #[test]
 fn the_documents_generation_is_the_one_this_engine_judges_placed_fences_by() {
     let doc = document();
@@ -192,9 +192,9 @@ fn the_documents_generation_is_the_one_this_engine_judges_placed_fences_by() {
         Some(FENCE_VERSION),
         "the document's `# {HOOK_MARKER} <n>` line and the engine's FENCE_VERSION are one fact"
     );
-    // And the number is in the BODY, not merely in the prose around it — the
-    // reader places the body, and a generation declared only in the surrounding
-    // document would land on disk as an unversioned fence.
+    // And the number is in the BODY, not merely in the prose around it — the reader places the
+    // body, and a generation declared only in the surrounding document would land on disk as an
+    // unversioned fence.
     let body = fence_body(&doc);
     assert_eq!(parse_fence_version(&body), Some(FENCE_VERSION));
     assert!(
@@ -224,11 +224,11 @@ fn the_document_names_every_door_this_engine_reads() {
 
 // ── the body ─────────────────────────────────────────────────────────────────
 
-/// **The extraction the document prescribes must be unambiguous.** "The one
-/// fenced block, and it is the file" is only an instruction if there is exactly
-/// one — a second block (a placement snippet, an example) turns a mechanical
-/// extraction into a choice, and the reader placing the wrong one places a file
-/// that is not a fence.
+/// **The extraction the document prescribes must be unambiguous.** "The one fenced block, and
+/// it is the file" is only an instruction if there is exactly one — a second block (a placement
+/// snippet, an example) turns a mechanical extraction into a choice, and the reader placing the
+/// wrong one places a file that is not a fence.
+///
 #[test]
 fn exactly_one_fenced_block_so_the_extraction_is_unambiguous() {
     let doc = document();
@@ -273,21 +273,21 @@ fn the_body_asks_the_scoped_question_and_not_the_permanent_one() {
         "the superseded invocation is still in the body — it asks a permanent question \
          and answers every commit with it"
     );
-    // The exit-2 leg is the cutover leg, and it must name the flag it actually
-    // passes. A skew message naming a flag the body does not use sends the
-    // operator to test the wrong thing.
+    // The exit-2 leg is the cutover leg, and it must name the flag it actually passes. A skew
+    // message naming a flag the body does not use sends the operator to test the wrong thing.
+    //
     assert!(
         body.contains("does not carry --commit-gate"),
         "the skew teaching names the flag whose absence causes the 2 it is explaining"
     );
 }
 
-/// The extracted block is a shell program, parsed by a shell.
+/// The extracted block is a shell program, parsed by a shell. A grep-only suite passes over a
+/// body with an unbalanced quote, and the reader places a file whose every invocation is a
+/// syntax error — which git reports as a non-zero hook exit, i.e. as a fence refusing every
+/// commit for a reason nobody can read.
 ///
-/// A grep-only suite passes over a body with an unbalanced quote, and the reader
-/// places a file whose every invocation is a syntax error — which git reports as
-/// a non-zero hook exit, i.e. as a fence refusing every commit for a reason
-/// nobody can read.
+///
 #[test]
 fn the_body_is_a_shell_program_that_parses() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -306,13 +306,13 @@ fn the_body_is_a_shell_program_that_parses() {
     );
 }
 
-/// **The force grammar is one law, and the document states it twice on purpose:**
-/// once as the `case` the shell runs, once as the table a reader acts on. Nothing
-/// but this arm keeps them in step.
+/// **The force grammar is one law, and the document states it twice on purpose:** once as the
+/// `case` the shell runs, once as the table a reader acts on. Nothing but this arm keeps them
+/// in step. The shell spells its case-fold as a character-class glob, so that is what is
+/// searched for — searching for `true` would also match the prose and prove nothing.
 ///
-/// The shell spells its case-fold as a character-class glob, so that is what is
-/// searched for — searching for `true` would also match the prose and prove
-/// nothing.
+///
+///
 #[test]
 fn the_force_grammar_is_one_law_in_both_of_its_spellings() {
     let doc = document();
@@ -349,9 +349,9 @@ fn the_force_grammar_is_one_law_in_both_of_its_spellings() {
     );
 }
 
-/// The specificity pair, over the bytes: the bypass leg writes to stderr, and the
-/// not-a-force leg falls through carrying no `printf` of its own. A notice that
-/// fired on both would be no notice at all.
+/// The specificity pair, over the bytes: the bypass leg writes to stderr, and the not-a-force
+/// leg falls through carrying no `printf` of its own. A notice that fired on both would be no
+/// notice at all.
 #[test]
 fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     let body = fence_body(&document());
@@ -379,9 +379,9 @@ fn the_bypass_is_announced_and_only_the_bypass_is_announced() {
     );
 }
 
-/// The ratified bound (silver §5), asserted rather than promised. A fence that
-/// grew a selector, a rev or a colour word would be a second gate — and refusal's
-/// legal home is engine-side.
+/// The ratified bound (silver §5), asserted rather than promised. A fence that grew a selector,
+/// a rev or a colour word would be a second gate — and refusals legal home is engine-side.
+///
 #[test]
 fn the_body_holds_no_markdown_semantics() {
     let body = fence_body(&document());
@@ -438,9 +438,9 @@ fn every_refusal_the_retired_installer_enforced_is_legible_in_the_document() {
     );
 }
 
-/// The document tells the reader how to check what they placed, and names the
-/// face that answers. A contract with no verification step ends at "I wrote three
-/// files", which is not the same claim as "this checkout is fenced".
+/// The document tells the reader how to check what they placed, and names the face that
+/// answers. A contract with no verification step ends at "I wrote three files", which is not
+/// the same claim as "this checkout is fenced".
 #[test]
 fn the_document_teaches_how_to_verify_what_was_placed() {
     let doc = document();
@@ -473,9 +473,9 @@ fn the_document_teaches_no_retired_verb() {
 
 // ── the invocation ───────────────────────────────────────────────────────────
 
-/// The bad-invocation leg, over the process boundary: exit 2 and a teaching, on
-/// every shape of wrong. **No exit-1 leg exists** — an emitter has no findings,
-/// and a document that printed is the whole of what this verb can succeed at.
+/// The bad-invocation leg, over the process boundary: exit 2 and a teaching, on every shape of
+/// wrong. **No exit-1 leg exists** — an emitter has no findings, and a document that printed is
+/// the whole of what this verb can succeed at.
 #[test]
 fn every_bad_invocation_is_a_loud_exit_2_that_teaches() {
     for (args, probe) in [

@@ -1,24 +1,24 @@
-//! U12 full-lifecycle e2e for `mrd run` — ACTIVE (U7 landed @ 04b6f48; the
-//! six gates flipped live at activation, none ignored). Assertions bind to
-//! ratified surface behavior (plan §3 decisions + verdict rulings): each
-//! test drives the REAL binary over its process boundary.
+//! U12 full-lifecycle e2e for `mrd run` — ACTIVE (U7 landed @ 04b6f48; the six gates flipped
+//! live at activation, none ignored). Assertions bind to ratified surface behavior (plan §3
+//! decisions + verdict rulings): each test drives the REAL binary over its process boundary.
 //!
-//! Coverage map (plan §4 U12): starlark + bash apply via ONE splice batch;
-//! deny-by-default caps at the choke, WHERE CAPABILITIES APPLY — starlark only
-//! (`docs/laws.md` § Amendment; the whole law is gated in
-//! `law_no_caps_on_bash.rs`); the snapshot bracket catching an
-//! ungoverned md write (named, never rolled back — #14); the
-//! config-widening attack REFUSED (#20, a U12 MUST); guarantee-class labels
-//! (#16/#23); receipt + run-record linkage (ruling 7, S8).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// Lifecycle fixture workspace: a starlark fix task, a bash fix task that
-/// emits one governed descriptor over the effect-shim fd, a bash task with
-/// NO caps that still tries to emit, a bash task that writes an md file
-/// directly (zero descriptors), and a bash task that rewrites
+/// Lifecycle fixture workspace: a starlark fix task, a bash fix task that emits one governed
+/// descriptor over the effect-shim fd, a bash task with NO caps that still tries to emit, a
+/// bash task that writes an md file directly (zero descriptors), and a bash task that rewrites
 /// `mdfs_config.yaml` mid-run (the widening attack).
+///
 const PAGE: &str = "\
 ---
 task.fix-note: \"[[#^note-1]]\"
@@ -138,10 +138,10 @@ fn starlark_task_applies_one_batch_with_receipt() {
     assert!(stdout(&out).contains("hermetic"), "{}", stdout(&out));
 }
 
-/// Bash lifecycle: the shim descriptor applies through the SAME choke point
-/// and splice batch; the receipt carries the exec record (invocation id,
-/// exit code, stdout sha256 + size, log address — ruling 7/S8); the stdout
-/// log exists under `.meridian/runs/`.
+/// Bash lifecycle: the shim descriptor applies through the SAME choke point and splice batch;
+/// the receipt carries the exec record (invocation id, exit code, stdout sha256 + size, log
+/// address — ruling 7/S8); the stdout log exists under `.meridian/runs/`.
+///
 #[test]
 fn bash_task_applies_via_shim_with_run_record() {
     let ws = Ws::new();
@@ -155,9 +155,9 @@ fn bash_task_applies_via_shim_with_run_record() {
     let receipts = receipts_text(&ws);
     assert!(receipts.contains(".meridian/runs/"), "{receipts}");
     assert!(receipts.contains("sha256"), "{receipts}");
-    // The class label: `unsandboxed`, not `detected` — bash has no guarantee
-    // to derive (`docs/laws.md` § Amendment). The bracket's verdict still
-    // renders, on the out-of-band-delta line below.
+    // The class label: `unsandboxed`, not `detected` — bash has no guarantee to derive
+    // (`docs/laws.md` § Amendment). The brackets verdict still renders, on the out-of-band-delta
+    // line below.
     assert!(stdout(&out).contains("unsandboxed"), "{}", stdout(&out));
     assert!(
         stdout(&out).contains("out-of-band delta: none"),
@@ -166,21 +166,21 @@ fn bash_task_applies_via_shim_with_run_record() {
     );
 }
 
-/// **Rewritten from `deny_by_default_refuses_undeclared_descriptor`**, which
-/// asserted the OLD contract head-on: an undeclared BASH block's descriptor
-/// refusing at the choke point with `capability denied`, exit 1, nothing
-/// applied. Capabilities do not apply to bash (`docs/laws.md` § Amendment), so
-/// `fix-uncapped` now applies.
+/// **Rewritten from `deny_by_default_refuses_undeclared_descriptor`**, which asserted the OLD
+/// contract head-on: an undeclared BASH blocks descriptor refusing at the choke point with
+/// `capability denied`, exit 1, nothing applied. Capabilities do not apply to bash
+/// (`docs/laws.md` § Amendment), so `fix-uncapped` now applies.
 ///
-/// This is a REAL behaviour change, not a print-statement deletion: bash
-/// reaches the tree through the effect-shim fd and that refusal was a live
-/// gate. It never bounded the block — a denied block writes with `sed -i`
-/// instead, where the U6b bracket at most detects the change and never rolls
-/// it back. The gate only pushed the write off the attested path.
 ///
-/// Deny-by-default itself is UNTOUCHED where it is real: the starlark half is
-/// asserted above, and `law_no_caps_on_bash.rs` holds both sides at once so
-/// the bash half cannot be bought by weakening the starlark one.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn an_undeclared_bash_descriptor_applies_ungoverned() {
     let ws = Ws::new();
@@ -193,10 +193,10 @@ fn an_undeclared_bash_descriptor_applies_ungoverned() {
     );
 }
 
-/// The zero-descriptor cheat: bash writes an md file directly. The snapshot
-/// bracket DETECTS it (exit 1, delta named as an exec-window change) and the
-/// write PERSISTS — never rolled back (#14: rollback would be a second write
-/// path with invented authority).
+/// The zero-descriptor cheat: bash writes an md file directly. The snapshot bracket DETECTS it
+/// (exit 1, delta named as an exec-window change) and the write PERSISTS — never rolled back
+/// (14: rollback would be a second write path with invented authority).
+///
 #[test]
 fn ungoverned_md_write_is_detected_named_never_rolled_back() {
     let ws = Ws::new();
@@ -211,10 +211,10 @@ fn ungoverned_md_write_is_detected_named_never_rolled_back() {
     assert!(ws.file("cheat.md").exists(), "rollback is forbidden (#14)");
 }
 
-/// U12 MUST (#20): the config-widening attack — bash rewrites
-/// `mdfs_config.yaml` mid-run to shrink the hash domain, then writes inside
-/// the new blind spot. The config hash bracket refuses (exit 1) and the
-/// smuggled write is still reported; nothing is silently admitted.
+/// U12 MUST (20): the config-widening attack — bash rewrites `mdfs_config.yaml` mid-run to
+/// shrink the hash domain, then writes inside the new blind spot. The config hash bracket
+/// refuses (exit 1) and the smuggled write is still reported; nothing is silently admitted.
+///
 #[test]
 fn config_widening_attack_is_refused() {
     let ws = Ws::new();

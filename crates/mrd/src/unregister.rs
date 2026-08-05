@@ -1,10 +1,10 @@
-//! `mrd unregister` — drop the daemon registry entry (when a daemon answers)
-//! and remove the workspace's drawer.
+//! `mrd unregister` — drop the daemon registry entry (when a daemon answers) and remove the
+//! workspaces drawer. The split is deliberate and works with the daemon down: the registry
+//! entry is removed only when a daemon is reachable, while the drawer is always removed. An
+//! ephemeral tree (cwd-default, no daemon, never registered) has neither — unregister is then a
+//! clean no-op.
 //!
-//! The split is deliberate and works with the daemon down: the registry entry
-//! is removed only when a daemon is reachable, while the drawer is always
-//! removed. An ephemeral tree (cwd-default, no daemon, never registered) has
-//! neither — unregister is then a clean no-op.
+//!
 
 use std::path::{Path, PathBuf};
 

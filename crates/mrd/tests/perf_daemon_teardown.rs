@@ -1,27 +1,27 @@
-//! **Perf-lane daemon teardown control** — the gate that the status/walk/check
-//! CPU targets cannot be, because those verbs are pure-local and never spawn.
+//! **Perf-lane daemon teardown control** — the gate that the status/walk/check CPU targets
+//! cannot be, because those verbs are pure-local and never spawn. The leak this closes W6
+//! measured 16 resident `mrd daemon` processes under one worktree's debug binary after its perf
+//! runs. Shape: each execution sandboxes `XDG_CACHE_HOME` into a fresh tempdir; a detached
+//! daemon outlives that tempdir and is never re-found by the next run. On a long-lived
+//! `[self-hosted, bench]` runner the residents accumulate forever (G11's idle-exit bounds the
+//! class at the product root; this file is the harness half).
 //!
-//! # The leak this closes
-//! W6 measured 16 resident `mrd daemon` processes under one worktree's debug
-//! binary after its perf runs. Shape: each execution sandboxes `XDG_CACHE_HOME`
-//! into a fresh tempdir; a detached daemon outlives that tempdir and is never
-//! re-found by the next run. On a long-lived `[self-hosted, bench]` runner the
-//! residents accumulate forever (G11's idle-exit bounds the class at the product
-//! root; this file is the harness half).
 //!
-//! # What this file asserts
-//! 1. A cold client auto-spawns a resident (the watchman model — `links`).
-//! 2. The harness tears it down by the **pidfile** the daemon wrote (never
-//!    `pgrep -f`, never process-table substring).
-//! 3. A control read AFTER teardown **asserts** the process is gone — never
-//!    skip-and-pass (g1 trap, 2026-08-05).
-//! 4. Two cycles leave **zero** residents of this binary — the two-run census
-//!    the card asks for, as a single process that cannot leak between cycles.
 //!
-//! # Why its own target
-//! Behind `perf-walltime` so the correctness suite never pays for it, and as
-//! its own `[[test]]` so a panic mid-control cannot fold into a CPU budget's
-//! `RUSAGE_CHILDREN` measurement next door.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

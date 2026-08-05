@@ -30,10 +30,10 @@ use serde_json::json;
 use crate::gc;
 use crate::{Fail, Format, current_dir};
 
-/// The declaration body init writes. No timestamp — a committed file must not
-/// churn. `type:` / `version:` / `name:` are the owner's required keys
-/// ([`config::mount::DECLARATION_KEYS`]), spelled through the owner's own
-/// constants so this writer cannot drift from the reader.
+/// The declaration body init writes. No timestamp — a committed file must not churn. `type:` /
+/// `version:` / `name:` are the owner's required keys ([`config::mount::DECLARATION_KEYS`]),
+/// spelled through the owner's own constants so this writer cannot drift from the reader.
+///
 fn declaration_body(name: &str) -> String {
     format!(
         "---\ntype: {DECLARATION_TYPE}\nversion: {version}\nname: {name}\n---\n\n# {name}\n\nThis directory is a meridian root. `mrd init` wrote this declaration; the\nmount table binds this root by the `name:` above, and `[run.caps]`-style\nconventions are declared here as `run.caps.<pattern>:` frontmatter keys.\n",
@@ -192,9 +192,9 @@ fn declare(
                     declaration_path.display()
                 ))
             })?;
-            // Validity has ONE owner: ask it. A refusal here means the derived
-            // name is not a canonical root name, so the file init just created
-            // is removed rather than left behind broken.
+            // Validity has ONE owner: ask it. A refusal here means the derived name is not a canonical
+            // root name, so the file init just created is removed rather than left behind broken.
+            //
             match config::mount::read_root_declaration(target) {
                 Ok(written) => Ok(Declared::Written(written.name)),
                 Err(fault) => {
@@ -213,21 +213,21 @@ fn declare(
     }
 }
 
-/// Retire every drawer whose workspace is a strict DESCENDANT of `target` and
-/// which the ladder no longer anchors on its own: with `target` registered, a
-/// daemon adopts such a tree from its registered ancestor, so its own drawer is
-/// a leftover. Each retired sentinel records `superseded_by = target`
-/// (amendment M2) so `cache clean` can reap it and a probe reads it as retired.
-/// `target`'s own drawer is skipped.
+/// Retire every drawer whose workspace is a strict DESCENDANT of `target` and which the ladder
+/// no longer anchors on its own: with `target` registered, a daemon adopts such a tree from its
+/// registered ancestor, so its own drawer is a leftover. Each retired sentinel records
+/// `superseded_by = target` (amendment M2) so `cache clean` can reap it and a probe reads it as
+/// retired. `target`'s own drawer is skipped.
 ///
-/// **A descendant that is still its OWN root is left alone.** Under the retired
-/// marker tier an init target out-resolved a nearer `.git`, so every descendant
-/// was genuinely shadowed; the ladder now returns the NEAREST `.git`, so a
-/// descendant repository resolves to itself and retiring its drawer would make
-/// a later `cache clean` reap a live workspace's cache. The check runs the
-/// env-free ladder ([`workspace::resolve_with_override`] with no override), so a
-/// `MERIDIAN_WORKSPACE` set for this invocation cannot make every descendant
-/// look anchored.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn reconcile_descendants(cache_root: &Path, target: &Path) -> Result<Vec<String>, Fail> {
     let drawers = cache::list_drawers(cache_root).map_err(|e| {
         Fail::tool(format!(

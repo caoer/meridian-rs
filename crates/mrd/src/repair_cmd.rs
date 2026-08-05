@@ -64,12 +64,12 @@ use wire_serve::write::{LockWriteArgs, lock_write};
 
 use crate::{EXIT_FINDINGS, Fail, Format, current_dir};
 
-/// Run `mrd repair [PAGE] [--dry] [--json]`.
+/// Run `mrd repair [PAGE] [--dry] [--json]`. Errors [`Fail`] — exit 2 on a bad invocation or a
+/// tool failure (the workspace cannot be resolved, the corpus cannot be read, git cannot be
+/// asked, the lock door refused); exit 1 when any pin is a TRUE LOSS.
 ///
-/// # Errors
-/// [`Fail`] — exit 2 on a bad invocation or a tool failure (the workspace cannot
-/// be resolved, the corpus cannot be read, git cannot be asked, the lock door
-/// refused); exit 1 when any pin is a TRUE LOSS.
+///
+///
 pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     let parsed = Repair::parse(args)?;
     let cwd = current_dir()?;
@@ -131,9 +131,9 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // the survey — which pins are even askable
-// ---------------------------------------------------------------------------
+//
+//
 
 /// One pin as this verb reads it: where it is declared, what it claims, and the
 /// file its blob is the blob OF.
@@ -143,9 +143,9 @@ struct PinSite {
     src_path: String,
     /// The row, verbatim — the ONLY thing repair ever rewrites is its `hash`.
     entry: lock::PinEntry,
-    /// The target's workspace-relative path WITH `.md` back on (R4's `object` is
-    /// the link spelling, which drops it — the same re-attachment
-    /// `check::layer0::ask_store` makes before asking git).
+    /// The targets workspace-relative path WITH `.md` back on (R4s `object` is the link spelling,
+    /// which drops it — the same re-attachment `check::layer0::ask_store` makes before asking git).
+    ///
     target: String,
 }
 
@@ -183,18 +183,18 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
             continue;
         }
         let Ok(Some(found)) = lock::find(doc) else {
-            // A refused lock is `check`'s finding to report, not this verb's to
-            // adopt: repair reads locks it can parse and stays silent about the
-            // ones that already have an owner saying so.
+            // A refused lock is `check`s finding to report, not this verbs to adopt: repair reads locks it
+            // can parse and stays silent about the ones that already have an owner saying so.
+            //
             continue;
         };
         out.pages += 1;
         for entry in found.lock.pins {
             out.scanned += 1;
-            // Jurisdiction on STRUCTURE, decided FIRST — the same ordering
-            // `check::layer0::objects_in` holds, and for the same reason: a
-            // behavioural skip would let a broken ambient store hide inside the
-            // exemption.
+            // Jurisdiction on STRUCTURE, decided FIRST — the same ordering `check::layer0::objects_in`
+            // holds, and for the same reason: a behavioural skip would let a broken ambient store hide
+            // inside the exemption.
+            //
             match addr::Addr::parse(&entry.object) {
                 Ok(addr) => {
                     if let Some(name) = addr.root() {
@@ -231,12 +231,12 @@ fn survey(docs: &BTreeMap<String, Document>, page: Option<&str>) -> Result<Surve
     Ok(out)
 }
 
-/// The pins that are LOST — **both planes dark**, which is the whole definition.
+/// The pins that are LOST — **both planes dark**, which is the whole definition. One batched
+/// `cat-file --batch-check` answers the retrieval plane for every candidate at once
+/// (`git::Repo::object_info`), and the claim plane is [`model::selector::classify_pin`] against
+/// the LIVE target. A pin that fails only one of the two is not this verbs business.
 ///
-/// One batched `cat-file --batch-check` answers the retrieval plane for every
-/// candidate at once (`git::Repo::object_info`), and the claim plane is
-/// [`model::selector::classify_pin`] against the LIVE target. A pin that fails
-/// only one of the two is not this verb's business.
+///
 fn lost_pins(
     repo: &git::Repo,
     docs: &BTreeMap<String, Document>,
@@ -269,17 +269,17 @@ fn lost_pins(
     Ok(lost)
 }
 
-/// The pin's colour against the LIVE target — [`model::selector::classify_pin`]
-/// itself, imported, never re-implemented (#43). The lock-row-to-selector
-/// projection is likewise the ONE definition `view::walk` colours through.
+/// The pins colour against the LIVE target — [`model::selector::classify_pin`] itself,
+/// imported, never re-implemented (43). The lock-row-to-selector projection is likewise the ONE
+/// definition `view::walk` colours through.
 fn live_color(docs: &BTreeMap<String, Document>, site: &PinSite) -> Color {
     let selector = view::walk::model_selector(&site.entry.object, &site.entry.selector);
     model::selector::classify_pin(&selector, &site.entry.fingerprint, docs.get(&site.target))
 }
 
-// ---------------------------------------------------------------------------
 // the walk — one `git log`, one `cat-file --batch`
-// ---------------------------------------------------------------------------
+//
+//
 
 /// What the history walk concluded about one lost pin.
 struct Outcome {
@@ -297,13 +297,13 @@ struct Recovered {
     oid: String,
 }
 
-/// The workspace's path prefix inside its repository (`""` when the workspace IS
-/// the top level).
+/// The workspaces path prefix inside its repository (`""` when the workspace IS the top level).
+/// `git log --name-status` prints paths from the REPOSITORY root while the corpus speaks
+/// workspace-relative ones. A vault that is a subdirectory of its repo would otherwise match
+/// nothing and every pin in it would read as a TRUE LOSS — a fabricated finding, which is the
+/// one answer this verb must never give.
 ///
-/// `git log --name-status` prints paths from the REPOSITORY root while the corpus
-/// speaks workspace-relative ones. A vault that is a subdirectory of its repo
-/// would otherwise match nothing and every pin in it would read as a TRUE LOSS —
-/// a fabricated finding, which is the one answer this verb must never give.
+///
 fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fail> {
     let top = repo.top_level().map_err(|e| {
         Fail::tool(format!(
@@ -322,12 +322,12 @@ fn repo_prefix(repo: &git::Repo, root: &fs::WorkspaceRoot) -> Result<String, Fai
     }
 }
 
-/// Walk the recorded history of every lost pin's target and decide each one.
+/// Walk the recorded history of every lost pins target and decide each one. **One `git log` and
+/// one `cat-file --batch` for the WHOLE run** — the law this unit is built to hold. The latest
+/// matching version wins: history is read oldest-first, so the last green answer is the most
+/// recent commit that carried the pinned content, which is the durable object a reader should
+/// be sent to.
 ///
-/// **One `git log` and one `cat-file --batch` for the WHOLE run** — the law this
-/// unit is built to hold. The latest matching version wins: history is read
-/// oldest-first, so the last green answer is the most recent commit that carried
-/// the pinned content, which is the durable object a reader should be sent to.
 fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outcome>, Fail> {
     if lost.is_empty() {
         return Ok(Vec::new());
@@ -391,11 +391,11 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
                 // the claim and is not evidence of its absence either.
                 continue;
             };
-            // **A plain `Document`, never a `CandidateDocument`** — these bytes
-            // are being READ, not landed. Minting a candidate here would put a
-            // history reader into the U12 byte-landing door census, which is a
-            // census of sites that write; the instrument caught exactly that and
-            // was right to. The build is the one the history tier uses.
+            // **A plain `Document`, never a `CandidateDocument`** — these bytes are being READ, not
+            // landed. Minting a candidate here would put a history reader into the U12 byte-landing door
+            // census, which is a census of sites that write; the instrument caught exactly that and was
+            // right to. The build is the one the history tier uses.
+            //
             let doc = model::build(text.to_owned(), syntax::parse(text));
             if matches!(
                 model::selector::classify_pin(&selector, &site.entry.fingerprint, Some(&doc)),
@@ -427,20 +427,20 @@ fn recover(repo: &git::Repo, lost: &[PinSite], prefix: &str) -> Result<Vec<Outco
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
 // the write — through the EXISTING lock door
-// ---------------------------------------------------------------------------
+//
+//
 
-/// Land every recovery, one guarded lock write per DECLARING page.
+/// Land every recovery, one guarded lock write per DECLARING page. The write goes through
+/// `wire_serve::write::lock_write` — the existing byte- landing door, with its D9 flock, world
+/// guard, write-what-you-read CAS and artifact guard inherited whole.
 ///
-/// The write goes through `wire_serve::write::lock_write` — the existing byte-
-/// landing door, with its D9 flock, world guard, write-what-you-read CAS and
-/// artifact guard inherited whole. This verb mints no candidate of its own, so
-/// the U12 door census does not move.
 ///
-/// **The forgery invariant is enforced HERE, structurally:** the entry written
-/// back is the entry that was read with ONE field replaced, so there is no path
-/// through this function that can alter a claim.
+///
+///
+///
+///
+///
 fn apply(
     root: &fs::WorkspaceRoot,
     docs: &BTreeMap<String, Document>,
@@ -511,14 +511,14 @@ fn apply(
     Ok(written)
 }
 
-// ---------------------------------------------------------------------------
 // the faces
-// ---------------------------------------------------------------------------
+//
+//
 
-/// The progress plane: counted lines on **stderr**, so `--json` on stdout stays
-/// machine-clean. A history walk over a corpus is the heaviest read this CLI
-/// performs, and a heavy op that reports nothing until it finishes is
-/// indistinguishable from one that has hung.
+/// The progress plane: counted lines on **stderr**, so `--json` on stdout stays machine-clean.
+/// A history walk over a corpus is the heaviest read this CLI performs, and a heavy op that
+/// reports nothing until it finishes is indistinguishable from one that has hung.
+///
 fn progress(line: &str) {
     eprintln!("repair: {line}");
 }
@@ -609,9 +609,9 @@ fn emit(
     }
 }
 
-// ---------------------------------------------------------------------------
 // invocation
-// ---------------------------------------------------------------------------
+//
+//
 
 #[derive(Debug)]
 struct Repair {
