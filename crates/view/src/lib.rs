@@ -39,13 +39,6 @@ pub use read_face::{
 };
 pub use schema::{SCHEMA_SQL, SCHEMA_VERSION, create_schema};
 
-/// The fingerprint domain version the ephemeral build folds under. `0` ⇒ the
-/// `b3:` token space (the current corpus domain); `model::merkle_root` prefixes
-/// the hex accordingly. A daemon `publish` instead carries the daemon's own
-/// authoritative `at_fingerprint`, so this constant only serves the daemonless
-/// ephemeral stamp.
-const FINGERPRINT_VERSION: u32 = 0;
-
 /// The stamp a daemon `publish` writes into the singleton `_meridian_view` row.
 /// The daemon is the sole persistent writer, so it carries the authoritative
 /// `as_of_fingerprint` (its warm `at_fingerprint`), the workspace path, and the
@@ -115,21 +108,29 @@ impl From<std::io::Error> for ViewError {
 
 /// Build an ephemeral `:memory:` view over `docs` for one query (daemonless
 /// `mrd`, OD6). Creates the schema, projects the corpus, and stamps the
-/// singleton `_meridian_view` with `built_epoch`/`built_seq` **both NULL**. The
-/// `as_of_fingerprint` is derived from `docs` via `model::merkle_root`, so the
-/// stamp reflects exactly the projected content. **Writes nothing to disk.**
+/// singleton `_meridian_view` with `built_epoch`/`built_seq` **both NULL**.
+/// **Writes nothing to disk.**
+///
+/// `as_of` is the caller's authoritative corpus fold for exactly these `docs` —
+/// the `model::MerkleRoot` token `fs::domain_snapshot` returned beside the bytes
+/// this projection was built from. The view crate does not refold it: a refold
+/// here is blind to the domain (its filter AND its `version` prefix, §12.3), so
+/// it stamps a `b3:` token in a `b3b:` workspace and a freshness comparison
+/// against the live fold then reports STALE over identical content (G14).
 ///
 /// # Errors
 /// Propagates any `DuckDB` error from opening the in-memory database, creating the
 /// schema, or inserting the projected rows.
-pub fn build_memory(docs: &BTreeMap<String, Document>) -> Result<Connection, ViewError> {
+pub fn build_memory(
+    docs: &BTreeMap<String, Document>,
+    as_of: &str,
+) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
     project(&conn, docs, &model::RootedCorpus::ambient(docs), None)?;
-    let as_of = ephemeral_fingerprint(docs);
     write_stamp(
         &conn,
-        &as_of,
+        as_of,
         "",
         None,
         None,
@@ -158,14 +159,14 @@ pub fn build_memory_rooted(
     docs: &BTreeMap<String, Document>,
     corpus: &model::RootedCorpus<'_>,
     mounts: &addr::MountSet,
+    as_of: &str,
 ) -> Result<Connection, ViewError> {
     let conn = Connection::open_in_memory()?;
     create_schema(&conn)?;
     project(&conn, docs, corpus, Some(mounts))?;
-    let as_of = ephemeral_fingerprint(docs);
     write_stamp(
         &conn,
-        &as_of,
+        as_of,
         "",
         None,
         None,
@@ -796,16 +797,6 @@ fn write_stamp(
     Ok(())
 }
 
-/// The ephemeral build's `as_of` fingerprint — `merkle_root` over the projected
-/// `docs` (their raw bytes), a self-consistent content hash in the `b3:` domain.
-fn ephemeral_fingerprint(docs: &BTreeMap<String, Document>) -> String {
-    let files: Vec<(&str, &[u8])> = docs
-        .iter()
-        .map(|(path, doc)| (path.as_str(), doc.raw.as_bytes()))
-        .collect();
-    model::merkle_root(&files, FINGERPRINT_VERSION).0
-}
-
 // ---------------------------------------------------------------------------
 // filesystem helpers (publish side)
 // ---------------------------------------------------------------------------
@@ -893,10 +884,36 @@ mod tests {
     #[test]
     fn build_memory_over_empty_corpus_stamps_singleton() {
         let docs = BTreeMap::new();
-        let conn = build_memory(&docs).expect("build");
+        let conn = build_memory(&docs, "b3:empty").expect("build");
         let n: i64 = conn
             .query_row("SELECT doc_count FROM _meridian_view", [], |r| r.get(0))
             .expect("stamp");
         assert_eq!(n, 0);
+    }
+
+    /// The ephemeral stamp is the CALLER's fold, verbatim — not a refold this
+    /// crate computes. A refold cannot see the workspace domain's `version`
+    /// prefix (§12.3), so in a `b3b:` workspace it stamps `b3:` and the freshness
+    /// comparison reports STALE over identical content (G14).
+    #[test]
+    fn build_memory_stamps_the_callers_fold_verbatim() {
+        let mut docs = BTreeMap::new();
+        docs.insert(
+            "a.md".to_owned(),
+            model::build("# A\n".to_owned(), syntax::parse("# A\n")),
+        );
+        // A version-2 token: what `fs::domain_snapshot` hands over in a workspace
+        // whose `mdfs_config.yaml` declares `version: 2`.
+        let files = [("a.md", "# A\n".as_bytes())];
+        let as_of = model::merkle_root(&files, 2).0;
+        assert!(as_of.starts_with("b3b:"), "fixture is a version-2 fold");
+
+        let conn = build_memory(&docs, &as_of).expect("build");
+        let stamped: String = conn
+            .query_row("SELECT as_of_fingerprint FROM _meridian_view", [], |r| {
+                r.get(0)
+            })
+            .expect("stamp");
+        assert_eq!(stamped, as_of, "the stamp is the fold it was handed");
     }
 }

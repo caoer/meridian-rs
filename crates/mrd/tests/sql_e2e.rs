@@ -294,6 +294,125 @@ fn q5_stale_surfaces_after_mutation_both_fingerprints_travel() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// G14 — a versioned hash domain: the ephemeral stamp and the daemon stamp are
+// the SAME fold, so identical state gets the same verdict on both paths
+// ---------------------------------------------------------------------------
+
+/// **The ephemeral build stamps the workspace's own fold, prefix included.**
+///
+/// `mdfs_config.yaml` declares `version: 2`, so every honest fold of this corpus
+/// is a `b3b:` token (§12.3). The ephemeral build used to REFOLD the projected
+/// docs under a hardcoded version 0 — same hex, `b3:` prefix — so the
+/// post-result comparison against the live `b3b:` fold reported STALE over a
+/// correct, current answer (G14, dogfood pass 3).
+///
+/// The two arms run over the SAME unmutated state, ephemeral first (nothing is
+/// published yet, so the daemon-absent degrade lands on the ephemeral build).
+#[test]
+fn g14_versioned_domain_ephemeral_and_daemon_agree_on_identical_state() {
+    let sb = sandbox();
+    let (ws, _canonical) = write_anchored_ws(
+        &sb,
+        "g14",
+        &[
+            ("mdfs_config.yaml", "version: 2\n"),
+            ("plan.md", "---\ntype: task\nstatus: todo\n---\n# Plan\n"),
+        ],
+    );
+
+    // Arm A — forced ephemeral: no reachable daemon, no published view.
+    let out = sb.run_no_daemon(&ws, &["sql", "--json", "--verify", "SELECT path FROM doc"]);
+    assert!(out.status.success(), "ephemeral sql: {}", stderr(&out));
+    let ephemeral = json(&out);
+    assert_eq!(
+        ephemeral["state"], "FRESH_AT_SAMPLE",
+        "a correct current ephemeral answer is FRESH, never STALE: {ephemeral}"
+    );
+    assert_eq!(ephemeral["stale"], Value::Bool(false));
+    let ephemeral_as_of = ephemeral["as_of_fingerprint"].as_str().unwrap().to_owned();
+    assert!(
+        ephemeral_as_of.starts_with("b3b:"),
+        "the stamp carries the domain's version-2 prefix: {ephemeral_as_of}"
+    );
+    assert_eq!(
+        ephemeral["rows"],
+        serde_json::json!([["plan.md"]]),
+        "the answer itself is correct"
+    );
+
+    // Arm B — a warm daemon over the same unmutated state: same verdict, and the
+    // SAME fingerprint. Two paths that fold the same corpus cannot disagree.
+    let _daemon = start_daemon(&sb);
+    let out = sb.run_with_daemon(&ws, &["sql", "--json", "--verify", "SELECT path FROM doc"]);
+    assert!(out.status.success(), "daemon sql: {}", stderr(&out));
+    let warm = json(&out);
+    assert_eq!(
+        warm["state"], "FRESH_AT_SAMPLE",
+        "the warm arm is fresh on the same state: {warm}"
+    );
+    assert_eq!(
+        warm["as_of_fingerprint"].as_str().unwrap(),
+        ephemeral_as_of,
+        "identical state ⇒ identical stamp on both paths"
+    );
+}
+
+/// **The fix does not trade a false STALE for a false FRESH.** In the same
+/// version-2 domain, a corpus that really moved still reports STALE — and so
+/// does a DOMAIN that moved while every markdown byte stayed put (`version: 2`
+/// → `3`), which is the case a body-only comparison would wrongly call fresh.
+#[test]
+fn g14_versioned_domain_still_reports_a_genuine_stale() {
+    let sb = sandbox();
+    let (ws, canonical) = write_anchored_ws(
+        &sb,
+        "g14-stale",
+        &[("mdfs_config.yaml", "version: 2\n"), ("a.md", "# A\n")],
+    );
+    let published = publish_view(&sb, &canonical);
+    let published_as_of = read_stamp_as_of(&published);
+    assert!(
+        published_as_of.starts_with("b3b:"),
+        "the published stamp is the version-2 fold: {published_as_of}"
+    );
+
+    // 1. The bytes moved.
+    std::fs::write(ws.join("a.md"), "# A changed\n").unwrap();
+    let out = sb.run_no_daemon(
+        &ws,
+        &["sql", "--json", "--verify", "SELECT count(*) AS n FROM doc"],
+    );
+    assert!(out.status.success(), "mutated sql: {}", stderr(&out));
+    let doc = json(&out);
+    assert_eq!(
+        doc["state"], "STALE",
+        "a mutated corpus is still STALE under a versioned domain: {doc}"
+    );
+    assert_eq!(doc["stale"], Value::Bool(true));
+
+    // 2. The DOMAIN moved, the bytes did not: restore the byte, bump the domain
+    //    version. The hex repeats; the prefix does not — `b3b:` vs `b3c:` — and
+    //    a cursor from the old world is exactly what §12.3 refuses to call fresh.
+    std::fs::write(ws.join("a.md"), "# A\n").unwrap();
+    std::fs::write(ws.join("mdfs_config.yaml"), "version: 3\n").unwrap();
+    let out = sb.run_no_daemon(
+        &ws,
+        &["sql", "--json", "--verify", "SELECT count(*) AS n FROM doc"],
+    );
+    assert!(out.status.success(), "rebumped sql: {}", stderr(&out));
+    let doc = json(&out);
+    assert_eq!(
+        doc["state"], "STALE",
+        "a domain-version bump is STALE even with identical bytes: {doc}"
+    );
+    assert_eq!(
+        doc["as_of_fingerprint"].as_str().unwrap(),
+        published_as_of,
+        "the published `b3b:` stamp still travels"
+    );
+}
+
 /// Read `_meridian_view.as_of_fingerprint` from a published file (`READ_ONLY`).
 fn read_stamp_as_of(path: &Path) -> String {
     let conn = duckdb::Connection::open_in_memory().unwrap();

@@ -37,6 +37,17 @@ fn fixture() -> (BTreeMap<String, Document>, BTreeMap<String, Document>) {
     (ambient, sessions)
 }
 
+/// The corpus fold an ephemeral build is stamped with — in production the
+/// caller's domain fold (`fs::domain_snapshot`); these fixtures declare no
+/// domain, so version 0 is that domain.
+fn fold(docs: &BTreeMap<String, Document>) -> String {
+    let files: Vec<(&str, &[u8])> = docs
+        .iter()
+        .map(|(path, d)| (path.as_str(), d.raw.as_bytes()))
+        .collect();
+    model::merkle_root(&files, 0).0
+}
+
 fn one_text(conn: &duckdb::Connection, sql: &str) -> Vec<String> {
     let mut stmt = conn.prepare(sql).expect("prepare");
     stmt.query_map([], |r| r.get::<_, Option<String>>(0))
@@ -57,7 +68,8 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
         &sessions,
     );
     let mounts = addr::MountSet::new([root]);
-    let conn = view::build_memory_rooted(&ambient, &corpus, &mounts).expect("view");
+    let conn =
+        view::build_memory_rooted(&ambient, &corpus, &mounts, &fold(&ambient)).expect("view");
 
     // The cross-root edge resolved, into its own columns.
     assert_eq!(
@@ -105,7 +117,7 @@ fn a_resolved_cross_root_edge_is_not_dangling_and_keeps_dest_path_free() {
 #[test]
 fn the_ambient_projection_is_unchanged_by_the_cross_root_columns() {
     let (ambient, _) = fixture();
-    let conn = view::build_memory(&ambient).expect("view");
+    let conn = view::build_memory(&ambient, &fold(&ambient)).expect("view");
 
     assert_eq!(
         one_text(
@@ -130,7 +142,7 @@ fn the_ambient_projection_is_unchanged_by_the_cross_root_columns() {
 #[test]
 fn the_schema_refuses_an_inconsistent_destination() {
     let docs = BTreeMap::new();
-    let conn = view::build_memory(&docs).expect("view");
+    let conn = view::build_memory(&docs, &fold(&docs)).expect("view");
     conn.execute_batch("INSERT INTO doc VALUES ('claim.md','r',1,10);")
         .expect("doc row");
 
