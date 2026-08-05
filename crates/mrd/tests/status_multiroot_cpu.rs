@@ -110,4 +110,9 @@ fn status_cpu_under_budget_with_a_populated_mount_table() {
         cpu.as_millis(),
         CPU_BUDGET.as_millis(),
     );
+
+    // Perf-lane hygiene: any auto-spawned resident dies with the sandbox, not
+    // after it. `status` itself is pure-local today; the Drop + explicit call
+    // still close the class if a future probe starts a daemon.
+    fixture::teardown_daemon(&sb);
 }

@@ -80,3 +80,56 @@ jobs:
       # half (no post-step leak file) in run/tests/exec.rs.
       - name: exec background-reap wall-time gate (5s, pinned runner)
         run: cargo test -p run --features perf-walltime --test exec_walltime -- --nocapture
+      # Harness teardown control: auto-spawn → pidfile reap → assert dead, two
+      # cycles, census of this binary stays flat. The status/walk/check targets
+      # above are pure-local and cannot prove the class; this one can. The
+      # step after this reaps any residual by exact binary path (belt).
+      - name: perf daemon teardown control (two-cycle census)
+        run: cargo test -p mrd --features perf-walltime --test perf_daemon_teardown -- --nocapture
+      # Belt: reap any residual resident whose argv is exactly the mrd binary
+      # this job built. Field-exact shape only — never pgrep -f (matches agent
+      # prompts; misses live daemons). Census is the proof, not kill exits.
+      # Reference: results/reap/reap-daemons.sh + dogfood reap-mine.sh.
+      - name: reap residual perf-lane daemons (census-proved)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${CARGO_TARGET_DIR:-target}"
+          MRD="${TARGET}/debug/mrd"
+          if [ ! -x "$MRD" ]; then
+            echo "no debug mrd at $MRD — nothing of this job to reap"
+            exit 0
+          fi
+          # Resolve to the same path ps will show (Cargo may write through a
+          # symlink; exact string match needs the form the kernel records).
+          MRD="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$MRD")"
+          census_mine() {
+            ps -eo pid=,args= | while IFS= read -r line; do
+              line="${line#"${line%%[![:space:]]*}"}"
+              pid="${line%%[[:space:]]*}"
+              rest="${line#*[[:space:]]}"
+              case "$rest" in
+                "$MRD daemon"|"$MRD daemon "*) printf '%s\n' "$pid" ;;
+              esac
+            done
+          }
+          before=$(census_mine | wc -l | tr -d ' ')
+          echo "reap: binary $MRD"
+          echo "reap: mine before $before"
+          for p in $(census_mine); do
+            kill -TERM "$p" 2>/dev/null || true
+            sleep 1
+            if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; sleep 1; fi
+            if kill -0 "$p" 2>/dev/null; then
+              echo "reap: FAILED to reap $p" >&2
+              exit 1
+            fi
+            echo "reap: reaped $p"
+          done
+          after=$(census_mine | wc -l | tr -d ' ')
+          echo "reap: mine after $after"
+          if [ "$after" -ne 0 ]; then
+            echo "reap: FAILED — $after of this binary's daemons survived" >&2
+            exit 1
+          fi
+          echo "reap: verified — every daemon from this binary is gone"

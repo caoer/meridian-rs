@@ -119,6 +119,8 @@ fn walk_cpu_under_budget_with_a_populated_mount_table() {
         CPU_BUDGET.as_millis(),
         wall.as_millis(),
     );
+    // Measurement done — reap any resident before the sandbox dies (perf hygiene).
+    fixture::teardown_daemon(&sb);
     assert!(
         cpu < CPU_BUDGET,
         "walk must build only the mount roots its own lock addresses name. \

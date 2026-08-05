@@ -92,4 +92,7 @@ fn check_cpu_under_budget_with_a_populated_mount_table() {
         cpu.as_millis(),
         CPU_BUDGET.as_millis(),
     );
+
+    // Perf-lane hygiene: reap any resident before the sandbox dies.
+    fixture::teardown_daemon(&sb);
 }
