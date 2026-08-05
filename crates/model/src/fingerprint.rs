@@ -171,8 +171,9 @@ pub fn parse_fingerprint(s: &str) -> Option<FingerprintParts> {
 
 /// A content-class verification outcome (spec §2.4). Four-way on purpose:
 /// `Unverifiable` (recognized token, codec/hash-fn this build does not
-/// implement — renders grey, the `superseded-algo` family) is NOT `Malformed`
-/// (not a token) and neither is `Red` (verified, drifted).
+/// implement — grey `unverifiable-fingerprint`, the fingerprint-plane home of
+/// the law that was `superseded-algo`) is NOT `Malformed` (not a token) and
+/// neither is `Red` (verified, drifted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentVerdict {
     /// Recomputed fingerprint equals the pinned token.
