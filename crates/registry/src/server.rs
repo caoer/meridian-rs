@@ -16,7 +16,7 @@
 //! state file — the single-writer invariant the atomic state write assumes.
 
 use std::collections::BTreeMap;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
-    DEFAULT_REAP_INTERVAL, now_secs,
+    DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, now_secs,
 };
 
 /// How long the accept loop parks between non-blocking `accept` polls. Short
@@ -86,6 +86,20 @@ pub struct Config {
     /// idle exit — which is what an in-process test server wants, since its
     /// lifetime is the test's, not a client's.
     pub idle_exit: Option<Duration>,
+    /// How long a push-plane write may block before the subscriber is dropped
+    /// (see [`crate::DEFAULT_PUSH_WRITE_TIMEOUT`]).
+    pub push_write_timeout: Duration,
+    /// R1: the build sha this daemon echoes as `hello.identity.build` on a v3
+    /// session, so a client can tell a resident daemon from the binary it just
+    /// deployed. `None` publishes NO identity — the honest answer for a host
+    /// that was given none, and distinct from `Some("unknown")`, which
+    /// publishes an identity the build could not name.
+    ///
+    /// It is carried rather than read here: `MRD_BUILD_SHA` is baked into the
+    /// `mrd` crate's compilation environment alone, so this crate cannot see
+    /// it. `mrd daemon` supplies it
+    /// (`docs/wire-contract-v3-identity-amendment.md`).
+    pub build_sha: Option<String>,
 }
 
 impl Config {
@@ -104,6 +118,10 @@ impl Config {
             prewarm_interval: DEFAULT_PREWARM_INTERVAL,
             prewarm_quiet_max: DEFAULT_PREWARM_QUIET_MAX,
             idle_exit: Some(DEFAULT_IDLE_EXIT),
+            push_write_timeout: DEFAULT_PUSH_WRITE_TIMEOUT,
+            // The layout cannot know the binary that will run it; the host
+            // process supplies its own sha.
+            build_sha: None,
         }
     }
 
@@ -196,7 +214,13 @@ impl RunningServer {
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let exit_requested = Arc::new(AtomicBool::new(false));
-        let accept = spawn_accept(listener, registry.clone(), shutdown.clone());
+        let accept = spawn_accept(
+            listener,
+            registry.clone(),
+            shutdown.clone(),
+            config.push_write_timeout,
+            config.build_sha.clone().map(Arc::from),
+        );
         let reaper = spawn_reaper(
             registry.clone(),
             shutdown.clone(),
@@ -303,42 +327,79 @@ fn spawn_accept(
     listener: UnixListener,
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
+    push_write_timeout: Duration,
+    build_sha: Option<Arc<str>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    // The accepted stream inherits the listener's non-blocking
-                    // flag on BSD/macOS; per-connection I/O must block on reads,
-                    // so reset it explicitly.
-                    if let Err(e) = stream.set_nonblocking(false) {
-                        eprintln!("registry: cannot set connection blocking ({e})");
-                        continue;
+        let dispatch = |stream: UnixStream| {
+            let registry = registry.clone();
+            let shutdown = shutdown.clone();
+            let build_sha = build_sha.clone();
+            thread::Builder::new()
+                .spawn(move || {
+                    if let Err(e) = serve_conn(
+                        &stream,
+                        &registry,
+                        &shutdown,
+                        push_write_timeout,
+                        build_sha.as_deref(),
+                    ) {
+                        eprintln!("registry: connection error ({e})");
                     }
-                    let registry = registry.clone();
-                    let shutdown = shutdown.clone();
-                    thread::spawn(move || {
-                        if let Err(e) = serve_conn(&stream, &registry, &shutdown) {
-                            eprintln!("registry: connection error ({e})");
-                        }
-                    });
+                })
+                .map(drop)
+        };
+        accept_loop(&listener, &shutdown, dispatch);
+    })
+}
+
+/// The accept loop proper, generic over how an accepted connection is
+/// dispatched.
+///
+/// **Fault containment (R2/S2):** a dispatch failure — thread exhaustion is the
+/// realistic one — drops that ONE connection and keeps accepting. `thread::spawn`
+/// panics on a failed spawn, and that panic would unwind this loop, leaving the
+/// daemon holding the listener and the singleton flock while serving nothing:
+/// no successor can bind, and clients wait out the 15-minute idle-exit. So the
+/// spawn is fallible (`thread::Builder`) and its error is a `continue`. The
+/// dropped client sees EOF and redials, by which time the transient is usually
+/// over.
+fn accept_loop(
+    listener: &UnixListener,
+    shutdown: &AtomicBool,
+    dispatch: impl Fn(UnixStream) -> io::Result<()>,
+) {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // The accepted stream inherits the listener's non-blocking
+                // flag on BSD/macOS; per-connection I/O must block on reads,
+                // so reset it explicitly.
+                if let Err(e) = stream.set_nonblocking(false) {
+                    eprintln!("registry: cannot set connection blocking ({e})");
+                    continue;
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    if shutdown.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    thread::sleep(ACCEPT_POLL);
-                }
-                Err(e) => {
-                    if shutdown.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    eprintln!("registry: accept error ({e})");
-                    thread::sleep(ACCEPT_POLL);
+                if let Err(e) = dispatch(stream) {
+                    eprintln!(
+                        "registry: cannot spawn connection thread ({e}); dropping this connection — the daemon keeps accepting"
+                    );
                 }
             }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread::sleep(ACCEPT_POLL);
+            }
+            Err(e) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+                eprintln!("registry: accept error ({e})");
+                thread::sleep(ACCEPT_POLL);
+            }
         }
-    })
+    }
 }
 
 /// Spawn the reaper: wake every [`REAP_TICK`], and once `reap_interval` has
@@ -369,6 +430,19 @@ fn spawn_reaper(
             // loop owns the teardown, because shutting the threads down from
             // inside one of them would join this thread to itself.
             if let Some(horizon) = idle_exit {
+                // G11 liveness (R2/S3): an armed `sub` connection counts toward
+                // the quiet clock. A subscribed daemon has a live consumer that
+                // sends no requests, so the request clock alone would exit out
+                // from under it. Holding the clock open (rather than only
+                // skipping the check) is what starts the full horizon over when
+                // the last subscriber leaves. Mortality is preserved from the
+                // OTHER side: the push plane drops a peer that closed (EOF) or
+                // stopped draining (write deadline), and the client owns a
+                // 30-minute drain TTL (D3) — never a server-side sub TTL.
+                if registry.has_subscribers() {
+                    registry.note_liveness();
+                    continue;
+                }
                 let quiet_for = now_secs().saturating_sub(registry.last_request_secs());
                 if quiet_for >= horizon.as_secs() {
                     eprintln!(
@@ -439,7 +513,13 @@ fn next_prewarm_delay(
 ///   internal, absent from wire `caps`;
 /// - **`hello`** — contract rev, pin, warm, BIND connection (§4; subsumes deleted `attach`);
 /// - **wire ops** — frozen contract from the bound workspace's warm engine.
-fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -> io::Result<()> {
+fn serve_conn(
+    stream: &UnixStream,
+    registry: &Registry,
+    shutdown: &AtomicBool,
+    push_write_timeout: Duration,
+    build_sha: Option<&str>,
+) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream.try_clone()?;
     // Bound workspace (canonical), set by `hello`. Per-connection.
@@ -455,7 +535,14 @@ fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -
         registry.note_request();
         // Set by an ACCEPTED `sub` only — see `push_loop`.
         let mut armed: Option<u64> = None;
-        let out = handle_line(registry, &mut attached, &mut rev, &mut armed, &line);
+        let out = handle_line(
+            registry,
+            &mut attached,
+            &mut rev,
+            &mut armed,
+            &line,
+            build_sha,
+        );
         writer.write_all(out.as_bytes())?;
         writer.flush()?;
         if let Some(from_seq) = armed {
@@ -465,7 +552,15 @@ fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -
                 .as_deref()
                 .expect("an accepted sub proves a bound workspace")
                 .to_path_buf();
-            return push_loop(registry, &ws, &mut writer, rev, from_seq, shutdown);
+            return push_loop(
+                registry,
+                &ws,
+                &mut writer,
+                rev,
+                from_seq,
+                shutdown,
+                push_write_timeout,
+            );
         }
     }
     Ok(())
@@ -483,6 +578,13 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 /// Ends on client disconnect (broken pipe is normal), daemon shutdown, or drop.
 /// [`SubGuard`](crate::ring::SubGuard) keeps the reaper off this workspace for
 /// the lifetime and releases on every exit path.
+///
+/// Two deadlines keep the subscription mortal, because an armed sub now holds
+/// the idle-exit clock open (R2/S3) and this loop parks an OS thread:
+/// - **peer closed** — the probe read (§[`peer_closed`]) sees EOF within one
+///   [`PUSH_TICK`], the only death signal a QUIET workspace ever produces;
+/// - **peer wedged** — `push_write_timeout` bounds a blocked write once the
+///   socket buffers fill, so a subscriber that stopped draining is dropped.
 fn push_loop(
     registry: &Registry,
     ws: &Path,
@@ -490,10 +592,19 @@ fn push_loop(
     rev: Rev,
     from_seq: u64,
     shutdown: &AtomicBool,
+    push_write_timeout: Duration,
 ) -> io::Result<()> {
     let ring = registry.ring(ws);
     // Subscribe before first detect — otherwise a reap can leave a silent hole.
     let _subscribed = ring.subscribe();
+    // A wedged consumer must not park this thread forever. A timed-out write may
+    // leave a partial frame on the wire; the connection is dropped immediately
+    // after, so the client reads a truncated line then EOF, redials, and
+    // resyncs by root (§7.1) — the same recovery a daemon restart needs.
+    writer.set_write_timeout(Some(push_write_timeout))?;
+    let mut probe = writer.try_clone()?;
+    // The probe read parks for the tick, so it replaces the sleep.
+    probe.set_read_timeout(Some(PUSH_TICK))?;
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut delivered = from_seq;
     while !shutdown.load(Ordering::SeqCst) {
@@ -506,9 +617,34 @@ fn push_loop(
             delivered = frame.delta.seq;
         }
         writer.flush()?;
-        thread::sleep(PUSH_TICK);
+        if peer_closed(&mut probe) {
+            return Ok(());
+        }
     }
     Ok(())
+}
+
+/// Has the push peer gone away? Parks up to the socket's read timeout, so this
+/// is also the loop's tick.
+///
+/// The push plane is one-way by construction (`serve_conn` never returns to the
+/// request loop), so a readable zero is EOF, not data — the signal a subscriber
+/// whose owner process died produces even when the workspace is quiet and no
+/// write is ever attempted. Bytes are a client that spoke on a channel it does
+/// not own: not a death signal, so the sub survives and only the tick is paid.
+fn peer_closed(probe: &mut UnixStream) -> bool {
+    let mut byte = [0u8; 1];
+    match probe.read(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => {
+            thread::sleep(PUSH_TICK);
+            false
+        }
+        Err(e) => !matches!(
+            e.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+        ),
+    }
 }
 
 /// Route one frame by `op` and render the `\n`-terminated response line.
@@ -522,6 +658,7 @@ fn handle_line(
     rev: &mut Rev,
     armed: &mut Option<u64>,
     line: &str,
+    build_sha: Option<&str>,
 ) -> String {
     let value: Value = match serde_json::from_str(line) {
         Ok(value) => value,
@@ -549,7 +686,7 @@ fn handle_line(
         }
         // `hello` negotiates rev; response shaped for it. No U7 duration
         // (measure point is `dispatch_read` alone).
-        Some("hello") => wire_line(&hello(registry, attached, rev, &obj), *rev, None),
+        Some("hello") => wire_line(&hello(registry, attached, rev, &obj, build_sha), *rev, None),
         _ => {
             // v3: re-key to v2 form for the strict decoder. v2 spelling / v2
             // connection pass through untouched.
@@ -661,6 +798,7 @@ fn hello(
     attached: &mut Option<PathBuf>,
     rev: &mut Rev,
     obj: &Map<String, Value>,
+    build_sha: Option<&str>,
 ) -> wire::Response {
     let id = obj.get("id").and_then(Value::as_u64);
     let body = match wire_serve::decode::decode(obj, *rev) {
@@ -671,7 +809,7 @@ fn hello(
         }) => {
             // Negotiate rev from decoded contract. Failed decode stays v2.
             *rev = Rev::from_contract(contract.as_deref());
-            hello_body(registry, attached, workspace)
+            hello_body(registry, attached, workspace, *rev, build_sha)
         }
         // Only `hello` routes here; any other decoded op is a routing break.
         Ok(_) => Err(Box::new(ErrorBody::new(ErrorCode::Internal))),
@@ -701,6 +839,8 @@ fn hello_body(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
     workspace: Option<String>,
+    rev: Rev,
+    build_sha: Option<&str>,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     let (root, storage, bound) = match workspace {
         None => (None, None, None),
@@ -737,6 +877,17 @@ fn hello_body(
         root,
         storage,
         workspace: bound,
+        // R1: v3-only, and only when this daemon was given a sha. A v2 session
+        // is the frozen path and never grows the key; a daemon with no
+        // configured sha publishes no identity at all, which is a different
+        // fact from publishing `unknown`
+        // (`docs/wire-contract-v3-identity-amendment.md`).
+        identity: match (rev, build_sha) {
+            (Rev::V3, Some(build)) => Some(wire::Identity {
+                build: build.to_string(),
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -1091,6 +1242,63 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     let mut err = ErrorBody::new(ErrorCode::IoError);
     err.cause = Some(e.to_string());
     Box::new(err)
+}
+
+/// R2/S2 accept-loop fault containment, driven at the dispatch seam: a real
+/// spawn failure (thread exhaustion) cannot be provoked in-process without
+/// taking the whole test binary down with it.
+#[cfg(test)]
+mod accept_containment_tests {
+    use super::accept_loop;
+    use std::io;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    /// A dispatch that always fails must not end the loop: the daemon holds the
+    /// listener AND the singleton flock, so an accept loop that unwinds serves
+    /// nothing and blocks every successor until idle-exit (15 min).
+    ///
+    /// *Mutation:* make the dispatch error a panic (which is what `thread::spawn`
+    /// does on a failed spawn) — the second connection is then never accepted.
+    #[test]
+    fn a_dispatch_failure_drops_one_connection_and_keeps_accepting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("accept.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let seen = Arc::new(AtomicUsize::new(0));
+        let loop_shutdown = shutdown.clone();
+        let loop_seen = seen.clone();
+        let accept = thread::spawn(move || {
+            accept_loop(&listener, &loop_shutdown, |_stream: UnixStream| {
+                loop_seen.fetch_add(1, Ordering::SeqCst);
+                Err(io::Error::other("cannot spawn connection thread"))
+            });
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for n in 1..=3 {
+            UnixStream::connect(&socket)
+                .unwrap_or_else(|e| panic!("connection {n} is accepted after {} failures: {e}", n - 1));
+            while seen.load(Ordering::SeqCst) < n && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(
+                seen.load(Ordering::SeqCst),
+                n,
+                "the loop reached dispatch for connection {n} — a failed dispatch \
+                 contains to that one connection"
+            );
+        }
+
+        shutdown.store(true, Ordering::SeqCst);
+        accept.join().expect("the accept loop survived every dispatch failure");
+    }
 }
 
 /// G11 quiet-backoff policy, pinned in isolation.

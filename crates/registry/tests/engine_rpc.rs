@@ -34,6 +34,11 @@ fn test_config(tmp: &TempDir) -> Config {
         // No idle exit: this server's lifetime is the test's, and a daemon that
         // reaped itself mid-assertion would fail as a flake, not a finding.
         idle_exit: None,
+        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
+        // No build identity configured: this fixture is not testing the hello
+        // identity field, and an absent sha is the honest state for a server
+        // started from a test harness rather than a deployed binary.
+        build_sha: None,
     }
 }
 

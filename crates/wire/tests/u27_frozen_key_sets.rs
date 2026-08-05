@@ -107,17 +107,20 @@ fn hpath_segment_key_set_is_frozen() {
 // §3.2 hello
 // ---------------------------------------------------------------------------
 
-/// Frozen §3.2 prints `{proto, server, caps, root}`. The type admits two more:
-/// `storage` and `workspace`, the resident-daemon binding facts, declared in
-/// the type's own doc as optional additive fields under the §3.2 evolution law
-/// and populated by the daemon host only (the sidecar emits neither — see the
-/// live half).
+/// Frozen §3.2 prints `{proto, server, caps, root}`. The type admits three
+/// more: `storage` and `workspace`, the resident-daemon binding facts, declared
+/// in the type's own doc as optional additive fields under the §3.2 evolution
+/// law and populated by the daemon host only (the sidecar emits neither — see
+/// the live half); and `identity`, the v3-only build identity.
 ///
-/// **U27 finding 3:** neither field is declared in any `docs/` amendment, so
-/// their standing on a v2 handshake rests on a code comment. Reported, not
-/// fixed here.
+/// **U27 finding 3:** neither binding field is declared in any `docs/`
+/// amendment, so their standing on a v2 handshake rests on a code comment.
+/// Reported, not fixed here. `identity` does not share that gap — it is
+/// declared in `docs/wire-contract-v3-identity-amendment.md`, and it never
+/// appears on a v2 handshake at all, because both hosts populate it under a
+/// negotiated v3 session only.
 #[test]
-fn hello_body_key_set_is_frozen_plus_the_two_daemon_binding_fields() {
+fn hello_body_key_set_is_frozen_plus_the_two_daemon_binding_fields_and_identity() {
     let hello = ResponseBody::Hello {
         proto: 1,
         server: "meridian-sidecar/2.0".into(),
@@ -125,10 +128,21 @@ fn hello_body_key_set_is_frozen_plus_the_two_daemon_binding_fields() {
         root: Some(root()),
         storage: Some("/drawer".into()),
         workspace: Some("/ws".into()),
+        identity: Some(wire::Identity {
+            build: "6c4b1f0a".into(),
+        }),
     };
     pin_keys(
         &hello,
-        &["caps", "proto", "root", "server", "storage", "workspace"],
+        &[
+            "caps",
+            "identity",
+            "proto",
+            "root",
+            "server",
+            "storage",
+            "workspace",
+        ],
         "Hello body (maximal)",
     );
 }

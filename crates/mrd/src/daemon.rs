@@ -57,8 +57,16 @@ fn install_signal_handlers() {
 /// Run `mrd daemon`: bind the socket, write the pidfile, and block until a
 /// signal, then shut down cleanly (flush state, remove the socket + pidfile).
 pub(crate) fn run() -> Result<(), Fail> {
-    let config = Config::resolve()
+    let mut config = Config::resolve()
         .map_err(|e| Fail::tool(format!("cannot resolve the daemon layout: {e}")))?;
+    // R1: this crate is the only one that can read the baked sha
+    // (`build.rs` bakes it into THIS crate's compilation environment), so the
+    // daemon host hands it to the registry rather than the registry reading it.
+    // The `unknown` fallback the build script bakes rides through verbatim — a
+    // build that cannot name a commit still publishes an identity, which is
+    // what lets a client tell it apart from a host that publishes none
+    // (`docs/wire-contract-v3-identity-amendment.md`).
+    config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     install_signal_handlers();
     let server = RunningServer::start(config)
         .map_err(|e| Fail::tool(format!("cannot start the registry daemon: {e}")))?;

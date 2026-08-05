@@ -107,6 +107,11 @@ pub fn project_response(frame: &mut Value) {
                 caps.push(Value::String("splice.pin".to_string()));
                 // Birth op at OP grain (no dotted create.<field>).
                 caps.push(Value::String("create".to_string()));
+                // R1: build identity as a FIELD amendment to the hello answer,
+                // so it takes the dotted grain. The bare `hello` cap stays
+                // absent — hello is the door discovery comes through, never a
+                // capability a client asks for.
+                caps.push(Value::String("hello.identity".to_string()));
             }
             body.insert("contract".to_string(), Value::String("v3".to_string()));
         }
@@ -376,7 +381,11 @@ mod tests {
                 "check_write",
                 "splice.plan_edits",
                 "splice.pin",
-                "create"
+                "create",
+                // R1: the hello answer's own field amendment, dotted like the
+                // splice ones. Its VALUE is the host's to supply; the
+                // projection only advertises the field.
+                "hello.identity"
             ])
         );
     }

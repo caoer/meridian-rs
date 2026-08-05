@@ -36,8 +36,17 @@ fn test_config(tmp: &TempDir) -> Config {
         prewarm_quiet_max: Duration::from_secs(365 * 24 * 60 * 60),
         // Lifetime is the test's; idle-exit would flake mid-assertion.
         idle_exit: None,
+        push_write_timeout: PUSH_WRITE_TIMEOUT,
+        // No build identity configured: this fixture is not testing the hello
+        // identity field, and an absent sha is the honest state for a server
+        // started from a test harness rather than a deployed binary.
+        build_sha: None,
     }
 }
+
+/// Short enough that a wedged-subscriber gate finishes in seconds; the
+/// production horizon is `DEFAULT_PUSH_WRITE_TIMEOUT` (10 s).
+const PUSH_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn write_ws(root: &Path, files: &[(&str, &str)]) -> PathBuf {
     for (rel, content) in files {
@@ -432,6 +441,126 @@ fn a_live_subscription_survives_the_reaper() {
         .next_frame()
         .expect("a live subscription still receives after the reaper has run");
     assert_eq!(frame["delta"]["files"][0]["path"], json!("plan.md"));
+    server.shutdown();
+}
+
+/// S1: a subscriber that stops draining must not park a server thread forever.
+/// The daemon is thread-per-connection, so a wedged consumer costs an OS thread
+/// AND (since an armed sub holds the quiet clock open) the daemon's mortality.
+/// Past the write deadline the connection is dropped and `SubGuard` freed.
+///
+/// *Mutation:* drop `set_write_timeout` from `push_loop` — the subscription
+/// stays live forever and the assertion times out.
+#[test]
+fn a_wedged_subscriber_is_dropped_and_frees_its_subguard() {
+    let tmp = TempDir::new().unwrap();
+    // A blocked write is only reachable once the socket buffers are full, so
+    // frames must be fat: one entry per file, corpus-wide rewrites.
+    let bodies: Vec<(String, String)> = (0..300)
+        .map(|i| {
+            (
+                format!("doc{i:03}.md"),
+                format!("# Doc {i}\n\nbody\n\n## Sub A\n\na\n\n## Sub B\n\nb\n"),
+            )
+        })
+        .collect();
+    let files: Vec<(&str, &str)> = bodies
+        .iter()
+        .map(|(name, body)| (name.as_str(), body.as_str()))
+        .collect();
+    let ws = write_ws(&tmp.path().join("ws"), &files);
+    let server = RunningServer::start(test_config(&tmp)).unwrap();
+
+    // Wedged by construction: this connection is never read from again.
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    let ring = server.registry().ring(&canonical);
+    assert!(
+        ring.has_subscribers(),
+        "control: the subscription is armed, so there is something to free"
+    );
+
+    // Keep producing until the kernel stops absorbing and the write blocks.
+    for round in 0..8 {
+        for (name, _) in &bodies {
+            external_edit(&ws, name, &format!("# {name}\n\nrevision {round}\n"));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    let deadline = Instant::now() + PUSH_WAIT;
+    while ring.has_subscribers() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !ring.has_subscribers(),
+        "a subscriber that stopped draining must be dropped past the {PUSH_WRITE_TIMEOUT:?} \
+         write deadline, freeing its SubGuard"
+    );
+    // The client end is still open — the server dropped it, not the test.
+    drop(sub);
+    server.shutdown();
+}
+
+/// S3: an armed sub connection counts toward the quiet clock — a subscribed
+/// daemon must not idle-exit out from under its subscriber.
+///
+/// *Mutation:* drop the `has_subscribers` arm from the reaper's idle-exit check
+/// — the daemon asks to exit while the subscription is live.
+#[allow(clippy::duration_suboptimal_units)]
+#[test]
+fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let mut config = test_config(&tmp);
+    config.idle_exit = Some(Duration::from_secs(2));
+    config.reap_interval = Duration::from_millis(100);
+    let server = RunningServer::start(config).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    // Well past the horizon with no request traffic at all: only the armed sub
+    // holds the daemon.
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(
+        !server.idle_exit_requested(),
+        "a daemon with a live subscriber must not exit under it — the subscriber \
+         sends no requests, so the request clock alone would kill it"
+    );
+
+    // The counterweight: the daemon stays MORTAL. The subscriber goes away
+    // exactly as a dead owner process does — the kernel closes the socket — and
+    // the push plane observes that EOF even though the workspace is quiet and
+    // no frame is ever written.
+    drop(sub);
+
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    let ring = server.registry().ring(&canonical);
+    let deadline = Instant::now() + PUSH_WAIT;
+    while ring.has_subscribers() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !ring.has_subscribers(),
+        "a closed push peer is observed on a quiet workspace — no write is ever \
+         attempted there, so EOF is the only signal"
+    );
+
+    let deadline = Instant::now() + PUSH_WAIT;
+    while !server.idle_exit_requested() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        server.idle_exit_requested(),
+        "and once the last subscription is gone the daemon ages out again — the \
+         liveness rule defers idle-exit, it must not disable it (g11: 281 \
+         immortal daemons, 9.6 GB)"
+    );
     server.shutdown();
 }
 

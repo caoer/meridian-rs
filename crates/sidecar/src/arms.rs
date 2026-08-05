@@ -36,7 +36,7 @@ pub(crate) fn dispatch(
     v3: bool,
 ) -> Result<ResponseBody, Box<ErrorBody>> {
     match op {
-        Op::Hello { .. } => Ok(hello(root)),
+        Op::Hello { .. } => Ok(hello(root, v3)),
         Op::Toc { path } => toc(root, &path),
         Op::Cat { path, sec } => cat(root, &path, sec),
         Op::Extract { path, kinds } => extract(root, &path, kinds, v3),
@@ -243,7 +243,14 @@ fn diff_op(
 
 /// v2 §3.2: proto, server name, armed caps. `root` optional — present when
 /// the walk computes, absent on I/O failure.
-fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
+///
+/// R1 identity: under v3 the sidecar publishes the field with the honest value
+/// `unknown`. It bakes no build sha — it has no build script, and it is on
+/// death row — so `unknown` is the true answer for it rather than a
+/// placeholder. It publishes the field anyway so one v3 client speaks to both
+/// hosts through one code path. Under v2 the field is `None` and the frozen
+/// hello body is byte-identical.
+fn hello(root: &fs::WorkspaceRoot, v3: bool) -> ResponseBody {
     ResponseBody::Hello {
         proto: crate::PROTO,
         server: crate::SERVER_NAME.to_string(),
@@ -253,6 +260,9 @@ fn hello(root: &fs::WorkspaceRoot) -> ResponseBody {
         storage: None,
         // Root is the launch arg, not a hello field — no bound root to echo.
         workspace: None,
+        identity: v3.then(|| wire::Identity {
+            build: wire_serve::UNKNOWN_BUILD.to_string(),
+        }),
     }
 }
 

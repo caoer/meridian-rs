@@ -39,6 +39,11 @@ fn test_config(tmp: &TempDir) -> Config {
         prewarm_quiet_max: Duration::from_secs(365 * 24 * 60 * 60),
         // Lifetime is the test's; idle-exit would flake mid-assertion.
         idle_exit: None,
+        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
+        // No build identity configured: this fixture is not testing the hello
+        // identity field, and an absent sha is the honest state for a server
+        // started from a test harness rather than a deployed binary.
+        build_sha: None,
     }
 }
 

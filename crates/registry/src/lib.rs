@@ -54,6 +54,14 @@ pub const DEFAULT_REAP_INTERVAL: Duration = Duration::from_secs(60);
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(15 * 60);
 
+/// Push-plane write deadline (R2/S1). The daemon is thread-per-connection, so a
+/// subscriber that stops draining parks an OS thread and its `SubGuard` for as
+/// long as it stays wedged. Past this deadline the connection is dropped and the
+/// subscription freed; the client redials and resyncs (§7.1). Matches the
+/// client-side 10 s op deadline (D4).
+#[allow(clippy::duration_suboptimal_units)]
+pub const DEFAULT_PUSH_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Pre-warm sweep interval while busy (P2 — latency only; correctness is
 /// fingerprint). Poll interim; OS notifier is the upgrade path.
 pub const DEFAULT_PREWARM_INTERVAL: Duration = Duration::from_secs(1);
