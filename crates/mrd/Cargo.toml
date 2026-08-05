@@ -52,6 +52,18 @@ name = "check_multiroot_cpu"
 path = "tests/check_multiroot_cpu.rs"
 required-features = ["perf-walltime"]
 
+# Perf-lane daemon teardown control: the status/walk/check CPU targets are
+# pure-local and never spawn a resident, so they cannot prove the harness reaps
+# one. This target auto-spawns via `links`, tears down by pidfile, and asserts
+# a two-cycle census of this binary stays flat. Behind the same feature so the
+# correctness suite never pays for it; its own target so a panic cannot fold
+# into a neighbouring `RUSAGE_CHILDREN` measurement. Why it exists:
+# `crates/mrd/tests/perf_daemon_teardown.rs` header.
+[[test]]
+name = "perf_daemon_teardown"
+path = "tests/perf_daemon_teardown.rs"
+required-features = ["perf-walltime"]
+
 # lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
 # library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
 # and the typed entry points.

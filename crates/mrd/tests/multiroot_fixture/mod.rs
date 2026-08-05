@@ -185,3 +185,99 @@ pub fn children_cpu() -> Duration {
     };
     secs(usage.ru_utime) + secs(usage.ru_stime)
 }
+
+// ---------------------------------------------------------------------------
+// Daemon teardown — the perf lane's hygiene for resident auto-spawns
+// ---------------------------------------------------------------------------
+//
+// A sandboxed `XDG_CACHE_HOME` dies with the tempdir; a detached `mrd daemon`
+// does not. On a long-lived self-hosted runner every leak accumulates (W6
+// measured 16 under one worktree's debug binary). G11 bounds the class at the
+// product root (idle exit); this is the harness half: reap by the pid the
+// daemon wrote to ITS OWN pidfile, never by process-table substring.
+//
+// Trap (g1, 2026-08-05): a control read AFTER teardown must ASSERT, never
+// skip-and-pass. Soft Drop reaps best-effort so a panicked test cannot leak;
+// the asserted path is [`teardown_daemon`], which the control target drives.
+
+/// The resident daemon's pidfile under this sandbox's cache root.
+pub fn daemon_pidfile(sb: &Sandbox) -> PathBuf {
+    sb.cache_home
+        .join("meridian")
+        .join("registry")
+        .join("daemon.pid")
+}
+
+/// Read the pid the daemon wrote, if the pidfile is present and parseable.
+pub fn read_daemon_pid(sb: &Sandbox) -> Option<i32> {
+    let text = std::fs::read_to_string(daemon_pidfile(sb)).ok()?;
+    text.trim().parse().ok()
+}
+
+/// Probe liveness with `kill(pid, 0)` — never a process-table substring.
+pub fn pid_alive(pid: i32) -> bool {
+    // SAFETY: signal 0 probes existence without delivering a signal.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Send `signal` to a detached daemon we do not own as a child.
+fn signal_pid(pid: i32, signal: libc::c_int) {
+    // SAFETY: plain kill(2) to a pid read from the daemon's own pidfile.
+    unsafe {
+        libc::kill(pid, signal);
+    }
+}
+
+fn wait_dead(pid: i32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !pid_alive(pid)
+}
+
+/// Best-effort reap: TERM → verify → KILL → verify. Never panics (Drop path).
+/// Returns the pid that was signalled, if any.
+pub fn try_teardown_daemon(sb: &Sandbox) -> Option<i32> {
+    let pid = read_daemon_pid(sb)?;
+    signal_pid(pid, libc::SIGTERM);
+    if !wait_dead(pid, Duration::from_secs(2)) {
+        signal_pid(pid, libc::SIGKILL);
+        let _ = wait_dead(pid, Duration::from_secs(2));
+    }
+    Some(pid)
+}
+
+/// **Asserted** teardown for the control gate: if a pidfile names a live
+/// daemon, kill it and ASSERT it is gone. If there is no pidfile, this is a
+/// no-op only when the caller has already proved no spawn was expected; the
+/// control target never relies on that branch — it asserts the spawn first.
+pub fn teardown_daemon(sb: &Sandbox) {
+    let Some(pid) = read_daemon_pid(sb) else {
+        return;
+    };
+    signal_pid(pid, libc::SIGTERM);
+    if !wait_dead(pid, Duration::from_secs(2)) {
+        signal_pid(pid, libc::SIGKILL);
+        assert!(
+            wait_dead(pid, Duration::from_secs(2)),
+            "daemon pid {pid} survived SIGKILL — the harness cannot claim a clean teardown"
+        );
+    }
+    assert!(
+        !pid_alive(pid),
+        "control after teardown: pid {pid} must be dead (pidfile path, never pgrep)"
+    );
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Best-effort only: a panicking test must not leave a resident behind,
+        // and Drop itself must not panic. The control target's asserted path is
+        // [`teardown_daemon`], not this.
+        let _ = try_teardown_daemon(self);
+    }
+}

@@ -62,6 +62,9 @@ jobs:
         run: |
           cargo clippy -p mrd --features perf-walltime --test status_walltime -- -D warnings
           cargo clippy -p mrd --features perf-walltime --test status_multiroot_cpu -- -D warnings
+          cargo clippy -p mrd --features perf-walltime --test walk_multiroot_cpu -- -D warnings
+          cargo clippy -p mrd --features perf-walltime --test check_multiroot_cpu -- -D warnings
+          cargo clippy -p mrd --features perf-walltime --test perf_daemon_teardown -- -D warnings
           cargo clippy -p run --features perf-walltime --test exec_walltime -- -D warnings
       - name: free space before the full-workspace test link (disk-exhaustion diagnostic)
         run: df -h /

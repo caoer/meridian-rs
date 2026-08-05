@@ -30,7 +30,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 struct Sandbox {
     tmp: tempfile::TempDir,
@@ -58,6 +58,45 @@ fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .env_remove("MERIDIAN_WORKSPACE")
         .output()
         .expect("spawn mrd")
+}
+
+/// Best-effort reap of a resident auto-spawned by this sandbox. Pidfile path,
+/// never process-table substring — same law as the multiroot fixture and the
+/// fleet reap script. Soft (no panic) so Drop can call it; the control target
+/// `perf_daemon_teardown` is the asserted path.
+fn try_teardown_daemon(sb: &Sandbox) {
+    let pidfile = sb
+        .cache_home
+        .join("meridian")
+        .join("registry")
+        .join("daemon.pid");
+    let Ok(text) = std::fs::read_to_string(pidfile) else {
+        return;
+    };
+    let Ok(pid) = text.trim().parse::<i32>() else {
+        return;
+    };
+    // SAFETY: kill(2) to a pid the daemon wrote to its own pidfile.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        // SAFETY: signal 0 probes existence.
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        try_teardown_daemon(self);
+    }
 }
 
 /// A bare workspace with an `mrd init` marker so `status` resolves it.
@@ -172,4 +211,8 @@ fn status_wall_time_under_1s_on_3k_corpus() {
         elapsed.as_secs_f64() < 1.0,
         "status must be O(armed), <1s on the 3k corpus — measured {ms} ms"
     );
+
+    // Perf-lane hygiene: any auto-spawned resident dies with the sandbox.
+    // `status` is pure-local today (no spawn); Drop still covers a future probe.
+    try_teardown_daemon(&sb);
 }
