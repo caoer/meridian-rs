@@ -44,6 +44,7 @@ fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
         // reaped itself mid-assertion would fail as a flake, not a finding.
         idle_exit: None,
         push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
+        sub_idle_write_timeout: registry::DEFAULT_SUB_IDLE_WRITE_TIMEOUT,
     }
 }
 

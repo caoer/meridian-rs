@@ -37,6 +37,9 @@ fn test_config(tmp: &TempDir) -> Config {
         // Lifetime is the test's; idle-exit would flake mid-assertion.
         idle_exit: None,
         push_write_timeout: PUSH_WRITE_TIMEOUT,
+        // Parked far ahead for every gate that is not about the idle-write
+        // horizon; the two that are set it themselves.
+        sub_idle_write_timeout: Duration::from_secs(365 * 24 * 60 * 60),
         // No build identity configured: this fixture is not testing the hello
         // identity field, and an absent sha is the honest state for a server
         // started from a test harness rather than a deployed binary.
@@ -47,6 +50,11 @@ fn test_config(tmp: &TempDir) -> Config {
 /// Short enough that a wedged-subscriber gate finishes in seconds; the
 /// production horizon is `DEFAULT_PUSH_WRITE_TIMEOUT` (10 s).
 const PUSH_WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Short enough that the R2b gates finish in seconds. The production horizon is
+/// `DEFAULT_SUB_IDLE_WRITE_TIMEOUT` (45 min), which is coupled to D3's
+/// 30-minute client-side drain TTL — see that constant before re-tuning either.
+const SUB_IDLE_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn write_ws(root: &Path, files: &[(&str, &str)]) -> PathBuf {
     for (rel, content) in files {
@@ -561,6 +569,116 @@ fn an_armed_sub_defers_idle_exit_and_releasing_it_restores_mortality() {
          liveness rule defers idle-exit, it must not disable it (g11: 281 \
          immortal daemons, 9.6 GB)"
     );
+    server.shutdown();
+}
+
+/// R2b, mode (c): an armed sub on a permanently quiet workspace is dropped after
+/// the idle-write horizon, and the freed `SubGuard` restores the daemon's
+/// mortality. This is the one residency mode neither earlier deadline can reach:
+/// no frame is ever written (so the write deadline never fires) and the peer
+/// never closes (so the EOF probe never fires).
+///
+/// *Mutation:* drop the `last_write.elapsed()` arm from `push_loop` — the
+/// subscription stays armed forever and the daemon never asks to exit.
+#[allow(clippy::duration_suboptimal_units)]
+#[test]
+fn an_armed_sub_with_zero_frames_written_is_dropped_after_the_idle_horizon() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let mut config = test_config(&tmp);
+    config.sub_idle_write_timeout = SUB_IDLE_WRITE_TIMEOUT;
+    config.idle_exit = Some(Duration::from_secs(1));
+    config.reap_interval = Duration::from_millis(100);
+    let server = RunningServer::start(config).unwrap();
+
+    // Armed and never written to: the workspace is quiet for the whole test, and
+    // this connection is never closed by the client side.
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    let ring = server.registry().ring(&canonical);
+    assert!(
+        ring.has_subscribers(),
+        "control: the subscription is armed, so there is something to drop"
+    );
+
+    let deadline = Instant::now() + PUSH_WAIT;
+    while ring.has_subscribers() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !ring.has_subscribers(),
+        "an armed sub with zero frames written must be dropped past the \
+         {SUB_IDLE_WRITE_TIMEOUT:?} idle-write horizon — otherwise a wedged \
+         subscriber on a quiet workspace pins the daemon forever"
+    );
+
+    // And the point of the drop: the daemon can age out again.
+    let deadline = Instant::now() + PUSH_WAIT;
+    while !server.idle_exit_requested() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        server.idle_exit_requested(),
+        "freeing the SubGuard restores mortality — dropping the sub is not the \
+         cost, it is the point (g11 lifecycle)"
+    );
+
+    // The client end was open the whole time: the server dropped it, not the test.
+    drop(sub);
+    server.shutdown();
+}
+
+/// R2b counterweight: any frame written RESETS the horizon, so a subscriber on a
+/// workspace that keeps producing survives well past it. Without the reset the
+/// backstop would be an absolute lifetime — a tax on every healthy subscriber
+/// rather than a bound on mode (c)'s exact signature.
+///
+/// *Mutation:* drop the `last_write = Instant::now()` reset from the frame loop
+/// — this subscriber dies mid-stream despite being drained continuously.
+#[test]
+fn a_frame_written_inside_the_horizon_resets_it() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp.path().join("ws"), &[("plan.md", PLAN)]);
+    let mut config = test_config(&tmp);
+    config.sub_idle_write_timeout = SUB_IDLE_WRITE_TIMEOUT;
+    let server = RunningServer::start(config).unwrap();
+
+    let mut sub = Conn::open(server.socket_path());
+    assert_eq!(sub.hello(&ws)["ok"], json!(true));
+    assert_eq!(sub.sub(0)["ok"], json!(true));
+
+    let canonical = workspace::canonicalize(&ws).unwrap();
+    let ring = server.registry().ring(&canonical);
+
+    // Edits spaced well inside the horizon, spanning several horizons in total.
+    // Each delivered frame must push the deadline out.
+    let started = Instant::now();
+    let mut delivered = 0;
+    for round in 0..10 {
+        external_edit(&ws, "plan.md", &format!("# Goals\n\nrevision {round}\n"));
+        delivered += sub.frames(1).len();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let spanned = started.elapsed();
+    assert!(
+        spanned > SUB_IDLE_WRITE_TIMEOUT * 2,
+        "control: the run must span more than one horizon or it proves nothing \
+         ({spanned:?} vs {SUB_IDLE_WRITE_TIMEOUT:?})"
+    );
+    assert!(
+        delivered >= 4,
+        "control: frames really were written, so the reset had something to \
+         reset ({delivered} delivered)"
+    );
+    assert!(
+        ring.has_subscribers(),
+        "a subscriber that is being written to must survive the idle-write \
+         horizon — the timer bounds silence, not lifetime"
+    );
+    drop(sub);
     server.shutdown();
 }
 
