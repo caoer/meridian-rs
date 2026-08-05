@@ -8,7 +8,8 @@ use crate::bad_request;
 
 /// One resolved heading in the host-face index (`tocIndex` `tocNode` lift).
 struct HeadingFacts {
-    /// Raw hpath segments for the native edit target.
+    /// The published RAW address — carries `n` only where ambiguous, exactly as
+    /// the read face publishes it. Rides verbatim into the native edit target.
     raw_hpath: Vec<HpathSeg>,
     /// Heading level (create child depth).
     level: u32,
@@ -18,46 +19,107 @@ struct HeadingFacts {
     content_span: Option<(usize, usize)>,
 }
 
-/// Host-face put index: sanitized-chain map (Go last-wins) + fm keys in order.
+/// Host-face put index: the read face's OWN address table + fm keys in order.
+///
+/// **R5 — this was a `HashMap` keyed on the sanitized joined chain, Go
+/// last-wins.** [`sanitize_heading`] maps `/` and ASCII space both to `-`, so
+/// `# A/B` and `# A B` produced one key; the later heading evicted the earlier,
+/// and a write addressed to the earlier landed on the later, silently. The
+/// index is now the same [`wire_map::facts::read_facts`] table the read plane
+/// resolves against, so there is ONE address grammar and one occurrence law
+/// across both planes — a read publishes an address the plan face accepts.
 struct PlanIndex {
-    headings: std::collections::HashMap<String, HeadingFacts>,
+    headings: Vec<HeadingFacts>,
     fm_keys: Vec<String>,
+}
+
+/// Why an address resolved to no single section.
+enum Miss {
+    NotFound,
+    /// The address matched more than one section — it abstained on `n` where
+    /// the document is ambiguous.
+    Ambiguous(usize),
 }
 
 impl PlanIndex {
     fn new(doc: &model::Document) -> Self {
-        let mut headings = std::collections::HashMap::new();
-        let mut fm_keys = Vec::new();
-        for row in wire_map::project_toc(doc) {
-            match row.kind.as_str() {
-                "heading" => {
-                    let segs = row.hpath.unwrap_or_default();
-                    let key = segs
-                        .iter()
-                        .map(|s| wire_map::gotext::sanitize_heading(&s.h))
-                        .collect::<Vec<_>>()
-                        .join("/");
-                    // Go map overwrite: LAST duplicate wins.
-                    headings.insert(
-                        key,
-                        HeadingFacts {
-                            raw_hpath: segs,
-                            level: row.level.unwrap_or(0),
-                            span: (span_usize(row.span.0), span_usize(row.span.1)),
-                            content_span: row
-                                .content_span
-                                .map(|cs| (span_usize(cs.0), span_usize(cs.1))),
-                        },
-                    );
-                }
-                "frontmatter" => {
-                    fm_keys.extend(row.keys.unwrap_or_default());
-                }
-                _ => {}
-            }
-        }
+        let rows = wire_map::project_toc(doc);
+        let fm_keys = rows
+            .iter()
+            .filter(|r| r.kind == "frontmatter")
+            .flat_map(|r| r.keys.clone().unwrap_or_default())
+            .collect();
+        let headings = wire_map::facts::read_facts(&rows, doc.raw.as_bytes())
+            .into_iter()
+            .filter(|f| f.anchor.is_none() && !f.hpath.is_empty())
+            .map(|f| HeadingFacts {
+                raw_hpath: f.hpath,
+                level: f.depth,
+                span: (span_usize(f.span.0), span_usize(f.span.1)),
+                content_span: f
+                    .content_span
+                    .map(|cs| (span_usize(cs.0), span_usize(cs.1))),
+            })
+            .collect();
         PlanIndex { headings, fm_keys }
     }
+
+    /// Resolve an address to exactly one section, or say why not.
+    ///
+    /// The occurrence law is `model::resolve_hpath_node`'s, not the read face's
+    /// first-wins: a selector segment with `n: None` DEMANDS uniqueness, and an
+    /// ambiguous address refuses. The write plane never silently picks — that
+    /// is the whole point of this unit, and picking "first" instead of "last"
+    /// would only move which section got the wrong write.
+    fn get(&self, addr: &[HpathSeg]) -> Result<&HeadingFacts, Miss> {
+        if addr.is_empty() {
+            return Err(Miss::NotFound);
+        }
+        let mut hits = self.headings.iter().filter(|f| seg_chain_matches(addr, f));
+        match (hits.next(), hits.count()) {
+            (None, _) => Err(Miss::NotFound),
+            (Some(only), 0) => Ok(only),
+            (Some(_), rest) => Err(Miss::Ambiguous(rest + 1)),
+        }
+    }
+}
+
+/// Per-segment address equality against a PUBLISHED address: same length, raw
+/// text byte-equal, and an occurrence that either abstains (`n: None`) or names
+/// the section's own. A published `n: None` means "unique among its siblings",
+/// i.e. occurrence 1 — so `n: Some(1)` against a unique heading matches, as it
+/// does natively.
+fn seg_chain_matches(addr: &[HpathSeg], f: &HeadingFacts) -> bool {
+    addr.len() == f.raw_hpath.len()
+        && addr.iter().zip(&f.raw_hpath).all(|(sel, pub_seg)| {
+            sel.h == pub_seg.h && sel.n.is_none_or(|k| k == pub_seg.n.unwrap_or(1))
+        })
+}
+
+/// The section-miss refusal, shared by every addressing arm.
+///
+/// The `^` arm survives the migration as a TEACHING check only: a caller who
+/// spells `[{"h":"^task1"}]` meant the anchor plane, and gets sent to
+/// `anchors[]` rather than to the section listing that will never hold it.
+/// It steers the message, never the resolution — the grammar collision u14
+/// removed does not come back through this door.
+fn section_miss(addr: &[HpathSeg], miss: &Miss) -> Box<ErrorBody> {
+    let shown = crate::display_hpath(addr);
+    if let Miss::Ambiguous(n) = miss {
+        return bad_request(format!(
+            "address {} matches {n} sections. {} Fix: pass the occurrence — the read face \
+             publishes it as `n` on the ambiguous segment.",
+            policy::defs::go_quote(&shown),
+            crate::NO_PARTIAL_WRITE_CLAUSE,
+        ));
+    }
+    let anchor_shaped = matches!(addr, [only] if only.h.starts_with('^'));
+    bad_request(format!(
+        "no section addressed by {}. {} {}",
+        policy::defs::go_quote(&shown),
+        crate::NO_PARTIAL_WRITE_CLAUSE,
+        crate::section_recovery(if anchor_shaped { "^" } else { "" }, None)
+    ))
 }
 
 /// Wire `u64` spans → `usize` checked (never lossy `as`; saturated miss hits Go bounds guards).
@@ -133,24 +195,17 @@ pub fn lower(
 fn lower_append(
     idx: &PlanIndex,
     raw: &[u8],
-    hpath: &str,
+    hpath: &[HpathSeg],
     body: &str,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
-    if hpath.starts_with('^') {
+    if matches!(hpath, [only] if only.h.starts_with('^')) {
         return Err(bad_request(format!(
             "append to a block anchor {} is not supported — append targets a section (the containing heading path)",
-            policy::defs::go_quote(hpath)
+            policy::defs::go_quote(&crate::display_hpath(hpath))
         )));
     }
-    let Some(node) = idx.headings.get(hpath) else {
-        return Err(bad_request(format!(
-            "no section addressed by {}. {} {}",
-            policy::defs::go_quote(hpath),
-            crate::NO_PARTIAL_WRITE_CLAUSE,
-            crate::section_recovery(hpath, None)
-        )));
-    };
+    let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
     let at = node.span.1;
     let mut payload = policy::defs::ensure_trailing_nl(body);
     if at > 0 && at <= raw.len() && raw[at - 1] != b'\n' {
@@ -175,20 +230,13 @@ fn lower_append(
 fn lower_match(
     idx: &PlanIndex,
     raw: &[u8],
-    hpath: &str,
+    hpath: &[HpathSeg],
     old: &str,
     new: &str,
     all: bool,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
-    let Some(node) = idx.headings.get(hpath) else {
-        return Err(bad_request(format!(
-            "no section addressed by {}. {} {}",
-            policy::defs::go_quote(hpath),
-            crate::NO_PARTIAL_WRITE_CLAUSE,
-            crate::section_recovery(hpath, None)
-        )));
-    };
+    let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
     // S10: peel `@fp` from `old` (needle in stored bytes) before search; `new` is payload.
     let old = &*syntax::strip_fp(old);
     let if_node_rev = rev
@@ -206,7 +254,7 @@ fn lower_match(
             return Err(bad_request(format!(
                 "replace anchor {} not found in {}",
                 policy::defs::go_quote(old),
-                policy::defs::go_quote(hpath)
+                policy::defs::go_quote(&crate::display_hpath(hpath))
             )));
         }
         let new_content = content.replace(old, new);
@@ -237,23 +285,16 @@ fn lower_match(
 /// `Put{content}` + `if_node_rev`.
 fn lower_replace_section(
     idx: &PlanIndex,
-    hpath: &str,
+    hpath: &[HpathSeg],
     body: &str,
     rev: Option<&str>,
 ) -> Result<Edit, Box<ErrorBody>> {
-    let Some(node) = idx.headings.get(hpath) else {
-        return Err(bad_request(format!(
-            "no section addressed by {}. {} {}",
-            policy::defs::go_quote(hpath),
-            crate::NO_PARTIAL_WRITE_CLAUSE,
-            crate::section_recovery(hpath, None)
-        )));
-    };
+    let node = idx.get(hpath).map_err(|m| section_miss(hpath, &m))?;
     let rev = rev.unwrap_or("");
     if rev.is_empty() {
         return Err(bad_request(format!(
             "replace_section on {} requires a fresh rev (a whole-section rewrite is destructive) — read the section and pass its rev",
-            policy::defs::go_quote(hpath)
+            policy::defs::go_quote(&crate::display_hpath(hpath))
         )));
     }
     let text = if body.is_empty() {
@@ -276,14 +317,14 @@ fn lower_replace_section(
 /// Create: parent-append as `Put{end}` on parent; top-level / parent-miss refuse.
 fn lower_create(
     idx: &PlanIndex,
-    parent_hpath: &str,
+    parent_hpath: &[HpathSeg],
     title: &str,
     body: &str,
 ) -> Result<Edit, Box<ErrorBody>> {
     let full = if parent_hpath.is_empty() {
         title.to_string()
     } else {
-        format!("{parent_hpath}/{title}")
+        format!("{}/{title}", crate::display_hpath(parent_hpath))
     };
     let cannot_place = || {
         bad_request(format!(
@@ -294,9 +335,12 @@ fn lower_create(
     if parent_hpath.is_empty() {
         return Err(cannot_place());
     }
-    let Some(parent) = idx.headings.get(parent_hpath) else {
-        return Err(cannot_place());
-    };
+    // An ambiguous PARENT says so by name: `cannot_place` would claim the
+    // parent is absent when the document holds several of it.
+    let parent = idx.get(parent_hpath).map_err(|m| match m {
+        Miss::NotFound => cannot_place(),
+        m @ Miss::Ambiguous(_) => section_miss(parent_hpath, &m),
+    })?;
     let level = (parent.level + 1) as usize;
     let heading = format!("\n{} {title}\n\n{body}\n", "#".repeat(level));
     Ok(Edit {
@@ -409,7 +453,7 @@ fn lower_property_group(
 
 #[cfg(test)]
 mod tests {
-    use wire::{EditShape, PlanEdit, PutAt, SecRef};
+    use wire::{EditShape, HpathSeg, PlanEdit, PutAt, SecRef};
 
     fn doc(raw: &str) -> model::Document {
         model::build(raw.to_string(), syntax::parse(raw))
@@ -432,7 +476,7 @@ mod tests {
         let e = lower1(
             "# Memo\n\nline\n",
             PlanEdit::Append {
-                hpath: "Memo".into(),
+                hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
                 body: "added".into(),
                 rev: None,
             },
@@ -445,7 +489,7 @@ mod tests {
         let e = lower1(
             "# Memo\n\nline",
             PlanEdit::Append {
-                hpath: "Memo".into(),
+                hpath: vec![HpathSeg { h: "Memo".into(), n: None }],
                 body: "added\n".into(),
                 rev: None,
             },
@@ -461,7 +505,7 @@ mod tests {
         let err = lower1(
             "# Tasks\n\n- [ ] one ^task1\n",
             PlanEdit::Match {
-                hpath: "^task1".into(),
+                hpath: vec![HpathSeg { h: "^task1".into(), n: None }],
                 old: "one".into(),
                 new: "two".into(),
                 all: false,
@@ -488,7 +532,7 @@ mod tests {
         let err = lower1(
             "# Tasks\n\n- item ^t1\n",
             PlanEdit::Append {
-                hpath: "^t1".into(),
+                hpath: vec![HpathSeg { h: "^t1".into(), n: None }],
                 body: "x".into(),
                 rev: None,
             },
@@ -508,7 +552,7 @@ mod tests {
         let err = lower1(
             "# A\n\nx\n",
             PlanEdit::Append {
-                hpath: "Ghost".into(),
+                hpath: vec![HpathSeg { h: "Ghost".into(), n: None }],
                 body: "x".into(),
                 rev: None,
             },
@@ -532,7 +576,7 @@ mod tests {
         let err = lower1(
             "# A\n\nx\n",
             PlanEdit::Create {
-                parent_hpath: String::new(),
+                parent_hpath: vec![],
                 title: "Brand".into(),
                 body: "b".into(),
             },
@@ -550,7 +594,7 @@ mod tests {
         let e = lower1(
             "# A\n\nx\n\n## B\n\ny\n",
             PlanEdit::Create {
-                parent_hpath: "A/B".into(),
+                parent_hpath: vec![HpathSeg { h: "A".into(), n: None }, HpathSeg { h: "B".into(), n: None }],
                 title: "New Kid".into(),
                 body: "hello".into(),
             },
@@ -576,7 +620,7 @@ mod tests {
         let e = lower1(
             raw,
             PlanEdit::Match {
-                hpath: "Todo".into(),
+                hpath: vec![HpathSeg { h: "Todo".into(), n: None }],
                 old: "item".into(),
                 new: "task".into(),
                 all: true,
@@ -596,7 +640,7 @@ mod tests {
         let err = lower1(
             raw,
             PlanEdit::Match {
-                hpath: "Todo".into(),
+                hpath: vec![HpathSeg { h: "Todo".into(), n: None }],
                 old: "ghost".into(),
                 new: "x".into(),
                 all: true,
@@ -617,7 +661,7 @@ mod tests {
         let err = lower1(
             raw,
             PlanEdit::ReplaceSection {
-                hpath: "Notes".into(),
+                hpath: vec![HpathSeg { h: "Notes".into(), n: None }],
                 body: "new".into(),
                 rev: None,
             },
@@ -633,7 +677,7 @@ mod tests {
         let e = lower1(
             raw,
             PlanEdit::ReplaceSection {
-                hpath: "Notes".into(),
+                hpath: vec![HpathSeg { h: "Notes".into(), n: None }],
                 body: "new".into(),
                 rev: Some("cafebabecafebabe".into()),
             },
@@ -762,56 +806,199 @@ mod tests {
         assert_eq!(text, "note: ");
     }
 
-    /// Duplicate sanitized chains: last wins (Go map overwrite).
+    /// R5 — duplicate headings REFUSE; they used to resolve to the last (Go map
+    /// overwrite). An `n`-less address over two `# Notes` names both, and the
+    /// write plane never silently picks: it refuses and teaches the occurrence.
+    /// Picking "last" (or "first") only chose which section got the wrong write.
     #[test]
-    fn duplicate_headings_last_wins() {
-        let e = lower1(
-            "# Notes\n\nfirst\n\n# Notes\n\nsecond\n",
+    fn duplicate_headings_refuse_without_an_occurrence() {
+        let raw = "# Notes\n\nfirst\n\n# Notes\n\nsecond\n";
+        let err = lower1(
+            raw,
             PlanEdit::Match {
-                hpath: "Notes".into(),
+                hpath: vec![HpathSeg {
+                    h: "Notes".into(),
+                    n: None,
+                }],
                 old: "second".into(),
                 new: "2nd".into(),
                 all: true,
                 rev: None,
             },
         )
-        .expect("resolves the LAST duplicate");
+        .expect_err("an ambiguous address refuses");
+        assert_eq!(
+            err.message.as_deref(),
+            Some(
+                "address \"Notes\" matches 2 sections. No edit was applied; the batch is \
+                 refused whole. Fix: pass the occurrence — the read face publishes it as \
+                 `n` on the ambiguous segment."
+            )
+        );
+
+        // The occurrence the read face publishes reaches exactly one of them.
+        let e = lower1(
+            raw,
+            PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "Notes".into(),
+                    n: Some(2),
+                }],
+                old: "second".into(),
+                new: "2nd".into(),
+                all: true,
+                rev: None,
+            },
+        )
+        .expect("`n: 2` names the second");
         let (_, text) = put_text(&e);
         assert_eq!(text, "\n2nd\n");
     }
 
-    /// Raw-title addresses miss (map keys sanitized only).
+    /// R5: `sanitize_heading` is non-injective, so two DIFFERENT headings share
+    /// one plan-face key. `# A/B` and `# A B` both sanitize to `A-B`; the index
+    /// keeps the LAST, and the first section becomes unaddressable — a write
+    /// aimed at it lands on the other one, silently. Each heading must have an
+    /// address that reaches it and nothing else.
     #[test]
-    fn raw_title_address_misses() {
-        let err = lower1(
-            "# My Section\n\nx\n",
+    fn each_colliding_heading_keeps_its_own_address() {
+        let raw = "# A/B\n\nfirst\n\n# A B\n\nsecond\n";
+        // The premise, pinned in the test itself: under the OLD grammar these
+        // two headings were one key. Anything that reintroduces sanitize
+        // keying on this face fails the assertions below.
+        assert_eq!(wire_map::gotext::sanitize_heading("A/B"), "A-B");
+        assert_eq!(wire_map::gotext::sanitize_heading("A B"), "A-B");
+
+        let e = lower1(
+            raw,
             PlanEdit::Match {
-                hpath: "My Section".into(),
+                hpath: vec![HpathSeg {
+                    h: "A/B".into(),
+                    n: None,
+                }],
+                old: "first".into(),
+                new: "1st".into(),
+                all: true,
+                rev: None,
+            },
+        )
+        .expect("the `A/B` section is addressable");
+        let (_, text) = put_text(&e);
+        // Trailing blank line rides `A/B`'s content span (it precedes `# A B`).
+        assert_eq!(text, "\n1st\n\n", "reaches `A/B`, not `A B`");
+
+        let e = lower1(
+            raw,
+            PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "A B".into(),
+                    n: None,
+                }],
+                old: "second".into(),
+                new: "2nd".into(),
+                all: true,
+                rev: None,
+            },
+        )
+        .expect("the `A B` section is addressable");
+        let (_, text) = put_text(&e);
+        assert_eq!(text, "\n2nd\n", "reaches `A B`, not `A/B`");
+    }
+
+    /// **The corruption claim R5 was authorized on.** A write must land on the
+    /// section the caller ADDRESSED — never on a different one while reporting
+    /// success.
+    ///
+    /// Under the sanitized joined grammar this was reachable and SILENT: `# A/B`
+    /// and `# A B` both keyed `A-B`, the index kept the last, and an edit
+    /// addressed to `A/B` lowered to a target on `A B` and returned `Ok`. The
+    /// caller was told it worked. Nothing in the response named the substitution,
+    /// so the loss was unobservable from the outside — that is what separates
+    /// this from the merely-loud arm above, and it is why the migration is a
+    /// correctness fix rather than tidiness.
+    ///
+    /// If this test ever fails, silent wrong-section writes are reachable again.
+    /// It is not an addressing nit — read the arms before "fixing" it.
+    #[test]
+    fn a_write_addressed_to_one_section_never_lands_on_another() {
+        // The anchor text is present in BOTH sections, so a wrong-section write
+        // SUCCEEDS instead of refusing — the silent path, not the loud one.
+        let raw = "# A/B\n\nnote here\n\n# A B\n\nnote here\n";
+
+        for (addressed, other) in [("A/B", "A B"), ("A B", "A/B")] {
+            let e = lower1(
+                raw,
+                PlanEdit::Match {
+                    hpath: vec![HpathSeg {
+                        h: addressed.into(),
+                        n: None,
+                    }],
+                    old: "note".into(),
+                    new: "NOTE".into(),
+                    all: true,
+                    rev: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("{addressed} is addressable: {:?}", e.message));
+
+            let SecRef::Hpath { hpath } = &e.target else {
+                panic!("hpath target")
+            };
+            let landed = hpath.iter().map(|s| s.h.as_str()).collect::<Vec<_>>();
+            assert_eq!(
+                landed,
+                vec![addressed],
+                "addressed {addressed:?} but the edit targets {landed:?} — a write \
+                 aimed at one section landed on {other:?} and reported success"
+            );
+        }
+    }
+
+    /// R5 — the POLARITY of this test is inverted, deliberately. It pinned
+    /// "the raw title misses, the sanitized address resolves"; the plan face now
+    /// speaks raw segments, so the raw title is THE address and the sanitized
+    /// spelling is just a different string that names no heading. This is the
+    /// asymmetry closing: `mrd read` publishes `My Section`, and that is now
+    /// exactly what a plan edit takes back.
+    #[test]
+    fn raw_title_addresses_and_the_sanitized_spelling_misses() {
+        let raw = "# My Section\n\nx\n";
+        lower1(
+            raw,
+            PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "My Section".into(),
+                    n: None,
+                }],
                 old: "x".into(),
                 new: "y".into(),
                 all: false,
                 rev: None,
             },
         )
-        .expect_err("raw title misses the sanitized map");
+        .expect("the raw title IS the address");
+
+        let err = lower1(
+            raw,
+            PlanEdit::Match {
+                hpath: vec![HpathSeg {
+                    h: "My-Section".into(),
+                    n: None,
+                }],
+                old: "x".into(),
+                new: "y".into(),
+                all: false,
+                rev: None,
+            },
+        )
+        .expect_err("the sanitized spelling names no heading");
         assert_eq!(
             err.message.as_deref(),
             Some(
-                "no section addressed by \"My Section\". No edit was applied; the batch \
+                "no section addressed by \"My-Section\". No edit was applied; the batch \
                  is refused whole. Fix: read the page with no selector to list its \
                  section paths."
             )
         );
-        lower1(
-            "# My Section\n\nx\n",
-            PlanEdit::Match {
-                hpath: "My-Section".into(),
-                old: "x".into(),
-                new: "y".into(),
-                all: false,
-                rev: None,
-            },
-        )
-        .expect("sanitized address resolves");
     }
 }

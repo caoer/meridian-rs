@@ -207,7 +207,7 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
     // Plan: strip needle and payload.
     let mut plan = pin_free_args("plan.md");
     plan.plan_edits = vec![wire::PlanEdit::Match {
-        hpath: "Plan".into(),
+        hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
         old: decorated.clone(),
         new: format!("{decorated} — reviewed."),
         all: true,

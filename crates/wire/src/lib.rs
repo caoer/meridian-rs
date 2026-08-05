@@ -485,9 +485,20 @@ pub struct PinFact {
 
 /// One v3 PLAN-level splice edit (M1 U8b, `splice.plan_edits`): the put-plan
 /// vocabulary the Go daemon's `buildSpliceEdit`/`buildPropertyEdits` emulation
-/// spoke, moved behind the wire. Externally tagged; addresses are the HOST-face
-/// sanitized forms (`"A/B"` joined sanitized hpath, `"^id"` blocks refuse per
-/// arm). The engine LOWERS each shape to native [`Edit`]s at the splice intake
+/// spoke, moved behind the wire. Externally tagged.
+///
+/// **R5 — addresses are SEGMENTS ([`HpathSeg`]), the same §2.1 grammar
+/// [`SecRef::Hpath`] takes and [`ReadRow::hpath`] publishes.** They were the
+/// HOST-face sanitized joined forms (`"A/B"`), inherited from u8b's mirror of
+/// meridian-go's put index. [`sanitize_heading`] is LOSSY and NON-INJECTIVE —
+/// `/` and ASCII space both become `-` — so `# A/B` and `# A B` shared one plan
+/// key, the index kept the last, and a write aimed at the first landed on the
+/// second while reporting success. The read plane shed that collision at u14 /
+/// u26; those units never opened `plan.rs`, so the write side kept it. Segments
+/// close the loop: an address a read publishes is an address a plan edit
+/// accepts, and two headings that differ cannot collide.
+///
+/// The engine LOWERS each shape to native [`Edit`]s at the splice intake
 /// (`wire-serve::plan`) — byte-faithful to the deleted Go arms, so the lowered
 /// batch is identical to what the host used to build. v3-only AT DECODE
 /// (rider 1): a v2 session's `plan_edits` hits the frozen unknown-field wall.
@@ -500,7 +511,7 @@ pub enum PlanEdit {
     /// exactly as `match`/`replace_section` carry theirs: an append changes
     /// existing content and is guarded like every other change (U10 S3).
     Append {
-        hpath: String,
+        hpath: Vec<HpathSeg>,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
@@ -509,7 +520,7 @@ pub enum PlanEdit {
     /// read-modify-write moved engine-side). `rev` is the v2-domain node rev
     /// (blake3) threaded to `if_node_rev`; empty/absent = the relaxed write.
     Match {
-        hpath: String,
+        hpath: Vec<HpathSeg>,
         old: String,
         new: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -519,7 +530,7 @@ pub enum PlanEdit {
     },
     /// Whole-section rewrite (destructive — requires `rev`).
     ReplaceSection {
-        hpath: String,
+        hpath: Vec<HpathSeg>,
         body: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rev: Option<String>,
@@ -529,7 +540,7 @@ pub enum PlanEdit {
     /// G-class: invisible while no def governs created sections). An empty
     /// `parent_hpath` (top-level create) refuses — M2 note carried forward.
     Create {
-        parent_hpath: String,
+        parent_hpath: Vec<HpathSeg>,
         title: String,
         body: String,
     },
