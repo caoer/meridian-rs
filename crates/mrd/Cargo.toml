@@ -52,6 +52,19 @@ name = "check_multiroot_cpu"
 path = "tests/check_multiroot_cpu.rs"
 required-features = ["perf-walltime"]
 
+# Residual after W5 — the two call sites W5 flagged and left unmeasured
+# (`engine.rs` ephemeral links, `sql.rs` ephemeral build). Same fixture, same
+# `RUSAGE_CHILDREN` law, one target each so their children never fold together.
+[[test]]
+name = "links_multiroot_cpu"
+path = "tests/links_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+[[test]]
+name = "sql_multiroot_cpu"
+path = "tests/sql_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
 # Perf-lane daemon teardown control: the status/walk/check CPU targets are
 # pure-local and never spawn a resident, so they cannot prove the harness reaps
 # one. This target auto-spawns via `links`, tears down by pidfile, and asserts

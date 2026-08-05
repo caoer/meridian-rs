@@ -73,6 +73,10 @@ pub fn run(sb: &Sandbox, cwd: &Path, args: &[&str]) -> Output {
         .env("HOME", &sb.home)
         .env("XDG_CACHE_HOME", &sb.cache_home)
         .env("MERIDIAN_CONFIG", &sb.config)
+        // Force the daemonless path: `mrd links` and `mrd sql` otherwise take the warm
+        // engine and never exercise `load_mounts_for` — which is exactly the residual
+        // these multi-root CPU gates measure. Status/walk/check are pure-local already.
+        .env("MERIDIAN_DAEMON_BIN", "/nonexistent")
         .env_remove("MERIDIAN_WORKSPACE")
         .output()
         .expect("spawn mrd")

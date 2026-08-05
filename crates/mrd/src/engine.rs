@@ -543,12 +543,15 @@ fn in_process_links(workspace: &Path, path: Option<&str>) -> Result<Value, Fail>
     // `live_root` samples after the read; for a single in-process snapshot the
     // world does not move, so it equals `as_of` (a legal §10.1 frame).
     let live = as_of.clone();
-    // **The whole reason this path exists after U21.** The mount table and one corpus per bound
-    // root come from `walk_cmd::load_mounts` — the SAME assembly the pin plane uses (S3-R59, one
-    // owner), so a cross-root address resolves through the same `resolve_ref` on both planes and
-    // cannot answer two ways.
-    //
-    let mounts = crate::walk_cmd::load_mounts();
+    // **The whole reason this path exists after U21.** The mount table comes from the SAME
+    // loader the pin plane uses (S3-R59, one owner — `walk_cmd::load_mounts_for`), so a
+    // cross-root address resolves through the same `resolve_ref` on both planes and cannot
+    // answer two ways. Corpora narrow to the roots this answer's ambient wikilink/embed
+    // targets NAME ([`crate::walk_cmd::link_addressed_roots`]) — the table itself is never
+    // narrowed. Measured: the full-table eager load burned ~27 s CPU on a workspace that
+    // named zero roots, against ~0.17 s for the already-narrowed walk/status siblings.
+    let mounts =
+        crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, path));
     let corpus = mounts.rooted(&docs);
     let body = wire_serve::read::links_rooted(
         &index,
