@@ -84,9 +84,11 @@ mrd read <PATH>[#FRAG] [--section SEL]
                          output is the rendered text verbatim)
 mrd put <PATH> [--dry | --validate] [--force] [--actor A] [--now T]
         [--if-fingerprint FP] [--receipt PATH#ANCHOR]
-                         the batch write: edits JSON on stdin (wire §4.4
-                         grammar), through the production splice choke-point
-                         (CAS + armed gate + write flock)
+                         the batch write: the edits ride stdin as a BARE JSON
+                         array — the VALUE of the wire §4.4 `edits` field, not
+                         the request object around it (id / op / path are
+                         argv's here) — through the production splice
+                         choke-point (CAS + armed gate + write flock)
 mrd pin <PAGE> <TARGET>#<SELECTOR> [--vibe] [--dry] [--json]
                          mint a meridian-lock pin: PAGE records the claim,
                          TARGET#SELECTOR is the content being attested
@@ -130,6 +132,9 @@ mrd realise <PAGE>       the reconciliation loop: observe -> check -> apply
 mrd cache ls             list the on-disk cache drawers
 mrd cache clean [--all]  reap stale / orphaned / retired drawers
 mrd daemon               run the registry daemon in the foreground
+mrd --version            the build identity, one line: package version + the
+                         commit the build read (`unknown` when it could reach
+                         no repository — read, never invented)
 ```
 
 `mrd help` is the authoritative surface — flags, refusal legs, and per-verb

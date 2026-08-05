@@ -281,6 +281,12 @@ The Edit-tool semantic model IS the wire write grammar: exact `old`/`new` replac
    "if_node_rev":"33d5b0e1b27cb48b"}]}
 ```
 
+**The CLI seam reads the `edits` VALUE, not this envelope.** `mrd put <PATH>`
+takes a BARE array on stdin — exactly what stands under `"edits"` above —
+because `id`, `op` and `path` are argv's on that face. Sending the whole
+request object is refused (`invalid type: map, expected a sequence`). The
+request shape shown here is the WIRE's; it is not a stdin template.
+
 Edit shapes — exactly two:
 
 | Shape | Semantics |

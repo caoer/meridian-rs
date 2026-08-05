@@ -999,6 +999,49 @@ fn put_malformed_now_is_exit_2() {
     );
 }
 
+/// Gate (G9, dogfood 2026-08-04 run 14) — the §4.4 REQUEST object on stdin is
+/// refused, and the refusal names the mistake instead of leaving a caller with
+/// "expected a sequence" and the doc that misled them.
+///
+/// The doc showed a request; the door wants the array under its `edits` key.
+/// This gate is what keeps the two faces from drifting apart again: it fails if
+/// the envelope ever silently starts working, and it fails if the refusal stops
+/// saying which shape stdin actually takes.
+#[test]
+fn the_wire_request_envelope_on_stdin_is_refused_by_name() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let envelope = r#"{"id":42,"op":"splice","path":"doc.md","edits":[
+        {"target":{"hpath":[{"h":"Alpha"}]},
+         "edit":{"match":{"old":"one","new":"ONE"}}}]}"#;
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], envelope);
+    assert_eq!(code(&out), 2, "a bad invocation, not a refusal");
+    let err = stderr(&out);
+    assert!(err.contains("BARE edits ARRAY"), "{err}");
+    assert!(err.contains("\"edits\""), "{err}");
+
+    // The shape it points at is the shape that works — asserted here so the
+    // hint can never teach a grammar the door does not accept.
+    let bare = r#"[{"target":{"hpath":[{"h":"Alpha"}]},
+                    "edit":{"match":{"old":"one","new":"ONE"}}}]"#;
+    let ok = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], bare);
+    assert_eq!(code(&ok), 0, "{}", stderr(&ok));
+}
+
+/// Gate (G9) — an object with no `edits` key gets the decoder's own message
+/// and NOTHING added: the hint fires on the diagnosed case only, so it can
+/// never mis-name some other malformed input.
+#[test]
+fn a_non_envelope_object_gets_no_envelope_hint() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--validate"], r#"{"nope":1}"#);
+    assert_eq!(code(&out), 2);
+    let err = stderr(&out);
+    assert!(err.contains("malformed edits JSON on stdin"), "{err}");
+    assert!(!err.contains("BARE edits ARRAY"), "{err}");
+}
+
 /// Gate — the USAGE text teaches both new verbs (printed on any unknown verb).
 #[test]
 fn usage_teaches_read_and_put() {
@@ -1013,5 +1056,23 @@ fn usage_teaches_read_and_put() {
     assert!(
         usage.contains("mrd put <PATH>"),
         "usage teaches put:\n{usage}"
+    );
+}
+
+/// Gate (G9) — `mrd put --help` states the stdin shape itself, rather than
+/// delegating the whole question to a wire section whose worked example shows
+/// a request object. The citation stays; what changed is that the help no
+/// longer needs the reader to notice which part of §4.4 it meant.
+#[test]
+fn put_help_states_the_bare_array_stdin_shape() {
+    let sb = sandbox();
+    let out = sb.run(sb.tmp.path(), &["put", "--help"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    assert!(page.contains("BARE JSON"), "{page}");
+    assert!(page.contains("§4.4"), "the wire citation stays:\n{page}");
+    assert!(
+        !page.contains("\"edits\":"),
+        "the help must not show the envelope it refuses:\n{page}"
     );
 }
