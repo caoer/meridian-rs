@@ -736,7 +736,14 @@ fn build_and_run_ephemeral(
         ))
     })?;
     let root = fs::WorkspaceRoot(canonical);
-    let (files, _f0) = fs::domain_snapshot(&root)
+    // F0 — the authoritative fold over exactly the bytes this build projects,
+    // under the workspace's own domain (filter + `version` prefix). It IS the
+    // stamp: the post-result comparison below is F0 vs F_now, and `fold_live`
+    // folds the same way, so the two sides can only differ when the corpus
+    // actually moved. Refolding it inside the view crate is what G14 was — a
+    // domain-blind `b3:` stamp against a `b3b:` live fold, STALE over identical
+    // content.
+    let (files, f0) = fs::domain_snapshot(&root)
         .map_err(|e| EphemeralError::NoCorpus(format!("cannot read the corpus: {e}")))?;
     let (_index, docs) = fs::build_corpus(files)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the corpus: {e}"))))?;
@@ -746,7 +753,7 @@ fn build_and_run_ephemeral(
     // consumer reads a working link as broken.
     let mounts = crate::walk_cmd::load_mounts();
     let corpus = mounts.rooted(&docs);
-    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set())
+    let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
 
     let as_of = read_as_of(&conn).map_err(EphemeralError::Fail)?;

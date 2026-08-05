@@ -17,6 +17,17 @@ fn doc(raw: &str) -> Document {
     model::build(raw.to_string(), syntax::parse(raw))
 }
 
+/// The corpus fold an ephemeral build is stamped with. In production the caller
+/// hands over the domain's own fold (`fs::domain_snapshot`); these fixtures have
+/// no domain config, so version 0 is that domain.
+fn fold(docs: &BTreeMap<String, Document>) -> String {
+    let files: Vec<(&str, &[u8])> = docs
+        .iter()
+        .map(|(path, d)| (path.as_str(), d.raw.as_bytes()))
+        .collect();
+    model::merkle_root(&files, 0).0
+}
+
 /// A fresh in-memory connection with the schema created (no rows).
 fn fresh_schema() -> Connection {
     let conn = Connection::open_in_memory().expect("open :memory:");
@@ -353,7 +364,7 @@ fn gate17_frontmatter_scalar_to_tag_rows() {
         "inline.md".to_string(),
         doc("---\ntags: [type/agent, type/task]\n---\n# H\n"),
     );
-    let conn = view::build_memory(&docs).unwrap();
+    let conn = view::build_memory(&docs, &fold(&docs)).unwrap();
     let n = scalar_i64(
         &conn,
         "SELECT count(*) FROM frontmatter_tag WHERE path='inline.md'",
@@ -369,7 +380,7 @@ fn gate17_frontmatter_scalar_to_tag_rows() {
         "both.md".to_string(),
         doc("---\ntag: solo\ntags: [one, two]\n---\n# H\n"),
     );
-    let conn = view::build_memory(&docs).unwrap();
+    let conn = view::build_memory(&docs, &fold(&docs)).unwrap();
     let singular_rows = scalar_i64(
         &conn,
         "SELECT count(*) FROM frontmatter_tag WHERE key='tag'",
@@ -392,7 +403,7 @@ fn gate17_block_form_frontmatter_is_zero_rows_fail_closed() {
         "block.md".to_string(),
         doc("---\ntags:\n  - type/agent\n  - type/task\n---\n# H\n"),
     );
-    let conn = view::build_memory(&docs).unwrap();
+    let conn = view::build_memory(&docs, &fold(&docs)).unwrap();
     let n = scalar_i64(
         &conn,
         "SELECT count(*) FROM frontmatter_tag WHERE path='block.md'",
@@ -410,7 +421,7 @@ fn gate17_block_form_frontmatter_is_zero_rows_fail_closed() {
 #[test]
 fn gate18_end_to_end_fixture() {
     let docs = fixture();
-    let conn = view::build_memory(&docs).expect("build_memory");
+    let conn = view::build_memory(&docs, &fold(&docs)).expect("build_memory");
 
     // 2 docs
     assert_eq!(scalar_i64(&conn, "SELECT count(*) FROM doc"), 2);
