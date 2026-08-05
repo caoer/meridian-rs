@@ -1,11 +1,11 @@
-//! The ≥-planted assertion: for every generated file, a correct parser must
-//! find at least the constructs the generator planted (the generator's
-//! recognizable-context invariant makes the inventory a sound lower bound).
-//! This extends correctness checking to arbitrary generated scale; the frozen
-//! GT pack in `testsuite` remains the only byte-exact truth.
+//! The ≥-planted assertion: for every generated file, a correct parser must find at least
+//! the constructs the generator planted (the generator's recognizable-context invariant
+//! makes the inventory a sound lower bound). This extends correctness checking to
+//! arbitrary generated scale; the frozen GT pack in `testsuite` remains the only
+//! byte-exact truth.
 //!
-//! Dormant: `#[ignore]` until rung 1 gives `syntax::parse` a body — remove the
-//! attribute when the rung lands (build-out obligation, see bench's lib doc).
+//! Dormant: `#[ignore]` until rung 1 gives `syntax::parse` a body — remove the attribute
+//! when the rung lands (build-out obligation, see bench's lib doc).
 
 use perfsuite::inventory::Inventory;
 use perfsuite::profile::{ConstructRate, KNOWN_CONSTRUCTS, Profile, Recipe, SizeDist};

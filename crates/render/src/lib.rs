@@ -1,31 +1,31 @@
-//! The COMPILED-IN render plane (M1 U4a1, decision D-Render-min): the
-//! [`Renderer`] trait with ONE production impl ([`ToonRenderer`]) and the
-//! node-grain walker ([`walk`]) — no pack API, no `Manifest`, no load gate;
-//! fixtures are ordinary golden tests.
+//! The COMPILED-IN render plane (M1 U4a1, decision D-Render-min): the [`Renderer`] trait
+//! with ONE production impl ([`ToonRenderer`]) and the node-grain walker ([`walk`]) — no
+//! pack API, no `Manifest`, no load gate; fixtures are ordinary golden tests.
 //!
 //! # Charter
-//! **Owns:** the token-efficient projection of a read — the TOON-compact face
-//! (U15, DECISION 27 · requirements D1 / decision 14 / R1.6), encoded by
-//! [`toon`] and pinned by the reviewed fixtures under
-//! `crates/testsuite/data/toon-goldens/` — and the two
-//! decoration hook points the marathon decisions reserve (seam now, behavior
-//! later):
-//! block elision by fenced-language tag (#8) at the walker — BUILT in U4b,
-//! opt-in via [`ToonRenderer::with_meridian_elision`] (the render-face
-//! production configuration; `default()` stays inert, which is the elision
-//! law: render-face only, and never on by accident) —
-//! and the `Link/Wikilink` visitor point (#6), NO-OP passthrough in M1
-//! (A-K1: stored bytes and the raw read/cat face never change — byte pin
+//! **Owns:** the token-efficient projection of a read — the TOON-compact face (U15,
+//! DECISION 27 · requirements D1 / decision 14 / R1.6), encoded by [`toon`] and pinned by
+//! the reviewed fixtures under `crates/testsuite/data/toon-goldens/` — and the two
+//! decoration hook points the marathon decisions reserve (seam now, behavior later):
+//! block elision by fenced-language tag (#8) at the walker — BUILT in U4b, opt-in via
+//! [`ToonRenderer::with_meridian_elision`] (the render-face production configuration;
+//! `default()` stays inert, which is the elision law: render-face only, and never on by
+//! accident) — and the `Link/Wikilink` visitor point (#6), NO-OP passthrough in M1 (A-K1:
+//! stored bytes and the raw read/cat face never change — byte pin
 //! #4: `meridian-*` blocks ride the raw face VERBATIM, elision is
 //! RENDER-face only).
 //!
-//! **Never does:** wire shapes (the composed read op is `wire-serve`'s),
-//! addressing computation (`wire-map::facts`), parsing (`syntax`), disk
-//! (`fs`).
+//! **Never does:** wire shapes (the composed read op is `wire-serve`'s), addressing
+//! computation (`wire-map::facts`), parsing (`syntax`), disk (`fs`).
 //!
 //! # G1 (panic-free law)
-//! The walker returns a typed [`RenderFailed`] `{node_kind, node_ref,
-//! reason}` — it NEVER panics; the sidecar serve loop is panic-free by law.
+//! The walker returns a typed [`RenderFailed`] `{node_kind, node_ref, reason}` — it NEVER
+//! panics; the sidecar serve loop is panic-free by law.
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeMap;
 

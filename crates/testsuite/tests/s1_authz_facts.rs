@@ -1,36 +1,36 @@
-//! S1 gate (stage-2), as amended by s1c: the composed read carries the AUTHZ
-//! FACTS — canonical hpaths, byte spans, and the `^id` ANCHORS — so
-//! ccc-statusd's put authz derives governing sections from the engine's facts
-//! instead of its own markdown mirror (`sanitizeHeadingHost`, M1 residual #4).
+//! S1 gate (stage-2), as amended by s1c: the composed read carries the AUTHZ FACTS —
+//! canonical hpaths, byte spans, and the `^id` ANCHORS — so ccc-statusd's put authz
+//! derives governing sections from the engine's facts instead of its own markdown mirror
+//! (`sanitizeHeadingHost`, M1 residual #4).
 //!
 //! Shaped after the Go-side drift guard the mirror-removal retires
-//! (`ccc-statusd/internal/mcpserver/sanitize_drift_guard_test.go`): over the
-//! SAME parity corpus, one live serve session per corpus root, comparing the
-//! HOST mirror's own input — the v2 `toc` op's RAW hpath segments, sanitized
-//! through the engine's single owner `model::gotext::sanitize_heading` (S0) —
-//! against the v3 composed-read row's canonical `hpath`.
+//! (`ccc-statusd/internal/mcpserver/sanitize_drift_guard_test.go`): over the SAME parity
+//! corpus, one live serve session per corpus root, comparing the HOST mirror's own input
+//! — the v2 `toc` op's RAW hpath segments, sanitized through the engine's single owner
+//! `model::gotext::sanitize_heading` (S0) — against the v3 composed-read row's canonical
+//! `hpath`.
 //!
 //! It then gates what the guard could not, because the row did not carry it:
 //!
-//! - every heading row and every anchor carries a `span`, byte-equal to the
-//!   v2 toc node's span for the same node — so the substitution the host
-//!   makes is fact-for-fact, not merely address-for-address;
-//! - the `^id` anchors are SURFACED (toc mode served headings only), with the
-//!   Go switch's drops intact (task/paragraph-hosted anchors stay
-//!   unaddressable);
-//! - `containingSectionTitles` (`puttoc.go:86`) computed from the v3 facts
-//!   ALONE equals the same walk over the v2 nodes the host reads today;
-//! - `rendered_text` never grows an anchor row — the captured Go toc bytes
-//!   are frozen.
+//! - every heading row and every anchor carries a `span`, byte-equal to the v2 toc node's
+//!   span for the same node — so the substitution the host makes is fact-for-fact, not
+//!   merely address-for-address;
+//! - the `^id` anchors are SURFACED (toc mode served headings only), with the Go switch's
+//!   drops intact (task/paragraph-hosted anchors stay unaddressable);
+//! - `containingSectionTitles` (`puttoc.go:86`) computed from the v3 facts ALONE equals
+//!   the same walk over the v2 nodes the host reads today;
+//! - `rendered_text` never grows an anchor row — the captured Go toc bytes are frozen.
 //!
-//! **s1c amends S1's ONE assertion that was wrong.** S1 put the anchor rows
-//! in the `toc` array beside the headings, discriminated by `depth == 0`;
-//! ccc-statusd's `readText` indents by `strings.Repeat("  ", depth-1)` and
-//! panicked "negative Repeat count" on the first file with a block anchor.
-//! The anchors now ride their own always-emitted `anchors[]`, so this file
-//! gates the SHAPE, not a discriminator: `toc` is heading-only over the whole
-//! corpus, `anchors[]` is present on every read, and the containment join
+//! **s1c amends S1's ONE assertion that was wrong.** S1 put the anchor rows in the `toc`
+//! array beside the headings, discriminated by `depth == 0`; ccc-statusd's `readText`
+//! indents by `strings.Repeat(" ", depth-1)` and panicked "negative Repeat count" on the
+//! first file with a block anchor. The anchors now ride their own always-emitted
+//! `anchors[]`, so this file gates the SHAPE, not a discriminator: `toc` is heading-only
+//! over the whole corpus, `anchors[]` is present on every read, and the containment join
 //! still agrees with the v2 nodes across the two planes.
+//!
+//!
+//!
 
 use model::gotext::sanitize_heading;
 use serde_json::{Value, json};

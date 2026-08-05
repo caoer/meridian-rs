@@ -1,27 +1,27 @@
 //! **U36 — elision is PER-LANGUAGE, derived from a property, never from a list.**
 //!
-//! A namespace answers *"is this ours?"*. Elision answers *"should a reader see
-//! it?"*. `lock::is_meridian_lang` served both, so `mrd read MERIDIAN.md`
-//! printed the prose and dropped every mount block the user had authored —
-//! byte-identically to a config that declares nothing (U6, pinned in
-//! `meridian_md.rs`).
+//! A namespace answers *"is this ours?"*. Elision answers *"should a reader see it?"*.
+//! `lock::is_meridian_lang` served both, so `mrd read MERIDIAN.md` printed the prose and
+//! dropped every mount block the user had authored — byte-identically to a config that
+//! declares nothing (U6, pinned in `meridian_md.rs`).
 //!
-//! The property that separates them is **"does the ENGINE EMIT this block's
-//! bytes?"** — `lock::is_engine_emitted`, derived from the registered canonical
-//! writers (`lock::EngineEmitted`).
+//! The property that separates them is **"does the ENGINE EMIT this block's bytes?"** —
+//! `lock::is_engine_emitted`, derived from the registered canonical writers
+//! (`lock::EngineEmitted`).
 //!
 //! # The gate is BOTH directions, and one alone is insufficient (S3-R17)
 //!
-//! 1. a NEW engine-emitted block, added **without touching the elision
-//!    predicate**, IS elided;
-//! 2. a language the engine only **PARSES** is **NOT** elided — no matter which
-//!    crate names it.
+//! 1. a NEW engine-emitted block, added **without touching the elision predicate**, IS
+//!    elided;
+//! 2. a language the engine only **PARSES** is **NOT** elided — no matter which crate
+//!    names it.
 //!
-//! (2) is what makes this a law rather than a namespace test in disguise, and it
-//! is the half that reddens: on the pre-U36 tree `meridian-mount` is elided, and
-//! under a *mention*-keyed derivation it is elided again, because `crates/config`
-//! names `meridian-mount` in a `pub const`. Both reddens are recorded in the U36
-//! card.
+//! (2) is what makes this a law rather than a namespace test in disguise, and it is the
+//! half that reddens: on the pre-U36 tree `meridian-mount` is elided, and under a
+//! *mention*-keyed derivation it is elided again, because `crates/config` names
+//! `meridian-mount` in a `pub const`. Both reddens are recorded in the U36 card.
+//!
+//!
 
 use render::{Header, RenderJob, Renderer, SectionRow, ToonRenderer};
 use wire_map::facts::{ReadFact, read_facts};

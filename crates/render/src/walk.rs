@@ -1,11 +1,11 @@
-//! The node-grain section walker: emits a section's RENDERED content with
-//! the block-elision hook applied pre-emit (decision #8 seam). With the hook
-//! inert (the M1 default) the emission is byte-identical to the raw content
-//! slice — the U0 goldens pin that identity; the raw read/cat face NEVER
-//! routes through here.
+//! The node-grain section walker: emits a section's RENDERED content with the
+//! block-elision hook applied pre-emit (decision #8 seam). With the hook inert (the M1
+//! default) the emission is byte-identical to the raw content slice — the U0 goldens pin
+//! that identity; the raw read/cat face NEVER routes through here.
 //!
-//! G1: every failure is a typed [`RenderFailed`] — no indexing without a
-//! bounds check, no panics.
+//! G1: every failure is a typed [`RenderFailed`] — no indexing without a bounds check, no
+//! panics.
+//!
 
 use crate::{ClaimLink, Decorations, ElideBy, RenderFailed};
 use wire_map::facts::ReadFact;

@@ -1,15 +1,15 @@
 //! Per-drawer advisory lock (amendment m3).
 //!
-//! Registration mutations, last-use stamping, GC, and targeted removal all take
-//! this lock so the reaper never races a live workspace. The lock is `flock(2)`
-//! on the **drawer directory** fd — the directory inode is stable (never
-//! renamed), so it correctly serializes callers that atomically replace the
-//! sentinel via tmp+rename (which swaps the sentinel inode out from under any
-//! lock held on the sentinel file itself).
+//! Registration mutations, last-use stamping, GC, and targeted removal all take this lock
+//! so the reaper never races a live workspace. The lock is `flock(2)` on the **drawer
+//! directory** fd — the directory inode is stable (never renamed), so it correctly
+//! serializes callers that atomically replace the sentinel via tmp+rename (which swaps
+//! the sentinel inode out from under any lock held on the sentinel file itself).
 //!
-//! `flock` locks are associated with the open file description, so two
-//! independent opens of one directory — even within a single process — contend:
-//! a held exclusive lock makes another exclusive `try_acquire` return `None`.
+//! `flock` locks are associated with the open file description, so two independent opens
+//! of one directory — even within a single process — contend: a held exclusive lock makes
+//! another exclusive `try_acquire` return `None`.
+//!
 
 use std::fs::File;
 use std::io;

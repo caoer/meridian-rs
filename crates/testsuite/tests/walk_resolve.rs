@@ -1,13 +1,13 @@
 //! M2-RESOLVE — the walk plane through `model::walk`, and the two-plane splits.
 //!
-//! Gate 2: the `obsidian-compat@1.12.7` app-oracle pack (`resolution.expected.json`)
-//! is reproduced probe-for-probe by `walk.rs` — every value comes from the live
-//! oracle, none hand-written. Gate 3: the duplicate-anchor split — the mint plane
-//! refuses `ambiguous_ref` (loud) where the walk plane silently picks (last-wins,
-//! frozen §2.1). Gate 4: the re-homed CHARSET-GUARD walk-vs-mint split — a
-//! `_`-bearing id is `bad_request` on the mint plane and `ref_not_found` (app
-//! silent-drop) on the walk. Plus the gate-3 adversarial harness `p2-walk-probes`
-//! run against `walk.rs` over the walkvault corpus.
+//! Gate 2: the `obsidian-compat@1.12.7` app-oracle pack (`resolution.expected.json`) is
+//! reproduced probe-for-probe by `walk.rs` — every value comes from the live oracle, none
+//! hand-written. Gate 3: the duplicate-anchor split — the mint plane refuses
+//! `ambiguous_ref` (loud) where the walk plane silently picks (last-wins, frozen §2.1).
+//! Gate 4: the re-homed CHARSET-GUARD walk-vs-mint split — a `_`-bearing id is
+//! `bad_request` on the mint plane and `ref_not_found` (app silent-drop) on the walk.
+//! Plus the gate-3 adversarial harness `p2-walk-probes` run against `walk.rs` over the
+//! walkvault corpus.
 
 use model::walk::{Location, Miss, Stage, walk};
 use model::{BadAnchorId, CorpusIndex, Document, Ref, ResolveError, build};

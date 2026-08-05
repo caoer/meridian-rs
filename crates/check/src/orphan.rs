@@ -1,36 +1,36 @@
-//! The orphan lint (G3): run receipts that record an authorisation with no
-//! completion.
+//! The orphan lint (G3): run receipts that record an authorisation with no completion.
 //!
 //! # What an orphan is
-//! The run plane writes up to two receipt lines per invocation, joined by the
-//! invocation id: a PRE-EXEC receipt anchored `^p-run-<invocation>` when a run
-//! is authorised, and a COMPLETION receipt anchored `^r-run-<invocation>` when
-//! it finishes. A pre-exec with no completion means the record cannot show that
-//! run finished — a run that died mid-exec is exactly this shape, and the
-//! pre-exec receipt exists to make it visible.
+//! The run plane writes up to two receipt lines per invocation, joined by the invocation
+//! id: a PRE-EXEC receipt anchored `^p-run-<invocation>` when a run is authorised, and a
+//! COMPLETION receipt anchored `^r-run-<invocation>` when it finishes. A pre-exec with no
+//! completion means the record cannot show that run finished — a run that died mid-exec
+//! is exactly this shape, and the pre-exec receipt exists to make it visible.
 //!
-//! The design named this lint three times and nobody built it, so until now
-//! nothing read the receipts back. An anchor whose reader does not exist is a
-//! plan, not a detector.
+//! The design named this lint three times and nobody built it, so until now nothing read
+//! the receipts back. An anchor whose reader does not exist is a plan, not a detector.
 //!
 //! # The era boundary, and why it is derived from the page itself
-//! Builds before the completion marker landed wrote NO completion receipt when
-//! a task emitted no descriptors — so a zero-effect run that genuinely
-//! succeeded left exactly the bytes an abandoned run leaves. Those invocations
-//! are **unauditable by construction**: the record cannot prove they finished,
-//! and a lint that quietly excused them would assert what the bytes do not
-//! support.
+//! Builds before the completion marker landed wrote NO completion receipt when a task
+//! emitted no descriptors — so a zero-effect run that genuinely succeeded left exactly
+//! the bytes an abandoned run leaves. Those invocations are **unauditable by
+//! construction**: the record cannot prove they finished, and a lint that quietly excused
+//! them would assert what the bytes do not support.
 //!
-//! They are still orphans and still flagged. What changes is the RENDERING:
-//! four permanently-red items that can never clear train exactly the
-//! bump-without-reading habit that made stale pins go green for weeks, so the
-//! era is named where a reader sees it.
+//! They are still orphans and still flagged. What changes is the RENDERING: four
+//! permanently-red items that can never clear train exactly the bump-without-reading
+//! habit that made stale pins go green for weeks, so the era is named where a reader sees
+//! it.
 //!
-//! The boundary is read off the page rather than configured: the first
-//! completion receipt proves the writer was capable of emitting one, so
-//! pre-exec receipts BEFORE it belong to the era that could not, and any
-//! after it is a live incident. No build id, no date, no external state — the
-//! evidence for the boundary is in the same bytes as the finding.
+//! The boundary is read off the page rather than configured: the first completion receipt
+//! proves the writer was capable of emitting one, so pre-exec receipts BEFORE it belong
+//! to the era that could not, and any after it is a live incident. No build id, no date,
+//! no external state — the evidence for the boundary is in the same bytes as the finding.
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::{BTreeMap, BTreeSet};
 

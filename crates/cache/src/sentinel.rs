@@ -1,11 +1,11 @@
 //! The sentinel (`registered.json`): the registration signal, its atomic +
 //! create-exclusive write, and corrupt-is-a-miss probing.
 //!
-//! `mkdir` is NOT registration — a crash after `mkdir` but before the payload
-//! would leave a bare directory that a dir-stat probe reads as a valid
-//! registration forever, inverting the shipped safety property "a corrupt shard
-//! is a miss, never a hit" (amendment C1). The sentinel is the signal: the probe
-//! stats the sentinel, never the directory.
+//! `mkdir` is NOT registration — a crash after `mkdir` but before the payload would leave
+//! a bare directory that a dir-stat probe reads as a valid registration forever,
+//! inverting the shipped safety property "a corrupt shard is a miss, never a hit"
+//! (amendment C1). The sentinel is the signal: the probe stats the sentinel, never the
+//! directory.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};

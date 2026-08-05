@@ -1,47 +1,47 @@
-//! The m3 drawer flock releases when its guard drops — even while this process
-//! has a forked child holding a copy of the lock fd.
+//! The m3 drawer flock releases when its guard drops — even while this process has a
+//! forked child holding a copy of the lock fd.
 //!
 //! # The bug this pins (R19's third instance, and the worst of the three)
-//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates
-//! every descriptor; `FD_CLOEXEC` acts at exec, not at fork. So any thread
-//! spawning any subprocess transiently holds a copy of every open fd between its
-//! fork and its exec. `DrawerLock` had **no `Drop` impl at all** — it released
-//! by letting its `File` field close — so a guard dropped inside that window did
-//! NOT release the lock: the child's copy kept the description alive.
+//! A `flock` lock belongs to the open file DESCRIPTION, and `fork` duplicates every
+//! descriptor; `FD_CLOEXEC` acts at exec, not at fork. So any thread spawning any
+//! subprocess transiently holds a copy of every open fd between its fork and its exec.
+//! `DrawerLock` had **no `Drop` impl at all** — it released by letting its `File` field
+//! close — so a guard dropped inside that window did NOT release the lock: the child's
+//! copy kept the description alive.
 //!
-//! `fs::WriteLock` and `run::executor::WorkspaceLock` carried the identical
-//! defect and were fixed first (measured on the fs one: 12 of 60 unrelated
-//! writes refused). This lock is the same defect with a **worse failure mode**,
-//! because it is the only BLOCKING acquire in the codebase: `DrawerLock::acquire`
-//! takes `LOCK_EX` without `LOCK_NB`, so a leaked description does not degrade to
-//! the fast typed `workspace_busy` refusal its two fixed siblings give — it
-//! degrades to a **HANG**.
+//! `fs::WriteLock` and `run::executor::WorkspaceLock` carried the identical defect and
+//! were fixed first (measured on the fs one: 12 of 60 unrelated writes refused). This
+//! lock is the same defect with a **worse failure mode**, because it is the only BLOCKING
+//! acquire in the codebase: `DrawerLock::acquire` takes `LOCK_EX` without `LOCK_NB`, so a
+//! leaked description does not degrade to the fast typed `workspace_busy` refusal its two
+//! fixed siblings give — it degrades to a **HANG**.
 //!
 //! # The two live paths, both inside the registry daemon
-//! 1. **The process-lifetime singleton.** `registry::server` takes a `DrawerLock`
-//!    on the registry directory for the daemon's whole lifetime
-//!    (`server.rs:159`, `_singleton`) while its connection threads fork `git`
-//!    inside `splice` (`server.rs:843` → `wire_serve::write::splice` →
-//!    `write.rs:1674` `git::Repo::at` → `git/src/lib.rs:312` `Command::new`).
-//!    The leak bites at **shutdown**: a successor daemon's `try_acquire` returns
-//!    `None` and it refuses *"another meridian registry daemon is already
+//! 1. **The process-lifetime singleton.** `registry::server` takes a `DrawerLock` on the
+//!    registry directory for the daemon's whole lifetime (`server.rs:159`, `_singleton`)
+//!    while its connection threads fork `git` inside `splice` (`server.rs:843` →
+//!    `wire_serve::write::splice` → `write.rs:1674` `git::Repo::at` → `git/src/lib.rs:312`
+//!    `Command::new`). The leak bites at **shutdown**: a successor daemon's `try_acquire`
+//!    returns `None` and it refuses *"another meridian registry daemon is already
 //!    running"* (`server.rs:160`) for a daemon that has already exited.
 //! 2. **Per-drawer locks** taken by `cache::register` (`sentinel.rs:150`) from a
-//!    connection thread. Here the leak is the hang: the next `register` on that
-//!    drawer waits forever on a holder that is gone.
+//!    connection thread. Here the leak is the hang: the next `register` on that drawer
+//!    waits forever on a holder that is gone.
 //!
-//! Both paths are asserted below, each through the acquire mode its production
-//! site uses — non-blocking `try_acquire` for the singleton, blocking `acquire`
-//! for the drawer.
+//! Both paths are asserted below, each through the acquire mode its production site uses
+//! — non-blocking `try_acquire` for the singleton, blocking `acquire` for the drawer.
 //!
 //! # Why this file forks by hand
 //! `Command::spawn` returns only after the child has exec'd, and exec closes the
-//! `O_CLOEXEC` lock fd, so a spawn-driven test has no live fd copy at the moment
-//! of the drop and passes with the defect fully restored (measured on the fs
-//! sibling: 400/400 with the explicit unlock reverted, two reviewers
-//! independently). The child here parks on `pause()` and never execs, so the
-//! window is held open on demand rather than raced for — and the control test
-//! below asserts that it really is open, so this file cannot go quietly vacuous.
+//! `O_CLOEXEC` lock fd, so a spawn-driven test has no live fd copy at the moment of the
+//! drop and passes with the defect fully restored (measured on the fs sibling: 400/400
+//! with the explicit unlock reverted, two reviewers independently). The child here parks
+//! on `pause()` and never execs, so the window is held open on demand rather than raced
+//! for — and the control test below asserts that it really is open, so this file cannot
+//! go quietly vacuous.
+//!
+//!
+//!
 
 use std::io;
 use std::os::unix::io::AsRawFd;

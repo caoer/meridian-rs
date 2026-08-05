@@ -1,32 +1,32 @@
-//! Presets + session birth (U5.3) — a preset is a def file whose `inputs` pin
-//! the convention floor; `unfold` materializes the declared scaffold through the
-//! U2.6 guarded create; `new` births one record from the def's `^template` after
-//! validating it against the def's `^properties`.
+//! Presets + session birth (U5.3) — a preset is a def file whose `inputs` pin the
+//! convention floor; `unfold` materializes the declared scaffold through the U2.6 guarded
+//! create; `new` births one record from the def's `^template` after validating it against
+//! the def's `^properties`.
 //!
 //! # Charter
-//! **Owns:** the preset-def grammar (`type: def` + a multi-line `inputs` block
-//! sequence pinning the floor + `# Properties`/`^properties`,
-//! `# Template`/`^template`, `# Unfold` body sections), its validation, and the
-//! two births — [`unfold`] (the whole scaffold set) and [`new_record`] (one
-//! `^template` record). Every birth rides the ONE write path
-//! ([`wire_serve::write::create`], d2 §2.5 C3 / U2.6): CAS `if_absent`,
-//! journaled birth, gate seam — so every scaffold file carries a birth receipt
-//! (an `op=create` journal row) and no write dodges the guard.
+//! **Owns:** the preset-def grammar (`type: def` + a multi-line `inputs` block sequence
+//! pinning the floor + `# Properties`/`^properties`, `# Template`/`^template`, `# Unfold`
+//! body sections), its validation, and the two births — [`unfold`] (the whole scaffold
+//! set) and [`new_record`] (one `^template` record). Every birth rides the ONE write path
+//! ([`wire_serve::write::create`], d2 §2.5 C3 / U2.6): CAS `if_absent`, journaled birth,
+//! gate seam — so every scaffold file carries a birth receipt (an `op=create` journal
+//! row) and no write dodges the guard.
 //!
-//! **Never does:** invent a second write path (birth is guarded create, never a
-//! raw `fs::write`), mint identity or a clock (`actor`/`now` are caller-supplied,
-//! §9), or hold session policy / liveness (that is the customer's — docs/laws.md
-//! charter). mrd dials these; it re-implements none of it.
+//! **Never does:** invent a second write path (birth is guarded create, never a raw
+//! `fs::write`), mint identity or a clock (`actor`/`now` are caller-supplied, §9), or
+//! hold session policy / liveness (that is the customer's — docs/laws.md charter). mrd
+//! dials these; it re-implements none of it.
 //!
 //! # The U2.11 safe grain (d2 §5.5, law)
-//! A preset's `inputs` is a multi-line frontmatter block sequence. It is READ
-//! through the U2.11 whole-value `fm_key` grain ([`model::resolve`] on
-//! [`model::Ref::FmKey`]) — never a line-oriented scan that would stop at the key
-//! line — and the preset pin a birth writes into its root record is RENDERED as a
-//! whole block-sequence value and written atomically as the file's birth bytes,
-//! never a single-line properties upsert (which the U2.11 corruption guard
-//! refuses). [`render_block_sequence`] + the grain read are the two halves of
-//! that round trip.
+//! A preset's `inputs` is a multi-line frontmatter block sequence. It is READ through the
+//! U2.11 whole-value `fm_key` grain ([`model::resolve`] on [`model::Ref::FmKey`]) — never
+//! a line-oriented scan that would stop at the key line — and the preset pin a birth
+//! writes into its root record is RENDERED as a whole block-sequence value and written
+//! atomically as the file's birth bytes, never a single-line properties upsert (which the
+//! U2.11 corruption guard refuses). [`render_block_sequence`] + the grain read are the
+//! two halves of that round trip.
+//!
+//!
 
 use model::{Document, NodeKind, Ref, YamlMap};
 use serde::Serialize;

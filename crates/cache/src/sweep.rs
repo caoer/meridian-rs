@@ -1,12 +1,12 @@
-//! The Cargo-grade last-use GC sweep, drawer listing (`cache ls`), and targeted
-//! removal (`unregister` / `clean`).
+//! The Cargo-grade last-use GC sweep, drawer listing (`cache ls`), and targeted removal
+//! (`unregister` / `clean`).
 //!
 //! A path-keyed drawer store without a reaper is the Bazel/VSCode disk-leak class
 //! (decision 0001 round 4). GC reaps only drawers with a **valid current-schema
-//! sentinel** whose last-use is past the threshold and that are **not currently
-//! locked** by a live workspace (amendment m3). Corrupt and future-schema drawers
-//! are left for explicit `clean` — GC never guesses a workspace path any way but
-//! the sentinel (amendment C3).
+//! sentinel** whose last-use is past the threshold and that are **not currently locked**
+//! by a live workspace (amendment m3). Corrupt and future-schema drawers are left for
+//! explicit `clean` — GC never guesses a workspace path any way but the sentinel
+//! (amendment C3).
 
 use std::fs;
 use std::io;

@@ -1,37 +1,37 @@
 //! Read-is-the-mint: the in-memory read-receipt ledger (stage-2 S6, D6/D9/D16).
 //!
 //! # What this is
-//! One actor read one selector at one rev. That fact — minted at the
-//! composed-read seam, held in daemon-session memory — is what a later pin
-//! gate (S7) consults to enforce the property **you cannot attest content that
-//! was never in your context**.
+//! One actor read one selector at one rev. That fact — minted at the composed-read seam,
+//! held in daemon-session memory — is what a later pin gate (S7) consults to enforce the
+//! property **you cannot attest content that was never in your context**.
 //!
 //! # Why it is NOT hung off the warm engine (H1, the reason this exists)
-//! The registry daemon rebuilds a workspace's warm engine whenever the corpus
-//! content hash changes (`registry::Registry::warm_or_build`). A pin WRITES —
-//! so a receipt living inside `WorkspaceEngine` would be evaporated by the very
-//! write the receipt authorized. This ledger is therefore a SEPARATE
-//! daemon-session layer, held beside the engines and untouched by any rebuild.
-//! `registry::Registry::read_mints` is its production holder; the gate proving
-//! survival is `crates/registry/tests/read_mint.rs`.
+//! The registry daemon rebuilds a workspace's warm engine whenever the corpus content
+//! hash changes (`registry::Registry::warm_or_build`). A pin WRITES — so a receipt living
+//! inside `WorkspaceEngine` would be evaporated by the very write the receipt authorized.
+//! This ledger is therefore a SEPARATE daemon-session layer, held beside the engines and
+//! untouched by any rebuild. `registry::Registry::read_mints` is its production holder;
+//! the gate proving survival is `crates/registry/tests/read_mint.rs`.
 //!
 //! # Grain (D6) and content (D9)
-//! **Selector-grained, never doc-level:** the key is (actor, path, selector), so
-//! reading section A cannot gate a pin into unseen section B. **A minimal
-//! mechanical fact:** actor, target selector, rev — never a `predicate_type`
-//! verdict envelope (that unification is stage-3), never any content bytes.
+//! **Selector-grained, never doc-level:** the key is (actor, path, selector), so reading
+//! section A cannot gate a pin into unseen section B. **A minimal mechanical fact:**
+//! actor, target selector, rev — never a `predicate_type` verdict envelope (that
+//! unification is stage-3), never any content bytes.
 //!
 //! # No persistence (D6)
-//! Memory only, per daemon-session, dropped when the daemon exits or the
-//! workspace is idle-reaped. This ledger performs NO I/O and holds no path to
-//! disk; the persisted `^receipt` projection is a different thing (this crate's
+//! Memory only, per daemon-session, dropped when the daemon exits or the workspace is
+//! idle-reaped. This ledger performs NO I/O and holds no path to disk; the persisted
+//! `^receipt` projection is a different thing (this crate's
 //! [`render_line`](crate::render_line)) and stays stage-3's to unify.
 //!
 //! # D12 (cross-root seam)
-//! The key carries a `path` spelling verbatim and never parses it, so a later
-//! `root:` prefix rides through unchanged. Mount identity is the HOLDER's key
-//! (one store per canonical workspace in the registry), never a field here —
-//! nothing in this module knows that there is exactly one root.
+//! The key carries a `path` spelling verbatim and never parses it, so a later `root:`
+//! prefix rides through unchanged. Mount identity is the HOLDER's key (one store per
+//! canonical workspace in the registry), never a field here — nothing in this module
+//! knows that there is exactly one root.
+//!
+//!
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};

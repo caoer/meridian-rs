@@ -1,34 +1,34 @@
-//! **The read face's own contract, over the U0 corpus** — the gate that
-//! REPLACES the retired Go-parity golden replays (U14, docket row P9).
+//! **The read face's own contract, over the U0 corpus** — the gate that REPLACES the
+//! retired Go-parity golden replays (U14, docket row P9).
 //!
 //! # Why the goldens retired here, and what that cost
-//! `data/parity/goldens/` held 11 captures of meridian-go's read face: the
-//! request each step sent, the `text` it rendered, and the `structured` body it
-//! returned. Four gates replayed them —
-//! `u0_read_parity` (engine facts vs `structured`), `u4a1_render_parity` (the
-//! `text` bytes), `u4a2_composed_read` (the same over the wire), and
+//! `data/parity/goldens/` held 11 captures of meridian-go's read face: the request each
+//! step sent, the `text` it rendered, and the `structured` body it returned. Four gates
+//! replayed them — `u0_read_parity` (engine facts vs `structured`), `u4a1_render_parity`
+//! (the `text` bytes), `u4a2_composed_read` (the same over the wire), and
 //! `s1_authz_facts::extended_rows_match_the_captured_go_toc_rows`.
 //!
 //! Every one of them fed a CAPTURED REQUEST into the engine's selector API:
-//! `args["ref"]`, `args["sections"]` — joined strings, in the grammar U14
-//! removed. That grammar is not a spelling those gates could be updated to
-//! stop using; it is the thing under test. And the captures cannot be re-taken:
-//! meridian-go is a dying bridge (`CLAUDE.md`, end-state ruling 2026-07-22 plus
-//! the 2026-07-26 amendment), it never served the redesigned contract, and the
-//! remaining legs owe it no byte parity. A capture you cannot re-take against a
-//! contract you have redesigned is not a gate; it is a snapshot of a world that
-//! has been superseded.
+//! `args["ref"]`, `args["sections"]` — joined strings, in the grammar U14 removed. That
+//! grammar is not a spelling those gates could be updated to stop using; it is the thing
+//! under test. And the captures cannot be re-taken: meridian-go is a dying bridge
+//! (`CLAUDE.md`, end-state ruling 2026-07-22 plus the 2026-07-26 amendment), it never
+//! served the redesigned contract, and the remaining legs owe it no byte parity. A
+//! capture you cannot re-take against a contract you have redesigned is not a gate; it is
+//! a snapshot of a world that has been superseded.
 //!
-//! **Following the `u4a2` precedent exactly** (ruling `d9419c03`, and the
-//! U0/U5/U5b refusal-pin retirements before it): the byte pins are CONVERTED
-//! into contracts over the engine's own stated laws, per case, and no shared
-//! assertion is loosened to make room. The corpus itself is NOT a capture — it
-//! is 11 hand-built input documents — so it stays, and this file replays every
-//! one of them. What is gone is the claim that the engine must agree with
-//! meridian-go's bytes. What replaces it is the claim that the engine agrees
-//! with ITSELF, which is the property a consumer actually depends on.
+//! **Following the `u4a2` precedent exactly** (ruling `d9419c03`, and the U0/U5/U5b
+//! refusal-pin retirements before it): the byte pins are CONVERTED into contracts over
+//! the engine's own stated laws, per case, and no shared assertion is loosened to make
+//! room. The corpus itself is NOT a capture — it is 11 hand-built input documents — so it
+//! stays, and this file replays every one of them. What is gone is the claim that the
+//! engine must agree with meridian-go's bytes. What replaces it is the claim that the
+//! engine agrees with ITSELF, which is the property a consumer actually depends on.
 //!
 //! U15 mints the TOON goldens that re-pin the rendered face.
+//!
+//!
+//!
 
 use wire_map::facts::{ReadFact, anchor_rows, read_facts, resolve_selector, section_content};
 

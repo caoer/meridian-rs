@@ -1,15 +1,15 @@
-//! D3-DELTA gate 1: the E3/E4 Delta fixtures byte-exact vs COMPUTED values —
-//! `seq`, roots, `file_rev`s, and node entries all derived by the engine, never
-//! transcribed (contract §7.1 worked frames are the assertion target).
+//! D3-DELTA gate 1: the E3/E4 Delta fixtures byte-exact vs COMPUTED values — `seq`,
+//! roots, `file_rev`s, and node entries all derived by the engine, never transcribed
+//! (contract §7.1 worked frames are the assertion target).
 //!
-//! Fixture derivation discipline (Advisor-gated Flag A): S1/S2 states derive
-//! from the frozen §4.4 worked splice requests applied to the committed S0
-//! bytes — E3: `"ship by August"→"ship by September"` on plan + the §6.3 E3
-//! receipt line appended; E4: `put:end "- new item\n"` on plan Q4 + the E4
-//! receipt line. The derived S2 plan is cross-checked byte-identical to the
-//! committed `wsfix/s2` fixture. If ANY derived value disagrees with a
-//! printed §7.1 value this suite fails — the STOP condition; bytes are never
+//! Fixture derivation discipline (Advisor-gated Flag A): S1/S2 states derive from the
+//! frozen §4.4 worked splice requests applied to the committed S0 bytes — E3: `"ship by
+//! August"→"ship by September"` on plan + the §6.3 E3 receipt line appended; E4: `put:end
+//! "- new item\n"` on plan Q4 + the E4 receipt line. The derived S2 plan is cross-checked
+//! byte-identical to the committed `wsfix/s2` fixture. If ANY derived value disagrees
+//! with a printed §7.1 value this suite fails — the STOP condition; bytes are never
 //! hand-tuned.
+//!
 
 use serde_json::{Value, json};
 

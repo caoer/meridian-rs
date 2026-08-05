@@ -1,13 +1,13 @@
-//! U5.3 merge gate — the named preset + session-birth fixtures (plan Block 5
-//! U5.3 Test: line), each driving the REAL U2.6 guarded create over an on-disk
-//! workspace (no in-memory double — fidelity is the point):
+//! U5.3 merge gate — the named preset + session-birth fixtures (plan Block 5 U5.3 Test:
+//! line), each driving the REAL U2.6 guarded create over an on-disk workspace (no
+//! in-memory double — fidelity is the point):
 //!
-//! - Gate 1: `unfold_births_every_scaffold_file`
-//!   (the sweep asserts the FULL declared scaffold set, not a sample).
-//! - Gate 2: `def_invalid_new_refuses_naming_the_def_rule`
-//!   (the refusal code conforms to the closed §8 taxonomy — row 17 `def_invalid`).
-//! - Gate 3: `unfold_on_an_existing_path_refuses_via_cas_if_absent`
-//!   (guarded-create semantics hold under unfold — no unguarded clobber).
+//! - Gate 1: `unfold_births_every_scaffold_file` (the sweep asserts the FULL declared
+//!   scaffold set, not a sample).
+//! - Gate 2: `def_invalid_new_refuses_naming_the_def_rule` (the refusal code conforms to
+//!   the closed §8 taxonomy — row 17 `def_invalid`).
+//! - Gate 3: `unfold_on_an_existing_path_refuses_via_cas_if_absent` (guarded-create
+//!   semantics hold under unfold — no unguarded clobber).
 //!
 //! Plus: the preset pins the convention floor + the U2.11 block-sequence grain
 //! round-trips the born root record's `inputs` pin.

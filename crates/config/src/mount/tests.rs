@@ -1,17 +1,17 @@
 //! The mount table's gates.
 //!
-//! Every refusal here is asserted **beside its acceptance** (S3-R8(c)): a guard
-//! proven only by what it blocks is indistinguishable from one that blocks
-//! everything, and the mount law has four places where refusing everything
-//! would look like success — the ceiling, the nesting test, the declared-vs-bound
-//! check, and the claim.
+//! Every refusal here is asserted **beside its acceptance** (S3-R8(c)): a guard proven
+//! only by what it blocks is indistinguishable from one that blocks everything, and the
+//! mount law has four places where refusing everything would look like success — the
+//! ceiling, the nesting test, the declared-vs-bound check, and the claim.
 //!
 //! # Environment preconditions fail LOUDLY, never silently
-//! The deny ceiling reads the process environment (`HOME`, the `XDG_*` bases,
-//! the cache root) and `workspace::deny_reason` is reused, not re-implemented,
-//! so these gates read it too. Where a directory is required, it is `expect`ed
-//! with the reason — **not skipped.** A skipped ceiling gate is a false negative
-//! that agrees with the failure it exists to detect.
+//! The deny ceiling reads the process environment (`HOME`, the `XDG_*` bases, the cache
+//! root) and `workspace::deny_reason` is reused, not re-implemented, so these gates read
+//! it too. Where a directory is required, it is `expect`ed with the reason — **not
+//! skipped.** A skipped ceiling gate is a false negative that agrees with the failure it
+//! exists to detect.
+//!
 
 use std::path::{Path, PathBuf};
 

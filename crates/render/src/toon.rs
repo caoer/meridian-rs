@@ -1,40 +1,40 @@
-//! The TOON-compact encoder (U15, DECISION 27 · requirements D1 / decision 14
-//! / R1.6): **our own**, over a fixed-shape value model.
+//! The TOON-compact encoder (U15, DECISION 27 · requirements D1 / decision 14 / R1.6):
+//! **our own**, over a fixed-shape value model.
 //!
-//! `toon-format/spec` (v4.1 working draft, 2026-07-26) and `toon-rust` were
-//! read as REFERENCE and are not depended on. The render face encodes a
-//! handful of statically-known shapes — a header object plus one uniform row
-//! table — so a serde-driven general encoder would buy a generality this plane
-//! never spends, and what it would cost is a dependency on someone else's
-//! quoting law at the exact seam where the goldens pin bytes. The spec's
-//! normative rules are reproduced here as code and named at each predicate.
+//! `toon-format/spec` (v4.1 working draft, 2026-07-26) and `toon-rust` were read as
+//! REFERENCE and are not depended on. The render face encodes a handful of
+//! statically-known shapes — a header object plus one uniform row table — so a
+//! serde-driven general encoder would buy a generality this plane never spends, and what
+//! it would cost is a dependency on someone else's quoting law at the exact seam where
+//! the goldens pin bytes. The spec's normative rules are reproduced here as code and
+//! named at each predicate.
 //!
 //! # The subset this encoder emits
 //! - scalars — `key: value`, exactly one space after the colon (spec §12)
 //! - nested objects — `key:` then the object one indent deeper (§8)
 //! - arrays of scalars — the inline form, `key[N]: a,b,c` (§9.1)
-//! - arrays of objects, **tabular** (§9.3) — `key[N]{f1,f2}:` then one
-//!   delimiter-joined row per element, including the **nested-uniform** column
-//!   groups `f{sub1,sub2}` that flatten a struct-valued field into sub-columns
-//!   in place, recursively and unboundedly
+//! - arrays of objects, **tabular** (§9.3) — `key[N]{f1,f2}:` then one delimiter-joined
+//!   row per element, including the **nested-uniform** column groups `f{sub1,sub2}` that
+//!   flatten a struct-valued field into sub-columns in place, recursively and unboundedly
 //! - arrays that do not classify as tabular — the list form (§9.4)
 //! - empty arrays — `key: []`; the legacy `key[0]:` header MUST NOT be emitted
 //!
 //! # Not emitted
-//! The keyed-tabular form (§9.5) and non-comma delimiters (§11) are legal TOON
-//! this plane has no shape for. They are absent rather than stubbed: an
-//! unexercised branch in an encoder is a byte format nothing pins.
+//! The keyed-tabular form (§9.5) and non-comma delimiters (§11) are legal TOON this plane
+//! has no shape for. They are absent rather than stubbed: an unexercised branch in an
+//! encoder is a byte format nothing pins.
 //!
 //! # Type fidelity is the quoting law
-//! A string is quoted whenever emitting it bare would decode back as something
-//! else — a number (including the zero-padded `007` that is a string wearing a
-//! number's clothes), a bool, a null, the empty string — or whenever it
-//! carries a byte the grammar owns. Quoting is decided per scalar, never per
-//! column, so a table where one cell needs quotes does not pay for it in every
-//! row. The predicate is exact rather than conservative: over-quoting would be
-//! lossless but this face is read by humans (R1.6 — *arrays for machines, TOON
-//! for humans*), and a document where every cell wears quotes is the noise the
-//! format exists to remove.
+//! A string is quoted whenever emitting it bare would decode back as something else — a
+//! number (including the zero-padded `007` that is a string wearing a number's clothes),
+//! a bool, a null, the empty string — or whenever it carries a byte the grammar owns.
+//! Quoting is decided per scalar, never per column, so a table where one cell needs
+//! quotes does not pay for it in every row. The predicate is exact rather than
+//! conservative: over-quoting would be lossless but this face is read by humans (R1.6 —
+//! *arrays for machines, TOON for humans*), and a document where every cell wears quotes
+//! is the noise the format exists to remove.
+//!
+//!
 
 use std::fmt::Write as _;
 

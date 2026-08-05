@@ -1,34 +1,34 @@
 //! The central hashed cache drawer for meridian.
 //!
-//! A *drawer* is the per-workspace directory that holds a cache payload. This
-//! crate owns four concerns and nothing else:
+//! A *drawer* is the per-workspace directory that holds a cache payload. This crate owns
+//! four concerns and nothing else:
 //!
-//! 1. **Addressing** — [`cache_root`], [`drawer_key`], [`drawer_dir`] map a
-//!    canonical workspace path to `<cache-root>/<sha256(path)[:16]>/<ver>-<salt>/`.
-//! 2. **Registration** — [`register`] writes the [`Sentinel`] (`registered.json`)
-//!    with crash-safe atomic + create-exclusive semantics; `mkdir` is NOT the
-//!    registration signal, the sentinel is (amendment C1).
-//! 3. **Probing** — [`probe`] stats the *sentinel*, never the directory. A
-//!    half-created drawer, a corrupt sentinel, or a future-schema sentinel is a
-//!    plain [`Probe::Miss`] — never an error, never a panic (downgrade gate).
-//! 4. **Housekeeping** — [`stamp_last_use`], [`list_drawers`], [`gc`],
-//!    [`remove_drawer`], each serialized by a per-drawer [`DrawerLock`] (m3) so
-//!    the reaper never races a live workspace.
+//! 1. **Addressing** — [`cache_root`], [`drawer_key`], [`drawer_dir`] map a canonical
+//!    workspace path to `<cache-root>/<sha256(path)[:16]>/<ver>-<salt>/`.
+//! 2. **Registration** — [`register`] writes the [`Sentinel`] (`registered.json`) with
+//!    crash-safe atomic + create-exclusive semantics; `mkdir` is NOT the registration
+//!    signal, the sentinel is (amendment C1).
+//! 3. **Probing** — [`probe`] stats the *sentinel*, never the directory. A half-created
+//!    drawer, a corrupt sentinel, or a future-schema sentinel is a plain [`Probe::Miss`] —
+//!    never an error, never a panic (downgrade gate).
+//! 4. **Housekeeping** — [`stamp_last_use`], [`list_drawers`], [`gc`], [`remove_drawer`],
+//!    each serialized by a per-drawer [`DrawerLock`] (m3) so the reaper never races a live
+//!    workspace.
 //!
 //! # Precondition: the input path is already canonical
 //!
-//! Every function that takes a workspace path assumes it is **already
-//! canonical** (absolute, symlinks resolved, on-disk case resolved).
-//! Canonicalization is `crates/workspace`'s job; this crate never performs it,
-//! and never compiles against that crate. Feed a non-canonical path and two
-//! spellings of one workspace hash to two drawers — a caller bug, not ours.
+//! Every function that takes a workspace path assumes it is **already canonical**
+//! (absolute, symlinks resolved, on-disk case resolved). Canonicalization is
+//! `crates/workspace`'s job; this crate never performs it, and never compiles against
+//! that crate. Feed a non-canonical path and two spellings of one workspace hash to two
+//! drawers — a caller bug, not ours.
 //!
 //! # Caching is an optimization, never a failure mode
 //!
 //! A caller with no drawer (tier-4 bare tree, no daemon) opens a
-//! [`CacheDrawer::Ephemeral`] via [`CacheDrawer::open`]: an in-memory,
-//! per-invocation handle that satisfies the same API as the disk-backed one and
-//! can never fail a run (shipped Go `NewStore("")` precedent).
+//! [`CacheDrawer::Ephemeral`] via [`CacheDrawer::open`]: an in-memory, per-invocation
+//! handle that satisfies the same API as the disk-backed one and can never fail a run
+//! (shipped Go `NewStore("")` precedent).
 
 mod layout;
 mod locking;

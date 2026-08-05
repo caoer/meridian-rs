@@ -1,28 +1,27 @@
-//! The `meridian-lock` fenced block — a machine-owned lockfile in the page
-//! (decision `2026-07-24-meridian-lock-block`, "#8"; schema **R4**, settled in
-//! session `86449b4e` 08-01 including the 17:20 ruling that removed the
-//! top-level `objects:` table).
+//! The `meridian-lock` fenced block — a machine-owned lockfile in the page (decision
+//! `2026-07-24-meridian-lock-block`, "#8"; schema **R4**, settled in session `86449b4e`
+//! 08-01 including the 17:20 ruling that removed the top-level `objects:` table).
 //!
 //! # Nature (#8): a lockfile
-//! Cargo.lock's species: machine-written, hand-editing is a bug, humans open
-//! it only when something is broken. Consequences carried here:
+//! Cargo.lock's species: machine-written, hand-editing is a bug, humans open it only when
+//! something is broken. Consequences carried here:
 //!
-//! - **Engine sole-writer** (#8 §3): [`render`] emits ONE canonical byte form
-//!   — deterministic field order, quoting, indentation. There is no "style".
-//! - **Strict reader, fail-loud**: [`parse`] accepts exactly the canonical
-//!   grammar; anything else is a typed [`LockError`] naming the line — a
-//!   malformed lock is corruption (or a hand edit), never something to guess
-//!   through. Absence of a lock is `Ok(None)` from [`find`]; a PRESENT but
-//!   broken lock is never silently treated as absent.
-//! - **Lock-is-content** (#8 §5): the block sits inside the page's span, so
-//!   the page's fingerprint covers its lock — that containment is what makes
-//!   the transitive pin graph complete, and it is a property of WHERE the
-//!   block lives, not of this crate's code (fixtured all the same).
+//! - **Engine sole-writer** (#8 §3): [`render`] emits ONE canonical byte form —
+//!   deterministic field order, quoting, indentation. There is no "style".
+//! - **Strict reader, fail-loud**: [`parse`] accepts exactly the canonical grammar;
+//!   anything else is a typed [`LockError`] naming the line — a malformed lock is
+//!   corruption (or a hand edit), never something to guess through. Absence of a lock is
+//!   `Ok(None)` from [`find`]; a PRESENT but broken lock is never silently treated as
+//!   absent.
+//! - **Lock-is-content** (#8 §5): the block sits inside the page's span, so the page's
+//!   fingerprint covers its lock — that containment is what makes the transitive pin
+//!   graph complete, and it is a property of WHERE the block lives, not of this crate's
+//!   code (fixtured all the same).
 //!
 //! # The R4 schema (v2) — pins only
-//! A lock is a version plus a list of pins. There is no retrieval-plane table:
-//! the blob hash rides the pin row that needs it, so a hash can never outlive
-//! the claim it was written for.
+//! A lock is a version plus a list of pins. There is no retrieval-plane table: the blob
+//! hash rides the pin row that needs it, so a hash can never outlive the claim it was
+//! written for.
 //!
 //! ```meridian-lock
 //! version: 2
@@ -33,53 +32,54 @@
 //!     fingerprint: "fp1.span2.b3.a8222f5a"
 //! ```
 //!
-//! - **`object`** — a wiki link, resolved EXACTLY as Obsidian resolves it. The
-//!   inner text is carried verbatim; resolution is the walk plane's job.
-//! - **`hash`** — the git blob hash of the target file, NEVER omitted ("if
-//!   hash is missing, we lost the explicit target meaning").
-//! - **`path` XOR `properties`** ([`Selector`]) — the body arm or the
-//!   frontmatter arm, never both, never neither. Both are **arrays only, no
-//!   string form** ("machine lock file. convenient buys nothing but chaos"),
-//!   and `[]` means *all* on either arm — the whole body without frontmatter,
-//!   or every frontmatter key.
-//! - **`fingerprint`** — a full `fp1.…` CID-token (`docs/norm-v2-spec.md` §2),
-//!   carried VERBATIM by this crate. Classifying it (green / red / grey
-//!   unverifiable) is the verify plane's job, never the parser's.
-//! - **Free-form extra keys** (`claim:`, and any unknown legacy key) are
-//!   allowed on a pin row and **engine-ignored**, carried verbatim (ZT 08-03:
-//!   *"user can or can not use claim, its free to use anything"*).
+//! - **`object`** — a wiki link, resolved EXACTLY as Obsidian resolves it. The inner text
+//!   is carried verbatim; resolution is the walk plane's job.
+//! - **`hash`** — the git blob hash of the target file, NEVER omitted ("if hash is
+//!   missing, we lost the explicit target meaning").
+//! - **`path` XOR `properties`** ([`Selector`]) — the body arm or the frontmatter arm,
+//!   never both, never neither. Both are **arrays only, no string form** ("machine lock
+//!   file. convenient buys nothing but chaos"), and `[]` means *all* on either arm — the
+//!   whole body without frontmatter, or every frontmatter key.
+//! - **`fingerprint`** — a full `fp1.…` CID-token (`docs/norm-v2-spec.md` §2), carried
+//!   VERBATIM by this crate. Classifying it (green / red / grey unverifiable) is the
+//!   verify plane's job, never the parser's.
+//! - **Free-form extra keys** (`claim:`, and any unknown legacy key) are allowed on a pin
+//!   row and **engine-ignored**, carried verbatim (ZT 08-03: *"user can or can not use
+//!   claim, its free to use anything"*).
 //!
-//! Settled semantics riding the schema: **latest only** (no `was` field —
-//! history recovery rides git blobs), **self-lock is legal**, and `inputs` is
-//! dead as vocabulary AND as a storage key (R1.3).
+//! Settled semantics riding the schema: **latest only** (no `was` field — history
+//! recovery rides git blobs), **self-lock is legal**, and `inputs` is dead as vocabulary
+//! AND as a storage key (R1.3).
 //!
 //! # The three-states rule (R4 18a.2)
 //! `absent` · `null` · `empty` are three different facts about a property and
-//! **fingerprint differently**. The mechanism lives in `model::fingerprint`
-//! (canonical keyed map, sorted keys, length-prefixed) because the
-//! `Fingerprint` seal and the one blake3 hasher live there; this crate owns
-//! the SELECTOR half — [`property_fingerprint`] refuses a duplicate selector
-//! key rather than deduping it.
+//! **fingerprint differently**. The mechanism lives in `model::fingerprint` (canonical
+//! keyed map, sorted keys, length-prefixed) because the `Fingerprint` seal and the one
+//! blake3 hasher live there; this crate owns the SELECTOR half — [`property_fingerprint`]
+//! refuses a duplicate selector key rather than deduping it.
 //!
 //! # v1 is not readable here (plan decision P4)
 //! [`VERSION`] is `2` and this crate reads v2 ONLY: a v1 file is
-//! [`LockError::UnsupportedVersion`], naming the file. That is fail-loud BY
-//! DESIGN — *refuse loudly, never guess*. The v1 parser lives in the migration
-//! tool, quarantined, so no reader can drift back into reinterpreting an old
-//! shape as a new one.
+//! [`LockError::UnsupportedVersion`], naming the file. That is fail-loud BY DESIGN —
+//! *refuse loudly, never guess*. The v1 parser lives in the migration tool, quarantined,
+//! so no reader can drift back into reinterpreting an old shape as a new one.
 //!
 //! # Namespace (#8 §1) — and readership, which is a different question (U36)
-//! The whole `meridian-*` prefix is reserved as the engine's block-language
-//! namespace — [`is_meridian_lang`] is the one predicate for *"is this ours?"*,
-//! uniform over the prefix, so tooling never grows an enumerated list.
+//! The whole `meridian-*` prefix is reserved as the engine's block-language namespace —
+//! [`is_meridian_lang`] is the one predicate for *"is this ours?"*, uniform over the
+//! prefix, so tooling never grows an enumerated list.
 //!
 //! **Reservation is not readership.** *"Should a reader see it?"* is answered by
 //! [`is_engine_emitted`], derived from the registered canonical writers
-//! ([`EngineEmitted`], [`engine_emits!`]). The two answers come apart exactly
-//! where it matters: the engine writes a `meridian-lock`, so it is elided from
-//! the render face; a human writes a `meridian-mount` and `config` only PARSES
-//! it, so it renders. One predicate serving both is what made a config file
-//! render as a config file that declares nothing.
+//! ([`EngineEmitted`], [`engine_emits!`]). The two answers come apart exactly where it
+//! matters: the engine writes a `meridian-lock`, so it is elided from the render face; a
+//! human writes a `meridian-mount` and `config` only PARSES it, so it renders. One
+//! predicate serving both is what made a config file render as a config file that
+//! declares nothing.
+//!
+//!
+//!
+//!
 
 use model::{ByteSpan, Document, Node, NodeKind, YamlMap};
 use std::collections::BTreeMap;

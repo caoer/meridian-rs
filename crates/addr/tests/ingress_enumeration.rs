@@ -1,32 +1,32 @@
 //! **The three ingress classes the compiler CANNOT reach** — U10 part (b).
+//! The address is a type (`crates/addr`), and retyping `lock::PinEntry` propagated it
+//! across the `lock` / `view` / `wire-serve` cluster **by compiler**: every site where
+//! the data carrying an address changed type had to discharge the parse or fail to build.
+//! That is the ladder's top rung and it is exhaustive over TYPE FLOW.
+//! It stops at three classes, because in each the address arrives as a raw string into a
+//! slot whose type does not change:
+//! | Class | Why the compiler cannot reach it | |---|---| | `markdown-body` | `dest:
+//! &str` from pulldown-cmark, and `syntax` is UPSTREAM of `model` — a type in a crate
+//! depending on `model` is architecturally unreachable from it | | `cli-argv` |
+//! hand-rolled splits over `String` args into `String` fields — nothing changes type | |
+//! `wire-decode` | `crates/wire` deps are serde only and criterion 7 freezes v2
+//! byte-identity; a `root:`-bearing target decodes into a plain `String`, and the
+//! compiler cannot force a call that does not exist |
+//! So this is the ladder's MIDDLE rung, used exactly where plan § 3.1 says *a list is all
+//! a test can give you*: it proves the door SET, not that each door is closed. **It fails
+//! when a FOURTH ingress appears** — a new raw split of an address spelling anywhere in
+//! the workspace source is an unclassified site until someone writes down which class it
+//! belongs to.
+//! **Precision, measured before the check was written** (S3-R23 ①): the scan finds every
+//! `#`-split in workspace `src/`, address-bearing or not, and the table classifies each.
+//! It therefore never *guesses* that a site is a defect — it reports that the set changed
+//! and demands a classification. Two of today's eleven rows are `not-an-address` and are
+//! pinned as such, which is what keeps a true positive distinguishable from a frontmatter
+//! parse.
 //!
-//! The address is a type (`crates/addr`), and retyping `lock::PinEntry`
-//! propagated it across the `lock` / `view` / `wire-serve` cluster **by
-//! compiler**: every site where the data carrying an address changed type had
-//! to discharge the parse or fail to build. That is the ladder's top rung and
-//! it is exhaustive over TYPE FLOW.
 //!
-//! It stops at three classes, because in each the address arrives as a raw
-//! string into a slot whose type does not change:
 //!
-//! | Class | Why the compiler cannot reach it |
-//! |---|---|
-//! | `markdown-body` | `dest: &str` from pulldown-cmark, and `syntax` is UPSTREAM of `model` — a type in a crate depending on `model` is architecturally unreachable from it |
-//! | `cli-argv` | hand-rolled splits over `String` args into `String` fields — nothing changes type |
-//! | `wire-decode` | `crates/wire` deps are serde only and criterion 7 freezes v2 byte-identity; a `root:`-bearing target decodes into a plain `String`, and the compiler cannot force a call that does not exist |
 //!
-//! So this is the ladder's MIDDLE rung, used exactly where plan § 3.1 says *a
-//! list is all a test can give you*: it proves the door SET, not that each door
-//! is closed. **It fails when a FOURTH ingress appears** — a new raw split of
-//! an address spelling anywhere in the workspace source is an unclassified site
-//! until someone writes down which class it belongs to.
-//!
-//! **Precision, measured before the check was written** (S3-R23 ①): the scan
-//! finds every `#`-split in workspace `src/`, address-bearing or not, and the
-//! table classifies each. It therefore never *guesses* that a site is a defect
-//! — it reports that the set changed and demands a classification. Two of
-//! today's eleven rows are `not-an-address` and are pinned as such, which is
-//! what keeps a true positive distinguishable from a frontmatter parse.
 
 use std::collections::BTreeSet;
 use std::fs;

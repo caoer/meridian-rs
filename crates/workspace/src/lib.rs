@@ -1,57 +1,57 @@
-//! The workspace identity layer: given a working directory, name the
-//! workspace it belongs to.
+//! The workspace identity layer: given a working directory, name the workspace it belongs
+//! to.
 //!
 //! # Charter
-//! **Owns:** the discovery ladder as pure filesystem functions
-//! (env override → git root → cwd default), the canonicalization that
-//! defines identity (symlinks and on-disk case resolved to one spelling),
-//! and the deny-ceiling predicate that refuses poisonous workspace paths
-//! (`$HOME`, `/`, mount points, `/tmp`, XDG base dirs, the meridian cache
+//! **Owns:** the discovery ladder as pure filesystem functions (env override → git root →
+//! cwd default), the canonicalization that defines identity (symlinks and on-disk case
+//! resolved to one spelling), and the deny-ceiling predicate that refuses poisonous
+//! workspace paths (`$HOME`, `/`, mount points, `/tmp`, XDG base dirs, the meridian cache
 //! root).
 //!
-//! **Never does:** disk writes of any kind. No registration, no sentinel,
-//! no cache directory creation — this crate only *names* a situation.
-//! Every rung resolves with no daemon and no side effects; the bottom rung
-//! returns an [`Answer::CwdDefault`] carrying the canonical cwd, and NEVER
-//! auto-registers. Warming an unanchored tree is an explicit `init` or the
-//! daemon's job (decision 0001, round 5), not this crate's.
+//! **Never does:** disk writes of any kind. No registration, no sentinel, no cache
+//! directory creation — this crate only *names* a situation. Every rung resolves with no
+//! daemon and no side effects; the bottom rung returns an [`Answer::CwdDefault`] carrying
+//! the canonical cwd, and NEVER auto-registers. Warming an unanchored tree is an explicit
+//! `init` or the daemon's job (decision 0001, round 5), not this crate's.
 //!
 //! # The ladder answers ONE question, and the explicit planes sit above it
-//! This ladder answers *"which root does this path belong to"*. Two other
-//! planes answer *"which root did someone name"*, and neither is a rung
-//! here:
+//! This ladder answers *"which root does this path belong to"*. Two other planes answer
+//! *"which root did someone name"*, and neither is a rung here:
 //!
-//! - the **mount table** (`config::MountTable`) — name ↔ vault ↔ path for
-//!   the roots this machine binds. It cannot be a rung: `config` depends on
-//!   this crate for [`deny_reason`], so a declaration rung here would be a
-//!   dependency cycle. A root's `MERIDIAN.md` self-declaration
-//!   (`type: meridian-root`) is therefore read by `config`, never here —
-//!   existence-only detection is exactly what the retired marker did wrong,
-//!   since it cannot tell a root declaration from a config.
-//! - the **declared root** on the serve path — the `hello` frame's
-//!   `workspace` field, pinned exactly by `registry::Registry::pin_declared`.
-//!   A daemon has no meaningful cwd, so it never enters this ladder at all.
+//! - the **mount table** (`config::MountTable`) — name ↔ vault ↔ path for the roots this
+//!   machine binds. It cannot be a rung: `config` depends on this crate for
+//!   [`deny_reason`], so a declaration rung here would be a dependency cycle. A root's
+//!   `MERIDIAN.md` self-declaration (`type: meridian-root`) is therefore read by
+//!   `config`, never here — existence-only detection is exactly what the retired marker
+//!   did wrong, since it cannot tell a root declaration from a config.
+//! - the **declared root** on the serve path — the `hello` frame's `workspace` field,
+//!   pinned exactly by `registry::Registry::pin_declared`. A daemon has no meaningful
+//!   cwd, so it never enters this ladder at all.
 //!
-//! The three planes meet at exactly one point: [`deny_reason`], reused whole
-//! by both, never re-implemented.
+//! The three planes meet at exactly one point: [`deny_reason`], reused whole by both,
+//! never re-implemented.
 //!
-//! **Dependencies:** `std` plus a single edge to `cache` for the one owner of
-//! cache-root resolution (the deny ceiling must name the same root the drawer
-//! addressing uses). No `wire`, `model`, or `sidecar` edge — Law 3 corollary
-//! holds; `cache` is a leaf utility, not a Go-facing crate.
+//! **Dependencies:** `std` plus a single edge to `cache` for the one owner of cache-root
+//! resolution (the deny ceiling must name the same root the drawer addressing uses). No
+//! `wire`, `model`, or `sidecar` edge — Law 3 corollary holds; `cache` is a leaf utility,
+//! not a Go-facing crate.
 //!
 //! # Identity is [`canonicalize`]
-//! Every path comparison and (later) fingerprint hash runs over the
-//! canonical form. On this target (macOS/APFS, case-insensitive default)
-//! [`std::fs::canonicalize`] resolves symlinks AND returns the on-disk
-//! directory-entry casing — a case-variant spelling (`mixedcase`) resolves
-//! to the real casing (`MixedCase`), so two spellings collapse to one
-//! identity for free. This is proven, not assumed: see the case-variant
-//! and symlink tests in `tests/discovery.rs`. Because `canonicalize`
-//! already yields on-disk case here, no per-component directory-entry
-//! resolver is needed. On a case-sensitive filesystem a case-variant
-//! spelling is a genuinely different path and correctly resolves to a
-//! different identity.
+//! Every path comparison and (later) fingerprint hash runs over the canonical form. On
+//! this target (macOS/APFS, case-insensitive default) [`std::fs::canonicalize`] resolves
+//! symlinks AND returns the on-disk directory-entry casing — a case-variant spelling
+//! (`mixedcase`) resolves to the real casing (`MixedCase`), so two spellings collapse to
+//! one identity for free. This is proven, not assumed: see the case-variant and symlink
+//! tests in `tests/discovery.rs`. Because `canonicalize` already yields on-disk case
+//! here, no per-component directory-entry resolver is needed. On a case-sensitive
+//! filesystem a case-variant spelling is a genuinely different path and correctly
+//! resolves to a different identity.
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::env;
 use std::ffi::OsStr;

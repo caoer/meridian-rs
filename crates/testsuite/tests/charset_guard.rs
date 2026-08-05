@@ -1,12 +1,12 @@
 //! CHARSET-GUARD discrimination gate (ruling 011 / wire-contract-v2 §2.4).
 //!
 //! The one block-id charset `[A-Za-z0-9-]`, both planes. This module rides the
-//! `data/charset-guard/discrimination.json` pack authored for the downstream
-//! units: every per-mint-position `_`-bearing `input_id` is refused by the
-//! `model::Ref::anchor` mint-guard (`Err(BadAnchorId)`), every `clean_accepts`
-//! id mints, and the pack-pinned walk answer (obsidian-compat WX-6) still says
-//! what the pack claims — the same id the mint plane refuses loud, the walk
-//! plane drops to `ref_not_found` (decision 013 consequence 3: both conform).
+//! `data/charset-guard/discrimination.json` pack authored for the downstream units: every
+//! per-mint-position `_`-bearing `input_id` is refused by the `model::Ref::anchor`
+//! mint-guard (`Err(BadAnchorId)`), every `clean_accepts` id mints, and the pack-pinned
+//! walk answer (obsidian-compat WX-6) still says what the pack claims — the same id the
+//! mint plane refuses loud, the walk plane drops to `ref_not_found` (decision 013
+//! consequence 3: both conform).
 
 use model::{BadAnchorId, Ref};
 use serde_json::Value;
