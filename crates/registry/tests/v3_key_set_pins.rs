@@ -67,6 +67,11 @@ fn test_config(tmp: &TempDir) -> Config {
     // No idle exit: this server's lifetime is the test's, and a daemon that
     // reaped itself mid-assertion would fail as a flake, not a finding.
     config.idle_exit = None;
+    // R1: a build sha, so the hello pin covers the shape a DEPLOYED daemon
+    // emits. Left unset, `identity` would be absent and the pin would freeze
+    // the identity-less variant — exhaustive over a body no production host
+    // sends (`docs/wire-contract-v3-identity-amendment.md`).
+    config.build_sha = Some("pinfixturebuild01".to_owned());
     config
 }
 
@@ -280,6 +285,14 @@ fn the_frame_envelope_carries_exactly_one_payload() {
 /// a copy: it exists to stop the handshake growing a seventh field unnoticed.
 /// `workspace` is the resolved binding echoed back — the client asked with a path
 /// and the daemon answers with the canonical one it actually bound.
+///
+/// **R1 (2026-08-05) — the expected set grew an eighth key, `identity`,
+/// deliberately.** The daemon now echoes its build identity on a v3 handshake
+/// so a client can tell a resident daemon from the binary it just deployed
+/// (`docs/wire-contract-v3-identity-amendment.md`). The pin stays exhaustive;
+/// only the expected list moved, and the fixture configures a sha precisely so
+/// this assertion covers the shape a deployed daemon emits rather than the
+/// identity-less one a bare fixture would produce.
 #[test]
 fn the_hello_body_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -293,6 +306,7 @@ fn the_hello_body_key_set_is_pinned() {
             "caps",
             "contract",
             "fingerprint",
+            "identity",
             "proto",
             "server",
             "storage",

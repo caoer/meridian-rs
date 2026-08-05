@@ -1043,6 +1043,21 @@ pub struct CheckWriteRepair {
     pub value: String,
 }
 
+/// The answering binary's build identity, carried by a v3 `hello` body.
+///
+/// An OBJECT rather than a bare string so a later fact joins it without
+/// re-typing the slot. `build` is the commit sha baked at compile time — the
+/// same value `mrd --version` prints — and it is the literal `unknown` when the
+/// build could not name a commit. `unknown` reaches the wire VERBATIM: a
+/// present-but-unknown identity and an absent one are different facts (a host
+/// that cannot name its build vs a host that publishes no build identity), and
+/// a client's mismatch policy needs both. Law:
+/// `docs/wire-contract-v3-identity-amendment.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Identity {
+    pub build: String,
+}
+
 /// Per-kind `info` payloads (v1 §5.2 table). Untagged: the sibling `kind`
 /// field discriminates; kinds with no `info` shape simply omit the key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1176,6 +1191,14 @@ pub enum ResponseBody {
     /// the real root here rather than assuming its own spelling survived.
     /// Absent exactly when `storage` is: a workspace-less handshake binds
     /// nothing.
+    /// `identity` is the answering binary's BUILD identity — v3-only, and the
+    /// one hello fact that is about the SERVER PROCESS rather than the corpus
+    /// or the binding. A resident daemon outlives the deploy that replaced its
+    /// binary, and every other hello fact reads correct while it does; `proto`
+    /// cannot separate two builds of one contract, which is precisely the case
+    /// a deploy check must catch. Populated under a negotiated v3 session only,
+    /// so the frozen v2 hello body never grows a key. Law:
+    /// `docs/wire-contract-v3-identity-amendment.md`.
     Hello {
         proto: u32,
         server: String,
@@ -1186,6 +1209,8 @@ pub enum ResponseBody {
         storage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         workspace: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        identity: Option<Identity>,
     },
     /// v2 §4.1: the map — header `file_rev` + ambient `root` (the commit-guard
     /// idiom made ambient: read a toc, later pass `if_root`), rows in frozen

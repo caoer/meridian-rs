@@ -23,8 +23,16 @@ use tempfile::TempDir;
 // the workspace precedent.
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config(tmp: &TempDir) -> Config {
+    test_config_with_build(tmp, None)
+}
+
+/// [`test_config`] with a build identity: `Some(sha)` makes the daemon publish
+/// `hello.identity.build`, `None` makes it publish no identity at all.
+#[allow(clippy::duration_suboptimal_units)]
+fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
     let dir = tmp.path().join("registry");
     Config {
+        build_sha: build_sha.map(str::to_owned),
         socket_path: dir.join("daemon.sock"),
         state_path: dir.join("state.json"),
         cache_root: tmp.path().join("cache"),
@@ -35,6 +43,7 @@ fn test_config(tmp: &TempDir) -> Config {
         // No idle exit: this server's lifetime is the test's, and a daemon that
         // reaped itself mid-assertion would fail as a flake, not a finding.
         idle_exit: None,
+        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
     }
 }
 
@@ -530,6 +539,143 @@ fn workspace_less_hello_is_a_pure_version_handshake() {
         listed["entries"].as_array().map(Vec::len),
         Some(0),
         "a bare hello registers no workspace: {listed}"
+    );
+
+    server.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// R1 — `hello.identity`: the build the daemon was made from
+// (`docs/wire-contract-v3-identity-amendment.md`)
+// ---------------------------------------------------------------------------
+
+/// The configured sha reaches the wire as `identity.build`, and the field is
+/// advertised as `hello.identity`. The value is carried VERBATIM: a client's
+/// check is strict equality against the sha it deployed, so any normalization
+/// here would silently defeat it.
+#[test]
+fn a_v3_hello_carries_the_configured_build_sha_and_advertises_the_field() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("a.md", "# A\n")]);
+    let server =
+        RunningServer::start(test_config_with_build(&tmp, Some("6c4b1f0adeadbeef"))).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.hello(&ws);
+    assert_eq!(hi["ok"], json!(true), "hello ok: {hi}");
+    assert_eq!(
+        hi["body"]["identity"],
+        json!({"build": "6c4b1f0adeadbeef"}),
+        "the identity object carries exactly `build`, verbatim: {hi}"
+    );
+
+    let caps: Vec<&str> = hi["body"]["caps"]
+        .as_array()
+        .expect("caps array")
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert!(
+        caps.contains(&"hello.identity"),
+        "the v3 projection advertises the field amendment at dotted grain: {caps:?}"
+    );
+    assert!(
+        !caps.contains(&"hello"),
+        "the bare op cap stays absent — hello is the discovery door, not a \
+         capability a client asks for: {caps:?}"
+    );
+
+    server.shutdown();
+}
+
+/// The build script's `unknown` fallback survives to the wire unchanged. It is
+/// NOT mapped to null and NOT dropped: a consumer must be able to tell "this
+/// host cannot name its build" from "this host publishes no build identity",
+/// because the two get different remediation.
+#[test]
+fn the_unknown_build_fallback_reaches_the_wire_verbatim() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("a.md", "# A\n")]);
+    let server = RunningServer::start(test_config_with_build(&tmp, Some("unknown"))).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.hello(&ws);
+    assert_eq!(
+        hi["body"]["identity"]["build"],
+        json!("unknown"),
+        "`unknown` is a published identity, carried as the literal string: {hi}"
+    );
+    assert!(
+        hi["body"]["identity"].is_object(),
+        "the published-unknown case is still an object, never null: {hi}"
+    );
+
+    server.shutdown();
+}
+
+/// Optionality is REAL, not nominal: a daemon given no sha omits the field
+/// entirely, and a v3 client's session is otherwise unaffected — it binds,
+/// lists caps, and serves reads exactly as it does with an identity.
+#[test]
+fn a_daemon_with_no_configured_sha_omits_the_field_and_the_session_is_unaffected() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("a.md", "# A\n")]);
+    let server = RunningServer::start(test_config_with_build(&tmp, None)).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.hello(&ws);
+    assert_eq!(hi["ok"], json!(true), "hello ok without an identity: {hi}");
+    assert!(
+        !hi["body"].as_object().unwrap().contains_key("identity"),
+        "the key is omitted entirely, never serialized as null: {hi}"
+    );
+
+    // The rest of the handshake is untouched by the absence.
+    assert_eq!(hi["body"]["proto"], json!(1));
+    assert!(
+        hi["body"]["workspace"].is_string(),
+        "the bind still names its root: {hi}"
+    );
+    let toc = conn.call(&json!({"op": "toc", "path": "a.md"}));
+    assert_eq!(
+        toc["ok"],
+        json!(true),
+        "a v3 client accepts an identity-less hello and reads on: {toc}"
+    );
+
+    server.shutdown();
+}
+
+/// The v2 freeze: a v2 session carries neither the field nor the cap, even from
+/// a daemon that has a sha configured. The amendment is v3-only, so a v2
+/// client's hello body is the one it always got.
+#[test]
+fn a_v2_session_carries_neither_the_identity_field_nor_its_cap() {
+    let tmp = TempDir::new().unwrap();
+    let ws = write_ws(&tmp, "ws", &[("a.md", "# A\n")]);
+    let server =
+        RunningServer::start(test_config_with_build(&tmp, Some("6c4b1f0adeadbeef"))).unwrap();
+    let mut conn = Conn::open(server.socket_path());
+
+    let hi = conn.call(&json!({
+        "op": "hello",
+        "proto": 1,
+        "workspace": ws.to_str().unwrap(),
+    }));
+    assert_eq!(hi["ok"], json!(true), "v2 hello ok: {hi}");
+    assert!(
+        !hi["body"].as_object().unwrap().contains_key("identity"),
+        "a v2 hello body never grows the key: {hi}"
+    );
+    let caps: Vec<&str> = hi["body"]["caps"]
+        .as_array()
+        .expect("caps array")
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert!(
+        !caps.contains(&"hello.identity"),
+        "a v2 session never advertises the v3 field amendment: {caps:?}"
     );
 
     server.shutdown();

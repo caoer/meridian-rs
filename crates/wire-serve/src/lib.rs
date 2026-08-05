@@ -32,6 +32,13 @@ use wire::{ErrorBody, ErrorCode, Path, Root};
 /// Protocol both hosts speak (wire §3.2, proto-1). Strict decode validates `hello`'s `proto` against this.
 pub const PROTO: u32 = 1;
 
+/// The build sha a host publishes when its build could not name a commit — the
+/// spelling `crates/mrd/build.rs` bakes, carried unchanged to
+/// `hello.identity.build`. One constant so the two hosts and the build script
+/// cannot drift into two spellings of the same unknown
+/// (`docs/wire-contract-v3-identity-amendment.md`).
+pub const UNKNOWN_BUILD: &str = "unknown";
+
 /// Whether `rev` is a contract rev the server serves (v3 amendment). Unknown rev refused loud at hello; never silent downgrade.
 #[must_use]
 pub fn is_known_rev(rev: &str) -> bool {

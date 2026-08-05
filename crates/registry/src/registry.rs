@@ -592,6 +592,24 @@ impl Registry {
         self.last_request.store(now_secs(), Ordering::Relaxed);
     }
 
+    /// G11 liveness: hold the quiet clock open without counting a request.
+    ///
+    /// An armed `sub` connection is activity for idle-exit — the daemon has a
+    /// live consumer — but it is not traffic for the pre-warm backoff: nothing
+    /// is being asked of the engine, so the cadence must still be allowed to
+    /// decay. Two clocks, one bump.
+    pub fn note_liveness(&self) {
+        self.last_request.store(now_secs(), Ordering::Relaxed);
+    }
+
+    /// Is any workspace subscribed? (G11 idle-exit: a subscribed daemon does
+    /// not exit under its subscriber.)
+    #[must_use]
+    pub fn has_subscribers(&self) -> bool {
+        let rings = self.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        rings.values().any(|ring| ring.has_subscribers())
+    }
+
     /// How many client requests this daemon has served since it started.
     ///
     /// The pre-warm backoff watches this rather than a timestamp: a counter
