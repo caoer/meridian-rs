@@ -73,3 +73,10 @@ jobs:
       # the log. Rationale and the red/green control: the test file's header.
       - name: status multi-root CPU gate (600 ms, populated mount table)
         run: cargo test -p mrd --features perf-walltime --test status_multiroot_cpu -- --nocapture
+      # Bash step-end reaping wall budget (5s). Lived in the correctness suite
+      # until host-load suite runs blew it (15.03s recorded) while isolation stayed
+      # green — same class as status_walltime, same relocation. `--nocapture`
+      # prints the measured duration into the log. Correctness keeps the event
+      # half (no post-step leak file) in run/tests/exec.rs.
+      - name: exec background-reap wall-time gate (5s, pinned runner)
+        run: cargo test -p run --features perf-walltime --test exec_walltime -- --nocapture
