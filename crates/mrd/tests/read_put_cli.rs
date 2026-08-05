@@ -1120,6 +1120,41 @@ fn root_mismatch_names_the_failure_and_gives_a_fix() {
 // the UNCONDITIONAL clause, gated across the malformed family by
 // `a_malformed_stdin_refusal_leaves_the_document_byte_unchanged` below.
 
+/// Gate — the malformed-stdin refusal CLAIMS nothing was written, and that
+/// claim is true for a structural reason: `read_stdin_edits` runs before the
+/// workspace is resolved and before any splice, so the exit happens with zero
+/// engine contact. **Nothing but this gate holds that ordering in place** —
+/// move the stdin decode after resolve/splice setup and the sentence becomes a
+/// lie no other test would notice. Pinned across the malformed FAMILY, not one
+/// spelling, because the clause is on all of them.
+#[test]
+fn a_malformed_stdin_refusal_leaves_the_document_byte_unchanged() {
+    for stdin in [
+        "not json at all",
+        r#"{"id":"1","edits":[{"target":{"hpath":[{"h":"Alpha"}]}}]}"#,
+        // A truncated array and a stray comma: malformed in a way that has
+        // nothing to do with an envelope.
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]}}"#,
+        r#"[{"target":{"hpath":[{"h":"Alpha"}]}},]"#,
+    ] {
+        let sb = sandbox();
+        let ws = sb.workspace();
+        let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+        let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
+        assert_eq!(code(&out), 2, "bad invocation for {stdin}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("Nothing was parsed and nothing was written"),
+            "every malformed case states it for {stdin}:\n{}",
+            stderr(&out)
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+            before,
+            "the refusal's own claim, enforced, for {stdin}"
+        );
+    }
+}
+
 /// Gate — the USAGE text teaches both new verbs (printed on any unknown verb).
 #[test]
 fn usage_teaches_read_and_put() {
