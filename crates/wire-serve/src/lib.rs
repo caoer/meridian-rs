@@ -1,15 +1,15 @@
 //! Shared typed edge: strict decode + read-op arms for both hosts (A6: lift, don't duplicate).
 //!
-//! Owns [`decode`] (wire §3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
-//! does not compose with `flatten`), [`read`] arms over borrowed model state, and
-//! [`write::splice`] (W1 choke-point both hosts commit through). Read arms never own corpus
-//! or disk; callers supply state. Write is stateful (disk/reparse/receipt/policy) but still
-//! one shared impl. `root`/`diff` stay with each host (different cursor/history plumbing).
+//! Owns [`decode`] (§3.2: unknown fields/enums refuse loud — serde `deny_unknown_fields`
+//! does not compose with `flatten`), [`read`] over borrowed model state, and
+//! [`write::splice`] (W1 choke-point). Read arms never own corpus/disk. Write is stateful
+//! but one shared impl. `root`/`diff` stay per-host (cursor/history plumbing).
 //!
-//! [`ring`] and [`watch`] are the DELTA plane, lifted here by U20b so the two hosts share one
-//! retention law and one external-change classifier. They were the sidecar's until a second
-//! host needed them; what stays per-host is the DRIVER (the sidecar reconciles at its serve-loop
-//! line boundary, the registry at a subscription's detection cycle), never the classification.
+//! [`ring`] and [`watch`] are the DELTA plane (U20b): one retention law, one external-change
+//! classifier. Per-host DRIVER only (sidecar at serve-loop line boundary; registry at
+//! subscription detection cycle) — never the classification.
+//!
+//!
 
 pub mod armed_disk;
 pub mod check_write;
@@ -46,19 +46,19 @@ pub fn bad_request(message: impl Into<String>) -> Box<ErrorBody> {
     Box::new(e)
 }
 
-/// The section-address recovery clause — the ONE place the engine says how a
-/// caller finds a real selector, so no refusal invents its own spelling.
+/// Section-address recovery clause — ONE place the engine says how to find a
+/// real selector (no refusal invents its own spelling).
 ///
-/// Selector-aware, because the two selector planes are published by DIFFERENT
-/// faces. Heading paths and dewey ordinals ride `toc`, which the human render
-/// prints. `^` anchors ride the separate `anchors[]` array, which
-/// `render::toc_text` does not print at all — so telling a reader to list the
-/// section paths after an anchor miss sends them to a listing their anchor was
-/// never in (the dead end recorded at `results/gaps-and-issues.md` § 3.1).
+/// Selector-aware: hpath/dewey ride `toc`; `^` anchors ride `anchors[]` (not
+/// printed by `render::toc_text`). Anchor-miss recovery must not send callers
+/// to a section listing that never had their anchor.
 ///
-/// `display_path` is `None` on the plan-lowering path, which holds a document
-/// but no spelling of its name; the clause then names the act without a command
-/// rather than inventing a path it cannot know.
+///
+///
+///
+/// `display_path` is `None` on plan-lowering (doc held, path unknown) — names
+/// the act without inventing a command path.
+///
 #[must_use]
 pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
     match (selector.starts_with('^'), display_path) {

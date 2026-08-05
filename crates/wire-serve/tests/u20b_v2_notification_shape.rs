@@ -1,14 +1,14 @@
-//! U20b — **the v2 key-set detector for NOTIFICATION frames.**
+//! U20b — v2 key-set pin for notification frames (exact keys, never values).
 //!
-//! Cloned from the shape that caught the U11 leak
-//! (`u11_mismatch_ladder.rs::a_frozen_v2_session_never_grows_a_field_from_the_ladder`):
-//! assert the EXACT KEY SET of a serialized frame, never its values. A v3-only
-//! field in a v2 envelope changes no value, so a value-pinning sweep is green
-//! and blind to it — key-set pinning is the only detector for this class.
+//! Class sibling of `u11_mismatch_ladder` key-set pin: v3-only field on v2 is
+//! value-invisible. Notifications are not replies — host emits, subscriber gets.
 //!
-//! Notification frames need their own detector because they are response-side by
-//! construction and are not replies: no "the client asked for this shape"
-//! reasoning protects them. A subscriber receives whatever the host emits.
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeSet;
 
@@ -43,8 +43,8 @@ fn serialize_v2(frame: &DeltaFrame) -> serde_json::Value {
     serde_json::from_slice(&out).expect("frame is JSON")
 }
 
-/// The frozen v2 notification shape: `{"delta":{…}}` and nothing else — no `id`
-/// (§3.1 classification is what makes it a Notification rather than a response).
+/// Frozen v2: top key set `{delta}` only (§3.1 Notification; no `id`).
+///
 #[test]
 fn a_v2_notification_frame_has_exactly_the_frozen_key_set() {
     let value = serialize_v2(&frame_of(vec![]));
@@ -66,25 +66,25 @@ fn a_v2_notification_frame_has_exactly_the_frozen_key_set() {
     );
 }
 
-/// **The leak, now closed.** `DeltaFrame::effects` is
-/// `#[serde(skip_serializing_if = "Vec::is_empty")]`, which skips on an empty
-/// VALUE and never on a v2 SESSION — so before the v2-reserved-field registry,
-/// the moment a reaction fired a v2 subscriber received `effects`, a field that
-/// postdates its contract:
+/// Pin: reacted v2 frame never grows `effects` (`rev::V2_RESERVED_FIELDS`).
+/// Value-skip on empty is not a session gate; registry row is the fix (Law 3).
 ///
-/// ```text
-/// V2 BARE   : {"delta":{…}}
-/// V2 REACTED: {"delta":{…},"effects":[{"intents":[],…,"how":"echo hi"}]}
-/// ```
 ///
-/// The fix is one row in `rev::V2_RESERVED_FIELDS`, consulted by the v2
-/// projection at both hosts (Law 3). This test WAS this file's `#[ignore]`d
-/// known-red while the mechanism was with the advisor; it is the mutation proof
-/// for the row, and reverting the row reddens it exactly as it did then.
 ///
-/// Restoring conformance with ratified frozen v2 — not amending it. The defect
-/// predates U20b (the sidecar has served v2 `sub` through this serializer since
-/// T5-SUB); it heals at both hosts because the table is shared.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_v2_notification_frame_never_grows_a_post_v2_field() {
     let reacted = frame_of(vec![EffectEnvelope {
@@ -103,18 +103,18 @@ fn a_v2_notification_frame_never_grows_a_post_v2_field() {
     );
 }
 
-/// **The order pin — what a key-SET assertion structurally cannot see.**
+/// Order pin: struct field order, not alphabetical (`Value` round-trip would
+/// BTreeMap-reorder and still pass key-set pins).
 ///
-/// The v2 demotion strips reserved fields on the TYPED value. The obvious
-/// "simplification" is to serialize to `Value`, remove the key, and write that
-/// back. It would pass every key-set pin in this file and still break the frozen
-/// contract at the byte level: `serde_json::Map` is a `BTreeMap` here
-/// (`preserve_order` is off), so a `Value` round-trip ALPHABETIZES keys, turning
-/// the frozen `seq, root_before, root_after, files` into `files, root_after,
-/// root_before, seq`.
 ///
-/// So this asserts the serialized ORDER, which is the only assertion that
-/// catches it.
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_v2_frame_prints_struct_order_not_alphabetical() {
     let mut out = Vec::new();
@@ -125,8 +125,8 @@ fn a_v2_frame_prints_struct_order_not_alphabetical() {
         "the v2 frame prints struct order, byte-for-byte as the frozen contract does: {line}"
     );
 
-    // The same must hold on the DEMOTED path — the branch that had to touch the
-    // frame is exactly the one that could reorder it.
+    // Demoted path must keep the same order.
+    //
     let mut out = Vec::new();
     let reacted = frame_of(vec![EffectEnvelope {
         intents: vec![],
@@ -142,9 +142,9 @@ fn a_v2_frame_prints_struct_order_not_alphabetical() {
     );
 }
 
-/// A v3 subscriber still receives the reaction plane — the demotion is a v2
-/// PROJECTION, not a deletion. Without this, stripping `effects` unconditionally
-/// would pass every other test in this file.
+/// Control: v3 still receives `effects` (projection, not unconditional delete).
+///
+///
 #[test]
 fn a_v3_session_still_receives_effects() {
     let reacted = frame_of(vec![EffectEnvelope {
@@ -162,9 +162,9 @@ fn a_v3_session_still_receives_effects() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The vintage/provenance split in `demote_v2` (leader ruling, 2026-08-04)
-// ---------------------------------------------------------------------------
+// Vintage/provenance split in `demote_v2` (2026-08-04 ruling).
+//
+//
 
 fn cas_error() -> wire::ErrorBody {
     wire::ErrorBody::new(wire::ErrorCode::CasMismatch)
@@ -178,15 +178,15 @@ fn error_response(error: wire::ErrorBody) -> wire::Response {
     }
 }
 
-/// **VINTAGE holds without a rung.** The four ladder extras postdate frozen v2,
-/// so a v2 session must not see them whoever wrote the value — the registry
-/// answers a schema question, not an authorship one.
+/// Vintage: post-v2 field demotes without authorship mark (`rung` absent).
 ///
-/// Unreachable through production today (`ladder::enrich` is the sole author of
-/// all six slots and always sets `rung`), which is exactly why it is pinned
-/// directly: the factoring exists so the vintage half keeps holding if a later
-/// unit sets one of these without a rung, and only a constructed envelope can
-/// prove that now.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
     let mut error = cas_error();
@@ -202,15 +202,15 @@ fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
     );
 }
 
-/// **The early return** — a refusal carrying nothing post-v2 is not demoted at
-/// all. True, and worth pinning. But note what it does NOT reach: it returns
-/// BEFORE the strip block, so it can say nothing about how that block behaves.
+/// Early return: nothing post-v2 ⇒ no demotion (does not exercise strip block).
 ///
-/// This test was originally named for the provenance property and was BLIND to
-/// it. With the guard deleted and an unconditional strip shipped, it stayed
-/// green — measured by running both arms and diffing the results: no test
-/// changed colour. Renamed to what it actually tests; the real provenance pin
-/// is below.
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_refusal_with_nothing_post_v2_is_not_demoted_at_all() {
     let mut error = cas_error();
@@ -222,25 +222,25 @@ fn a_refusal_with_nothing_post_v2_is_not_demoted_at_all() {
     );
 }
 
-/// **PROVENANCE protects the v2-LEGAL fields — THE DIVERGENT CASE.**
+/// Provenance: non-ladder refusal keeps v2-legal `message`/`path` under demotion.
+/// Fixture forces demotion via post-v2 field without `rung` so strip runs.
 ///
-/// `message` and `path` are legal v2 vocabulary, so an ordinary refusal keeps
-/// them; only the ladder's own are stripped, and `rung` proves the ladder wrote
-/// them. This is the assertion a registry row for `message` would break — the
-/// regression the "migrate all six to the table" order would have shipped, and
-/// which a botched mutation restore actually DID ship for one commit.
 ///
-/// The fixture is a NON-ladder refusal that nevertheless carries a post-v2
-/// field. That combination is the only input where correct and incorrect
-/// behaviour differ: the vintage half forces a demotion, so control REACHES the
-/// strip block, and there the v2-legal slots must survive. Reaching the block is
-/// the entire point — assert this property from an input that returns early and
-/// the pin is green whether or not the guard exists.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
     let mut error = cas_error();
-    // No rung: not ladder-authored. A post-v2 field: forces the demotion, so we
-    // land INSIDE the strip block instead of returning before it.
+    // No rung + post-v2 field → demotion reaches strip.
+    //
     error.new_fingerprint = Some(wire::NodeRev("beef000000000000".into()));
     error.message = Some("plain refusal wording".into());
     error.path = Some(wire::Path("plan.md".into()));
@@ -266,10 +266,10 @@ fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
     );
 }
 
-/// The ladder's own `message`/`path` still go, so a demoted v2 `cas_mismatch`
-/// prints exactly what it always printed. The control for the test above: it
-/// proves the provenance path can still fire, so "keeps its message" is not
-/// passing because nothing ever strips one.
+/// Control: ladder-authored `message`/`path` still strip with `rung`.
+///
+///
+///
 #[test]
 fn the_ladders_own_message_and_path_are_still_stripped() {
     let mut error = cas_error();

@@ -1,34 +1,34 @@
-//! **U11 — post-resolution confinement, proven NEGATIVELY.**
+//! U11 — post-resolution path confinement on `splice` (lexical `path_confined`).
 //!
-//! `path_confined` (`write.rs`) is the only confinement this engine has, and it
-//! is purely LEXICAL — empty / leading `/` / `.` / `..`. Confinement in practice
-//! came from joining onto the ONE `fs::WorkspaceRoot`; multi-root removes that
-//! ambient guarantee, so the path portion must be re-confined to its resolved
-//! mount.
+//! Pins: `..` / absolute / `root:` paths → `bad_path` + victim bytes untouched;
+//! in-workspace path still commits (S3-R8(c) acceptance).
 //!
-//! **And `splice` — the primary write op — never called `path_confined` at all.**
-//! Only `create`, `remove`, `lock_write` and `mint_pin` did. `fs::load` joins the
-//! caller's path onto the root (`root.0.join(rel_path)`), and `Path::join` with an
-//! ABSOLUTE path DISCARDS the root entirely — so an absolute or `..`-bearing
-//! splice path reads and writes outside the workspace.
 //!
-//! `mrd put` makes this reachable from a shell: it bypasses the strict decode
-//! entirely and builds `SpliceArgs` straight from raw argv (`mrd/src/put_cmd.rs`).
 //!
-//! Every test here asserts on the WRITE refusal, and the acceptance half
-//! (S3-R8(c)) is asserted in the same breath — a guard proven only by what it
-//! blocks is indistinguishable from a guard that blocks everything.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{Edit, EditShape, ErrorCode, HpathSeg, Path as WPath, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// The in-workspace page a legitimate splice edits — the acceptance half.
+/// In-workspace page (acceptance half).
 const PAGE: &str = "# Alpha\n\n## Beta\n\nkeep this.\n";
-/// The out-of-workspace victim an escaping splice would reach.
+/// Sibling victim outside the workspace.
 const VICTIM: &str = "# Alpha\n\n## Beta\n\nsecret.\n";
 
-/// An outer directory holding BOTH the workspace and a sibling victim file, so
-/// `../victim.md` from inside the workspace names a real, editable document.
+/// Outer dir with workspace + sibling victim (`../victim.md` is real).
+///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot, std::path::PathBuf) {
     let outer = tempfile::tempdir().expect("tempdir");
     let ws = outer.path().join("ws");
@@ -75,10 +75,10 @@ fn args_for(path: &str) -> SpliceArgs {
     }
 }
 
-/// **The escape, via `..`.** A relative path climbing out of the workspace must
-/// be refused `bad_path` — and the victim's bytes must be untouched. The byte
-/// assertion is the one that carries the claim: a refusal that still wrote would
-/// pass an `is_err()` check alone.
+/// `..` path → `bad_path`; victim bytes untouched.
+///
+///
+///
 #[test]
 fn splice_refuses_a_dot_dot_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
@@ -97,9 +97,9 @@ fn splice_refuses_a_dot_dot_path_and_leaves_the_victim_untouched() {
     );
 }
 
-/// **The escape, via an ABSOLUTE path** — the sharper one, because
-/// `Path::join` with an absolute argument discards the root outright rather than
-/// walking out of it.
+/// Absolute path → `bad_path` (`Path::join` discards root).
+///
+///
 #[test]
 fn splice_refuses_an_absolute_path_and_leaves_the_victim_untouched() {
     let (_outer, root, victim) = workspace();
@@ -115,9 +115,9 @@ fn splice_refuses_an_absolute_path_and_leaves_the_victim_untouched() {
     );
 }
 
-/// **The ACCEPTANCE half (S3-R8(c)).** The same splice shape, confined to the
-/// workspace, must still COMMIT. Without this the two refusals above are equally
-/// satisfied by a `splice` that refuses everything.
+/// Acceptance (S3-R8(c)): ordinary in-workspace path still commits.
+///
+///
 #[test]
 fn splice_still_commits_an_ordinary_in_workspace_path() {
     let (_outer, root, _victim) = workspace();
@@ -136,9 +136,9 @@ fn splice_still_commits_an_ordinary_in_workspace_path() {
     );
 }
 
-/// **The `root:`-bearing path (§ 4.2 / D11).** A first path segment carrying a
-/// `:` is unaddressable by the address grammar, so a write door targeting one
-/// refuses `bad_path` rather than creating a document no address can ever name.
+/// `root:`-bearing path (§4.2 / D11) → `bad_path` at the door.
+///
+///
 #[test]
 fn splice_refuses_a_root_prefixed_path() {
     let (_outer, root, _victim) = workspace();

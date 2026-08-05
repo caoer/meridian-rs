@@ -1,39 +1,39 @@
-//! S4a (plan D4): the I4 def-conformance verdict is INTERNALIZED into `splice`
-//! under the D9 write flock, so a foreign writer can no longer split the verdict
-//! from the write it authorized.
+//! S4a (D4): I4 def-conformance internalized into `splice` under D9 flock.
 //!
-//! The window this closes: a host ran `check_write` (round-trip 1), got a PASS,
-//! then ran `splice` (round-trip 2). Anything that landed on the target in
-//! between changed the pre-image, so the ladder had judged bytes the write no
-//! longer wrote. `splice` now re-runs the SAME ladder (`check_write::verdict` —
-//! one owner) over the `doc` it loaded under the flock and the `after_doc` it is
-//! about to commit; the verdict that authorizes bytes is that one.
+//! Closes check→apply TOCTOU: `splice` re-runs `check_write::verdict` on live
+//! pre-image. Fixture: `Answer` required-before-terminal; terminal write legal
+//! with Answer filled, refuses when foreign writer empties Answer.
 //!
-//! Fixture shape: a def whose `Answer` section is `required-before-terminal`
-//! (severity `error` — never forceable). The pending write flips `status` to a
-//! terminal value. With `Answer` populated that write is legal; once a foreign
-//! writer empties `Answer`, the SAME write introduces the violation.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PutAt, Recovery, ResponseBody, SecRef};
 use wire_serve::write::{SpliceArgs, splice};
 
-/// The kind is deliberately unique (`s4aprobe`): `discover_layers` walks to the
-/// filesystem root and also consults `$UCC_HOME/defs`, so a common kind name
-/// could be shadowed by a real def on the developer's machine.
+/// Unique kind `s4aprobe` (avoids `$UCC_HOME/defs` / parent-walk shadow).
+///
+///
 const DEF: &str = "---\ntype: def\ndefines: s4aprobe\nversion: 1\n---\n\n# Properties\n\n```yaml\ntype:      {shape: line, required: true, default: s4aprobe}\nstatus:    {shape: line, required: true, suggest: [open], terminal: [done]}\nclosed_at: {shape: iso, stamp: close}\n```\n^properties\n\n# Sections\n\n## section: Answer\n```yaml\nrequired-before-terminal: true\n```\n";
 
-/// The record as the host read it: `Answer` non-empty, `status: open`. The empty
-/// `closed_at` makes the terminal transition a REPAIR case — the ladder plans a
-/// close stamp, which resolves the `status ∈ terminal ⟺ closed_at set`
-/// biconditional and leaves only the section law to judge.
+/// Host-read record: Answer non-empty, open; empty `closed_at` → repair stamp.
+///
+///
+///
 const REC: &str =
     "---\ntype: s4aprobe\nstatus: open\nclosed_at:\n---\n\n# Answer\n\nthe answer body\n";
 
-/// What a FOREIGN writer (not a cooperating meridian writer — the flock does not
-/// reach it, decision G2) leaves behind: `Answer` emptied.
+/// Foreign writer (G2, outside flock) empties Answer.
+///
 const REC_DRIFTED: &str = "---\ntype: s4aprobe\nstatus: open\nclosed_at:\n---\n\n# Answer\n\n";
 
-/// A workspace with the def layer and the record in place.
+/// Def layer + record workspace.
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir(dir.path().join("defs")).expect("defs dir");
@@ -43,9 +43,9 @@ fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     (dir, root)
 }
 
-/// The pending write, in both vocabularies: the host's pre-flight speaks the
-/// put-plan `set_property`, the wire `splice` speaks the native `fm_key` upsert.
-/// Same intent — `status: done` — so the two verdicts are comparable.
+/// Pending write: native `fm_key` upsert `status: done` (same intent as pre-flight).
+///
+///
 fn splice_args(dry: bool) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -72,7 +72,7 @@ fn splice_args(dry: bool) -> SpliceArgs {
     }
 }
 
-/// The host's pre-flight (round-trip 1), served exactly as both hosts serve it.
+/// Host pre-flight (`check_write` / put-plan `set_property`).
 fn pre_flight(root: &fs::WorkspaceRoot) -> ResponseBody {
     let raw = std::fs::read_to_string(root.0.join("rec.md")).expect("read prev");
     let prev = wire_serve::check_write::build_doc(&raw);
@@ -99,27 +99,27 @@ fn refusal(body: &ResponseBody) -> Option<&wire::CheckWriteRefuse> {
     }
 }
 
-/// **THE TOCTOU test.** Pre-flight PASSES, a foreign writer lands between check
-/// and apply, and the apply now refuses — where it used to commit bytes the
-/// verdict never evaluated.
+/// TOCTOU: pre-flight pass + foreign empty Answer → apply refuses, no write.
+///
+///
 #[test]
 fn foreign_write_between_check_and_apply_can_no_longer_split_the_verdict() {
     let (dir, root) = workspace();
 
-    // Round-trip 1: the host checks. `Answer` is non-empty, so going terminal is
-    // legal — the host is now authorized to write.
+    // Round-trip 1: pre-flight PASSes (Answer non-empty).
+    //
     assert!(
         refusal(&pre_flight(&root)).is_none(),
         "pre-flight must PASS on the bytes the host read"
     );
 
-    // The window: a foreign writer empties `Answer`. Nothing about the host's
-    // plan changed — it still says `status: done`.
+    // Window: foreign writer empties Answer.
+    //
     std::fs::write(dir.path().join("rec.md"), REC_DRIFTED).expect("foreign write");
 
-    // Round-trip 2: the apply. The internalized verdict judges the LIVE
-    // pre-image, sees the write introduce `def/required-before-terminal`, and
-    // refuses before any byte lands.
+    // Apply: live pre-image fails required-before-terminal; nothing lands.
+    //
+    //
     let err = splice(&root, None, &splice_args(false), &[], None)
         .expect_err("the internalized verdict must refuse the drifted write");
     assert_eq!(
@@ -151,8 +151,8 @@ fn foreign_write_between_check_and_apply_can_no_longer_split_the_verdict() {
     );
 }
 
-/// The control: with no foreign writer, the very same request lands. The
-/// internalized verdict gates, it does not blanket-refuse.
+/// Control: undrifted same request lands (gate, not blanket refuse).
+///
 #[test]
 fn undrifted_write_still_lands() {
     let (dir, root) = workspace();
@@ -167,9 +167,9 @@ fn undrifted_write_still_lands() {
     );
 }
 
-/// A dry run refuses exactly where the real write does — a rehearsal that
-/// answered "would succeed" here would hand the host back the same split
-/// verdict, one round-trip later.
+/// Dry run refuses where real write would (no split-verdict rehearsal).
+///
+///
 #[test]
 fn dry_run_refuses_where_the_real_write_would() {
     let (dir, root) = workspace();
@@ -185,9 +185,9 @@ fn dry_run_refuses_where_the_real_write_would() {
     );
 }
 
-/// One owner, two entry points: run over the SAME drifted pre-image, the
-/// standalone op and the internalized run reach the identical verdict. If the
-/// ladder ever forked, this is what would catch it.
+/// One owner: standalone `check_write` and internalized splice agree on message.
+///
+///
 #[test]
 fn standalone_op_and_internalized_run_agree_on_the_drifted_pre_image() {
     let (dir, root) = workspace();
@@ -209,9 +209,9 @@ fn standalone_op_and_internalized_run_agree_on_the_drifted_pre_image() {
     );
 }
 
-/// A workspace with no def layer is untouched by the internalization: the
-/// undeclared kind passes (undeclared ≠ contract), so ordinary writes on
-/// ordinary pages keep landing.
+/// No def layer: ordinary write still lands (undeclared ≠ contract).
+///
+///
 #[test]
 fn no_def_layer_leaves_ordinary_writes_alone() {
     let dir = tempfile::tempdir().expect("tempdir");

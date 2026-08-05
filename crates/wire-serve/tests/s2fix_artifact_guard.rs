@@ -1,37 +1,37 @@
-//! Advisor R25, structural fix 1 — **GUARD THE ARTIFACT, not the verb.**
+//! R25 fix 1 — guard the `meridian-lock` artifact, not only the pin verb (D16).
 //!
-//! The read-mint gate (D16) guards the `splice.pin` DOOR. The thing it protects
-//! is the `meridian-lock` block, which is ordinary page text: every put shape can
-//! compose those bytes without the pin field ever being set. The review
-//! reproduced it — an actor with zero read receipts wrote a **Green** pin through
-//! native `edits` (finding 4, P1).
+//! Pins on WRITE (`is_err()`), never rendered colour (R26). Doors: native
+//! `edits`, `plan_edits`, `write::create`, anchor promotion, legit `splice.pin`
+//! control; `run::executor` is separate (`crates/run/tests/executor.rs`).
 //!
-//! Every test here asserts on the WRITE (`is_err()`), never on the colour the
-//! forged claim would have rendered: a fix that lets the block commit and paints
-//! it grey fails by construction (R26).
 //!
-//! The doors driven here are the four the review names plus the two this unit
-//! enumerated: native `edits`, lowered `plan_edits`, `write::create`, the pin's
-//! own anchor promotion (a raw file replace outside the batch), and the legit
-//! `splice.pin` mint (the control — a guard that also refuses the real mint would
-//! be worthless). `run::executor` is the fifth door and is driven in
-//! `crates/run/tests/executor.rs` (it bypasses `splice` entirely).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PlanEdit, PutAt, SecRef};
 use wire_serve::write::{CreateArgs, SpliceArgs, splice};
 
-/// The pinning page — no lock block, so a first pin BIRTHS one at EOF.
+/// Pinning page (no lock — first pin births one at EOF).
 const PINNER: &str = "# Plan\n\ndraws from the guide.\n";
-/// The pinned page. A HEADING ref, never a bare `#^anchor`: an anchor node's
-/// span is its host line, so a bare-anchor fixture fingerprints the empty span in
-/// every document and proves nothing (R31, fix3's false-gate self-catch).
+/// Pinned page — heading ref only (bare `#^anchor` is R31 empty-span false green).
+///
+///
 const TARGET: &str = "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n";
-/// The same shape carrying DIFFERENT content — the control that proves the
-/// fixture's fingerprints are real (see `fingerprints_in_this_fixture_differ`).
+/// Different body under same heading — control that fingerprints can differ.
+///
 const DECOY: &str = "# Guide\n\n## Leader's Guideline\n\nship it without reading.\n";
 
-/// Git-initialised: these tests mint pins through the production door, and an
-/// R4 pin row carries a `hash` only git can answer for.
+/// Git workspace: R4 pin row needs a `hash` only git can answer.
+///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
@@ -86,9 +86,9 @@ fn put_at_end(section: &str, text: &str) -> Edit {
     }
 }
 
-/// The honest fingerprint of the target section, computed the way the VERIFY
-/// plane computes it — so a forged block carries a token that would VERIFY, not
-/// a made-up one. A guard that only catches nonsense tokens is not a guard.
+/// Live VERIFY-plane fingerprint (forged block must carry a token that would green).
+///
+///
 fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> String {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let sel = model::selector::Selector::parse(&format!("{rel}#{selector}"));
@@ -100,23 +100,23 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
         .into_string()
 }
 
-/// The R4 blob hash a fixture pin carries when the test is not measuring the
-/// retrieval plane. R4 makes `hash` MANDATORY, so there is no pin without one.
+/// Fixture blob oid (R4 `hash` mandatory; retrieval plane not under test).
+///
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
-/// One R4 pin in the bytes `lock::render` emits.
+/// One R4 pin in `lock::render` bytes; path as SEGMENTS (R1.6 / U14 — never
+/// join-then-split `page#A/B`; `/` in heading text must survive).
 ///
-/// **Takes the path as SEGMENTS, never a joined `page#A/B` spelling.** The
-/// previous form took that spelling and rebuilt the array by splitting the
-/// fragment on `/` — which is the exact thing R1.6 forbids on a machine
-/// surface, re-entering through a fixture. A heading whose own text contains a
-/// `/` (now legal and pinnable: U14 ruled the round-trip refusal dead) would
-/// have been split into TWO array elements, handing these tests a lock row the
-/// engine could never mint. The test would then pass on an impossible subject.
 ///
-/// The production path is proved not to do this by
-/// `s7_pin::the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string`;
-/// this helper now holds the same line.
+///
+///
+///
+///
+///
+///
+///
+///
+///
 fn lock_block(object: &str, path: &[&str], fingerprint: &str) -> String {
     let path = path
         .iter()
@@ -130,8 +130,8 @@ fn lock_block(object: &str, path: &[&str], fingerprint: &str) -> String {
     )
 }
 
-/// R31 control: the two documents this fixture compares must fingerprint
-/// DIFFERENTLY, or every assertion above them is green by accident.
+/// Control: target vs decoy fingerprints must differ (else pins are vacuous).
+///
 #[test]
 fn fingerprints_in_this_fixture_differ() {
     let (dir, root) = workspace();
@@ -144,8 +144,8 @@ fn fingerprints_in_this_fixture_differ() {
     );
 }
 
-/// **Finding 4 (P1), the reviewer's forge repro.** One actor, one EMPTY receipt
-/// ledger: the gated door refuses, and the ungated door must refuse too.
+/// Finding 4 (P1): unread actor — gated pin and ordinary-edit forge both refuse.
+///
 #[test]
 fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     let (dir, root) = workspace();
@@ -153,7 +153,7 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     let mallory = Some("agent-mallory");
     let before = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
 
-    // 1. The GATED door: a pin from an actor who never read the target.
+    // 1. Gated door: unread pin.
     let gated = splice(
         &root,
         None,
@@ -176,8 +176,8 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
         "the read-mint gate must refuse an un-read pin"
     );
 
-    // 2. The UNGATED door: the same claim as ordinary page text, carrying a
-    //    fingerprint that would verify GREEN.
+    // 2. Ungated door: same claim as page text (token would verify green).
+    //
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let forged = splice(
         &root,
@@ -217,9 +217,9 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     );
 }
 
-/// The guard is on the ARTIFACT, so it does not care who is asking: the
-/// local-operator CLI shape (`actor: None`, which D16 trusts for the PIN verb)
-/// cannot write lock bytes as page text either.
+/// CLI (`actor: None`, D16-trusted for pin) still cannot put lock bytes as text.
+///
+///
 #[test]
 fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
     let (_dir, root) = workspace();
@@ -246,7 +246,7 @@ fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
     );
 }
 
-/// Door 2 — the lowered `plan_edits` batch reaches the same bytes.
+/// Door 2: `plan_edits` lowering cannot forge a lock.
 #[test]
 fn plan_edits_lowering_cannot_forge_a_lock() {
     let (dir, root) = workspace();
@@ -272,8 +272,8 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
     );
 }
 
-/// Door 3 — a BIRTH carrying a lock block. `create` has no pre-image, so any
-/// lock bytes in the body are a claim nobody computed.
+/// Door 3: `create` body may not birth a lock (no pre-image claim).
+///
 #[test]
 fn create_cannot_birth_a_page_carrying_a_lock() {
     let (dir, root) = workspace();
@@ -302,12 +302,12 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
     );
 }
 
-/// An ordinary edit may not REPLACE a minted lock either — rewriting the pin's
-/// fingerprint is the same forgery as writing one.
+/// Ordinary edits cannot rewrite a minted lock fingerprint.
+///
 #[test]
 fn ordinary_edits_cannot_rewrite_a_minted_lock() {
     let (dir, root) = workspace();
-    // The legit mint first (CLI shape, D16 local-operator-trusted).
+    // Legit mint first (CLI / D16).
     splice(
         &root,
         None,
@@ -328,7 +328,7 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
     let minted = std::fs::read_to_string(dir.path().join("plan.md")).expect("read");
     let real = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
 
-    // Now drift the target and try to "re-green" the claim by hand.
+    // Drift target; try to re-green the claim by hand.
     std::fs::write(dir.path().join("guide.md"), DECOY).expect("drift");
     let drifted = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     assert_ne!(
@@ -371,8 +371,8 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
     );
 }
 
-/// THE CONTROL: the guard admits exactly the block the call minted — the real
-/// pin path, its idempotent re-pin, and a second pin unioned into the same lock.
+/// Control: real mint, re-pin, and ordinary edit beside an untouched lock land.
+///
 #[test]
 fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     let (dir, root) = workspace();
@@ -405,8 +405,8 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
         "a re-pin of unchanged content is byte-idempotent"
     );
 
-    // A content edit on the SAME page, riding beside an untouched lock, is
-    // ordinary work — the guard must not refuse it.
+    // Content edit beside untouched lock is ordinary work.
+    //
     splice(
         &root,
         None,
@@ -422,13 +422,13 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     .expect("an ordinary edit beside an untouched lock still commits");
 }
 
-/// The pin's anchor promotion writes the TARGET through a raw `fs::replace_file`
-/// outside the batch (finding 9). It must be lock-NEUTRAL: a target that carries
-/// its own lock keeps it byte-for-byte across the promotion.
+/// Anchor promotion (`fs::replace_file`, finding 9) is lock-neutral on target.
+///
+///
 #[test]
 fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     let (dir, root) = workspace();
-    // Give the TARGET its own minted lock first, through the guarded path.
+    // Target gets its own lock first (guarded path).
     std::fs::write(
         dir.path().join("src.md"),
         "# Src\n\n## Source Guideline\n\nread me first.\n",
@@ -459,7 +459,7 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
             .expect("guide.md carries a lock")
     };
 
-    // Now pin INTO guide.md — this promotes an anchor into it (a raw replace).
+    // Pin into guide.md — promotes anchor via raw replace.
     splice(
         &root,
         None,
@@ -492,14 +492,14 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     );
 }
 
-/// **A stated consequence of R25, asserted rather than discovered.** The lock
-/// block is birthed at EOF, so it lives inside the page's LAST section: a
-/// whole-section rewrite (`put at:content`, `plan_edits.replace_section`) would
-/// DELETE the attestation. R25 says refuse any lock-byte change this call did not
-/// mint, and a deletion is a change — an actor could otherwise erase a RED pin
-/// and leave a page reading clean. The remedy the refusal implies: append
-/// (`put at:end`) instead of rewriting, or hand-remove the block deliberately —
-/// the same repair path a corrupt lock already documents (#8 §3).
+/// R25: whole-section rewrite that would delete lock at EOF refuses; message
+/// teaches destroy/instead (`put at:end`). Append beside lock still lands.
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
     let (dir, root) = workspace();
@@ -552,11 +552,11 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
         Some(ErrorCode::BadRequest),
         "deleting the attestation through an ordinary put must refuse"
     );
-    // R24/R32: a refusal that names the law and not the way out teaches the
-    // caller nothing but that they are stuck. This one is the LEGITIMATE case —
-    // a whole-section rewrite of the last section is an ordinary thing to want —
-    // so the message must carry what it would destroy AND what to do instead,
-    // naming only remedies that exist today.
+    // R24/R32: refusal names destroy + remedy (not law alone).
+    //
+    //
+    //
+    //
     let taught = wiped.as_ref().err().and_then(|e| e.message.clone());
     let taught = taught.as_deref().unwrap_or_default();
     for clause in [
@@ -576,7 +576,7 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
         "the page is byte-unchanged"
     );
 
-    // The append shape is unaffected — it adds beside the block, never over it.
+    // Append beside lock still commits.
     splice(
         &root,
         None,

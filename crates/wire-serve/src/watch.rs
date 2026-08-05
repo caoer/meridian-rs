@@ -1,44 +1,44 @@
-//! F5-WATCH — external-change reconciliation: the CLASSIFIER, shared by both
-//! hosts (U20b). `WatchState` tracks the world at the ring tip; each reconcile
-//! runs the three-way disposition:
+//! F5-WATCH — external-change CLASSIFIER, shared by both hosts (U20b).
+//! `WatchState` tracks the world at ring tip; each reconcile is three-way:
 //!
-//! - snapshot root == watch root → nothing (a cycle finding nothing emits
-//!   nothing — the empty-batch pin generalizes);
-//! - snapshot root == ring tip `root_after` → an INTERNAL commit moved the
-//!   world: sync silently (`commit_batch` already emitted — no double
-//!   emission);
-//! - else → EXTERNAL: one detected change set = one root advance = one
-//!   Delta, `actor`/`now` ABSENT (§7.1: the engine never invents identity
-//!   or time it wasn't given; `seq` is assigned at detection), assembled at
-//!   the ONE production constructor site and stored in the ring.
+//! - snapshot root == watch root → nothing;
+//! - snapshot root == ring tip `root_after` → INTERNAL: sync silently (no
+//!   double emission; `commit_batch` already emitted);
+//! - else → EXTERNAL: one change set = one root advance = one Delta;
+//!   `actor`/`now` ABSENT (§7.1); `seq` at detection; ONE production constructor.
 //!
-//! **Rename ruling (advisor, f5-watch echo — pinned AS DATA):** within one
-//! detection batch, EXACTLY one removed + EXACTLY one added path with
-//! byte-equal content classifies `renamed` + `from_path` (blake3/byte
-//! equality is a fact in the campaign's identity vocabulary, not a
-//! similarity heuristic); every other case refuses to guess and emits
-//! delete+create with `from_path` unwired. Ledgered edge, recorded here: a
-//! genuine delete of A plus an independent create of byte-equal B
-//! classifies as renamed — indistinguishable from a rename in the fact
-//! plane, and the fact plane is what we serve (013 posture). STOP tripwire
-//! if a frozen worked value ever contradicts.
 //!
-//! **Stated degrade (no pin) — SIDECAR ONLY:** an external write landing in the
-//! same dispatch window as an internal commit can break ring-chain contiguity;
-//! `diff` over crossing ranges then answers `root_unknown` → full resync —
-//! degrades to re-derive, never to wrong data (§7.3 posture). The registry does
-//! NOT inherit this degrade: its detector snapshots under the workspace write
-//! flock, so it never observes a batch mid-landing (U20a §4, advisor-passed).
-//! The difference is the DRIVER's, not the classifier's — which is exactly the
-//! split that lets one classifier serve two hosts.
 //!
-//! # What is here and what is not
-//! The three-way disposition, the rename ruling and the wire projection are
-//! shared: they are the law of what a change MEANS. The DRIVER is each host's
-//! own — the sidecar reconciles on demand at its serve-loop line boundary
-//! (`sidecar::demand`, which prices a line before running it), the registry on a
-//! subscription's detection cycle. A host that copied the classifier to change
-//! its driver would be forking the law to change the schedule.
+//!
+//!
+//!
+//! **Rename ruling (as data):** within one batch, EXACTLY one removed + EXACTLY
+//! one added path with byte-equal content → `renamed` + `from_path`. Else
+//! delete+create, `from_path` unwired. Fact plane is what we serve (delete+create
+//! of byte-equal B classifies as rename — indistinguishable in the fact plane).
+//!
+//!
+//!
+//!
+//!
+//! **Stated degrade — SIDECAR ONLY:** external write in the same window as
+//! internal commit can break ring-chain contiguity → `root_unknown` resync
+//! (§7.3: re-derive, never wrong data). Registry detector snapshots under write
+//! flock (never mid-landing). DRIVER differs; classifier is shared.
+//!
+//!
+//!
+//! # What is here vs not
+//! Shared: three-way disposition, rename ruling, wire projection (what a change
+//! MEANS). Per-host DRIVER: sidecar at serve-loop line boundary; registry on
+//! subscription detection cycle.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{DeltaFile, DeltaFrame, ErrorBody, FileChange, NodeRev, Path, Root};
 

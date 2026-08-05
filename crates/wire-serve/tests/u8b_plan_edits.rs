@@ -1,11 +1,11 @@
-//! M1 U8b end-to-end gates: `splice` with `plan_edits` — the engine-lowered
-//! put path — lands the SAME disk bytes the Go daemon's emulation built, and
-//! the whole flow (flock → lower → validate → commit → Delta) behaves as one
-//! native splice.
+//! U8b: `plan_edits` lowering ≡ host-built native batch (bytes, armed, root).
+//! Flow: flock → lower → validate → commit → Delta as one native splice.
 //!
-//! The equivalence law under test: for every plan batch, `plan_edits` through
-//! the lowering == the native batch the host used to construct — byte-for-byte
-//! on disk, same armed shape, same root advance.
+//!
+//!
+//!
+//!
+//!
 
 use std::path::PathBuf;
 
@@ -60,12 +60,12 @@ fn seg(h: &str) -> HpathSeg {
 
 const DOC: &str = "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## Tasks\n\n- item one\n- item two\n\n# Archive\n\nold\n";
 
-/// THE equivalence law: a mixed plan batch (property + append + create) lands
-/// byte-identical disk state to the native batch the Go host used to build
-/// for the same plans — same emulation bytes, engine-lowered.
+/// Equivalence: mixed plan (property+append+create) lands same bytes as native.
+///
+///
 #[test]
 fn plan_batch_equals_the_host_built_native_batch() {
-    // Workspace A: the plan-level form.
+    // A: plan form.
     let (da, ra) = ws(&[("card.md", DOC)]);
     let out_a = splice(
         &ra,
@@ -94,9 +94,9 @@ fn plan_batch_equals_the_host_built_native_batch() {
     )
     .expect("plan splice commits");
 
-    // Workspace B: the native batch the Go emulation would have built —
-    // props group first (Put{all} on the fm_key), then the disciplined
-    // append payload, then the parent-append heading text.
+    // B: native batch (prop Put{all}, append, parent-append create).
+    //
+    //
     let (db, rb) = ws(&[("card.md", DOC)]);
     let out_b = splice(
         &rb,
@@ -149,7 +149,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
         "plan_edits and the host-built native batch land IDENTICAL bytes"
     );
 
-    // Same armed shape: the lowered batch arms 1:1 with the native one.
+    // Armed 1:1.
     let (ResponseBody::Splice { armed: aa, .. }, ResponseBody::Splice { armed: ab, .. }) =
         (&out_a.body, &out_b.body)
     else {
@@ -162,14 +162,14 @@ fn plan_batch_equals_the_host_built_native_batch() {
     );
 }
 
-/// The full plan flow lands the expected literal bytes (an anchor an auditor
-/// can eyeball): CAS-guarded whole-section rewrite + match-all RMW.
+/// Match-all + `replace_section` land expected literal bytes.
+///
 #[test]
 fn replace_section_and_match_all_land_expected_bytes() {
     let (dir, root) = ws(&[("card.md", DOC)]);
 
-    // Read the live section rev the way a caller would (armed facts domain):
-    // resolve Tasks' node rev from the model directly.
+    // Live Tasks section rev.
+    //
     let doc = fs::load(&root, std::path::Path::new("card.md")).expect("load");
     let target = model::Ref::Hpath(vec![
         model::HpathSeg {
@@ -207,7 +207,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
         "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## Tasks\n\n- task one\n- task two\n\n# Archive\n\nold\n"
     );
 
-    // Whole-section rewrite under the fresh rev.
+    // replace_section under fresh rev.
     let doc = fs::load(&root, std::path::Path::new("card.md")).expect("load");
     let fresh = model::resolve(&doc, &target).expect("resolves").node_rev.0;
     splice(
@@ -232,9 +232,9 @@ fn replace_section_and_match_all_land_expected_bytes() {
     );
 }
 
-/// A stale rev on a plan `replace_section` refuses `cas_mismatch` through the
-/// UNCHANGED native CAS path (the lowering threads `rev` → `if_node_rev`; the
-/// guard itself is the frozen engine's).
+/// Plan `rev` threads to native CAS (`if_node_rev`); stale → `cas_mismatch`.
+///
+///
 #[test]
 fn plan_rev_threads_into_the_native_cas_guard() {
     let (dir, root) = ws(&[("card.md", DOC)]);
@@ -261,16 +261,16 @@ fn plan_rev_threads_into_the_native_cas_guard() {
     );
 }
 
-/// S4b/D11: `set_property` through the plan face composes `{key}: {value}` into
-/// the frontmatter line, so a multi-line value FORGES keys — this path skips
-/// `check_write`'s rebuild, so it must refuse on its own. Both spellings refuse
-/// `bad_request` and the file stays byte-identical.
+/// S4b/D11: multiline `set_property` value forges keys → `bad_request`, no write.
+///
+///
+///
 #[test]
 fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     let (dir, root) = ws(&[("card.md", DOC)]);
 
-    // Forged-key spelling: no ": " in the value, so the conditional quote never
-    // fires — before the fix this landed a literal `injected:pwned` FM line.
+    // Forged-key spelling (no ": " → no quote).
+    //
     let err = splice(
         &root,
         None,
@@ -294,8 +294,8 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
         )
     );
 
-    // Quoted spelling: the mid-value ": " DOES trigger the single quote, and a
-    // single-quoted YAML scalar cannot escape the raw newline — same refusal.
+    // Quoted spelling (": " triggers quote; newline still refuses).
+    //
     let err = splice(
         &root,
         None,
@@ -345,13 +345,13 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     );
 }
 
-/// Finding 5 / R5: the KEY is composed into `{key}: {value}` exactly as the
-/// value is, so it has the SAME fallible owner (`policy::defs::yaml_safe_key`
-/// → `SafeKey`) — and BOTH doors discharge it. The pre-flight (`rebuild`) and
-/// the committer (`splice.plan_edits`, which skips `check_write`) refuse the
-/// identical edit; before the fix the committer accepted it and forged two
-/// frontmatter lines. The assert is the REFUSAL itself: a fix that sanitized
-/// the key into something legal and committed would fail here.
+/// Finding 5 / R5: unsafe property KEY refuses at pre-flight and plan commit.
+/// Same owner as value (`yaml_safe_key`); assert is the refusal itself.
+///
+///
+///
+///
+///
 #[test]
 fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     // The reviewer's repro, verbatim (review 2026-07-25-0845-64d761b1 § #5).
@@ -455,9 +455,9 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
     );
 }
 
-/// The two golden MUST-CARRY refusals fire from the ENGINE now, with the file
-/// untouched: p-replace-on-block + p-create-top (message = the Go-face bytes
-/// minus the host's `put: ` prefix).
+/// Golden MUST-CARRY refusals: p-replace-on-block + p-create-top (engine, no write).
+///
+///
 #[test]
 fn golden_target_class_refusals_fire_engine_side() {
     let (dir, root) = ws(&[("card.md", "# Tasks\n\n- [ ] one ^task1\n")]);

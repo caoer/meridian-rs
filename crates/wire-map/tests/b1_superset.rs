@@ -1,12 +1,12 @@
-//! B1-SUPERSET: the four wire-observable superset-by-embedding predicates
-//! (contract §15 B1, §14 wire-map row), written at the `wire_map::project`
-//! seam WHILE `project` is still `todo!()` — fail-first is the law of this
-//! unit. Divergence between model and wire vocabularies must surface here as
-//! a compile/test error, never as runtime loss.
+//! B1-SUPERSET: four wire-observable superset-by-embedding predicates
+//! (contract §15 B1) at `wire_map::project`. Real parsed documents only.
 //!
-//! Predicates exercise REAL parsed documents (`model::build` over
-//! `syntax::parse`), never hand-constructed trees — the whole pipeline is
-//! under test, exactly as a sidecar would drive it.
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::NodeKind as K;
 
@@ -15,10 +15,10 @@ fn project(raw: &str) -> Vec<wire::Node> {
     wire_map::project(&doc)
 }
 
-/// Predicate 1: every dialect construct is wire-representable across the
-/// 11-kind enum — including `Comment` and `InlineCode`, the two kinds the
-/// model vocabulary currently lacks (the DESIGNED fail-first surface: the
-/// gap lands here, never as silent loss).
+/// Predicate 1: every dialect construct is wire-representable (11-kind enum).
+///
+///
+///
 #[test]
 fn every_dialect_construct_is_wire_representable() {
     let src = "---\ntitle: Superset\n---\n\
@@ -110,10 +110,10 @@ fn fence_unterminated_rides_the_wire() {
     );
 }
 
-/// Predicate 4: frontmatter key ORDER is preserved in `keys` — document
-/// order, never sorted (the model-side `YamlMap` is a `BTreeMap` today; that
-/// ordered-keys gap is DESIGNED to land on this surface and resolves in
-/// M2-PROJECT, visibly).
+/// Predicate 4: frontmatter `keys` preserve document order, never sorted.
+///
+///
+///
 #[test]
 fn frontmatter_key_order_preserved_in_keys() {
     // deliberately non-alphabetical: a sort would betray itself

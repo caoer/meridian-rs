@@ -1,21 +1,21 @@
-//! The `read` refusal contract — site 8 of the issue-05 family.
+//! `read` refusal contract (issue-05 site 8): both-selector-planes contradiction.
 //!
-//! **This refusal had no test at all**, which is how it survived three sweeps.
-//! It was found neither by grepping the defect STRING ("mode toc") nor the
-//! defect CLASS ("no section addressed"), because it is phrased like neither:
-//! it explains a distinction between two selector planes and never names a
-//! file, a partial state, or a fix. Leader `2702bc87` surfaced it by enumerating
-//! the message corpus for literals carrying the sweep's own bar — `Fix:` and a
-//! partial-state clause — and looking at the refusal-shaped literals in NEITHER
-//! set.
+//! Pins as PROPERTIES not bytes (`d9419c03`): message must name file, disclose
+//! partial state ("Nothing was read" / "no rev was minted"), carry `Fix:`, and
+//! keep the two-plane distinction ("scopes the whole call").
 //!
-//! Its sibling 305 lines away in the same file (`mode sections needs selectors`)
-//! got the full treatment in this sweep. One exemplary, one untouched, same
-//! plane — which is exactly the half-leaked vocabulary the card exists to close.
 //!
-//! Asserted as PROPERTIES, not bytes, for the reason ruling `d9419c03` gives
-//! about the u4a2 goldens: a byte pin forbids all rewording, including
-//! improvements.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{ErrorCode, Path as WPath};
 use wire_serve::read::{NO_DECORATIONS, ReadParams, composed_read};
@@ -26,10 +26,10 @@ fn doc() -> model::Document {
     model::build(RAW.to_string(), syntax::parse(RAW))
 }
 
-/// Passing BOTH a `#fragment` and `sections[]` is a caller contradiction: the
-/// fragment scopes the whole call, `sections[]` selects document-absolute
-/// paths, so honouring both is undefined. The refusal for it must still meet
-/// the bar every other refusal in this sweep now meets.
+/// Both `#fragment` and `sections[]` is undefined (planes disagree); refusal
+/// must meet the exemplar bar (file + partial state + Fix + distinction).
+///
+///
 #[test]
 fn both_selector_planes_refuses_at_the_exemplar_bar() {
     let d = doc();
@@ -57,25 +57,25 @@ fn both_selector_planes_refuses_at_the_exemplar_bar() {
         .as_deref()
         .expect("the refusal is a sentence, not a bare code");
 
-    // 1. THE FILE. `display` is already in scope one line above the refusal, so
-    //    omitting it was never a plumbing limit — the refusal simply never said
-    //    which page it was talking about.
+    // 1. File named.
+    //
+    //
     assert!(m.contains("notes.md"), "names the file: {m}");
 
-    // 2. THE PARTIAL STATE. A read that refuses serves nothing and mints no
-    //    receipt; saying so is what stops a caller wondering whether a rev they
-    //    now hold came from this call.
+    // 2. Partial state: nothing read, no rev minted.
+    //
+    //
     assert!(
         m.contains("Nothing was read") && m.contains("no rev was minted"),
         "discloses the partial state: {m}"
     );
 
-    // 3. THE FIX, naming an act rather than restating the problem.
+    // 3. Fix clause present.
     assert!(m.contains("Fix:"), "carries a fix clause: {m}");
 
-    // 4. The one thing the ORIGINAL got right, kept: it taught the distinction
-    //    between the two planes. The defect was never that it explained too
-    //    much, only that it stopped before saying what to do.
+    // 4. Two-plane distinction kept.
+    //
+    //
     assert!(
         m.contains("scopes the whole call"),
         "keeps the distinction the original taught: {m}"

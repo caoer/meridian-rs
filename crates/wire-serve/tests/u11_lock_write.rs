@@ -1,9 +1,9 @@
-//! U11 (M1 decision #8): the guarded `meridian-lock` write path — the
-//! engine-sole-writer door for the NEW lock method. Format law (types, strict
-//! parse, canonical render, locate) is `crates/lock`'s; THIS suite gates the
-//! write path: locate-or-create, EOF placement law, CAS, flock,
-//! atomicity (lock-is-content — one file replace), and the fail-loud posture
-//! on a corrupt (hand-edited) lock state.
+//! U11: guarded `lock_write` path (locate/create, EOF placement, CAS, flock,
+//! atomic replace, corrupt fail-loud). Format law lives in `crates/lock`.
+//!
+//!
+//!
+//!
 
 use wire::{ErrorCode, NodeRev, Path as WPath, Recovery};
 use wire_serve::write::{LockWriteArgs, lock_write};
@@ -32,8 +32,8 @@ fn file_rev(root: &fs::WorkspaceRoot, rel: &str) -> NodeRev {
     NodeRev(doc.root.node_rev.0)
 }
 
-/// A real full-token fingerprint minted off the fixture page's root node —
-/// the U10 CID-token path (`fp1.span2.b3.<64hex>`), not a synthetic string.
+/// Real root-node fingerprint (`fp1.span2.b3.<64hex>`), not synthetic.
+///
 fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
     let doc = fs::load(root, std::path::Path::new("page.md")).expect("load");
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -41,9 +41,9 @@ fn minted_fingerprint(root: &fs::WorkspaceRoot) -> String {
         .into_string()
 }
 
-/// One lock for the tests: a single R4 pin — object wikilink, per-pin `hash`,
-/// the whole-body `path: []` arm — carrying a REAL minted
-/// `fp1.span2.b3.<64hex>` token.
+/// Sample R4 pin (object, hash, `path: []`, real fingerprint).
+///
+///
 fn sample_lock(root: &fs::WorkspaceRoot) -> lock::Lock {
     let mut l = lock::Lock::new();
     l.upsert_pin(lock::PinEntry::new(
@@ -72,9 +72,9 @@ fn fence_count(raw: &str) -> usize {
     raw.matches("```meridian-lock").count()
 }
 
-/// GATE — birth: a page without a lock gains ONE block at EOF (placement law:
-/// one blank line before, one terminator after), the block round-trips
-/// (find→parse == the lock written), and the root advances.
+/// Birth: one lock at EOF (placement law), round-trip, root advances.
+///
+///
 #[test]
 fn birth_lands_at_eof_and_round_trips() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -118,9 +118,9 @@ fn birth_lands_at_eof_and_round_trips() {
     );
 }
 
-/// GATE — update: a second write replaces the block IN PLACE (still exactly
-/// one block), the new pin is present on re-parse, and surrounding content
-/// stays byte-identical.
+/// Update: in-place replace, still one block; surrounding content byte-identical.
+///
+///
 #[test]
 fn update_replaces_in_place_exactly_one_block() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -150,9 +150,9 @@ fn update_replaces_in_place_exactly_one_block() {
     assert_eq!(found.lock, l, "the updated lock (two pins) round-trips");
 }
 
-/// Canonical determinism: re-writing the SAME lock is byte-stable (the
-/// canonical render + in-place replace changes nothing, so the file rev —
-/// and the world root — hold still).
+/// Same lock rewrite is byte-stable (file rev / root hold).
+///
+///
 #[test]
 fn rewriting_same_lock_is_byte_stable() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -168,8 +168,8 @@ fn rewriting_same_lock_is_byte_stable() {
     );
 }
 
-/// GATE — CAS: after the page drifts from the read rev, the write refuses
-/// `cas_mismatch` citing read vs found, and the page is untouched.
+/// CAS: stale `if_file_rev` → `cas_mismatch`; page untouched.
+///
 #[test]
 fn cas_drift_refuses_citing_revs() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -188,8 +188,8 @@ fn cas_drift_refuses_citing_revs() {
     assert_eq!(fence_count(&read(&root, "page.md")), 0, "nothing landed");
 }
 
-/// Dry runs touch no disk: no block, no root advance — but the outcome still
-/// reports the computed after-rev and `created`.
+/// Dry: no disk write; still reports after-rev and `created`.
+///
 #[test]
 fn dry_writes_nothing() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -204,8 +204,8 @@ fn dry_writes_nothing() {
     assert_eq!(read(&root, "page.md"), PAGE, "no byte landed");
 }
 
-/// D9: the lock write serializes on the workspace write flock — a held lock
-/// refuses the typed `workspace_busy` (retry) and lands nothing.
+/// D9: held flock → `workspace_busy`/retry; nothing lands.
+///
 #[test]
 fn held_flock_refuses_workspace_busy() {
     let (_d, root) = ws(&[("page.md", PAGE)]);
@@ -218,9 +218,9 @@ fn held_flock_refuses_workspace_busy() {
     assert_eq!(read(&root, "page.md"), PAGE, "nothing landed");
 }
 
-/// Fail-loud on corruption (#8 §3, sole-writer): a page carrying TWO
-/// hand-written `meridian-lock` blocks refuses with a teaching `bad_request`
-/// naming the sole-writer law — never silently adopts or rewrites one.
+/// Corrupt: two hand-written lock blocks → teaching `bad_request` (#8 §3).
+///
+///
 #[test]
 fn two_hand_written_blocks_refuse_loud() {
     let forged =
@@ -253,7 +253,7 @@ fn two_hand_written_blocks_refuse_loud() {
     );
 }
 
-/// A lock pins CONTENT — locking a missing page is `file_not_found` (env).
+/// Missing page → `file_not_found` (env).
 #[test]
 fn missing_page_is_file_not_found() {
     let (_d, root) = ws(&[]);

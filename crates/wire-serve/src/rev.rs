@@ -452,7 +452,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// The v2-reserved-field registry (advisor ruling, 2026-08-03)
+// The v2-reserved-field registry (v2 demotion law)
 // ---------------------------------------------------------------------------
 
 /// WHERE in a frame a reserved field appears. A key is stripped at its declared
