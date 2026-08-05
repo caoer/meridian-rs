@@ -35,7 +35,10 @@ use crate::engine::WorkspaceEngine;
 use crate::protocol::{Request, Response};
 use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
-use crate::{DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_REAP_INTERVAL, now_secs};
+use crate::{
+    DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
+    DEFAULT_REAP_INTERVAL, now_secs,
+};
 
 /// How long the accept loop parks between non-blocking `accept` polls. Short
 /// enough that shutdown is prompt, long enough not to spin a core.
@@ -75,6 +78,14 @@ pub struct Config {
     /// How often the pre-warm thread sweeps the warm workspaces (see
     /// [`DEFAULT_PREWARM_INTERVAL`]).
     pub prewarm_interval: Duration,
+    /// The ceiling the pre-warm cadence backs off to while quiet (see
+    /// [`DEFAULT_PREWARM_QUIET_MAX`]).
+    pub prewarm_quiet_max: Duration,
+    /// How long the daemon stays resident with no client request before asking
+    /// its host process to exit (see [`DEFAULT_IDLE_EXIT`]). `None` disables
+    /// idle exit — which is what an in-process test server wants, since its
+    /// lifetime is the test's, not a client's.
+    pub idle_exit: Option<Duration>,
 }
 
 impl Config {
@@ -91,6 +102,8 @@ impl Config {
             idle_threshold: DEFAULT_IDLE_REAP,
             reap_interval: DEFAULT_REAP_INTERVAL,
             prewarm_interval: DEFAULT_PREWARM_INTERVAL,
+            prewarm_quiet_max: DEFAULT_PREWARM_QUIET_MAX,
+            idle_exit: Some(DEFAULT_IDLE_EXIT),
         }
     }
 
@@ -129,6 +142,9 @@ pub fn default_socket_path() -> io::Result<PathBuf> {
 #[derive(Debug)]
 pub struct RunningServer {
     shutdown: Arc<AtomicBool>,
+    /// G11: raised by the reaper when the idle-exit horizon passes. A REQUEST,
+    /// not the act — see [`RunningServer::idle_exit_requested`].
+    exit_requested: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
     reaper: Option<JoinHandle<()>>,
     prewarm: Option<JoinHandle<()>>,
@@ -179,17 +195,26 @@ impl RunningServer {
             std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600));
 
         let shutdown = Arc::new(AtomicBool::new(false));
+        let exit_requested = Arc::new(AtomicBool::new(false));
         let accept = spawn_accept(listener, registry.clone(), shutdown.clone());
         let reaper = spawn_reaper(
             registry.clone(),
             shutdown.clone(),
             config.idle_threshold,
             config.reap_interval,
+            config.idle_exit,
+            exit_requested.clone(),
         );
-        let prewarm = spawn_prewarm(registry.clone(), shutdown.clone(), config.prewarm_interval);
+        let prewarm = spawn_prewarm(
+            registry.clone(),
+            shutdown.clone(),
+            config.prewarm_interval,
+            config.prewarm_quiet_max,
+        );
 
         Ok(RunningServer {
             shutdown,
+            exit_requested,
             accept: Some(accept),
             reaper: Some(reaper),
             prewarm: Some(prewarm),
@@ -203,6 +228,17 @@ impl RunningServer {
     #[must_use]
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// G11: has the daemon been idle past its exit horizon?
+    ///
+    /// The host process polls this and calls [`shutdown`](Self::shutdown)
+    /// itself. The reaper cannot tear the server down from inside a reaper
+    /// thread — `shutdown` joins that very thread — so the horizon is reported,
+    /// never acted on, by the thread that observes it.
+    #[must_use]
+    pub fn idle_exit_requested(&self) -> bool {
+        self.exit_requested.load(Ordering::SeqCst)
     }
 
     /// The shared registry, for in-process inspection and driving the reaper
@@ -312,6 +348,8 @@ fn spawn_reaper(
     shutdown: Arc<AtomicBool>,
     idle_threshold: Duration,
     reap_interval: Duration,
+    idle_exit: Option<Duration>,
+    exit_requested: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let threshold_secs = idle_threshold.as_secs();
@@ -327,6 +365,19 @@ fn spawn_reaper(
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
             }
+            // G11 idle exit. The reaper raises the FLAG only; the process's own
+            // loop owns the teardown, because shutting the threads down from
+            // inside one of them would join this thread to itself.
+            if let Some(horizon) = idle_exit {
+                let quiet_for = now_secs().saturating_sub(registry.last_request_secs());
+                if quiet_for >= horizon.as_secs() {
+                    eprintln!(
+                        "registry: no client request in {quiet_for}s — shutting down (a client that needs the daemon auto-spawns one)"
+                    );
+                    exit_requested.store(true, Ordering::SeqCst);
+                    return;
+                }
+            }
         }
     })
 }
@@ -341,13 +392,16 @@ fn spawn_prewarm(
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
     interval: Duration,
+    quiet_max: Duration,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut elapsed = Duration::ZERO;
+        let mut delay = interval;
+        let mut seen_requests = registry.request_count();
         while !shutdown.load(Ordering::SeqCst) {
             thread::sleep(PREWARM_TICK);
             elapsed += PREWARM_TICK;
-            if elapsed < interval {
+            if elapsed < delay {
                 continue;
             }
             elapsed = Duration::ZERO;
@@ -358,8 +412,39 @@ fn spawn_prewarm(
                     rebuilt.len()
                 );
             }
+            // G11 the quiet backoff. Two things restore the base cadence: a
+            // rebuild (the corpus is moving) and client traffic since the last
+            // sweep (somebody is working, so the next edit is worth catching
+            // fast). Otherwise the cadence doubles toward the ceiling, so an
+            // abandoned daemon's cost decays instead of persisting forever.
+            let requests = registry.request_count();
+            let quiet = rebuilt.is_empty() && requests == seen_requests;
+            delay = next_prewarm_delay(delay, interval, quiet_max, quiet);
+            seen_requests = requests;
         }
     })
+}
+
+/// G11 the quiet-backoff step: the sweep interval after one sweep.
+///
+/// A quiet sweep doubles the delay toward `quiet_max`; anything else drops
+/// straight back to `base`. Doubling, not a fixed long interval, is what keeps
+/// the ACTIVE case unchanged — a daemon somebody is using still sweeps at
+/// `base` — while an abandoned one's cost decays to a walk a minute.
+///
+/// Clamped at both ends: `base` when a configuration puts `quiet_max` below it
+/// (a nonsense pair must not produce a sweep faster than the base cadence), and
+/// `quiet_max` above.
+fn next_prewarm_delay(
+    current: Duration,
+    base: Duration,
+    quiet_max: Duration,
+    quiet: bool,
+) -> Duration {
+    if !quiet {
+        return base;
+    }
+    current.saturating_mul(2).min(quiet_max.max(base)).max(base)
 }
 
 /// Serve one connection: read NDJSON frames until EOF, routing each to the
@@ -393,6 +478,11 @@ fn serve_conn(stream: &UnixStream, registry: &Registry, shutdown: &AtomicBool) -
         if line.trim().is_empty() {
             continue;
         }
+        // G11: every decoded frame is a client request, so the activity clock
+        // bumps HERE — before dispatch, and regardless of the verb or whether
+        // it succeeds. A daemon being asked malformed questions is still a
+        // daemon somebody is using, and must not age out underneath them.
+        registry.note_request();
         // Set by an ACCEPTED `sub` and by nothing else — see `push_loop`.
         let mut armed: Option<u64> = None;
         let out = handle_line(registry, &mut attached, &mut rev, &mut armed, &line);
@@ -1176,4 +1266,59 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     let mut err = ErrorBody::new(ErrorCode::IoError);
     err.cause = Some(e.to_string());
     Box::new(err)
+}
+
+/// G11 the quiet-backoff step function — the half of the fix that is a policy
+/// decision rather than a measurement, so it is pinned here in isolation.
+#[cfg(test)]
+mod backoff_tests {
+    use super::next_prewarm_delay;
+    use std::time::Duration;
+
+    const BASE: Duration = Duration::from_secs(1);
+    // `Duration::from_days`/`from_mins` are not const-stable at MSRV 1.96, so the
+    // seconds form is the only option (the crate-wide precedent); silence the lint.
+    #[allow(clippy::duration_suboptimal_units)]
+    const CAP: Duration = Duration::from_secs(60);
+
+    /// A daemon nobody is using must get cheaper over time, not stay expensive
+    /// forever. This is what turns a leaked daemon from a permanent cost into a
+    /// decaying one.
+    #[test]
+    fn quiet_sweeps_double_the_delay_up_to_the_ceiling() {
+        let mut delay = BASE;
+        let mut seen = vec![delay];
+        for _ in 0..10 {
+            delay = next_prewarm_delay(delay, BASE, CAP, true);
+            seen.push(delay);
+        }
+        assert_eq!(
+            seen[..7],
+            [1, 2, 4, 8, 16, 32, 60].map(Duration::from_secs),
+            "the quiet cadence must double and then hold at the ceiling"
+        );
+        assert_eq!(delay, CAP, "and never climb past it");
+    }
+
+    /// The active case must be UNCHANGED: a busy daemon still sweeps at the base
+    /// cadence, so nothing about pre-warm's latency promise moves for a user who
+    /// is actually working.
+    #[test]
+    fn any_activity_restores_the_base_cadence_in_one_step() {
+        assert_eq!(
+            next_prewarm_delay(CAP, BASE, CAP, false),
+            BASE,
+            "a sweep that found work drops straight back to base — no ramp-down"
+        );
+    }
+
+    /// A nonsense configuration must not produce a sweep FASTER than the base
+    /// cadence; that would make the fix a regression.
+    #[test]
+    fn a_ceiling_below_the_base_still_never_sweeps_faster_than_base() {
+        assert_eq!(
+            next_prewarm_delay(BASE, BASE, Duration::from_millis(1), true),
+            BASE
+        );
+    }
 }

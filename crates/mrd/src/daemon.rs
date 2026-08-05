@@ -77,7 +77,11 @@ pub(crate) fn run() -> Result<(), Fail> {
     );
     eprintln!("press Ctrl-C to stop");
 
-    while !SIGNALLED.load(Ordering::SeqCst) {
+    // G11: two ways out — a signal, or the idle-exit horizon the reaper watches.
+    // A detached daemon is reparented to init and nothing else will ever end it,
+    // so without the second condition every isolated run leaves one behind
+    // forever. Teardown is identical either way; only the reason differs.
+    while !SIGNALLED.load(Ordering::SeqCst) && !server.idle_exit_requested() {
         thread::sleep(Duration::from_millis(200));
     }
     eprintln!("shutting down");

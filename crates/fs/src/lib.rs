@@ -234,6 +234,62 @@ fn walk_domain_dir(
     Ok(())
 }
 
+/// A cheap, stat-only fingerprint of the hash domain: the same walk
+/// [`hash_domain`] runs, folded over each file's `(relative path, mtime, size)`
+/// instead of its bytes. **Never a correctness signal — a change DETECTOR.**
+///
+/// # Why a second, weaker signal exists
+/// [`domain_snapshot`] is described as "the cheap half" because it does not
+/// PARSE. Against a real corpus that framing is misleading: it still reads and
+/// folds every domain file's bytes, so on a 20 GB vault it costs a fifth of a
+/// core when run once a second. This signal reads no file bytes at all — it
+/// pays one `stat` per domain file and nothing else, so a poller can ask "did
+/// anything change?" without touching content.
+///
+/// # What it may and may not decide
+/// Equality means "no file's path, size, or mtime moved", which is evidence of
+/// an unchanged corpus, not proof of one — a write that restores the previous
+/// size within the filesystem's mtime granularity is invisible here. So it may
+/// only gate WORK THAT IS PURE LATENCY: skipping a pre-warm sweep costs a later
+/// query one rebuild it would have paid anyway. It must never stand in for the
+/// content root, which remains the warm-engine reuse key and the only thing a
+/// served answer is stamped with.
+///
+/// # Errors
+/// I/O failure loading the domain config or traversing the root.
+pub fn domain_stat_signature(root: &WorkspaceRoot) -> io::Result<u64> {
+    let domain = domain::Domain::load(root)?;
+    let rels = hash_domain(root, &domain)?;
+    // FNV-1a, not the production merkle fold: this crate's hashing law puts the
+    // real root in `model` (M3-MERKLE), and a detector that borrowed the root's
+    // machinery would read as a second, weaker root. A non-cryptographic fold
+    // over stat metadata cannot be mistaken for one.
+    let mut fold = FNV_OFFSET;
+    let mut eat = |bytes: &[u8]| {
+        for byte in bytes {
+            fold ^= u64::from(*byte);
+            fold = fold.wrapping_mul(FNV_PRIME);
+        }
+    };
+    eat(&(rels.len() as u64).to_le_bytes());
+    for rel in &rels {
+        let meta = fs::symlink_metadata(root.0.join(rel))?;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+        eat(rel.to_string_lossy().as_bytes());
+        eat(&mtime.to_le_bytes());
+        eat(&meta.len().to_le_bytes());
+    }
+    Ok(fold)
+}
+
+/// FNV-1a 64-bit offset basis and prime, for [`domain_stat_signature`]'s fold.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 /// The domain files of a workspace as `(workspace-relative path, raw bytes)`
 /// pairs — the shape [`domain_snapshot`] returns and [`build_corpus`] consumes.
 pub type DomainFiles = Vec<(String, Vec<u8>)>;
@@ -1895,5 +1951,88 @@ mod tests {
             spellings(&user_rule_pages(&anchor).expect("the layer")),
             vec!["rules/real.md"]
         );
+    }
+}
+
+/// G11 design tests for [`domain_stat_signature`]: the cheap change signal that
+/// replaced a per-second read of the whole corpus.
+#[cfg(test)]
+mod stat_signature_tests {
+    use super::{WorkspaceRoot, domain_snapshot, domain_stat_signature};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn workspace(files: &[(&str, &str)]) -> (tempfile::TempDir, WorkspaceRoot) {
+        let tmp = tempfile::tempdir().unwrap();
+        for (rel, body) in files {
+            let path = tmp.path().join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, body).unwrap();
+        }
+        let root = WorkspaceRoot(fs::canonicalize(tmp.path()).unwrap());
+        (tmp, root)
+    }
+
+    /// The gate the pre-warm skip rests on: an untouched corpus signs the same
+    /// twice, so a sweep can tell "nothing moved" from "something did".
+    #[test]
+    fn an_untouched_corpus_signs_the_same_twice() {
+        let (_tmp, root) = workspace(&[("a.md", "# A\n"), ("sub/b.md", "# B\n")]);
+        let first = domain_stat_signature(&root).unwrap();
+        assert_eq!(
+            first,
+            domain_stat_signature(&root).unwrap(),
+            "a quiet corpus must sign identically, or the skip never fires"
+        );
+    }
+
+    /// And the other half: a signal that never changes would freeze pre-warm
+    /// permanently. Size, path set, and mtime each move it.
+    #[test]
+    fn every_kind_of_corpus_change_moves_the_signature() {
+        let (tmp, root) = workspace(&[("a.md", "# A\n")]);
+        let base = domain_stat_signature(&root).unwrap();
+
+        fs::write(tmp.path().join("a.md"), "# A grown longer\n").unwrap();
+        let grown = domain_stat_signature(&root).unwrap();
+        assert_ne!(base, grown, "a changed file size must move the signature");
+
+        fs::write(tmp.path().join("b.md"), "# B\n").unwrap();
+        let added = domain_stat_signature(&root).unwrap();
+        assert_ne!(grown, added, "a new domain file must move the signature");
+
+        fs::remove_file(tmp.path().join("b.md")).unwrap();
+        let removed = domain_stat_signature(&root).unwrap();
+        assert_ne!(
+            added, removed,
+            "a removed domain file must move the signature"
+        );
+        assert_eq!(grown, removed, "and removal must return to the prior shape");
+    }
+
+    /// **The load-bearing claim, proven rather than asserted: this signal reads
+    /// no file CONTENT.** A domain file with no read permission is invisible to
+    /// `domain_snapshot` (it fails) and fully visible here (it signs). That is
+    /// the whole of G11 — 28.6% of a core against 20 GB was the content read,
+    /// and only a signal that never opens a file removes it.
+    #[test]
+    fn the_signature_stats_the_corpus_without_reading_a_byte_of_it() {
+        let (tmp, root) = workspace(&[("a.md", "# A\n")]);
+        let readable = domain_stat_signature(&root).unwrap();
+
+        let secret = tmp.path().join("a.md");
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o000)).unwrap();
+
+        assert!(
+            domain_snapshot(&root).is_err(),
+            "the content fold must need read permission — otherwise this test proves nothing"
+        );
+        assert_eq!(
+            domain_stat_signature(&root).unwrap(),
+            readable,
+            "the stat signal must not depend on reading the bytes"
+        );
+
+        fs::set_permissions(&secret, fs::Permissions::from_mode(0o644)).unwrap();
     }
 }

@@ -124,6 +124,10 @@ impl Sandbox {
             idle_threshold: never,
             reap_interval: never,
             prewarm_interval: never,
+            prewarm_quiet_max: never,
+            // No idle exit: this server's lifetime is the test's, and a daemon that
+            // reaped itself mid-assertion would fail as a flake, not a finding.
+            idle_exit: None,
         })
         .expect("the resident daemon starts")
     }
