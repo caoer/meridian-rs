@@ -65,3 +65,11 @@ jobs:
       # data that explains it. `--nocapture` prints the measured ms into the log.
       - name: status wall-time gate (1000 ms hard budget, pinned runner)
         run: cargo test -p mrd --features perf-walltime --test status_walltime -- --nocapture
+      # The multi-root profile — the same verb with a POPULATED mount table, the
+      # input the step above deliberately deletes and therefore cannot bound.
+      # Gated on CPU, not wall: this runner is pinned but not exclusive, and the
+      # W2 investigation measured a 0.01 s-CPU command taking 5.3 s of wall under
+      # load. `--nocapture` prints the measured CPU (and the ungated wall) into
+      # the log. Rationale and the red/green control: the test file's header.
+      - name: status multi-root CPU gate (600 ms, populated mount table)
+        run: cargo test -p mrd --features perf-walltime --test status_multiroot_cpu -- --nocapture
