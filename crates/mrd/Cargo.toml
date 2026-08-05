@@ -26,6 +26,17 @@ name = "status_walltime"
 path = "tests/status_walltime.rs"
 required-features = ["perf-walltime"]
 
+# The multi-root profile, in the SAME lane and behind the same feature — it is a
+# measurement gate, so it belongs where wall/CPU numbers are allowed to be gated
+# and nowhere else. Its own target rather than a second `#[test]` in the file
+# above, because it reads `RUSAGE_CHILDREN`: cargo runs test binaries one at a
+# time, so a target holding exactly one test can attribute the delta to its own
+# child. Why it exists at all: `crates/mrd/tests/status_multiroot_cpu.rs` header.
+[[test]]
+name = "status_multiroot_cpu"
+path = "tests/status_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
 # lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
 # library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
 # and the typed entry points.
@@ -157,6 +168,12 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# The perf lane's CPU measure (crates/mrd/tests/status_multiroot_cpu.rs):
+# `getrusage(RUSAGE_CHILDREN)` reads the measured child's user+sys, which is the
+# load-independent number on this shared host — wall-clock there measures the
+# neighbours. Already a regular dependency of this crate; no new external crate
+# enters the graph and `cargo deny` is unchanged.
+libc = "0.2"
 # R31 gate (crates/mrd/tests/color_planes_e2e.rs): mint the empty-span token a
 # HAND-AUTHORED lock carries — `blake3` of zero bytes — through the same hasher
 # family the engine uses, so the witness is computed, never a literal that could

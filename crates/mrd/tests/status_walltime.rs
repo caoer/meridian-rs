@@ -15,6 +15,18 @@
 //! `cargo test --workspace` skips this target entirely (no wall-clock gate, and
 //! no vacuous pass either), `ci.yml` still compiles and lints it so it cannot
 //! bit-rot, and `perf.yml` runs it for real on the pinned runner.
+//!
+//! # What this file CANNOT see, and the sibling that can
+//! Its sandbox sets `HOME` to a bare temp dir, so the machine mount table is
+//! EMPTY. That is deliberate isolation and it stays — but it also DELETES the
+//! input that came to dominate the verb: the eager mount loader had no roots to
+//! walk here, so this budget passed green for the whole life of the W2 defect
+//! while the real `mrd status` took 20-22 s in the field (`a8fdb356`). A perf
+//! gate whose fixture removes the dominant input reports a bound it never
+//! tested. The multi-root profile that DOES declare a table is
+//! `status_multiroot_cpu.rs`; the two are complementary and neither replaces the
+//! other — this one bounds the corpus-independence claim, that one bounds the
+//! mount-table-independence claim.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
