@@ -378,18 +378,20 @@ fn spelled(error: &ErrorBody) -> String {
 ///
 /// The diff and the new content ride UNINDENTED beneath their headers — both
 /// are meant to be copied or piped, and an indent would corrupt them.
+///
+/// Every branch here is reachable from a terminal, and that is a standing
+/// requirement rather than an observation: a refusal no input can produce is
+/// dead code with a green test guarding it. `ErrorBody::changed` was printed
+/// here until it was checked — nothing in the write path ever sets it, and
+/// `registry::root_mismatch_wire_shape` pins a served `root_mismatch` to
+/// `expected` + `actual` with NO `changed` — so that line was removed rather
+/// than left as prose about a field the engine does not send.
 fn extras(error: &ErrorBody) -> String {
     let mut out = String::new();
     if error.code == wire::ErrorCode::RootMismatch
         && let (Some(expected), Some(actual)) = (&error.expected, &error.actual)
     {
         let _ = write!(out, "\n  pinned:  {}\n  current: {}", expected.0, actual.0);
-    }
-    if let Some(changed) = &error.changed
-        && !changed.is_empty()
-    {
-        let names: Vec<&str> = changed.iter().map(|p| p.0.as_str()).collect();
-        let _ = write!(out, "\n  changed: {}", names.join(", "));
     }
     if let Some(fingerprint) = &error.new_fingerprint {
         let _ = write!(out, "\n  new_fingerprint: {}", fingerprint.0);
