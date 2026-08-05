@@ -5,21 +5,18 @@
 //! bound or unbound, with a fresh `XDG_CACHE_HOME` on each arm so a stale daemon table could
 //! not explain it.
 //!
+//! # Harness hygiene (correctness-lane daemon leak)
 //!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! `mrd links` auto-spawns a detached resident (`ensure_daemon`) on first use. Each test
+//! sandboxes `XDG_CACHE_HOME` into a fresh tempdir; that tempdir — and the pidfile inside it —
+//! dies with the test. Without a reap-before-delete, the resident outlives the suite (G13/G14/G15
+//! measured 8 per workspace run from this file's 8 tests). Soft [`Drop`] reaps by the pid the
+//! daemon wrote to its OWN pidfile (never `pgrep -f`) — same class as g1/g13 and the perf-lane
+//! fix at `01fce9c8`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -34,7 +31,9 @@ const TARGET: &str = "# Notes\n\nTARGET BYTES — this file lives in the `sessio
 const DECOY: &str = "# Notes\n\nAMBIENT ROOT FILE — the wrong document.\n";
 
 struct Sandbox {
-    /// Held for its `Drop` — the tree is deleted when this falls.
+    /// Held for its field-Drop — the tree is deleted when this falls. [`Sandbox`]'s
+    /// own `Drop` reaps the resident FIRST, while the pidfile under `cache_home`
+    /// still exists; only then does field-drop remove the tempdir.
     #[allow(dead_code)]
     tmp: tempfile::TempDir,
     cache_home: PathBuf,
@@ -142,6 +141,60 @@ impl Sandbox {
         );
         (out, entry)
     }
+
+    /// The resident daemon's pidfile under this sandbox's cache root.
+    fn daemon_pidfile(&self) -> PathBuf {
+        self.cache_home
+            .join("meridian")
+            .join("registry")
+            .join("daemon.pid")
+    }
+
+    /// Best-effort reap: TERM → verify → KILL → verify. Never panics (Drop path).
+    /// Returns the pid that was signalled, if any. Pidfile path only — never a
+    /// process-table substring (`pgrep -f` matches agent prompts and misses live
+    /// daemons — measured both directions, 2026-08-04/05).
+    fn try_reap(&self) -> Option<i32> {
+        let text = std::fs::read_to_string(self.daemon_pidfile()).ok()?;
+        let pid = text.trim().parse::<i32>().ok()?;
+        signal_pid(pid, libc::SIGTERM);
+        if !wait_dead(pid, Duration::from_secs(2)) {
+            signal_pid(pid, libc::SIGKILL);
+            let _ = wait_dead(pid, Duration::from_secs(2));
+        }
+        Some(pid)
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        // Best-effort only: a panicking test must not leave a resident behind,
+        // and Drop itself must not panic. Runs before TempDir field-drop so the
+        // pidfile is still on disk.
+        let _ = self.try_reap();
+    }
+}
+
+/// Send `signal` to a detached daemon we do not own as a child.
+fn signal_pid(pid: i32, signal: libc::c_int) {
+    // SAFETY: plain kill(2) to a pid the daemon wrote to its own pidfile.
+    unsafe {
+        libc::kill(pid, signal);
+    }
+}
+
+/// Poll until `pid` is gone (`kill(pid, 0)` → ESRCH).
+fn wait_dead(pid: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // SAFETY: signal 0 probes existence without delivering a signal.
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // SAFETY: final probe.
+    unsafe { libc::kill(pid, 0) == -1 }
 }
 
 fn stdout(out: &Output) -> String {
