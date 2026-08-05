@@ -247,14 +247,35 @@ AT DECODE: the session rev threads into the strict decoder
 wall byte-for-byte. Items are externally tagged, exactly one of:
 
 ```jsonc
-{"append":          {"hpath": s, "body": s}}
-{"match":           {"hpath": s, "old": s, "new": s, "all": bool?, "rev": s?}}
-{"replace_section": {"hpath": s, "body": s, "rev": s?}}
-{"create":          {"parent_hpath": s, "title": s, "body": s}}
-{"set_property":    {"key": s, "value": s}}
+{"append":          {"hpath": seg[], "body": s, "rev": s?}}
+{"match":           {"hpath": seg[], "old": s, "new": s, "all": bool?, "rev": s?}}
+{"replace_section": {"hpath": seg[], "body": s, "rev": s?}}
+{"create":          {"parent_hpath": seg[], "title": s, "body": s}}
+{"set_property":    {"key": s, "value": s, "rev": s?}}
 ```
 
-Addresses are the HOST-face sanitized hpath forms. The engine lowers each
+Addresses are SEGMENTS (`seg` = `{"h": s, "n": u32?}`, §2.1) — the SAME
+grammar `sec.hpath` takes and the read face publishes, so a read-then-write
+loop closes with nothing reconstructed by the caller.
+
+**R5 — these were the HOST-face sanitized joined forms (`"A/B"`), and that was
+a silent data-loss door.** `sanitizeHeading` is lossy and non-injective (`/`
+and ASCII space both become `-`), so `# A/B` and `# A B` shared one plan-face
+key; the index kept the last, and an edit addressed to the first lowered onto
+the second AND RETURNED SUCCESS. The read plane shed this collision at U14/U26;
+those units never opened the plan file, so the write side kept it. The
+asymmetry was a gap, never a design.
+
+Two consequences callers see:
+
+- The RAW heading text is the address. `{"h": "My Section"}` addresses
+  `# My Section`; the sanitized spelling `My-Section` now names no heading.
+- An ambiguous address REFUSES instead of picking. Two `# Notes` under one
+  parent need `{"h": "Notes", "n": 2}` — the occurrence the read face
+  publishes on exactly the segments where it is needed. The write plane never
+  silently picks.
+
+The engine lowers each
 shape to native edits at the splice intake (`wire-serve::plan`,
 emulation-byte-faithful: append newline discipline, match-all
 read-modify-write, create = parent-append, set_property = the property-group

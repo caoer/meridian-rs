@@ -86,6 +86,23 @@ pub fn section_recovery(selector: &str, display_path: Option<&str>) -> String {
     }
 }
 
+/// Display-only spelling of a segment address — segments joined on `/`, a
+/// pinned occurrence as `#k`. **Nothing parses this**; it exists so a refusal
+/// can name back what the caller asked for. The machine grammar is the segment
+/// array itself (U14), and this joined form is deliberately NOT invertible —
+/// re-deriving an address from it is the collision R5 removed.
+#[must_use]
+pub fn display_hpath(hpath: &[wire::HpathSeg]) -> String {
+    hpath
+        .iter()
+        .map(|s| match s.n {
+            Some(n) => format!("{}#{n}", s.h),
+            None => s.h.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// The write plane's partial-state disclosure. A refused batch lands NOTHING,
 /// so the refusal says so and a reader never has to guess which edits took —
 /// the write-side twin of `config::NO_PARTIAL_LOAD_CLAUSE`.
@@ -202,7 +219,7 @@ mod tests {
 
     fn plan_splice() -> Value {
         json!({"op": "splice", "path": "a.md",
-            "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]})
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"}}]})
     }
 
     /// Frozen v2 negative: `plan_edits` under v2 hits unknown-field wall byte-for-byte.
@@ -222,10 +239,10 @@ mod tests {
     #[test]
     fn v3_splice_plan_edits_decodes_all_shapes() {
         let frame = json!({"op": "splice", "path": "a.md", "plan_edits": [
-            {"append": {"hpath": "A", "body": "x"}},
-            {"match": {"hpath": "A", "old": "a", "new": "b", "all": true, "rev": "r"}},
-            {"replace_section": {"hpath": "A", "body": "x", "rev": "r"}},
-            {"create": {"parent_hpath": "A", "title": "B", "body": "x"}},
+            {"append": {"hpath": [{"h": "A"}], "body": "x"}},
+            {"match": {"hpath": [{"h": "A"}], "old": "a", "new": "b", "all": true, "rev": "r"}},
+            {"replace_section": {"hpath": [{"h": "A"}], "body": "x", "rev": "r"}},
+            {"create": {"parent_hpath": [{"h": "A"}], "title": "B", "body": "x"}},
             {"set_property": {"key": "k", "value": "v"}},
         ]});
         let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("v3 decodes");
@@ -453,7 +470,7 @@ mod tests {
     #[test]
     fn v3_append_admits_its_rev_token() {
         let frame = json!({"op": "splice", "path": "a.md",
-            "plan_edits": [{"append": {"hpath": "A", "body": "x", "rev": "abc123"}}]});
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x", "rev": "abc123"}}]});
         let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("decodes");
         let Op::Splice { plan_edits, .. } = op else {
             panic!("splice op");
@@ -461,7 +478,7 @@ mod tests {
         assert_eq!(
             plan_edits,
             vec![wire::PlanEdit::Append {
-                hpath: "A".into(),
+                hpath: vec![wire::HpathSeg { h: "A".into(), n: None }],
                 body: "x".into(),
                 rev: Some("abc123".into()),
             }]
@@ -474,7 +491,7 @@ mod tests {
         // both edits and plan_edits → bad_request
         let both = json!({"op": "splice", "path": "a.md",
             "edits": [{"target": {"hpath": [{"h": "A"}]}, "edit": {"put": {"at": "end", "text": "x"}}}],
-            "plan_edits": [{"append": {"hpath": "A", "body": "x"}}]});
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"}}]});
         let e = super::decode::decode(&obj(both), super::rev::Rev::V3).expect_err("both refused");
         assert_eq!(
             e.message.as_deref(),
@@ -497,7 +514,7 @@ mod tests {
 
         // unknown field inside a shape → named refusal
         let bad_field = json!({"op": "splice", "path": "a.md",
-            "plan_edits": [{"append": {"hpath": "A", "body": "x", "bogus": 1}}]});
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x", "bogus": 1}}]});
         let e = super::decode::decode(&obj(bad_field), super::rev::Rev::V3)
             .expect_err("shape field wall");
         assert_eq!(
@@ -507,8 +524,8 @@ mod tests {
 
         // two tags on one item → exactly-one refusal
         let two_tags = json!({"op": "splice", "path": "a.md",
-            "plan_edits": [{"append": {"hpath": "A", "body": "x"},
-                            "match": {"hpath": "A", "old": "a", "new": "b"}}]});
+            "plan_edits": [{"append": {"hpath": [{"h": "A"}], "body": "x"},
+                            "match": {"hpath": [{"h": "A"}], "old": "a", "new": "b"}}]});
         let e = super::decode::decode(&obj(two_tags), super::rev::Rev::V3)
             .expect_err("two tags refused");
         assert!(

@@ -79,12 +79,12 @@ fn plan_batch_equals_the_host_built_native_batch() {
                     rev: None,
                 },
                 PlanEdit::Append {
-                    hpath: "Memo/Tasks".into(),
+                    hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
                     body: "- item three".into(),
                     rev: None,
                 },
                 PlanEdit::Create {
-                    parent_hpath: "Archive".into(),
+                    parent_hpath: vec![HpathSeg { h: "Archive".into(), n: None }],
                     title: "Log".into(),
                     body: "created".into(),
                 },
@@ -190,7 +190,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
-                hpath: "Memo/Tasks".into(),
+                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
                 old: "item".into(),
                 new: "task".into(),
                 all: true,
@@ -217,7 +217,7 @@ fn replace_section_and_match_all_land_expected_bytes() {
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
-                hpath: "Memo/Tasks".into(),
+                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
                 body: "- done".into(),
                 rev: Some(fresh),
             }],
@@ -245,7 +245,7 @@ fn plan_rev_threads_into_the_native_cas_guard() {
         &plan_args(
             "card.md",
             vec![PlanEdit::ReplaceSection {
-                hpath: "Memo/Tasks".into(),
+                hpath: vec![HpathSeg { h: "Memo".into(), n: None }, HpathSeg { h: "Tasks".into(), n: None }],
                 body: "- clobber".into(),
                 rev: Some("0000000000000000".into()),
             }],
@@ -469,7 +469,7 @@ fn golden_target_class_refusals_fire_engine_side() {
         &plan_args(
             "card.md",
             vec![PlanEdit::Match {
-                hpath: "^task1".into(),
+                hpath: vec![HpathSeg { h: "^task1".into(), n: None }],
                 old: "one".into(),
                 new: "two".into(),
                 all: false,
@@ -495,7 +495,7 @@ fn golden_target_class_refusals_fire_engine_side() {
         &plan_args(
             "card.md",
             vec![PlanEdit::Create {
-                parent_hpath: String::new(),
+                parent_hpath: vec![],
                 title: "Brand".into(),
                 body: "b".into(),
             }],

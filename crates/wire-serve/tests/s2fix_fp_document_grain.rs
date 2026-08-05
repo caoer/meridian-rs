@@ -93,7 +93,7 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
         &args(
             Vec::new(),
             vec![PlanEdit::Create {
-                parent_hpath: "Plan".into(),
+                parent_hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
                 title: format!("Draws from [[guide#^task1{TOKEN}|Task One]]"),
                 body: format!("body [[guide#^task1{TOKEN}|B]]"),
             }],
@@ -125,7 +125,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
         &args(
             Vec::new(),
             vec![PlanEdit::Append {
-                hpath: "Plan".into(),
+                hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
                 rev: None,
                 body: format!("appended [[guide#^a{TOKEN}|A]]"),
             }],
@@ -146,7 +146,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
         &args(
             Vec::new(),
             vec![PlanEdit::ReplaceSection {
-                hpath: "Plan/Sub".into(),
+                hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }, wire::HpathSeg { h: "Sub".into(), n: None }],
                 body: format!("replaced [[guide#^b{TOKEN}|B]]"),
                 rev: Some(section_rev(&root, "Plan/Sub")),
             }],

@@ -1223,7 +1223,7 @@ fn path_c_create_title() {
             force: false,
             edits: Vec::new(),
             plan_edits: vec![wire::PlanEdit::Create {
-                parent_hpath: "Plan".into(),
+                parent_hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
                 title: "Draws from [[guide#^task1@green.19c66a18|Task One]]".into(),
                 body: "body [[guide#^task1@green.19c66a18|B]]".into(),
             }],

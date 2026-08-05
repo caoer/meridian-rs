@@ -307,7 +307,7 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                 title,
                 ..
             } => {
-                let full = format!("{parent_hpath}/{title}");
+                let full = format!("{}/{title}", crate::display_hpath(parent_hpath));
                 if section_exists(doc, parent_hpath, title) {
                     out.push(Demand {
                         subject: format!("section \"{full}\""),
@@ -322,7 +322,7 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
             | PlanEdit::Append { hpath, rev, .. } => {
                 if rev.as_deref().is_none_or(str::is_empty) {
                     out.push(Demand {
-                        subject: format!("section \"{hpath}\""),
+                        subject: format!("section \"{}\"", crate::display_hpath(hpath)),
                         unmet: Unmet::NoGuard {
                             grain: Grain::Node,
                             slot: Slot::PlanRowRev,
@@ -334,19 +334,27 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
     }
 }
 
-/// Does `parent_hpath/title` already address a section? The birth's absence
+/// Does `parent_hpath` + `title` already address a section? The birth's absence
 /// guard — an ambiguous resolve counts as EXISTING (something is there).
-fn section_exists(doc: &model::Document, parent_hpath: &str, title: &str) -> bool {
+///
+/// R5: the parent arrives as SEGMENTS, so the child chain is a concat. This
+/// used to `split('/')` a joined string, which re-derived the boundaries the
+/// caller had already stated — a parent heading containing `/` split into two
+/// phantom segments and the guard asked about a section nobody named.
+fn section_exists(doc: &model::Document, parent_hpath: &[wire::HpathSeg], title: &str) -> bool {
     if parent_hpath.is_empty() {
         return false;
     }
     let segs: Vec<model::HpathSeg> = parent_hpath
-        .split('/')
-        .chain(std::iter::once(title))
-        .map(|h| model::HpathSeg {
-            h: h.to_owned(),
-            n: None,
+        .iter()
+        .map(|s| model::HpathSeg {
+            h: s.h.clone(),
+            n: s.n,
         })
+        .chain(std::iter::once(model::HpathSeg {
+            h: title.to_owned(),
+            n: None,
+        }))
         .collect();
     !matches!(
         model::resolve(doc, &model::Ref::Hpath(segs)),

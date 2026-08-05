@@ -388,7 +388,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
             "append" => {
                 plan_fields(b, "append", &["hpath", "body", "rev"])?;
                 PlanEdit::Append {
-                    hpath: req_str(b, "append", "hpath")?,
+                    hpath: req_segs(b, "append", "hpath")?,
                     body: req_str(b, "append", "body")?,
                     rev: opt_str(b, "append", "rev")?,
                 }
@@ -396,7 +396,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
             "match" => {
                 plan_fields(b, "match", &["hpath", "old", "new", "all", "rev"])?;
                 PlanEdit::Match {
-                    hpath: req_str(b, "match", "hpath")?,
+                    hpath: req_segs(b, "match", "hpath")?,
                     old: req_str(b, "match", "old")?,
                     new: req_str(b, "match", "new")?,
                     all: opt_bool(b, "match", "all")?.unwrap_or(false),
@@ -406,7 +406,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
             "replace_section" => {
                 plan_fields(b, "replace_section", &["hpath", "body", "rev"])?;
                 PlanEdit::ReplaceSection {
-                    hpath: req_str(b, "replace_section", "hpath")?,
+                    hpath: req_segs(b, "replace_section", "hpath")?,
                     body: req_str(b, "replace_section", "body")?,
                     rev: opt_str(b, "replace_section", "rev")?,
                 }
@@ -414,7 +414,7 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
             "create" => {
                 plan_fields(b, "create", &["parent_hpath", "title", "body"])?;
                 PlanEdit::Create {
-                    parent_hpath: req_str(b, "create", "parent_hpath")?,
+                    parent_hpath: req_segs(b, "create", "parent_hpath")?,
                     title: req_str(b, "create", "title")?,
                     body: req_str(b, "create", "body")?,
                 }
@@ -436,6 +436,29 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
                 )));
             }
         });
+    }
+    Ok(out)
+}
+
+/// A plan edit's REQUIRED address field, as §2.1 segments (R5). The same
+/// `{h, n?}` grammar `sec.hpath` takes and the read face publishes — decoded
+/// through the SAME [`decode_seg`] door, so the two planes cannot drift apart
+/// again. An empty array decodes: it is the joined grammar's empty string, and
+/// the LOWERING arms own what it means (top-level `create` refuses by name).
+fn req_segs(
+    obj: &Map<String, Value>,
+    shape: &str,
+    field: &str,
+) -> Result<Vec<HpathSeg>, Box<ErrorBody>> {
+    let Some(Value::Array(items)) = obj.get(field) else {
+        return Err(bad_request(format!(
+            "`{field}` in `{shape}` must be an array of hpath segments — \
+             `[{{\"h\":\"Goals\"}},{{\"h\":\"Q3\"}}]`, the grammar the read face publishes"
+        )));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(decode_seg(item)?);
     }
     Ok(out)
 }
