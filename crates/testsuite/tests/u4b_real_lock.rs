@@ -80,6 +80,7 @@ fn engine_written_lock_elided_on_render_face_verbatim_on_raw() {
     let header = Header {
         display_path: "$S/page.md",
         file_rev: &doc.root.node_rev.0,
+        fingerprint: "fp",
         words_total: 0,
         decorations: &render::NO_DECORATIONS,
     };

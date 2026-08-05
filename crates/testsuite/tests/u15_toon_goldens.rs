@@ -117,8 +117,12 @@ fn toc_face_over_a_document_with_no_headings() {
     assert_golden("toc-empty", &text);
 }
 
-/// The sections face: a TOON head declaring each body's `hpath`, `rev`,
-/// `words` and `bytes`, then the bodies verbatim behind their markers.
+/// The sections face: a TOON head declaring each body's `n`, raw `title`,
+/// `rev`, `words` and `bytes`, then the bodies verbatim behind their markers.
+///
+/// Read face v2 (dogfood G2): the marker is the row's `n`, not its full
+/// heading path. A deep section used to print its 199-char address twice —
+/// once in the head row, once as the banner — around an 800-byte body.
 #[test]
 fn sections_face_over_one_section() {
     let text = render_face(
@@ -152,20 +156,20 @@ fn sections_face_carries_the_partial_read_notice_as_a_field() {
 ///
 /// The marker is not the boundary — the head's `bytes` is — so the lookalike
 /// is served verbatim and the face stays unambiguous. The golden is the proof:
-/// it contains two `== Notes ==` lines, one structural and one authored, and
-/// the head declares exactly one section.
+/// it contains two `== 1 ==` lines, one structural and one authored, and the
+/// head declares exactly one section.
 #[test]
 fn prose_may_spell_a_marker_without_forging_a_boundary() {
     let text = render_face(
         "lookalike.md",
-        "# Notes\n\nthe face writes a line like\n\n== Notes ==\n\nand this section is ABOUT that line\n",
+        "# Notes\n\nthe face writes a line like\n\n== 1 ==\n\nand this section is ABOUT that line\n",
         &json!({
             "id": 1, "op": "read", "path": "corpus/lookalike.md",
             "sections": [{"hpath": [{"h": "Notes"}]}]
         }),
     );
     assert!(
-        text.matches("== Notes ==").count() == 2,
+        text.matches("== 1 ==").count() == 2,
         "the fixture really exercises the collision: {text}"
     );
     assert_golden("sections-marker-lookalike", &text);

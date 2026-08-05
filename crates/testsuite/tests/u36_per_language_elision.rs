@@ -84,6 +84,7 @@ fn rendered_content(raw: &str) -> String {
                 header: Header {
                     display_path: "~/MERIDIAN.md",
                     file_rev: &doc.root.node_rev.0,
+                    fingerprint: "fp",
                     words_total: 0,
                     decorations: &render::NO_DECORATIONS,
                 },
