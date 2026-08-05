@@ -397,7 +397,11 @@ fn extras(error: &ErrorBody) -> String {
         let _ = write!(out, "\n  new_fingerprint: {}", fingerprint.0);
     }
     if let Some(diff) = &error.diff {
-        let _ = write!(out, "\n  diff (apply this to your copy):\n{}", diff.trim_end());
+        let _ = write!(
+            out,
+            "\n  diff (apply this to your copy):\n{}",
+            diff.trim_end()
+        );
     }
     if let Some(content) = &error.new_content {
         let _ = write!(

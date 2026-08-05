@@ -1141,7 +1141,12 @@ fn a_malformed_stdin_refusal_leaves_the_document_byte_unchanged() {
         let ws = sb.workspace();
         let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
         let out = sb.run_stdin(&ws, &["put", "doc.md"], stdin);
-        assert_eq!(code(&out), 2, "bad invocation for {stdin}: {}", stderr(&out));
+        assert_eq!(
+            code(&out),
+            2,
+            "bad invocation for {stdin}: {}",
+            stderr(&out)
+        );
         assert!(
             stderr(&out).contains("Nothing was parsed and nothing was written"),
             "every malformed case states it for {stdin}:\n{}",
