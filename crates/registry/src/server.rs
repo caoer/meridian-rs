@@ -37,7 +37,7 @@ use crate::registry::{PinOutcome, RegisterOutcome, Registry, ResolveOutcome};
 use crate::state::StateStore;
 use crate::{
     DEFAULT_IDLE_EXIT, DEFAULT_IDLE_REAP, DEFAULT_PREWARM_INTERVAL, DEFAULT_PREWARM_QUIET_MAX,
-    DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, now_secs,
+    DEFAULT_PUSH_WRITE_TIMEOUT, DEFAULT_REAP_INTERVAL, DEFAULT_SUB_IDLE_WRITE_TIMEOUT, now_secs,
 };
 
 /// How long the accept loop parks between non-blocking `accept` polls. Short
@@ -89,6 +89,10 @@ pub struct Config {
     /// How long a push-plane write may block before the subscriber is dropped
     /// (see [`crate::DEFAULT_PUSH_WRITE_TIMEOUT`]).
     pub push_write_timeout: Duration,
+    /// How long an armed sub may go with ZERO frames written before it is
+    /// dropped (see [`crate::DEFAULT_SUB_IDLE_WRITE_TIMEOUT`], which carries the
+    /// coupling constraint against D3's 30-minute client-side drain TTL).
+    pub sub_idle_write_timeout: Duration,
     /// R1: the build sha this daemon echoes as `hello.identity.build` on a v3
     /// session, so a client can tell a resident daemon from the binary it just
     /// deployed. `None` publishes NO identity — the honest answer for a host
@@ -119,6 +123,7 @@ impl Config {
             prewarm_quiet_max: DEFAULT_PREWARM_QUIET_MAX,
             idle_exit: Some(DEFAULT_IDLE_EXIT),
             push_write_timeout: DEFAULT_PUSH_WRITE_TIMEOUT,
+            sub_idle_write_timeout: DEFAULT_SUB_IDLE_WRITE_TIMEOUT,
             // The layout cannot know the binary that will run it; the host
             // process supplies its own sha.
             build_sha: None,
@@ -218,7 +223,10 @@ impl RunningServer {
             listener,
             registry.clone(),
             shutdown.clone(),
-            config.push_write_timeout,
+            PushDeadlines {
+                write: config.push_write_timeout,
+                idle_write: config.sub_idle_write_timeout,
+            },
             config.build_sha.clone().map(Arc::from),
         );
         let reaper = spawn_reaper(
@@ -321,13 +329,23 @@ fn prepare_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The deadlines that keep a push subscription mortal, carried together because
+/// they cover complementary halves of one question — see [`push_loop`].
+#[derive(Debug, Clone, Copy)]
+struct PushDeadlines {
+    /// [`Config::push_write_timeout`]: a blocked write on a busy workspace.
+    write: Duration,
+    /// [`Config::sub_idle_write_timeout`]: silence on a quiet one.
+    idle_write: Duration,
+}
+
 /// Spawn the accept loop: non-blocking `accept`, one detached thread per
 /// connection, polling the shutdown flag between idle polls.
 fn spawn_accept(
     listener: UnixListener,
     registry: Arc<Registry>,
     shutdown: Arc<AtomicBool>,
-    push_write_timeout: Duration,
+    deadlines: PushDeadlines,
     build_sha: Option<Arc<str>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
@@ -341,7 +359,7 @@ fn spawn_accept(
                         &stream,
                         &registry,
                         &shutdown,
-                        push_write_timeout,
+                        deadlines,
                         build_sha.as_deref(),
                     ) {
                         eprintln!("registry: connection error ({e})");
@@ -517,7 +535,7 @@ fn serve_conn(
     stream: &UnixStream,
     registry: &Registry,
     shutdown: &AtomicBool,
-    push_write_timeout: Duration,
+    deadlines: PushDeadlines,
     build_sha: Option<&str>,
 ) -> io::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
@@ -559,7 +577,7 @@ fn serve_conn(
                 rev,
                 from_seq,
                 shutdown,
-                push_write_timeout,
+                deadlines,
             );
         }
     }
@@ -583,8 +601,12 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 /// the idle-exit clock open (R2/S3) and this loop parks an OS thread:
 /// - **peer closed** — the probe read (§[`peer_closed`]) sees EOF within one
 ///   [`PUSH_TICK`], the only death signal a QUIET workspace ever produces;
-/// - **peer wedged** — `push_write_timeout` bounds a blocked write once the
-///   socket buffers fill, so a subscriber that stopped draining is dropped.
+/// - **peer wedged** — `deadlines.write` bounds a blocked write once the
+///   socket buffers fill, so a subscriber that stopped draining is dropped;
+/// - **peer wedged on a QUIET workspace** (R2b) — neither of the two above can
+///   fire there, since nothing is written and no EOF arrives, so
+///   `deadlines.idle_write` drops a sub that has written zero frames for that
+///   long. Rides this loop's existing tick: no new thread, no new syscall.
 fn push_loop(
     registry: &Registry,
     ws: &Path,
@@ -592,7 +614,7 @@ fn push_loop(
     rev: Rev,
     from_seq: u64,
     shutdown: &AtomicBool,
-    push_write_timeout: Duration,
+    deadlines: PushDeadlines,
 ) -> io::Result<()> {
     let ring = registry.ring(ws);
     // Subscribe before first detect — otherwise a reap can leave a silent hole.
@@ -601,12 +623,14 @@ fn push_loop(
     // leave a partial frame on the wire; the connection is dropped immediately
     // after, so the client reads a truncated line then EOF, redials, and
     // resyncs by root (§7.1) — the same recovery a daemon restart needs.
-    writer.set_write_timeout(Some(push_write_timeout))?;
+    writer.set_write_timeout(Some(deadlines.write))?;
     let mut probe = writer.try_clone()?;
     // The probe read parks for the tick, so it replaces the sleep.
     probe.set_read_timeout(Some(PUSH_TICK))?;
     let ws_root = fs::WorkspaceRoot(ws.to_path_buf());
     let mut delivered = from_seq;
+    // R2b: zero frames written for this long ⇒ drop. Any frame resets it.
+    let mut last_write = Instant::now();
     while !shutdown.load(Ordering::SeqCst) {
         // Detection failure never ends the sub; log and retry next cycle.
         if let Err(e) = ring.detect(&ws_root) {
@@ -615,9 +639,16 @@ fn push_loop(
         for frame in ring.frames_after(delivered) {
             wire_serve::ring::write_frame(writer, &frame, rev == Rev::V3)?;
             delivered = frame.delta.seq;
+            last_write = Instant::now();
         }
         writer.flush()?;
         if peer_closed(&mut probe) {
+            return Ok(());
+        }
+        // The drop lands cleanly BETWEEN frames — nothing was written, so a live
+        // client redials with its cursor and catches up from an empty ring. Not
+        // the root-resync path above, which is for a partially written frame.
+        if last_write.elapsed() >= deadlines.idle_write {
             return Ok(());
         }
     }

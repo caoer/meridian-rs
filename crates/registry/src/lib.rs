@@ -62,6 +62,25 @@ pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(15 * 60);
 #[allow(clippy::duration_suboptimal_units)]
 pub const DEFAULT_PUSH_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Push-plane idle-write horizon (R2b): an armed sub with ZERO frames written
+/// for this long is dropped; any frame written resets it. The backstop for the
+/// one residency mode nothing else bounds — owner wedged AND workspace
+/// permanently quiet, where no write is ever attempted (so
+/// [`DEFAULT_PUSH_WRITE_TIMEOUT`] never fires) and no EOF arrives (so the
+/// `peer_closed` probe never fires). Re-arm cost is zero by construction:
+/// nothing was written, so the client redials with its cursor onto an empty
+/// ring catchup.
+///
+/// **COUPLED — 45 min, and it must stay comfortably ABOVE D3's 30-minute
+/// client-side drain TTL.** A healthy client TTLs its own unused feed at 30 min
+/// and this timer never fires; a wedged client cannot run its own TTL, so the
+/// server fires at 45. At or below 30 min the server pre-empts the client's own
+/// mechanism and churns healthy idle feeds — that inequality is the whole
+/// difference between a backstop and a tax. Neither number may be re-tuned
+/// without the other (`decisions/2026-08-05-mode-c-idle-write-drop.md`).
+#[allow(clippy::duration_suboptimal_units)]
+pub const DEFAULT_SUB_IDLE_WRITE_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+
 /// Pre-warm sweep interval while busy (P2 — latency only; correctness is
 /// fingerprint). Poll interim; OS notifier is the upgrade path.
 pub const DEFAULT_PREWARM_INTERVAL: Duration = Duration::from_secs(1);
