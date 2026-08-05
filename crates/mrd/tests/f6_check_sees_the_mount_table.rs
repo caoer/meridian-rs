@@ -292,6 +292,77 @@ impl Sandbox {
             .to_owned();
         (pins, edge)
     }
+
+    /// `mrd status`'s composed line — the one carrying the `lock` axis.
+    fn status_line(&self) -> String {
+        let status = self.run(&self.ws, &["status"]);
+        said(&status)
+            .lines()
+            .find(|l| l.contains("lock "))
+            .unwrap_or("<no composed line>")
+            .trim()
+            .to_owned()
+    }
+}
+
+/// **The same sensitivity gate, driven through `mrd status`.**
+///
+/// This file's header names `status` beside `check` as a surface the F6 blindness
+/// sat under, and every other gate here drives `check` and `walk`. So the axis
+/// `status` actually renders was argued for and never measured — the three states
+/// were never once asked of it.
+///
+/// # Why the gap became load-bearing
+/// `status` no longer builds every declared root's corpus. It builds the roots its
+/// own lock addresses NAME (`status_cmd::lock_addressed_roots`), because building
+/// the rest cost 80.6% of a bare `status` run and could change no answer. That
+/// narrowing is safe exactly as far as the collector is complete, and THIS is the
+/// case that tells: `other:doc.md#Doc/Design` names a root whose DOCS the claim
+/// colour must read.
+///
+/// Under-collect, and `resolve_ref` arm (b) refuses with *"the mount table binds
+/// this root, but no corpus for it was loaded in this process"* — a grey where a
+/// green or a red belongs. The assert is therefore the F6 assert, unchanged in
+/// shape: **the axis must MOVE**, and it must move to the NAMED colours. A grey
+/// fails it from either direction, which is what makes this a gate on the
+/// narrowing and not a restatement of it.
+#[test]
+fn the_status_lock_axis_varies_across_matched_drifted_and_restored_on_a_bound_root() {
+    let sb = sandbox();
+    sb.cross_root_corpus();
+
+    let matched = sb.status_line();
+    std::fs::write(sb.other.join("doc.md"), DOC_DRIFTED).expect("drift the target root");
+    let drifted = sb.status_line();
+    std::fs::write(sb.other.join("doc.md"), DOC).expect("restore byte-exact");
+    let restored = sb.status_line();
+
+    assert_ne!(
+        matched, drifted,
+        "THE STATUS LOCK AXIS MUST MOVE — a cross-root pin whose target drifted \
+         must not read as one that matches.\n  matched: {matched}\n  drifted: {drifted}"
+    );
+    assert_eq!(
+        matched, restored,
+        "and it must move BACK on a byte-exact restore.\n  matched:  {matched}\n  \
+         restored: {restored}"
+    );
+    assert!(
+        matched.contains("lock green"),
+        "a matched cross-root target on a bound root is GREEN on the lock axis: {matched}"
+    );
+    assert!(
+        drifted.contains("lock red"),
+        "a drifted one is RED on the lock axis: {drifted}"
+    );
+    // The narrowing's own failure mode, named — so a regression reads as itself
+    // rather than as a mysterious colour change.
+    assert!(
+        !matched.contains("unmounted") && !matched.contains("path-unseeable"),
+        "the root is BOUND and its corpus must have been loaded on demand; a grey \
+         here means `lock_addressed_roots` did not name the root this pin \
+         addresses: {matched}"
+    );
 }
 
 /// **THE SENSITIVITY GATE (F6): the pin axis must MOVE on a bound root.**
