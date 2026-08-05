@@ -140,9 +140,16 @@ fn a_background_child_is_reaped_at_step_end() {
     // fd, then exits. Without the group SIGKILL the readers would wait 15s
     // for the inherited pipe fds; with it the step ends now and the writer
     // never lands its post-step write.
+    //
+    // Correctness is the EVENT, not a duration: after step end the leak file
+    // must not exist. The former `elapsed < 5s` wall-clock assert lived here
+    // and failed under host load twice this session (U13 worker; w6 worker at
+    // load ~20) while isolation stayed green — the exact class `ci.yml`
+    // forbids in this lane. That budget rides the perf lane now
+    // (`exec_walltime.rs`, feature `perf-walltime`); the 5s number is
+    // unchanged — relocation, not relaxation.
     let tmp = tempfile::tempdir().unwrap();
     let env = BTreeMap::new();
-    let started = Instant::now();
     // The leak path is ABSOLUTE: since U16 the step runs in the invocation
     // cwd, so a relative write would land beside the test binary's cwd and the
     // assertion below would pass without proving anything.
@@ -152,11 +159,6 @@ fn a_background_child_is_reaped_at_step_end() {
     );
     let r = exec::exec(&spec_in(&tmp, &src, &env)).unwrap();
     assert!(r.status.success());
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "step end must not wait for the background child: {:?}",
-        started.elapsed()
-    );
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         !tmp.path().join("leak.txt").exists(),
