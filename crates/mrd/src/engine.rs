@@ -15,6 +15,7 @@
 //! sources, so the warm answer and the degrade answer never drift (both speak
 //! `fingerprint`); only the reported [`EngineSource`] differs.
 
+use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -316,29 +317,94 @@ fn dial_links(socket: &Path, workspace: &Path, path: Option<&str>) -> io::Result
 /// Map an engine refusal to the CLI exit triad (shared by `read`/`put`):
 /// `bad_request` is a bad invocation (exit 2); every other refusal is a
 /// finding (exit 1). When the engine minted a `message`, it is printed
-/// VERBATIM — the refusal strings are golden-pinned (U0), never reworded.
-/// A message-less refusal renders its code plus the §8 comparison tokens.
+/// VERBATIM — the refusal strings are golden-pinned (U0), never reworded —
+/// and the extras that message NAMES are printed under it ([`extras`]), so a
+/// terminal reader can follow the instruction it was given. A message-less
+/// refusal is spelled here, in the house pattern: the failure, the
+/// nothing-happened clause, one fix line.
 pub(crate) fn refusal_fail(error: &ErrorBody) -> Fail {
-    let text = if let Some(message) = &error.message {
-        message.clone()
-    } else {
-        let code = serde_json::to_value(error.code)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "error".to_owned());
-        match (&error.expected, &error.actual, &error.path) {
-            (Some(expected), Some(actual), _) => {
-                format!("{code}: expected {}, actual {}", expected.0, actual.0)
-            }
-            (_, _, Some(path)) => format!("{code}: {}", path.0),
-            _ => code,
-        }
+    let mut text = match &error.message {
+        Some(message) => message.clone(),
+        None => spelled(error),
     };
+    text.push_str(&extras(error));
     if error.code == wire::ErrorCode::BadRequest {
         Fail::tool(text)
     } else {
         Fail::findings(text)
     }
+}
+
+/// A message-less refusal, written the way the good refusals in this tree are
+/// written: name the failure, say what did NOT happen, give the fix.
+///
+/// `root_mismatch` is the one that reaches a person often — the world-grain
+/// guard on a write — so it gets the full pattern with its own recovery
+/// command. Any other message-less code falls back to the code plus the §8
+/// comparison tokens; inventing a fix line for a refusal we cannot name would
+/// teach a recovery that may not exist.
+fn spelled(error: &ErrorBody) -> String {
+    let code = serde_json::to_value(error.code)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "error".to_owned());
+    if error.code == wire::ErrorCode::RootMismatch
+        && let Some(actual) = &error.actual
+    {
+        return format!(
+            "root_mismatch: the workspace fingerprint your write pinned is not this \
+             workspace's current one. {} Fix: re-run with `--if-fingerprint {}` once you \
+             have seen what moved, or drop the flag to write unguarded.",
+            wire_serve::NO_PARTIAL_WRITE_CLAUSE,
+            actual.0
+        );
+    }
+    match (&error.expected, &error.actual, &error.path) {
+        (Some(expected), Some(actual), _) => {
+            format!("{code}: expected {}, actual {}", expected.0, actual.0)
+        }
+        (_, _, Some(path)) => format!("{code}: {}", path.0),
+        _ => code,
+    }
+}
+
+/// The refusal's own extras, rendered for a TERMINAL rather than a wire client.
+///
+/// A `cas_mismatch` refusal tells the caller to apply the `diff` extra and
+/// resend with `new_fingerprint`; on the human face those are wire response
+/// fields nobody can see, so the instruction was unfollowable exactly where it
+/// was offered. Printing them under the message is what makes the ladder's
+/// no-re-read shortcut reachable from a shell.
+///
+/// The diff and the new content ride UNINDENTED beneath their headers — both
+/// are meant to be copied or piped, and an indent would corrupt them.
+fn extras(error: &ErrorBody) -> String {
+    let mut out = String::new();
+    if error.code == wire::ErrorCode::RootMismatch
+        && let (Some(expected), Some(actual)) = (&error.expected, &error.actual)
+    {
+        let _ = write!(out, "\n  pinned:  {}\n  current: {}", expected.0, actual.0);
+    }
+    if let Some(changed) = &error.changed
+        && !changed.is_empty()
+    {
+        let names: Vec<&str> = changed.iter().map(|p| p.0.as_str()).collect();
+        let _ = write!(out, "\n  changed: {}", names.join(", "));
+    }
+    if let Some(fingerprint) = &error.new_fingerprint {
+        let _ = write!(out, "\n  new_fingerprint: {}", fingerprint.0);
+    }
+    if let Some(diff) = &error.diff {
+        let _ = write!(out, "\n  diff (apply this to your copy):\n{}", diff.trim_end());
+    }
+    if let Some(content) = &error.new_content {
+        let _ = write!(
+            out,
+            "\n  new_content (that node's current bytes):\n{}",
+            content.trim_end()
+        );
+    }
+    out
 }
 
 /// One NDJSON round trip on an open connection: write the request line, read one

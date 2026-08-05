@@ -1042,6 +1042,84 @@ fn a_non_envelope_object_gets_no_envelope_hint() {
     assert!(!err.contains("BARE edits ARRAY"), "{err}");
 }
 
+// ---------------------------------------------------------------------------
+// the refuse surface: what a refusal tells a person at a terminal
+// ---------------------------------------------------------------------------
+
+/// Gate (G7) — a `cas_mismatch` refusal tells the caller to apply the `diff`
+/// extra and resend with `new_fingerprint`. On the human face those were wire
+/// fields nobody could see, so the no-re-read shortcut was unreachable exactly
+/// where it was offered. Both now PRINT under the message.
+#[test]
+fn cas_mismatch_prints_the_extras_its_message_names() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let stale = serde_json::to_string(&serde_json::json!([{
+        "target": {"hpath": [{"h": "Alpha"}, {"h": "Beta"}]},
+        "edit": {"match": {"old": "four five", "new": "six"}},
+        "if_node_rev": "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+    }]))
+    .expect("edits json");
+    let out = sb.run_stdin(&ws, &["put", "doc.md", "--dry"], &stale);
+    assert_eq!(code(&out), 1, "cas_mismatch refuses: {}", stderr(&out));
+    let text = stderr(&out);
+    assert!(
+        text.contains("new_fingerprint: "),
+        "the token to resend with is printable:\n{text}"
+    );
+    assert!(
+        text.contains("diff (apply this to your copy):") || text.contains("new_content ("),
+        "the rung's own extra is printable:\n{text}"
+    );
+}
+
+/// Gate (G6) — a `root_mismatch` was a bare `expected …, actual …` line: no
+/// sentence, no nothing-was-written clause, no fix. It now reads like the read
+/// face's exemplary refusal, and its fix line carries the fingerprint the
+/// guard wants (G8, partially: the value is reachable without `--json`).
+#[test]
+fn root_mismatch_names_the_failure_and_gives_a_fix() {
+    let sb = sandbox();
+    let ws = sb.workspace();
+    let before = std::fs::read_to_string(ws.join("doc.md")).expect("read");
+    let out = sb.run_stdin(
+        &ws,
+        &[
+            "put",
+            "doc.md",
+            "--if-fingerprint",
+            "b3b:0000000000000000000000000000000000000000000000000000000000000000",
+        ],
+        &beta_match("four five", "six"),
+    );
+    assert_eq!(code(&out), 1, "root_mismatch refuses: {}", stderr(&out));
+    let text = stderr(&out);
+    assert!(text.contains("root_mismatch"), "names the failure:\n{text}");
+    assert!(
+        text.contains("No edit was applied"),
+        "states what did NOT happen:\n{text}"
+    );
+    assert!(
+        text.contains("Fix: re-run with `--if-fingerprint b3"),
+        "the fix line carries the fingerprint the guard wants:\n{text}"
+    );
+    assert!(
+        text.contains("pinned:") && text.contains("current:"),
+        "both tokens stay printable:\n{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(ws.join("doc.md")).expect("read back"),
+        before,
+        "the refusal's own claim: nothing was written"
+    );
+}
+
+// The G6 half of this card's stdin work is W4's
+// `the_wire_request_envelope_on_stdin_is_refused_by_name` above — it names the
+// envelope mistake, conditionally, which is the correct base. What W3 keeps is
+// the UNCONDITIONAL clause, gated across the malformed family by
+// `a_malformed_stdin_refusal_leaves_the_document_byte_unchanged` below.
+
 /// Gate — the USAGE text teaches both new verbs (printed on any unknown verb).
 #[test]
 fn usage_teaches_read_and_put() {

@@ -334,9 +334,16 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
                 .to_owned(),
         ));
     }
+    // Shape advice is CONDITIONAL ([`envelope_hint`]) — only the caller who
+    // really sent the envelope is told to remove one. The nothing-happened
+    // clause is UNCONDITIONAL, because it is true of every malformed case: the
+    // decode runs before the workspace is resolved and before any splice, so a
+    // refusal here has had zero engine contact. It rides last so the sentence
+    // terminates the refusal whether or not the hint fired.
     let edits: Vec<Edit> = serde_json::from_str(&raw).map_err(|e| {
         Fail::tool(format!(
-            "malformed edits JSON on stdin: {e}{}",
+            "malformed edits JSON on stdin: {e}{}. Nothing was parsed and nothing was \
+             written.",
             envelope_hint(&raw)
         ))
     })?;
@@ -348,7 +355,11 @@ fn read_stdin_edits() -> Result<Vec<Edit>, Fail> {
 ///
 /// It fires only when the bytes really are that — an object with an `edits`
 /// key — so the hint can never mis-diagnose some other malformed input. Any
-/// other shape gets the decoder's own message and nothing added to it.
+/// other shape gets the decoder's own message and NO shape advice: a truncated
+/// array or a stray comma told to remove an envelope it never sent would be a
+/// recovery that does not exist. (The caller is still told nothing was parsed
+/// and nothing was written — that clause is unconditional and lives at the
+/// call site, because it holds for every malformed input.)
 fn envelope_hint(raw: &str) -> &'static str {
     let is_envelope = serde_json::from_str::<Value>(raw)
         .ok()
