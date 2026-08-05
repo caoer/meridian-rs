@@ -224,6 +224,75 @@ fn s3_append_on_existing_content_is_guarded() {
     splice(&root, None, &ok, &[], None).expect("a guarded append lands");
 }
 
+/// **R4, the door U10 could not build.** A plan `append` carries its own node
+/// token now, so a wire-origin plan append can SATISFY the guard through its own
+/// face instead of being refused every time with only `force` as a way out.
+#[test]
+fn a_plan_append_carrying_its_section_rev_lands() {
+    let (_d, root) = ws();
+    let rev = sec_rev(&root, tasks());
+    let a = SpliceArgs {
+        plan_edits: vec![PlanEdit::Append {
+            hpath: "Memo/Tasks".into(),
+            body: "- item two".into(),
+            rev: Some(rev.0),
+        }],
+        ..args(Origin::Wire)
+    };
+    splice(&root, None, &a, &[], None).expect("a guarded plan append lands");
+    assert!(
+        std::fs::read_to_string(root.0.join("memo.md"))
+            .expect("read")
+            .contains("- item two"),
+        "the append writes its bytes"
+    );
+}
+
+/// R4 builds a door; it does not loosen the guard. No `rev` still refuses.
+#[test]
+fn a_plan_append_without_a_rev_still_refuses() {
+    let (_d, root) = ws();
+    let a = SpliceArgs {
+        plan_edits: vec![PlanEdit::Append {
+            hpath: "Memo/Tasks".into(),
+            body: "- item two".into(),
+            rev: None,
+        }],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, None, &a, &[], None).expect_err("an unguarded append refuses");
+    assert_eq!(err.code, ErrorCode::GuardRequired);
+    assert!(
+        !std::fs::read_to_string(root.0.join("memo.md"))
+            .expect("read")
+            .contains("- item two"),
+        "nothing landed"
+    );
+}
+
+/// And a WRONG token is not a token: the threaded `rev` reaches CAS, so a stale
+/// append refuses there rather than writing over someone else's change.
+#[test]
+fn a_plan_append_with_a_stale_rev_does_not_write() {
+    let (_d, root) = ws();
+    let a = SpliceArgs {
+        plan_edits: vec![PlanEdit::Append {
+            hpath: "Memo/Tasks".into(),
+            body: "- item two".into(),
+            rev: Some("not-this-sections-rev".into()),
+        }],
+        ..args(Origin::Wire)
+    };
+    let err = splice(&root, None, &a, &[], None).expect_err("a stale append token refuses");
+    assert_eq!(err.code, ErrorCode::CasMismatch);
+    assert!(
+        !std::fs::read_to_string(root.0.join("memo.md"))
+            .expect("read")
+            .contains("- item two"),
+        "nothing landed"
+    );
+}
+
 /// A wire write that stripped the `force` flag AND the rev is not a way in:
 /// `force` is the one bypass, and it is explicit.
 #[test]
@@ -439,16 +508,23 @@ fn the_fix_clause_names_the_slot_the_caller_actually_has() {
         plan_edits: vec![PlanEdit::Append {
             hpath: "Memo/Tasks".into(),
             body: "- item two".into(),
+            rev: None,
         }],
         ..args(Origin::Wire)
     };
     let err = splice(&root, None, &plan_append, &[], None).expect_err("append is guarded (S3)");
     let message = err.message.as_deref().expect("a message");
     assert_guard_contract("plan append", message, "NODE grain");
+    // R4 retired the unslotted fix text. `append` now carries its own `rev`, so
+    // the fix names that field — the same door `match` is sent to — instead of
+    // routing the caller to a native `edits` batch or `force`.
     assert!(
-        message.contains("`append` carries no rev field")
-            && message.contains("native `edits` batch"),
-        "it names the doors that EXIST rather than a field it does not have: {message}"
+        message.contains("`rev` on the plan edit"),
+        "the append face is told about its own `rev`: {message}"
+    );
+    assert!(
+        !message.contains("`append` carries no rev field"),
+        "the retired unslotted clause must be gone: {message}"
     );
 }
 

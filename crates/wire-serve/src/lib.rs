@@ -448,6 +448,26 @@ mod tests {
         }
     }
 
+    /// R4: `append` carries its own node token, so the decoder must admit `rev`
+    /// on that shape — the field wall would otherwise refuse the guarded door.
+    #[test]
+    fn v3_append_admits_its_rev_token() {
+        let frame = json!({"op": "splice", "path": "a.md",
+            "plan_edits": [{"append": {"hpath": "A", "body": "x", "rev": "abc123"}}]});
+        let op = super::decode::decode(&obj(frame), super::rev::Rev::V3).expect("decodes");
+        let Op::Splice { plan_edits, .. } = op else {
+            panic!("splice op");
+        };
+        assert_eq!(
+            plan_edits,
+            vec![wire::PlanEdit::Append {
+                hpath: "A".into(),
+                body: "x".into(),
+                rev: Some("abc123".into()),
+            }]
+        );
+    }
+
     /// `plan_edits`: mutual exclusion, empty-array law, per-shape strictness.
     #[test]
     fn v3_plan_edits_strict_negatives() {

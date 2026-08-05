@@ -81,6 +81,7 @@ fn plan_batch_equals_the_host_built_native_batch() {
                 PlanEdit::Append {
                     hpath: "Memo/Tasks".into(),
                     body: "- item three".into(),
+                    rev: None,
                 },
                 PlanEdit::Create {
                     parent_hpath: "Archive".into(),

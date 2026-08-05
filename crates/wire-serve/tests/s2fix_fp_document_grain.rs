@@ -126,6 +126,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
             Vec::new(),
             vec![PlanEdit::Append {
                 hpath: "Plan".into(),
+                rev: None,
                 body: format!("appended [[guide#^a{TOKEN}|A]]"),
             }],
         ),

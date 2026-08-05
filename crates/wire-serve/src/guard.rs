@@ -105,17 +105,16 @@ enum Grain {
 /// differently, so a refusal that names one slot for both teaches the wrong fix
 /// to half its readers — this is what keeps the fix clause honest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Every slot IS a rev slot — the shared postfix is the point, and each prefix
+// names the face whose field the refusal must spell.
+#[allow(clippy::enum_variant_names)]
 enum Slot {
     /// A native edit: `if_node_rev`.
     NativeNodeRev,
-    /// A plan `match` / `replace_section` row: `rev`.
+    /// A plan `match` / `replace_section` / `append` row: `rev`.
     PlanRowRev,
     /// A plan `set_property` row: `rev`, the doc-root token.
     PlanFileRev,
-    /// A plan `append` row — which carries NO rev field at all. Naming a slot
-    /// here would send the caller to a field that does not exist, so the fix
-    /// names the two doors that DO carry the guard.
-    PlanAppendUnslotted,
 }
 
 /// Why one demand went unmet, and therefore which refusal it mints.
@@ -318,7 +317,9 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
             }
             // Content changes, all three of them. `append` is a content change
             // like any other (S3): it does not escape by not being replace-shaped.
-            PlanEdit::Match { hpath, rev, .. } | PlanEdit::ReplaceSection { hpath, rev, .. } => {
+            PlanEdit::Match { hpath, rev, .. }
+            | PlanEdit::ReplaceSection { hpath, rev, .. }
+            | PlanEdit::Append { hpath, rev, .. } => {
                 if rev.as_deref().is_none_or(str::is_empty) {
                     out.push(Demand {
                         subject: format!("section \"{hpath}\""),
@@ -329,13 +330,6 @@ fn plan_demands(doc: &model::Document, plan_edits: &[PlanEdit], out: &mut Vec<De
                     });
                 }
             }
-            PlanEdit::Append { hpath, .. } => out.push(Demand {
-                subject: format!("section \"{hpath}\""),
-                unmet: Unmet::NoGuard {
-                    grain: Grain::Node,
-                    slot: Slot::PlanAppendUnslotted,
-                },
-            }),
         }
     }
 }
@@ -418,13 +412,6 @@ fn refusal(path: &Path, demand: &Demand) -> Box<ErrorBody> {
                 Slot::PlanFileRev => format!(
                     "Fix: run `mrd read {file} --json` and send its `file_rev` as `rev` on each \
                      `set_property`."
-                ),
-                // Naming a `rev` field on `append` would send the caller to a
-                // field the shape does not have. Name the doors that exist.
-                Slot::PlanAppendUnslotted => format!(
-                    "Fix: `append` carries no rev field — run `mrd read {file} --json`, then send \
-                     this change as a native `edits` batch whose `put at:end` carries that \
-                     section's `sec_rev` as `if_node_rev`, or repeat it with `force`."
                 ),
             };
             let mut e = ErrorBody::new(ErrorCode::GuardRequired);

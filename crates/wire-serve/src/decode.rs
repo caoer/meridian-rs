@@ -386,10 +386,11 @@ fn decode_plan_edits(v: &Value) -> Result<Vec<PlanEdit>, Box<ErrorBody>> {
         };
         out.push(match tag.as_str() {
             "append" => {
-                plan_fields(b, "append", &["hpath", "body"])?;
+                plan_fields(b, "append", &["hpath", "body", "rev"])?;
                 PlanEdit::Append {
                     hpath: req_str(b, "append", "hpath")?,
                     body: req_str(b, "append", "body")?,
+                    rev: opt_str(b, "append", "rev")?,
                 }
             }
             "match" => {
