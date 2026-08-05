@@ -109,7 +109,7 @@
 //!   semantic class.
 //! - **2** — bad invocation, or an unresolvable / unreadable workspace.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -581,44 +581,13 @@ fn lock_planes(workspace: &Path) -> (LockAxis, VibeDebt) {
     // by-construction agreement above is untouched — see
     // [`crate::walk_cmd::load_mounts_for`] for why the corpora may differ and the
     // verdicts may not.
-    let mounts = crate::walk_cmd::load_mounts_for(&lock_addressed_roots(&docs));
+    let mounts = crate::walk_cmd::load_mounts_for(&crate::walk_cmd::lock_addressed_roots(&docs));
     let corpus = mounts.rooted(&docs);
     let colors: Vec<Color> = view::walk::lock_pin_colors_rooted(&corpus, mounts.set())
         .into_iter()
         .map(|p| p.color)
         .collect();
     (LockAxis::roll_up(&colors), vibe_debt(workspace, &docs))
-}
-
-/// Every mount root the corpus's `meridian-lock` addresses NAME — the exact set
-/// of roots whose pages this run can read, and so the exact set worth building.
-///
-/// # Why the set is knowable before any root is loaded
-/// A pin's root is a property of its ADDRESS, not of the tree the address points
-/// into: `sessions:notes/plan.md` names `sessions` whether or not `sessions` is
-/// declared, readable, or holds that page. Reading the name therefore costs the
-/// ambient corpus that is already in memory and no root corpus at all.
-///
-/// The root is read off [`view::read_face::LockItem::declared_addr`] — the
-/// parsed address, which that field's contract names **the structural owner**
-/// (U10): *"Every consumer that needs the root, the path or the selector reads
-/// THIS; nothing re-splits `declared_ref`."* A second spelling of the address
-/// grammar here is exactly the drift that field exists to prevent, so this
-/// function contains none.
-///
-/// A row with no address — a lock refusal, or a spelling outside the grammar —
-/// contributes no root, which is correct rather than lossy: it resolves into no
-/// root, so no root's pages can answer for it.
-fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
-    let mut roots = BTreeSet::new();
-    for doc in docs.values() {
-        for item in view::read_face::page_lock_items(doc) {
-            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
-                roots.insert(root.clone());
-            }
-        }
-    }
-    roots
 }
 
 /// Which object store one pinned blob belongs to: the ambient

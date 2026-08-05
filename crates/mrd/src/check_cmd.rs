@@ -138,11 +138,13 @@
 //! which is the permanent-fact-as-per-commit-verdict defect above wearing a new
 //! sign.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use std::path::Path;
 
 use check::{CoreReport, GREY_CANNOT_ASSESS, PinPlane, PinRow, WRITE_HISTORY_NOT_ASSESSED};
+use model::Document;
 use receipt::anchor::{ObjectAnchor, PENDING_ANCHOR_TTL};
 use serde_json::{Value, json};
 
@@ -176,11 +178,6 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let root = fs::WorkspaceRoot(canonical.clone());
 
-    // U11/F6 — the REAL mount table, through the one loader `mrd walk` uses. A
-    // default (empty) table here is what made the cross-root pin axis answer
-    // `grey(unmounted)` for a bound root in all three of its states.
-    let mounts = crate::walk_cmd::load_mounts();
-
     // ONE read of the worktree, whose bytes feed the fold AND the corpus — the
     // reason `domain_snapshot` returns both. A second read would let the two
     // planes describe two different worktrees.
@@ -199,12 +196,41 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
         Interval::NotAsked
     };
 
-    let worktree = assess(&root, &mounts, worktree_files)?;
+    // W5 — **the corpora are built before the mount table, because they are what
+    // says which roots the table must build.** Each interval's corpus is built
+    // exactly once here and then assessed, rather than built inside `assess`:
+    // the root set is a question about the corpus, so asking it costs a build,
+    // and a build per question would have paid twice for the same bytes.
+    let worktree_docs = build_corpus(worktree_files)?;
+    let staged_docs = match &interval {
+        Interval::Diverges(bytes) => Some(build_corpus(bytes.files.clone())?),
+        _ => None,
+    };
 
-    let staged = match &interval {
-        Interval::Diverges(bytes) => Some(Assessed {
+    // U11/F6 — the REAL mount table, through the one loader `mrd walk` uses. A
+    // default (empty) table here is what made the cross-root pin axis answer
+    // `grey(unmounted)` for a bound root in all three of its states.
+    //
+    // W5 — the table is whole; only the CORPORA narrow, to the roots this
+    // check's own lock addresses NAME. The union spans BOTH intervals because
+    // ONE table serves both assessments, and the staged corpus may pin a root
+    // the worktree does not — a narrowing per interval would have built the
+    // table for the first and read it for the second. Over-collecting here costs
+    // a corpus; under-collecting cannot pass silently, since the only consumer
+    // of a skipped root refuses out loud by name
+    // ([`crate::walk_cmd::load_mounts_for`]).
+    let mut needed = crate::walk_cmd::lock_addressed_roots(&worktree_docs);
+    if let Some(docs) = &staged_docs {
+        needed.append(&mut crate::walk_cmd::lock_addressed_roots(docs));
+    }
+    let mounts = crate::walk_cmd::load_mounts_for(&needed);
+
+    let worktree = assess(&root, &mounts, &worktree_docs);
+
+    let staged = match (&interval, &staged_docs) {
+        (Interval::Diverges(bytes), Some(docs)) => Some(Assessed {
             paths: bytes.paths.clone(),
-            report: assess(&root, &mounts, bytes.files.clone())?.report,
+            report: assess(&root, &mounts, docs).report,
         }),
         _ => None,
     };
@@ -803,16 +829,28 @@ struct StagedBytes {
 fn assess(
     root: &fs::WorkspaceRoot,
     mounts: &crate::walk_cmd::Mounts,
-    files: fs::DomainFiles,
-) -> Result<Assessed, Fail> {
+    docs: &BTreeMap<String, Document>,
+) -> Assessed {
+    let corpus = mounts.rooted(docs);
+    let pins = pin_rows(&corpus, mounts.set());
+    Assessed {
+        paths: Vec::new(),
+        report: check::core_of(root, docs, &pins),
+    }
+}
+
+/// One interval's bytes, parsed into the corpus both the root scan and the
+/// assessment read.
+///
+/// **Split out of [`assess`] by W5**, which needs the corpus in hand *before*
+/// the mount table exists — the roots worth building are read off these very
+/// documents ([`crate::walk_cmd::lock_addressed_roots`]). Keeping the build
+/// inside `assess` would have forced a second parse of the same bytes purely to
+/// ask which roots they name.
+fn build_corpus(files: fs::DomainFiles) -> Result<BTreeMap<String, Document>, Fail> {
     let (_index, docs) =
         fs::build_corpus(files).map_err(|e| Fail::tool(format!("cannot build the corpus: {e}")))?;
-    let corpus = mounts.rooted(&docs);
-    let pins = pin_rows(&corpus, mounts.set());
-    Ok(Assessed {
-        paths: Vec::new(),
-        report: check::core_of(root, &docs, &pins),
-    })
+    Ok(docs)
 }
 
 /// **The interval the commit spans** (F1): the worktree snapshot with the INDEX's

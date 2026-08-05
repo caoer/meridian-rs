@@ -49,11 +49,19 @@ pub(crate) fn dispatch(args: &[String]) -> Result<(), Fail> {
     })?;
     let docs = build_docs(&resolved.workspace)?;
 
-    // U11 — the mount table, loaded from `MERIDIAN.md`, and one corpus per
-    // BOUND root. `mounts` owns the document maps; `corpus` borrows them, so the
-    // owner must outlive the borrow — hence two bindings rather than one
+    // U11 — the mount table, loaded from `MERIDIAN.md`, with a corpus for the
+    // roots this workspace's own lock addresses NAME ([`lock_addressed_roots`])
+    // and no others. `mounts` owns the document maps; `corpus` borrows them, so
+    // the owner must outlive the borrow — hence two bindings rather than one
     // expression.
-    let mounts = load_mounts();
+    //
+    // W5 — the table stays whole and only the CORPORA narrow, so every
+    // `grey(unmounted)` / `path-unseeable` verdict reads the same set it always
+    // did (see [`load_mounts_for`]). The narrowing is sound for the WALK in
+    // particular because the walk never traverses into a root: a cross-root
+    // target is a leaf (`view::walk::steps_from`), so a root's pages are read
+    // only to colour an edge naming that root — which is what this set collects.
+    let mounts = load_mounts_for(&lock_addressed_roots(&docs));
     let corpus = mounts.rooted(&docs);
     let mount_set = mounts.set();
 
@@ -181,6 +189,55 @@ pub(crate) fn load_mounts() -> Mounts {
 /// skipped it precisely because no address names it.
 pub(crate) fn load_mounts_for(needed: &BTreeSet<addr::MountName>) -> Mounts {
     load_mounts_where(&|name| needed.contains(name))
+}
+
+/// Every mount root the corpus's `meridian-lock` addresses NAME — the exact set
+/// of roots whose pages this run can read, and so the exact set worth building.
+///
+/// # Why the set is knowable before any root is loaded
+/// A pin's root is a property of its ADDRESS, not of the tree the address points
+/// into: `sessions:notes/plan.md` names `sessions` whether or not `sessions` is
+/// declared, readable, or holds that page. Reading the name therefore costs the
+/// ambient corpus that is already in memory and no root corpus at all.
+///
+/// The root is read off [`view::read_face::LockItem::declared_addr`] — the
+/// parsed address, which that field's contract names **the structural owner**
+/// (U10): *"Every consumer that needs the root, the path or the selector reads
+/// THIS; nothing re-splits `declared_ref`."* A second spelling of the address
+/// grammar here is exactly the drift that field exists to prevent, so this
+/// function contains none.
+///
+/// A row with no address — a lock refusal, or a spelling outside the grammar —
+/// contributes no root, which is correct rather than lossy: it resolves into no
+/// root, so no root's pages can answer for it.
+///
+/// # Why this is the COMPLETE needed set, and not merely a heuristic (W5)
+/// The set is read off DECLARED addresses, so it is only sound if an address
+/// that names no root can never reach into one. It cannot:
+/// `model::CorpusIndex::resolve_ref` branches on `addr.root()` FIRST, and the
+/// `None` arm resolves through `three_rules(.., corpus.ambient_docs())` — the
+/// ambient map alone (`crates/model/src/lib.rs`, the arm commented *"the ambient
+/// root … byte-for-byte what it was before U11"*). No mounted corpus is in scope
+/// on that path, so a bare or form-2 `[[wikilink]]` ref resolves ambiently or
+/// misses; it never silently lands in a root this set did not name.
+///
+/// **This is why one computation serves `status`, `walk` and `check` alike**,
+/// though W2 expected walk and check to need a different, traversal-aware set.
+/// They do not, because neither verb traverses INTO a root: `view::walk`'s
+/// `forward_edges` maps `corpus.ambient_docs()` only, and a cross-root target is
+/// a leaf by construction — the ambient corpus holds no key spelled `root:path`,
+/// so the BFS never expands one. A root's pages are read for exactly one
+/// purpose, colouring an edge that NAMES it, and this set names every such root.
+pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSet<addr::MountName> {
+    let mut roots = BTreeSet::new();
+    for doc in docs.values() {
+        for item in view::read_face::page_lock_items(doc) {
+            if let Some(root) = item.declared_addr.as_ref().and_then(addr::Addr::root) {
+                roots.insert(root.clone());
+            }
+        }
+    }
+    roots
 }
 
 /// The one loader both faces above are spellings of — so the table bind, the
