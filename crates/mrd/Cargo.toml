@@ -37,6 +37,21 @@ name = "status_multiroot_cpu"
 path = "tests/status_multiroot_cpu.rs"
 required-features = ["perf-walltime"]
 
+# W5 — the same gate for the two verbs W2 left eager. One target each, for the
+# `RUSAGE_CHILDREN` reason above: separate test TARGETS are separate processes,
+# so their children never fold into each other's measurement, where two
+# `#[test]`s in one file would. All three share `tests/multiroot_fixture/mod.rs`
+# so the table they measure through cannot drift apart between them.
+[[test]]
+name = "walk_multiroot_cpu"
+path = "tests/walk_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
+[[test]]
+name = "check_multiroot_cpu"
+path = "tests/check_multiroot_cpu.rs"
+required-features = ["perf-walltime"]
+
 # lib + bin: the bin (`main.rs`) is process wiring only; every verb lives in the
 # library so integration tests can drive both the real binary (CARGO_BIN_EXE_mrd)
 # and the typed entry points.
