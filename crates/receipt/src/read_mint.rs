@@ -153,6 +153,29 @@ impl ReadMintStore {
             .cloned()
     }
 
+    /// Whether ANY actor in this session holds a receipt for (path, selector).
+    ///
+    /// This is the D7 refusal's rotation half, and NOTHING else: a gate that
+    /// already missed on the caller's own identity asks whether the selector
+    /// was read at all in this session, so the refusal can say "your identity
+    /// rotated" instead of "you never read this". It answers a BOOLEAN on
+    /// purpose — naming the other identity would publish one actor's read
+    /// history to another, and the fix ("re-read as yourself") does not depend
+    /// on who read it before.
+    ///
+    /// It is never an authorization input: no caller may pass a gate on this.
+    #[must_use]
+    pub fn any_actor_read(&self, path: &str, selector: &wire::ReadSel) -> bool {
+        self.actors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|rows| {
+                rows.iter()
+                    .any(|r| r.path == path && &r.selector == selector)
+            })
+    }
+
     /// How many receipts the ledger holds across every actor. Introspection for
     /// gates ("this read minted nothing"), never a correctness input.
     #[must_use]
@@ -312,6 +335,29 @@ mod tests {
                 .lookup("mine", "a.md", &sel(&format!("S{MAX_RECEIPTS_PER_ACTOR}")))
                 .is_some(),
             "the newest receipt is held"
+        );
+    }
+
+    #[test]
+    fn any_actor_read_separates_a_rotated_identity_from_a_selector_never_read() {
+        let store = ReadMintStore::new();
+        store.mint("before-rotation", "a.md", &sel("A"), "rev-1");
+
+        assert!(
+            store.lookup("after-rotation", "a.md", &sel("A")).is_none(),
+            "the gate still misses — a receipt is keyed to the identity that read"
+        );
+        assert!(
+            store.any_actor_read("a.md", &sel("A")),
+            "but the selector WAS read in this session: that is the rotation cause"
+        );
+        assert!(
+            !store.any_actor_read("a.md", &sel("B")),
+            "a selector nobody read is the never-read cause"
+        );
+        assert!(
+            !store.any_actor_read("b.md", &sel("A")),
+            "and the path is part of the question, exactly as in lookup"
         );
     }
 

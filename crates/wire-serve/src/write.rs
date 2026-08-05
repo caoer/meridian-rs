@@ -1714,13 +1714,29 @@ fn read_mint_gate(
         ));
     };
     let Some(receipt) = store.lookup(actor, &target.0, selector) else {
+        // D7: the refusal IS the user experience, so it names the cause it can
+        // tell apart. A receipt held under another identity says the caller's
+        // session id rotated; no receipt at all says the selector was never
+        // read — or that the mint evaporated, which is memory-only semantics
+        // working, not a defect. Both causes end at the SAME one-round-trip
+        // fix, so the agent never has to interpret which one it hit.
+        let rotated = store.any_actor_read(&target.0, selector);
+        let cause = if rotated {
+            "this session holds a receipt for that selector under a DIFFERENT identity, so \
+             yours rotated (a fork, a resume, a /clear mints under a new id)"
+        } else {
+            "no identity in this session has read it — either it was never read, or the mint \
+             evaporated (receipts are memory-only, so a daemon restart or an idle reap clears \
+             them)"
+        };
         return Err(read_mint_required(
             target,
             format!(
-                "pin of {}#{asked} refused: actor {actor} has not read that selector in this \
-                 session — you cannot attest content that was never in your context. Read it \
-                 first (mode sections, that exact selector), then pin.",
-                target.0
+                "pin of {}#{asked} refused: actor {actor} holds no read receipt for that \
+                 selector — you cannot attest content that was never in your context. Cause: \
+                 {cause}. Fix, either way, in one round trip: re-read {}#{asked} (mode \
+                 sections, that exact selector) as {actor}, then pin again.",
+                target.0, target.0
             ),
         ));
     };
