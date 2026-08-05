@@ -151,6 +151,9 @@ struct MountedCorpus {
 ///
 ///
 ///
+/// Full-table face: every bound root gets a corpus. Kept for a caller that cannot
+/// compute a needed set; every production verb today can, and uses [`load_mounts_for`].
+#[allow(dead_code)] // full-table face — deliberate; no production caller remains after the residual narrow
 pub(crate) fn load_mounts() -> Mounts {
     load_mounts_where(&|_| true)
 }
@@ -161,9 +164,10 @@ pub(crate) fn load_mounts() -> Mounts {
 /// bounds it. `mrd status` measured 80.6% of its whole run inside this function, walking 271 MB
 /// across four declared roots to colour two pins, none of which addressed a root at all. A
 /// caller that KNOWS which roots its addresses name pays for those and no others. Which roots
-/// those are is the callers question, not this loaders: `status` reads them off its own lock
-/// items ([`crate::status_cmd`]), and a caller that cannot know keeps [`load_mounts`]. The
-/// declared table is unchanged, and that is the whole safety argument `needed` narrows the
+/// those are is the caller's question, not this loader's: `status`/`walk`/`check` read them off
+/// lock items ([`lock_addressed_roots`]); `links` and ephemeral `sql` read them off wikilink/
+/// embed targets ([`link_addressed_roots`]); a caller that cannot know keeps [`load_mounts`].
+/// The declared table is unchanged, and that is the whole safety argument: `needed` narrows the
 /// CORPORA, never the [`addr::MountSet`].
 ///
 ///
@@ -238,6 +242,51 @@ pub(crate) fn lock_addressed_roots(docs: &BTreeMap<String, Document>) -> BTreeSe
         }
     }
     roots
+}
+
+/// Every mount root the corpus's **wikilink/embed** targets NAME — the set of roots whose pages
+/// the link plane (and the SQL projection of that plane) can resolve into.
+///
+/// Why this is the complete needed set for `mrd links` and ephemeral `mrd sql`, not the full
+/// mount table: both surfaces project **ambient** documents only. Mounted root corpora exist so
+/// `resolve_ref` can answer a rooted spelling (`sessions:notes.md`) with the page in that root,
+/// not so the surface enumerates every declared root's pages. A workspace that carries no rooted
+/// spelling therefore needs **zero** root corpora — measured on the multi-root table at
+/// ~27 s CPU for both surfaces before this narrowing, against ~0.17 s for the already-narrowed
+/// `walk`/`status` siblings on the same input.
+///
+/// `path` mirrors `query::links_rooted`: `None` scans the whole ambient corpus; `Some` scans
+/// that one file. The root name is read from [`addr::Addr::parse`] of each wikilink/embed
+/// target — the same grammar the resolver peels — so a second address splitter never appears.
+/// A target outside the grammar contributes no root (it cannot resolve into one either).
+pub(crate) fn link_addressed_roots(
+    docs: &BTreeMap<String, Document>,
+    path: Option<&str>,
+) -> BTreeSet<addr::MountName> {
+    let mut roots = BTreeSet::new();
+    for (source, doc) in docs {
+        if path.is_some_and(|p| p != source.as_str()) {
+            continue;
+        }
+        collect_link_roots(&doc.root, &mut roots);
+    }
+    roots
+}
+
+fn collect_link_roots(node: &model::Node, roots: &mut BTreeSet<addr::MountName>) {
+    match &node.kind {
+        model::NodeKind::Wikilink { target, .. } | model::NodeKind::Embed { target, .. } => {
+            if let Ok(addr) = addr::Addr::parse(target)
+                && let Some(root) = addr.root()
+            {
+                roots.insert(root.clone());
+            }
+        }
+        _ => {}
+    }
+    for child in &node.children {
+        collect_link_roots(child, roots);
+    }
 }
 
 /// The one loader both faces above are spellings of — so the table bind, the refusal carrying,

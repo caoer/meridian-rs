@@ -748,10 +748,18 @@ fn build_and_run_ephemeral(
     let (_index, docs) = fs::build_corpus(files)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the corpus: {e}"))))?;
     // U21 — the ephemeral view is built with MOUNT AUTHORITY, from the same
-    // `load_mounts` assembly the pin plane and the link plane use (S3-R59, one
-    // owner). Without it a cross-vault link projects as dangling and every SQL
-    // consumer reads a working link as broken.
-    let mounts = crate::walk_cmd::load_mounts();
+    // loader the pin plane and the link plane use (S3-R59, one owner —
+    // `walk_cmd::load_mounts_for`). Without it a cross-vault link projects as
+    // dangling and every SQL consumer reads a working link as broken.
+    //
+    // Corpora narrow to the roots ambient wikilink/embed targets NAME
+    // ([`crate::walk_cmd::link_addressed_roots`]); the MountSet stays whole.
+    // This is NOT a lock-item scan and NOT a genuine full-table need: the view
+    // projects ambient docs only, and mounted pages exist so `resolve_ref` can
+    // land a rooted spelling. Measured on the multi-root table with zero rooted
+    // spellings: ~27 s CPU before, same shape as the W5 residual.
+    let mounts =
+        crate::walk_cmd::load_mounts_for(&crate::walk_cmd::link_addressed_roots(&docs, None));
     let corpus = mounts.rooted(&docs);
     let conn = view::build_memory_rooted(&docs, &corpus, mounts.set(), &f0.0)
         .map_err(|e| EphemeralError::Fail(Fail::tool(format!("cannot build the view: {e}"))))?;
