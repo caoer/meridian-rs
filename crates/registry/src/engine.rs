@@ -10,7 +10,8 @@
 //! Resident state is a disposable projection of disk: no persistence, no
 //! recovery machinery. A cold daemon holds no engines; the first
 //! `warm_or_build` for a workspace rebuilds from disk. Eviction is NOT
-//! engineered here — the daemon's existing idle-reap (5-day `last_use` horizon,
+//! engineered here — the daemon's existing idle-reap (one-hour `last_use`
+//! horizon,
 //! [`Registry::reap`](crate::Registry::reap)) drops a warm engine when it drops
 //! the workspace's registration (risk R4: generous residency, no memory budget).
 //!

@@ -28,6 +28,10 @@ fn test_config(tmp: &TempDir) -> Config {
         idle_threshold: Duration::from_secs(365 * 24 * 60 * 60),
         reap_interval: Duration::from_secs(365 * 24 * 60 * 60),
         prewarm_interval: Duration::from_secs(365 * 24 * 60 * 60),
+        prewarm_quiet_max: Duration::from_secs(365 * 24 * 60 * 60),
+        // No idle exit: this server's lifetime is the test's, and a daemon that
+        // reaped itself mid-assertion would fail as a flake, not a finding.
+        idle_exit: None,
     }
 }
 

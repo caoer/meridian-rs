@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use wire::{ErrorBody, ErrorCode, ResponseBody, Root};
@@ -113,6 +114,22 @@ pub struct Registry {
     /// published stamp (pairs with `seq`). A per-instance value (a restart mints
     /// a new one).
     epoch: String,
+    /// G11 the pre-warm quiet map: the last [`fs::domain_stat_signature`] each
+    /// warm workspace was swept at. A sweep whose signature matches its entry
+    /// skips the corpus snapshot entirely — the difference between one `stat`
+    /// per domain file and reading plus folding every byte of a 20 GB vault,
+    /// once a second, forever.
+    ///
+    /// Written only by [`Self::prewarm`], so it is never load-bearing: an entry
+    /// that is missing or stale costs one extra snapshot, never a wrong answer.
+    /// Correctness stays the content root inside `engines`.
+    prewarm_signatures: Mutex<HashMap<PathBuf, u64>>,
+    /// G11 the activity clock: how many client requests this daemon has served,
+    /// and when the last one landed (unix seconds). Bumped by the socket's
+    /// dispatch, read by the pre-warm backoff (traffic means work is happening,
+    /// so sweep eagerly again) and by the idle-exit check.
+    requests: AtomicU64,
+    last_request: AtomicU64,
     state: StateStore,
     cache_root: PathBuf,
 }
@@ -145,6 +162,14 @@ impl Registry {
             // A per-instance epoch stamp: restart mints a new one, so a stale
             // cross-restart `built_epoch` never reads as current.
             epoch: now_secs().to_string(),
+            // No workspace has been swept yet, so the first sweep of each is a
+            // full snapshot — the signature is a skip-gate, not a cold-start
+            // assumption.
+            prewarm_signatures: Mutex::new(HashMap::new()),
+            requests: AtomicU64::new(0),
+            // A daemon nobody ever calls must still age out, so the clock starts
+            // at birth rather than at zero.
+            last_request: AtomicU64::new(now_secs()),
             state,
             cache_root,
         }
@@ -706,6 +731,9 @@ impl Registry {
         };
         let mut rebuilt = Vec::new();
         for workspace in warm {
+            if self.stat_signature_unchanged(&workspace) {
+                continue;
+            }
             // Only a `Built` rebuilt: `Reused` reused the warm engine (nothing
             // parsed), and an `Err` (vanished or non-UTF-8 workspace) pre-warms
             // nothing — the next query re-derives from disk and surfaces the
@@ -715,6 +743,54 @@ impl Registry {
             }
         }
         rebuilt
+    }
+
+    /// G11: has `workspace` looked untouched since the last sweep? Records the
+    /// signature it observed, so the answer is `false` exactly once per change.
+    ///
+    /// An unreadable workspace answers `false` — never skip on an error, or a
+    /// transient `stat` failure would silently freeze a corpus's pre-warm until
+    /// something else changed. The snapshot behind it is the error-reporting
+    /// path, and it is best-effort there too.
+    fn stat_signature_unchanged(&self, workspace: &Path) -> bool {
+        let Ok(signature) = fs::domain_stat_signature(&fs::WorkspaceRoot(workspace.to_path_buf()))
+        else {
+            return false;
+        };
+        let mut seen = self
+            .prewarm_signatures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if seen.get(workspace) == Some(&signature) {
+            return true;
+        }
+        seen.insert(workspace.to_path_buf(), signature);
+        false
+    }
+
+    /// G11: record that a client request was served — the daemon's activity
+    /// clock. Bumped once per dispatched request by the socket loop.
+    pub fn note_request(&self) {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        self.last_request.store(now_secs(), Ordering::Relaxed);
+    }
+
+    /// How many client requests this daemon has served since it started.
+    ///
+    /// The pre-warm backoff watches this rather than a timestamp: a counter
+    /// that moved means traffic arrived *between two sweeps*, which a
+    /// one-second-granular clock can miss entirely.
+    #[must_use]
+    pub fn request_count(&self) -> u64 {
+        self.requests.load(Ordering::Relaxed)
+    }
+
+    /// Unix seconds of the last client request — or of daemon start, when there
+    /// has been none. Never `0` in practice, so an idle-exit check on it cannot
+    /// be tricked into firing immediately.
+    #[must_use]
+    pub fn last_request_secs(&self) -> u64 {
+        self.last_request.load(Ordering::Relaxed)
     }
 
     /// Unregister `path`, dropping it from memory and the state file. The
