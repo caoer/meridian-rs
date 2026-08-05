@@ -55,27 +55,34 @@ const SUN_PATH_CAPACITY: usize = 108;
 #[cfg(not(target_os = "linux"))]
 const SUN_PATH_CAPACITY: usize = 104;
 
-/// Voice the degrade on a HUMAN face — nothing on the warm path.
+/// Voice the degrade on a face a person reads — nothing on the warm path.
 ///
-/// **The gap this closes.** `--json` has always carried `"source"`, so a
-/// machine reader could see the degrade. The human face of `mrd read` prints
-/// the rendered projection and nothing else, so a person got a correct answer
-/// from a slower path with no signal that the path had changed. That silence
-/// invalidated roughly twenty measurements taken on this engine before anyone
-/// noticed the daemon was never in them.
+/// **The gap this closes.** `mrd read --json` has always carried `"source"`, so
+/// a machine reader could see the degrade. The human face printed the rendered
+/// projection and nothing else, so a person got a correct answer from a slower
+/// path with no signal that the path had changed. That silence invalidated
+/// roughly twenty measurements taken on this engine before anyone noticed the
+/// daemon was never in them.
 ///
 /// **Why STDERR.** The answer content is stdout's, and it must stay
-/// byte-identical between the warm and degraded paths — `mrd read` output is
-/// piped and diffed. A note on stdout would corrupt the very artifact the
-/// degrade must not change. So the fact rides the channel a person reads and a
-/// pipe drops, and the ONLY delta on stdout is none at all.
+/// byte-identical between the warm and degraded paths — this output is piped
+/// and diffed. A note on stdout would corrupt the very artifact the degrade
+/// must not change. So the fact rides the channel a person reads and a pipe
+/// drops, and the ONLY delta on stdout is none at all.
+///
+/// **G13 — one voice, two callers.** `mrd sql` degrades the same way and was
+/// measured at 248× the warm cost while saying nothing (0.24s → 59.63s), so it
+/// calls THIS function rather than growing a second voice that could drift from
+/// it. Its degrade arm may read a cold published `view.duckdb` instead of
+/// building in-process, so line 1 names the daemonless PATH rather than one
+/// arm's mechanism — the fact a reader acts on is the same either way.
 pub(crate) fn voice_degrade(source: &EngineSource) {
     if !matches!(source, EngineSource::Ephemeral) {
         return;
     }
     eprintln!(
-        "mrd: source: ephemeral — no daemon answered, so this answer was built in-process \
-         from disk."
+        "mrd: source: ephemeral — no daemon answered, so this answer came from the daemonless \
+         path (an in-process build, or a cold last-published file), not the warm engine."
     );
     eprintln!(
         "mrd:   The content is what a warm daemon serves; the TIMING is not — do not measure \

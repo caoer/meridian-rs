@@ -283,12 +283,34 @@ impl Frame {
 /// an error — the frame is the honest report.
 pub(crate) fn run(tail: &[String]) -> Result<(), Fail> {
     let args = SqlArgs::parse(tail)?;
-    let frame = execute(&args)?;
-    emit(&args, &frame)
+    let (frame, path) = execute(&args)?;
+    emit(&args, &frame, path)
+}
+
+/// **G13 — which path served this run, for the degrade voice only.**
+///
+/// The dogfood measured `mrd sql` degrading at 248× the warm cost (0.24s →
+/// 59.63s) with stdout, stderr and exit byte-identical, so a person could pay
+/// a minute for an answer and never learn why. This is the one bit the voice
+/// needs, and it is deliberately NOT the freshness frame: `state` answers "is
+/// this answer current?", which is a different question from "did the warm
+/// engine serve it?" — a cold last-published file is `UNVERIFIED` exactly as a
+/// warm one is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ServedBy {
+    /// The resident daemon answered `view_path` and its file was queried.
+    Daemon,
+    /// A tiers-1-3 workspace whose daemon did not answer — the cold-file or
+    /// in-process degrade ran instead. The costly, formerly mute path.
+    Degrade,
+    /// Tier-4 bare: `:memory:` is this tier's DESIGNED path, never a fallback,
+    /// so it is silent. Voicing here would cry degrade on every correct run in
+    /// an unregistered directory and teach the reader to ignore the line.
+    Tier4,
 }
 
 /// The §Q3 order-of-operations, dispatched by resolution tier.
-fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
+fn execute(args: &SqlArgs) -> Result<(Frame, ServedBy), Fail> {
     let cwd = match &args.cwd {
         Some(p) => p.clone(),
         None => current_dir()?,
@@ -308,20 +330,22 @@ fn execute(args: &SqlArgs) -> Result<Frame, Fail> {
             if let Some(reply) = try_daemon_view_path(&cwd, args.fresh) {
                 let path = reply_path(&reply);
                 if let Some(path) = path {
-                    return query_published(
+                    let frame = query_published(
                         Path::new(&path),
                         &resolved.workspace,
                         args,
                         reply_changes_seq(&reply),
                         reply_last_error(&reply),
-                    );
+                    )?;
+                    return Ok((frame, ServedBy::Daemon));
                 }
             }
-            degrade_cold_or_ephemeral(&resolved.drawer, &resolved.workspace, args)
+            let frame = degrade_cold_or_ephemeral(&resolved.drawer, &resolved.workspace, args)?;
+            Ok((frame, ServedBy::Degrade))
         }
         // Tier-4 bare: ephemeral `:memory:` ONLY — never the daemon, never a
         // drawer, never a claim on a prior registered workspace (§tier-4).
-        Source::Ephemeral => ephemeral_query(&resolved.workspace, args),
+        Source::Ephemeral => Ok((ephemeral_query(&resolved.workspace, args)?, ServedBy::Tier4)),
     }
 }
 
@@ -900,7 +924,23 @@ fn hex(bytes: &[u8]) -> String {
 /// table with the freshness banner. In human mode a SQL error is a loud tool
 /// failure (exit 2); under `--json` it rides the buffered document (the parent
 /// reads `error`).
-fn emit(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
+fn emit(args: &SqlArgs, frame: &Frame, path: ServedBy) -> Result<(), Fail> {
+    let result = emit_result(args, frame);
+    // **G13 — the voice fires on EVERY exit path, after stdout is written.**
+    // The dogfood's most expensive silent degrade was the ERROR path (0.70s →
+    // 99s, byte-identical), so voicing only the success arm would leave the
+    // worst case mute. It runs last so the answer (or the refusal) reaches the
+    // reader first, and it touches stderr only — stdout and the exit code are
+    // byte-identical to the warm run, which is the constraint that lets this
+    // voice exist at all.
+    if path == ServedBy::Degrade {
+        crate::engine::voice_degrade(&crate::engine::EngineSource::Ephemeral);
+    }
+    result
+}
+
+/// The face itself: the OD9 document, the human table, or the buffered error.
+fn emit_result(args: &SqlArgs, frame: &Frame) -> Result<(), Fail> {
     if args.json {
         println!("{}", frame_json(frame));
         return Ok(());
