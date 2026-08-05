@@ -1,17 +1,17 @@
-//! Advisor R25, structural fix 2 — the `@fp` strip moved from the PAYLOAD to the
-//! CANDIDATE DOCUMENT.
+//! R25 fix 2 — `@fp` strip at candidate-document grain (not payload field list).
 //!
-//! The strip used to walk named payload fields. A field list is the defect shape:
-//! it missed `plan_edits.create.title` (finding 13), it could not see a token two
-//! edits compose between them, and it judged each payload OUT of the document it
-//! lands in — stripping a token the document law calls a code sample (finding
-//! 11). One grammar, one grain: identify in the candidate, remove from the
-//! payload that carries it, refuse what is left.
+//! Pins R22: no `@fp` in a claim-link position on disk; non-claim positions
+//! (fence, frontmatter, HTML comment, indented code) are explicit exclusions.
 //!
-//! The claim this file pins is R22's, unchanged in width: **no `@fp` token in a
-//! claim-link POSITION on disk.** The positions that are NOT claim-link positions
-//! are named and tested here as explicit exclusions, because a claim that does
-//! not state its own edges is wider than its proof.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use wire::{
     CheckWriteEdit, Edit, EditShape, ErrorCode, Path as WPath, PlanEdit, PutAt, ResponseBody,
@@ -57,8 +57,8 @@ fn hpath(chain: &str) -> SecRef {
     }
 }
 
-/// The live whole-node rev of a section — `replace_section` demands the rev the
-/// caller read (a whole-section rewrite is destructive).
+/// Live section `node_rev` (`replace_section` needs the rev the caller read).
+///
 fn section_rev(root: &fs::WorkspaceRoot, chain: &str) -> String {
     let doc = fs::load(root, std::path::Path::new("plan.md")).expect("load");
     let r = model::Ref::Hpath(
@@ -80,10 +80,10 @@ fn on_disk(dir: &tempfile::TempDir) -> String {
     std::fs::read_to_string(dir.path().join("plan.md")).expect("read")
 }
 
-/// **Finding 13.** `plan_edits.create.title` is interpolated into heading bytes
-/// by the lowering — a field the payload list never named. At document grain the
-/// heading is just part of the candidate, so the token is stripped with the
-/// body's.
+/// Finding 13: token in `plan_edits.create.title` strips with the body.
+///
+///
+///
 #[test]
 fn a_token_in_create_title_is_stripped_with_the_body() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nbody\n");
@@ -114,8 +114,8 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
     assert!(text.contains("body [[guide#^task1|B]]"), "{text}");
 }
 
-/// Every plan-edit shape that carries a payload, in one batch — the coverage a
-/// field list had to be maintained for, now structural.
+/// Payload shapes (append / `replace_section` / match needle+new) strip without a field list.
+///
 #[test]
 fn every_payload_shape_is_covered_without_a_field_list() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nold line\n\n## Sub\n\nsub body\n");
@@ -137,8 +137,8 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(!appended.contains(TOKEN), "{appended}");
     assert!(appended.contains("appended [[guide#^a|A]]"), "{appended}");
 
-    // A nested target cannot ride the same batch (§4.4 disjointness), so the
-    // whole-section rewrite is its own splice.
+    // Nested target: separate splice (§4.4 disjointness).
+    //
     splice(
         &root,
         None,
@@ -158,9 +158,9 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(!text.contains(TOKEN), "{text}");
     assert!(text.contains("replaced [[guide#^b|B]]"), "{text}");
 
-    // The native `match` payload, and its NEEDLE: `old` is an ADDRESS matched
-    // against stored bytes (which never carry a token), so a needle copied from
-    // the decorated render face must still find its line.
+    // Native match: decorated needle must still match stored (unstripped) bytes.
+    //
+    //
     splice(
         &root,
         None,
@@ -184,11 +184,11 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(text.contains("matched [[guide#^c|C]]"), "{text}");
 }
 
-/// **Finding 11, the over-strip half.** A payload judged in isolation is not the
-/// document it lands in: this token lands INSIDE an existing code fence, where
-/// R22 says it is a code sample and must survive. The payload-grain strip ate it;
-/// the document-grain strip leaves it, and the assertion stays quiet because the
-/// one grammar does not call it a claim.
+/// Finding 11 over-strip: token inside a code fence survives (R22 sample).
+///
+///
+///
+///
 #[test]
 fn a_token_landing_inside_a_fence_survives_r22() {
     let (dir, root) = ws("# Plan\n\n```text\nsample: PLACEHOLDER\n```\n");
@@ -217,10 +217,10 @@ fn a_token_landing_inside_a_fence_survives_r22() {
     );
 }
 
-/// **Finding 11, the under-strip half — and the seeded missed door (gate 4).**
-/// The token's bytes are RETAINED page text; the edit only closes the link that
-/// turns them into a claim. No payload carries the token, so no payload-grain
-/// strip could ever see it. The candidate does, and refuses LOUD.
+/// Finding 11 under-strip: composing a claim from retained bytes refuses.
+///
+///
+///
 #[test]
 fn a_token_composed_out_of_retained_bytes_refuses() {
     let seed = format!("# Plan\n\nsee [[guide#^goal{TOKEN}\n");
@@ -251,18 +251,18 @@ fn a_token_composed_out_of_retained_bytes_refuses() {
     assert_eq!(on_disk(&dir), before, "nothing was written");
 }
 
-/// **A LIVE FALSE-RED in the shipped strip, found by fix8 on the run plane and
-/// fixed here at its source.** Sections are contiguous, so a `put{at:end}`
-/// replaces an EMPTY region sitting exactly on the byte where the next sibling
-/// begins: two request targets contain it, and attribution by containment alone
-/// called that ambiguous and refused. A legitimate decorated append into any
-/// section whose sibling is also edited therefore could not land — the mirror
-/// image of the defect this loop exists to close, and the reason the boundary
-/// rule (the target that ENDS there owns it) is part of the law.
+/// Boundary rule: target that ENDS at shared byte owns it — decorated append
+/// beside an edited sibling commits stripped (not false-red ambiguous).
+/// Control: [`a_token_composed_out_of_retained_bytes_refuses`].
 ///
-/// Its control is [`a_token_composed_out_of_retained_bytes_refuses`]: a token
-/// that genuinely has no payload to strip still refuses. The rule narrows
-/// ambiguity, it does not remove it.
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
     let seed = "# Plan\n\nbody\n\n## Alpha\n\nalpha body\n\n## Beta\n\nbeta body\n";
@@ -280,8 +280,8 @@ fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
                     },
                     if_node_rev: None,
                 },
-                // The sibling that shares Alpha's end byte, edited in the SAME
-                // batch — which is what puts two containers on that byte.
+                // Sibling sharing Alpha's end byte, same batch.
+                //
                 Edit {
                     target: hpath("Plan/Beta"),
                     edit: EditShape::Put {
@@ -310,10 +310,10 @@ fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
     assert!(text.contains("beta gains a line."), "{text}");
 }
 
-/// A token already on disk is not this write's to remove: deleting bytes the
-/// batch never addressed would move the fingerprint of a node this write does not
-/// own — reddening pins that have nothing to do with it. The write proceeds, and
-/// introduces nothing.
+/// Pre-existing on-disk token left alone (batch does not own those bytes).
+///
+///
+///
 #[test]
 fn a_pre_existing_token_is_left_exactly_as_found() {
     let seed = format!("# Plan\n\nsee [[guide#^goal{TOKEN}|G]]\n\n## Sub\n\nsub body\n");
@@ -344,13 +344,13 @@ fn a_pre_existing_token_is_left_exactly_as_found() {
     assert!(text.contains("one more line."), "{text}");
 }
 
-/// **Finding 22, stated at exactly the width of its proof.** `create` already
-/// strips its whole body, so its grain was never the problem — the question is
-/// WHICH positions the one grammar calls claim links. Frontmatter, HTML comments
-/// and indented code are not among them, for the same reason a code fence is not
-/// (R22): the dialect parse mints no link node there. The control below is the
-/// half that makes this honest — the DECORATE side reads the same tree, so the
-/// engine can never mint a token in a position the strip cannot reach.
+/// Finding 22: frontmatter / HTML comment / indented code / fence are not
+/// claim-link positions (R22); control — decorate sees the same one link.
+///
+///
+///
+///
+///
 #[test]
 fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
     let (dir, root) = ws("# Seed\n");
@@ -394,9 +394,9 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
         );
     }
 
-    // THE CONTROL — decorate and strip read ONE tree. A position the strip does
-    // not reach is a position the decorator never mints into, so the round trip
-    // cannot leak a token into it.
+    // Control: one grammar — strip and decorate agree on claim-link set.
+    //
+    //
     let doc = fs::load(&root, std::path::Path::new("born.md")).expect("load");
     let mut blocks = Vec::new();
     collect_link_blocks(&doc.root, &mut blocks);
@@ -418,9 +418,9 @@ fn collect_link_blocks(node: &model::Node, out: &mut Vec<String>) {
     }
 }
 
-/// **Finding 15.** The pre-flight refused the address the committer accepted:
-/// `check_write.at` kept its decoration while `read::to_model_ref` peeled it. One
-/// question, two answers. Both entry points now peel at the address owner.
+/// Finding 15: `check_write` and splice agree on a decorated address.
+///
+///
 #[test]
 fn check_write_and_splice_agree_on_a_decorated_address() {
     let (dir, root) = ws("# Plan\n\nthe goal line ^goal\n");
@@ -475,9 +475,9 @@ fn check_write_and_splice_agree_on_a_decorated_address() {
     );
 }
 
-/// The pre-flight judges the STRIPPED candidate, not the decorated draft — S4a's
-/// thesis at document grain: a def rule reading the page's bytes sees what
-/// `splice` will commit.
+/// Pre-flight candidate is stripped (S4a: ladder sees what splice commits).
+///
+///
 #[test]
 fn the_pre_flight_judges_the_stripped_candidate() {
     let (_dir, root) = ws("# Plan\n\nbody\n");

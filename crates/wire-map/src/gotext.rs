@@ -1,30 +1,30 @@
-//! Go-EXACT text semantics for the host-face addressing facts (M1 U2).
+//! Go-exact text semantics for host-face addressing facts (M1 U2).
 //!
-//! The read cutover (plan A-C1) demands byte-identity with the LIVE Go
-//! `readsidecar.go` output, so these primitives replicate the Go stdlib
-//! semantics the host face uses — never idiomatic-Rust near-equivalents:
+//! Primitives replicate Go stdlib semantics (byte-identity with
+//! `readsidecar.go`), never idiomatic-Rust near-equivalents:
 //!
-//! - [`is_go_space`] = Go `unicode.IsSpace` (the Unicode `White_Space`
-//!   property), pinned as an EXPLICIT table so neither stdlib's Unicode
-//!   revision can skew the set underneath us.
-//! - [`fields_count`] = `len(strings.Fields(s))` — maximal runs of
-//!   non-`White_Space` runes.
-//! - [`sanitize_heading`] = `sanitizeHeadingHost` (`readsidecar.go:350`,
-//!   itself "mirrors meridian internal/body map.go VERBATIM"): `TrimSpace`,
-//!   then `/` → `-`, then ASCII space → `-`, empty → `"untitled"`.
-//! - [`DeweyCounter`] = the `buildTocEntries` ordinal stack
-//!   (`readsidecar.go:222`), including its malformed-hierarchy behavior
-//!   (level jumps H1→H3, resets H6→H1) — reproduced, not repaired.
+//! - [`is_go_space`] = Go `unicode.IsSpace` (explicit `White_Space` table).
+//! - [`fields_count`] = `len(strings.Fields(s))`.
+//! - [`sanitize_heading`] = `sanitizeHeadingHost` (`readsidecar.go:350`):
+//!   `TrimSpace`, `/` → `-`, ASCII space → `-`, empty → `"untitled"`.
+//! - [`DeweyCounter`] = `buildTocEntries` ordinal stack — including
+//!   malformed-hierarchy behavior; reproduced, not repaired.
 //!
-//! [`is_go_space`] and [`sanitize_heading`] MOVED to [`model::gotext`] in
-//! stage-2 S0 and are re-exported here unchanged — `policy::defs::rebuild`
-//! needs the same heading address law, and a second copy is a drift surface.
-//! The word count and the dewey stack stay here: they are projection facts,
-//! and projection is this crate's charter (law 3).
+//! [`is_go_space`] / [`sanitize_heading`] re-export [`model::gotext`] (one
+//! owner). Word count and dewey stay here (projection facts, law 3).
 //!
-//! The authoritative parity target is the U0 captured golden corpus (A-S2);
-//! these unit tests pin the enumerated divergence classes the review named
-//! (NBSP/NEL are spaces, ZWSP is not, level jumps, empty headings).
+//! Parity target: U0 golden corpus. Unit tests pin divergence classes
+//! (NBSP/NEL space, ZWSP not, level jumps, empty headings).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 pub use model::gotext::{is_go_space, sanitize_heading};
 

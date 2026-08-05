@@ -1,19 +1,19 @@
-//! U5+U6 (M1 D8/D9): DIRECT concurrent-writer coverage for the write path,
-//! OUTSIDE the replay harness (A-C2: a single-threaded replay corpus can
-//! never contain the interleaves these units exist to close — the gate would
-//! pass precisely because it never exercises the change).
+//! U5+U6 (D8/D9): concurrent writers outside replay (A-C2).
 //!
-//! What the combined fix guarantees under concurrency, and what this test pins:
-//! - the committed file is NEVER torn: every landed state is a validated
-//!   pre-image plus whole span edits (each token intact on its own line);
-//! - a racer that finds the write flock held refuses the TYPED
-//!   `workspace_busy` frame (retry) — never a wait, never a panic;
-//! - under the flock cooperating racers cannot reach the D8 conflict at all
-//!   (read#2→verify→rename is serialized), so NO lost update remains:
-//!   `present == ok` EXACTLY. (`write_conflict` still guards out-of-band
-//!   writers — pinned deterministically by the fs-seam gates in
-//!   `crates/fs`, which drive drift between stage and rename by hand.)
-//! - a refused splice landed NOTHING (its token is absent).
+//! Pins: no torn file; busy → typed `workspace_busy`/retry; under flock
+//! `present == ok` exactly (no lost update among cooperating writers);
+//! refused token absent. Out-of-band `write_conflict`: `crates/fs` gates.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Barrier};
@@ -23,9 +23,9 @@ use wire_serve::write::{SpliceArgs, splice};
 
 const PAGE: &str = "---\ntitle: Race\n---\n# Log\n\nseed line\n";
 
-/// One racer's request: `put at:end` of a unique token under `# Log` —
-/// guardless (no `if_root`, no `if_node_rev`), so every refusal that surfaces
-/// is the engine's own conflict detection, not a caller CAS.
+/// Guardless racer: unique `put at:end` token (engine conflict only, not CAS).
+///
+///
 fn racer_args(i: usize) -> SpliceArgs {
     SpliceArgs {
         id: None,
@@ -77,16 +77,16 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
     let mut ok = BTreeSet::new();
     let mut busy = 0usize;
     for handle in handles {
-        // A panicking racer fails the join — the panic-free law, checked free.
+        // Panic-free: join fails the suite.
         let (i, outcome) = handle.join().expect("no racer may panic");
         match outcome {
             Ok(()) => {
                 ok.insert(i);
             }
             Err(e) => {
-                // EVERY concurrency refusal is the one typed busy frame (U6:
-                // the flock serializes cooperating writers; the D8 conflict is
-                // unreachable for them, and nothing else may leak through).
+                // Cooperating refusal is only typed `workspace_busy` (U6).
+                //
+                //
                 assert_eq!(
                     e.code,
                     ErrorCode::WorkspaceBusy,
@@ -101,12 +101,12 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
     }
     assert_eq!(ok.len() + busy, RACERS, "every racer resolved");
     assert!(!ok.is_empty(), "at least one racer lands (someone wins)");
-    // Observability (run with --nocapture): how the race resolved this run.
+    // Race outcome (visible under --nocapture).
     eprintln!("u5/u6 race: ok={} workspace_busy={busy}", ok.len());
 
-    // The landed state is NEVER torn: the base page survives intact and every
-    // extra line is one COMPLETE token (a stale blind splice would interleave
-    // spans mid-line; pre-fix this is exactly the silent corruption mode).
+    // No tear: base intact; each extra line is one complete token.
+    //
+    //
     let after = std::fs::read_to_string(dir.path().join("log.md")).expect("read back");
     assert!(
         after.starts_with(PAGE.trim_end_matches('\n')) || after.starts_with(PAGE),
@@ -126,15 +126,15 @@ fn concurrent_splices_refuse_typed_and_never_tear() {
             "token-{token} landed twice — a double splice"
         );
     }
-    // U6 upgrade: EXACT equality — every ok racer's token landed (the flock
-    // leaves NO lost-update window for cooperating writers) and no refused
-    // racer's token is present (a refusal lands NOTHING).
+    // `present == ok` exactly (no lost update; refused writes land nothing).
+    //
+    //
     assert_eq!(
         present, ok,
         "under the flock, landed tokens equal ok racers exactly (no lost update)"
     );
 
-    // Refused commits clean their staged temps — no litter beside the page.
+    // No surviving staged temps.
     let litter: Vec<_> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(Result::ok)

@@ -14,8 +14,8 @@ fn workspace(pinner: &str, target: &str) -> (tempfile::TempDir, fs::WorkspaceRoo
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), pinner).expect("pinner");
     std::fs::write(dir.path().join("guide.md"), target).expect("target");
-    // Git-initialised: these pins go through the production door, and an R4 pin
-    // row carries a `hash` only git can answer for.
+    // Git: R4 pin row needs a `hash`.
+    //
     for args in [
         vec!["init", "-q"],
         vec!["config", "user.email", "s2fix@example.invalid"],
@@ -118,33 +118,33 @@ fn fingerprint_of(bytes: &str, chain: &[&str]) -> String {
 /// A `/`-bearing heading — the case whose REFUSAL this file used to pin.
 const SLASH_TARGET: &str = "# Guide\n\n## A/B\n\nreview before you close.\n";
 
-/// **The `/`-refusal is DEAD (U14 ruling, 2026-08-03) — this is its tripwire.**
+/// U14 tripwire: `/` in heading no longer refuses — pin COMMITS (machine surface).
+/// Scope: `/` only; `#`-in-heading refusal still lives.
 ///
-/// `a_refused_pin_leaves_both_files_byte_unchanged` and
-/// `the_refusal_repeats_and_still_writes_nothing` pinned the opposite law: a
-/// heading containing `/` refuses with `bad_request` ("cannot round-trip"),
-/// deterministically, writing nothing. That refusal existed only because the
-/// joined `page#A/B` echo made `A/B` and `["A","B"]` the same bytes — the
-/// delimiter collision ZT named in the decision-20 rationale. U14 disposed of
-/// the echo AND of the joined `PinSpec.selector` the collision had moved into,
-/// so the refusal was ruled dead.
 ///
-/// A deleted capability whose subject was a LAW gets an INVERTED test naming
-/// the ruling, so a restoration breaks a test instead of passing silently.
 ///
-/// **This test asserts SUCCESS, deliberately, and that is the all-hands #2
-/// lesson applied to itself.** The obvious inversion — assert the refusal
-/// message no longer says "round-trip" — passes for a neighbouring reason: the
-/// CLI string coat splits `"Guide/A/B"` into three segments and MISSES with
-/// `pin_target_missing`, so the assertion would hold whether or not the `/`
-/// refusal ever died. A fixture that can trigger more than one refusal path
-/// cannot pin either. Driving the MACHINE surface and requiring the pin to
-/// COMMIT has exactly one way to pass.
 ///
-/// **Scope guard — `/` ONLY.** The `#`-in-heading refusal SURVIVES and keeps
-/// its own coverage; `#` is still a live delimiter in the ingress grammars
-/// (wikilinks, `path#fragment`) and nothing has ruled it representable end to
-/// end. Named candidate row for a future docket, not this ruling.
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
+///
 #[test]
 fn a_slash_bearing_heading_is_no_longer_refused_and_the_pin_commits() {
     let (_dir, root) = workspace(PINNER, SLASH_TARGET);

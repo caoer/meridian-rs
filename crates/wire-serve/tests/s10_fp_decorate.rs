@@ -17,8 +17,8 @@ const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from [[guide#^lea
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
-/// Git-initialised, because [`mint_pin`] goes through the production pin door
-/// and an R4 pin row carries a `hash` that only git can answer for.
+/// Git workspace ([`mint_pin`] / R4 `hash`).
+///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
@@ -197,14 +197,14 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         "tone word + 8-hex digest: {token}"
     );
 
-    // sections[].content is raw (A-K1: never feed decorated face into a write).
+    // sections[].content is raw (A-K1).
     let raw = &sections.as_ref().expect("sections")[0].content;
     assert!(
         !raw.contains('@'),
         "sections[].content is the raw face, verbatim: {raw}"
     );
 
-    // Plan batch: strip both needle (`old` vs stored) and payload (`new`).
+    // Plan: strip needle and payload.
     let mut plan = pin_free_args("plan.md");
     plan.plan_edits = vec![wire::PlanEdit::Match {
         hpath: "Plan".into(),
@@ -229,7 +229,7 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
         "the lock block survives the round trip:\n{on_disk}"
     );
 
-    // Native edit vocabulary strips at the same intake.
+    // Native match strips at same intake.
     let mut native = pin_free_args("plan.md");
     native.edits = vec![Edit {
         target: SecRef::Hpath {
@@ -263,14 +263,14 @@ fn a_heading_fragment_at_is_never_touched() {
     let (_dir, root) = workspace();
     mint_pin(&root);
 
-    // Non-token `@` shapes: heading fragment, shaped tail on heading, label, non-hex block tail, email.
+    // Non-token `@` shapes (heading, label, email, etc.).
     let authored = "\n\
         - [[Page#Q@Home]]\n\
         - [[Page#Q@green.b3af12cd]]\n\
         - [[guide#^leaders-guideline|ping @zt]]\n\
         - [[guide#^other@green.nothex1]]\n\
         - plain text me@example.com\n\n";
-    // put at:end (not content): lock at EOF would be deleted by whole-section rewrite (R25).
+    // put at:end (R25: content rewrite would delete lock at EOF).
     splice(
         &root,
         None,
@@ -288,7 +288,7 @@ fn a_heading_fragment_at_is_never_touched() {
         );
     }
 
-    // Decorated read leaves them alone (token rides block-ref slot only).
+    // Decorated read leaves non-tokens alone.
     let body = read_decorated(&root, "plan.md", "Plan");
     let ResponseBody::Read { rendered_text, .. } = &body else {
         panic!("read body");

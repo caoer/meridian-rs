@@ -1,14 +1,14 @@
-//! U6 (M1 D9): DIRECT two-process + in-process coverage for the cross-process
-//! write flock, OUTSIDE the replay harness (A-C2: a single-threaded replay
-//! corpus cannot contend for a lock).
+//! U6 (D9): write flock — in-process + two-process (A-C2; outside replay).
 //!
-//! The law under test: every cooperating meridian writer — sidecar, resident
-//! registry daemon, `mrd` — flows through `wire_serve::write::{splice,create,
-//! remove}`, and each acquires the exclusive `LOCK_NB` flock on
-//! `.meridian/write.lock` across its whole critical section. A held lock is
-//! the fast typed `workspace_busy` refusal (retry — transient; the SAME
-//! request succeeds once the holder exits), never a wait and never a panic.
-//! G2: lock-file I/O failure maps to the typed `io_error{cause}` frame.
+//! `splice`/`create`/`remove` take exclusive `LOCK_NB` on `.meridian/write.lock`;
+//! held → typed `workspace_busy`/retry; G2 lock I/O → `io_error{cause}`.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::time::{Duration, Instant};
 
@@ -56,15 +56,15 @@ fn busy(e: &wire::ErrorBody) {
     assert_eq!(e.recovery, Recovery::Retry, "workspace_busy → retry");
 }
 
-/// Drive one splice by the DOCUMENTED recovery contract: retry on
-/// `workspace_busy` (bounded — 2 s), fail loud on anything else.
+/// Splice with documented recovery: retry `workspace_busy` (2 s bound).
+/// Fork+clone can briefly keep flock after close; retry is the contract.
 ///
-/// Why a loop and not a single shot: `flock` release can outlive `close()` by
-/// a moment when another thread `fork`s while the lock fd is open — the
-/// child's cloned fd table keeps the description (and its lock) alive until
-/// its `exec` closes the CLOEXEC fds. `LOCK_NB` callers see that as a
-/// transient `workspace_busy`; retry IS the contract (recovery class), so the
-/// test exercises exactly what a production caller does.
+///
+///
+///
+///
+///
+///
 fn splice_retrying(root: &fs::WorkspaceRoot, args: &SpliceArgs) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -78,10 +78,10 @@ fn splice_retrying(root: &fs::WorkspaceRoot, args: &SpliceArgs) {
     }
 }
 
-/// In-process determinism: flock contends across independent acquires even
-/// within one process, so holding the engine lock refuses `splice`, `create`,
-/// AND `remove` with the typed `workspace_busy` — and releasing it lets the
-/// SAME splice succeed (the retry recovery is real).
+/// Held lock refuses splice/create/remove busy; release → same splice lands.
+///
+///
+///
 #[test]
 fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -144,8 +144,8 @@ fn held_lock_refuses_all_write_ops_then_retry_succeeds() {
     );
 }
 
-/// A dry run takes the lock too — the rehearsal refuses `workspace_busy`
-/// exactly where the real write would (never a silent "would-succeed").
+/// Dry splice also takes the lock and refuses busy.
+///
 #[test]
 fn dry_splice_also_refuses_busy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -159,9 +159,9 @@ fn dry_splice_also_refuses_busy() {
     busy(&splice(&root, None, &args, &[], None).expect_err("dry splice must refuse busy"));
 }
 
-/// G2: lock-file I/O failure (here: `.meridian` exists as a regular FILE, so
-/// the lock dir cannot be made) maps to the TYPED `io_error{cause}` frame —
-/// never a panic, never an unwrap.
+/// G2: unmakeable lock dir → typed `io_error{cause}` (not panic).
+///
+///
 #[test]
 fn lock_io_failure_is_typed_io_error() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -185,10 +185,10 @@ fn lock_io_failure_is_typed_io_error() {
     );
 }
 
-/// The child half of the two-process test: env-gated (a plain test run is a
-/// no-op). Under `MERIDIAN_U6_HOLD_WS` it acquires the workspace write lock IN
-/// THIS PROCESS, drops a `child.locked` marker, and holds until the parent
-/// drops `child.release` (10 s ceiling — the test never hangs).
+/// Child holder: env `MERIDIAN_U6_HOLD_WS` → acquire, marker, wait for release.
+///
+///
+///
 #[test]
 fn hold_write_lock_helper() {
     let Ok(ws) = std::env::var("MERIDIAN_U6_HOLD_WS") else {
@@ -205,10 +205,10 @@ fn hold_write_lock_helper() {
     }
 }
 
-/// TWO-PROCESS gate (A-C2): a SECOND OS process holds the flock; this
-/// process's `splice` refuses the typed `workspace_busy` (cross-process
-/// serialization is real, not thread-local), and after the holder exits the
-/// SAME request succeeds.
+/// Two-process (A-C2): remote holder → busy; release → same request lands.
+///
+///
+///
 #[test]
 fn cross_process_holder_refuses_busy_then_retry_lands() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -223,9 +223,9 @@ fn cross_process_holder_refuses_busy_then_retry_lands() {
         .spawn()
         .expect("spawn the holder process");
 
-    // Wait until the child actually holds the lock (marker). The ceiling is
-    // generous (30 s): under a cold parallel build the child test binary can
-    // start slowly, and a short ceiling turns machine load into a flake.
+    // Wait for child.locked (generous ceiling under cold parallel build).
+    //
+    //
     let locked_marker = dir.path().join("child.locked");
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && !locked_marker.exists() {

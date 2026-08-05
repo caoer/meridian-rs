@@ -1,25 +1,25 @@
-//! C3 — **the v2 splice-response key set.** `body.armed.effects` postdates
-//! frozen v2 and must not reach a v2 session.
+//! C3 — v2 splice-response key set. `body.armed.effects` is post-v2 and must
+//! not reach a v2 session (`docs/wire-contract-v2.md` §4.4/§5.2).
 //!
-//! Third sighting of the All-Hands #1 class and the first on the plain
-//! splice-response path. One producer, two exits: `write.rs` fills a single
-//! `armed_effects` and writes it to BOTH the ring frame (closed by U20b's
-//! `NotificationRoot` row) and this response body.
+//! Oracle: frozen `armed` is exactly `{path, edits}` (no `effects`).
+//! Pins (All-Hands #3): v2 armed → `{path, edits}`; v3 → `{path, edits, effects}`.
+//! Arms must differ by exactly `effects` or the leak pin is blind.
 //!
-//! # The oracle
-//! The frozen §4.4/§5.2 worked frame (`docs/wire-contract-v2.md`) prints
-//! `armed` as exactly `{path, edits}`. `effects` is absent from it, so it has a
-//! VINTAGE answer — it postdates the freeze — and is a registry row rather than
-//! an authorship-keyed strip.
 //!
-//! # The control, and why it is stated before it is written (All-Hands #3)
-//! The two worlds this suite must tell apart:
-//! - **v2 session, reaction armed** → `armed` prints `{path, edits}`.
-//! - **v3 session, reaction armed** → `armed` prints `{path, edits, effects}`.
 //!
-//! Their outputs DIFFER, and the differing key is the one under test. A pin
-//! whose two arms printed the same key set would be a decoration: it could not
-//! distinguish the healthy plane from the leaking one.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::collections::BTreeSet;
 
@@ -37,7 +37,7 @@ fn armed_effect() -> EffectEnvelope {
     }
 }
 
-/// A splice response whose batch armed a reaction — the shape the leak rides.
+/// Splice response with a reaction armed — the leak vehicle.
 fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
     Response {
         id: Some(42),
@@ -67,9 +67,9 @@ fn splice_response(effects: Vec<EffectEnvelope>) -> Response {
     }
 }
 
-/// Serialize the way a host's v2 branch does: demote, then write the typed
-/// value. This is the production path (`sidecar::write_response`,
-/// `registry::wire_line`), not a re-implementation of it.
+/// Host v2 path: `demote_v2` then serialize (`sidecar::write_response` /
+/// `registry::wire_line`).
+///
 fn v2_wire(response: &Response) -> serde_json::Value {
     let demoted = wire_serve::rev::demote_v2(response);
     serde_json::to_value(demoted.as_ref().unwrap_or(response)).expect("serializes")
@@ -83,9 +83,9 @@ fn set(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(ToString::to_string).collect()
 }
 
-/// **THE LEAK TEST.** Exhaustive, not a subset check: a `contains`-style
-/// assertion passes while a v3 field rides a v2 envelope, which is the whole
-/// reason this class survived three sightings.
+/// Leak pin: exact key set (not subset) — `contains` would miss a v3 field on v2.
+///
+///
 #[test]
 fn a_v2_splice_response_armed_has_exactly_the_frozen_key_set() {
     let wire = v2_wire(&splice_response(vec![armed_effect()]));
@@ -101,12 +101,12 @@ fn a_v2_splice_response_armed_has_exactly_the_frozen_key_set() {
     );
 }
 
-/// **THE CONTROL — the other world.** A v3 session is entitled to the reaction
-/// plane, so its `armed` DOES carry `effects`.
+/// Control: v3 `armed` carries `effects`; diff vs v2 is exactly that field
+/// (All-Hands #3). Same key sets ⇒ leak pin above is blind.
 ///
-/// Stated as a diff, per All-Hands #3: this arm's key set must differ from the
-/// v2 arm's by exactly `effects`. If the two arms printed the same set, the pin
-/// above would be blind and would keep passing greenly forever.
+///
+///
+///
 #[test]
 fn a_v3_splice_response_still_carries_the_reaction_plane() {
     let response = splice_response(vec![armed_effect()]);
@@ -130,8 +130,8 @@ fn a_v3_splice_response_still_carries_the_reaction_plane() {
     );
 }
 
-/// A splice that armed NO reaction is untouched: demotion is a projection of
-/// what is there, never an unconditional edit of the shape.
+/// No reaction armed → no demotion (projection of present fields only).
+///
 #[test]
 fn a_splice_that_armed_nothing_is_not_demoted() {
     let response = splice_response(vec![]);

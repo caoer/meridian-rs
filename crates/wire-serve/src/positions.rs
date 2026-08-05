@@ -1,62 +1,62 @@
-//! **The positional address grammar** (`docs/address-grammar.md` § 9) — the ONE
-//! owner of *where an agent-plane address may occupy a document*, and of the two
-//! translations across the agent/stored seam.
+//! **Positional address grammar** (`docs/address-grammar.md` § 9) — ONE owner of
+//! where an agent-plane address may occupy a document, and of agent/stored
+//! translations. **Cross-root law lives here.**
 //!
-//! # The transform is POSITIONAL, never a byte transform (A-1)
+//! # Transform is POSITIONAL, never a byte transform (A-1)
 //!
-//! `root:` is **already a live YAML frontmatter key** in the shipped preset/def
-//! grammar — `crates/preset/src/lib.rs:217` reads it, fixtures carry
-//! `root: SESSION.md` verbatim. A blanket transform over the token would rewrite
-//! that line, corrupt the def, and — because it changes bytes inside a span —
-//! **silently invalidate every pin whose fingerprint covers it.** Frontmatter is
-//! not an address position and the shipped code already says so one refusal over:
-//! *"frontmatter is not a claim-link position (S10/R22)"*.
+//! `root:` is a live YAML frontmatter key in shipped preset/def grammar. Blanket
+//! token rewrite would corrupt defs and **silently invalidate pins** whose
+//! fingerprint covers those bytes. Frontmatter is not an address position
+//! (S10/R22).
 //!
-//! So this module identifies each address **by its position in the candidate**
-//! and translates only the ones in the owned positions — the `strip_fp_candidate`
-//! shape, copied structurally rather than by analogy.
+//! Identify addresses **by position in the candidate**; translate only owned
+//! positions (`strip_fp_candidate` shape).
 //!
-//! # The four positions, and the two this module touches (A-4)
+//!
+//! # Four positions; this module touches two (A-4)
 //!
 //! | # | Position | This module |
 //! |---|---|---|
-//! | 1 | a wikilink target — the `dest` of `[[…]]` | **translates** |
-//! | 2 | a markdown link URL — the URL of `[label](url)` | **translates** |
-//! | 3 | `meridian-lock` `ref:` values | **identity**, by ratified law |
-//! | 4 | `meridian-lock` `objects:` keys | **identity**, by ratified law |
+//! | 1 | wikilink target `[[…]]` | **translates** |
+//! | 2 | markdown link URL `[label](url)` | **translates** |
+//! | 3 | `meridian-lock` `ref:` | **identity** (ratified) |
+//! | 4 | `meridian-lock` `objects:` | **identity** (ratified) |
 //!
-//! Positions 3 and 4 stay in the canonical `root:` form —
-//! *"Lock `ref:` and `objects:` keys use the canonical `root:` form (agent
-//! plane), never the URI"* (`2026-07-24-cross-root-addressing.md` §2). They are
-//! address positions, so U10's TYPE reaches them; they are not stored-form
-//! positions, so this transform is the identity there. A worker reading "the
-//! positional grammar U12's transform may touch" without A-4 would translate the
-//! lock and break the ratified stored form.
+//! 3–4 stay canonical `root:` form (agent plane, never URI). U10 TYPE reaches
+//! them; transform is identity. Translating the lock would break ratified form.
 //!
-//! # The mask comes from the parser, never from a second reading of the bytes
 //!
-//! `root:page.md` inside a code span or a fenced block is a **code sample** the
-//! document law leaves alone (§ 9.4 P2). Wikilink positions come from
-//! `syntax::parse`, which already masks fences and inline code, so position 1 is
-//! masked by construction. Position 2 has no node in the tree — `syntax::parse`
-//! emits `Wikilink`/`Embed`, never an inline `[x](y)` — so its scan derives its
-//! mask from the SAME parse's `Fence` / `InlineCode` / `Frontmatter` spans. One
-//! parse, one masking law; a second reading of the bytes would be a second
-//! answer to *"is this code?"*.
 //!
-//! # The canonical agent-plane spelling of a cross-root ref is the WIKILINK
+//! # Mask from the parser, never a second byte reading
 //!
-//! The stored form is always a markdown link (`[display](obsidian://…)`), so the
-//! reverse translation must pick a spelling. It picks the wikilink, because the
-//! ratified decision spells the agent plane's cross-root ref that way
-//! (`2026-07-24-cross-root-addressing.md` §5: *"a cross-root stored link
-//! (`[[sessions:...]]`)"*). Consequence, stated rather than discovered: a
-//! **markdown link** carrying an agent-plane cross-root URL (§ 9.4 P4)
-//! translates on write as U3 rules, and reads back as the canonical wikilink
-//! with the same address and the same display. The ADDRESS round-trips byte for
-//! byte; the surrounding markdown converges on one spelling, and
-//! [`crate::positions::tests`] asserts that convergence rather than leaving it
-//! to be discovered.
+//! Code sample / fence (`root:page.md` inside) left alone (§ 9.4 P2). Position 1
+//! masked by `syntax::parse`. Position 2 scans with the SAME parse's Fence /
+//! `InlineCode` / Frontmatter spans — one parse, one masking law.
+//!
+//!
+//!
+//!
+//! # Canonical agent-plane cross-root spelling is the WIKILINK
+//!
+//! Stored form is always markdown link (`[display](obsidian://…)`). Reverse
+//! picks wikilink. ADDRESS round-trips; surrounding markdown converges on one
+//! spelling ([`crate::positions::tests`]).
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::ops::Range;
 

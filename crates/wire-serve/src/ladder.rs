@@ -1,50 +1,50 @@
-//! U11 — the **mismatch-recovery ladder** (R1.2 / requirements decision 12).
+//! U11 — **mismatch-recovery ladder** (R1.2 / decision 12).
 //!
-//! # The standing law
-//! On a fingerprint mismatch, **never instruct a whole-file read.** The refusal
-//! carries the richest rung it can COMPUTE, so the caller proceeds without one:
+//! # Standing law
+//! On fingerprint mismatch, **never instruct a whole-file read.** Refusal carries
+//! the richest rung it can COMPUTE:
 //!
-//! 1. the CHANGE DIFF, when computable;
-//! 2. else the NEW CONTENT of the node plus the new fingerprint;
-//! 3. else the bare mismatch.
+//! 1. CHANGE DIFF, when computable;
+//! 2. else NEW CONTENT of the node + new fingerprint;
+//! 3. else bare mismatch.
 //!
-//! The agent skipping a read call is not a side benefit — it is the feature (ZT,
-//! security triage S4).
+//! Skipping a re-read is the feature (S4), not a side benefit.
 //!
 //! # One continuous path, not a second mechanism
-//! U10's `guard_required` is **rung ZERO** of this same ladder: a plain
-//! [`ErrorBody`] whose subject / cause / partial-state / fix slots are exactly
-//! what a rung enriches. ZT's ruling — "force is any client's refuse→rewrite
-//! path" — makes write → refuse (+rung) → rewrite ONE act. So this module adds
-//! v3-additive extras to the EXISTING `cas_mismatch` code with its bound
-//! `Recovery::Refresh` (plan decision P14). **No new error code is minted**, and
-//! nothing here replaces U10's refusal.
+//! U10 `guard_required` is **rung ZERO** of this ladder. Force is refuse→rewrite:
+//! write → refuse (+rung) → rewrite is ONE act. Adds v3-additive extras to the
+//! EXISTING `cas_mismatch` + `Recovery::Refresh` (P14). **No new error code**;
+//! does not replace U10's refusal.
 //!
-//! # Where a baseline comes from, and why the cap is a correctness rule
-//! The engine stores no prior versions, so the only honest baseline for a diff
-//! is **the caller's own picture, carried in its request** — a `match` edit's
-//! `old` is what the caller believed the node contained. A rung-1 diff is
-//! therefore computed from the two pictures we actually hold: the caller's
-//! `old`, and the node's current bytes.
+//! # Baseline and the cap
+//! Engine stores no prior versions: baseline is the caller's picture in the
+//! request (`match.old`). Rung-1 diffs caller's `old` vs current bytes.
 //!
-//! That is only WORTH sending when the caller's picture was close, and
-//! [`DIFF_CAP_BYTES`] is what enforces it. The cap is not a safety bolt-on: it
-//! is the rule that keeps rung 1 richer than rung 2 rather than merely
-//! different. A far-apart picture produces a diff no smaller than the content,
-//! trips the cap, and falls to rung 2 — the ETag-412-with-body shape.
+//! [`DIFF_CAP_BYTES`] keeps rung 1 richer than rung 2: a far-apart picture trips
+//! the cap and falls to rung 2 (ETag-412-with-body).
+//!
+//!
 //!
 //! # Form follows the fingerprint scope that tripped
-//! A section or block body diffs as a **unified line diff**. Frontmatter diffs
-//! in **ops form** (JSON-Patch shaped), because frontmatter is a property map
-//! and a line diff over `key: value` teaches the wrong edit. The scope that
-//! tripped picks the form; nothing sniffs the content.
+//! Section/block → **unified line diff**. Frontmatter → **ops form** (property
+//! map; line diff teaches the wrong edit). Scope picks form; no content sniff.
 //!
 //! # Scope is a SECURITY rule (S4)
-//! A rung discloses the caller's **targeted node and nothing else**. The caller
-//! already addressed that node and already held a fingerprint for it, so
-//! returning its current bytes tells them nothing they were not entitled to. Any
-//! byte outside it would be a disclosure the request never asked for. Pinned by
-//! `rung_one_discloses_nothing_outside_the_callers_targeted_section`.
+//! A rung discloses the caller's **targeted node only**. Caller already addressed
+//! it and held its fingerprint. Bytes outside would be unasked disclosure.
+//! Pinned by `rung_one_discloses_nothing_outside_the_callers_targeted_section`.
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
+//!
 
 use std::fmt::Write as _;
 
