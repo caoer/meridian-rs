@@ -1,57 +1,29 @@
 //! The engine-side receipt renderer: armed facts → the default md receipt line
 //! (wire-contract.md §6.3; standing design, decision 014).
 //!
-//! # Charter
-//! **Owns:** rendering one batch's armed facts as one markdown list-item block — the
-//! shipped DEFAULT template. The template is replaceable (D-C10, §6.4): the normative
-//! receipt content is the armed-fact set defined by the wire response shape; a non-ccc
-//! consumer renders it any way it likes. Also owns the receipt block-anchor mint format
-//! (`r-NNNNNN`, in-charset per decision 011 — the CHARSET-GUARD position homed here).
-//! Stage-2 S6 adds the read-is-the-mint ledger ([`read_mint`]) — the ephemeral in-memory
-//! read-receipt fact, the same receipt FAMILY at the read plane (stage-3 unifies its
-//! representation with the persisted `^receipt` projection this module renders).
+//! Owns: rendering one batch's armed facts as one markdown list-item block —
+//! the shipped default template (replaceable, D-C10 §6.4: the armed-fact set
+//! is normative, the presentation is not) — and the receipt block-anchor mint
+//! format (`r-NNNNNN`, decision 011). Stage-2 S6 adds the read-is-the-mint
+//! ledger ([`read_mint`]).
 //!
-//! **Never does:** I/O, batching, validation, span math. Rendered bytes join the batch
-//! BEFORE validation (the caller's law, §6.1): the append rides inside the sealed batch
-//! and the single root advance (D-C3). Dependencies are `wire` only, by gate — a leaf
-//! crate; placement per the repo growth rule (not in the bin; `model`/`wire-map` charter
-//! "never does: body formatting").
+//! Never does: I/O, batching, validation, span math. Rendered bytes join the
+//! batch before validation (§6.1) and ride the sealed batch's single root
+//! advance (D-C3). Dependencies are `wire` only — a leaf crate.
 //!
-//! # Receipt laws this crate renders TO (v2 §6.1–§6.3)
-//! - Receipts are PER-REQUEST, never a wire requirement: this renderer runs only when the
-//!   splice named a `receipt:{path,anchor}` address.
-//! - The line carries the same facts as the armed response: op, target identities, rev
-//!   transitions, `root_before`, actor, now, request id. Facts about what was ARMED —
-//!   never delivery claims (A7).
-//! - `root_before` only — a receipt cannot contain the root it produces (§6.2, the
-//!   no-self-rooting law, stated as a limit).
-//! - Absent inputs produce absent facts (§9): a request without `actor`/ `now`/`id`
-//!   renders a line without those tokens.
+//! Receipt laws (§6.1–§6.3): per-request, rendered only when the splice named
+//! a `receipt:{path,anchor}` address; the line carries the armed response's
+//! facts, never delivery claims (A7); `root_before` only — a receipt cannot
+//! contain the root it produces (§6.2); absent inputs produce absent facts
+//! (§9).
 //!
-//! # The field law (fix9): this renderer emits IDENTIFIERS, never free text
-//! Every value a receipt line interpolates arrives from outside — `actor` and the target
-//! `hpath`/`fm_key` are caller-supplied wire strings, `path` passes only the §1 path law
-//! (which admits `[`, `]`, `@` and line endings). Rendered raw, those bytes become
-//! MARKDOWN: `actor=[[guide#^goal@green.b3af12cd|G]]` is an `@fp` claim in a claim-link
-//! position — a claim nobody computed, in stored bytes, on a plane no candidate strip
-//! sees (the receipt rides `ValidatedBatch.receipt`, beside `.edits`, never inside the
-//! document the `@fp` strip judges).
-//!
-//! So every field goes through [`render_field`], and the invariant is one sentence: **a
-//! rendered receipt line carries no `[` the frozen template did not put there** (it puts
-//! none). No wikilink can form, so no claim-link position exists, so
-//! `syntax::fp_removals` is empty by CONSTRUCTION rather than by a strip that would have
-//! to re-spell the dialect grammar in a crate whose charter forbids the dependency.
-//!
-//! The same law closes three siblings of the `@fp` instance for free, because it guards
-//! the CHARSET rather than one token shape: whitespace (which forges `key=value` token
-//! boundaries), line endings (which forge a whole row), and backticks (which would close
-//! the escape span early).
-//!
-//!
-//!
-//!
-//!
+//! Field law (fix9): the renderer emits identifiers, never free text. Every
+//! interpolated value goes through [`render_field`], so a rendered line
+//! carries no `[` the frozen template did not put there — no wikilink can
+//! form, no claim-link position exists, and `syntax::fp_removals` is empty by
+//! construction. Guarding the charset also excludes whitespace and line
+//! endings (which would forge token/row boundaries) and backticks (which
+//! would close the escape span early).
 
 use std::borrow::Cow;
 use std::fmt::Write;
@@ -59,13 +31,12 @@ use std::fmt::Write;
 pub mod anchor;
 pub mod read_mint;
 
-/// May `c` stand VERBATIM in a receipt line — a byte that cannot become
+/// May `c` stand verbatim in a receipt line — a byte that cannot become
 /// markdown structure or a token boundary?
 ///
-/// ASCII graphic (so no whitespace and no line ending: one row stays one row,
-/// one `key=value` stays one token), minus `[` and `]` (so no wikilink or embed
-/// can form, which is what makes a claim-link position unreachable), minus the
-/// backtick and backslash [`render_field`] spends as escape delimiters.
+/// ASCII graphic (no whitespace, no line ending), minus `[` and `]` (no
+/// wikilink or embed can form), minus the backtick and backslash
+/// [`render_field`] spends as escape delimiters.
 #[must_use]
 pub fn is_receipt_ident_char(c: char) -> bool {
     c.is_ascii_graphic() && !matches!(c, '[' | ']' | '`' | '\\')
@@ -82,19 +53,11 @@ pub fn is_receipt_ident(s: &str) -> bool {
 
 /// One receipt-line field, rendered.
 ///
-/// An identifier renders as itself — **byte-identical**, so every §6.3 frozen
-/// line and every actor the daemon derives is unchanged. Anything else renders
-/// as an inline code span with its out-of-charset characters escaped `\u{…}`
-/// (Rust's own spelling, borrowed rather than invented) and `\` doubled.
-///
-/// The escaped content carries no backtick, so the span always closes exactly
-/// where this function put it; and no `[`, so the claim grammar cannot form
-/// even before the code masking R22 ratified applies. The value is preserved
-/// exactly — reversibly, not lossily — which is what §5.2's "recorded exactly
-/// as given, never invented" requires of a record that must still be legible as
-/// one line. The normative facts are the armed response's (D-C10: template
-/// replaceable, facts normative); this is the shipped template's presentation
-/// of one of them.
+/// An identifier renders byte-identical. Anything else renders as an inline
+/// code span with out-of-charset characters escaped `\u{…}` and `\` doubled —
+/// reversible, so the value is preserved exactly (§5.2). The escaped content
+/// carries no backtick (the span closes where this function put it) and no
+/// `[` (the claim grammar cannot form).
 #[must_use]
 pub fn render_field(s: &str) -> Cow<'_, str> {
     if is_receipt_ident(s) {
@@ -139,9 +102,8 @@ pub struct EditFact<'a> {
     pub after: &'a wire::NodeRev,
 }
 
-/// Render the default receipt line — the block-leaf BYTES (no line
-/// terminator: the block span excludes it, v1 leaf law; the batch writer
-/// owns terminators and file joining).
+/// Render the default receipt line — the block-leaf bytes, no line terminator
+/// (the batch writer owns terminators and file joining).
 ///
 /// Worked shape (§6.3 E3, byte-exact under test):
 /// `- splice notes/plan.md id=42 actor=… now=… root_before=b3:… edits=1
@@ -180,14 +142,14 @@ pub fn render_line(facts: &ArmedFacts<'_>) -> String {
 }
 
 /// Mint the receipt block anchor for a batch counter: `r-NNNNNN`,
-/// zero-padded to six digits, widening beyond — always inside the ONE
-/// block-id charset `[A-Za-z0-9-]+` (§2.4, decision 011).
+/// zero-padded to six digits, widening beyond — always inside the block-id
+/// charset `[A-Za-z0-9-]+` (§2.4, decision 011).
 #[must_use]
 pub fn anchor(n: u64) -> String {
     format!("r-{n:06}")
 }
 
-/// Target display text — DISPLAY inside the default template, never a
+/// Target display text — display inside the default template, never a
 /// second address grammar (§6.4): hpath segments joined `>`, an occurrence
 /// index as `(n)`, anchors as `^id`, frontmatter keys bare.
 pub(crate) fn target_display(target: &wire::SecRef) -> String {

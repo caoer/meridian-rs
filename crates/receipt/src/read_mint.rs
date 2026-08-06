@@ -1,62 +1,48 @@
 //! Read-is-the-mint: the in-memory read-receipt ledger (stage-2 S6, D6/D9/D16).
 //!
-//! # What this is
-//! One actor read one selector at one rev. That fact — minted at the composed-read seam,
-//! held in daemon-session memory — is what a later pin gate (S7) consults to enforce the
-//! property **you cannot attest content that was never in your context**.
+//! One actor read one selector at one rev. That fact — minted at the
+//! composed-read seam, held in daemon-session memory — is what a later pin
+//! gate (S7) consults: you cannot attest content that was never in your
+//! context.
 //!
-//! # Why it is NOT hung off the warm engine (H1, the reason this exists)
-//! The registry daemon rebuilds a workspace's warm engine whenever the corpus content
-//! hash changes (`registry::Registry::warm_or_build`). A pin WRITES — so a receipt living
-//! inside `WorkspaceEngine` would be evaporated by the very write the receipt authorized.
-//! This ledger is therefore a SEPARATE daemon-session layer, held beside the engines and
-//! untouched by any rebuild. `registry::Registry::read_mints` is its production holder;
-//! the gate proving survival is `crates/registry/tests/read_mint.rs`.
+//! Not hung off the warm engine (H1): a pin writes, and the registry rebuilds
+//! a workspace's warm engine on content-hash change, so a receipt living in
+//! `WorkspaceEngine` would be evaporated by the very write it authorized.
+//! `registry::Registry::read_mints` is the production holder; the survival
+//! gate is `crates/registry/tests/read_mint.rs`.
 //!
-//! # Grain (D6) and content (D9)
-//! **Selector-grained, never doc-level:** the key is (actor, path, selector), so reading
-//! section A cannot gate a pin into unseen section B. **A minimal mechanical fact:**
-//! actor, target selector, rev — never a `predicate_type` verdict envelope (that
-//! unification is stage-3), never any content bytes.
+//! Selector-grained, never doc-level (D6): the key is (actor, path, selector),
+//! so reading section A cannot gate a pin into unseen section B. Content is a
+//! minimal mechanical fact (D9): actor, selector, rev — never a verdict
+//! envelope, never content bytes.
 //!
-//! # No persistence (D6)
-//! Memory only, per daemon-session, dropped when the daemon exits or the workspace is
-//! idle-reaped. This ledger performs NO I/O and holds no path to disk; the persisted
-//! `^receipt` projection is a different thing (this crate's
-//! [`render_line`](crate::render_line)) and stays stage-3's to unify.
+//! Memory only, per daemon-session (D6): no I/O, no path to disk. The
+//! persisted `^receipt` projection is a different thing
+//! ([`render_line`](crate::render_line)).
 //!
-//! # D12 (cross-root seam)
-//! The key carries a `path` spelling verbatim and never parses it, so a later `root:`
-//! prefix rides through unchanged. Mount identity is the HOLDER's key (one store per
-//! canonical workspace in the registry), never a field here — nothing in this module
-//! knows that there is exactly one root.
-//!
-//!
+//! D12: the key carries the `path` spelling verbatim and never parses it, so
+//! a later `root:` prefix rides through unchanged.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 
-/// The per-actor receipt cap. A resident daemon must not grow without bound, so
-/// the oldest receipt is evicted past this many DISTINCT (path, selector) pairs
-/// for one actor. Re-reading a selector replaces its receipt in place rather
-/// than adding one, so ordinary agent traffic never approaches the cap;
-/// eviction is the memory backstop, not the lifecycle (TTL is deliberately
-/// unimplemented — ratified as implementation space, and Core ships none).
+/// The per-actor receipt cap: the oldest receipt is evicted past this many
+/// distinct (path, selector) pairs for one actor. Re-reading replaces in
+/// place, so ordinary traffic never approaches the cap — eviction is the
+/// memory backstop, not the lifecycle.
 const MAX_RECEIPTS_PER_ACTOR: usize = 1024;
 
 /// One minted read fact: this actor read this selector of this path, and the
-/// bytes it was served carried this rev.
+/// bytes it was served carried this rev — the three D9 facts and nothing
+/// else.
 ///
-/// The three D9 facts and nothing else. `path` is the workspace-relative wire
-/// spelling verbatim; `selector` is the read face's own TAGGED selector
-/// ([`wire::ReadSel`], U14) — the ledger re-derives no address and, since the
-/// key is structured, the mint site and the pin gate cannot key on two
-/// spellings of one address. `sec_rev` is the node CAS token over exactly the
-/// bytes the read served, which is what a pin gate re-checks against disk
-/// inside its flock.
+/// `selector` is the read face's own tagged selector ([`wire::ReadSel`],
+/// U14), so the mint site and the pin gate cannot key on two spellings of one
+/// address. `sec_rev` is the node CAS token over exactly the bytes served —
+/// what a pin gate re-checks against disk inside its flock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadReceipt {
-    /// The DAEMON-derived actor (D13) the read was stamped with.
+    /// The daemon-derived actor (D13) the read was stamped with.
     pub actor: String,
     /// The workspace-relative document path the read served.
     pub path: String,
@@ -83,17 +69,15 @@ impl ReadMintStore {
         Self::default()
     }
 
-    /// Mint (or refresh) the receipt for `actor` reading `selector` of `path` at
-    /// `sec_rev`, returning the minted fact.
+    /// Mint (or refresh) the receipt for `actor` reading `selector` of `path`
+    /// at `sec_rev`, returning the minted fact.
     ///
-    /// Re-reading the same (path, selector) REPLACES the prior receipt — the
-    /// rev moves with the bytes, so a stale rev never lingers beside a fresh
-    /// one for the same address.
+    /// Re-reading the same (path, selector) replaces the prior receipt — a
+    /// stale rev never lingers beside a fresh one for the same address.
     ///
     /// `actor` must be a real identity: the `actor == None` no-mint door (D16)
-    /// is the CALLER's explicit branch (`wire_serve::read`), so this method is
-    /// never reached with an absent actor and can never open a shared
-    /// empty-string bucket.
+    /// is the caller's branch (`wire_serve::read`), so this method never opens
+    /// a shared empty-string bucket.
     pub fn mint(
         &self,
         actor: &str,
@@ -123,23 +107,16 @@ impl ReadMintStore {
         receipt
     }
 
-    /// The receipt for `actor` reading `selector` of `path`, or `None` when this
-    /// actor did not read exactly that selector in this session.
+    /// The receipt for `actor` reading `selector` of `path`, or `None` when
+    /// this actor did not read exactly that selector in this session.
     ///
-    /// # Matching is EXACT on all three key parts
-    /// A different actor, a different path, or a different selector is a MISS —
-    /// including a NESTED selector. Reading `Notes/Plan` does not answer a
-    /// lookup for `Notes/Plan/Q3` even though the sections face served the
-    /// subtree's bytes: the gate fails CLOSED, and the caller's remedy is to
-    /// read the exact selector it intends to pin. (Widening this to
-    /// span-containment is a deliberate non-goal of Core — a permissive authz
-    /// answer needs its own ratified decision, and no ratified decision asks
-    /// for one.)
+    /// Matching is exact on all three key parts — a nested selector is a miss
+    /// (reading `Notes/Plan` does not answer `Notes/Plan/Q3`): the gate fails
+    /// closed, and the remedy is to read the exact selector to be pinned.
     ///
-    /// # This answers "was it read", never "is it current"
-    /// The returned receipt carries the `sec_rev` the bytes were served at. A
-    /// caller gating a WRITE must re-check that rev against disk inside its own
-    /// flock — a receipt is not a lease.
+    /// Answers "was it read", never "is it current": a caller gating a write
+    /// must re-check `sec_rev` against disk inside its own flock — a receipt
+    /// is not a lease.
     #[must_use]
     pub fn lookup(&self, actor: &str, path: &str, selector: &wire::ReadSel) -> Option<ReadReceipt> {
         let actors = self.actors.lock().unwrap_or_else(PoisonError::into_inner);
@@ -153,17 +130,13 @@ impl ReadMintStore {
             .cloned()
     }
 
-    /// Whether ANY actor in this session holds a receipt for (path, selector).
+    /// Whether any actor in this session holds a receipt for (path, selector).
     ///
-    /// This is the D7 refusal's rotation half, and NOTHING else: a gate that
-    /// already missed on the caller's own identity asks whether the selector
-    /// was read at all in this session, so the refusal can say "your identity
-    /// rotated" instead of "you never read this". It answers a BOOLEAN on
-    /// purpose — naming the other identity would publish one actor's read
-    /// history to another, and the fix ("re-read as yourself") does not depend
-    /// on who read it before.
-    ///
-    /// It is never an authorization input: no caller may pass a gate on this.
+    /// The D7 refusal's rotation half only: it lets a gate that missed on the
+    /// caller's identity say "your identity rotated" instead of "you never
+    /// read this". A boolean on purpose — naming the other identity would
+    /// publish one actor's read history to another. Never an authorization
+    /// input: no caller may pass a gate on this.
     #[must_use]
     pub fn any_actor_read(&self, path: &str, selector: &wire::ReadSel) -> bool {
         self.actors
@@ -202,7 +175,7 @@ mod tests {
 
     use super::*;
 
-    /// A selector from its human spelling, through the ONE ingress door.
+    /// A selector from its human spelling, through the one ingress door.
     fn sel(s: &str) -> wire::ReadSel {
         wire::ReadSel::parse(s)
     }
@@ -247,11 +220,9 @@ mod tests {
         );
     }
 
-    /// U14: the key is TAGGED, so the three read grammars isolate from each
-    /// other too. A receipt for the heading named `1.2` does not answer for the
-    /// dewey row `1.2`, and neither answers for the block `^1.2` — before the
-    /// union these were one string and one key, so reading any of them opened
-    /// the pin gate for all three.
+    /// U14: the key is tagged, so the three read grammars isolate — a receipt
+    /// for the heading `1.2` answers neither the dewey row `1.2` nor the
+    /// block `^1.2`.
     #[test]
     fn the_grammars_isolate_a_heading_is_not_its_dewey_twin_nor_a_block_of_that_name() {
         let store = ReadMintStore::new();

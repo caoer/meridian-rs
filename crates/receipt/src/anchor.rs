@@ -1,79 +1,35 @@
 //! The anchor law + two-badge freshness (d2 §2.3 v3 W-C1; d3 §1.5).
 //!
-//! # What the anchor is, and the one law it exists to hold
-//! The freshness axis is two-sided. Tip equality — the object id of local `HEAD` versus
-//! the local remote-tracking ref `origin/<branch>` — is *mechanical and local*
-//! ([`TipPosition`], a source-2 fact). But the **anchor** — the engine's local knowledge
-//! of origin's refs — carries its **own trust state**, because a restored backup restores
-//! `.git` *including the local copy of origin's refs*. A stale local `origin/<branch>`
-//! therefore makes the mechanical compare say `at-tip` while the world has moved on.
+//! Tip equality ([`TipPosition`]) is mechanical and local; the anchor — the
+//! engine's local knowledge of origin's refs — carries its own trust state,
+//! because a restored backup restores `.git` including the local copy of
+//! origin's refs, so a stale `origin/<branch>` can read `at-tip`.
 //!
-//! **The load-bearing law (W-C1): no surface may render a bare `at-tip` / `behind` from
-//! the local remote-tracking ref.** Only an anchor the *current run* verified against
-//! origin may render the tip axis bare. Every other render carries a qualifier that names
-//! exactly how stale the knowledge is. [`render_tip_axis`] is the sole renderer, and it
-//! produces a bare axis from the [`AnchorState::Verified`] arm alone — the invariant is
-//! structural, not a convention.
+//! W-C1: no surface may render a bare `at-tip` / `behind` from the local
+//! remote-tracking ref. Only an anchor the current run verified against origin
+//! renders the tip axis bare; every other render carries a qualifier naming
+//! how stale the knowledge is. [`render_tip_axis`] is the sole renderer and
+//! produces a bare axis from the [`AnchorState::Verified`] arm alone.
 //!
-//! # A "run" is one engine invocation
-//! One verb execution or one wire call; the facts computed within it share one moment
-//! ([`AnchorState::classify`] takes that moment as `now_unix`).
+//! A "run" is one engine invocation (one verb execution or wire call); its
+//! facts share one moment ([`AnchorState::classify`] takes it as `now_unix`).
 //!
-//! # The three anchor states (qualifier mandatory unless verified)
-//! - [`AnchorState::Verified`] — the run ITSELF observed origin. Exactly one door
-//!   produces it: `realise` executing a fetch observe-class claim (net cap,
-//!   customer-triggered — the engine never fetches implicitly). Verified is a **moment,
-//!   never a stored state**: persisted evidence always decays to as-known, so this state
-//!   is reachable only with [`AnchorFacts::run_observed`] set true for THIS run. Only
-//!   Verified renders bare `at-tip` / `behind`; `status` is cap-free and so NEVER reaches
-//!   it.
-//! - [`AnchorState::AsKnownAged`] — the last origin observation is a journaled
-//!   fetch-claim receipt: renders `at-tip (anchor as-known, observed <now>, ~<age>)`, the
-//!   age sourced from the receipt's `now` (source 3, chain-protected). A restore replays
-//!   it only with **visibly growing age** and cannot re-mint recency without a journaled
-//!   write.
-//! - [`AnchorState::AsKnownAgeless`] — the local origin ref is present but no journaled
-//!   observation dates it (an out-of-engine `git fetch` is a world act the ledger cannot
-//!   verify). Renders `at-tip (anchor as-known)` forever, plus the [`AGELESS_NUDGE`] hint
-//!   to run the fetch through the engine door. `FETCH_HEAD` / reflog mtimes are dropped
-//!   entirely — they are never a dater.
-//! - [`AnchorState::Unverified`] — never fetched, or anchor facts absent (no local origin
-//!   ref at all): renders `at-tip (anchor unverified)`.
+//! The freshness badge fuses on top (d3 §1.5): [`freshness_badge`] is green
+//! only for a verified, at-tip anchor, and the board renders two badges,
+//! never one merged color ([`TwoBadge`]) — a local-only or restored pin never
+//! reads as pointed-fresh green.
 //!
-//! # The two-badge fusion (d3 §1.5, fused ON TOP)
-//! A pin's color is computed per validity axis and the board badges the axis: the **owned
-//! axis** ([`OwnedBadge`], content-equality — practical, not cryptographic) and the
-//! **freshness axis** ([`FreshnessBadge`], the pointed 5th axis). The board renders **two
-//! badges, never one merged color** ([`TwoBadge`]). The anchor law fuses onto the
-//! freshness badge: [`freshness_badge`] returns green ONLY for a verified, at-tip anchor
-//! — an as-known / unverified / behind anchor is grey. This is the invariant both probes
-//! agree on: **a local-only or restored pin never reads as pointed-fresh green.** Where a
-//! single glyph is needed, freshness-grey dominates a pointed claim (fail-safe — show the
-//! weakest asserted axis; [`TwoBadge::dominant`]).
-//!
-//! # The second anchor: is the pinned BLOB anchored? (S5)
-//! The axis above answers "how stale is our knowledge of origin". A pinned `objects:`
-//! entry asks a different, local question: **does the blob this pin names exist, and is
-//! it reachable from a commit?** [`ObjectAnchor`] carries that as three states —
-//! [`ObjectAnchor::Anchored`] / [`ObjectAnchor::PendingAnchor`] /
-//! [`ObjectAnchor::NeverAnchored`] — and the same fact/classify split applies: the `git`
-//! crate gathers [`ObjectAnchorFacts`] by asking git, this module classifies them, and no
-//! state is ever inferred from a fabricated object id.
-//!
-//!
-//!
-//!
-//!
+//! [`ObjectAnchor`] answers the second, local question (S5): does the pinned
+//! blob exist, and is it reachable from a commit? Same fact/classify split:
+//! the `git` crate gathers [`ObjectAnchorFacts`], this module classifies.
 
 use std::time::Duration;
 
 /// The mechanical tip position: the object id of local `HEAD` versus the local
 /// remote-tracking ref `origin/<branch>` (a source-2 rev comparison).
 ///
-/// This is LOCAL and MECHANICAL. It says **nothing** about whether the local
-/// remote-tracking ref is fresh — that is the anchor's job. Rendering this
-/// position without an anchor qualifier is the exact W-C1 violation this module
-/// forbids; always pair it with an [`AnchorState`] through [`render_tip_axis`].
+/// Says nothing about the ref's freshness — always pair with an
+/// [`AnchorState`] through [`render_tip_axis`] (W-C1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipPosition {
     /// Local `HEAD` equals the local `origin/<branch>` object id.
@@ -94,10 +50,9 @@ impl TipPosition {
 }
 
 /// The last journaled fetch-claim observation the anchor is dated by. `now` is
-/// the receipt's timestamp token, rendered verbatim (source-3, recorded exactly
-/// as given). `unix` is that token parsed to epoch seconds — the age arithmetic
-/// coordinate. The caller (the status surface / the realise fetch-claim path)
-/// derives `unix` from `now`; this leaf crate never parses dates.
+/// the receipt's timestamp token, rendered verbatim; `unix` is that token
+/// parsed to epoch seconds. The caller derives `unix` from `now` — this leaf
+/// crate never parses dates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observed {
     /// The receipt's `now` token, rendered verbatim in the `observed <now>`
@@ -108,20 +63,18 @@ pub struct Observed {
 }
 
 /// The origin-observation facts the status surface gathers for one run. The
-/// anchor law is computed from THESE — never from the freshness of the local
-/// remote-tracking ref (a restored backup carries a stale copy of it).
-///
-/// Checking whether the origin ref *exists* ([`AnchorFacts::origin_ref_present`])
-/// is allowed and required — it splits as-known-ageless from unverified. What is
-/// forbidden is trusting that ref's *recency*; that trust comes only from
-/// [`AnchorFacts::run_observed`] or a journaled observation.
+/// anchor law is computed from these, never from the freshness of the local
+/// remote-tracking ref. Checking that the origin ref *exists* is required (it
+/// splits as-known-ageless from unverified); trusting its *recency* is not —
+/// that comes only from [`AnchorFacts::run_observed`] or a journaled
+/// observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorFacts {
-    /// True iff THIS run performed the origin observation — the one verified
+    /// True iff this run performed the origin observation — the one verified
     /// door (`realise` fetch observe-claim). `status`, being cap-free, always
     /// passes false.
     pub run_observed: bool,
-    /// The most recent journaled fetch-claim observation, if any. The ONLY
+    /// The most recent journaled fetch-claim observation, if any. The only
     /// dater of the anchor.
     pub last_observation: Option<Observed>,
     /// Whether the local remote-tracking ref (`origin/<branch>`) is present at
@@ -155,15 +108,14 @@ pub enum AnchorState {
 }
 
 impl AnchorState {
-    /// Classify the anchor from the run's gathered [`AnchorFacts`] and its one
-    /// moment `now_unix` (epoch seconds). The precedence is the state ladder:
-    /// a run-observed anchor is verified; else a journaled observation dates it
-    /// as-known-aged; else a present-but-undated origin ref is as-known-ageless;
-    /// else unverified.
+    /// Classify the anchor from the run's [`AnchorFacts`] and its moment
+    /// `now_unix` (epoch seconds): run-observed ⇒ verified; else a journaled
+    /// observation ⇒ as-known-aged; else a present-but-undated origin ref ⇒
+    /// as-known-ageless; else unverified.
     ///
-    /// The local remote-tracking ref's *object id* never enters this
-    /// classification — only whether it *exists*. That is the W-C1 guard: a
-    /// restored `.git` cannot promote the anchor past as-known.
+    /// The origin ref's *object id* never enters this classification — only
+    /// whether it *exists* — so a restored `.git` cannot promote the anchor
+    /// past as-known (the W-C1 guard).
     #[must_use]
     pub fn classify(facts: &AnchorFacts, now_unix: i64) -> AnchorState {
         if facts.run_observed {
@@ -183,9 +135,8 @@ impl AnchorState {
         AnchorState::Unverified
     }
 
-    /// Whether this state is allowed to render the tip axis BARE (no
-    /// qualifier). True for [`AnchorState::Verified`] alone — the structural
-    /// witness of the W-C1 invariant.
+    /// Whether this state may render the tip axis bare (no qualifier). True
+    /// for [`AnchorState::Verified`] alone — the structural witness of W-C1.
     #[must_use]
     pub fn renders_bare_axis(&self) -> bool {
         matches!(self, AnchorState::Verified)
@@ -199,18 +150,14 @@ impl AnchorState {
 pub const AGELESS_NUDGE: &str = "anchor as-known but undated — an out-of-engine `git fetch` cannot be dated; \
      run the fetch through the engine (realise fetch observe-claim) to mint a dated observation";
 
-/// The one `op` a fetch observe-claim receipt records. Its journal-row READER
-/// (`last_observation`) died with the journal (ZT 2026-08-02); the constant stays
-/// because the op is the realise fetch-claim path's, not the journal's, and a
-/// re-derived dater must name the same op the claim writes.
+/// The one `op` a fetch observe-claim receipt records; a re-derived dater
+/// must name the same op the claim writes.
 pub const OBSERVE_OP: &str = "observe";
 
 /// Render the anchor-qualified tip axis (d2 §2.3 v3, the sole renderer).
 ///
-/// A bare axis (`at-tip` / `behind`, no qualifier) is produced by the
-/// [`AnchorState::Verified`] arm **alone** — this is the structural guarantee
-/// of the W-C1 law: no as-known or unverified anchor, and therefore no local
-/// remote-tracking ref, can ever mint a bare tip axis.
+/// A bare axis (no qualifier) is produced by the [`AnchorState::Verified`]
+/// arm alone — the structural guarantee of W-C1.
 #[must_use]
 pub fn render_tip_axis(tip: TipPosition, anchor: &AnchorState) -> String {
     let word = tip.word();
@@ -237,17 +184,8 @@ pub fn nudge_hint(anchor: &AnchorState) -> Option<&'static str> {
     }
 }
 
-// `last_observation(&[ParsedRow])` lived here — it scanned page-ordered journal
-// rows for the last `op=observe` receipt and returned its `now` token, the value
-// that dates an as-known anchor. It read the journal, so it died with the journal
-// (ZT 2026-08-02, remove-no-replacement). [`AnchorFacts::last_observation`] is
-// untouched: the FIELD is a plain dated token, and only its journal-row EXTRACTOR
-// was journal-shaped. A caller that can date an observation from another source
-// still classifies through [`classify`] unchanged.
-
-/// A compact, honest (`~`-prefixed at the call site) age: whole units, coarsest
-/// that fits. Sub-minute reads in seconds; then minutes, hours, days. Never
-/// claims sub-second precision — the anchor age is always approximate.
+/// A compact age: whole units, coarsest that fits (seconds, then minutes,
+/// hours, days). Never claims sub-second precision.
 #[must_use]
 pub fn human_age(age: Duration) -> String {
     let secs = age.as_secs();
@@ -266,30 +204,13 @@ pub fn human_age(age: Duration) -> String {
 // object anchoring — the three states of a pinned blob (S5)
 // ---------------------------------------------------------------------------
 
-/// The git-object facts ONE anchoring check gathers about ONE blob. The caller
-/// (the `git` crate's `Repo` handle, driven from `mrd status` / the pin path)
-/// asks git; this crate never computes an object id and never shells out — the
-/// same split the origin axis uses, where [`AnchorFacts`] are gathered by the
-/// status surface and classified here.
+/// The git-object facts one anchoring check gathers about one blob. The
+/// caller (the `git` crate's `Repo` handle) asks git; this crate never
+/// computes an object id and never shells out.
 ///
-/// Both facts come from the same run: `reachable_from_commit` is answered from
-/// the ONE `git rev-list --objects --all` set the check computed up front (O(1)
-/// membership, never a per-blob git call), and `object_present` from the batched
-/// `git cat-file --batch-check` over every pinned oid.
-///
-/// # Both facts must come from ONE store — the per-root law (U13)
-/// The ratified cross-root addressing §4 puts the anchoring check in **that
-/// root's** git repo: six roots, six object stores, **one law**. This type is
-/// that one law's input, and it is store-blind on purpose — the caller picks the
-/// repository (`git::Repo` is a handle, never a singleton, seam rule D12) and
-/// this classification is the same in every one of them.
-///
-/// What that costs the caller is stated rather than assumed: **a fact pair split
-/// across two stores is a wrong answer, not a stale one.** An oid can be
-/// reachable in root A and absent from root B, so `reachable_from_commit` read
-/// from A beside `object_present` read from B classifies a blob that exists
-/// nowhere. Gather both from one handle in one pass, as `mrd status`'s gauge and
-/// `git`'s own `one_oid_three_stores_three_anchor_states` gate both do.
+/// Both facts must come from one object store in one pass (U13): an oid can
+/// be reachable in root A and absent from root B, so a fact pair split across
+/// two stores is a wrong answer, not a stale one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectAnchorFacts {
     /// Whether the object exists in the repository's object database.
@@ -299,12 +220,9 @@ pub struct ObjectAnchorFacts {
     pub reachable_from_commit: bool,
 }
 
-/// The three anchoring states of a pinned blob.
-///
-/// # Grain
-/// Stage-2 grain is M1's **anchor-is-a-line**: the lock rides in a fence and the
-/// pin anchor is a slug line, which this classification is sufficient for. The
-/// anchor-after-fence receipt grain is stage-3 and is NOT modeled here.
+/// The three anchoring states of a pinned blob. Stage-2 grain (M1
+/// anchor-is-a-line); the stage-3 anchor-after-fence receipt grain is not
+/// modeled here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectAnchor {
     /// Reachable from a ref: a commit carries the blob, so it survives `git gc`
@@ -321,25 +239,19 @@ pub enum ObjectAnchor {
     NeverAnchored,
 }
 
-/// **Named residual G1 — the pending-anchor TTL is `gc.pruneExpire`.** A
-/// pending-anchor blob is unreachable from every ref, so `git gc` prunes it once
-/// it ages past the repository's local `gc.pruneExpire` (git's default
-/// `2.weeks.ago`). The engine **documents this and does not prevent it**: the
-/// eager write buys local verifiability, committing the file is the only durable
-/// anchor, and a pruned blob honestly re-classifies as
-/// [`ObjectAnchor::NeverAnchored`] rather than silently reading as anchored.
+/// Named residual G1 — the pending-anchor TTL is the repository's local
+/// `gc.pruneExpire` (git default `2.weeks.ago`). The engine documents this
+/// and does not prevent it: committing the file is the only durable anchor,
+/// and a pruned blob re-classifies as [`ObjectAnchor::NeverAnchored`].
 pub const PENDING_ANCHOR_TTL: &str = "pending-anchor durability is the repository's local `gc.pruneExpire` \
      (git default 2.weeks.ago): an uncommitted vibe blob is unreachable, so git may prune it — \
      commit the file to anchor it durably";
 
 impl ObjectAnchor {
     /// Classify the anchoring state from the run's gathered facts.
-    ///
-    /// Reachability is the stronger fact and decides first: an object a ref
-    /// reaches IS in the database, so a `reachable_from_commit` fact gathered
-    /// against a stale presence answer still classifies as
-    /// [`ObjectAnchor::Anchored`] — the classification never invents a state the
-    /// facts do not support.
+    /// Reachability is the stronger fact and decides first: a reachable
+    /// object is in the database, so it classifies as
+    /// [`ObjectAnchor::Anchored`] even against a stale presence answer.
     #[must_use]
     pub fn classify(facts: &ObjectAnchorFacts) -> ObjectAnchor {
         if facts.reachable_from_commit {
@@ -351,8 +263,7 @@ impl ObjectAnchor {
         }
     }
 
-    /// The render word for this state — one spelling, shared by every surface
-    /// so the status line and the gauge never drift apart.
+    /// The render word for this state — one spelling shared by every surface.
     #[must_use]
     pub fn word(self) -> &'static str {
         match self {
@@ -363,8 +274,7 @@ impl ObjectAnchor {
     }
 
     /// The hint to render beside this state, if any. Only
-    /// [`ObjectAnchor::PendingAnchor`] carries one — [`PENDING_ANCHOR_TTL`], the
-    /// named residual G1.
+    /// [`ObjectAnchor::PendingAnchor`] carries one — [`PENDING_ANCHOR_TTL`].
     #[must_use]
     pub fn nudge(self) -> Option<&'static str> {
         match self {
@@ -402,10 +312,9 @@ impl OwnedBadge {
     }
 }
 
-/// The freshness axis (pointed, 5th) badge — the anchor law fuses here. Green
-/// ONLY when a verified anchor confirms on-origin; never red (nothing drifted),
-/// grey for every unconfirmed anchor (the false-green invariant). Produced by
-/// [`freshness_badge`].
+/// The freshness axis (pointed, 5th) badge. Green only when a verified anchor
+/// confirms on-origin; never red (nothing drifted), grey for every
+/// unconfirmed anchor. Produced by [`freshness_badge`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreshnessBadge {
     /// A verified, at-tip anchor confirms the pin is on origin.
@@ -426,13 +335,10 @@ impl FreshnessBadge {
     }
 }
 
-/// Fuse the anchor law onto the freshness badge (d3 §1.5 fused on d2 §2.3 v3).
+/// Fuse the anchor law onto the freshness badge (d3 §1.5).
 ///
-/// A green freshness badge REQUIRES a verified anchor confirming on-origin at
-/// tip. Every other combination — an as-known / unverified anchor, OR a behind
-/// tip even when verified — is grey. This is the false-green invariant: a
-/// local-only, restored, or merely as-known pin never reads as pointed-fresh
-/// green.
+/// Green requires a verified anchor confirming on-origin at tip; every other
+/// combination is grey — the false-green invariant.
 #[must_use]
 pub fn freshness_badge(tip: TipPosition, anchor: &AnchorState) -> FreshnessBadge {
     match (anchor, tip) {
@@ -465,9 +371,7 @@ impl Glyph {
 }
 
 /// The two-badge result for one pin: the owned-axis badge and the freshness
-/// badge, rendered side by side and NEVER merged into one color. `pointed`
-/// records whether the pin asserts an origin-freshness claim — only a pointed
-/// claim lets freshness-grey dominate the single glyph.
+/// badge, rendered side by side and never merged into one color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TwoBadge {
     /// The owned-axis (content-equality) result.
@@ -526,8 +430,8 @@ mod tests {
         }
     }
 
-    /// The verified door: a run that observed origin renders the tip axis BARE.
-    /// This is the ONLY door to a bare axis.
+    /// A run that observed origin renders the tip axis bare — the only door
+    /// to a bare axis.
     #[test]
     fn verified_run_renders_bare_axis() {
         let facts = AnchorFacts {
@@ -543,15 +447,11 @@ mod tests {
         assert!(nudge_hint(&state).is_none());
     }
 
-    /// **Gate — restore-replay scenario (load-bearing negative).** A restored
-    /// `.git` carries a stale local `origin/<branch>` (so the origin ref is
-    /// present) and replays an old journaled fetch-claim receipt. The run did
-    /// NOT observe origin this moment. The anchor must render
-    /// `at-tip (anchor as-known, observed …, ~<age>)` with a growing age and
-    /// NEVER a bare `at-tip`.
+    /// Gate — restore-replay: a restored `.git` with a stale origin ref and a
+    /// replayed fetch-claim receipt must render as-known with a growing age,
+    /// never a bare `at-tip`.
     #[test]
     fn restore_replay_renders_as_known_growing_age_never_bare_at_tip() {
-        // The old observation: journaled 2 days before the first render moment.
         let obs_unix = 0;
         let facts = AnchorFacts {
             run_observed: false,
@@ -559,7 +459,7 @@ mod tests {
             origin_ref_present: true, // the restore restored origin's local ref
         };
 
-        // First render moment: 2 days after the observation.
+        // Render 2 days after the observation.
         let render1 = AnchorState::classify(&facts, 2 * DAY);
         let line1 = render_tip_axis(TipPosition::AtTip, &render1);
         assert!(
@@ -575,8 +475,7 @@ mod tests {
             "a restored anchor must NOT render a bare tip axis"
         );
 
-        // Replay LATER (5 days after the observation): the SAME receipt, but the
-        // age has grown — a restore cannot re-mint recency.
+        // Replay the same receipt 5 days after the observation: age grows.
         let render2 = AnchorState::classify(&facts, 5 * DAY);
         let line2 = render_tip_axis(TipPosition::AtTip, &render2);
         assert_eq!(
@@ -596,18 +495,13 @@ mod tests {
             "the replayed age must grow: {age2:?} > {age1:?}"
         );
 
-        // The invariant, stated as an assertion: the render is never bare.
         assert_ne!(line1, "at-tip");
         assert_ne!(line2, "at-tip");
     }
 
-    /// **The fires-check (W-C1 guard).** A guard that classified the anchor
-    /// from the local remote-tracking ref's *presence* (the restore-restored
-    /// ref) would promote it to verified and render a bare `at-tip` — the exact
-    /// violation. This test encodes the wrong guard inline and asserts it WOULD
-    /// produce the bare axis the correct [`AnchorState::classify`] refuses, so
-    /// the restore-replay gate above is not a tautology over a state that can
-    /// never be reached.
+    /// Fires-check (W-C1 guard): a guard that trusted the origin ref's
+    /// presence would render the bare `at-tip` that [`AnchorState::classify`]
+    /// refuses — so the restore-replay gate above is not a tautology.
     #[test]
     fn a_ref_reading_guard_would_render_bare_at_tip() {
         let facts = AnchorFacts {
@@ -616,8 +510,7 @@ mod tests {
             origin_ref_present: true,
         };
 
-        // The WRONG guard: trust the local remote-tracking ref's presence as a
-        // verified observation.
+        // The wrong guard: trust the ref's presence as a verified observation.
         let wrong = if facts.origin_ref_present {
             AnchorState::Verified
         } else {
@@ -629,15 +522,13 @@ mod tests {
             "the ref-reading guard renders the bare axis the law forbids"
         );
 
-        // The RIGHT guard never does.
+        // The right guard never does.
         let right = AnchorState::classify(&facts, 2 * DAY);
         assert_ne!(render_tip_axis(TipPosition::AtTip, &right), "at-tip");
     }
 
-    /// **Gate — out-of-engine fetch.** A `git fetch` run outside the engine
-    /// leaves the local origin ref present but mints no journaled observation.
-    /// The anchor renders as-known AGELESS (`at-tip (anchor as-known)`, no age)
-    /// and carries the nudge hint.
+    /// Gate — out-of-engine fetch: origin ref present, no journaled
+    /// observation ⇒ as-known ageless, with the nudge hint.
     #[test]
     fn out_of_engine_fetch_is_as_known_ageless_with_nudge() {
         let facts = AnchorFacts {
@@ -677,8 +568,7 @@ mod tests {
     /// observe — and it wins over the mere presence of the origin ref
     /// (as-known-aged, never ageless).
     #[test]
-    // The age is the arithmetic `160 - 100 = 60` seconds — seconds are the unit
-    // under test, so the second-grained `Duration` is the readable form here.
+    // Seconds are the unit under test.
     #[allow(clippy::duration_suboptimal_units)]
     fn dated_observation_beats_bare_ref_presence() {
         let facts = AnchorFacts {
@@ -714,8 +604,7 @@ mod tests {
 
     /// `human_age` picks the coarsest whole unit that fits.
     #[test]
-    // Each assertion probes a second-grained THRESHOLD (59→60, 3599→3600,
-    // 86399→86400); the raw second counts are the point of the test.
+    // Each assertion probes a second-grained threshold; the raw counts matter.
     #[allow(clippy::duration_suboptimal_units)]
     fn human_age_scales_units() {
         assert_eq!(human_age(Duration::from_secs(3)), "3s");
@@ -728,8 +617,8 @@ mod tests {
         assert_eq!(human_age(Duration::from_secs(3 * 86_400)), "3d");
     }
 
-    /// The two-badge fusion: a verified, at-tip anchor mints the ONLY green
-    /// freshness badge; the board shows both badges, never one merged color.
+    /// The two-badge fusion: only a verified, at-tip anchor mints a green
+    /// freshness badge.
     #[test]
     fn freshness_badge_green_only_when_verified_at_tip() {
         assert_eq!(
@@ -762,9 +651,8 @@ mod tests {
         );
     }
 
-    /// The three object-anchoring states, each from the facts that produce it
-    /// (S5). The end-to-end proof against a real repository lives in the `git`
-    /// crate's `tests/plumbing.rs`; this is the classification law alone.
+    /// The three object-anchoring states (S5); the end-to-end proof against a
+    /// real repository lives in the `git` crate's `tests/plumbing.rs`.
     #[test]
     fn object_anchor_classifies_three_states() {
         let anchored = ObjectAnchor::classify(&ObjectAnchorFacts {
@@ -823,9 +711,7 @@ mod tests {
     /// glyph is the weakest asserted axis.
     #[test]
     fn two_badge_render_and_dominant_glyph() {
-        // An owned-only pin on uncommitted-but-matching content: green owned,
-        // grey freshness — shows green (freshness-grey does not dominate an
-        // owned-only pin).
+        // Owned-only pin: freshness-grey does not dominate.
         let owned_only = TwoBadge {
             owned: OwnedBadge::Green,
             freshness: FreshnessBadge::Grey,
@@ -834,8 +720,7 @@ mod tests {
         assert_eq!(owned_only.render(), "owned green · freshness grey");
         assert_eq!(owned_only.dominant(), Glyph::Green);
 
-        // A pointed pin with a grey freshness badge: freshness-grey dominates
-        // (fail-safe — the weakest asserted axis).
+        // Pointed pin with grey freshness: freshness-grey dominates.
         let pointed_grey = TwoBadge {
             owned: OwnedBadge::Green,
             freshness: FreshnessBadge::Grey,
