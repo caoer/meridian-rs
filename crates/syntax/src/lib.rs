@@ -4,23 +4,15 @@
 //! # Charter
 //! **Owns:** the dialect grammar truth. Fork events (wikilinks, anchors, callout types +
 //! fold markers, embed `!`-folding) plus the two post-passes the fork deliberately
-//! excludes (`%%comment%%` — cross-block, 12 lines outside the parser beats touching
-//! `firstpass.rs`; and masking). Byte-exact spans are the load-bearing contract: pulldown
-//! emits `(event, byte_range)` natively, so a parser version bump fails at compile time,
-//! never silently at runtime.
+//! excludes (`%%comment%%` and masking). Byte-exact spans are the load-bearing contract:
+//! pulldown emits `(event, byte_range)` natively, so a parser version bump fails at
+//! compile time, never silently at runtime.
 //!
-//! **Never does:** I/O, state, hashing, world-model assembly (that's `model`'s), body
-//! formatting (permanently out of scope — ccc-mdformat owns it).
+//! **Never does:** I/O, state, hashing, world-model assembly (`model`'s), body
+//! formatting (ccc-mdformat owns it).
 //!
-//! # Law enforcement (candidate thesis, this crate's part)
-//! This is the ONLY crate allowed to depend on the fork. The fork's churn and ours must
-//! not couple (constraint 5): every other crate sees `DialectNode`, never a pulldown
-//! type, so a fork API change is a one-crate event.
-//!
-//! # Rungs
-//! Rung 1 lands `parse` complete (the the prior `rust-pulldown` parse baseline's
-//! extraction core relocates here); later rungs add dialect events, never callers.
-//!
+//! Only this crate may depend on the fork: every other crate sees `DialectNode`, never a
+//! pulldown type, so a fork API change is a one-crate event.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
@@ -33,13 +25,13 @@ pub struct DialectNode {
     pub kind: DialectKind,
     /// Half-open byte range into the input. Span laws (block spans exclude the
     /// final line terminator; inline spans include their delimiters) are the
-    /// wire contract's §2 — enforced here at emission, tested against the GT pack.
+    /// wire contract's §2, enforced at emission.
     pub span: Range<usize>,
 }
 
-/// Dialect constructs rung 1 recognizes. First-class fork events where the fork
-/// owns the grammar (`Wikilink`, `Anchor`, …), post-pass products where it
-/// deliberately doesn't (`Comment`).
+/// Dialect constructs: first-class fork events where the fork owns the grammar
+/// (`Wikilink`, `Anchor`, …), post-pass products where it deliberately doesn't
+/// (`Comment`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialectKind {
     Frontmatter {
@@ -89,9 +81,8 @@ pub enum DialectKind {
 /// carries its own byte range). Two post-passes the fork deliberately excludes
 /// run here over the raw source: `%%comment%%` (cross-block, masked) and anchor
 /// block ids. Nodes come out in the §1 total order.
-// One cohesive single-pass event dispatcher: the shared cursor state
-// (masks, open items, wikilink accumulator) makes splitting the match arms into
-// helpers cost more coupling than it saves in length.
+// Single-pass dispatcher: shared cursor state (masks, open items, wikilink
+// accumulator) makes splitting the match arms cost more coupling than it saves.
 #[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn parse(input: &str) -> Vec<DialectNode> {
@@ -116,7 +107,6 @@ pub fn parse(input: &str) -> Vec<DialectNode> {
     for (ev, range) in Parser::new_ext(input, parser_options()).into_offset_iter() {
         match ev {
             Event::Start(Tag::MetadataBlock(_)) => {
-                // frontmatter only when the file opens with exactly "---\n"
                 if range.start != 0 || !input.starts_with("---\n") {
                     continue;
                 }
@@ -249,7 +239,6 @@ pub fn parse(input: &str) -> Vec<DialectNode> {
             Event::End(TagEnd::Link | TagEnd::Image) => {
                 if let Some((is_image, mut wrange, dest, alias, has_pothole)) = cur_wikilink.take()
                 {
-                    // no newline inside a wikilink
                     if input[wrange.clone()].contains('\n') {
                         continue;
                     }
@@ -442,19 +431,18 @@ fn split_wikilink_target(dest: &str) -> (String, Option<String>, Option<String>)
     }
 }
 
-/// The one block-id charset (decision 011 / contract §2.4): `[A-Za-z0-9-]` —
-/// Obsidian app-exact (Latin letters, digits, dash), on BOTH the mint and walk
-/// planes. THE single normative definition in code; `model::Ref` anchor
-/// validation and every downstream mint position route through it. No `_` — the
-/// dead two-plane superset is gone.
+/// The block-id charset (ruling 011 / contract §2.4): `[A-Za-z0-9-]`, Obsidian
+/// app-exact, on both the mint and walk planes. The single normative
+/// definition; `model::Ref` anchor validation and every downstream mint
+/// position route through it.
 #[must_use]
 pub fn is_block_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-'
 }
 
-/// Is `s` a well-formed block id — non-empty and every char in the one charset
-/// ([`is_block_id_char`])? A legacy `_`-bearing id is NOT (ruling 011): outside
-/// the strict-plane grammar, refused `bad_request` at the mint boundary.
+/// Is `s` a well-formed block id — non-empty and every char in
+/// [`is_block_id_char`]? A `_`-bearing id is not (ruling 011): refused
+/// `bad_request` at the mint boundary.
 #[must_use]
 pub fn is_block_id(s: &str) -> bool {
     !s.is_empty() && s.chars().all(is_block_id_char)
@@ -468,34 +456,22 @@ fn is_callout_type_char(b: u8) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// the claim-link `@fp` decoration token (stage-2 S10, D10)
+// the claim-link `@fp` decoration token
 // ---------------------------------------------------------------------------
 //
-// The AGENT-PLANE spelling of a claim link: `[[guide#^leaders-guideline@green.
-// b3af12cd|Leader's Guideline]]`. It is minted onto a READ and stripped off a
-// PUT — stored bytes never carry one — so this crate owns only its SHAPE, and
-// the shape is what makes the strip safe:
-//
-// - **It rides the BLOCK-REF slot alone** (`#^id@…`). A heading fragment is a
-//   different slot, so `[[Page#Q@Home]]` is not even looked at — the D10
-//   ambiguity is closed structurally, not by luck of spelling.
-// - **It is SHAPED, never opaque** — `@<tone-word>.<8 lowercase hex>`. A
-//   fully-opaque "everything after `@`" rule is unparseable against a heading
-//   `@` and would eat authored text.
-// - **The VOCABULARY is the caller's, the SHAPE is this crate's.** The tone
-//   word is `view::walk::color_tone`'s output and the digest is a
-//   `model::fingerprint` CID-token's; neither meaning is re-derived here (D10:
-//   value-semantics opaque). This crate answers exactly one question — is this
-//   tail a well-formed token, and where does it sit.
-//
-// The block-id charset (§2.4) has no `@`, so anything this grammar does NOT
-// recognize survives to `model::Ref::anchor` and refuses `bad_request` there.
-// Shaped-and-stripped or unshaped-and-refused: there is no third outcome, and
-// no path that writes an `@fp` to disk.
+// Agent-plane spelling of a claim link:
+// `[[guide#^leaders-guideline@green.b3af12cd|Leader's Guideline]]`. Minted
+// onto a read, stripped off a put — stored bytes never carry one. This crate
+// owns only the shape (`@<tone-word>.<8 lowercase hex>`), riding the
+// block-ref slot alone (a heading fragment is a different slot); the tone
+// word and digest vocabulary are the caller's (`view::walk::color_tone`,
+// `model::fingerprint`). The block-id charset (§2.4) has no `@`, so anything
+// this grammar does not recognize survives to `model::Ref::anchor` and
+// refuses `bad_request` there; no path writes an `@fp` to disk.
 
 /// The token's digest field width: the leading hex of the pinned CID-token,
 /// enough to recognize a claim across a render without being an address (a
-/// decorated form is NEVER resolved back into one — S7's two-spellings trap).
+/// decorated form is never resolved back into one).
 pub const FP_DIGEST_LEN: usize = 8;
 
 /// The longest tone word the shape admits (`green` / `grey` / `red` today —
@@ -522,12 +498,12 @@ pub fn is_fp_body(body: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Split a wikilink BLOCK-REF fragment (the text after `#^`) into its stored
+/// Split a wikilink block-ref fragment (the text after `#^`) into its stored
 /// block id and its `@fp` token body, if it carries a well-formed one.
 ///
 /// `("leaders-guideline@green.b3af12cd")` → `("leaders-guideline",
 /// Some("green.b3af12cd"))`; anything else → `(input, None)`. The split is on
-/// the LAST `@` so a block id may not be silently truncated by an earlier one —
+/// the last `@` so a block id may not be silently truncated by an earlier one —
 /// and since the block-id charset has no `@` at all, a stored id never reaches
 /// here with one.
 #[must_use]
@@ -551,20 +527,16 @@ pub fn fp_token(tone: &str, digest: &str) -> Option<String> {
     is_fp_body(&body).then(|| format!("@{body}"))
 }
 
-/// The byte range of one wikilink/embed's BLOCK-REF slot in `input` — the
+/// The byte range of one wikilink/embed's block-ref slot in `input` — the
 /// fragment bytes after `#^`, up to the alias pipe or the closing `]]`.
 ///
 /// `span` is the node's own span and `block` its parsed fragment. The slot is
-/// LOCATED from the link's structure — open delimiter, then the dest up to the
-/// first `|`, then the dest's first `#^` — which are the same two splits the
-/// parse itself makes. It is never searched for: a label that quotes its own
-/// block ref (`[[guide#^goal|guide#^goal in full]]`) is ordinary prose, and a
-/// byte search over the whole node hands that prose the address's slot.
-///
-/// The located range is then checked verbatim against `block`, so a link whose
-/// bytes do not present their own parsed fragment yields `None` rather than a
-/// guess: an undecorated link claims nothing, while a misplaced token claims
-/// something false.
+/// located from the link's structure (open delimiter, dest up to the first
+/// `|`, the dest's first `#^`), never searched for: a label that quotes its
+/// own block ref is ordinary prose, and a byte search over the whole node
+/// would hand that prose the address's slot. The located range is checked
+/// verbatim against `block`, so a link whose bytes do not present their own
+/// parsed fragment yields `None` rather than a guess.
 #[must_use]
 pub fn block_slot(input: &str, span: &Range<usize>, block: &str) -> Option<Range<usize>> {
     let node = input.get(span.clone())?;
@@ -586,15 +558,10 @@ pub fn block_slot(input: &str, span: &Range<usize>, block: &str) -> Option<Range
     (input.get(slot.clone()) == Some(block)).then_some(slot)
 }
 
-/// The stored block id at the head of `block` — EVERY trailing well-formed `@fp`
-/// token peeled off, not just the last one.
-///
-/// A doubled token (`goal@green.b3af12cd@green.b3af12cd`) is what makes this a
-/// loop rather than one [`split_fp`]: peel only the last and the residue is
-/// ITSELF a well-formed token, so a strip would emit the very shape it exists to
-/// remove — a forged claim indistinguishable from a mint, laundered through the
-/// removal law. Peeling the whole run makes that shape unreachable by
-/// construction instead of by a second pass.
+/// The stored block id at the head of `block` — every trailing well-formed
+/// `@fp` token peeled off, not just the last one: peeling only the last of a
+/// doubled token leaves a residue that is itself a well-formed token, so a
+/// strip would emit the very shape it exists to remove.
 fn fp_base(block: &str) -> &str {
     let mut base = block;
     while let (peeled, Some(_)) = split_fp(base) {
@@ -603,21 +570,17 @@ fn fp_base(block: &str) -> &str {
     base
 }
 
-/// Every `@fp` token RUN's byte range in `input`, sorted — the ranges a strip
+/// Every `@fp` token run's byte range in `input`, sorted — the ranges a strip
 /// removes. Document-grained: pass whole file bytes and
 /// `fp_removals(…).is_empty()` is the checkable spelling of "no token in a
 /// claim-link position on disk".
 ///
 /// Identification runs over the one dialect parse: a token is recognized only
-/// inside a `Wikilink`/`Embed` node's block-ref slot, so text that merely looks
-/// like one (inside a code fence, in a heading fragment, in a label, in prose)
-/// is never a token. That is the same discipline [`anchor_removals`] follows,
-/// and for the same reason: the removal law must never re-derive the grammar it
-/// consumes.
-///
-/// A range covers the token RUN whole, never just its last token, which is what
-/// makes the single-pass [`strip_fp`] a fixpoint —
-/// `fp_removals(&strip_fp(x)).is_empty()` holds for every `x`.
+/// inside a `Wikilink`/`Embed` node's block-ref slot, so look-alike text (in a
+/// code fence, a heading fragment, a label, prose) is never a token — the
+/// removal law never re-derives the grammar it consumes. A range covers the
+/// token run whole, which is what makes the single-pass [`strip_fp`] a
+/// fixpoint: `fp_removals(&strip_fp(x)).is_empty()` holds for every `x`.
 #[must_use]
 pub fn fp_removals(input: &str) -> Vec<Range<usize>> {
     let mut out: Vec<Range<usize>> = Vec::new();
@@ -669,12 +632,11 @@ pub fn strip_fp(input: &str) -> std::borrow::Cow<'_, str> {
 // norm-v2 — the fingerprint plane's canonicalization (docs/fingerprint-norm-spec.md §4)
 // ---------------------------------------------------------------------------
 //
-// Lives HERE because the one normative anchor grammar is this crate's lexer
-// ([`scan_anchors`], ruling 011): norm-v2 is identity except anchor-token
-// removal, and the removal law must never re-derive the grammar it consumes.
-// No hashing happens in this crate (charter) — `model` hashes the canonical
-// bytes. A grammar change that alters anchor recognition is a CODEC BUMP for
-// the fingerprint plane (spec §2.2), never a silent reinterpretation.
+// Lives here because the normative anchor grammar is this crate's lexer
+// (`scan_anchors`): norm-v2 is identity except anchor-token removal, and the
+// removal law must never re-derive the grammar it consumes. No hashing here —
+// `model` hashes the canonical bytes. A grammar change that alters anchor
+// recognition is a codec bump for the fingerprint plane (spec §2.2).
 
 /// The §4.2 removal ranges for every anchor token in `input`, file
 /// coordinates, sorted and overlap-merged. Identification runs over the WHOLE
@@ -902,7 +864,7 @@ mod tests {
         faults
     }
 
-    // ---- Gate 2: span-law fixtures (contract §1) ----
+    // ---- span-law fixtures (contract §1) ----
 
     #[test]
     fn span_law_multibyte_split_refusal() {
@@ -984,7 +946,7 @@ mod tests {
         assert_eq!(first_span("paragraph tail ^my-anchor\n", 4), "^my-anchor");
     }
 
-    // ---- Relocation behaviour (adapted from prior donor tests) ----
+    // ---- Extraction behaviour ----
 
     #[test]
     fn frontmatter_span_and_keys() {
@@ -1110,10 +1072,8 @@ mod tests {
 
     #[test]
     fn anchor_underscore_rejected_app_exact() {
-        // CHARSET-GUARD (ruling 011 / contract §2.4): block ids are app-exact
-        // `[A-Za-z0-9-]`. A `_`-bearing id is outside the charset, so the lexer
-        // — matching the app's silent drop — does not scan it as an anchor; a
-        // clean dash-bearing id still scans.
+        // ruling 011 / contract §2.4: block ids are app-exact `[A-Za-z0-9-]`;
+        // a `_`-bearing id is not scanned as an anchor (the app's silent drop).
         let src = "dropped ^b_1\nalso dropped ^mixed-id_2\nkept ^mixed-id-2\n";
         assert_eq!(
             slices(src)
@@ -1222,8 +1182,8 @@ mod tests {
         assert_eq!(ords, vec![1, 4]);
     }
 
-    // ---- norm-v2 crate-local smoke (the conformance suite is
-    // crates/model/tests/norm_v2_fixtures.rs — golden data lives THERE) ----
+    // ---- norm-v2 crate-local smoke (conformance suite:
+    // crates/model/tests/norm_v2_fixtures.rs) ----
 
     #[test]
     fn norm_v2_tail_and_own_line() {
@@ -1255,8 +1215,7 @@ mod tests {
 mod fp_tests {
     use super::*;
 
-    /// The SHAPE law, exhaustively: what is a token and what is authored text.
-    /// The right column is the whole reason D10 rejected an opaque token — every
+    /// The shape law: what is a token and what is authored text — every
     /// `false` row is a spelling a human legitimately writes.
     #[test]
     fn the_shape_admits_only_a_well_formed_token() {
@@ -1286,7 +1245,7 @@ mod fp_tests {
         }
     }
 
-    /// The split is on the LAST `@` and only when the tail is well-formed, so a
+    /// The split is on the last `@` and only when the tail is well-formed, so a
     /// block id is never silently truncated.
     #[test]
     fn split_fp_separates_the_stored_id_from_the_token() {
@@ -1316,9 +1275,9 @@ mod fp_tests {
         assert_eq!(fp_token("GREEN", &hex64), None, "not a tone word");
     }
 
-    /// The strip removes tokens from BLOCK-REF slots and nothing else. The
-    /// heading-fragment rows are D10's whole point; the code-fence row is the
-    /// consequence of identifying tokens through the one dialect parse.
+    /// The strip removes tokens from block-ref slots and nothing else; the
+    /// code-fence row follows from identifying tokens through the one dialect
+    /// parse.
     #[test]
     fn strip_fp_removes_block_ref_tokens_only() {
         let cases = [
@@ -1370,7 +1329,7 @@ mod fp_tests {
         ));
     }
 
-    /// The slot is the ADDRESS's, wherever the link sits and whatever the label
+    /// The slot is the address's, wherever the link sits and whatever the label
     /// says — the one position decorate writes and strip removes. The `None`
     /// arms are the honest refusals: no block-ref slot exists to point at.
     #[test]
@@ -1406,10 +1365,9 @@ mod fp_tests {
         );
     }
 
-    /// F3 — the slot is LOCATED, not searched for. A label that repeats its own
-    /// decorated block ref used to win a whole-node `rfind`, so the strip ate the
-    /// authored label text and left the address token on disk: a forged claim
-    /// plus a corrupted label from one ordinary sentence.
+    /// Regression: a label repeating its own decorated block ref once won a
+    /// whole-node `rfind`, so the strip ate the label text and left the
+    /// address token on disk.
     #[test]
     fn strip_removes_the_address_token_not_a_label_that_repeats_it() {
         let input = "[[guide#^goal@green.b3af12cd|see #^goal@green.b3af12cd here]]";
@@ -1424,10 +1382,9 @@ mod fp_tests {
         );
     }
 
-    /// F2 — a strip that can EMIT a well-formed token is the defect. A doubled
-    /// token used to strip to a SINGLE one: a forged claim indistinguishable from
-    /// a mint, laundered by the strip that was supposed to remove it. The whole
-    /// token run is one removal, so one pass is already the fixpoint.
+    /// Regression: a doubled token used to strip to a single well-formed one —
+    /// a forged claim. The whole token run is one removal, so one pass is
+    /// already the fixpoint.
     #[test]
     fn a_doubled_token_cannot_strip_into_a_well_formed_one() {
         for (input, want) in [
@@ -1453,11 +1410,10 @@ mod fp_tests {
         }
     }
 
-    /// The document-grained post-condition fix2a asserts: whatever went in, the
-    /// stripped bytes carry NO token in claim-link position. One grammar, one
-    /// grain — including the shapes R22 deliberately leaves alone (a fenced code
-    /// sample, a heading fragment's `@`), which are not claim-link positions and
-    /// so are already empty here.
+    /// Post-condition: whatever went in, the stripped bytes carry no token in
+    /// claim-link position — including the shapes deliberately left alone (a
+    /// fenced code sample, a heading fragment's `@`), which are not claim-link
+    /// positions.
     #[test]
     fn fp_removals_is_empty_after_a_strip_whatever_the_shape() {
         for input in [
@@ -1476,7 +1432,7 @@ mod fp_tests {
         }
     }
 
-    /// The strip is IDEMPOTENT and its output re-parses to the stored address —
+    /// The strip is idempotent and its output re-parses to the stored address —
     /// which is what makes "stored bytes never carry a token" checkable.
     #[test]
     fn stripped_bytes_carry_the_stored_address() {
