@@ -3043,7 +3043,7 @@ mod tests {
     const R_V0_DRAFTS_HEX: &str =
         "05f0c6192308db5937c3e1352d1f9a6fc31b89b1a57175c8af6ce7903525aa4a";
 
-    // Non-plan fixture bytes, verbatim from the contract §0.3 fixture bytes (docs/wire-contract-v2.md).
+    // Non-plan fixture bytes, verbatim from the contract §0.3 fixture bytes (docs/wire-contract.md).
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
     const GH_README: &str = "# CI notes\n";
     const DRAFT_TMP: &str = "scratch\n";

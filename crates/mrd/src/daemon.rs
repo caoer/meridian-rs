@@ -65,7 +65,7 @@ pub(crate) fn run() -> Result<(), Fail> {
     // The `unknown` fallback the build script bakes rides through verbatim — a
     // build that cannot name a commit still publishes an identity, which is
     // what lets a client tell it apart from a host that publishes none
-    // (`docs/wire-contract-v3-identity-amendment.md`).
+    // (`docs/wire-contract.md`).
     config.build_sha = Some(env!("MRD_BUILD_SHA").to_owned());
     install_signal_handlers();
     let server = RunningServer::start(config)

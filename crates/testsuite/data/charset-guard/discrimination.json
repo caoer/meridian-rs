@@ -2,7 +2,7 @@
   "pack": "charset-guard",
   "authored_by": "CHARSET-GUARD (worker 47c67df4)",
   "authored_at": "2026-07-19T03:35:53Z",
-  "rule": "decision 011 + Addendum / wire-contract-v2 §2.4",
+  "rule": "decision 011 + Addendum / wire-contract.md §2.4",
   "charset": "[A-Za-z0-9-]",
   "note": "The one block-id charset, BOTH planes. A `_`-bearing id is outside the strict mint grammar and is refused `bad_request`; the SAME id via the walk plane follows the app (silent drop -> ref_not_found). Decision 013 consequence 3: loud mint refusal AND the pinned app walk answer BOTH conform. Downstream units ride `input_id` at their own mint position; the rung-2 core proves the mechanism via `model::Ref::anchor`.",
   "mint_refusals": [

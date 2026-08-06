@@ -29,6 +29,11 @@ over markdown lands HERE, never in meridian-go.
   its mechanism reads precisely as **scope-of-assent**, not page elaboration
   alone.
 
-Docs: `docs/laws.md` (crate charters), `docs/wire-contract-v2.md` +
-`docs/wire-contract-v3-amendment.md` (the client seam),
-`docs/node-rev-merkle-spec.md` (rev/hash law), `docs/status.md` (mrd CLI).
+Docs: `docs/README.md` (process + standing corrections), `docs/wire-contract.md`
+(the **only** wire constitution — no v2/v3 stack), `docs/laws.md` (crate
+charters), `docs/node-rev-merkle-spec.md` (rev/hash law), `docs/status.md`
+(mrd CLI, descriptive only).
+
+- **Docs-first (binding):** accurate design lives in `docs/`. **Doc correct >
+  code correct.** Material changes update the correct doc **before** code. Do
+  not re-derive dual addresses or teach DuckDB/`view_path` as agent core.

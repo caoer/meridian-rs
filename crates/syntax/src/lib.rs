@@ -666,7 +666,7 @@ pub fn strip_fp(input: &str) -> std::borrow::Cow<'_, str> {
 }
 
 // ---------------------------------------------------------------------------
-// norm-v2 — the fingerprint plane's canonicalization (docs/norm-v2-spec.md §4)
+// norm-v2 — the fingerprint plane's canonicalization (docs/fingerprint-norm-spec.md §4)
 // ---------------------------------------------------------------------------
 //
 // Lives HERE because the one normative anchor grammar is this crate's lexer

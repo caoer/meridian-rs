@@ -18,8 +18,9 @@ registry daemon.
   structure (heading path, block anchor, frontmatter key), never by client-
   supplied byte offset. Edits are content-addressed: a node-grain or world-grain
   revision guard refuses a stale write instead of corrupting it.
-- **A frozen contract.** The Go-visible surface is wire-contract-v2 (see
-  `docs/`), frozen — changes are additive amendments, never silent breaks.
+- **A standing wire contract.** The Go-visible surface is
+  `docs/wire-contract.md` (accurate design; **docs first**, code may lag).
+  There is no v2/v3 stack for agents to learn.
 
 ## Crates
 
@@ -28,7 +29,7 @@ registry daemon.
 | `syntax` | Markdown bytes → dialect node list with byte-exact spans; the only crate that touches the pulldown-cmark fork |
 | `model` | The in-memory world model: governed node tree (kind/span/rev/hpath), resolve, CAS-splice validation, Merkle roots — deliberately non-serializable. Also content identity: the `fp1.…` fingerprint token, its verify verdict, and the one reason-carrying drift-color model |
 | `fs` | Disk truth in, atomic splices out: read/walk/watch feeding the model; tmp+fsync+rename splice execution |
-| `wire` | The frozen wire vocabulary: path/span/node_rev/root + op/request/response/error types (serde-only, zero I/O) |
+| `wire` | The standing wire vocabulary: path/span/node_rev/fingerprint + op/request/response/error types (serde-only, zero I/O). Code may lag `docs/wire-contract.md` |
 | `wire-map` | The named model→wire projection seam: tree-flatten + prefix window + node ordering, as a tested library function |
 | `git` | The git plumbing organ: shell-out blob object ids, the eager `-w` write, and object reachability against a repo handle — git owns content-addressing, the engine never computes an oid. A `std`-only leaf |
 | `receipt` | The receipt family: the persisted outcome-as-fact line committed in the same batch as the edit, the append-only journal + forgery detector, the anchor freshness and blob three-state axes, and the ephemeral read-mint ledger |
@@ -118,9 +119,8 @@ Start here, then follow the file that matches your role:
 
 | Doc | Read it for | Start here if you are… |
 |---|---|---|
-| `docs/wire-contract-v2.md` | The frozen NDJSON contract: ops, shapes, guards, deltas, errors | integrating a host daemon against the wire |
-| `docs/wire-contract-v3-amendment.md` | The live v3 rev: the `root`→`fingerprint` rename, the composed `read`, and the stage-2 attestation surface (`splice.pin`, the read-mint receipt, `anchors[]`, the `@fp` grammar, the error-code additions) | writing a v3 client, or pinning content |
-| `docs/wire-contract-v2-colors-amendment.md` | The color law: the pin-axis grey enumeration, the anchor axis, and the composed three-axis legend | rendering or reading drift state |
-| `docs/node-rev-merkle-spec.md` | How node revisions and workspace roots are computed and bound | implementing or verifying the rev/root hashing |
-| `docs/laws.md` | The three architecture laws and per-crate charters | contributing Rust code to the engine |
-| `docs/status.md` | Current build state: armed capabilities, test baseline, perf verdicts | checking what works today |
+| `docs/README.md` | Docs-first process, standing corrections A/B/C, inventory | start here |
+| `docs/wire-contract.md` | **Only** wire constitution: ops, segments, fingerprint, receipts, refusal, … | integrating a host or agent against the wire |
+| `docs/node-rev-merkle-spec.md` | How node revisions and workspace fingerprints are hashed | implementing or verifying revs |
+| `docs/laws.md` | Three architecture laws and per-crate charters | contributing Rust |
+| `docs/status.md` | CLI / build snapshot (**descriptive** — not design authority over the contract) | what the binary exposes today |

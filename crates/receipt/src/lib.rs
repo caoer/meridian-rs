@@ -1,5 +1,5 @@
 //! The engine-side receipt renderer: armed facts → the default md receipt line
-//! (wire-contract-v2 §6.3; FROZEN 2026-07-18, decision 014).
+//! (wire-contract.md §6.3; standing design, decision 014).
 //!
 //! # Charter
 //! **Owns:** rendering one batch's armed facts as one markdown list-item block — the

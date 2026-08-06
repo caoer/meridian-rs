@@ -1,4 +1,4 @@
-//! U-SPEC golden fixtures for `docs/norm-v2-spec.md` (fingerprint hash domain;
+//! U-SPEC golden fixtures for `docs/fingerprint-norm-spec.md` (fingerprint hash domain;
 //! decision 2026-07-24-fingerprint-cid-representation).
 //!
 //! `reference` = spec-verbatim norm-v2 (§4) + token (§2). Production
@@ -8,7 +8,7 @@
 
 use model::{Node, NodeKind, build};
 
-/// Spec-verbatim reference implementation (norm-v2-spec §2, §4).
+/// Spec-verbatim reference implementation (fingerprint-norm-spec §2, §4).
 mod reference {
     use std::ops::Range;
 

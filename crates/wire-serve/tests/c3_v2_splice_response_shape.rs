@@ -1,5 +1,5 @@
 //! C3 — v2 splice-response key set. `body.armed.effects` is post-v2 and must
-//! not reach a v2 session (`docs/wire-contract-v2.md` §4.4/§5.2).
+//! not reach a v2 session (`docs/wire-contract.md` §4.4/§5.2).
 //!
 //! Oracle: frozen `armed` is exactly `{path, edits}` (no `effects`).
 //! Pins (All-Hands #3): v2 armed → `{path, edits}`; v3 → `{path, edits, effects}`.

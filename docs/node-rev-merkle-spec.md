@@ -1,13 +1,10 @@
----
-type: result
-status: spec
-created: 2026-07-18
-tags: [type/result, domain/ccc-mdfs, topic/meridian-rs, topic/merkle]
----
+# node_rev + workspace fingerprint (merkle) spec
 
-# node_rev + root spec — rung 3 (`root`, `guard`)
+> **Standing:** Design law is `wire-contract.md` (one contract). Mint addresses = segments only. Receipts = armed wire facts. DuckDB/`view_path` not agent core. **Doc correct > code correct; docs first.** See `README.md`.
 
-The hash scheme behind the wire nouns `node_rev` and `root` (wire contract §2), specified so rung 3 is implementation-only. Binds: what bytes are hashed, normalization, tree composition to the 32-byte root, incremental update on `splice`, and `guard` op semantics — all under the three laws (vision §2: no snapshot files, no second database, Rust memory disposable).
+**Scope note:** this document is **node_rev and workspace merkle (fingerprint) hash law**. It does not define section address grammar; mint-plane hpath remains segment form only. Worked-example generator assets stay under `node-rev-merkle-spec.assets/`.
+
+The hash scheme behind the wire nouns `node_rev` and **`fingerprint`** (workspace content hash — never “root” as a wire hash token; see `wire-contract.md`). Binds: what bytes are hashed, tree composition to the 32-byte workspace fingerprint, and incremental update on `splice`. Integrity surface on the wire is **`fingerprint` + `if_fingerprint` + `diff`** — there is no separate `guard` op (`wire-contract.md` §4.7). Under the three laws: no snapshot files, no second database, Rust memory disposable.
 
 ## 0. Design inheritance — the merkle-root-spike, absorbed
 
@@ -31,11 +28,11 @@ An earlier merkle-root prototype was folded into this spec. Its scheme is adopte
 
 ## 1. One hash family: BLAKE3-256
 
-Every hash in this spec — node_rev, file leaf, interior, root — is BLAKE3 with 256-bit output. One primitive, one implementation, no mixed families.
+Every hash in this spec — node_rev, file leaf, interior, workspace fingerprint — is BLAKE3 with 256-bit output. One primitive, one implementation, no mixed families.
 
-- Chooses crypto-grade at xxhash-class speed (blake3 saturates memory bandwidth on these sizes), so the integrity cursor is adversary-proof for free, and the 32-byte root matches law 2's "32-byte cursor" verbatim.
-- Wire spellings: `root` = `"b3:" + 64 lowercase hex chars` (algorithm-prefixed per §2 of the wire contract; the contract's `"b3:88d2aa"` examples are abbreviations, non-normative). `node_rev` = first **16 lowercase hex chars** (64 bits) of the node hash, unprefixed. Both remain opaque to clients — equality only.
-- Why truncate node_rev but not root: node_rev is a CAS race detector scoped to one node's edit history — 64 bits gives collision-safety margins (~2³² revisions to birthday) at half the wire noise; the root is the fleet's integrity cursor and keeps full width. The frozen wire role ("opaque, equality only") means widening later is an amendment, not a break.
+- Chooses crypto-grade at xxhash-class speed (blake3 saturates memory bandwidth on these sizes), so the integrity cursor is strong for free, and the 32-byte fingerprint matches law 2's "32-byte cursor" verbatim.
+- Wire spellings: **`fingerprint`** = `"b3:" + 64 lowercase hex chars` (algorithm- and domain-prefixed per `wire-contract.md` §1 / §12; short `"b3:88d2aa"` forms in old examples are abbreviations, non-normative). `node_rev` = first **16 lowercase hex chars** (64 bits) of the node hash, unprefixed. Both remain opaque to clients — equality only.
+- Why truncate node_rev but not fingerprint: node_rev is a CAS race detector scoped to one node's edit history — 64 bits is enough for that job at half the wire noise; the workspace fingerprint is the integrity cursor and keeps full width.
 
 ## 2. node_rev — what bytes are hashed
 
@@ -48,25 +45,25 @@ Every hash in this spec — node_rev, file leaf, interior, root — is BLAKE3 wi
 
 ## 3. File leaf hash — and why there is no per-file sub-merkle
 
-`leaf(file) = blake3(raw_file_bytes)` — full 32 bytes, whole file, every regular file under the workspace root (not just `.md`; an asset drift must move the root too).
+`leaf(file) = blake3(raw_file_bytes)` — full 32 bytes, whole file, for every path in the **hash domain** (`wire-contract.md` §12: md-only floor + default/custom ignore via `meridian/domain.md`). Non-domain paths never enter the tree.
 
 Section-grain leaves (the pre-wired seam of §0's inherited design) are **rejected for tree composition**: node spans index the raw file bytes, so the whole-file hash already changes iff any node's bytes change — a file-internal merkle adds hashing work and tree surface while buying only sub-file drift-naming, which the parser gives us for free (`toc`/`extract` diff, or `DiffSections`-style rev-table comparison at ~0.2ms/file). Node-grain integrity lives in `node_rev` (CAS, §2); file-and-above integrity lives in the tree (§4). Two grains, one boundary, no overlap.
 
 Files that are **not valid UTF-8** still get leaf hashes (blake3 needs no UTF-8) and participate in the root; they simply serve no spans/nodes (wire `invalid_utf8` law). Integrity coverage and span service are independent properties.
 
-## 4. Tree composition — leaves to the 32-byte root
+## 4. Tree composition — leaves to the 32-byte workspace fingerprint
 
 The inherited scheme with blake3-256 in place of xxhash64:
 
 ```
 interior(dir) = blake3( concat over children sorted by name-bytes:
-                          varint(len(name)) ‖ name_bytes ‖ type_byte ‖ child_hash_32B )
+ varint(len(name)) ‖ name_bytes ‖ type_byte ‖ child_hash_32B )
 type_byte: 0x00 = file, 0x01 = dir
 ```
 
-- Children sorted by raw name bytes (§9 for the unicode caveat). Symlinks skipped (§9). Empty dirs pruned bottom-up (a dir whose children all pruned is itself pruned); the workspace root always exists.
-- The workspace root's own name is not hashed (no parent to hold it).
-- `root` (wire noun) = the workspace root's interior hash, spelled `b3:<64hex>`. A subtree root (per-file or per-dir scope, §7 `root` op) is that node's hash in the same spelling — a file-scope root is the file's leaf hash.
+- Children sorted by raw name bytes (§9 for the unicode caveat). Symlinks skipped (§9). Empty dirs pruned bottom-up (a dir whose children all pruned is itself pruned); the workspace tree root always exists.
+- The workspace directory's own name is not hashed (no parent to hold it).
+- **`fingerprint` (wire noun)** = the workspace tree's interior hash, spelled `b3:<64hex>` (prefix may advance with domain `version` — `wire-contract.md` §12.3). A file-scope leaf hash is that file's leaf; it is not a second wire “root” op.
 
 ## 5. Worked example (real values)
 
@@ -88,7 +85,7 @@ Leaves (blake3 over whole raw file):
 
 ```
 leaf(tasks/x.md) = 1e56548abcd43053053ef8f06b68c3261a7d29aa2a03aaa80b0a2f204d213d7e
-leaf(notes.md)   = 96c26935d00a13398c39887a29adeb554d351b6863ec776c31d4a7f7f93f1875
+leaf(notes.md) = 96c26935d00a13398c39887a29adeb554d351b6863ec776c31d4a7f7f93f1875
 ```
 
 Interior `tasks/` — pre-image is one child entry, 38 bytes: `04` (varint len 4) ‖ `x.md` ‖ `00` ‖ leaf:
@@ -101,17 +98,17 @@ interior(tasks/) = f7a2e4b1af9ef2aa9d57abaa4375e6cff8c474c2f6dd788bc6a9d2543f027
 Workspace root — two entries sorted by name (`notes.md` < `tasks`), 81-byte pre-image `08‖notes.md‖00‖leaf ‖ 05‖tasks‖01‖interior`:
 
 ```
-root = b3:807b69c693ad2c65e290422a1123198f22be6161c2caa43d71fab029fa4763cd
+fingerprint = b3:807b69c693ad2c65e290422a1123198f22be6161c2caa43d71fab029fa4763cd
 ```
 
 **Incremental update:** splice Beta's body `beta body\n` → `beta body v2\n`. Recompute exactly one path:
 
 ```
 node_rev(#Alpha/Beta): 780d2fb4cf68f60f → f34813be3889438e
-leaf(tasks/x.md)     : 1e56…3d7e → b78aa71202f4273e830ace6c7844b8943a53c04d1bab719586af2c3a307907ef
-interior(tasks/)     : f7a2…77fe → 234267c9a1b642b751e50dabed092664a0013fce2c1b22738f6279ac99075a4f
-root                 : b3:807b… → b3:a1f7bb8e46227d0c44df8c993fa1ab066b299d275d01d81e5dd6c40ba665b7c2
-leaf(notes.md)       : unchanged (96c26935d00a1339…)
+leaf(tasks/x.md) : 1e56…3d7e → b78aa71202f4273e830ace6c7844b8943a53c04d1bab719586af2c3a307907ef
+interior(tasks/) : f7a2…77fe → 234267c9a1b642b751e50dabed092664a0013fce2c1b22738f6279ac99075a4f
+fingerprint : b3:807b… → b3:a1f7bb8e46227d0c44df8c993fa1ab066b299d275d01d81e5dd6c40ba665b7c2
+leaf(notes.md) : unchanged (96c26935d00a1339…)
 ```
 
 (All values computed by a reference implementation of this spec, blake3-256, 2026-07-18; the generator is `node-rev-merkle-spec.assets/worked-example-gen.go` — 90 lines of Go, with `node-rev-merkle-spec.assets/go.mod` — and should land as the fixture seed for the rung-3 test suite.)
@@ -121,70 +118,58 @@ leaf(notes.md)       : unchanged (96c26935d00a1339…)
 The daemon holds ONE current tree in Rust memory (the world model). On a successful `splice(path, …)`:
 
 1. New file bytes are already in hand (the splice output) → new leaf = blake3(bytes). Cost: ~15µs for a 46KB file (blake3 ≥3GB/s).
-2. Walk parent chain to the workspace root re-hashing interiors: O(depth) hashes, each over ~30–40 bytes × fanout. Session trees are ≤6 deep; total incremental root update is well under 1ms.
-3. The splice response gains an additive `root` field (wire §6.2 sketch already reserves this) — the caller's next cursor.
+2. Walk parent chain to the workspace tree root re-hashing interiors: O(depth) hashes, each over ~30–40 bytes × fanout. Session trees are ≤6 deep; total incremental fingerprint update is well under 1ms.
+3. The splice response carries ambient **`fingerprint_before` / `fingerprint_after`** (and related fields per `wire-contract.md` §4.4) — the caller's next world cursor.
 
-Out-of-band changes (hand edits, git operations, the `md` CLI during transition) arrive via the watch feed → same per-file update path (re-read, re-leaf, re-chain). Watch latency is a freshness window, not a correctness hole: the recovery law (§7) catches anything missed, and splice re-reads the file under the sidecar flock before writing, so CAS never trusts the tree — the tree serves reads (`root`, `guard`, diff), never writes.
+Out-of-band changes (hand edits, git operations) arrive via the watch feed → same per-file update path (re-read, re-leaf, re-chain). Watch latency is a freshness window, not a correctness hole: recovery (§7 below / `wire-contract.md` §4.7 `diff`) catches anything missed, and splice re-reads under the write flock before writing, so CAS never trusts the tree alone — the tree serves integrity reads, never silent write authority.
 
-**No persistence.** The tree is never written to disk — no snapshot files, no cache. Daemon start = full rebuild (measured 2.2–5.2s corpus-wide, §0); per the vision, "the moment memory can't be thrown away, the architecture has been violated". The inherited snapshot format is dropped here (§0 rejected).
+**No persistence.** The tree is never written to disk — no snapshot files, no cache. Daemon start = full rebuild (measured 2.2–5.2s corpus-wide, §0). The inherited snapshot format is dropped here (§0 rejected).
 
-**Root history ring (the one new mechanism).** `diff(my_root, live_root)` — the recovery law — needs a tree BEHIND the old root, and clients hold only 32 bytes. So the daemon keeps a bounded in-memory ring of recent `(root, tree)` snapshots (structurally shared — an updated tree reuses every unchanged subtree node, so N snapshots cost O(changes), not O(N·tree)). Ring bounded by count/age (knob, §10). A root not in the ring is answerable only as "full resync" — which degrades to law 3's re-derive, never to wrong data.
+**Fingerprint history ring.** `diff(from_fingerprint, to_fingerprint)` needs trees behind old fingerprints; clients hold only the token. The daemon may keep a bounded in-memory ring of recent `(fingerprint, tree)` snapshots (structurally shared). A fingerprint not in the ring answers `fingerprint_unknown` → full resync — re-derive, never wrong data.
 
-## 7. `guard` semantics + CAS interaction (rung-3 op surface: `root`, `guard`)
+## 7. Integrity surface + CAS (wire vocabulary)
 
-Two guards, two grains, composable:
+Two grains, composable — **no separate `guard` op** (dropped; integrity = `fingerprint` + `if_fingerprint` + `diff`):
 
-| Guard | Grain | Question | Failure |
+| Guard / op | Grain | Question | Failure |
 |---|---|---|---|
-| `if_node_rev` (on `splice`, rung 2) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — retryable: re-resolve, re-derive |
-| `if_root` (on `splice`/batch, rung 3, additive field) | file / subtree / workspace | "is the WORLD still what I planned against?" (TODO-6: commit guards ONE thing) | `root_mismatch` {expected, actual, scope} — retryable: re-plan |
+| `if_node_rev` (on `splice`) | one node | "is THIS section still what I read?" | `cas_mismatch` {expected, actual} — refresh: re-read, re-plan |
+| `if_fingerprint` (on `splice`, optional) | workspace | "is the WORLD still what I planned against?" | `fingerprint_mismatch` {expected, actual, changed?} — resync / re-plan |
+| `fingerprint` op | workspace | read the current content-hash cursor | — |
+| `diff` | range of fingerprints | batches of Delta between two cursors | `fingerprint_unknown` if outside retained history |
 
-**`root` op** — read the current cursor:
-
-```jsonc
-→ {"id":7,"op":"root"}                      // workspace scope
-← {"id":7,"ok":true,"root":"b3:807b69c6…"}
-→ {"id":8,"op":"root","path":"tasks"}       // subtree scope; a file path yields its leaf
-← {"id":8,"ok":true,"root":"b3:f7a2e4b1…"}
-```
-
-**`guard` op** — validate a held root and, on mismatch, name the drift (the inherited Diff, answered from the ring):
+**`fingerprint` op** — read the current cursor:
 
 ```jsonc
-→ {"id":9,"op":"guard","root":"b3:807b69c6…"}
-← {"id":9,"ok":true,"root":"b3:807b69c6…"}                       // match: 1 comparison, the fast path
-← {"id":9,"ok":false,"error":"root_mismatch",
-   "expected":"b3:807b69c6…","actual":"b3:a1f7bb8e…",
-   "changed":[{"path":"tasks/x.md","kind":"modified"}]}          // O(changed) descent, ring-served
-← {"id":9,"ok":false,"error":"root_unknown","message":"root evicted; full resync"}  // ring miss
+→ {"id":7,"op":"fingerprint"}
+← {"id":7,"ok":true,"body":{"fingerprint":"b3:807b69c6…","seq":N}}
 ```
 
-- `changed` kinds: `modified` / `added` / `removed`; species change = remove+add; whole added/removed subtrees enumerate their files (the §0 Diff semantics). `path` optionally scopes a guard to a subtree.
-- New error codes (amendment, per wire §4 additive rule): `root_mismatch` (retryable — re-plan), `root_unknown` (retryable only via full resync — treat as "cursor expired").
-- **Ordering when both guards ride one splice:** `if_root` checked first (1 comparison, cheapest, fails the whole plan), then `if_node_rev` per edit. A passing root implies unchanged node_revs everywhere — the node check is then a free formality; a failing root skips all node work.
-- **What each layer never does:** Rust never decides WHEN a guard is required (that's Go's rev-ladder policy, migration map §4); Go never computes hashes (node_rev/root are opaque — it compares equality only). The pipe txn's CAS-vs-T0 + DRY-all commit is re-expressed at rung 3 as: `guard(root@plan)` → batch `splice` with `if_root` — multi-file all-or-nothing shape is rung-3 detail, flagged in the migration map §8.
+**Ordering when both guards ride one splice:** `if_fingerprint` first (cheapest world check, fails the whole batch), then per-edit `if_node_rev`. A failing world guard skips node work.
 
-**Consistency with the three laws:** disk stays the only durable truth (law 2 — tree and ring are memory); recovery at every layer is re-derive (law 3 — cold start rebuilds, ring miss resyncs, events remain a latency optimization since `diff(my_root, live_root)` is always available); Rust answers "what changed", Go decides what to do about it (law 1).
+**What each layer never does:** the engine never decides *when* a guard is **required** (host policy / geography — `wire-contract.md` §5.3); hosts never compute hashes (node_rev / fingerprint are opaque equality tokens). Multi-file all-or-nothing commit remains a named limit (`wire-contract.md` §6.5).
 
-## 8. Interaction with rung 2 (what rung 3 adds, nothing it changes)
+**Consistency with the three laws:** disk stays the only durable truth (tree and ring are memory); recovery is re-derive; the engine answers “what changed”, policy decides what to do about it.
 
-- `splice` request: `if_root` (optional, additive). `splice` response: `root` (additive).
-- Node objects/`resolve`: unchanged — node_rev algorithm (§1–2) is the amendment the wire contract §2 promised ("algorithm and length are a rung-2 decision").
-- New ops `root`, `guard` appear in `hello.caps`.
-- New error codes `root_mismatch`, `root_unknown`.
+## 8. Interaction with the write plane
+
+- `splice` request: optional `if_fingerprint`. Response: fingerprint transition fields per `wire-contract.md` §4.4.
+- Node objects / `resolve`: node_rev algorithm (§1–2) is the hash law for CAS tokens.
+- Caps advertise `fingerprint`, `diff`, `splice.if_fingerprint` (and related) — not a `guard` op.
+- Error codes: `fingerprint_mismatch`, `fingerprint_unknown` (not `root_*`).
 
 ## 9. Normalization rulings (closed for v1)
 
-- **Names: raw bytes, byte-order sort, no unicode normalization.** The root is a per-host daemon↔client cursor, never a cross-host sync token — the NFD/NFC divergence (macOS vs Linux) cannot bite a cursor that never crosses hosts. Revisit only if roots ever travel between machines (then: NFC at hash time, flagged as proto-visible).
-- **Symlinks: skipped silently** — consistent with the statusd jail's stance that symlinks are resolved and confined at the addressing layer; a symlink's target, if in-tree, is hashed at its real path. Cost: retargeting an in-tree symlink alone doesn't move the root — accepted for v1, listed below.
+- **Names: raw bytes, byte-order sort, no unicode normalization.** The fingerprint is a per-host daemon↔client cursor, never a cross-host sync token — the NFD/NFC divergence (macOS vs Linux) cannot bite a cursor that never crosses hosts. Revisit only if fingerprints ever travel between machines (then: NFC at hash time, flagged as proto-visible).
+- **Symlinks: skipped silently** — consistent with the addressing jail's stance that symlinks are resolved and confined at the addressing layer; a symlink's target, if in-tree, is hashed at its real path. Cost: retargeting an in-tree symlink alone doesn't move the fingerprint — accepted for now, listed below.
 - **Content: raw bytes always** (§2, §3). CRLF, trailing whitespace, BOM — all hash as written.
 
 ## 10. Open questions for architecture review
 
 1. **node_rev width** — 16 hex (64-bit) per §1, vs the contract examples' 6. Examples are non-normative, but the amendment that freezes `resolve` should state the width; any objection to 16?
 2. **Ring bound** — count (e.g. 64 roots) vs age (e.g. 10min) vs both. Determines how stale a subscriber can be and still catch up without a full resync. Cheap either way (structural sharing); needs a number.
-3. **Root scope of non-watched files** — §3 says every regular file under the workspace root. Should ignore globs (`.git/`, `.ccc/events.ndjson` journals, `*.lock` sidecars) be excluded from the root? Recommend YES for the daemon's own write-side artifacts (journal/locks — otherwise every guarded write moves the root it just guarded) with the ignore set frozen in the contract amendment; needs sign-off on the exact set. **This is the one place §3's "every file" needs a carve-out — a root that self-invalidates on every splice is useless as a commit guard.**
-4. **Symlink retarget invisibility** (§9) — acceptable for v1, or hash the target path as a pseudo-leaf?
-5. **Multi-file atomic batch at rung 3** (pipe-txn successor) — same open question as migration map §8; the guard vocabulary here is designed to serve it (`if_root` + batch splice) but the wire shape is undecided.
-6. **guard `changed` payload cap** — a wildly stale root can name thousands of paths; cap + `truncated:true`, or force `root_unknown` past a threshold? Recommend cap at 1000 with truncation flag.
+3. **Hash domain** — settled for design in `wire-contract.md` §12 (md-only + `meridian/domain.md`). This spec’s leaf rule must stay aligned with that domain filter.
+4. **Symlink retarget invisibility** (§9) — acceptable for now, or hash the target path as a pseudo-leaf?
+5. **Multi-file atomic batch** — limit stated in `wire-contract.md` §6.5; vocabulary is `if_fingerprint` + batch `splice`.
+6. **`diff` / mismatch `changed` payload cap** — a wildly stale fingerprint can name thousands of paths; cap + `truncated:true`, or force `fingerprint_unknown` past a threshold?
 

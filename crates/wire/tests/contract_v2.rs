@@ -1,5 +1,5 @@
 //! Contract fixtures, executable against the frozen text
-//! (`docs/wire-contract-v2.md`):
+//! (`docs/wire-contract.md`):
 //! hpath dual-serialization + deviation row, the unknown-kinds discrimination
 //! fixture, the §8 recovery-binding table, and the worked §4.1/§4.2/§4.5/§5.2 frames
 //! asserted value-for-value (byte-exact dispatch fixtures are D2-DISPATCH's;

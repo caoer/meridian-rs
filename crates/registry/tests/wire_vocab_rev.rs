@@ -1,4 +1,4 @@
-//! The daemon-socket vocabulary gate (`docs/wire-contract-v3-amendment.md`),
+//! The daemon-socket vocabulary gate (`docs/wire-contract.md`),
 //! executable end-to-end over the resident daemon's unified socket.
 //!
 //! The amendment's hard rule, on the daemon socket this time: a `hello` session

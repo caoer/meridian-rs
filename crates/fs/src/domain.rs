@@ -545,7 +545,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    // ---- §12.1 fixture bytes, verbatim from the contract §0.3 fixtures (docs/wire-contract-v2.md) ----
+    // ---- §12.1 fixture bytes, verbatim from the contract §0.3 fixtures (docs/wire-contract.md) ----
     const PLAN_V0: &str = "---\ntitle: Plan\n---\n# Goals\n\nShip the contract.\n\n## Q3\n\nship by August\n\n## Q4\n\n- item one\n- see [[2026-07-18]]\n- blocked on [[roadmap]]\n";
     const RECEIPTS_V0: &str = "# Receipts \u{2014} 2026-07-18\n"; // em dash = 3-byte UTF-8
     const GH_README: &str = "# CI notes\n";
