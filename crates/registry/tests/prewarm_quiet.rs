@@ -20,23 +20,15 @@ const NEVER: Duration = Duration::from_secs(365 * 24 * 60 * 60);
 fn quiet_server(tmp: &Path, idle_exit: Option<Duration>, reap_interval: Duration) -> RunningServer {
     let dir = tmp.join("registry");
     fs::create_dir_all(&dir).unwrap();
-    RunningServer::start(Config {
-        socket_path: dir.join("daemon.sock"),
-        state_path: dir.join("state.json"),
-        cache_root: tmp.join("cache"),
-        idle_threshold: NEVER,
-        reap_interval,
-        prewarm_interval: NEVER,
-        prewarm_quiet_max: NEVER,
-        idle_exit,
-        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
-        sub_idle_write_timeout: registry::DEFAULT_SUB_IDLE_WRITE_TIMEOUT,
-        // No build identity configured: this fixture is not testing the hello
-        // identity field, and an absent sha is the honest state for a server
-        // started from a test harness rather than a deployed binary.
-        build_sha: None,
-    })
-    .unwrap()
+    let mut config = Config::for_cache_root(tmp.join("cache"));
+    config.socket_path = dir.join("daemon.sock");
+    config.state_path = dir.join("state.json");
+    config.idle_threshold = NEVER;
+    config.reap_interval = reap_interval;
+    config.prewarm_interval = NEVER;
+    config.prewarm_quiet_max = NEVER;
+    config.idle_exit = idle_exit;
+    RunningServer::start(config).unwrap()
 }
 
 fn workspace(tmp: &Path, files: &[(&str, &str)]) -> PathBuf {

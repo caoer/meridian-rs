@@ -30,22 +30,20 @@ fn test_config(tmp: &TempDir) -> Config {
 /// `hello.identity.build`, `None` makes it publish no identity at all.
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config_with_build(tmp: &TempDir, build_sha: Option<&str>) -> Config {
+    let forever = Duration::from_secs(365 * 24 * 60 * 60);
     let dir = tmp.path().join("registry");
-    Config {
-        build_sha: build_sha.map(str::to_owned),
-        socket_path: dir.join("daemon.sock"),
-        state_path: dir.join("state.json"),
-        cache_root: tmp.path().join("cache"),
-        idle_threshold: Duration::from_secs(365 * 24 * 60 * 60),
-        reap_interval: Duration::from_secs(365 * 24 * 60 * 60),
-        prewarm_interval: Duration::from_secs(365 * 24 * 60 * 60),
-        prewarm_quiet_max: Duration::from_secs(365 * 24 * 60 * 60),
-        // No idle exit: this server's lifetime is the test's, and a daemon that
-        // reaped itself mid-assertion would fail as a flake, not a finding.
-        idle_exit: None,
-        push_write_timeout: registry::DEFAULT_PUSH_WRITE_TIMEOUT,
-        sub_idle_write_timeout: registry::DEFAULT_SUB_IDLE_WRITE_TIMEOUT,
-    }
+    let mut config = Config::for_cache_root(tmp.path().join("cache"));
+    config.build_sha = build_sha.map(str::to_owned);
+    config.socket_path = dir.join("daemon.sock");
+    config.state_path = dir.join("state.json");
+    config.idle_threshold = forever;
+    config.reap_interval = forever;
+    config.prewarm_interval = forever;
+    config.prewarm_quiet_max = forever;
+    // No idle exit: this server's lifetime is the test's, and a daemon that
+    // reaped itself mid-assertion would fail as a flake, not a finding.
+    config.idle_exit = None;
+    config
 }
 
 /// A workspace `tmp/<name>` seeded with `files` — a sibling of the cache root,
