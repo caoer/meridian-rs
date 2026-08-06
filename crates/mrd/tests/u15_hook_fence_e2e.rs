@@ -1,49 +1,24 @@
-//! **U15 — criterion 5: the commit fence, RUN AS A PLACED HOOK IN A REAL REPOSITORY.**
-//! Never an asserted function: every leg here places the fence **`mrd skill hook` emits** —
-//! extracted from that verbs stdout exactly as its document tells a reader to extract it
-//! ([`Sandbox::place_fence`]) — then drives a real `git commit` and reads what git did. #
-//! What retired with the installer, and what did not The verb plane that used to write
-//! these files is deleted. Its refusal arms (a foreign hook, a submodule, a redirected
-//! `core.hooksPath`, a downgrade, a non-repository) went with it: those are rules an agent
-//! now reads and acts on, and `crates/mrd/tests/skill_hook_emit.rs` measures that the
-//! document still carries every one of them. **What could not retire is this files
-//! subject** — whether following that document actually fences a repository. A contract
-//! whose body does not refuse an out-of-band write is a contract that lies, and no amount
-//! of document-grepping catches it. # The three arms, and why the third is not optional
-//! (S3-R8(c)) A guard proven only by what it blocks is indistinguishable from a guard that
-//! blocks everything, so the refusals are paired with the acceptance: -
-//! [`the_fence_accepts_a_commit_whose_writes_were_all_governed`] — the **ACCEPTANCE**.
-//! Without it, a verifier running *pin → out-of-band edit → commit → rejected* records PASS
-//! caused by a false red rather than by the guard, which is structurally how stage 2s
-//! criterion 3 failed. - [`the_fence_refuses_a_commit_carrying_an_out_of_band_write`] —
-//! refusal one. - [`the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation`] —
-//! refusal two, **as AMENDED by S3-R71(a)**: the arm binds to the **ORPHAN** state — no ref
-//! reaches the pinned blob AND the file no longer hashes to it, so nothing holds it and no
-//! commit will. # Why that amendment is load-bearing for this file U14 measured one pins
-//! ordinary governed life: `never-anchored` before `git add`; **`pending-anchor` AT HOOK
-//! TIME — because `git add` writes the blob and the commit that would anchor it is the one
-//! being fenced**; `anchored` after. So pending-anchor is the normal state of every
-//! governed commit at the moment the fence runs, and an arm wired to it would refuse the
-//! lifecycle rather than a defect. **A lifecycle state is not a defect.** The acceptance
-//! arm is what catches that, and it caught it against the criterions own author-level
-//! wording. # The discriminator is the PAIR, never one legs exit Every refusal leg here has
-//! the acceptance leg as its control: the same placed hook, the same binary, the same
-//! repository shape — one corpus commits and the other does not. An exit code on its own
-//! would be satisfied by a hook that refuses everything, including the one that refuses
-//! because `mrd` is missing.
+//! U15 — criterion 5: the commit fence, RUN AS A PLACED HOOK IN A REAL
+//! REPOSITORY. Never an asserted function: every leg places the fence
+//! `mrd skill hook` emits — extracted from that verbs stdout exactly as its
+//! document tells a reader to extract it ([`Sandbox::place_fence`]) — then drives
+//! a real `git commit` and reads what git did.
 //!
+//! # The three arms
 //!
+//! A guard proven only by what it blocks is indistinguishable from a guard that
+//! blocks everything, so the refusals are paired with the acceptance (S3-R8(c)):
+//! - [`the_fence_accepts_a_commit_whose_writes_were_all_governed`] — the
+//!   ACCEPTANCE, without which every refusal below is unattributable.
+//! - [`the_fence_refuses_a_commit_carrying_an_out_of_band_write`].
+//! - [`the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation`],
+//!   bound to the ORPHAN state (S3-R71(a)): no ref reaches the pinned blob AND
+//!   the file no longer hashes to it, so nothing holds it and no commit will.
 //!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! That last binding is load-bearing. `pending-anchor` is the normal state of
+//! every governed commit at the moment the fence runs — `git add` writes the blob
+//! and the commit that would anchor it is the one being fenced — so an arm wired
+//! to it would refuse the lifecycle rather than a defect.
 
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
@@ -56,15 +31,8 @@ fn mrd_bin() -> PathBuf {
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mrd")), PathBuf::from)
 }
 
-/// A sandbox whose `mrd` is OURS and whose caches are its own. The `bin/` directory holds a
-/// symlink to the binary under test and is the ONLY thing on the hooks `PATH`.
-///
-///
-///
-///
-///
-///
-///
+/// A sandbox whose `mrd` is OURS and whose caches are its own. The `bin/`
+/// directory holds a symlink to the binary under test and leads the hooks `PATH`.
 struct Sandbox {
     tmp: tempfile::TempDir,
     bin: PathBuf,
@@ -148,14 +116,10 @@ impl Sandbox {
         format!("{}:{SYSTEM_PATH}", self.bin.display())
     }
 
-    /// A commit whose hook runs with a `PATH` that has git but NOT `mrd` — the "`mrd` is not on
-    /// PATH at commit time" rescue row, driven rather than described. The precondition is asserted
-    /// rather than assumed: if a deployed `mrd` happened to live in a system directory this leg
-    /// would silently measure the wrong thing, so it checks that nothing named `mrd` is resolvable
-    /// there before it draws any conclusion.
-    ///
-    ///
-    ///
+    /// A commit whose hook runs with a `PATH` that has git but NOT `mrd` — the
+    /// "`mrd` is not on PATH at commit time" rescue row, driven rather than
+    /// described. The precondition is asserted: a deployed `mrd` in a system
+    /// directory would make this leg measure a different failure.
     fn commit_without_mrd(&self, ws: &Path, message: &str) -> Output {
         for dir in SYSTEM_PATH.split(':') {
             assert!(
@@ -197,22 +161,9 @@ impl Sandbox {
         ws
     }
 
-    /// **Declare a pin AND LAND IT, so the interval a commit records carries the lock.** Returns
-    /// the governed bytes of the pinned file. Both halves are load-bearing, and the second one is
-    /// why arms broke `mrd pin` writes the lock into `claim.md` and leaves it UNCOMMITTED.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// Declare a pin AND LAND IT, so the interval a commit records carries the
+    /// lock — `mrd pin` writes the lock into `claim.md` and leaves it
+    /// UNCOMMITTED. Returns the governed bytes of the pinned file.
     fn pin_and_land(&self, ws: &Path) -> Vec<u8> {
         let pin = self.run(ws, &["pin", "claim.md", "source.md#Source/Guideline"]);
         assert_eq!(pin.status.code(), Some(0), "mrd pin: {}", said(&pin));
@@ -221,16 +172,10 @@ impl Sandbox {
         std::fs::read(ws.join("source.md")).expect("governed bytes")
     }
 
-    /// **Place the fence the way `mrd skill hook`s document says to**, and assert the STATE CHANGE
-    /// rather than an exit code (R40): every door git dispatches for a commit built from a prepared
-    /// index carries an executable fence. Returns `pre-commit`, which is the door the arms in this
-    /// file drive.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// Place the fence the way `mrd skill hook`s document says to, asserting the
+    /// STATE CHANGE rather than an exit code (R40): every door git dispatches for
+    /// a commit built from a prepared index carries an executable fence. Returns
+    /// `pre-commit`, the door the arms in this file drive.
     fn place_fence(&self, ws: &Path) -> PathBuf {
         let out = self.run(ws, &["skill", "hook"]);
         assert_eq!(out.status.code(), Some(0), "mrd skill hook: {}", said(&out));
@@ -257,12 +202,8 @@ impl Sandbox {
     }
 }
 
-/// **Make the corpus one the gate genuinely refuses** — rewrite the PINNED section out of band,
-/// so the pin plane reads `red content-drifted`. The refusal used to come free from the journal
-/// being empty, over a corpus with nothing wrong in it. It is CONSTRUCTED now, and it is
-/// constructed from a real lie about real content, which is what the fence actually guards.
-///
-///
+/// Make the corpus one the gate genuinely refuses: rewrite the PINNED section
+/// out of band, so the pin plane reads `red content-drifted`.
 fn drift_the_pin(ws: &Path) {
     write(
         ws,
@@ -293,17 +234,10 @@ fn fence_body(doc: &str) -> String {
 
 // ── ARM 1 — THE ACCEPTANCE (S3-R8(c)) ────────────────────────────────────────
 
-/// **The fence ACCEPTS a commit whose writes were ALL governed.** This is the leg without which
-/// every refusal below is unattributable. The corpus is written through the shipped write doors
-/// (`mrd pin`, then `mrd put`), so the journals last rows `root_after` IS the live tree and
-/// `mrd check` exits 0 — and the installed hook
-///
-///
-///
-///
-///
-///
-///
+/// The fence ACCEPTS a commit whose writes were ALL governed — the leg without
+/// which every refusal below is unattributable. The corpus is written through
+/// the shipped write doors (`mrd pin`, then `mrd put`), so `mrd check` exits 0
+/// before the hook is asked.
 #[test]
 fn the_fence_accepts_a_commit_whose_writes_were_all_governed() {
     let sb = sandbox();
@@ -346,22 +280,16 @@ fn the_fence_accepts_a_commit_whose_writes_were_all_governed() {
 
 // ── ARM 2 — the OUT-OF-BAND refusal ──────────────────────────────────────────
 
-/// **The fence REFUSES a commit carrying an out-of-band write** — the one door
-/// the engine cannot see, and the fence's whole reason for existing.
+/// The fence REFUSES a commit carrying an out-of-band write — the one door the
+/// engine cannot see, and the fence's whole reason for existing.
 ///
 /// The control is the acceptance leg above: same hook, same binary, same
 /// repository shape. What differs is one plain shell rewrite of a governed file.
 ///
-/// # The out-of-band write moved from `plan.md` to the PINNED section
-/// It used to rewrite `plan.md`, and the refusal came from the journal's baseline
-/// going stale. Nothing pins `plan.md`, so under the pins-only gate that write is
-/// **invisible** — the arm was asserting a refusal the engine no longer produces.
-///
-/// The subject is unchanged: *a plain shell rewrite of governed content must not
-/// reach history through this fence*. What changed is that the content has to be
-/// content the corpus CLAIMS, because a claim is the only thing the gate can check
-/// a byte against. The laundered edit to unclaimed content is not caught here and
-/// is not caught anywhere — that is the ruled design, recorded in `check_e2e.rs`.
+/// The rewrite has to land on content the corpus CLAIMS, because a claim is the
+/// only thing the gate can check a byte against. A laundered edit to unclaimed
+/// content is not caught here and is not caught anywhere — the ruled design,
+/// recorded in `check_e2e.rs`.
 #[test]
 fn the_fence_refuses_a_commit_carrying_an_out_of_band_write() {
     let sb = sandbox();
@@ -407,21 +335,15 @@ fn the_fence_refuses_a_commit_carrying_an_out_of_band_write() {
 
 // ── ARM 2b — the INDEX refusal (F1): the interval the commit spans ───────────
 
-/// **The fence REFUSES a commit whose INDEX carries an out-of-band write, with the worktree
-/// restored byte-exact** — F1, the false green the shipped fence shipped with. # The
-/// sequence is the reviewers, and the byte-exactness is the whole gate `mrd pin` writes a
-/// `^facts` anchor into the target, so an undo that reconstructs the file by hand does not
-/// restore it — and the fence then refuses for the WRONG REASON (the worktree really did
-/// drift), which reads exactly like the defect being absent. **The comfortable answer came
-/// from the inexact restore.** Here the governed bytes are CAPTURED and written back
-/// verbatim, so the worktree is provably identical and the index is provably not — both
-/// asserted below before the commit is attempted. The control is
-/// [`the_fence_accepts_a_commit_whose_writes_were_all_governed`]: same hook, same binary,
-/// same corpus shape, one intervals bytes different.
+/// The fence REFUSES a commit whose INDEX carries an out-of-band write, with the
+/// worktree restored byte-exact (F1).
 ///
-///
-///
-///
+/// The byte-exactness is the whole gate: `mrd pin` writes a `^facts` anchor into
+/// the target, so an undo that reconstructs the file by hand does not restore it
+/// and the fence refuses for the WRONG REASON. Here the governed bytes are
+/// CAPTURED and written back verbatim, so the worktree is provably identical and
+/// the index provably not — both asserted before the commit is attempted. The
+/// control is [`the_fence_accepts_a_commit_whose_writes_were_all_governed`].
 #[test]
 fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
     let sb = sandbox();
@@ -493,8 +415,7 @@ fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
         before,
         "R40 — refused means git recorded NO commit"
     );
-    // And history is the oracle: whatever the hook printed, the bytes are what
-    // matter. `git show HEAD:source.md` is where F1 was caught.
+    // History is the oracle: whatever the hook printed, the bytes are what matter.
     assert!(
         !String::from_utf8_lossy(&git_bytes(&ws, &["show", "HEAD:source.md"]))
             .contains("FORGED out of band"),
@@ -510,11 +431,8 @@ fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
         "AND IT NAMES THE INTERVAL (S3-R29): a refusal an operator cannot locate \
          is one they cannot act on, and the worktree here is clean: {text}"
     );
-    // S3-R104 — ASSERT THE CAUSE, because this arm has two independent refusing detectors and a
-    // later fix could delete one of them without failing anything. The pin plane is the one that
-    // names the forgery; the journal planes grey is the second, and it survives the interval
-    // predicate only because a forged tree matches no receipt. Measured post-predicate-fix: both
-    // are present.
+    // S3-R104 — assert the CAUSE: this arm has two independent refusing detectors,
+    // and a later fix could delete one without failing anything.
     assert!(
         text.contains("content-drifted"),
         "the refusal must name WHAT it saw — a pin whose target drifted — or this arm \
@@ -522,26 +440,23 @@ fn the_fence_refuses_a_commit_whose_index_carries_an_out_of_band_write() {
     );
 }
 
-/// **The fence still ACCEPTS the same corpus once the forgery is out of BOTH intervals** — the
-/// redden pairs other arm, over the exact repository the leg above refused. Without it, the
-/// refusal above is satisfied by a fence that refuses every commit with anything staged at all
-/// — which is what widening an interval most plausibly breaks, and it would brick every
-/// governed commit on the fleet.
-///
-///
+/// The fence still ACCEPTS the same corpus once the forgery is out of BOTH
+/// intervals, over the exact repository the leg above refused. Without it, that
+/// refusal is satisfied by a fence that refuses every commit with anything staged
+/// at all — what widening an interval most plausibly breaks.
 #[test]
 fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
     let sb = sandbox();
     let ws = sb.corpus("accepts-index");
     sb.place_fence(&ws);
 
-    // LANDED, not merely declared: until the lock is in the interval a commit records, the bytes a
-    // commit would record claim nothing and the forgery below is invisible to the gate. See
-    // `Sandbox::pin_and_land`.
+    // LANDED, not merely declared: until the lock is in the interval a commit
+    // records, the bytes a commit would record claim nothing and the forgery below
+    // is invisible to the gate.
     let governed = sb.pin_and_land(&ws);
 
-    // The refusal, first, so the acceptance below is measured over a corpus this fence genuinely
-    // stops — never over one that would have committed anyway.
+    // The refusal first, so the acceptance below is measured over a corpus this
+    // fence genuinely stops.
     let forged = String::from_utf8(governed.clone())
         .expect("utf-8 fixture")
         .replace("the pinned body", "FORGED out of band");
@@ -556,10 +471,8 @@ fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
     // Take the forgery out of the INDEX too, and stage the rest of the governed
     // write with it: `mrd pin` wrote BOTH the lock in `claim.md` and the anchor in
     // `source.md`, and a commit recording one without the other records a tree no
-    // receipt vouches for. An ordinary `git add -A` is what a governed commit does.
-    // An ordinary edit to a page nothing pins, so the acceptance carries a REAL
-    // commit. Without it the tree is identical to HEAD and git refuses for its own
-    // reasons — an empty commit would prove nothing about the fence.
+    // receipt vouches for. The edit to an unpinned page is what makes the
+    // acceptance a REAL commit rather than an empty one git refuses on its own.
     write(&ws, "plan.md", "# Plan\n\n## Goals\n\nalpha beta gamma\n");
     git_ok(&ws, &["add", "-A"]);
     assert_eq!(
@@ -588,13 +501,11 @@ fn the_widened_interval_still_accepts_a_governed_commit_over_the_same_corpus() {
 
 // ── ARM 3 — the ORPHAN refusal (criterion 5 as AMENDED, S3-R71(a)) ───────────
 
-/// **The fence REFUSES a commit that would strand an anchor obligation** — the ORPHAN: no ref
-/// reaches the pinned blob AND the file no longer hashes to it, so nothing holds it and no
-/// commit will. The corpus isolates the anchoring finding from the content one: the out-of-band
-/// edit lands in `Notes`, OUTSIDE the pinned `Guideline`, so the claim plane stays green and
-/// the `objects:` blob — which is whole-file — moves.
-///
-///
+/// The fence REFUSES a commit that would strand an anchor obligation — the
+/// ORPHAN: no ref reaches the pinned blob AND the file no longer hashes to it.
+/// The corpus isolates the anchoring finding from the content one: the
+/// out-of-band edit lands in `Notes`, OUTSIDE the pinned `Guideline`, so the
+/// claim plane stays green while the whole-file `objects:` blob moves.
 #[test]
 fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
     let sb = sandbox();
@@ -652,28 +563,20 @@ fn the_fence_refuses_a_commit_that_would_strand_an_anchor_obligation() {
 
 // ── THE ACCEPTANCE THE FIRST INTERVAL FIX BROKE (found by fbd87f1c) ──────────
 
-/// **A legitimately-governed PARTIAL STAGE is ACCEPTED** — `git add` followed by a
-/// further governed write, which on a fleet doing continuous governed writes is the
-/// common path, and which `git add -p` reaches on every hunk it leaves behind.
+/// A legitimately-governed PARTIAL STAGE is ACCEPTED — `git add` followed by a
+/// further governed write, which `git add -p` reaches on every hunk it leaves
+/// behind.
 ///
-/// # The corpus contains no out-of-band write at all
-/// `mrd pin` (governed) → `mrd put` edit ONE (governed) → `git add notes.md` →
-/// `mrd put` edit TWO (governed). The index now holds the EXACT post-edit-ONE
-/// bytes: a state the engine itself wrote and journaled. **The deployed engine
-/// accepts this commit (`2 -> 3`); the first interval fix refused it (`2 -> 2`) —
-/// a FALSE RED, and the suite did not catch it because no arm asserted the
-/// acceptance direction for partial staging.**
+/// The corpus contains no out-of-band write at all: `mrd pin` → `mrd put` edit
+/// ONE → `git add notes.md` → `mrd put` edit TWO, all governed, so the index
+/// holds the EXACT post-edit-ONE bytes — a state the engine itself wrote and
+/// journaled. That snapshot is internally inconsistent and legitimately so:
+/// `git add notes.md` stages content without the journal, so the staged tree
+/// folds to `^r-000002`'s `root_after` while the staged journal still ends at
+/// `^r-000001`.
 ///
-/// # Why it refused, measured, because the fix turns on it
-/// The staged snapshot is INTERNALLY INCONSISTENT and legitimately so: `git add
-/// notes.md` stages content without the journal, so the staged tree folds to
-/// `^r-000002`'s `root_after` while the staged journal still ends at `^r-000001`.
-/// Dating a snapshot against its own journal's LAST row therefore reports
-/// *"something advanced the tree that the journal does not account for"* — when the
-/// engine wrote every byte of both states.
-///
-/// **The discriminator is that a legitimate intermediate state matches SOME receipt
-/// in the record, and a forgery matches NONE.** The refusal arms above are this
+/// The discriminator is that a legitimate intermediate state matches SOME
+/// receipt in the record, and a forgery matches NONE. The refusal arms above are this
 /// arm's control: they must keep refusing in the same run, and
 /// [`a_staged_journal_forgery_is_refused_though_the_journal_is_root_excluded`] is
 /// the one that proves the widening did not open the journal door.
@@ -701,7 +604,7 @@ fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
     let two = sb.run_stdin(&ws, &["put", "plan.md"], &goals_match("beta", "beta-TWO"));
     assert_eq!(two.status.code(), Some(0), "put TWO: {}", said(&two));
 
-    // THE FIXTURE'S OWN PRECONDITIONS, so a pass cannot come from a corpus that
+    // The fixture's own preconditions, so a pass cannot come from a corpus that
     // never reached the state under test.
     assert_eq!(
         git_bytes(&ws, &["show", ":plan.md"]),
@@ -742,36 +645,18 @@ fn a_governed_partial_stage_is_accepted_though_the_journal_has_moved_past_it() {
     );
 }
 
-/// **THE TREE-FORM PREDICATE IS GONE, AND THIS ARM NOW ASSERTS ITS ABSENCE.** What it proved,
-/// and why it cannot Ratified S3-R103: *the predicate is over the TREE, not per path*. Two
-/// governed writes to two files, then only the SECOND staged — the index carries `b.md`s new
-/// bytes beside `a.md`s HEAD bytes, **a combination no governed write ever produced**, though
-/// every individual paths bytes came from some receipt. The tree-form predicate refused it; a
-/// per-path reading would not have. **Both readings were readings OF THE RECORD.**
-/// `is_prefix_of` / `accounts_for` were pure functions of journal rows (U5 § 3), and the whole
-/// R102(a)-vs-R103 distinction was about which shape of question to ask the ledger.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The tree-form predicate is gone, and this arm asserts its absence. Two
+/// governed writes to two files, then only the SECOND staged: the index carries
+/// `b.md`s new bytes beside `a.md`s HEAD bytes — a combination no governed write
+/// ever produced, though every individual paths bytes came from some receipt. The
+/// tree-form predicate refused that; a per-path reading does not.
 #[test]
 fn a_mixed_two_receipt_stage_now_commits_because_the_tree_predicate_is_gone() {
     let sb = sandbox();
     let ws = sb.corpus("mixed-two-receipt");
-    // The two files are committed BEFORE the fence is installed, exactly as `corpus()` commits its
-    // own: writing them is an out-of-band write, and the fence would refuse that commit for the
-    // right reason and mask this arm.
+    // The two files are committed BEFORE the fence is installed: writing them is
+    // an out-of-band write, which the fence would refuse for the right reason and
+    // mask this arm.
     write(&ws, "a.md", "# A\n\n## Log\n\nalpha\n");
     write(&ws, "b.md", "# B\n\n## Log\n\nbeta\n");
     git_ok(&ws, &["add", "-A"]);
@@ -830,30 +715,13 @@ fn a_mixed_two_receipt_stage_now_commits_because_the_tree_predicate_is_gone() {
 
 // ── THE OTHER DOORS ONTO THE SAME INTERVAL GAP (F1 names them) ───────────────
 
-/// **`git commit <pathspec>` records a THIRD interval, and asking git is what makes the fence
-/// see it.** `git commit -- <paths>` is `--only`: the commit tree is **HEAD plus the named
-/// paths worktree bytes**, ignoring the index. So a governed write to a file the commit does
-/// not name is LEFT BEHIND, and the tree that lands is one no receipt ever produced — while the
-/// worktree is entirely governed and a worktree check is honestly green. Here `mrd pin` writes
-/// `claim.md`s lock and `source.md`s anchor, `mrd put` writes `plan.md`, nothing is staged, and
-/// the commit names `plan.md` alone. The recorded tree carries the governed `plan.md` and
-/// **HEADs lock-less `claim.md`**.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// `git commit <pathspec>` records a THIRD interval: `git commit -- <paths>` is
+/// `--only`, so the commit tree is HEAD plus the named paths worktree bytes,
+/// ignoring the index. A governed write to a file the commit does not name is
+/// LEFT BEHIND, and the tree that lands is one no receipt ever produced — while
+/// the worktree is entirely governed and a worktree check is honestly green.
+/// Here the commit names `plan.md` alone, so the recorded tree carries the
+/// governed `plan.md` beside HEADs lock-less `claim.md`.
 #[test]
 fn a_pathspec_commit_now_lands_because_its_only_detector_was_the_record() {
     let sb = sandbox();
@@ -886,12 +754,8 @@ fn a_pathspec_commit_now_lands_because_its_only_detector_was_the_record() {
         .env_remove("MERIDIAN_WORKSPACE")
         .output()
         .expect("git commit <pathspec>");
-    // **S3-R104 NAMED THIS ARMS ONLY REFUSING DETECTOR, AND IT WAS THE JOURNAL.** The comment that
-    // stood here said so in as many words: *"the pin plane is GREEN here (no lock is drifted); the
-    // refusal is the journal plane being unable to date a tree the record never produced."* That
-    // plane is deleted, so the arms sole detector is deleted with it — no re-derivation is
-    // available, because the pin plane genuinely has no complaint about this tree.
-    //
+    // This arms only refusing detector was the journal plane, and that plane is
+    // deleted: the pin plane genuinely has no complaint about this tree.
     assert!(
         commit.status.success(),
         "THE REDUCTION, ASSERTED: `git commit -- <pathspec>` is `--only`, so this \
@@ -906,10 +770,8 @@ fn a_pathspec_commit_now_lands_because_its_only_detector_was_the_record() {
         "R40 — the commit is REAL. This is lost enforcement, recorded rather than \
          discovered later by someone who trusted the fence to cover pathspec commits"
     );
-    // The interval machinery itself is UNTOUCHED and still works — it is only the plane that had a
-    // complaint that is gone. Asserted so this arm does not read as "the fence stopped seeing
-    // pathspec commits", which would be a different and much worse defect.
-    //
+    // The interval machinery itself still works — asserted so this arm does not
+    // read as "the fence stopped seeing pathspec commits".
     let gated = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
         gated.status.code(),
@@ -926,42 +788,15 @@ fn a_pathspec_commit_now_lands_because_its_only_detector_was_the_record() {
     );
 }
 
-/// **A write landing BETWEEN `git add` AND HOOK FIRE does not block the governed index — and is
-/// TOLD, never withheld.** Then the same bytes, STAGED, are refused. The pair is the contract;
-/// either half alone is satisfied by a fence that does the wrong thing. This is the case F1
-/// calls the normal one on a common dir with a live fleet: another agent writes while a commit
-/// is in flight. The concurrent writer is simulated where it is deterministic — the bytes
-/// change after staging and before the hook runs, exactly the state such a race leaves. A
-/// sleep-and-hope race would prove less; it would pass when it happened to lose. THIS ARM
-/// CHANGED WITH THE SCOPED QUESTION, DELIBERATELY Under the retired `mrd check --staged` the
-/// exit was worst-of ACROSS intervals, so the worktrees ungoverned bytes refused a commit that
-/// would not have recorded them. `--commit-gate` names ONE interval — **the one a commit
-/// records** — because a finding from the other swamps a clean answer about the bytes actually
-/// being committed, which is how a permanent fact came to be spent as a per-commit verdict
-/// (S4-R19).
+/// A write landing BETWEEN `git add` and hook fire does not block the governed
+/// index; the same bytes, STAGED, are refused. The pair is the contract — either
+/// half alone is satisfied by a fence that does the wrong thing. The concurrent
+/// writer is simulated where it is deterministic: the bytes change after staging
+/// and before the hook runs, exactly the state such a race leaves.
 ///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// `--commit-gate` names ONE interval — the one a commit records — because a
+/// finding from the other swamps a clean answer about the bytes actually being
+/// committed (S4-R19).
 #[test]
 fn a_write_landing_after_git_add_does_not_block_the_governed_index() {
     let sb = sandbox();
@@ -978,9 +813,8 @@ fn a_write_landing_after_git_add_does_not_block_the_governed_index() {
     assert_eq!(put.status.code(), Some(0), "mrd put: {}", said(&put));
     git_ok(&ws, &["add", "-A"]);
 
-    // The other agent writes, after the stage, before the hook — and it breaks a pin, so it is a
-    // write the gate CAN see. That is what makes the acceptance below meaningful: the bytes on
-    // disk are genuinely bad.
+    // The other agent writes, after the stage and before the hook, and it breaks a
+    // pin — so the bytes on disk are genuinely bad and the gate CAN see them.
     drift_the_pin(&ws);
     assert_eq!(
         sb.run(&ws, &["check"]).status.code(),
@@ -1000,9 +834,8 @@ fn a_write_landing_after_git_add_does_not_block_the_governed_index() {
     );
     assert_eq!(head_count(&ws), before + 1, "R40 — the commit was recorded");
 
-    // REFUSAL, same run, same bytes — staged this time. Without this half the arm is satisfied by
-    // a gate that accepts everything, which is the stuck-open fence the scoped question must not
-    // have traded the stuck-closed one for.
+    // REFUSAL, same run, same bytes — staged this time. Without this half the arm
+    // is satisfied by a gate that accepts everything.
     git_ok(&ws, &["add", "-A"]);
     let before = head_count(&ws);
     let refused = sb.commit(&ws, "and now it is staged", &[]);
@@ -1015,28 +848,9 @@ fn a_write_landing_after_git_add_does_not_block_the_governed_index() {
     assert_eq!(head_count(&ws), before, "R40 — no commit was recorded");
 }
 
-/// **THE RESERVED JOURNAL IS AN ORDINARY PAGE, AND STAGING A FORGED ONE MOVES NOTHING.**
-/// Asserted, because the arm that stood here proved the opposite. What it proved The journal
-/// was root-EXCLUDED from the hash domain by named law — the one file whose bytes no fold
-/// covered — so the interval overlay had to pick it out of the index BY HAND. Stage a forged
-/// journal, restore the worktree byte-exact, and without that special read the chain would be
-/// recomputed over the honest worktree copy while the commit recorded the forged one.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The reserved journal is an ORDINARY PAGE, and staging a forged one moves
+/// nothing: no root exclusion means no special index read, and nothing dates a
+/// tree against it.
 #[test]
 fn a_staged_journal_forgery_moves_nothing_because_the_path_is_an_ordinary_page() {
     let sb = sandbox();
@@ -1082,29 +896,24 @@ fn a_staged_journal_forgery_moves_nothing_because_the_path_is_an_ordinary_page()
     );
 }
 
-/// **A VERSION SKEW — this fence, an OLDER `mrd` on PATH — fails CLOSED and names
-/// the skew.**
+/// A VERSION SKEW — this fence, an OLDER `mrd` on PATH — fails CLOSED and names
+/// the skew.
 ///
 /// The hook resolves its engine at commit time and never bakes one in (D11), so a
-/// fence placed from a new engine's document can be run against an old one. The
-/// old engine answers `unknown flag: --commit-gate` and exits 2, and **the fence
-/// then refuses every commit**. That is the ordinary state of a cutover, not a
-/// corner — and this contract's cutover is exactly it, because the generation the
-/// document now emits runs a flag the previous fence's engine may not carry.
-///
-/// It must fail CLOSED — falling back to an unscoped `mrd check` would restore the
-/// F1 false green — but a bare "exited 2" leaves an operator with a bricked
-/// repository and no idea why. The stand-in for the old engine is a script that
-/// answers exactly as one does: exit 2 with `unknown flag`.
+/// fence placed from a new engine's document can be run against an old one that
+/// answers `unknown flag: --commit-gate` and exits 2. Failing closed is required
+/// — falling back to an unscoped `mrd check` would restore the F1 false green —
+/// but a bare "exited 2" leaves an operator with a bricked repository and no idea
+/// why. The stand-in for the old engine answers exactly as one does.
 #[test]
 fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
     let sb = sandbox();
     let ws = sb.corpus("version-skew");
     sb.place_fence(&ws);
 
-    // An `mrd` that behaves like an engine predating `--commit-gate`: exit 2 on the flag.
-    // Everything else about the fence is unchanged, so the refusal below is attributable to the
-    // skew and nothing else.
+    // An `mrd` that behaves like an engine predating `--commit-gate`: exit 2 on
+    // the flag. Everything else is unchanged, so the refusal below is attributable
+    // to the skew.
     let old = sb.tmp.path().join("old-bin");
     std::fs::create_dir_all(&old).expect("old bin dir");
     std::fs::write(
@@ -1154,19 +963,16 @@ fn a_fence_run_against_an_older_engine_refuses_and_names_the_skew() {
 
 // ── the ESCAPES, and the state change that proves each one ───────────────────
 
-/// **`--force` is honoured, in its hook spelling**, and so is gits own `--no-verify`. Both run
-/// against the SAME corpus arm 2 proved refused, so each one is measured as an escape from a
-/// real refusal rather than over a corpus that would have committed anyway.
-///
+/// `--force` is honoured, in its hook spelling, and so is gits own `--no-verify`.
+/// Both run against the SAME corpus arm 2 proved refused, so each is measured as
+/// an escape from a real refusal.
 #[test]
 fn both_escapes_carry_a_commit_the_fence_refused() {
     let sb = sandbox();
     let ws = sb.corpus("escapes");
     sb.place_fence(&ws);
-    // A CONSTRUCTED refusing tree: a landed pin, then an out-of-band rewrite of the content it
-    // claims. The refusal used to come from the journal being empty — over a corpus with nothing
-    // wrong in it — so this arms control had gone false while still compiling.
-    //
+    // A CONSTRUCTED refusing tree: a landed pin, then an out-of-band rewrite of
+    // the content it claims.
     sb.pin_and_land(&ws);
     drift_the_pin(&ws);
     git_ok(&ws, &["add", "-A"]);
@@ -1217,8 +1023,8 @@ fn both_escapes_carry_a_commit_the_fence_refused() {
     assert_eq!(head_count(&ws), before + 1, "R40 — it committed");
 }
 
-/// **`mrd` not on PATH at commit time: the hook FAILS CLOSED with a teaching
-/// message**, never a silent pass. An unverifiable commit is not a verified one.
+/// `mrd` not on PATH at commit time: the hook FAILS CLOSED with a teaching
+/// message, never a silent pass. An unverifiable commit is not a verified one.
 #[test]
 fn the_fence_fails_closed_when_mrd_is_not_on_path() {
     let sb = sandbox();
@@ -1251,17 +1057,9 @@ fn the_fence_fails_closed_when_mrd_is_not_on_path() {
 
 // ── the WORKTREE edge (D11): N workspaces, ONE hook dir ──────────────────────
 
-/// **Placing per git COMMON dir from a linked worktree lands in the MAIN repositorys
-/// `hooks/`**, and that one file fences the linked worktree it is committing from. This is D11
-/// ruled and then run.
-///
-///
-///
-///
-///
-///
-///
-///
+/// Placing per git COMMON dir from a linked worktree lands in the MAIN
+/// repositorys `hooks/`, and that one file fences the linked worktree it is
+/// committing from (D11).
 #[test]
 fn a_linked_worktree_places_into_the_common_dir_and_is_fenced_by_it() {
     let sb = sandbox();
@@ -1294,9 +1092,9 @@ fn a_linked_worktree_places_into_the_common_dir_and_is_fenced_by_it() {
          common dir, which is the whole reason D11 had to pick a side"
     );
 
-    // Placed from the LINKED worktree, following the documents instruction — `place_fence`
-    // resolves the common dir the same way the document tells its reader to, so where it lands is
-    // the instructions answer and not the tests.
+    // Placed from the LINKED worktree: `place_fence` resolves the common dir the
+    // way the document tells its reader to, so where it lands is the instructions
+    // answer and not the tests.
     sb.place_fence(&linked);
     let in_common = linked_common.join("hooks").join("pre-commit");
     assert!(
@@ -1309,10 +1107,9 @@ fn a_linked_worktree_places_into_the_common_dir_and_is_fenced_by_it() {
         "and NOT in the worktree's own git dir, where git would never look for it"
     );
 
-    // And it fences the linked worktree: an out-of-band write there is refused. The refusing tree
-    // is CONSTRUCTED (a landed pin, then a rewrite of the content it claims) — this arms subject
-    // is WHICH HOOK FILE FIRES, so it needs a tree the gate genuinely stops, and emptiness no
-    // longer supplies one.
+    // And it fences the linked worktree: an out-of-band write there is refused.
+    // The refusing tree is CONSTRUCTED (a landed pin, then a rewrite of the content
+    // it claims) because this arms subject is WHICH HOOK FILE FIRES.
     sb.pin_and_land(&linked);
     drift_the_pin(&linked);
     git_ok(&linked, &["add", "-A"]);
@@ -1382,9 +1179,9 @@ fn common_dir(dir: &Path) -> PathBuf {
     PathBuf::from(text)
 }
 
-/// How many commits `HEAD` reaches. **The state change every refusal leg asserts** (R40): a
-/// hook that printed a refusal while git committed anyway would pass an exit-code assert and
-/// fail the operator.
+/// How many commits `HEAD` reaches — the state change every refusal leg asserts
+/// (R40): a hook that printed a refusal while git committed anyway would pass an
+/// exit-code assert and fail the operator.
 fn head_count(dir: &Path) -> usize {
     let out = Command::new("git")
         .arg("-C")

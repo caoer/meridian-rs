@@ -1,18 +1,7 @@
-//! **U12 — criterion 4, BOTH HALVES, driven through the REAL `mrd put` / `mrd read`.** *"The
-//! positive half is required because round-trip identity alone is satisfied by never
-//! translating at all"* — an identity function round-trips perfectly and ships nothing. So
-//! every gate below asserts what the stored bytes ARE, not merely that they survive a round
-//! trip.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! U12 — criterion 4, both halves, driven through the real `mrd put` /
+//! `mrd read`. Round-trip identity alone is satisfied by never translating at
+//! all, so every gate asserts what the stored bytes are, not merely that they
+//! survive a round trip.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -32,12 +21,9 @@ struct Sandbox {
 }
 
 /// A `MERIDIAN.md` mount table binding `sessions` to `dir` under the Obsidian
-/// vault name `field-notes-sessions`.
-///
-/// **The vault name is deliberately DIFFERENT from the canonical root name.**
-/// If they were equal, every assertion that the stored form carries the VAULT
-/// name would also pass for an implementation that stored the ROOT name — the
-/// exact thing criterion 4 forbids.
+/// vault name `field-notes-sessions`. The vault name deliberately differs from
+/// the canonical root name — if they were equal, the vault-name assertions
+/// would also pass for an implementation that stored the root name.
 fn config_raw(sessions: Option<&Path>) -> String {
     use std::fmt::Write as _;
     let mut raw = "---\ntype: meridian-config\nversion: 1\n---\n\n# Test roots\n\n".to_string();
@@ -229,14 +215,9 @@ fn the_agent_plane_form_round_trips_through_the_stored_form() {
 // The positional bound — frontmatter is NOT an address position
 // ---------------------------------------------------------------------------
 
-/// **`root: SESSION.md` in frontmatter survives a write byte-identically in that span, and the
-/// pin covering it stays valid.** `root:` is a live YAML key in the shipped preset/def grammar.
-///
-///
-///
-///
-///
-///
+/// `root: SESSION.md` in frontmatter survives a write byte-identically in
+/// that span, and the pin covering it stays valid — `root:` is a live YAML
+/// key in the shipped preset/def grammar, not an address position.
 #[test]
 fn frontmatter_root_survives_byte_identically_and_its_rev_does_not_move() {
     let sb = sandbox(true);
@@ -301,9 +282,9 @@ fn fm_rev(raw: &str) -> String {
 // The refusals — each with the acceptance half beside it
 // ---------------------------------------------------------------------------
 
-/// An UNMOUNTED root has no vault name, so it has no stored form: the write refuses and teaches
-/// the declaration. The acceptance half is the bound root in the same fixture, which lands.
-///
+/// An unmounted root has no vault name, so it has no stored form: the write
+/// refuses and teaches the declaration. The acceptance half is the bound root
+/// in the same fixture, which lands.
 #[test]
 fn an_unmounted_root_refuses_the_write_and_teaches_the_declaration() {
     let sb = sandbox(true);
@@ -338,10 +319,9 @@ fn an_unmounted_root_refuses_the_write_and_teaches_the_declaration() {
     assert!(sb.read_back("page.md").contains("obsidian://"));
 }
 
-/// **The ordinary corpus is untouched** — the control that keeps this transform from being an
-/// instrument that cries wolf. An external URL parses as an address with root `https`
-/// (`Addr::parse` measurement), so before the bound test this refused every write carrying one.
-///
+/// The ordinary corpus is untouched — the control that keeps this transform
+/// from crying wolf. An external URL parses as an address with root `https`,
+/// so an unbounded transform would refuse every write carrying one.
 #[test]
 fn ordinary_links_and_ambient_refs_are_untouched() {
     let sb = sandbox(true);
@@ -366,10 +346,10 @@ fn ordinary_links_and_ambient_refs_are_untouched() {
     );
 }
 
-/// **No machine binds anything** — the state every machine starts in. A cross-root ref refuses
-/// (there is no vault name to store) and the ordinary corpus is completely unaffected, which is
-/// what keeps this from bricking every single-root workspace.
-///
+/// No machine binds anything — the state every machine starts in. A
+/// cross-root ref refuses (there is no vault name to store) and the ordinary
+/// corpus is unaffected, which keeps this from bricking every single-root
+/// workspace.
 #[test]
 fn an_absent_mount_table_refuses_cross_root_and_leaves_everything_else_alone() {
     let sb = sandbox(false);
@@ -444,12 +424,10 @@ fn a_hand_edited_stored_uri_fails_loudly_on_read_back() {
     );
 }
 
-/// A RETAINED cross-root address — one the document already carried, in a section this write
-/// does not touch — is **not** rewritten. Rewriting it would change bytes this batch never
-/// addressed and move the fingerprint of a node this write does not own, reddening pins that
-/// have nothing to do with it. The same rule the `@fp` strip follows.
-///
-///
+/// A retained cross-root address — one the document already carried, in a
+/// section this write does not touch — is not rewritten: that would move the
+/// fingerprint of a node this write does not own, reddening unrelated pins.
+/// The same rule the `@fp` strip follows.
 #[test]
 fn a_retained_agent_plane_address_is_not_this_writes_to_move() {
     let sb = sandbox(true);

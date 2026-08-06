@@ -1,69 +1,28 @@
-//! **`mrd walk` pays for the roots its addresses NAME, and for no others** (W5).
+//! `mrd walk` pays for the roots its addresses name, and for no others (W5).
 //!
-//! W2 fixed this defect class in `mrd status` and deliberately left `walk` and
-//! `check` alone, reasoning that their addresses *may traverse roots*, so the
-//! needed set could not be a lock-item scan and the narrowing would have to be a
-//! different design. **Measured, that reasoning is wrong, and the way it is
-//! wrong is a structural fact worth pinning down here.**
-//!
-//! `mrd walk` never traverses INTO a root. `view::walk::forward_edges` maps
-//! `corpus.ambient_docs()` alone, and a cross-root target is a LEAF by
+//! `mrd walk` never traverses INTO a root: `view::walk::forward_edges` maps
+//! `corpus.ambient_docs()` alone, and a cross-root target is a leaf by
 //! construction — the ambient corpus holds no key spelled `root:path`, so the
-//! BFS cannot expand one (`steps_from`, and the comment there saying so). A
-//! mounted root's pages are therefore read for exactly one purpose: colouring an
-//! edge that NAMES that root. That is precisely the set
-//! `walk_cmd::lock_addressed_roots` collects, so status's narrowing is not
-//! merely adaptable to walk — it is the same question with the same answer.
+//! BFS cannot expand one. A mounted root's pages are read for exactly one
+//! purpose: colouring an edge that names that root, which is the set
+//! `walk_cmd::lock_addressed_roots` collects.
 //!
-//! # The measurement that made this a defect rather than a preference
-//! Same workspace, same machine, same minute, four declared roots bound in the
-//! machine's real `~/MERIDIAN.md` and none of them named by any lock:
+//! The measure is CPU, not wall: wall-clock on a contended host measures the
+//! neighbours, and this defect class is dominated by directory I/O.
+//! `getrusage(RUSAGE_CHILDREN)` reads user+sys for the child alone; wall is
+//! printed only for the record.
 //!
-//! | verb | CPU before | CPU after |
-//! |---|---:|---:|
-//! | `status` (narrowed by W2) | 0.05 s | 0.05 s |
-//! | `walk` | **5.48 s** | **0.03 s** |
-//! | `check` | **5.48 s** | **0.06 s** |
-//!
-//! Two verbs of the same engine were 110× apart from their own sibling for the
-//! whole life of the W2 fix, on the identical input.
-//!
-//! # The measure is CPU, not wall
-//! The host these lanes run on is shared, and the W2 investigation measured the
-//! consequence directly: `mrd read` burns 0.01 s of CPU and took 5.3 s of wall
-//! under load 41, carrying no defect at all. Wall-clock on a contended host
-//! measures the neighbours. CPU is the load-independent number, and CPU is what
-//! this defect moves, because 72 % of its samples are `getdirentries64`/`open`.
-//! `getrusage(RUSAGE_CHILDREN)` reads exactly that, for the child and no one
-//! else, so this file asserts on user+sys and prints wall only for the record.
-//!
-//! # Negative control — how to redden this gate
-//! Point `MRD_BIN` at an engine built before W5 (or restore
-//! `load_mounts()` at the `mrd walk` call site) and run this target. The
-//! measured red/green pair is recorded on the card; no source edit is needed to
-//! reproduce it.
+//! Negative control: restore `load_mounts()` at the `mrd walk` call site and
+//! this target reddens.
 
 use std::time::{Duration, Instant};
 
 mod multiroot_fixture;
 use multiroot_fixture as fixture;
 
-/// **The CPU budget.** See the module header for why it is CPU and not wall, and
-/// [`multiroot_fixture`] for the table it is measured through. The budget is the one
-/// `status_multiroot_cpu.rs` measured for the same fixture and the same narrowing — walks
-/// post-fix work is statuss ambient build plus one BFS over a corpus of two pages, which is
-/// smaller than the spread the budget already carries.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The CPU budget — the one `status_multiroot_cpu.rs` measured for the same
+/// fixture and the same narrowing; walk's post-fix work is status's ambient
+/// build plus one BFS over a two-page corpus.
 const CPU_BUDGET: Duration = Duration::from_millis(600);
 
 #[test]
@@ -95,9 +54,9 @@ fn walk_cpu_under_budget_with_a_populated_mount_table() {
     let wall_start = Instant::now();
     let out = fixture::run(&sb, &ws, &["walk", "claim.md"]);
     let wall = wall_start.elapsed();
-    // `RUSAGE_CHILDREN` is cumulative and monotonic, so the later read can only be the larger one
-    // — but the checked form says so rather than trusting it, and an underflow here would print as
-    // a wildly under-budget PASS.
+    // `RUSAGE_CHILDREN` is cumulative and monotonic; the checked form says so
+    // rather than trusting it — an underflow would print as an under-budget
+    // PASS.
     let cpu = fixture::children_cpu()
         .checked_sub(cpu_before)
         .expect("children CPU is cumulative, so it never goes backwards");

@@ -1,23 +1,12 @@
-//! **Ephemeral `mrd sql` pays for the roots ambient wikilink/embed targets NAME.**
+//! Ephemeral `mrd sql` pays only for the roots ambient wikilink/embed targets
+//! name. The view projects ambient docs only; mounted pages exist so
+//! `resolve_ref` can land a rooted spelling.
 //!
-//! W5 flagged `sql.rs`'s eager `load_mounts()` as unmeasured and cautioned that the
-//! call site *names* a deliberate S3-R59 assembly (pin plane + link plane, one
-//! owner) — so it was not assumed to be the same defect. Measured on the
-//! multi-root table with a workspace that names **zero** roots: ~27 s CPU, same
-//! shape as the links residual, against ~0.17 s for the already-narrowed
-//! walk/status siblings. The S3-R59 comment is about **one loader owner**, not
-//! about loading every declared root's corpus. The view projects ambient docs
-//! only; mounted pages exist so `resolve_ref` can land a rooted spelling.
+//! Tier-4 bare is the residual: a bare (unregistered) cwd always takes
+//! `:memory:` and always hits `build_and_run_ephemeral` → `load_mounts_for`.
 //!
-//! # Tier-4 bare is the residual
-//! A git-root workspace can degrade into a cold last-published `view.duckdb` and
-//! never rebuild; a bare (unregistered) cwd always takes `:memory:` and always
-//! hits `build_and_run_ephemeral` → `load_mounts_for`. That is the path under
-//! test.
-//!
-//! # Negative control
-//! Point `MRD_BIN` at an engine that still calls `load_mounts()` in
-//! `build_and_run_ephemeral`, or restore that call site, and this target reddens.
+//! Negative control: restore an eager `load_mounts()` in
+//! `build_and_run_ephemeral` and this target reddens.
 
 use std::time::{Duration, Instant};
 

@@ -1,19 +1,7 @@
-//! Per-verb help, over the process boundary (issue 22). What this file holds the CLI to Before
-//! this surface existed, `mrd put --help` answered `unknown flag: --help` and exit 2, so the
-//! only way to learn a verbs grammar was to invoke it wrong and read the refusal. Three
-//! propositions are gated here: 1. **Every verb answers `--help`** — exit 0, on stdout, naming
-//! its own synopsis.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! Per-verb help, over the process boundary. Every verb answers `--help` with
+//! exit 0 on stdout, naming its own synopsis; a caller can tell a read from a
+//! write; a refusal leads with its reason; and the surface is written for its
+//! reader.
 
 use std::process::{Command, Output};
 
@@ -65,12 +53,9 @@ fn verb_lines(listing: &str) -> Vec<(bool, String)> {
         .collect()
 }
 
-/// The words that address a verb: `mrd cache clean [--all]  reap …` -> `cache
-/// clean`. The test derives them the same way a reader does — read left to
-/// right until a token stops looking like a verb name.
 /// The synopsis half of a verb line: the head when the description column is
 /// there, the whole line when the synopsis overflows it. Same rule the CLI
-/// lexes by — and without it, `mrd daemon   run the registry daemon…` reads as
+/// lexes by — without it, `mrd daemon   run the registry daemon…` reads as
 /// eight verb words, and `mrd cache clean --all …` loses its flags.
 fn head_of(synopsis: &str) -> &str {
     if synopsis.as_bytes().get(SYNOPSIS_WIDTH - 1) == Some(&b' ') {
@@ -80,6 +65,8 @@ fn head_of(synopsis: &str) -> &str {
     }
 }
 
+/// The words that address a verb: `mrd cache clean [--all]  reap …` -> `cache
+/// clean` — read left to right until a token stops looking like a verb name.
 fn address_of(synopsis: &str) -> Vec<&str> {
     let head = head_of(synopsis);
     head.strip_prefix("mrd ")
@@ -91,18 +78,14 @@ fn address_of(synopsis: &str) -> Vec<&str> {
 
 // ── 1. every verb answers ─────────────────────────────────────────────────────
 
-/// **The gate the card names.** Every verb in the listing answers `--help` with exit 0 on
-/// stdout, and the page it prints names that verbs own synopsis. The verb list is read out of
-/// `mrd --help` rather than typed here, so this cannot pass by being kept in step with the CLI
-/// by hand.
+/// Every verb in the listing answers `--help` with exit 0 on stdout, and the
+/// page it prints names that verbs own synopsis. The verb list is read out of
+/// `mrd --help` rather than typed here, so this cannot pass by being kept in
+/// step with the CLI by hand.
 #[test]
 fn every_verb_in_the_listing_answers_its_own_help() {
     let listing = listing();
     let verbs = verb_lines(&listing);
-    // 27 in the landing assembly: U9bs `lock migrate` and U23s `retire` each added one, on
-    // branches that could not see each other. DECISION 26 deleted `lock migrate` with its crate,
-    // so it went back to 26 — and U22s `repair`, the lost-pin repair, makes it 27 again.
-    //
     assert_eq!(verbs.len(), 27, "verbs in the listing:\n{listing}");
 
     for (_, synopsis) in &verbs {
@@ -177,7 +160,6 @@ fn a_verb_with_two_tiers_prints_both() {
 
 /// An operand between the verb and the flag does not hide the verb: `mrd read notes.md --help`
 /// is what a caller types when the invocation they just ran refused and they want the grammar.
-///
 #[test]
 fn an_operand_before_the_flag_still_resolves_the_verb() {
     let out = mrd(&["read", "some-page.md", "--help"]);
@@ -188,7 +170,6 @@ fn an_operand_before_the_flag_still_resolves_the_verb() {
 /// The page carries only the options its own verb owns. `--json` is real for most verbs but is
 /// NOT offered under `mrd skill hook`, whose description says in its own words that no such
 /// face exists — a help page that advertised it would be teaching a lie.
-///
 #[test]
 fn a_page_carries_its_own_options_and_no_false_promises() {
     let run = stdout(&mrd(&["run", "--help"]));
@@ -199,12 +180,9 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
         "--rule belongs to test, not run:\n{run}"
     );
 
-    // The claim is about what the page OFFERS, not about the letters on it: this verbs own
-    // description says "There is no --json face", so the string is in the prose either way. Only
-    // the options block can promise a flag. Probe a span that does NOT cross a line break — the
-    // listing wraps this sentence between "There is no" and "--json face", so the phrase a reader
-    // sees is not a substring of the page.
-    //
+    // The claim is what the page OFFERS, not the letters on it: this verbs own
+    // description says "There is no --json face", so only the options block can
+    // promise the flag. The probed span must not cross the listing's line wrap.
     let hook = stdout(&mrd(&["skill", "hook", "--help"]));
     assert!(
         hook.contains("--json face — the document is markdown"),
@@ -222,12 +200,8 @@ fn a_page_carries_its_own_options_and_no_false_promises() {
     assert!(test.contains("--spec PAGE"), "{test}");
 }
 
-/// **The invariant the `--dry` finding turned into a rule.** If a verb's
-/// synopsis offers a flag, and the options block has an entry for that flag,
-/// that entry appears on the verb's page. Before this, `--dry` was tagged
-/// `(run)` while standing in SEVEN other synopses, so `mrd put --help` showed
-/// `[--dry]` above and explained it nowhere — the tag was decoration, and the
-/// per-verb surface made it load-bearing without anyone editing it.
+/// If a verb's synopsis offers a flag, and the options block has an entry for
+/// that flag, that entry appears on the verb's page.
 #[test]
 fn a_flag_offered_in_a_synopsis_is_explained_beneath_it() {
     let listing = listing();
@@ -331,9 +305,9 @@ fn a_separator_passes_the_flag_through() {
 
 // ── 2. a caller can tell a read from a write ──────────────────────────────────
 
-/// The write mark is part of the listing, so it travels into the per-verb page with the line. A
-/// caller who asks about one verb learns whether it writes without reading all 26.
-///
+/// The write mark is part of the listing, so it travels into the per-verb page
+/// with the line: a caller who asks about one verb learns whether it writes
+/// without reading the whole listing.
 #[test]
 fn the_write_mark_travels_into_the_verb_page() {
     let writer = stdout(&mrd(&["put", "--help"]));
@@ -349,30 +323,11 @@ fn the_write_mark_travels_into_the_verb_page() {
     );
 }
 
-/// The classification itself, pinned. Twelve verbs change files or the
-/// drawer; the other fourteen are reads. This is the list a reviewer argues
-/// with — if it changes, it changes here, deliberately.
-///
-/// **Was twelve of twenty-six, then eleven of twenty-five when `journal genesis`
-/// was retired with the ledger it reset (U6) — nothing is being reset any more,
-/// so the write it performed had no subject.** It went to thirteen of
-/// twenty-seven because TWO units each added a writer, on branches that could
-/// not see each other: U9b's `mrd lock migrate` and U23's `mrd retire mark`.
-/// **DECISION 26 (ZT 2026-08-04) deleted the lock migration** — two field locks
-/// were hand-migrated, so the tool had no remaining subject — and the count is
-/// twelve of twenty-six.
-///
-/// **`retire mark` is a WRITER, and the reason is not its flag set.** It sweeps
-/// `~~` markers across the vault's markdown. `--dry` does not exempt it any
-/// more than it exempts `pin`, `realise`, `reconcile`, `new` or `unfold`, all
-/// of which carry the same flag and are marked. Contrast `mrd test`, which is
-/// unmarked because it writes only into temporary directories — the
-/// distinction the sibling test pins.
-///
-/// **U22 adds `mrd repair`** — it rewrites a pin's `hash` in the operator's own
-/// page through the guarded lock door, so it is a writer on exactly the reading
-/// above, and its `--dry` exempts it no more than `retire mark`'s does. Thirteen
-/// of twenty-seven.
+/// The classification itself, pinned: thirteen verbs change files or the
+/// drawer, the other fourteen are reads. `retire mark` writes because it sweeps
+/// `~~` markers across the vault's markdown, and `--dry` exempts it no more
+/// than it exempts `pin`, `realise`, `reconcile`, `new` or `unfold`; `mrd test`
+/// is unmarked because it writes only into temporary directories.
 ///
 /// The count is in the test NAME on purpose — a classification whose total can
 /// drift silently is one nobody reviews.
@@ -417,9 +372,8 @@ fn the_write_classification_is_thirteen_of_twenty_seven() {
     );
 }
 
-/// `mrd test` writes only into temporary directories, and `mrd sql` reads a published view —
-/// both are unmarked, and both are the calls a hurried reader would get wrong. Pinned so the
-/// reasoning is not re-litigated silently.
+/// `mrd test` writes only into temporary directories, and `mrd sql` reads a
+/// published view — both stand unmarked.
 #[test]
 fn the_tempdir_and_read_only_verbs_are_not_marked() {
     let listing = listing();
@@ -433,9 +387,8 @@ fn the_tempdir_and_read_only_verbs_are_not_marked() {
 
 // ── 3. a refusal leads with its reason ────────────────────────────────────────
 
-/// **The gate the card names.** The diagnostic is the FIRST line of stderr. It used to be the
-/// last, under 239 lines of help, which is off the screen on any terminal a person actually
-/// uses.
+/// The diagnostic is the FIRST line of stderr, not the last under a screenful
+/// of help.
 #[test]
 fn an_unknown_subcommand_puts_its_error_first() {
     let out = mrd(&["nope"]);
@@ -504,19 +457,16 @@ fn the_bare_help_verb_still_prints_everything() {
 
 // ── 4. the surface is written for its reader ──────────────────────────────────
 
-/// **The A6 gate.** No internal unit tag reaches help output. `mrd new --help`
-/// used to open its description with `file birth (U5.3):` — a docket bookkeeping
-/// id, legible to whoever held the plan and to nobody else. A reader who has
-/// never seen the docket reads `(U5.3)` as a version, a flag, or an error code.
-///
-/// The claim is over the whole surface, derived rather than listed: every page
-/// the CLI can print is scanned for the shape `U<digit>.<digit>`, so a tag added
-/// to a verb written next year fails here without this file being edited.
+/// No internal unit tag (`U5.3`) reaches help output — a docket id reads to an
+/// outside caller as a version, a flag, or an error code. The claim is derived
+/// rather than listed: every page the CLI can print is scanned for the shape, so
+/// a tag added to a verb written next year fails here without this file being
+/// edited.
 #[test]
 fn no_internal_unit_tag_reaches_a_help_page() {
-    /// The dockets tag shape: `U`, a digit, a dot, then an alphanumeric — `U5.3`, `U3.5b`, `U2.11`.
-    /// Scanned by hand; a regex crate is a dependency this workspace does not take for one
-    /// predicate.
+    /// The dockets tag shape: `U`, a digit, a dot, then an alphanumeric — `U5.3`,
+    /// `U3.5b`, `U2.11`. Scanned by hand; a regex crate is a dependency this
+    /// workspace does not take for one predicate.
     fn unit_tags(text: &str) -> Vec<String> {
         let bytes: Vec<char> = text.chars().collect();
         let mut found = Vec::new();
@@ -547,8 +497,7 @@ fn no_internal_unit_tag_reaches_a_help_page() {
         found
     }
 
-    // The scanner really can fail — the positive control. Without this, a broken
-    // predicate would report a clean surface forever.
+    // Positive control: a broken predicate would report a clean surface forever.
     assert_eq!(
         unit_tags("file birth (U5.3): resolve the def"),
         vec!["U5.3".to_owned()],
@@ -570,8 +519,7 @@ fn no_internal_unit_tag_reaches_a_help_page() {
         unit_tags(&full)
     );
 
-    // Every per-verb page too — the pages are lexed out of the listing, but a
-    // future help surface that is not need not be, and this gate outlives that.
+    // Every per-verb page too.
     for (_, synopsis) in verb_lines(&full) {
         let address = address_of(&synopsis);
         let mut args = address.clone();

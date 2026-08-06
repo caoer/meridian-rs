@@ -1,13 +1,5 @@
-//! End-to-end gates for `mrd status` (U3.6, the LAST leg), driving the REAL binary
+//! End-to-end gates for `mrd status`, driving the real binary
 //! (`CARGO_BIN_EXE_mrd`) over its process boundary against on-disk workspaces.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -158,16 +150,11 @@ fn status_genesis_is_clean_and_unverified() {
     assert!(!so.contains("anchor at-tip\n"), "no bare at-tip line: {so}");
 }
 
-/// `status` names HOW it resolved the workspace it judged, never the path alone
-/// (marker-retirement ruling: "every resolution states which tier and which root
-/// answered — never silently"). The header used to print the bare path, which is
-/// exactly the silence the ruling retired.
-///
-/// Both cases are asserted in one test because the discriminating fact is that
-/// the word CHANGES with the situation: a git-anchored tree reads `git-root`, an
-/// unanchored one reads `ephemeral` (the cwd-default refinement — the ladder
-/// answered nothing and no daemon adopted it). A hardcoded word would pass one
-/// half and fail the other.
+/// `status` names how it resolved the workspace it judged, never the path
+/// alone. Both cases are asserted in one test because the discriminating fact
+/// is that the word changes with the situation: a git-anchored tree reads
+/// `git-root`, an unanchored one reads `ephemeral` — a hardcoded word would
+/// pass one half and fail the other.
 #[test]
 fn status_names_the_tier_that_resolved_the_workspace() {
     let sb = sandbox();
@@ -251,23 +238,10 @@ fn status_armed_and_drifted_reds_and_exits_1() {
     );
 }
 
-/// **THE JOURNAL IS INERT, AND THIS PINS IT.** A hand-written page in the retired journal's
-/// exact shape — `op=force` rows with `forced_rule=` tokens and anchors, plus a realise receipt
-/// to bound them by — moves NOTHING on this surface. Two tests used to live here: one asserted
-/// the violation row and the exit-1 leg, the other the receipts-boundary arithmetic that
-/// decided which forced rows counted. ZT ruled the ledger out of existence (: *"Engine does not
-/// have memory. It should not have. History is pin to git when we lock.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The journal is inert, and this pins it: a hand-written page in the retired
+/// journal's exact shape — `op=force` rows with `forced_rule=` tokens and
+/// anchors, plus a realise receipt to bound them by — moves nothing on this
+/// surface. The engine keeps no memory by design.
 #[test]
 fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
     let sb = sandbox();
@@ -291,8 +265,7 @@ fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
     let out = sb.run(&ws, &["status"]);
     let so = stdout(&out);
 
-    // THE EXIT CODE. A forced write used to make this exit 1; nothing observes
-    // one now, so a clean workspace is clean.
+    // Nothing observes a forced write, so a clean workspace is clean.
     assert_eq!(
         code(&out),
         0,
@@ -300,7 +273,7 @@ fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
         stderr(&out)
     );
 
-    // THE COUNT, THE BOUNDARY AND THE VIOLATION ROWS ARE ALL GONE.
+    // The count, the boundary and the violation rows are all gone.
     assert!(
         !so.contains("forced-since-realise: 1") && !so.contains("forced-since-realise: 2"),
         "the count is not back: {so}"
@@ -322,7 +295,7 @@ fn a_journal_shaped_page_is_inert_and_the_disclosure_is_rendered() {
         "the realise ledger no longer bounds anything on this surface: {so}"
     );
 
-    // AND THE DISCLOSURE IS PRESENT — silence is not compliance.
+    // And the disclosure is present — silence is not compliance.
     assert!(
         so.contains("forced-since-realise: not-tracked"),
         "the axis is disclosed, not dropped: {so}"
@@ -394,18 +367,14 @@ fn lock_block(declared_ref: &str, fingerprint: &str) -> String {
     lock_block_pinning(declared_ref, FIXTURE_BLOB, fingerprint)
 }
 
-/// The R4 blob hash a fixture pin carries when the test is not measuring the retrieval plane.
-/// R4 makes `hash` MANDATORY — *"if hash is missing, we lost the explicit target meaning"* — so
-/// there is no pin without one.
+/// The blob hash a fixture pin carries when the test is not measuring the
+/// retrieval plane (R4 makes `hash` mandatory on every pin row).
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
-/// One R4 pin, hand-written in the exact bytes `lock::render` emits, so this gate depends on
-/// the CLI's own READER and not on the writer that produced them. `declared_ref` is a
-/// `page[A/B]` convenience spelling, split into the `object` and the `path` ARRAY here — R4
-/// admits no joined string on the row. NOTE FOR REVIEWERS: `version: 1` became `version: 2`
-/// across these fixtures. That is the LOCK FILE schema version, not the wire protocol version.
-///
-///
+/// One R4 pin, hand-written in the exact bytes `lock::render` emits, so this
+/// gate depends on the CLI's own reader and not on the writer that produced
+/// them. `declared_ref` is a `page[A/B]` convenience spelling, split into the
+/// `object` and the `path` array here — R4 admits no joined string on the row.
 fn lock_block_pinning(declared_ref: &str, blob: &str, fingerprint: &str) -> String {
     let (target, fragment) = match declared_ref.split_once('#') {
         Some((t, f)) => (t, f),
@@ -427,10 +396,10 @@ fn lock_block_pinning(declared_ref: &str, blob: &str, fingerprint: &str) -> Stri
     )
 }
 
-/// The LIVE fingerprint token of a page's document root — what a correct pin holds. Computed
-/// through the engine's own mint over the same parse `fs::build_corpus` runs, so the fixture
-/// cannot pin a token the reader would not recompute.
-///
+/// The live fingerprint token of a page's document root — what a correct pin
+/// holds. Computed through the engine's own mint over the same parse
+/// `fs::build_corpus` runs, so the fixture cannot pin a token the reader
+/// would not recompute.
 fn live_fingerprint(raw: &str) -> String {
     let doc = model::build(raw.to_string(), syntax::parse(raw));
     model::fingerprint::fingerprint(&doc, &doc.root)
@@ -459,11 +428,9 @@ fn lock_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
     doc["composed"]["lock"].clone()
 }
 
-/// S9 GATE — a real `meridian-lock` pin is VISIBLE to `mrd status` on its own
-/// axis, green when the pinned fingerprint still matches and red when the target
-/// content moved. Before S9 `mrd status` did not read page pins at all: it
-/// printed `pin green` identically whether the corpus held a correct pin, a
-/// drifted one, or none.
+/// S9 gate — a real `meridian-lock` pin is visible to `mrd status` on its own
+/// axis: green when the pinned fingerprint still matches, red when the target
+/// content moved.
 #[test]
 fn status_renders_the_meridian_lock_axis_green_then_red() {
     let sb = sandbox();
@@ -564,13 +531,9 @@ fn git(ws: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_owned()
 }
 
-/// The canonical `meridian-lock` fence bytes for one pinned BLOB — the retrieval plane the
-/// gauge measures, written by hand so this gate depends on the CLI's own reader. R4 retired the
-/// shared `objects:` table; the blob rides the pin row as its `hash`, so the retrieval plane is
-/// now measured off an ordinary pin. `key` is the target the blob is OF — the pin's `object`.
-///
-///
-///
+/// The lock fence bytes for one pinned blob — the retrieval plane the gauge
+/// measures, written by hand so this gate depends on the CLI's own reader.
+/// The blob rides the pin row as its `hash`; `key` is the pin's `object`.
 fn lock_block_with_object(key: &str, blob_sha: &str) -> String {
     lock_block_pinning(key, blob_sha, &format!("fp1.span2.b3.{}", "0".repeat(64)))
 }
@@ -587,10 +550,10 @@ fn vibe_json(sb: &Sandbox, ws: &Path) -> serde_json::Value {
     doc["composed"]["vibe_debt"].clone()
 }
 
-/// S11 GATE 1 — a NEVER-COMMITTED vibe blob increments the gauge in both count and bytes. The
-/// fixture reproduces `--vibe`'s eager write exactly (`git hash-object -w`): the blob is in the
-/// object database, reachable from no ref, and the lock references it.
-///
+/// S11 gate 1 — a never-committed vibe blob increments the gauge in both
+/// count and bytes. The fixture reproduces `--vibe`'s eager write exactly
+/// (`git hash-object -w`): the blob is in the object database, reachable from
+/// no ref, and the lock references it.
 #[test]
 fn status_vibe_debt_counts_a_never_committed_blob() {
     let sb = sandbox();
@@ -628,9 +591,9 @@ fn status_vibe_debt_counts_a_never_committed_blob() {
     eprintln!("S11 json     (1 blob owed): {j}");
 }
 
-/// S11 GATE 2 — a COMMITTED blob contributes nothing. Same lock, same sha: the only change is
-/// that a commit now reaches the object, which is exactly what paying the debt means.
-///
+/// S11 gate 2 — a committed blob contributes nothing. Same lock, same sha:
+/// the only change is that a commit now reaches the object, which is exactly
+/// what paying the debt means.
 #[test]
 fn status_vibe_debt_ignores_a_committed_blob() {
     let sb = sandbox();

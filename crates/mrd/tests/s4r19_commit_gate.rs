@@ -1,70 +1,18 @@
-//! **S4-R19 — what `--commit-gate` still proves, re-derived after the journal
-//! died. This file is a REWRITE, not a repair, and the axis it measures is now
-//! ONE-DIMENSIONAL.**
+//! S4-R19 — `mrd check --commit-gate`: does the interval a commit records
+//! carry a pin that no longer holds?
 //!
-//! # The card this file was built for
-//! Three propositions rode one exit code, and the fence spent the permanent one on
-//! every commit:
+//! The gate reads the pin plane and nothing else: `permits() ==
+//! !pins.is_red() && !pins.cannot_assess()`. An out-of-band edit is caught
+//! because the rewritten file is a pinned target, so the pin plane reads
+//! `red content-drifted`.
 //!
-//! | | proposition | about | permanence |
-//! |---|---|---|---|
-//! | **P1** | the journal chain has a break | the **past** | permanent by design |
-//! | **P2** | this index carries an out-of-band write | **this interval** | per-commit |
-//! | **P3** | the journal cannot date the tree | **evidence availability** | per-state |
+//! Refusal arms sit beside acceptance arms built from the same fixture, so no
+//! arm can be satisfied by a gate wired to a constant.
 //!
-//! Past the first break P1 was permanently true, so the exit stopped varying with
-//! what was staged — a guard whose verdict no longer depends on the thing it guards
-//! carries zero information about it. `--commit-gate` asked the per-commit question
-//! instead, and the old 8-arm matrix measured that it discriminated across the axis
-//! **chain-break × staged-write**.
-//!
-//! # WHY THE MATRIX COLLAPSED (ZT, 2026-08-03)
-//! *"Engine does not have memory. It should not have. History is pin to git when we
-//! lock. Anything between locks is not history."*
-//!
-//! **P1 and P3 are both journal propositions and both are gone.** The gate reads the
-//! PIN PLANE and nothing else (U5's derivation note § 6): `permits() ==
-//! !pins.is_red() && !pins.cannot_assess()`. So the chain-break axis has no
-//! antecedent — `break_the_chain` forged a `root_before` inside a file that does not
-//! exist — and **half the old matrix was measuring a dimension that no longer has
-//! two values.**
-//!
-//! P2 survives whole, and its DETECTOR changed underneath it: an out-of-band edit is
-//! caught because the rewritten file is a **pinned target**, so the pin plane reads
-//! `red content-drifted`. Same proposition, different plane answering.
-//!
-//! **A 4-arm matrix that honestly covers one axis beats an 8-arm one with four dead
-//! arms.** The axis is: *does the interval a commit records carry a pin that no
-//! longer holds?*
-//!
-//! # THE OLD ARMS, each accounted for — none weakened into passing
-//! | old arm | disposition |
-//! |---|---|
-//! | 1 — chain-broken + governed staged write commits, break told | **DELETED.** Both halves are chain. Nothing tells a break. |
-//! | 2 — clean chain + governed write passes both questions | **SURVIVES** as [`a_governed_corpus_passes_both_questions`]. |
-//! | 3 — clean chain + out-of-band write refused | **SURVIVES** as [`an_out_of_band_write_to_pinned_content_is_refused`]; only the reason STRING moved (`no governed write ever produced` was baseline vocabulary). |
-//! | 4 — the specificity arm, index vs worktree | **SURVIVES** as [`a_forged_index_is_refused_even_when_the_worktree_is_clean`]. Its real subject was always the INTERVAL; the chain was scenery, so it is rebuilt on a clean corpus. |
-//! | 5 — the break never heals | **DELETED.** No break to heal. |
-//! | 6 — a gated pass over a broken record is not spelled green | **PARTLY SURVIVES** as [`the_passing_word_names_the_plane_that_answered`]: the vocabulary claim outlived its corpus, and the word to hold honest is now `pins-hold`. |
-//! | 7 — an empty record refuses without accusing | **REVERSED, BY RULING** — see [`a_pinless_corpus_passes_by_default`]. |
-//! | 8 — empty record + out-of-band write fails closed | **REVERSED, same antecedent** — [`a_pinless_corpus_passes_even_with_an_out_of_band_write`]. |
-//!
-//! # THE INSTRUMENT, and why every arm here can still fail
-//! The subject is a gate that must DISCRIMINATE, so an arm that passes whatever the
-//! gate does is decoration. Two devices keep these arms falsifiable:
-//!
-//! 1. **Acceptance and refusal over ONE corpus** (S3-R99). A gate that permits and a
-//!    gate that is silently broken look identical from the caller, so the refusal
-//!    arms sit beside acceptance arms built from the same fixture mutated.
-//! 2. **The unscoped question is measured in the same run** where the two can
-//!    differ, so an arm cannot be satisfied by a verb that stopped refusing
-//!    anything.
-//!
-//! # The fence here is a TEST FIXTURE, not the shipped one
-//! This harness places its own `pre-commit` that execs the scoped question, so these
-//! arms measure `--commit-gate` itself and not the contract built on it.
-//! `crates/mrd/tests/skill_hook_emit.rs` holds the shipped document;
-//! `crates/mrd/tests/hook_plane_fence.rs` drives the real emitted body.
+//! The fence here is a test fixture, not the shipped one: the harness places
+//! its own `pre-commit` that execs the scoped question, so these arms measure
+//! `--commit-gate` itself. `skill_hook_emit.rs` holds the shipped document;
+//! `hook_plane_fence.rs` drives the real emitted body.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -131,9 +79,9 @@ impl Sandbox {
         }
     }
 
-    /// A real git repo with a pinnable source and three claim pages, `mrd init`, one commit, then
-    /// the fence. **Nothing here declares a pin** — that is [`Sandbox::pin_a_claim`]s job, and the
-    /// difference is now the whole axis.
+    /// A real git repo with a pinnable source and three claim pages,
+    /// `mrd init`, one commit, then the fence. Nothing here declares a pin —
+    /// that is [`Sandbox::pin_a_claim`]'s job.
     fn corpus(&self, name: &str) -> PathBuf {
         let ws = self.tmp.path().join(name);
         std::fs::create_dir_all(&ws).expect("mkdir");
@@ -153,27 +101,9 @@ impl Sandbox {
         ws
     }
 
-    /// One governed write through the engines own door: `mrd pin` declares a claim against a
-    /// section of `source.md`. **Renamed from `governed_write`.** The old name meant *"a write that
-    /// journals a row"*, and there are no rows — keeping it would have left the files central
-    /// fixture named after the vanished plane. What makes this a governed write is that it went
-    /// through the door; what makes it matter HERE is that it leaves a PIN, which is the only thing
-    /// the gate reads. The pin is COMMITTED, and that is not incidental — it is the axis The gate
-    /// reads **the interval a commit records**.
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
-    ///
+    /// One governed write through the engine's own door: `mrd pin` declares a
+    /// claim against a section of `source.md`, then commits it. The pin is the
+    /// only thing the gate reads, and the committed interval is the axis.
     fn pin_a_claim(&self, ws: &Path, claim: &str) {
         let pin = self.run(ws, &["pin", claim, "source.md#Source/Guideline"]);
         assert_eq!(code(&pin), 0, "the governed write lands: {}", said(&pin));
@@ -260,8 +190,8 @@ fn git_head(ws: &Path) -> String {
     }
 }
 
-/// Rewrite the PINNED section by hand — an out-of-band edit through no meridian writer, to
-/// content a lock names. This is what the surviving detector detects.
+/// Rewrite the pinned section by hand — an out-of-band edit through no
+/// meridian writer, to content a lock names.
 fn rewrite_pinned_content(ws: &Path, marker: &str) {
     write(
         ws,
@@ -272,9 +202,8 @@ fn rewrite_pinned_content(ws: &Path, marker: &str) {
 
 // ── the instrument's own control ─────────────────────────────────────────────
 
-/// **The gate can both accept and refuse.** Without this the whole file could be satisfied by a
-/// gate wired to a constant, and a constant is precisely the defect this card started from
-/// wearing the other sign.
+/// The gate can both accept and refuse — without this the whole file could be
+/// satisfied by a gate wired to a constant.
 #[test]
 fn the_gate_accepts_pinned_work_and_refuses_an_out_of_band_edit() {
     let sb = sandbox();
@@ -290,8 +219,8 @@ fn the_gate_accepts_pinned_work_and_refuses_an_out_of_band_edit() {
     );
 
     rewrite_pinned_content(&ws, "rewritten by hand");
-    // STAGED, because the gate reads the index — which is the state a pre-commit fence actually
-    // fires in, and the reason the interval exists at all (F1).
+    // Staged, because the gate reads the index — the state a pre-commit fence
+    // actually fires in.
     git(&ws, &["add", "-A"]);
     let refuses = sb.run(&ws, &["check", "--commit-gate"]);
     assert_eq!(
@@ -307,12 +236,9 @@ fn the_gate_accepts_pinned_work_and_refuses_an_out_of_band_edit() {
     );
 }
 
-/// **A BOUNDARY, asserted so a later reader finds it stated rather than surprising.** An
-/// out-of-band edit that is NOT staged does not refuse: the index still carries clean bytes,
-/// and those are the bytes a commit would record. This is F1 working in the direction it was
-/// built for, and **it is untouched by the ruling** — the interval is a question about git, not
-/// about engine memory.
-///
+/// Boundary: an out-of-band edit that is not staged does not refuse — the
+/// index still carries clean bytes, and those are the bytes a commit would
+/// record.
 #[test]
 fn an_unstaged_out_of_band_edit_does_not_gate_a_clean_index() {
     let sb = sandbox();
@@ -346,9 +272,8 @@ fn an_unstaged_out_of_band_edit_does_not_gate_a_clean_index() {
 
 // ── ACCEPTANCE ───────────────────────────────────────────────────────────────
 
-/// **Was ARM 2, and it survives untouched in substance.** A corpus whose pins hold passes BOTH
-/// questions, so a gate that learned to say "no" to everything is caught right here, and a verb
-/// whose unscoped form broke outright is caught beside it.
+/// A corpus whose pins hold passes both questions, so a gate that learned to
+/// say "no" to everything is caught here.
 #[test]
 fn a_governed_corpus_passes_both_questions() {
     let sb = sandbox();
@@ -373,19 +298,9 @@ fn a_governed_corpus_passes_both_questions() {
 
 // ── REFUSAL, in the same run ─────────────────────────────────────────────────
 
-/// **Was ARM 3.** An out-of-band write to pinned content is refused, naming the
-/// interval. The per-commit proposition P2 survives the ruling whole.
-///
-/// # What changed here is the DETECTOR and therefore the WORDS, not the verdict
-/// The arm used to require the refusal to say `"no governed write ever produced"` —
-/// `Accounted::ForeignBytes`, the journal-derived leg, which asserted that no
-/// recorded write produced these bytes. That vocabulary is gone with the record.
-///
-/// The refusal is now the pin plane's and carries the pin plane's reason word,
-/// `red content-drifted`, which is the SAME word `mrd walk` and `mrd status` print
-/// over the same corpus (one computer, `view::walk::lock_pin_colors`). The exit code
-/// and the subject are unmoved; only the sentence naming the cause moved, because a
-/// different plane is the one answering.
+/// An out-of-band write to pinned content is refused, naming the interval.
+/// The refusal carries the pin plane's reason word, `red content-drifted` —
+/// the same word `mrd walk` and `mrd status` print over the same corpus.
 #[test]
 fn an_out_of_band_write_to_pinned_content_is_refused() {
     let sb = sandbox();
@@ -425,18 +340,8 @@ fn an_out_of_band_write_to_pinned_content_is_refused() {
     );
 }
 
-/// **Was ARM 4 — THE SPECIFICITY ARM, and its subject was never the chain.** An out-of-band
-/// write staged in the INDEX with the worktree restored to clean bytes (the F1 shape). The gate
-/// must still refuse.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The specificity arm: an out-of-band write staged in the index with the
+/// worktree restored to clean bytes. The gate must still refuse.
 #[test]
 fn a_forged_index_is_refused_even_when_the_worktree_is_clean() {
     let sb = sandbox();
@@ -487,32 +392,10 @@ fn a_forged_index_is_refused_even_when_the_worktree_is_clean() {
 
 // ── THE REVERSED ARMS — ruled, recorded, and given the flag they needed ──────
 
-/// **Was ARM 7, and its assertion is INVERTED BY RULING.** A corpus that declares no pin PASSES
-/// `--commit-gate`: exit 0, verdict `pins-hold`. The old arm, and why its doctrine did not
-/// simply lose It asserted exit 1, under the name *"an empty record refuses without accusing"*
-/// — unknown is not clean, fail CLOSED. **That reading was journal mechanics, not independent
-/// doctrine:** an empty record meant no baseline, no baseline meant a grey write-history plane,
-/// and the grey gated the exit. The antecedent died with the journal by ruling, so this is a
-/// mechanism with no input left being removed — not a safety principle being overturned. Zero
-/// pins is VACUOUS TRUTH, not unknown Fail-closed protects the case where the gate CANNOT
-/// ASSESS something it claims to gate.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// Ruled: a corpus that declares no pin passes `--commit-gate` — exit 0,
+/// verdict `pins-hold`. Zero pins is vacuous truth, not unknown; fail-closed
+/// protects the case where the gate cannot assess something it claims to
+/// gate, and there is nothing here to assess.
 #[test]
 fn a_pinless_corpus_passes_by_default() {
     let sb = sandbox();
@@ -555,24 +438,12 @@ fn a_pinless_corpus_passes_by_default() {
     );
 }
 
-/// **Was ARM 8 — same antecedent, same reversal.** A pinless corpus plus an out-of-band
-/// write still passes, because there is no pin for the write to contradict. # This is U5
-/// corpus row 08, and it is the largest reduction in enforcement here The old gate refused
-/// this via `Accounted::ForeignBytes`: the record had produced no such root. **It permits
-/// now**, because the record is gone and the pin plane is all that gates — and the pin
-/// plane has nothing to say about content nobody claimed. The forged bytes are caught at
-/// the **write door**, and at lock time by git. `check` is at-rest truth, and at rest this
-/// world matches its (zero) pins. U5 flagged this row for U25 re-verdict; it is ruled, and
-/// this arm is where the ruling is executable rather than only written down. **The contrast
-/// arm is the point:** the same forgery against a corpus that DOES pin the file is refused
-/// ([`an_out_of_band_write_to_pinned_content_is_refused`]). The difference is coverage, not
-/// the gate going soft.
-///
-///
-///
-///
-///
-///
+/// A pinless corpus plus an out-of-band write still passes: there is no pin
+/// for the write to contradict, and the pin plane is all that gates. The
+/// contrast arm is the point — the same forgery against a corpus that does
+/// pin the file is refused
+/// ([`an_out_of_band_write_to_pinned_content_is_refused`]). The difference is
+/// coverage, not the gate going soft.
 #[test]
 fn a_pinless_corpus_passes_even_with_an_out_of_band_write() {
     let sb = sandbox();
@@ -600,20 +471,10 @@ fn a_pinless_corpus_passes_even_with_an_out_of_band_write() {
     );
 }
 
-/// **THE OPT-IN FLAG: the fail-closed doctrine, preserved as a callers choice.**
-/// `--require-pins` refuses exactly the corpus the two arms above let through, and it refuses
-/// it with its OWN word rather than borrowing greys. Both directions, so the flag is shown to
-/// discriminate The same run measures the flag refusing a pinless corpus AND permitting a
-/// pinned one.
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// The opt-in flag: `--require-pins` refuses exactly the corpus the two arms
+/// above let through, with its own reason word rather than a borrowed grey.
+/// The same run measures the flag refusing a pinless corpus and permitting a
+/// pinned one, so the flag is shown to discriminate.
 #[test]
 fn require_pins_refuses_a_pinless_corpus_and_permits_a_pinned_one() {
     let sb = sandbox();
@@ -661,8 +522,8 @@ fn require_pins_refuses_a_pinless_corpus_and_permits_a_pinned_one() {
         said(&covered)
     );
 
-    // A grey pin still fails closed WITH OR WITHOUT the flag; that leg is not this flag's business
-    // and the flag must not be read as having introduced it.
+    // A grey pin still fails closed with or without the flag; that leg is not
+    // this flag's business.
     assert!(
         !said(&covered).contains("no-pin-coverage"),
         "coverage exists, so the flag has nothing to say: {}",
@@ -670,10 +531,8 @@ fn require_pins_refuses_a_pinless_corpus_and_permits_a_pinned_one() {
     );
 }
 
-/// **The flag means nothing without the question, and says so** rather than being silently
-/// ignored. A caller who typed `--require-pins` believes a gate is being tightened; answering
-/// confidently about a question that was never asked is the one shape a fences verb must never
-/// produce.
+/// The flag means nothing without the question, and says so rather than being
+/// silently ignored.
 #[test]
 fn require_pins_without_the_gate_is_a_bad_invocation() {
     let sb = sandbox();
@@ -695,19 +554,8 @@ fn require_pins_without_the_gate_is_a_bad_invocation() {
 
 // ── VOCABULARY AND SHAPE ─────────────────────────────────────────────────────
 
-/// **What survives of ARM 6.** Its corpus (a broken chain) is gone, but its claim was about
-/// VOCABULARY — a gated pass must never be spelled in a word stronger than the evidence — and
-/// that claim outlived the corpus. The word to hold honest changed with the plane.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
+/// A gated pass must never be spelled in a word stronger than the evidence;
+/// the word to hold honest is `pins-hold`.
 #[test]
 fn the_passing_word_names_the_plane_that_answered() {
     let sb = sandbox();
@@ -762,10 +610,9 @@ fn the_passing_word_names_the_plane_that_answered() {
     );
 }
 
-/// **The shipped `--json` face is untouched when the question is not asked.** The gate block is
-/// ABSENT without `--commit-gate`, per this faces own law — *an absent field reads as "not
-/// checked"* — and a `null` would instead claim the gate was asked and had nothing to say.
-///
+/// The shipped `--json` face is untouched when the question is not asked: the
+/// gate block is absent without `--commit-gate` — an absent field reads as
+/// "not checked", where a `null` would claim the gate was asked.
 #[test]
 fn the_shipped_json_face_gains_nothing_until_the_gate_is_asked() {
     let sb = sandbox();

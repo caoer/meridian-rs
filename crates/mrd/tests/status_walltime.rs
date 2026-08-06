@@ -1,32 +1,14 @@
-//! The `mrd status` wall-time budget — the PERF lane's gate, not the PR lane's.
+//! The `mrd status` wall-time budget — the perf lane's gate, not the PR
+//! lane's. Wall-time numbers are never gated in the PR lane (shared-runner
+//! noise): `required-features = ["perf-walltime"]` keeps
+//! `cargo test --workspace` from gating a wall clock, `ci.yml` still compiles
+//! and lints this target, and `perf.yml` runs it on the pinned runner.
 //!
-//! `ci.yml` states the law this file obeys: *"Wall-time numbers are NEVER gated
-//! in this lane (shared-runner noise); that's perf.yml's job on the pinned fleet
-//! runner."* While this assert lived in `status_e2e.rs` that law was
-//! contradicted — `cargo test --workspace` gated a wall-clock number on whatever
-//! machine happened to run it, so "workspace suite green" meant "green on a quiet
-//! machine". A/B interleave on one host at matched load, three pairs: the shipped
-//! `main` at `64d761b1` blew the same 1000 ms budget **3 for 3** (2012 / 1244 /
-//! 2711 ms) against a candidate tree's 2387 / 1278 / 1477 ms. The assert was
-//! measuring contention, not code.
-//!
-//! So it MOVED, and **the 1000 ms budget did not move with it.** The mechanism is
-//! `required-features = ["perf-walltime"]` in `crates/mrd/Cargo.toml`:
-//! `cargo test --workspace` skips this target entirely (no wall-clock gate, and
-//! no vacuous pass either), `ci.yml` still compiles and lints it so it cannot
-//! bit-rot, and `perf.yml` runs it for real on the pinned runner.
-//!
-//! # What this file CANNOT see, and the sibling that can
-//! Its sandbox sets `HOME` to a bare temp dir, so the machine mount table is
-//! EMPTY. That is deliberate isolation and it stays — but it also DELETES the
-//! input that came to dominate the verb: the eager mount loader had no roots to
-//! walk here, so this budget passed green for the whole life of the W2 defect
-//! while the real `mrd status` took 20-22 s in the field (`a8fdb356`). A perf
-//! gate whose fixture removes the dominant input reports a bound it never
-//! tested. The multi-root profile that DOES declare a table is
-//! `status_multiroot_cpu.rs`; the two are complementary and neither replaces the
-//! other — this one bounds the corpus-independence claim, that one bounds the
-//! mount-table-independence claim.
+//! This sandbox sets `HOME` to a bare temp dir, so the machine mount table is
+//! empty — deliberate isolation, which also means the eager mount loader has
+//! no roots to walk here. The multi-root profile that does declare a table is
+//! `status_multiroot_cpu.rs`; the two are complementary — this one bounds the
+//! corpus-independence claim, that one the mount-table-independence claim.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -162,12 +144,10 @@ fn arm_rules(ws: &Path, ids: &[String]) {
     std::fs::write(ws.join(fs::domain::ATTESTED_MARKER_PATH), "").expect("once-armed marker");
 }
 
-/// **The <1s wall-time gate (the merge budget, U3.6).** A 3k-doc corpus with a handful of armed
-/// rules: `status` reads ONE artifact file + the once-armed marker + O(armed) rule-page
-/// re-hashes + the journal + the git refs — NEVER the 3k docs. So its wall-time is independent
-/// of corpus size and stays well under the 1s hard budget. The measured milliseconds are
-/// printed for the card record.
-///
+/// The <1s wall-time gate. A 3k-doc corpus with a handful of armed rules:
+/// `status` reads one artifact file + the once-armed marker + O(armed)
+/// rule-page re-hashes + the journal + the git refs — never the 3k docs, so
+/// its wall-time is independent of corpus size.
 #[test]
 fn status_wall_time_under_1s_on_3k_corpus() {
     let sb = sandbox();
