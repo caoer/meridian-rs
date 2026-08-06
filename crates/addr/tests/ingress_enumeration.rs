@@ -1,32 +1,17 @@
-//! **The three ingress classes the compiler CANNOT reach** — U10 part (b).
-//! The address is a type (`crates/addr`), and retyping `lock::PinEntry` propagated it
-//! across the `lock` / `view` / `wire-serve` cluster **by compiler**: every site where
-//! the data carrying an address changed type had to discharge the parse or fail to build.
-//! That is the ladder's top rung and it is exhaustive over TYPE FLOW.
-//! It stops at three classes, because in each the address arrives as a raw string into a
-//! slot whose type does not change:
-//! | Class | Why the compiler cannot reach it | |---|---| | `markdown-body` | `dest:
-//! &str` from pulldown-cmark, and `syntax` is UPSTREAM of `model` — a type in a crate
-//! depending on `model` is architecturally unreachable from it | | `cli-argv` |
-//! hand-rolled splits over `String` args into `String` fields — nothing changes type | |
-//! `wire-decode` | `crates/wire` deps are serde only and criterion 7 freezes v2
-//! byte-identity; a `root:`-bearing target decodes into a plain `String`, and the
-//! compiler cannot force a call that does not exist |
-//! So this is the ladder's MIDDLE rung, used exactly where plan § 3.1 says *a list is all
-//! a test can give you*: it proves the door SET, not that each door is closed. **It fails
-//! when a FOURTH ingress appears** — a new raw split of an address spelling anywhere in
-//! the workspace source is an unclassified site until someone writes down which class it
-//! belongs to.
-//! **Precision, measured before the check was written** (S3-R23 ①): the scan finds every
-//! `#`-split in workspace `src/`, address-bearing or not, and the table classifies each.
-//! It therefore never *guesses* that a site is a defect — it reports that the set changed
-//! and demands a classification. Two of today's eleven rows are `not-an-address` and are
-//! pinned as such, which is what keeps a true positive distinguishable from a frontmatter
-//! parse.
+//! The three ingress classes the compiler cannot reach.
 //!
+//! The address is a type (`crates/addr`) and its retype propagated by compiler over
+//! type flow — but three classes take an address as a raw string into a slot whose
+//! type never changes: `markdown-body` (`dest: &str` from pulldown-cmark, upstream
+//! of `model`), `cli-argv` (`String` argv into `String` fields), and `wire-decode`
+//! (serde-only deps, frozen byte-identity).
 //!
-//!
-//!
+//! This suite proves the door SET, not that each door is closed: it fails when a
+//! fourth ingress appears — a new raw `#`-split of an address spelling is
+//! unclassified until someone writes down which class it belongs to. The scan finds
+//! every `#`-split in workspace `src/`, address-bearing or not, and the table
+//! classifies each, so a true positive stays distinguishable from an ordinary
+//! `#` split.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -50,17 +35,15 @@ enum Class {
     /// so the arithmetic closes, not because they are doors.
     InternalReader,
     /// Not an address at all. Pinned so a true ingress stays distinguishable
-    /// from an ordinary `#` split — the false positive that would get this
-    /// instrument deleted.
+    /// from an ordinary `#` split.
     NotAnAddress,
 }
 
-/// **THE DOOR LIST.** Every raw `#`-split in workspace `src/`, with its class.
+/// THE DOOR LIST. Every raw `#`-split in workspace `src/`, with its class.
 ///
-/// Lines are deliberately absent: a line number rots on the next edit and the
-/// rot reads exactly like a real change. The `needle` is a stable fragment of
-/// the site's own enclosing item, so a site that MOVES stays matched and a site
-/// that DISAPPEARS is a real finding.
+/// Lines are deliberately absent: a line number rots on the next edit. The
+/// needle is a stable fragment of the site's enclosing item, so a site that
+/// moves stays matched and one that disappears is a real finding.
 const PINNED: &[(&str, &str, Class)] = &[
     // ---- INGRESS 1: the markdown body (`syntax`, upstream of `model`) -------
     (
@@ -77,11 +60,8 @@ const PINNED: &[(&str, &str, Class)] = &[
     ("crates/mrd/src/pin_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/put_cmd.rs", "fn parse", Class::CliArgv),
     ("crates/mrd/src/read_cmd.rs", "fn parse", Class::CliArgv),
-    // FINDING 02's A4, and it is CLI argv despite living in `view`: the walk
-    // root reaches `page_of` as the bare positional `walk_cmd.rs` collected
-    // (`walk_cmd.rs` → `page: String` → `view::walk::walk(.., &parsed.page, ..)`).
-    // Classified `internal-reader` in this table's first draft — corrected after
-    // tracing the argument rather than trusting the crate it sits in.
+    // CLI argv despite living in `view`: the walk root reaches `page_of` as the
+    // bare positional `walk_cmd.rs` collected.
     ("crates/view/src/walk.rs", "fn page_of", Class::CliArgv),
     // ---- INGRESS 3: wire decode (serde-only, v2 byte-identity frozen) ------
     (
@@ -201,8 +181,8 @@ fn enclosing_item(trimmed: &str) -> Option<String> {
     None
 }
 
-/// **THE GATE.** The scanned set equals the pinned set — so a fourth ingress
-/// cannot appear without someone writing down which class it belongs to.
+/// THE GATE. The scanned set equals the pinned set — a fourth ingress cannot
+/// appear without someone writing down which class it belongs to.
 #[test]
 fn the_ingress_set_is_exactly_the_pinned_door_list() {
     let scanned = scan();
@@ -234,11 +214,8 @@ fn the_ingress_set_is_exactly_the_pinned_door_list() {
     );
 }
 
-/// The arithmetic closes (R32): every scanned site is accounted for by exactly
-/// one class, and the three INGRESS classes are each non-empty.
-///
-/// A door list whose classes were all empty would pass the set comparison above
-/// and prove nothing — this is the acceptance half (S3-R8(c)).
+/// The arithmetic closes: every scanned site carries exactly one class, and
+/// the three INGRESS classes are each non-empty.
 #[test]
 fn every_ingress_class_is_populated_and_the_arithmetic_closes() {
     let scanned = scan();
@@ -282,8 +259,7 @@ fn every_ingress_class_is_populated_and_the_arithmetic_closes() {
     }
 }
 
-/// Each pinned door still EXISTS. A list that names vanished sites rots into
-/// confident fiction; this is the check that it still describes the tree.
+/// Each pinned door still exists in the tree.
 #[test]
 fn every_pinned_door_still_exists_in_the_tree() {
     let root = workspace_root();
