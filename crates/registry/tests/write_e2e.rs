@@ -1,10 +1,6 @@
-//! E2E gates for the resident daemon's WRITE path (decision 0002, W1). A real
-//! client `hello`s a workspace, then `splice`s over the SAME connection: the edit
-//! lands on disk through the ONE shared `splice → commit` choke-point, the
-//! response is a BARE meridian-fs commit (no rule packs ⇒ `verdicts: []`), and the
-//! NEXT read reflects the write — the resident engine rebuilds on the moved
-//! fingerprint (U1 `warm_or_build`), so `cat` serves the committed bytes. A dry
-//! splice writes nothing.
+//! E2E gates for the resident daemon's write path (decision 0002): `hello`
+//! binds a workspace, `splice` commits over the same connection through the
+//! shared `splice → commit` choke-point, and the next read reflects it.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -29,8 +25,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // No idle exit: a daemon that reaped itself mid-assertion would flake.
     config.idle_exit = None;
     config
 }
@@ -49,9 +44,8 @@ fn write_ws(tmp: &TempDir, files: &[(&str, &str)]) -> PathBuf {
     ws
 }
 
-/// A persistent connection speaking raw NDJSON: `hello` binds the workspace, then
-/// every op rides the SAME connection (the per-connection binding the handshake
-/// sets up).
+/// A persistent NDJSON connection: `hello` binds the workspace, then every op
+/// rides the same connection.
 struct Conn {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -89,9 +83,9 @@ impl Conn {
 const PLAN: &str = "# Goals\n\nship by August\n";
 const PLAN_AFTER: &str = "# Goals\n\nship by September\n";
 
-/// A guarded `match` edit inside the Goals section: `ship by August` →
-/// `ship by September`. U10: a wire-origin content change carries the section's
-/// live fingerprint, so the frame reads the `toc` for it first.
+/// A guarded `match` edit inside Goals: `ship by August` → `ship by September`.
+/// A wire-origin content change carries the section's live fingerprint, so the
+/// frame reads the `toc` for it first.
 fn splice_frame(conn: &mut Conn) -> Value {
     let toc = conn.call(&json!({"op": "toc", "path": "plan.md"}));
     let rev = toc["body"]["nodes"]
@@ -115,9 +109,8 @@ fn splice_frame(conn: &mut Conn) -> Value {
     })
 }
 
-/// The main gate: `hello` binds + warms; `splice` commits the edit to disk with a
-/// BARE `verdicts: []`; the NEXT `cat` over the socket serves the committed bytes
-/// (the resident engine rebuilt on the moved fingerprint).
+/// `hello` binds + warms; `splice` commits to disk with a bare `verdicts: []`;
+/// the next `cat` over the socket serves the committed bytes.
 #[test]
 fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     let tmp = TempDir::new().unwrap();
@@ -125,8 +118,7 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // hello binds the workspace, warming the resident engine; capture its cursor.
-    // This is a v3 session, so the cursor is spelled `fingerprint`.
+    // v3 session: the cursor is spelled `fingerprint`.
     let ack = conn.hello(&ws);
     assert_eq!(ack["ok"], json!(true), "hello ok: {ack}");
     let fingerprint_before_hello = ack["body"]["fingerprint"]
@@ -134,7 +126,6 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
         .expect("hello fingerprint")
         .to_string();
 
-    // splice: the edit commits through the shared choke-point.
     let splice = {
         let f = splice_frame(&mut conn);
         conn.call(&f)
@@ -171,12 +162,9 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
         "the armed edit names the target: {splice}"
     );
 
-    // The write LANDED on disk.
     let on_disk = fs::read_to_string(ws.join("plan.md")).unwrap();
     assert_eq!(on_disk, PLAN_AFTER, "the edit landed on disk byte-for-byte");
 
-    // The NEXT read over the socket reflects it — the resident engine rebuilt on
-    // the moved fingerprint (U1), so `cat` serves the committed bytes.
     let cat = conn.call(&json!({"op": "cat", "path": "plan.md"}));
     assert_eq!(cat["ok"], json!(true), "cat ok: {cat}");
     assert_eq!(
@@ -185,8 +173,6 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
         "the resident engine reflects the write on the next read: {cat}"
     );
 
-    // Warm reuse resumed at the new fingerprint (the rebuild was once, on the cat
-    // read's `warm_or_build`, not a storm).
     assert_eq!(
         server.registry().warm_or_build(&ws).unwrap(),
         registry::WarmOutcome::Reused,
@@ -197,7 +183,7 @@ fn splice_lands_on_disk_and_the_next_read_reflects_it() {
 }
 
 /// A dry splice runs everything except disk: same response shape, `root_after`
-/// null, `verdicts` present, and NOT one byte changes on disk.
+/// null, `verdicts` present, and not one byte changes on disk.
 #[test]
 fn dry_splice_writes_nothing() {
     let tmp = TempDir::new().unwrap();
@@ -223,7 +209,6 @@ fn dry_splice_writes_nothing() {
         "dry verdicts: {splice}"
     );
 
-    // Zero disk effects means zero: the file is byte-for-byte unchanged.
     let on_disk = fs::read_to_string(ws.join("plan.md")).unwrap();
     assert_eq!(on_disk, PLAN, "a dry splice writes nothing");
 
@@ -239,9 +224,7 @@ fn splice_without_hello_is_refused() {
     let server = RunningServer::start(test_config(&tmp)).unwrap();
     let mut conn = Conn::open(server.socket_path());
 
-    // Written out rather than built by `splice_frame`: an unbound connection
-    // cannot read a `toc` either, and the rung under test fires before any
-    // fingerprint would be looked at.
+    // Written out by hand: an unbound connection cannot read a `toc` either.
     let splice = conn.call(&json!({
         "id": 7,
         "op": "splice",
@@ -263,7 +246,6 @@ fn splice_without_hello_is_refused() {
         "the refusal names the missing hello: {splice}"
     );
 
-    // And no byte reached disk.
     let on_disk = fs::read_to_string(tmp.path().join("ws").join("plan.md")).unwrap();
     assert_eq!(on_disk, PLAN, "a refused splice writes nothing");
 
@@ -302,15 +284,11 @@ fn hello_advertises_the_splice_caps() {
 }
 
 // ---------------------------------------------------------------------------
-// The BIRTH op on the resident host (the second dispatch arm).
-//
-// `create` has two dispatch arms — the per-workspace sidecar's and this one.
-// Two arms is two chances to drift, so the daemon's arm gets its own gate: the
-// same guarded door, the same journal row, the same CAS refusal.
+// The birth op on the resident host (the second `create` dispatch arm).
 // ---------------------------------------------------------------------------
 
 /// The daemon births a file through the shared guarded door, journals it, and
-/// serves the newborn on the NEXT read over the same connection.
+/// serves the newborn on the next read over the same connection.
 #[test]
 fn create_births_on_the_daemon_and_the_next_read_serves_the_newborn() {
     let tmp = TempDir::new().unwrap();
@@ -329,33 +307,22 @@ fn create_births_on_the_daemon_and_the_next_read_serves_the_newborn() {
     assert_eq!(birth["ok"], json!(true), "the birth landed: {birth}");
     assert_eq!(birth["id"], json!(11), "the response echoes the frame id");
 
-    // The caller's exact bytes, on disk.
     assert_eq!(
         fs::read_to_string(ws.join("notes/newborn.md")).expect("newborn exists"),
         body_bytes,
         "birth is byte-transparent on the daemon too"
     );
 
-    // The DOOR test used to read the journal row the guarded create wrote and
-    // match its anchor to the one the reply handed back — the assertion a
-    // daemon-side bypass could not satisfy. The journal is gone (ZT 2026-08-02),
-    // and with it that specific anti-bypass evidence; it is NOT replaced by an
-    // equivalent, and the seam note for U5 records the loss rather than papering
-    // over it. What still distinguishes the guarded door from a raw write is
-    // below: the exact bytes landed AND the world fingerprint advanced.
     assert!(
         birth["body"]["journal_anchor"].is_null(),
         "the retired journal anchor is gone from the birth reply: {birth}"
     );
 
-    // v3 vocabulary, and a real root advance.
     assert_ne!(
         birth["body"]["fingerprint_after"], birth["body"]["fingerprint_before"],
         "the birth advanced the fingerprint: {birth}"
     );
 
-    // The resident engine rebuilds on the moved fingerprint, so the newborn is
-    // readable over the SAME connection.
     let toc = conn.call(&json!({"id": 12, "op": "toc", "path": "notes/newborn.md"}));
     assert_eq!(toc["ok"], json!(true), "the newborn is readable: {toc}");
     assert_eq!(
@@ -364,8 +331,8 @@ fn create_births_on_the_daemon_and_the_next_read_serves_the_newborn() {
     );
 }
 
-/// The daemon's arm refuses a clobber for the SAME designed reason the sidecar's
-/// does — asserted by cause, and with the occupant proven byte-untouched.
+/// The daemon's arm refuses a clobber by cause, leaving the occupant
+/// byte-untouched.
 #[test]
 fn create_on_an_occupied_path_refuses_cas_mismatch_on_the_daemon() {
     let tmp = TempDir::new().unwrap();
@@ -396,8 +363,8 @@ fn create_on_an_occupied_path_refuses_cas_mismatch_on_the_daemon() {
 }
 
 /// §3.2 discovery honesty on the daemon: a v2 session neither advertises the
-/// birth op nor serves it. Both halves on a PROVEN-LIVE handshake — a refused
-/// hello would fake the same absence.
+/// birth op nor serves it — asserted on a proven-live handshake, since a
+/// refused hello would fake the same absence.
 #[test]
 fn a_v2_daemon_session_neither_advertises_nor_serves_create() {
     let tmp = TempDir::new().unwrap();

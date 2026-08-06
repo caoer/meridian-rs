@@ -3,7 +3,7 @@
 //!
 //! # Socket placement
 //! The socket, state file, and singleton lock all live in a fixed per-user
-//! directory OUTSIDE any workspace: `<cache-root>/registry/` (the `cache`
+//! directory outside any workspace: `<cache-root>/registry/` (the `cache`
 //! crate's root, which the deny ceiling already refuses as a workspace, so the
 //! socket can never sit inside a registerable tree). The directory is created
 //! mode 0700; a **world-writable** registry directory is refused (a hostile
@@ -83,26 +83,22 @@ pub struct Config {
     pub prewarm_quiet_max: Duration,
     /// How long the daemon stays resident with no client request before asking
     /// its host process to exit (see [`DEFAULT_IDLE_EXIT`]). `None` disables
-    /// idle exit — which is what an in-process test server wants, since its
-    /// lifetime is the test's, not a client's.
+    /// idle exit, which is what an in-process test server wants.
     pub idle_exit: Option<Duration>,
     /// How long a push-plane write may block before the subscriber is dropped
     /// (see [`crate::DEFAULT_PUSH_WRITE_TIMEOUT`]).
     pub push_write_timeout: Duration,
-    /// How long an armed sub may go with ZERO frames written before it is
+    /// How long an armed sub may go with zero frames written before it is
     /// dropped (see [`crate::DEFAULT_SUB_IDLE_WRITE_TIMEOUT`], which carries the
     /// coupling constraint against D3's 30-minute client-side drain TTL).
     pub sub_idle_write_timeout: Duration,
-    /// R1: the build sha this daemon echoes as `hello.identity.build` on a v3
-    /// session, so a client can tell a resident daemon from the binary it just
-    /// deployed. `None` publishes NO identity — the honest answer for a host
-    /// that was given none, and distinct from `Some("unknown")`, which
-    /// publishes an identity the build could not name.
+    /// The build sha this daemon echoes as `hello.identity.build` on a v3
+    /// session. `None` publishes no identity, which is distinct from
+    /// `Some("unknown")`.
     ///
-    /// It is carried rather than read here: `MRD_BUILD_SHA` is baked into the
-    /// `mrd` crate's compilation environment alone, so this crate cannot see
-    /// it. `mrd daemon` supplies it
-    /// (`docs/wire-contract.md`).
+    /// Carried rather than read here: `MRD_BUILD_SHA` is baked into the `mrd`
+    /// crate's compilation environment alone, so this crate cannot see it;
+    /// `mrd daemon` supplies it (`docs/wire-contract.md`).
     pub build_sha: Option<String>,
 }
 
@@ -136,8 +132,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`io::ErrorKind::NotFound`] when no cache root resolves (neither
-    /// `XDG_CACHE_HOME` nor `HOME` is set); a daemon needs a stable per-user
-    /// home for its socket and state, so this is a hard error, not a degrade.
+    /// `XDG_CACHE_HOME` nor `HOME` is set) — a hard error, not a degrade: the
+    /// daemon needs a stable per-user home for its socket and state.
     pub fn resolve() -> io::Result<Self> {
         Ok(Self::for_cache_root(cache::cache_root()?))
     }
@@ -165,7 +161,7 @@ pub fn default_socket_path() -> io::Result<PathBuf> {
 #[derive(Debug)]
 pub struct RunningServer {
     shutdown: Arc<AtomicBool>,
-    /// G11: raised by the reaper when the idle-exit horizon passes. A REQUEST,
+    /// G11: raised by the reaper when the idle-exit horizon passes. A request,
     /// not the act — see [`RunningServer::idle_exit_requested`].
     exit_requested: Arc<AtomicBool>,
     accept: Option<JoinHandle<()>>,
@@ -329,8 +325,7 @@ fn prepare_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The deadlines that keep a push subscription mortal, carried together because
-/// they cover complementary halves of one question — see [`push_loop`].
+/// The deadlines that keep a push subscription mortal — see [`push_loop`].
 #[derive(Debug, Clone, Copy)]
 struct PushDeadlines {
     /// [`Config::push_write_timeout`]: a blocked write on a busy workspace.
@@ -374,14 +369,11 @@ fn spawn_accept(
 /// The accept loop proper, generic over how an accepted connection is
 /// dispatched.
 ///
-/// **Fault containment (R2/S2):** a dispatch failure — thread exhaustion is the
-/// realistic one — drops that ONE connection and keeps accepting. `thread::spawn`
-/// panics on a failed spawn, and that panic would unwind this loop, leaving the
-/// daemon holding the listener and the singleton flock while serving nothing:
-/// no successor can bind, and clients wait out the 15-minute idle-exit. So the
-/// spawn is fallible (`thread::Builder`) and its error is a `continue`. The
-/// dropped client sees EOF and redials, by which time the transient is usually
-/// over.
+/// **Fault containment (R2/S2):** a dispatch failure (thread exhaustion) drops
+/// that one connection and keeps accepting. `thread::spawn` panics on a failed
+/// spawn, and that panic would unwind this loop while the daemon still holds
+/// the listener and the singleton flock, so the spawn is fallible
+/// (`thread::Builder`) and its error is a `continue`.
 fn accept_loop(
     listener: &UnixListener,
     shutdown: &AtomicBool,
@@ -444,19 +436,15 @@ fn spawn_reaper(
             if !reaped.is_empty() {
                 eprintln!("registry: idle-reaped {} workspace(s)", reaped.len());
             }
-            // G11 idle exit. The reaper raises the FLAG only; the process's own
+            // G11 idle exit. The reaper raises the flag only; the process's own
             // loop owns the teardown, because shutting the threads down from
             // inside one of them would join this thread to itself.
             if let Some(horizon) = idle_exit {
-                // G11 liveness (R2/S3): an armed `sub` connection counts toward
-                // the quiet clock. A subscribed daemon has a live consumer that
-                // sends no requests, so the request clock alone would exit out
-                // from under it. Holding the clock open (rather than only
-                // skipping the check) is what starts the full horizon over when
-                // the last subscriber leaves. Mortality is preserved from the
-                // OTHER side: the push plane drops a peer that closed (EOF) or
-                // stopped draining (write deadline), and the client owns a
-                // 30-minute drain TTL (D3) — never a server-side sub TTL.
+                // G11 liveness (R2/S3): an armed `sub` connection sends no
+                // requests, so the request clock alone would exit out from
+                // under it. Holding the clock open (rather than only skipping
+                // the check) restarts the full horizon when the last subscriber
+                // leaves; the push plane keeps the sub itself mortal.
                 if registry.has_subscribers() {
                     registry.note_liveness();
                     continue;
@@ -529,7 +517,7 @@ fn next_prewarm_delay(
 /// vocabulary on the socket). Families by `op`:
 /// - **admin** (`ping`/`register`/`unregister`/`resolve_ws`/`list`) — daemon-
 ///   internal, absent from wire `caps`;
-/// - **`hello`** — contract rev, pin, warm, BIND connection (§4; subsumes deleted `attach`);
+/// - **`hello`** — contract rev, pin, warm, bind connection (§4; subsumes deleted `attach`);
 /// - **wire ops** — frozen contract from the bound workspace's warm engine.
 fn serve_conn(
     stream: &UnixStream,
@@ -551,7 +539,7 @@ fn serve_conn(
         }
         // Activity clock: every frame counts, before dispatch, success or not.
         registry.note_request();
-        // Set by an ACCEPTED `sub` only — see `push_loop`.
+        // Set by an accepted `sub` only — see `push_loop`.
         let mut armed: Option<u64> = None;
         let out = handle_line(
             registry,
@@ -587,8 +575,8 @@ fn serve_conn(
 /// How often a subscriber checks for undelivered frames.
 ///
 /// Shorter than [`crate::ring::DETECT_CADENCE`]: noticing a frame (mutex + seq
-/// compare), not finding one (corpus fold). Separate so N subscribers share
-/// folds yet each deliver promptly.
+/// compare) is cheaper than finding one (corpus fold), so N subscribers share
+/// folds yet each delivers promptly.
 const PUSH_TICK: Duration = Duration::from_millis(50);
 
 /// Push channel: detect, deliver undelivered frames, repeat.
@@ -597,16 +585,15 @@ const PUSH_TICK: Duration = Duration::from_millis(50);
 /// [`SubGuard`](crate::ring::SubGuard) keeps the reaper off this workspace for
 /// the lifetime and releases on every exit path.
 ///
-/// Two deadlines keep the subscription mortal, because an armed sub now holds
-/// the idle-exit clock open (R2/S3) and this loop parks an OS thread:
-/// - **peer closed** — the probe read (§[`peer_closed`]) sees EOF within one
-///   [`PUSH_TICK`], the only death signal a QUIET workspace ever produces;
+/// An armed sub holds the idle-exit clock open (R2/S3) and parks an OS thread,
+/// so three signals keep it mortal:
+/// - **peer closed** — the probe read ([`peer_closed`]) sees EOF within one
+///   [`PUSH_TICK`], the only death signal a quiet workspace ever produces;
 /// - **peer wedged** — `deadlines.write` bounds a blocked write once the
 ///   socket buffers fill, so a subscriber that stopped draining is dropped;
-/// - **peer wedged on a QUIET workspace** (R2b) — neither of the two above can
-///   fire there, since nothing is written and no EOF arrives, so
-///   `deadlines.idle_write` drops a sub that has written zero frames for that
-///   long. Rides this loop's existing tick: no new thread, no new syscall.
+/// - **peer wedged on a quiet workspace** (R2b) — neither of the above can fire
+///   there, so `deadlines.idle_write` drops a sub that has written zero frames
+///   for that long.
 fn push_loop(
     registry: &Registry,
     ws: &Path,
@@ -619,10 +606,9 @@ fn push_loop(
     let ring = registry.ring(ws);
     // Subscribe before first detect — otherwise a reap can leave a silent hole.
     let _subscribed = ring.subscribe();
-    // A wedged consumer must not park this thread forever. A timed-out write may
-    // leave a partial frame on the wire; the connection is dropped immediately
-    // after, so the client reads a truncated line then EOF, redials, and
-    // resyncs by root (§7.1) — the same recovery a daemon restart needs.
+    // A timed-out write may leave a partial frame on the wire; the connection is
+    // dropped right after, so the client reads a truncated line then EOF,
+    // redials, and resyncs by root (§7.1).
     writer.set_write_timeout(Some(deadlines.write))?;
     let mut probe = writer.try_clone()?;
     // The probe read parks for the tick, so it replaces the sleep.
@@ -645,9 +631,8 @@ fn push_loop(
         if peer_closed(&mut probe) {
             return Ok(());
         }
-        // The drop lands cleanly BETWEEN frames — nothing was written, so a live
-        // client redials with its cursor and catches up from an empty ring. Not
-        // the root-resync path above, which is for a partially written frame.
+        // Drops between frames: nothing was written, so a live client redials
+        // with its cursor and catches up from an empty ring.
         if last_write.elapsed() >= deadlines.idle_write {
             return Ok(());
         }
@@ -659,10 +644,9 @@ fn push_loop(
 /// is also the loop's tick.
 ///
 /// The push plane is one-way by construction (`serve_conn` never returns to the
-/// request loop), so a readable zero is EOF, not data — the signal a subscriber
-/// whose owner process died produces even when the workspace is quiet and no
-/// write is ever attempted. Bytes are a client that spoke on a channel it does
-/// not own: not a death signal, so the sub survives and only the tick is paid.
+/// request loop), so a readable zero is EOF, not data — the only death signal a
+/// quiet workspace produces. Bytes are a client speaking on a channel it does
+/// not own: not a death signal, so the sub survives.
 fn peer_closed(probe: &mut UnixStream) -> bool {
     let mut byte = [0u8; 1];
     match probe.read(&mut byte) {
@@ -822,8 +806,8 @@ const CAPS: [&str; 17] = [
     "sub",
 ];
 
-/// Resident-engine handshake (§4, U3): decode `hello` (unknown rev ⇒
-/// `bad_request`), pin + warm + BIND the connection. Subsumes deleted `attach`.
+/// Resident-engine handshake (§4): decode `hello` (unknown rev ⇒
+/// `bad_request`), pin + warm + bind the connection. Subsumes deleted `attach`.
 fn hello(
     registry: &Registry,
     attached: &mut Option<PathBuf>,
@@ -908,11 +892,9 @@ fn hello_body(
         root,
         storage,
         workspace: bound,
-        // R1: v3-only, and only when this daemon was given a sha. A v2 session
-        // is the frozen path and never grows the key; a daemon with no
-        // configured sha publishes no identity at all, which is a different
-        // fact from publishing `unknown`
-        // (`docs/wire-contract.md`).
+        // v3-only, and only when this daemon was given a sha: v2 is the frozen
+        // path and never grows the key, and no configured sha publishes no
+        // identity rather than `unknown` (`docs/wire-contract.md`).
         identity: match (rev, build_sha) {
             (Rev::V3, Some(build)) => Some(wire::Identity {
                 build: build.to_string(),
@@ -1039,9 +1021,8 @@ fn dispatch_read(
         }),
         Op::Diff { from_root, to_root } => warm_engine_read(registry, ws, |engine| {
             // `diff` does not read the ring: same-root ⇒ empty; else
-            // `root_unknown` → resync. Degrade to re-derive, never wrong data.
-            // `root.seq` stays 0 for the same reason — both surfaces read the
-            // ring together or neither does.
+            // `root_unknown` → resync. `root.seq` stays 0 for the same reason —
+            // both surfaces read the ring together or neither does.
             let current = engine_root(engine);
             if from_root == current && to_root == current {
                 Ok(ResponseBody::Diff {
@@ -1060,7 +1041,7 @@ fn dispatch_read(
         Op::ViewPath { .. } => {
             unreachable!("view_path is handled before the bound-workspace guard")
         }
-        // W1 write path: BARE meridian-fs commit via shared choke-point.
+        // Write path: bare meridian-fs commit via shared choke-point.
         // No rule packs (`&[]` ⇒ `verdicts: []`). Writes disk; warm engine
         // rebuilds on next read (fingerprint moved). Numbered on the workspace ring.
         Op::Splice {
@@ -1104,7 +1085,7 @@ fn dispatch_read(
             Ok(out.body)
         }
         // Birth op — v3-only; same guarded door as the sidecar (`write::create`).
-        // BARE commit, numbered on the same ring as `splice`.
+        // Bare commit, numbered on the same ring as `splice`.
         Op::Create {
             path,
             body,
@@ -1229,7 +1210,7 @@ fn warm_engine_read<R>(
     })
 }
 
-/// §4.5 walk plane, served COLD from a per-request walk corpus (not the
+/// §4.5 walk plane, served cold from a per-request walk corpus (not the
 /// hash-domain warm engine).
 fn resolve_cold(
     ws: &Path,
@@ -1276,8 +1257,8 @@ fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
 }
 
 /// R2/S2 accept-loop fault containment, driven at the dispatch seam: a real
-/// spawn failure (thread exhaustion) cannot be provoked in-process without
-/// taking the whole test binary down with it.
+/// spawn failure cannot be provoked in-process without taking the test binary
+/// down with it.
 #[cfg(test)]
 mod accept_containment_tests {
     use super::accept_loop;
@@ -1289,11 +1270,8 @@ mod accept_containment_tests {
     use std::time::{Duration, Instant};
 
     /// A dispatch that always fails must not end the loop: the daemon holds the
-    /// listener AND the singleton flock, so an accept loop that unwinds serves
-    /// nothing and blocks every successor until idle-exit (15 min).
-    ///
-    /// *Mutation:* make the dispatch error a panic (which is what `thread::spawn`
-    /// does on a failed spawn) — the second connection is then never accepted.
+    /// listener and the singleton flock, so an accept loop that unwinds serves
+    /// nothing and blocks every successor until idle-exit.
     #[test]
     fn a_dispatch_failure_drops_one_connection_and_keeps_accepting() {
         let tmp = tempfile::tempdir().unwrap();

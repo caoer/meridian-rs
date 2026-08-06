@@ -1,16 +1,10 @@
 //! Served `root_mismatch` wire shape — read from the daemon socket.
 //!
-//! Contract (`docs/wire-contract.md` §5.1, §8, §18 row 2) names
+//! The contract (`docs/wire-contract.md` §5.1, §8, §18 row 2) names
 //! `root_mismatch{expected,actual,changed}`. The engine serves `expected` and
-//! `actual` only; `changed` is **implemented-absent**: `world_guard` sees two
-//! root hashes, and a merkle root is not invertible. Serving "what drifted"
-//! would need retained inter-lock history, which decision 19 forbids (engine
-//! has no memory between locks).
-//!
-//! The frozen fixture in `wire/tests/contract_v2.rs` is left untouched (ZT
-//! valve). This file pins the served shape from a real daemon over a real
-//! socket (U27: an exhaustive key-set pin is a wire detector only when values
-//! come from the wire).
+//! `actual` only; `changed` is implemented-absent — `world_guard` sees two root
+//! hashes and a merkle root is not invertible, and computing "what drifted"
+//! would need inter-lock history that decision 19 forbids.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -103,9 +97,8 @@ fn served_root_mismatch(tmp: &TempDir) -> Value {
     refused["error"].clone()
 }
 
-/// Exhaustive key set of a served `root_mismatch` (not a subset check — that
-/// would pass if `changed` appeared). `changed` absence is the
-/// implemented-absent verdict, executable.
+/// Exhaustive key set of a served `root_mismatch` — not a subset check, which
+/// would pass if `changed` appeared.
 #[test]
 fn a_served_root_mismatch_carries_expected_and_actual_and_no_changed() {
     let tmp = TempDir::new().unwrap();
@@ -124,7 +117,6 @@ fn a_served_root_mismatch_carries_expected_and_actual_and_no_changed() {
         "the wire shape of a real root_mismatch: {error}"
     );
 
-    // Named separately: absence is the engine fact pinned from its own output.
     assert!(
         error.get("changed").is_none(),
         "`changed` is specified in §5.1/§8/§18 row 2 and is unreachable by \
@@ -134,8 +126,7 @@ fn a_served_root_mismatch_carries_expected_and_actual_and_no_changed() {
 }
 
 /// §8 from the wire: `root_mismatch` carries `recovery: resync`. Also the
-/// control that the pin above is not vacuous — code/recovery from the same
-/// served frame proves a real world-guard refusal was produced.
+/// control that the pin above is not vacuous.
 #[test]
 fn the_served_root_mismatch_is_a_real_one_carrying_its_ruled_recovery() {
     let tmp = TempDir::new().unwrap();
@@ -153,9 +144,8 @@ fn the_served_root_mismatch_is_a_real_one_carrying_its_ruled_recovery() {
 }
 
 /// Instrument control: the pin can distinguish a `changed` field from its
-/// absence. Injects `changed` into the served frame (downstream of the engine)
-/// so a future presence would redden the key-set pin. Not a production mutation
-/// of `world_guard` — the pin already reads the real output path.
+/// absence. `changed` is injected downstream of the engine, so a future
+/// presence would redden the key-set pin.
 #[test]
 fn the_pin_can_distinguish_a_changed_field_from_its_absence() {
     let tmp = TempDir::new().unwrap();

@@ -144,7 +144,7 @@ impl Registry {
                 ));
             }
         };
-        // Deny ceiling enforced IN THE DAEMON, not merely client-side.
+        // Deny ceiling enforced in the daemon, not merely client-side.
         if let Some(reason) = workspace::deny_reason(&canonical) {
             return RegisterOutcome::Denied(reason.into());
         }
@@ -155,7 +155,7 @@ impl Registry {
             return RegisterOutcome::Adopted(existing.clone());
         }
 
-        // First writer for this path. Write the drawer sentinel BEFORE the map
+        // First writer for this path. Write the drawer sentinel before the map
         // insert, still under the lock, so a sentinel failure leaves no
         // dangling registry entry — one entry iff one sentinel.
         let drawer = cache::drawer_dir(&self.cache_root, &canonical);
@@ -198,7 +198,7 @@ impl Registry {
     /// Pin storage for a **declared** root (`hello.workspace`).
     ///
     /// **Exact, or refuse** — no ancestor walk; a declaration never widens to
-    /// an enclosing registered workspace (jail root IS the declared path).
+    /// an enclosing registered workspace (jail root is the declared path).
     /// Reuses [`register`](Self::register) whole (R2). Response `workspace`
     /// names what actually bound (canonicalization may rewrite spelling).
     /// Does not warm; caller warms and binds.
@@ -287,7 +287,7 @@ impl Registry {
     }
 
     /// V2 §Q2 `view_path`: resolve `cwd`, publish/serve `view.duckdb`, return
-    /// stamped PATH + pre-open freshness hint — never rows. Sole builder (OD6).
+    /// stamped path + pre-open freshness hint — never rows. Sole builder (OD6).
     /// Under the per-workspace publish mutex (B1). Branches: `fresh` ⇒ bounded
     /// rebuild (§Q3); known `as_of` ⇒ serve last-good (no rebuild); else first
     /// build. Publish failure with last-good serves it + OD7 `last_error`.
@@ -390,8 +390,8 @@ impl Registry {
         )
     }
 
-    /// Workspace delta ring (U20b), created on first use. `workspace` must be
-    /// CANONICAL — S6 isolation key (hello bind supplies it). [`Arc`] so a
+    /// Workspace delta ring, created on first use. `workspace` must be
+    /// canonical — S6 isolation key (hello bind supplies it). [`Arc`] so a
     /// parked subscriber never holds this map's lock.
     #[must_use]
     pub fn ring(&self, workspace: &Path) -> Arc<crate::ring::WorkspaceRing> {
@@ -404,7 +404,7 @@ impl Registry {
     }
 
     /// Read-is-the-mint ledger (S6), created on first use. `workspace` must be
-    /// CANONICAL (same key as `engines`/`inner`). [`Arc`] so a slow read never
+    /// canonical (same key as `engines`/`inner`). [`Arc`] so a slow read never
     /// holds this map's lock.
     #[must_use]
     pub fn read_mints(&self, workspace: &Path) -> Arc<receipt::read_mint::ReadMintStore> {
@@ -429,8 +429,8 @@ impl Registry {
             .and_then(|s| s.last_ok_fingerprint.clone())
     }
 
-    /// The OD7 reply telemetry: `refresh_in_progress` (always `false` in round-1
-    /// — rebuilds are synchronous, done before the reply) + the last failure.
+    /// The OD7 reply telemetry: `refresh_in_progress` (always `false` —
+    /// rebuilds are synchronous, done before the reply) + the last failure.
     fn refresh_telemetry(&self, workspace: &Path) -> (bool, Option<wire::RefreshError>) {
         let states = self
             .refresh_state
@@ -441,7 +441,7 @@ impl Registry {
     }
 
     /// Build + publish `view.duckdb` at the current disk fold, then sample
-    /// `live` AFTER — the absent/first-build path (§Q3 post-result fold shape,
+    /// `live` after — the absent/first-build path (§Q3 post-result fold shape,
     /// no retry). `FRESH_AT_SAMPLE` iff `F0 == F_now`, else `STALE`.
     fn build_once(
         &self,
@@ -455,7 +455,7 @@ impl Registry {
     }
 
     /// The bounded `--fresh` rebuild (§Q3): build at `F0`, sample `live = F_now`
-    /// after; equal ⇒ `FRESH_AT_SAMPLE`; else retry ONCE; still differing ⇒
+    /// after; equal ⇒ `FRESH_AT_SAMPLE`; else retry once; still differing ⇒
     /// `RACED` with both fingerprints. Never loops, never labels fresh.
     fn bounded_fresh(
         &self,
@@ -594,10 +594,9 @@ impl Registry {
 
     /// G11 liveness: hold the quiet clock open without counting a request.
     ///
-    /// An armed `sub` connection is activity for idle-exit — the daemon has a
-    /// live consumer — but it is not traffic for the pre-warm backoff: nothing
-    /// is being asked of the engine, so the cadence must still be allowed to
-    /// decay. Two clocks, one bump.
+    /// An armed `sub` connection is activity for idle-exit, but not traffic for
+    /// the pre-warm backoff — nothing is asked of the engine, so that cadence
+    /// must still be allowed to decay.
     pub fn note_liveness(&self) {
         self.last_request.store(now_secs(), Ordering::Relaxed);
     }
@@ -613,16 +612,15 @@ impl Registry {
     /// How many client requests this daemon has served since it started.
     ///
     /// The pre-warm backoff watches this rather than a timestamp: a counter
-    /// that moved means traffic arrived *between two sweeps*, which a
-    /// one-second-granular clock can miss entirely.
+    /// that moved means traffic arrived between two sweeps, which a
+    /// one-second-granular clock can miss.
     #[must_use]
     pub fn request_count(&self) -> u64 {
         self.requests.load(Ordering::Relaxed)
     }
 
     /// Unix seconds of the last client request — or of daemon start, when there
-    /// has been none. Never `0` in practice, so an idle-exit check on it cannot
-    /// be tricked into firing immediately.
+    /// has been none, so an idle-exit check cannot fire immediately.
     #[must_use]
     pub fn last_request_secs(&self) -> u64 {
         self.last_request.load(Ordering::Relaxed)
@@ -717,8 +715,8 @@ impl Registry {
     }
 
     /// Persist the current map to the state file, logging (never failing) on a
-    /// write error — a lost persist costs a warm registration across restart,
-    /// which is recoverable; it must not crash the daemon.
+    /// write error — a lost persist only costs a warm registration across
+    /// restart.
     fn persist(&self, map: &HashMap<PathBuf, WorkspaceEntry>) {
         let entries: Vec<WorkspaceEntry> = map.values().cloned().collect();
         if let Err(e) = self.state.save(&entries) {
@@ -734,7 +732,7 @@ impl Registry {
     }
 }
 
-/// Sample a workspace's CURRENT disk fingerprint — a full-corpus fold
+/// Sample a workspace's current disk fingerprint — a full-corpus fold
 /// (`fs::domain_snapshot`, the cheap half, no parse), the §Q3 live sample.
 fn sample_fingerprint(workspace: &Path) -> Result<model::MerkleRoot, Box<ErrorBody>> {
     let root = fs::WorkspaceRoot(workspace.to_path_buf());
@@ -758,8 +756,7 @@ fn view_state(as_of: &model::MerkleRoot, live: &model::MerkleRoot) -> wire::View
 /// Map a `warm_or_build` / `domain_snapshot` I/O failure onto its wire frame: a
 /// non-UTF-8 corpus file is `invalid_utf8` (refused, never lossy-decoded);
 /// anything else carries its cause on `io_error`. Mirrors the daemon read
-/// path's `warm_err_to_wire` (`server.rs`) so a fold failure reads identically
-/// whichever op raised it.
+/// path's `warm_err_to_wire` (`server.rs`).
 fn warm_err_to_wire(e: &io::Error) -> Box<ErrorBody> {
     if e.kind() == io::ErrorKind::InvalidData {
         return Box::new(ErrorBody::new(ErrorCode::InvalidUtf8));
@@ -812,13 +809,11 @@ mod engine_tests {
             &[("a.md", "# A\n\nsee [[b]]\n"), ("b.md", "# B\n")],
         );
 
-        // Cold → build.
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Built { docs: 2 },
             "first warm builds the corpus"
         );
-        // Unchanged hash → reuse (zero parses).
         assert_eq!(
             reg.warm_or_build(&ws).unwrap(),
             WarmOutcome::Reused,
@@ -868,7 +863,6 @@ mod engine_tests {
 
         reg.warm_or_build(&ws).unwrap();
 
-        // Warm state answers a real query::links.
         let canonical = workspace::canonicalize(&ws).unwrap();
         let engines = reg.engines.read().unwrap();
         let engine = engines.get(&canonical).expect("warm engine resident");

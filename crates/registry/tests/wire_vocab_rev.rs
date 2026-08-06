@@ -1,16 +1,12 @@
 //! The daemon-socket vocabulary gate (`docs/wire-contract.md`),
 //! executable end-to-end over the resident daemon's unified socket.
 //!
-//! The amendment's hard rule, on the daemon socket this time: a `hello` session
-//! that negotiated `contract:v3` emits `fingerprint` and NEVER `root` — in every
-//! answered class (`hello` caps + binding, `root`/`fingerprint`, `toc`, `links`,
-//! `diff`, `splice`) — while a `v2` (or un-negotiated) session emits `root` and
-//! NEVER `fingerprint`, byte-for-byte the frozen contract. One epoch, one rev.
-//!
-//! This closes the U2/U3 gap: the wire ops were unified onto the daemon socket
-//! without carrying the per-session rev projection across, so the socket served
-//! `root` even to a v3 client. The projection now lives in `wire-serve` and both
-//! hosts drive it — this gate proves it on the daemon socket.
+//! A `hello` session that negotiated `contract:v3` emits `fingerprint` and
+//! never `root` — in every answered class (`hello` caps + binding,
+//! `root`/`fingerprint`, `toc`, `links`, `diff`, `splice`) — while a `v2` (or
+//! un-negotiated) session emits `root` and never `fingerprint`, byte-for-byte
+//! the frozen contract. One epoch, one rev. The per-session rev projection
+//! lives in `wire-serve`; this gate proves it on the daemon socket.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -35,8 +31,7 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
     config
 }
@@ -97,7 +92,7 @@ impl Conn {
 
 const PLAN: &str = "# Goals\n\nsee [[b]]\n\nship by August\n";
 
-/// The v2-root vocabulary keys — none may appear as an object KEY (recursively)
+/// The v2-root vocabulary keys — none may appear as an object key (recursively)
 /// in a v3 frame, and every one of them must appear (where applicable) in a v2
 /// frame.
 const ROOT_KEYS: &[&str] = &[
@@ -121,8 +116,8 @@ const FINGERPRINT_KEYS: &[&str] = &[
     "live_fingerprint",
 ];
 
-/// Recursively collect every object KEY in `v` (values are never collected — a
-/// corpus path or linkpath that spells "root" is a legitimate VALUE and must
+/// Recursively collect every object key in `v` (values are never collected — a
+/// corpus path or linkpath that spells "root" is a legitimate value and must
 /// never be re-keyed).
 fn keys(v: &Value, out: &mut Vec<String>) {
     match v {
@@ -154,7 +149,7 @@ fn caps(frame: &Value) -> Vec<String> {
 }
 
 /// The primary gate: a v3-negotiated session emits `fingerprint` in every class
-/// and ZERO `root` tokens — read frames (`toc`/`root`/`links`/`diff`), the write
+/// and zero `root` tokens — read frames (`toc`/`root`/`links`/`diff`), the write
 /// frame (`splice`), and the `hello` caps + binding.
 #[test]
 fn v3_session_emits_fingerprint_and_zero_root_tokens() {
@@ -181,8 +176,7 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
         "fingerprint",
         "splice.if_fingerprint",
         "links.require_fingerprint",
-        // S3 U1 (R23): the v3-era splice amendments, advertised as dotted
-        // `op.field` caps because a v3 session honours both fields.
+        // v3-era splice amendments, advertised as dotted `op.field` caps.
         "splice.plan_edits",
         "splice.pin",
     ] {
@@ -259,7 +253,7 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
         "splice carries the fingerprint transition: {splice}"
     );
 
-    // The hard rule, mechanized: ZERO root-vocabulary KEYS in ANY v3 frame.
+    // The hard rule, mechanized: zero root-vocabulary keys in any v3 frame.
     for frame in [&hi, &toc, &fp, &links, &diff, &splice] {
         let frame_keys = all_keys(frame);
         for root_key in ROOT_KEYS {
@@ -273,7 +267,7 @@ fn v3_session_emits_fingerprint_and_zero_root_tokens() {
     server.shutdown();
 }
 
-/// The mirror gate: a `v2` (declared) session emits `root` and NEVER
+/// The mirror gate: a `v2` (declared) session emits `root` and never
 /// `fingerprint`, with no `contract` echo — byte-for-byte the frozen contract.
 #[test]
 fn v2_session_emits_root_and_never_fingerprint() {
@@ -299,9 +293,8 @@ fn v2_session_emits_root_and_never_fingerprint() {
             "v2 caps carry `{want}`: {hi}"
         );
     }
-    // S3 U1 (R23), the other direction of discovery honesty: a v2 session
-    // REFUSES both v3-era splice amendments at the field wall, so advertising
-    // them here would be a FALSE advertisement. The frozen v2 constant is why.
+    // Discovery honesty, the other direction: a v2 session refuses both v3-era
+    // splice amendments at the field wall, so it must not advertise them.
     for forbidden in ["splice.pin", "splice.plan_edits"] {
         assert!(
             !hi_caps.contains(&forbidden.to_string()),
@@ -343,7 +336,7 @@ fn v2_session_emits_root_and_never_fingerprint() {
         "splice carries the root transition: {splice}"
     );
 
-    // ZERO fingerprint-vocabulary KEYS in ANY v2 frame.
+    // Zero fingerprint-vocabulary keys in any v2 frame.
     for frame in [&hi, &toc, &root, &links, &splice] {
         let frame_keys = all_keys(frame);
         for fp_key in FINGERPRINT_KEYS {
@@ -363,10 +356,10 @@ fn v2_session_emits_root_and_never_fingerprint() {
     server.shutdown();
 }
 
-/// U7 in-band timing on the daemon socket: a v3 session's dispatched frames —
+/// In-band timing on the daemon socket: a v3 session's dispatched frames —
 /// reads, the write, and a refusal alike — carry `meta: {duration_us}` (integer
 /// µs, the daemon measure point is `dispatch_read`). The `hello` handshake is
-/// intercepted BEFORE the dispatch shell and carries none.
+/// intercepted before the dispatch shell and carries none.
 #[test]
 fn v3_dispatch_frames_carry_meta_duration_us() {
     let tmp = TempDir::new().unwrap();
@@ -414,15 +407,13 @@ fn v3_dispatch_frames_carry_meta_duration_us() {
     server.shutdown();
 }
 
-/// U2 addressing facts on the daemon socket: a v3 `extract` enriches heading
-/// nodes with `n`/`words` and carries the address as SEGMENTS; a v2 `extract`
-/// against the SAME warm engine carries ZERO such keys (frozen shape).
+/// A v3 `extract` enriches heading nodes with `n`/`words` and carries the
+/// address as segments; a v2 `extract` against the same warm engine carries
+/// zero such keys (frozen shape).
 ///
-/// **U14 removed `hpath_text`** (ZT decision 14) — the joined sanitized address
-/// was a string address on a machine surface, and the node already carries the
-/// segment address that round-trips into `put`. The v2 half still names
-/// `hpath_text` deliberately: it asserts what a v2 SESSION may receive, so it
-/// must keep failing if any future unit reintroduces the key.
+/// `hpath_text` is retired — the node carries the segment address that
+/// round-trips into `put`. The v2 half still names `hpath_text` on purpose, so
+/// it keeps failing if a future unit reintroduces the key.
 #[test]
 fn v3_extract_enriches_headings_v2_never() {
     let tmp = TempDir::new().unwrap();
@@ -471,10 +462,11 @@ fn v3_extract_enriches_headings_v2_never() {
     server.shutdown();
 }
 
-/// Byte-identical, mechanized: v3 is EXACTLY v2 re-keyed — for the read ops that
-/// carry the cursor, a v2 connection and a v3 connection against the SAME warm
-/// engine answer the same DATA under the two vocabularies. The v2 `root` value
-/// equals the v3 `fingerprint` value, and neither leaks the other's spelling.
+/// Byte-identical, mechanized: v3 is exactly v2 re-keyed — for the read ops
+/// that carry the cursor, a v2 connection and a v3 connection against the same
+/// warm engine answer the same data under the two vocabularies. The v2 `root`
+/// value equals the v3 `fingerprint` value, and neither leaks the other's
+/// spelling.
 #[test]
 fn v3_is_exactly_v2_rekeyed_over_the_same_engine() {
     let tmp = TempDir::new().unwrap();
@@ -526,8 +518,8 @@ fn v3_is_exactly_v2_rekeyed_over_the_same_engine() {
 }
 
 /// One heading's live `node_rev` out of a `toc` frame — the fingerprint a
-/// wire-origin write must carry (U10). The v2 and v3 vocabularies spell the
-/// SURROUNDING frame differently; the per-node token is the same key in both.
+/// wire-origin write must carry. The v2 and v3 vocabularies spell the
+/// surrounding frame differently; the per-node token is the same key in both.
 fn toc_node_rev(toc: &Value, heading: &str) -> String {
     toc["body"]["nodes"]
         .as_array()

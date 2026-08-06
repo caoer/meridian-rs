@@ -1,39 +1,10 @@
 //! Exhaustive key-set pins for the daemon socket's served shapes (v3 session).
 //!
-//! The LIVE half of the U27 frozen-key-set pair lives in
-//! `crates/sidecar/tests/u27_v2_key_set_pins.rs`, which drives `sidecar::serve`.
-//! Unit R3b deletes that crate, and with it the only live-plane place where a
-//! response shape is pinned EXHAUSTIVELY. This suite rehomes that mechanism onto
-//! the daemon socket — the surface that outlives the sidecar.
-//!
-//! # What "outlives v2" means here
-//!
-//! The u27 pins are stated in the FROZEN V2 vocabulary, and R3b also removes v2
-//! rev support, so a verbatim copy would pin a wire nobody will serve. The
-//! criterion applied, stated once so a reader can check every pin below against
-//! it:
-//!
-//! > **An assertion outlives v2 iff its subject survives the v2→v3 projection in
-//! > `crates/wire-serve/src/rev.rs`.** Concretely: a pin over keys the rename
-//! > table does not touch is rehomed verbatim; a pin over a renamed cursor key
-//! > (`root*` → `fingerprint*`) is rehomed re-spelled; and a pin asserting the
-//! > ABSENCE of a v3-only key on a v2 session (no `meta`, no `fingerprint`, no
-//! > `n`/`words`) dies with v2 — it has no v3 statement, because on v3 the key is
-//! > present by design.
-//!
-//! Three u27 pins are deliberately NOT rehomed here, each for a stated reason;
-//! see § Not rehomed at the foot of this file.
-//!
-//! # Why exhaustive
-//!
-//! Every pin is a full sorted key LIST, never a subset or a `contains`. A subset
-//! check cannot catch the failure these pins exist for: a field that leaks onto a
-//! surface it was never designed for. `Option` + `skip_serializing_if` is not a
-//! version gate, and a value sweep misses field growth entirely.
-//!
-//! Pins record the wire AS SERVED. Where the served shape and a document disagree
-//! the pin follows the wire and says so in its comment — a pin that encodes what
-//! the wire ought to be is a wish, and it fails on the day someone fixes nothing.
+//! Every pin is a full sorted key list, never a subset or a `contains` — a
+//! subset check cannot catch a field leaking onto a surface it was never
+//! designed for. Pins record the wire as served; where the served shape and a
+//! document disagree the pin follows the wire and says so in its comment.
+//! Deliberate coverage gaps are listed at the foot of this file.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -50,12 +21,8 @@ use tempfile::TempDir;
 // ---------------------------------------------------------------------------
 
 /// A daemon config rooted under `tmp`, reap horizons large enough that the
-/// background reaper never evicts a warm engine mid-test.
-///
-/// Built by MUTATING the production layout rather than by a struct literal: the
-/// literal form (copied across the older registry suites) stops compiling the day
-/// `Config` grows a field, turning one unit's change into a compile break in
-/// another unit's test file. This form names only what the test cares about.
+/// background reaper never evicts a warm engine mid-test. Built by mutating the
+/// production default so a new `Config` field cannot break this suite's compile.
 #[allow(clippy::duration_suboptimal_units)]
 fn test_config(tmp: &TempDir) -> Config {
     let forever = Duration::from_secs(365 * 24 * 60 * 60);
@@ -64,13 +31,10 @@ fn test_config(tmp: &TempDir) -> Config {
     config.reap_interval = forever;
     config.prewarm_interval = forever;
     config.prewarm_quiet_max = forever;
-    // No idle exit: this server's lifetime is the test's, and a daemon that
-    // reaped itself mid-assertion would fail as a flake, not a finding.
+    // Lifetime is the test's; idle-exit would flake mid-assertion.
     config.idle_exit = None;
-    // R1: a build sha, so the hello pin covers the shape a DEPLOYED daemon
-    // emits. Left unset, `identity` would be absent and the pin would freeze
-    // the identity-less variant — exhaustive over a body no production host
-    // sends (`docs/wire-contract.md`).
+    // A build sha, so the hello pin covers the shape a deployed daemon emits
+    // rather than the identity-less variant.
     config.build_sha = Some("pinfixturebuild01".to_owned());
     config
 }
@@ -222,19 +186,12 @@ fn guarded_write(conn: &mut Conn) -> Value {
 // The frame envelope (§3.1)
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::frame_envelope_key_set_is_id_ok_and_exactly_one_payload`.
+/// Exactly one payload member rides — never `body` and `error` together — and
+/// `meta` is present by design (in-band timing).
 ///
-/// The v2 pin was `{id, ok, body|error}` and named the ABSENCE of `meta` as the
-/// point. Under v3 `meta` is present by design (U7 in-band timing), so the
-/// surviving statement is the one that still bites: exactly ONE payload member
-/// rides — never `body` and `error` together.
-///
-/// The daemon has TWO refusal envelopes, and the difference is not cosmetic: a
-/// frame refused BEFORE the dispatch shell (an unknown op — the daemon never
-/// reached the engine) carries no `meta`, while a refusal the engine itself
-/// produced is timed like any other engine work. Both are pinned, because a
-/// future refactor that moved the unknown-op check behind dispatch would change
-/// which frames a latency consumer can read, silently.
+/// Both refusal envelopes are pinned: a frame refused before the dispatch shell
+/// (an unknown op) carries no `meta`, while a refusal the engine itself
+/// produced is timed like any other engine work.
 #[test]
 fn the_frame_envelope_carries_exactly_one_payload() {
     let (fx, mut conn) = Fixture::start();
@@ -256,8 +213,8 @@ fn the_frame_envelope_carries_exactly_one_payload() {
         "dispatched error response frame",
     );
 
-    // U7 placement: `meta` rides BESIDE the payload, never inside it. A timing
-    // block that sank into `body` would be a payload field on every read.
+    // `meta` rides beside the payload, never inside it. A timing block that
+    // sank into `body` would be a payload field on every read.
     assert!(
         ok["body"].as_object().unwrap().get("meta").is_none(),
         "meta is not a body field: {ok}"
@@ -275,24 +232,11 @@ fn the_frame_envelope_carries_exactly_one_payload() {
 // hello (§3.2)
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::hello_body_key_set_is_the_frozen_four`.
-///
-/// The sidecar's hello body was the frozen four (`caps`/`proto`/`root`/`server`).
-/// The daemon's is a DIFFERENT shape by design — it also pins the drawer
-/// (`storage`) and echoes the negotiated `contract`, because a resident daemon
-/// serving many workspaces must tell the client which one it bound. That is a
-/// socket-plane fact the sidecar never had, so this pin is the socket's own, not
-/// a copy: it exists to stop the handshake growing a seventh field unnoticed.
-/// `workspace` is the resolved binding echoed back — the client asked with a path
-/// and the daemon answers with the canonical one it actually bound.
-///
-/// **R1 (2026-08-05) — the expected set grew an eighth key, `identity`,
-/// deliberately.** The daemon now echoes its build identity on a v3 handshake
-/// so a client can tell a resident daemon from the binary it just deployed
-/// (`docs/wire-contract.md`). The pin stays exhaustive;
-/// only the expected list moved, and the fixture configures a sha precisely so
-/// this assertion covers the shape a deployed daemon emits rather than the
-/// identity-less one a bare fixture would produce.
+/// The daemon's hello body pins the drawer (`storage`) and echoes the
+/// negotiated `contract`, the resolved `workspace`, and the build `identity` —
+/// a resident daemon serving many workspaces must tell the client which one it
+/// bound, and from which binary. The pin stops the handshake growing another
+/// field unnoticed.
 #[test]
 fn the_hello_body_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -321,11 +265,9 @@ fn the_hello_body_key_set_is_pinned() {
 // toc (§4.1) — body + every row class the contract works
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::toc_body_and_row_key_sets_are_frozen`.
-///
-/// The body's cursor key is re-spelled (`root` → `fingerprint`); the ROW shapes
-/// are vocabulary-neutral and rehome verbatim, including the §2.1 `hpath`
-/// segment, whose object form is pinned in both directions (decision 20).
+/// The body's cursor key is `fingerprint`; the row shapes are
+/// vocabulary-neutral, including the §2.1 `hpath` segment, whose object form is
+/// pinned in both directions (decision 20).
 #[test]
 fn the_toc_body_and_row_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -361,10 +303,8 @@ fn the_toc_body_and_row_key_sets_are_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::toc_anchor_row_key_set_is_frozen`.
-///
-/// Vocabulary-neutral: the anchor row is minted by the receipt append and carries
-/// no cursor key at all.
+/// Vocabulary-neutral: the anchor row is minted by the receipt append and
+/// carries no cursor key at all.
 #[test]
 fn the_toc_anchor_row_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -391,7 +331,6 @@ fn the_toc_anchor_row_key_set_is_pinned() {
 // cat (§4.2) · extract (§4.3) · resolve (§4.5)
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::cat_body_key_set_is_frozen_both_forms`.
 /// Vocabulary-neutral — `cat` carries no cursor key in either form.
 #[test]
 fn the_cat_body_key_sets_are_pinned_both_forms() {
@@ -410,15 +349,9 @@ fn the_cat_body_key_sets_are_pinned_both_forms() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::extract_body_and_node_key_sets_are_frozen`
-/// AND `contract_v3.rs::a_frozen_v2_extract_node_never_grows_a_field`.
-///
-/// The v2 statement was an allow-list proving the node had NOT grown the v3 host
-/// face. Its v3 statement is the mirror and the stronger one: on a v3 session the
-/// enriched keys are present, EXACTLY, and a heading node carries `n`/`words`
-/// while a wikilink node carries neither. `hpath_text` is absent from both — U14
-/// (ZT decision 14) retired the joined string address from machine surfaces, and
-/// an exhaustive pin is what keeps it retired.
+/// On a v3 session the enriched keys are present, exactly: a heading node
+/// carries `n`/`words`, a wikilink node carries neither. `hpath_text` is absent
+/// from both — the joined string address is retired from machine surfaces.
 #[test]
 fn the_extract_body_and_node_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -457,8 +390,7 @@ fn the_extract_body_and_node_key_sets_are_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::resolve_body_key_sets_are_frozen_both_forms`.
-/// Vocabulary-neutral: §4.5 answers a LOCATION, never a rev (D-C2), so the
+/// Vocabulary-neutral: §4.5 answers a location, never a rev (D-C2), so the
 /// rename table never touches it.
 #[test]
 fn the_resolve_body_key_sets_are_pinned_both_forms() {
@@ -483,9 +415,7 @@ fn the_resolve_body_key_sets_are_pinned_both_forms() {
 // links (§4.6) + the §10.1 staleness triple
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::links_body_and_file_key_sets_are_frozen`.
-/// The staleness triple is re-spelled; the corpus edge map is never re-keyed, so
-/// the file entry rehomes verbatim.
+/// The staleness triple is re-spelled; the corpus edge map is never re-keyed.
 #[test]
 fn the_links_body_and_file_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -531,12 +461,9 @@ fn the_links_body_and_file_key_sets_are_pinned() {
 // splice (§4.4) — the ONE write response shape, real and dry
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::splice_body_receipt_and_edit_key_sets_are_frozen`
-/// and `::armed_key_set_as_served_on_v2`.
-///
 /// Only the transition slots are re-spelled; `armed`, the receipt fact, and the
-/// armed edit are vocabulary-neutral and rehome verbatim. `armed.file_rev_after`
-/// is pinned AS SERVED (decision 21): the whole-file rev after the write, so a
+/// armed edit are vocabulary-neutral. `armed.file_rev_after`
+/// is pinned as served (decision 21): the whole-file rev after the write, so a
 /// client skips a follow-up `toc`. Correctness still rides the fingerprint.
 #[test]
 fn the_splice_body_receipt_and_armed_key_sets_are_pinned() {
@@ -577,12 +504,10 @@ fn the_splice_body_receipt_and_armed_key_sets_are_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::splice_dry_body_key_set_is_frozen`.
-///
-/// The dry rehearsal is a DIFFERENT key set from the committed write, not the
+/// The dry rehearsal is a different key set from the committed write, not the
 /// same one with null values: no receipt, no `seq`, a `dry` flag, and a dry
 /// `armed` that carries no `file_rev_after` (nothing was written, so the
-/// file-grain post-rev does not exist). `fingerprint_after` is NULL, never
+/// file-grain post-rev does not exist). `fingerprint_after` is null, never
 /// absent — a client reading the transition slot must see the slot.
 #[test]
 fn the_splice_dry_body_key_set_is_pinned() {
@@ -626,9 +551,7 @@ fn the_splice_dry_body_key_set_is_pinned() {
 // fingerprint · sub · diff (§4.7)
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::root_and_sub_ack_body_key_sets_are_frozen`
-/// and `::diff_body_key_set_is_frozen`. Cursor keys re-spelled; `seq` and
-/// `batches` are vocabulary-neutral.
+/// Cursor keys re-spelled; `seq` and `batches` are vocabulary-neutral.
 #[test]
 fn the_cursor_sub_ack_and_diff_body_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -654,21 +577,15 @@ fn the_cursor_sub_ack_and_diff_body_key_sets_are_pinned() {
 // The §8 error envelopes — per worked code
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::cas_mismatch_error_key_set_is_frozen`.
-///
-/// The v2 pin's point was that `rev::demote_v2` DROPS the v3 ladder extras, so
-/// its key set was the short one (`{code, recovery, expected, actual}`). The v3
-/// statement is the other side of that same fact, and it is the one worth
-/// keeping: this is the shape BEFORE any demotion — the full A-K5 retry ladder.
-/// Porting the v2 key set verbatim would have pinned the demoted shape on a wire
-/// that never demotes, and it would have passed on nothing.
+/// The shape before any demotion — the full retry ladder. `rev::demote_v2`
+/// drops the ladder extras; this wire never demotes.
 #[test]
 fn the_cas_mismatch_error_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
     let write = guarded_write(&mut conn);
     assert_eq!(conn.call(&write)["ok"], json!(true), "the first write lands");
 
-    // The SAME guard replayed: the section rev moved under it.
+    // The same guard replayed: the section rev moved under it.
     let stale_retry = conn.call(&write);
     assert_eq!(
         stale_retry["error"]["code"],
@@ -690,10 +607,9 @@ fn the_cas_mismatch_error_key_set_is_pinned() {
         ],
         "cas_mismatch error (v3, ladder extras present)",
     );
-    // The extras are the LADDER, and the ladder is the point: the refusal hands
-    // back the current rev and the diff, so a client re-sends without re-reading.
-    // `recovery` is `refresh` here, not `resync` — a section-grain conflict is
-    // recoverable in place.
+    // The extras are the ladder: the refusal hands back the current rev and
+    // the diff, so a client re-sends without re-reading. `recovery` is
+    // `refresh`, not `resync` — a section-grain conflict is recoverable in place.
     assert_eq!(stale_retry["error"]["recovery"], json!("refresh"), "{stale_retry}");
     assert_eq!(
         stale_retry["error"]["new_fingerprint"], stale_retry["error"]["actual"],
@@ -702,7 +618,6 @@ fn the_cas_mismatch_error_key_set_is_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::no_match_and_not_unique_error_key_sets_are_frozen`.
 /// Vocabulary-neutral: `matches` is the only extra either refusal carries.
 #[test]
 fn the_no_match_and_not_unique_error_key_sets_are_pinned() {
@@ -726,8 +641,7 @@ fn the_no_match_and_not_unique_error_key_sets_are_pinned() {
         "no_match error",
     );
 
-    // `not_unique` needs a second occurrence: append "- new item" into Q4 so
-    // "item" then occurs twice inside that section.
+    // `not_unique` needs a second occurrence of "item" inside Q4.
     let append = conn.call(&json!({
         "id": 57, "op": "splice", "path": "plan.md",
         "edits": [{
@@ -767,10 +681,8 @@ fn the_no_match_and_not_unique_error_key_sets_are_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::ref_not_found_error_key_sets_are_frozen_both_stages`.
-/// Vocabulary-neutral: stage 2 got far enough to name a `dest`; stage 1 did not.
-/// The two stages are separate shapes and both are pinned, because collapsing
-/// them is exactly how the walk loses its diagnostic.
+/// Vocabulary-neutral: stage 2 got far enough to name a `dest`; stage 1 did
+/// not. Both shapes are pinned — collapsing them loses the walk's diagnostic.
 #[test]
 fn the_ref_not_found_error_key_sets_are_pinned_both_stages() {
     let (fx, mut conn) = Fixture::start();
@@ -793,9 +705,8 @@ fn the_ref_not_found_error_key_sets_are_pinned_both_stages() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::remaining_frozen_error_key_sets_are_pinned`.
-/// Every one of these is vocabulary-neutral — they refuse the REQUEST, before any
-/// cursor is in play.
+/// All vocabulary-neutral — they refuse the request before any cursor is in
+/// play.
 #[test]
 fn the_remaining_error_key_sets_are_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -856,11 +767,9 @@ fn the_remaining_error_key_sets_are_pinned() {
     fx.shutdown();
 }
 
-/// Rehomes `u27_v2_key_set_pins.rs::guard_required_error_key_set_is_pinned`.
-///
-/// Vocabulary-neutral, and the most-served refusal on this wire: it is what a
-/// guardless write meets first. Its teaching `message`/`path` are pinned so the
-/// refusal cannot grow a sibling field unseen.
+/// Vocabulary-neutral, and the most-served refusal on this wire: what a
+/// guardless write meets first. Its `message`/`path` are pinned so the refusal
+/// cannot grow a sibling field unseen.
 #[test]
 fn the_guard_required_error_key_set_is_pinned() {
     let (fx, mut conn) = Fixture::start();
@@ -888,21 +797,11 @@ fn the_guard_required_error_key_set_is_pinned() {
 // §3.1 id discipline — a divergence, recorded rather than papered over
 // ---------------------------------------------------------------------------
 
-/// §3.1 says a request whose `id` is not an integer lexeme is `bad_request`, and
-/// the refusal echoes the offending lexeme back as `id_raw` so the client can
-/// correlate a frame it can no longer address. `u27_v2_key_set_pins.rs::remaining_frozen_error_key_sets_are_pinned`
-/// pins that refusal on the sidecar plane.
-///
-/// **The daemon does not serve it.** A string `id` is accepted: the request is
-/// executed, and the response carries `id: null` with `ok: true` — so the caller
-/// gets an answer it cannot correlate and no signal that anything was wrong.
-/// This test pins WHAT IS SERVED. The contract shape gets the `#[ignore]`d twin
-/// below, exactly as u27 did for `root_mismatch.changed`: a pin that encodes the
-/// contract instead of the wire would fail on day one and teach a future reader
-/// that the suite is broken rather than that the daemon is.
-///
-/// Deleting `crates/sidecar` removes the only plane where §3.1 id discipline is
-/// enforced by a test. R3b should carry a disposition card for this.
+/// §3.1 says a non-integer `id` lexeme is `bad_request` echoing `id_raw`. The
+/// daemon does not serve it: a string `id` is accepted, the request executes,
+/// and the response carries `id: null` with `ok: true` — an answer the caller
+/// cannot correlate. This test pins what is served; the contract shape gets the
+/// `#[ignore]`d twin below.
 #[test]
 fn a_non_integer_id_is_accepted_as_served_on_the_daemon() {
     let (fx, mut conn) = Fixture::start();
@@ -945,12 +844,9 @@ fn contract_3_1_a_non_integer_id_is_refused_with_id_raw() {
 // pin_keys self-control
 // ---------------------------------------------------------------------------
 
-/// Rehomes `u27_v2_key_set_pins.rs::the_pin_primitive_rejects_a_superset`.
-///
-/// The primitive must travel with its own control. A future weakening of
-/// `pin_keys` to a subset check would leave every pin in this file compiling,
-/// passing, and asserting nothing — the exact failure mode these pins exist to
-/// prevent, committed inside the suite that names the law.
+/// The primitive travels with its own control: weakening `pin_keys` to a subset
+/// check would leave every pin in this file compiling, passing, and asserting
+/// nothing.
 #[test]
 fn the_pin_primitive_rejects_a_superset() {
     let one_extra = json!({"a": 1, "b": 2});
@@ -968,33 +864,12 @@ fn the_pin_primitive_rejects_a_superset() {
 }
 
 // ---------------------------------------------------------------------------
-// § Not rehomed
+// § Deliberate gaps
 // ---------------------------------------------------------------------------
 //
-// Three u27 live-plane pins are absent from this file on purpose:
-//
-// 1. `root_mismatch_error_key_set_as_served_on_v2_today` and
-//    `contract_root_mismatch_carries_changed` (the `#[ignore]`d disposition
-//    twin). Both already have a socket-plane home:
-//    `crates/registry/tests/root_mismatch_wire_shape.rs` pins the served shape,
-//    proves the refusal is a real one carrying its ruled recovery, and carries
-//    its own control that the pin can distinguish a `changed` field from its
-//    absence. Duplicating them here would give the U27 finding two homes and no
-//    owner.
-//
-// 2. `delta_notification_key_sets_are_frozen`. The Delta noun on the push plane
-//    has a socket home in `crates/registry/tests/sub_push.rs`, which drives the
-//    real subscription. That suite asserts Delta VALUES, not an exhaustive key
-//    set — so the pin mechanism is genuinely thinner there than it was in u27.
-//    It is named here rather than silently dropped: the honest statement is that
-//    the push plane keeps its coverage and loses its exhaustive pin.
-//
-// 3. `verdict_key_set_is_frozen_on_the_wire`. This one has NO socket home and
-//    cannot be given one from a test: the daemon serves with no rule packs
-//    (`crates/registry/src/server.rs` — "No rule packs (`&[]` ⇒ `verdicts: []`)"),
-//    so a §11.1 Verdict is UNREACHABLE on this wire. u27's own comment records
-//    that a pin over a hand-built value tests its own construction, which is why
-//    it insisted on a wire pin. Deleting `crates/sidecar` therefore removes the
-//    only place a Verdict is pinned as it leaves a real server, and nothing in
-//    this unit can replace it. That is a REAL coverage loss and it belongs on
-//    R3b's checklist, not in a comment that reads as if it were handled.
+// - root_mismatch: pinned on the socket plane by
+//   `crates/registry/tests/root_mismatch_wire_shape.rs`, not duplicated here.
+// - Delta notifications: `crates/registry/tests/sub_push.rs` drives the real
+//   subscription and asserts Delta values, not an exhaustive key set.
+// - Verdict: unreachable on this wire — the daemon serves with no rule packs
+//   (`&[]` ⇒ `verdicts: []`), so no §11.1 Verdict can be pinned from a test.
