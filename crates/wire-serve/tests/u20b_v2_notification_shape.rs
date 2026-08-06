@@ -2,13 +2,6 @@
 //!
 //! Class sibling of `u11_mismatch_ladder` key-set pin: v3-only field on v2 is
 //! value-invisible. Notifications are not replies — host emits, subscriber gets.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeSet;
 
@@ -44,7 +37,6 @@ fn serialize_v2(frame: &DeltaFrame) -> serde_json::Value {
 }
 
 /// Frozen v2: top key set `{delta}` only (§3.1 Notification; no `id`).
-///
 #[test]
 fn a_v2_notification_frame_has_exactly_the_frozen_key_set() {
     let value = serialize_v2(&frame_of(vec![]));
@@ -68,23 +60,6 @@ fn a_v2_notification_frame_has_exactly_the_frozen_key_set() {
 
 /// Pin: reacted v2 frame never grows `effects` (`rev::V2_RESERVED_FIELDS`).
 /// Value-skip on empty is not a session gate; registry row is the fix (Law 3).
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_v2_notification_frame_never_grows_a_post_v2_field() {
     let reacted = frame_of(vec![EffectEnvelope {
@@ -105,16 +80,6 @@ fn a_v2_notification_frame_never_grows_a_post_v2_field() {
 
 /// Order pin: struct field order, not alphabetical (`Value` round-trip would
 /// BTreeMap-reorder and still pass key-set pins).
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_v2_frame_prints_struct_order_not_alphabetical() {
     let mut out = Vec::new();
@@ -126,7 +91,6 @@ fn a_v2_frame_prints_struct_order_not_alphabetical() {
     );
 
     // Demoted path must keep the same order.
-    //
     let mut out = Vec::new();
     let reacted = frame_of(vec![EffectEnvelope {
         intents: vec![],
@@ -143,8 +107,6 @@ fn a_v2_frame_prints_struct_order_not_alphabetical() {
 }
 
 /// Control: v3 still receives `effects` (projection, not unconditional delete).
-///
-///
 #[test]
 fn a_v3_session_still_receives_effects() {
     let reacted = frame_of(vec![EffectEnvelope {
@@ -162,9 +124,7 @@ fn a_v3_session_still_receives_effects() {
     );
 }
 
-// Vintage/provenance split in `demote_v2` (2026-08-04 ruling).
-//
-//
+// Vintage/provenance split in `demote_v2`.
 
 fn cas_error() -> wire::ErrorBody {
     wire::ErrorBody::new(wire::ErrorCode::CasMismatch)
@@ -179,14 +139,6 @@ fn error_response(error: wire::ErrorBody) -> wire::Response {
 }
 
 /// Vintage: post-v2 field demotes without authorship mark (`rung` absent).
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
     let mut error = cas_error();
@@ -203,14 +155,6 @@ fn a_post_v2_field_is_demoted_even_with_no_authorship_mark() {
 }
 
 /// Early return: nothing post-v2 ⇒ no demotion (does not exercise strip block).
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_refusal_with_nothing_post_v2_is_not_demoted_at_all() {
     let mut error = cas_error();
@@ -224,23 +168,10 @@ fn a_refusal_with_nothing_post_v2_is_not_demoted_at_all() {
 
 /// Provenance: non-ladder refusal keeps v2-legal `message`/`path` under demotion.
 /// Fixture forces demotion via post-v2 field without `rung` so strip runs.
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
     let mut error = cas_error();
     // No rung + post-v2 field → demotion reaches strip.
-    //
     error.new_fingerprint = Some(wire::NodeRev("beef000000000000".into()));
     error.message = Some("plain refusal wording".into());
     error.path = Some(wire::Path("plan.md".into()));
@@ -267,9 +198,6 @@ fn a_non_ladder_refusal_keeps_its_v2_legal_message_and_path() {
 }
 
 /// Control: ladder-authored `message`/`path` still strip with `rung`.
-///
-///
-///
 #[test]
 fn the_ladders_own_message_and_path_are_still_stripped() {
     let mut error = cas_error();

@@ -1,27 +1,10 @@
-//! **R31 at the MINT door** — the reachability probe, frozen as a test.
-//!
-//! The empty-normalized-span class is the purest false green there is: a
-//! fingerprint over no bytes matches every document, so the pin can never drift.
-//! `crates/model/tests/s2fix_empty_span.rs` closes the class at the owner and
-//! proves the verdict side; this file answers the other half of R31 — *is the
-//! class reachable through the pin verb?*
-//!
-//! # The answer, and why it is a TEST rather than a paragraph
-//!
-//! It is not reachable: every enumerated ref form that can normalize away is
-//! refused, and each is refused at a rung EARLIER than the fingerprint owner —
-//! the read-face resolve, or the CLI's own ref grammar. That measured fact is
-//! what makes this a **VERIFY-side class**, and it is why the guard that bites
-//! lives in `ContentVerdict::EmptySpan` and not here.
-//!
-//! Prose would rot. These asserts cannot: if a future read-face change projects
-//! an own-line anchor as a fact, or the grammar starts accepting a bare page
-//! ref, the form arrives at the owner — and the owner refuses too, which the
-//! last test pins directly. So the class stays closed whichever rung moves, and
-//! this file says which rung is doing the work TODAY.
-//!
-//! **The mint refusal is belt-on-belt, NOT the load-bearing guard.** Stage 3
-//! must not read it as one.
+//! R31 at the mint door: is the empty-normalized-span class reachable through
+//! the pin verb? A fingerprint over no bytes matches every document, so such
+//! a pin could never drift. `crates/model/tests/s2fix_empty_span.rs` closes
+//! the class at the owner; this file pins that every empty-normalizing ref
+//! form is refused at an earlier rung, and (last test) that the owner refuses
+//! too if a rung moves. The mint refusal is belt-on-belt, not the load-bearing
+//! guard — that lives in `ContentVerdict::EmptySpan`.
 
 use wire::{ErrorCode, Path as WPath, PinSpec, Recovery, ResponseBody};
 use wire_serve::write::{SpliceArgs, splice};
@@ -33,9 +16,9 @@ fn workspace(target_name: &str, target_body: &str) -> (tempfile::TempDir, fs::Wo
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
     std::fs::write(dir.path().join(target_name), target_body).expect("target");
-    // Git-initialised: the positive control below MINTS, and an R4 pin row
-    // carries a `hash` only git can answer for. The refusal probes must fail on
-    // the read-face resolve rung they name, never on a missing repo.
+    // Git-initialised: the positive control mints and an R4 pin row needs a
+    // git `hash`; refusal probes must fail on the rung they name, never on a
+    // missing repo.
     for args in [
         vec!["init", "-q"],
         vec!["config", "user.email", "s2fix@example.invalid"],
@@ -82,11 +65,9 @@ struct Probe {
     selector: &'static str,
 }
 
-/// Every empty-normalizing ref form from the enumeration, as the pin verb sees
-/// it. The `Page` form is absent by construction: `PinSpec` carries a selector
-/// and `mrd pin`'s grammar refuses both a bare `TARGET` and an empty fragment —
-/// the two probes at the bottom of this file pin that separately, because "the
-/// grammar makes it unreachable" is a claim that needs its own assert.
+/// Every empty-normalizing ref form as the pin verb sees it. The `Page` form
+/// is absent by construction — `PinSpec` carries a selector and the grammar
+/// refuses a bare target or empty fragment — pinned separately below.
 fn probes() -> Vec<Probe> {
     vec![
         Probe {
@@ -107,14 +88,10 @@ fn probes() -> Vec<Probe> {
     ]
 }
 
-/// **THE MINT PROBE — the assert is the refusal.** Every empty-normalizing ref
-/// form is refused by `pin`, typed, with `Recovery::Fix`, and nothing is
-/// written to the pinning page.
-///
-/// Refusing is the whole claim. A pin that ACCEPTED any of these and rendered
-/// the result grey would pass a colour assertion and still ship a token that
-/// matches every document — which is why this asserts the error and the
-/// untouched bytes, never a rendered tone.
+/// Every empty-normalizing form is refused by `pin`: typed, `Recovery::Fix`,
+/// nothing written. Asserts the error and untouched bytes, never a rendered
+/// tone — an accepted pin rendered grey would still ship a universal-match
+/// token.
 #[test]
 fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
     for probe in probes() {
@@ -142,10 +119,8 @@ fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
             probe.name
         );
 
-        // WHICH rung refused, recorded rather than assumed. Today it is the
-        // read-face resolve: an own-line anchor is not a `list_item` row, so it
-        // projects no fact at all. The fingerprint owner never sees it — that
-        // is the measurement behind "this class is verify-side".
+        // Which rung refused, recorded: today the read-face resolve — an
+        // own-line anchor projects no fact, so the owner never sees it.
         assert!(
             err.message
                 .as_deref()
@@ -157,10 +132,8 @@ fn every_empty_normalizing_form_is_refused_at_the_pin_door() {
     }
 }
 
-/// The control that makes the test above non-vacuous: an INLINE anchor on the
-/// same page shape mints normally. So `pin` is refusing the empty span, not
-/// refusing `#^id` refs as a class — a fix that broke every anchor pin would
-/// pass the refusal asserts and fail here.
+/// Control: an inline anchor on the same shape mints normally — `pin` refuses
+/// the empty span, not `#^id` refs as a class.
 #[test]
 fn an_inline_anchor_on_the_same_shape_still_mints() {
     let (_dir, root) = workspace("guide.md", "# H\n\n- real content ^guideline\n");
@@ -178,10 +151,8 @@ fn an_inline_anchor_on_the_same_shape_still_mints() {
         fact.fingerprint
     );
 
-    // And it is the token the VERIFY plane recomputes over the item's real
-    // bytes — so it is a genuine content id, not the universal match. Computing
-    // it here rather than comparing against a literal empty digest keeps the
-    // gate anchored to the engine's own hasher.
+    // The token verify recomputes over the item's real bytes — computed via
+    // the engine's own hasher, not compared against a literal digest.
     let doc = fs::load(&root, std::path::Path::new("guide.md")).expect("load");
     let target = model::resolve(&doc, &model::Ref::anchor("guideline").expect("block id"))
         .expect("the anchor resolves");
@@ -195,13 +166,9 @@ fn an_inline_anchor_on_the_same_shape_still_mints() {
     );
 }
 
-/// The `Page` form's rung: the pin verb requires a SELECTOR, so a whole-page
-/// ref cannot reach the owner. Both spellings refuse — a bare target and an
-/// empty fragment — and the refusal teaches the section grammar.
-///
-/// This is the form R31 did not predict, and its unreachability is the reason
-/// it surfaces only through a hand-authored lock (see the `walk` gate in
-/// `crates/mrd/tests/color_planes_e2e.rs`).
+/// The `Page` form's rung: `pin` requires a selector, so a whole-page ref
+/// cannot reach the owner. Reachable only through a hand-authored lock
+/// (`crates/mrd/tests/color_planes_e2e.rs` walk gate).
 #[test]
 fn a_whole_page_ref_cannot_reach_the_mint_at_all() {
     let (_dir, root) = workspace("empty.md", "");
@@ -217,17 +184,10 @@ fn a_whole_page_ref_cannot_reach_the_mint_at_all() {
     );
 }
 
-/// **THE OWNER'S OWN RUNG, proven independently of every rung above it.**
-///
-/// The tests above measure which guard fires FIRST today. This one asks the
-/// question that survives them changing: if a form ever did reach the
-/// fingerprint owner with an empty normalized span, would it refuse? It does —
-/// and it is the same typed error, so the class stays closed no matter which
-/// earlier rung moves.
-///
-/// Driven at the owner rather than through `pin`, precisely because `pin` cannot
-/// deliver such a span today. Pinning that fact here is what keeps the
-/// belt-on-belt discharge in `write.rs` honest: it is unreachable, not dead.
+/// The owner's own rung, independent of every rung above: an empty normalized
+/// span that did reach the fingerprint owner would still refuse, same typed
+/// error. Driven at the owner because `pin` cannot deliver such a span today —
+/// which keeps the belt-on-belt discharge in `write.rs` honest.
 #[test]
 fn the_owner_refuses_an_empty_span_even_when_no_earlier_rung_would() {
     let raw = "# H\n\n^guideline\n\nbody\n";

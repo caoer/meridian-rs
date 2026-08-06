@@ -18,7 +18,6 @@ const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
 /// Git workspace ([`mint_pin`] / R4 `hash`).
-///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");

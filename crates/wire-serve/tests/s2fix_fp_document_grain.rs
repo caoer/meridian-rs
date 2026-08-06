@@ -2,16 +2,6 @@
 //!
 //! Pins R22: no `@fp` in a claim-link position on disk; non-claim positions
 //! (fence, frontmatter, HTML comment, indented code) are explicit exclusions.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use wire::{
     CheckWriteEdit, Edit, EditShape, ErrorCode, Path as WPath, PlanEdit, PutAt, ResponseBody,
@@ -58,7 +48,6 @@ fn hpath(chain: &str) -> SecRef {
 }
 
 /// Live section `node_rev` (`replace_section` needs the rev the caller read).
-///
 fn section_rev(root: &fs::WorkspaceRoot, chain: &str) -> String {
     let doc = fs::load(root, std::path::Path::new("plan.md")).expect("load");
     let r = model::Ref::Hpath(
@@ -80,10 +69,7 @@ fn on_disk(dir: &tempfile::TempDir) -> String {
     std::fs::read_to_string(dir.path().join("plan.md")).expect("read")
 }
 
-/// Finding 13: token in `plan_edits.create.title` strips with the body.
-///
-///
-///
+/// Token in `plan_edits.create.title` strips with the body.
 #[test]
 fn a_token_in_create_title_is_stripped_with_the_body() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nbody\n");
@@ -118,7 +104,6 @@ fn a_token_in_create_title_is_stripped_with_the_body() {
 }
 
 /// Payload shapes (append / `replace_section` / match needle+new) strip without a field list.
-///
 #[test]
 fn every_payload_shape_is_covered_without_a_field_list() {
     let (dir, root) = ws("---\ntitle: Plan\n---\n\n# Plan\n\nold line\n\n## Sub\n\nsub body\n");
@@ -145,7 +130,6 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(appended.contains("appended [[guide#^a|A]]"), "{appended}");
 
     // Nested target: separate splice (§4.4 disjointness).
-    //
     splice(
         &root,
         None,
@@ -175,8 +159,6 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(text.contains("replaced [[guide#^b|B]]"), "{text}");
 
     // Native match: decorated needle must still match stored (unstripped) bytes.
-    //
-    //
     splice(
         &root,
         None,
@@ -200,11 +182,7 @@ fn every_payload_shape_is_covered_without_a_field_list() {
     assert!(text.contains("matched [[guide#^c|C]]"), "{text}");
 }
 
-/// Finding 11 over-strip: token inside a code fence survives (R22 sample).
-///
-///
-///
-///
+/// Over-strip guard: token inside a code fence survives (R22 sample).
 #[test]
 fn a_token_landing_inside_a_fence_survives_r22() {
     let (dir, root) = ws("# Plan\n\n```text\nsample: PLACEHOLDER\n```\n");
@@ -233,10 +211,7 @@ fn a_token_landing_inside_a_fence_survives_r22() {
     );
 }
 
-/// Finding 11 under-strip: composing a claim from retained bytes refuses.
-///
-///
-///
+/// Under-strip guard: composing a claim from retained bytes refuses.
 #[test]
 fn a_token_composed_out_of_retained_bytes_refuses() {
     let seed = format!("# Plan\n\nsee [[guide#^goal{TOKEN}\n");
@@ -270,15 +245,6 @@ fn a_token_composed_out_of_retained_bytes_refuses() {
 /// Boundary rule: target that ENDS at shared byte owns it — decorated append
 /// beside an edited sibling commits stripped (not false-red ambiguous).
 /// Control: [`a_token_composed_out_of_retained_bytes_refuses`].
-///
-///
-///
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
     let seed = "# Plan\n\nbody\n\n## Alpha\n\nalpha body\n\n## Beta\n\nbeta body\n";
@@ -297,7 +263,6 @@ fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
                     if_node_rev: None,
                 },
                 // Sibling sharing Alpha's end byte, same batch.
-                //
                 Edit {
                     target: hpath("Plan/Beta"),
                     edit: EditShape::Put {
@@ -327,9 +292,6 @@ fn a_decorated_append_beside_an_edited_sibling_commits_stripped() {
 }
 
 /// Pre-existing on-disk token left alone (batch does not own those bytes).
-///
-///
-///
 #[test]
 fn a_pre_existing_token_is_left_exactly_as_found() {
     let seed = format!("# Plan\n\nsee [[guide#^goal{TOKEN}|G]]\n\n## Sub\n\nsub body\n");
@@ -360,13 +322,8 @@ fn a_pre_existing_token_is_left_exactly_as_found() {
     assert!(text.contains("one more line."), "{text}");
 }
 
-/// Finding 22: frontmatter / HTML comment / indented code / fence are not
-/// claim-link positions (R22); control — decorate sees the same one link.
-///
-///
-///
-///
-///
+/// Frontmatter / HTML comment / indented code / fence are not claim-link
+/// positions (R22); control — decorate sees the same one link.
 #[test]
 fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
     let (dir, root) = ws("# Seed\n");
@@ -411,8 +368,6 @@ fn frontmatter_comments_and_indented_code_are_not_claim_link_positions() {
     }
 
     // Control: one grammar — strip and decorate agree on claim-link set.
-    //
-    //
     let doc = fs::load(&root, std::path::Path::new("born.md")).expect("load");
     let mut blocks = Vec::new();
     collect_link_blocks(&doc.root, &mut blocks);
@@ -434,9 +389,7 @@ fn collect_link_blocks(node: &model::Node, out: &mut Vec<String>) {
     }
 }
 
-/// Finding 15: `check_write` and splice agree on a decorated address.
-///
-///
+/// `check_write` and splice agree on a decorated address.
 #[test]
 fn check_write_and_splice_agree_on_a_decorated_address() {
     let (dir, root) = ws("# Plan\n\nthe goal line ^goal\n");
@@ -492,8 +445,6 @@ fn check_write_and_splice_agree_on_a_decorated_address() {
 }
 
 /// Pre-flight candidate is stripped (S4a: ladder sees what splice commits).
-///
-///
 #[test]
 fn the_pre_flight_judges_the_stripped_candidate() {
     let (_dir, root) = ws("# Plan\n\nbody\n");

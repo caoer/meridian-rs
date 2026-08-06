@@ -3,19 +3,6 @@
 //! Pins on WRITE (`is_err()`), never rendered colour (R26). Doors: native
 //! `edits`, `plan_edits`, `write::create`, anchor promotion, legit `splice.pin`
 //! control; `run::executor` is separate (`crates/run/tests/executor.rs`).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use wire::{Edit, EditShape, ErrorCode, Path as WPath, PinSpec, PlanEdit, PutAt, SecRef};
 use wire_serve::write::{CreateArgs, SpliceArgs, splice};
@@ -23,15 +10,11 @@ use wire_serve::write::{CreateArgs, SpliceArgs, splice};
 /// Pinning page (no lock — first pin births one at EOF).
 const PINNER: &str = "# Plan\n\ndraws from the guide.\n";
 /// Pinned page — heading ref only (bare `#^anchor` is R31 empty-span false green).
-///
-///
 const TARGET: &str = "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n";
 /// Different body under same heading — control that fingerprints can differ.
-///
 const DECOY: &str = "# Guide\n\n## Leader's Guideline\n\nship it without reading.\n";
 
 /// Git workspace: R4 pin row needs a `hash` only git can answer.
-///
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("plan.md"), PINNER).expect("pinner");
@@ -87,8 +70,6 @@ fn put_at_end(section: &str, text: &str) -> Edit {
 }
 
 /// Live VERIFY-plane fingerprint (forged block must carry a token that would green).
-///
-///
 fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> String {
     let doc = fs::load(root, std::path::Path::new(rel)).expect("load");
     let sel = model::selector::Selector::parse(&format!("{rel}#{selector}"));
@@ -101,22 +82,10 @@ fn live_fingerprint(root: &fs::WorkspaceRoot, rel: &str, selector: &str) -> Stri
 }
 
 /// Fixture blob oid (R4 `hash` mandatory; retrieval plane not under test).
-///
 const FIXTURE_BLOB: &str = "9ae3f1deadbeef";
 
 /// One R4 pin in `lock::render` bytes; path as SEGMENTS (R1.6 / U14 — never
 /// join-then-split `page#A/B`; `/` in heading text must survive).
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
-///
 fn lock_block(object: &str, path: &[&str], fingerprint: &str) -> String {
     let path = path
         .iter()
@@ -131,7 +100,6 @@ fn lock_block(object: &str, path: &[&str], fingerprint: &str) -> String {
 }
 
 /// Control: target vs decoy fingerprints must differ (else pins are vacuous).
-///
 #[test]
 fn fingerprints_in_this_fixture_differ() {
     let (dir, root) = workspace();
@@ -144,8 +112,7 @@ fn fingerprints_in_this_fixture_differ() {
     );
 }
 
-/// Finding 4 (P1): unread actor — gated pin and ordinary-edit forge both refuse.
-///
+/// Unread actor: gated pin and ordinary-edit forge both refuse.
 #[test]
 fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     let (dir, root) = workspace();
@@ -177,7 +144,6 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
     );
 
     // 2. Ungated door: same claim as page text (token would verify green).
-    //
     let token = live_fingerprint(&root, "guide.md", "Guide/Leader's Guideline");
     let forged = splice(
         &root,
@@ -218,8 +184,6 @@ fn an_unread_actor_cannot_forge_a_pin_through_ordinary_edits() {
 }
 
 /// CLI (`actor: None`, D16-trusted for pin) still cannot put lock bytes as text.
-///
-///
 #[test]
 fn the_local_operator_door_cannot_write_lock_bytes_as_page_text() {
     let (_dir, root) = workspace();
@@ -274,7 +238,6 @@ fn plan_edits_lowering_cannot_forge_a_lock() {
 }
 
 /// Door 3: `create` body may not birth a lock (no pre-image claim).
-///
 #[test]
 fn create_cannot_birth_a_page_carrying_a_lock() {
     let (dir, root) = workspace();
@@ -304,7 +267,6 @@ fn create_cannot_birth_a_page_carrying_a_lock() {
 }
 
 /// Ordinary edits cannot rewrite a minted lock fingerprint.
-///
 #[test]
 fn ordinary_edits_cannot_rewrite_a_minted_lock() {
     let (dir, root) = workspace();
@@ -373,7 +335,6 @@ fn ordinary_edits_cannot_rewrite_a_minted_lock() {
 }
 
 /// Control: real mint, re-pin, and ordinary edit beside an untouched lock land.
-///
 #[test]
 fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     let (dir, root) = workspace();
@@ -407,7 +368,6 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     );
 
     // Content edit beside untouched lock is ordinary work.
-    //
     splice(
         &root,
         None,
@@ -423,9 +383,7 @@ fn the_minted_pin_still_lands_and_re_pins_idempotently() {
     .expect("an ordinary edit beside an untouched lock still commits");
 }
 
-/// Anchor promotion (`fs::replace_file`, finding 9) is lock-neutral on target.
-///
-///
+/// Anchor promotion (`fs::replace_file`) is lock-neutral on target.
 #[test]
 fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
     let (dir, root) = workspace();
@@ -495,12 +453,6 @@ fn the_anchor_promotion_leaves_the_targets_lock_untouched() {
 
 /// R25: whole-section rewrite that would delete lock at EOF refuses; message
 /// teaches destroy/instead (`put at:end`). Append beside lock still lands.
-///
-///
-///
-///
-///
-///
 #[test]
 fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
     let (dir, root) = workspace();
@@ -554,10 +506,6 @@ fn a_whole_section_rewrite_that_would_delete_the_lock_refuses() {
         "deleting the attestation through an ordinary put must refuse"
     );
     // R24/R32: refusal names destroy + remedy (not law alone).
-    //
-    //
-    //
-    //
     let taught = wiped.as_ref().err().and_then(|e| e.message.clone());
     let taught = taught.as_deref().unwrap_or_default();
     for clause in [

@@ -13,11 +13,9 @@ const PINNER: &str = "---\ntitle: Plan\n---\n\n# Plan\n\ndraws from the guide.\n
 const TARGET: &str =
     "# Guide\n\n## Leader's Guideline\n\nreview before you close.\n\n## Other\n\nunrelated.\n";
 
-/// A pinnable workspace — **git-initialised**, because R4 gives every pin row a
-/// `hash` and admits no row without one. A bare directory is no longer a
-/// workspace a pin can land in; that case is its own test
-/// ([`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
-/// builds its fixture with [`bare_workspace`] directly).
+/// A pinnable workspace — git-initialised: R4 gives every pin row a `hash`
+/// and admits no row without one. The no-git case is its own test
+/// ([`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`]).
 fn workspace() -> (tempfile::TempDir, fs::WorkspaceRoot) {
     let (dir, root) = bare_workspace();
     git_init(dir.path());
@@ -186,26 +184,10 @@ fn a_bare_cli_pin_mints_a_real_lock_block_and_promotes_the_slug() {
     );
 }
 
-/// **The path array is built from `hpath_raw` SEGMENTS, never by splitting a
-/// joined string** (R1.6 — arrays for machines, no string address forms).
-///
-/// The discriminator is `sanitize_heading`, which is MANY-TO-ONE: it rewrites
-/// every space to `-`. The fixture heading is `Leader's Guideline` (a SPACE),
-/// and the two candidate derivations disagree on exactly that byte:
-///
-/// - **From `hpath_raw` segments** → `["Guide", "Leader's Guideline"]`. The
-///   space survives, because the raw pre-image is what was carried.
-/// - **From a joined string** — the sanitized address the read face used to
-///   publish, split on `/` → `["Guide", "Leader's-Guideline"]`. A HYPHEN. That
-///   address resolves to nothing, and the pin would read red-dangling forever.
-///
-/// U14 removed the joined spellings this test was defending against, so the
-/// assert below moved with them: it now pins that NOTHING on the pin path
-/// sanitizes, which is the same property stated positively.
-///
-/// So a hyphen in the second element is proof the joined string was the input.
-/// The assert is on the space, and it cannot pass by accident: no sanitized
-/// spelling of this heading contains one.
+/// The path array is built from `hpath_raw` segments, never by splitting a
+/// joined string (R1.6). `sanitize_heading` is many-to-one (space → `-`), so
+/// the assert is on the space in `Leader's Guideline`: a hyphen there would
+/// prove a joined, sanitized spelling was the input.
 #[test]
 fn the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string() {
     let (_dir, root) = workspace();
@@ -253,20 +235,15 @@ fn the_path_array_is_built_from_raw_segments_not_by_splitting_a_joined_string() 
     );
 }
 
-/// A heading whose RAW text begins with `^` is REFUSED, not written.
-///
-/// R4 spells an anchor pin as a path array whose sole element is a `^id`, so an
-/// element like `^looks-like-an-anchor` sitting among heading segments would
-/// make the row's GRAIN unreadable — block or section, with nothing in the bytes
-/// to tell them apart. Mixed arrays appear nowhere in the ratified trace, so the
-/// engine refuses rather than assigning one a meaning.
+/// A heading whose RAW text begins with `^` is refused, not written: R4 spells
+/// an anchor pin as a path array whose sole element is a `^id`, so such an
+/// element among heading segments would make the row's grain unreadable.
 #[test]
 fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_array() {
     let (dir, root) = workspace();
-    // A SPACE after the caret, deliberately: `^Alpha-Beta` would parse as a real
-    // block anchor on the heading line and refuse one rung earlier (slug
-    // collision), which would test the wrong thing. `^Alpha Beta` is plain
-    // heading text — the case that actually reaches the array builder.
+    // A SPACE after the caret, deliberately: `^Alpha-Beta` would parse as a
+    // real block anchor and refuse one rung earlier (slug collision). `^Alpha
+    // Beta` is plain heading text — the case that reaches the array builder.
     std::fs::write(
         dir.path().join("guide.md"),
         "# Guide\n\n## ^Alpha Beta\n\nbody text.\n",
@@ -289,42 +266,13 @@ fn a_heading_that_begins_with_a_caret_refuses_rather_than_minting_an_ambiguous_a
     );
 }
 
-/// **KEY-SET PIN over the serialized `PinFact`** (all-hands #1; U8 `0bb3ed73`,
-/// carried forward by U14 — see "what U14 changed" below).
-///
-/// `Option` + `skip_serializing_if` is not a version gate: it skips on the
-/// VALUE being none, never on the SESSION being v2. So what a field means for
-/// the wire is decided by whether anything POPULATES it — and U8 changed
-/// exactly that for `blob`.
-///
-/// Before U8, a pin outside git minted `blob: None` and the key serialized
-/// AWAY, so `PinFact`'s key set varied with the environment. Under R4 the hash
-/// is mandatory: a pin either carries one or refuses, so `blob` is now ALWAYS
-/// present wherever a `PinFact` exists at all. That is a key-set change, and it
-/// is the class value-pinning sweeps are blind to — they pin worked values
-/// (spans, revs, roots), not the presence of a key.
-///
-/// This test is the detector for that class on this body. `PinFact` rides
-/// `splice.pin`, which is v3-only at decode, so nothing here should reach a v2
-/// frame — this pins the key set so a later change to that reachability is
-/// caught HERE, loudly, instead of shipping green.
-///
-/// **What U14 changed, and why this expectation moved rather than weakened.**
-/// U14 dropped `declared_ref` — the joined `"<target>#<selector>"` echo — under
-/// ZT decision 14 (no string address forms on machine surfaces), and retyped
-/// `selector` from a joined string to the tagged [`wire::ReadSel`]. Seven keys
-/// became six. That is precisely the "did I change WHICH KEYS APPEAR" question
-/// U8 taught this test to ask, answered YES and deliberately, so the unit that
-/// changed the key set updates the pin. The assertion is not loosened: it is
-/// still an EXACT set, and it still fails on any key added or removed.
-///
-/// **What this test alone does NOT prove.** Its workspace is git-initialised, so
-/// it cannot witness the absent-`blob` case directly. The invariant "a `PinFact`
-/// exists ⟹ `blob` is present" is established by this test TOGETHER with
-/// [`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`], which
-/// covers the other branch: no git, no `PinFact` at all. Neither half is
-/// sufficient alone, and a future edit that softened the refusal back to honest
-/// degradation would break that second test, not this one.
+/// Key-set pin over the serialized `PinFact`. `Option` + `skip_serializing_if`
+/// skips on the VALUE, never the session, so the wire key set is decided by
+/// what populates a field — and R4 made `blob` mandatory: a pin either carries
+/// a hash or refuses. Exact-set assert: any key added or removed fails here,
+/// loudly. The absent-`blob` branch is covered by
+/// [`without_git_the_pin_refuses_because_r4_admits_no_hashless_row`]; neither
+/// half is sufficient alone.
 #[test]
 fn the_pin_fact_key_set_is_pinned_and_blob_is_now_always_present() {
     let (_dir, root) = workspace();
@@ -779,8 +727,6 @@ fn a_missing_target_or_selector_refuses_pin_target_missing() {
     let err = splice(&root, None, &pin_args("Guide/No Such Section"), &[], None)
         .expect_err("no such selector");
     assert_eq!(err.code, ErrorCode::PinTargetMissing);
-    // The teaching is unchanged in intent; only its spelling moved off the
-    // internal mode name onto a command the reader can run (issue-05).
     assert!(
         err.message
             .as_deref()
@@ -818,11 +764,9 @@ fn vibe_writes_the_eager_blob_where_a_normal_pin_only_computes_it() {
     );
 }
 
-/// Outside git: the pin REFUSES. Under v1 the claim plane landed and the
-/// `objects:` entry was simply absent — two planes, one optional. R4 folded the
-/// hash INTO the claim ("if hash is missing, we lost the explicit target
-/// meaning"), so the same condition now has no legal row to write. Still no
-/// fabricated sha (D5); the honesty just moved from omission to refusal.
+/// Outside git the pin refuses: R4 folds the hash into the claim, so there is
+/// no legal hashless row. Still no fabricated sha (D5) — honesty moved from
+/// omission to refusal.
 #[test]
 fn without_git_the_pin_refuses_because_r4_admits_no_hashless_row() {
     let (_dir, root) = bare_workspace();
@@ -1114,29 +1058,12 @@ fn git_init(dir: &std::path::Path) {
     }
 }
 
-/// **The `/`-bearing heading, pinned end to end** — the fixture U8 gave up to
-/// ask-don't-widen, landed here as the ruling's proof (2026-08-03, completed by
-/// the advisor ruling that retyped `PinSpec.selector`).
-///
-/// U8 found `lock_ref_fragment` refusing any heading containing `/`. The only
-/// thing forcing that refusal was the joined `page#A/B` wire echo, whose `/`
-/// was a delimiter — the exact collision ZT named in the decision-20 rationale.
-/// U14 disposed of the echo, and then found the SAME collision had simply moved
-/// one layer up into `PinSpec.selector`, which was still a `/`-joined string:
-/// the heading was representable in storage and still unpinnable. Both had to
-/// go for the capability to exist.
-///
-/// **What is delivered, precisely.** A `/`-bearing heading is representable and
-/// pinnable on the MACHINE surface — the wire array, which is what agents and
-/// MCP callers send, and what this test drives. The human CLI coat
-/// (`mrd pin --section`) still splits its string on `/`, so it cannot address
-/// this heading; widening the coat is C2, and C2 stays reserved. Neither half
-/// of that sentence may be dropped when this is described.
-///
-/// The load-bearing negative is the element COUNT. Any implementation that
-/// joins and re-splits produces `["Guide", "A", "B"]` — three elements, a
-/// well-formed address resolving to nothing — and that is what this asserts
-/// against.
+/// A `/`-bearing heading is representable and pinnable on the MACHINE surface
+/// (the wire array — what agents and MCP callers send). The CLI coat
+/// (`mrd pin --section`) still splits its string on `/` and cannot address it;
+/// widening the coat is C2, reserved. The load-bearing negative is the element
+/// COUNT: a join-then-split implementation yields `["Guide", "A", "B"]` — a
+/// well-formed address resolving to nothing.
 #[test]
 fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
     let (_dir, root) = workspace();
@@ -1189,13 +1116,9 @@ fn a_slash_bearing_heading_pins_end_to_end_and_stores_as_one_array_element() {
     );
 }
 
-/// The other half of the same boundary: the CLI STRING coat cannot address that
-/// heading, and says so rather than silently pinning the wrong thing.
-///
-/// `ReadSel::parse` splits on `/`, so `"Guide/A/B"` is three segments — an
-/// address that resolves to nothing here. The refusal is the honest outcome,
-/// and pinning it is what keeps the delivered capability described accurately:
-/// machine surface yes, CLI sugar no, C2 reserved.
+/// The other half of the boundary: `ReadSel::parse` splits on `/`, so
+/// `"Guide/A/B"` is three segments resolving to nothing — the coat refuses
+/// rather than silently pinning the wrong section.
 #[test]
 fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
     let (_dir, root) = workspace();
@@ -1205,9 +1128,8 @@ fn the_cli_string_coat_still_cannot_address_a_slash_bearing_heading() {
     )
     .expect("rewrite the target with a `/`-bearing heading");
 
-    // POSITIVE CONTROL first (all-hands #2): the same coat, same fixture, a
-    // heading with no `/` — so the miss below is attributable to the SPLIT and
-    // not to a broken fixture, a wrong path, or a workspace with no headings.
+    // Positive control: same coat, same fixture, a heading with no `/` — the
+    // miss below is attributable to the split, not a broken fixture.
     splice(&root, None, &pin_args("Guide"), &[], None)
         .expect("the coat addresses an ordinary heading in this very fixture");
 

@@ -1,11 +1,5 @@
 //! U8b: `plan_edits` lowering ≡ host-built native batch (bytes, armed, root).
 //! Flow: flock → lower → validate → commit → Delta as one native splice.
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::path::PathBuf;
 
@@ -61,8 +55,6 @@ fn seg(h: &str) -> HpathSeg {
 const DOC: &str = "---\nstatus: open\nowner: d\n---\n# Memo\n\nbody line\n\n## Tasks\n\n- item one\n- item two\n\n# Archive\n\nold\n";
 
 /// Equivalence: mixed plan (property+append+create) lands same bytes as native.
-///
-///
 #[test]
 fn plan_batch_equals_the_host_built_native_batch() {
     // A: plan form.
@@ -108,8 +100,6 @@ fn plan_batch_equals_the_host_built_native_batch() {
     .expect("plan splice commits");
 
     // B: native batch (prop Put{all}, append, parent-append create).
-    //
-    //
     let (db, rb) = ws(&[("card.md", DOC)]);
     let out_b = splice(
         &rb,
@@ -176,13 +166,11 @@ fn plan_batch_equals_the_host_built_native_batch() {
 }
 
 /// Match-all + `replace_section` land expected literal bytes.
-///
 #[test]
 fn replace_section_and_match_all_land_expected_bytes() {
     let (dir, root) = ws(&[("card.md", DOC)]);
 
     // Live Tasks section rev.
-    //
     let doc = fs::load(&root, std::path::Path::new("card.md")).expect("load");
     let target = model::Ref::Hpath(vec![
         model::HpathSeg {
@@ -264,8 +252,6 @@ fn replace_section_and_match_all_land_expected_bytes() {
 }
 
 /// Plan `rev` threads to native CAS (`if_node_rev`); stale → `cas_mismatch`.
-///
-///
 #[test]
 fn plan_rev_threads_into_the_native_cas_guard() {
     let (dir, root) = ws(&[("card.md", DOC)]);
@@ -302,15 +288,11 @@ fn plan_rev_threads_into_the_native_cas_guard() {
 }
 
 /// S4b/D11: multiline `set_property` value forges keys → `bad_request`, no write.
-///
-///
-///
 #[test]
 fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     let (dir, root) = ws(&[("card.md", DOC)]);
 
     // Forged-key spelling (no ": " → no quote).
-    //
     let err = splice(
         &root,
         None,
@@ -335,7 +317,6 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     );
 
     // Quoted spelling (": " triggers quote; newline still refuses).
-    //
     let err = splice(
         &root,
         None,
@@ -385,16 +366,10 @@ fn plan_set_property_refuses_multiline_values_and_writes_nothing() {
     );
 }
 
-/// Finding 5 / R5: unsafe property KEY refuses at pre-flight and plan commit.
+/// R5: unsafe property KEY refuses at pre-flight and plan commit.
 /// Same owner as value (`yaml_safe_key`); assert is the refusal itself.
-///
-///
-///
-///
-///
 #[test]
 fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
-    // The reviewer's repro, verbatim (review 2026-07-25-0845-64d761b1 § #5).
     const SEED: &str = "---\ntitle: Plan\n---\n\n# Plan\n\nbody\n";
     const FORGED: &str = "ti tle: forged\nevil";
 
@@ -499,8 +474,6 @@ fn plan_set_property_refuses_forged_keys_at_both_doors_and_writes_nothing() {
 }
 
 /// Golden MUST-CARRY refusals: p-replace-on-block + p-create-top (engine, no write).
-///
-///
 #[test]
 fn golden_target_class_refusals_fire_engine_side() {
     let (dir, root) = ws(&[("card.md", "# Tasks\n\n- [ ] one ^task1\n")]);
