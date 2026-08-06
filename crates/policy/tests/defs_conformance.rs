@@ -1,12 +1,5 @@
 //! Def-conformance goldens — byte-exact against the U0 fixture set.
 //! `$SESSION` is substituted for the scratch root.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 #![allow(clippy::too_many_lines)] // one sequential script fn by design (env is global)
 
 use std::fs;

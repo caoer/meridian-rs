@@ -1,44 +1,8 @@
 //! Blocking gate at the armed change plane (U4.2) — the pure decision half.
 //! Input is the [`ArmedLaw`] [`resolve_armed_law`] resolved at the write path.
 //! A block-severity firing, drifted law, or unloadable set refuses with a
-//! closed `{code, recovery}` pair. Never-armed is a no-op. Fills the retired
-//! `authorize` seam; does not load from disk (caller injects the law).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
+//! closed `{code, recovery}` pair. Never-armed is a no-op. Does not load from
+//! disk (caller injects the law).
 
 use crate::armed::Mode;
 use crate::armed_law::{ArmedFault, ArmedLaw, ArmedRule};
@@ -60,8 +24,7 @@ pub enum GateOutcome {
 /// One advisory finding a `warn`-armed rule emitted, a surviving armed-law fault,
 /// OR a `--force`-escaped refusal (U4.3) — all render on the write response and
 /// none refuse (§11.1 advisory shape). A `forced` finding is the loud record of a
-/// skip: it renders, and the mount journals it (the sanctioned bypass, decision
-/// #6).
+/// skip: it renders, and the mount journals it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateFinding {
     /// The rule id (or `binding-break:<side>`) that emitted it.
@@ -138,9 +101,9 @@ pub enum GateRefusal {
 ///   cannot EVALUATE the change fails closed — never a silent pass. Surviving
 ///   (non-refusing) faults ride along as advisory findings.
 ///
-/// `--force` (amendment pt 3): a forced change escapes a `block` refusal — the
-/// skip is the mount's to journal + render. It never escapes an armed-law fault:
-/// a law that cannot be read is not a check to skip.
+/// `--force`: a forced change escapes a `block` refusal — the skip is the
+/// mount's to journal + render. It never escapes an armed-law fault: a law that
+/// cannot be read is not a check to skip.
 #[must_use]
 pub fn gate(change: &Change, law: &ArmedLaw) -> GateOutcome {
     if law.never_armed() {
@@ -284,8 +247,7 @@ fn evaluate_armed(change: &Change, law: &ArmedLaw) -> GateOutcome {
     GateOutcome::Ok(findings)
 }
 
-/// The name a report labels an armed rule with — its id (ruling D1: the id is
-/// the name everywhere the slug was one).
+/// The name a report labels an armed rule with — its id.
 fn rule_name(armed: &ArmedRule) -> String {
     armed.id().as_str().to_string()
 }
@@ -565,8 +527,8 @@ mod tests {
         );
     }
 
-    /// A drifted armed page fails closed at the door. The fault keys on the rule
-    /// ID and its PAGE — the row key — where the slug-era refusal named a folder.
+    /// A drifted armed page fails closed at the door; the fault keys on the
+    /// rule id and its page — the row key.
     #[test]
     fn a_drifted_armed_page_fails_closed_naming_the_id_and_the_page() {
         let check = reviewer_check("reviewer.not-owner");

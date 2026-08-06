@@ -16,35 +16,17 @@
 //! unloadable INDEX refuses with `{code, recovery}` from the §8 taxonomy.
 //! Never-armed is a bit-for-bit no-op. Armed set is loaded from the workspace
 //! path, never supplied by the caller.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use model::{CorpusIndex, Document};
 
-/// The attested armed-set artifact — the INDEX successor (registration ruling § 4,
-/// amended 2026-08-01). [`armed::arm`] is the ONE act that turns a discovered page
-/// into an armed one: it narrows to an [`armed::ArmRoot`], resolves through the
-/// landed resolver, and pins each winner's page + [`page_rev`] into an
-/// [`armed::ArmedArtifact`] row keyed by (id, arm root).
+/// The attested armed-set artifact — the INDEX successor (registration ruling § 4).
+/// [`armed::arm`] turns a discovered page into an armed one: it narrows to an
+/// [`armed::ArmRoot`], resolves through the landed resolver, and pins each
+/// winner's page + [`page_rev`] into an [`armed::ArmedArtifact`] row keyed by
+/// (id, arm root).
 ///
-/// Module (not flat re-export) so it does not collide with the folder loader's
-/// `index::arm` at the seam where the two acts differ.
-///
-///
+/// A module (not a flat re-export) so it does not collide with the folder
+/// loader's `index::arm`.
 pub mod armed;
 pub mod armed_law;
 
@@ -75,8 +57,7 @@ pub use change::{
 /// The load gate's injected fact plane, in policy vocabulary: the composition
 /// layer builds [`FactDoc`]s from fixture bytes through the real parse→facts path
 /// ([`facts_from_document`] over a real AST) and hands them to [`compile`] — no
-/// `syntax::`/`model::` type crosses the `build_facts` signature (the fence holds
-/// at the type level, P6-VERDICTS load-gate unification).
+/// `syntax::`/`model::` type crosses the `build_facts` signature.
 pub use pack::{FactDoc, facts_from_document};
 
 /// The `rulepack-api@2` CHECK evaluation surface (U1.3): the full-`EvalLimits`
@@ -109,16 +90,15 @@ pub use hook::{
 /// drops `actor` — the engine must not observe the observer.
 pub use reaction::derive_event;
 
-/// Tag-indexed rule registration — the registration rework's discovery layer.
-/// A page registers by carrying `rules/hook` / `rules/check` in its frontmatter
-/// `tags:` ([`RuleKind`]), is identified by its frontmatter `id:` ([`RuleId`],
-/// § 2 grammar), and resolves against same-id pages by mount depth along the
-/// three-rung scope ladder ([`ScopeLayer`] → [`Scope`]). [`RuleIndex::discover`]
-/// reads a caller-supplied page feed ([`PageRef`] — `policy` stays I/O-free);
-/// [`RuleIndex::resolve`] is the ONE pure resolver both the arming path and the
-/// read-only print verb call, and it RETAINS every shadowed candidate so the
-/// override chain stays printable. Nothing here arms: discovery makes a page
-/// known, only the explicit attested ARM act activates it.
+/// Tag-indexed rule registration. A page registers by carrying `rules/hook` /
+/// `rules/check` in its frontmatter `tags:` ([`RuleKind`]), is identified by its
+/// frontmatter `id:` ([`RuleId`], § 2 grammar), and resolves against same-id
+/// pages by mount depth along the three-rung scope ladder ([`ScopeLayer`] →
+/// [`Scope`]). [`RuleIndex::discover`] reads a caller-supplied page feed
+/// ([`PageRef`] — `policy` stays I/O-free); [`RuleIndex::resolve`] is the one
+/// pure resolver both the arming path and the print verb call, and it retains
+/// every shadowed candidate so the override chain stays printable. Nothing here
+/// arms: discovery makes a page known, only the attested ARM act activates it.
 pub use registration::{
     Collision, Effective, EffectiveSet, ID_KEY, IdFault, MAX_ID_LEN, PageRef,
     REGISTRATION_NAMESPACE, RegisterError, RegisterFault, Registration, RuleId, RuleIndex,
@@ -128,16 +108,14 @@ pub use registration::{
 /// The page-shaped rule load — what a registered page becomes when it is
 /// evaluated. [`register_page`] answers identity (the tag and the `id:`);
 /// [`load_rule`] answers evaluability, parsing the legs the registration tags
-/// declare through the SAME parsers the convention folder loader uses. It takes the
-/// [`Registration`] rather than re-deriving one, so a page becomes a rule in exactly
-/// one place, and it verifies the supplied bytes against the registered rev rather
-/// than trusting the caller not to have re-read a moved page.
+/// declare through the same parsers the convention folder loader uses. It takes
+/// the [`Registration`] rather than re-deriving one, and verifies the supplied
+/// bytes against the registered rev.
 pub use rule::{CounterfactualRule, Rule, RuleLoadError, load_rule, load_rule_for_corpus};
 
 /// The blocking gate at the armed change plane (U4.2): the pure decision
-/// ([`gate`]), whose input is the [`ArmedLaw`] that
-/// [`resolve_armed_law`] resolved at the write's own path. Fills the retired
-/// `authorize` seam.
+/// ([`gate`]), whose input is the [`ArmedLaw`] that [`resolve_armed_law`]
+/// resolved at the write's own path.
 pub use gate::{GateFinding, GateOutcome, GateRefusal, GateViolation, gate};
 
 /// A workspace's attested armed law at ONE path, and the ONE surface reporting
@@ -168,8 +146,8 @@ pub use binding::{ATTESTED_MARKER_PATH, BindingSide, DoorLaw, classify_door_law}
 ///   records one §11.1 finding; `severity` ∈ {error, warn, info}.
 ///
 /// Changing this surface or the dialect bumps the pin to `rulepack-api@N` and is
-/// gated at load — never a wire change (row-13 wire-invariance: no wire crate
-/// names Starlark). The exact injected surface is documented on `pack`.
+/// gated at load — never a wire change. The exact injected surface is documented
+/// on `pack`.
 pub const RULEPACK_API: &str = "rulepack-api@1";
 
 /// The §11.3 per-eval metering budget: `{steps, mem}` bounding one evaluation.
@@ -228,8 +206,7 @@ pub struct RulesetPin {
 
 /// A compiled ruleset — admitted only after its fixtures demonstrated
 /// themselves under budget (§11.3 load gate). Private fields seal construction
-/// to `policy::compile` (the capability seal); the eval bridge lives behind
-/// this type, so P6-STARLARK/P6-EVAL add no public surface here.
+/// to `policy::compile`.
 #[derive(Debug)]
 pub struct CompiledRuleset {
     id: String,
@@ -262,10 +239,9 @@ impl CompiledRuleset {
         self.budget
     }
 
-    /// Ruleset-level budget class = max class over used assertions (schema doc
-    /// L188). The P6-VERDICTS seam: a `Corpus` result means the pack needs the
-    /// resident corpus index, so loading it sidecar-mode is later refused
-    /// `daemon_only` (that error is NOT defined in this unit).
+    /// Ruleset-level budget class = max class over used assertions. A `Corpus`
+    /// result means the pack needs the resident corpus index; loading it
+    /// sidecar-mode is later refused `daemon_only` (defined elsewhere).
     #[must_use]
     pub fn budget_class(&self) -> BudgetClass {
         self.budget_class
@@ -333,21 +309,18 @@ pub enum Severity {
     Info,
 }
 
-/// Parse the §11.3 manifest, verify the pin, and RUN the pack's fixtures under
+/// Parse the §11.3 manifest, verify the pin, and run the pack's fixtures under
 /// its declared budgets as the load gate — a pack whose fixtures fail is never
 /// admitted. YAML enters the engine here and nowhere else.
 ///
 /// `source` is the manifest text (the caller pre-reads it from `pin.path`);
 /// `files` resolves manifest-relative fixture/rule paths to their contents, so
 /// policy performs no I/O of its own. `build_facts` turns a fixture's `(path,
-/// body)` into the injected fact plane — the load gate's demonstration runs over
-/// the SAME facts production `evaluate` sees (the composition layer injects the
-/// real parse→facts path; policy names no parser). Kept in policy vocabulary
-/// (`&str`s in, [`FactDoc`] out) so the fence holds at the type level.
+/// body)` into the injected fact plane — the same parse→facts path production
+/// `evaluate` sees, kept in policy vocabulary (`&str`s in, [`FactDoc`] out).
 ///
 /// Pipeline: content-pin (sha256) → parse → api-pin → read+classify rules →
-/// extract+parse fenced Starlark predicates → run fixtures over `build_facts`'s
-/// facts through the metered Starlark core → admit / refuse.
+/// extract+parse fenced Starlark predicates → run fixtures → admit / refuse.
 ///
 /// # Errors
 /// [`CompileError::PinMismatch`] (api or sha256), [`CompileError::Malformed`]
@@ -392,16 +365,14 @@ pub fn compile(
     }
     let budget_class = pack::classify_budget_class(&rule_sources);
 
-    // 4b. Extract + parse-check each rule page's fenced Starlark predicate. A rule
-    // that cannot be read (no ```starlark block, or unparseable) fails loud here,
-    // before any fixture runs.
+    // 4b. Extract + parse-check each rule page's fenced Starlark predicate.
     let predicates = pack::extract_predicates(&rule_sources, &manifest.rules)?;
 
-    // 4c. §11.2 WHEN/HOW partition: a WHEN referencing anything outside the closed
-    // fact vocabulary is refused at COMPILE, before any fixture runs.
+    // 4c. §11.2 WHEN/HOW partition: a WHEN outside the closed fact vocabulary is
+    // refused at compile, before any fixture runs.
     pack::check_when_vocab(&predicates)?;
 
-    // 5. Fixtures ARE the load gate: no fixtures = cannot demonstrate itself.
+    // 5. Fixtures are the load gate: no fixtures = cannot demonstrate itself.
     if manifest.fixtures.is_empty() {
         return Err(CompileError::FixtureFailed {
             fixture: String::new(),
@@ -418,14 +389,6 @@ pub fn compile(
                 detail: format!("unreadable: {e}"),
             })?;
         let fx = pack::parse_fixture(fixture, &content)?;
-        // Load-gate unification (P6-VERDICTS): the fixture demonstrates over the
-        // SAME fact plane production `evaluate` uses — `build_facts` is the real
-        // parse→facts path the composition layer injects (`facts_from_document`
-        // over a real AST), so a fixture cannot pass on a plane the wire never
-        // reproduces. The signature stays in POLICY vocabulary (`&str`s in,
-        // `FactDoc` out) — no `syntax::`/`model::` type crosses it, the fence
-        // holds at the type level. The retired synthetic per-line builder lives
-        // test-only now.
         let facts = build_facts(&fx.path, &fx.body);
         match pack::eval_over_facts(&predicates, &facts, manifest.budgets) {
             Ok(violations) => {
@@ -523,11 +486,10 @@ pub fn evaluate(
 /// `policy_vocab` op body).
 ///
 /// The `class` is the true cost tier of the fact (change-local / whole-document /
-/// one-hop cross-document); the `p99_us` is a monotonic class DEFAULT
-/// ([`change::class_default_p99`]), not a per-key measured SLA — per-key
-/// calibration against the frozen corpus is U1.5's (`test --corpus`). The keys
-/// are exactly the [purity-guarded vocabulary](change::CHANGE_FACT_VOCAB): every
-/// one a pure function of the before/after states and pinned evidence, no
+/// one-hop cross-document); the `p99_us` is a monotonic class default
+/// ([`change::class_default_p99`]), not a per-key measured SLA. The keys are
+/// exactly the [purity-guarded vocabulary](change::CHANGE_FACT_VOCAB): every one
+/// a pure function of the before/after states and pinned evidence, no
 /// git/clock/random/io fact among them.
 #[must_use]
 pub fn vocab() -> Vec<(&'static str, Budget)> {

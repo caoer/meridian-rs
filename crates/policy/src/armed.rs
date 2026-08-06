@@ -12,50 +12,6 @@
 //! - Fail-closed on corrupt/missing artifact once the workspace has been armed.
 //! - Sibling subtrees do not couple: a CHECK armed at `sessions/a` must not
 //!   refuse a write under `sessions/b`.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,12 +19,10 @@ use crate::registration::{RuleId, RuleIndex, RuleKind, ScopeLayer, page_rev};
 
 /// The workspace path the attested armed-set artifact lives at — sibling of the
 /// once-armed marker (`meridian/attested`), under the engine-managed `meridian/`
-/// directory rather than the dying `conventions/` folder grammar.
+/// directory.
 ///
-/// Naming it here does NOT protect it: mirroring it into `fs::domain` and adding it
-/// to the binding law's reserved set (so deleting it is refused like the INDEX) is
-/// the door's wiring, owed by the loader-cutover / feeder cards. Recorded as a named
-/// gap rather than half-wired here.
+/// Naming it here does not protect it: mirroring it into `fs::domain` and the
+/// binding law's reserved set is the door's wiring — a named gap.
 pub const ARMED_RULES_PATH: &str = "meridian/armed-rules.md";
 
 /// The artifact page's title. A strict parse requires it — an armed-set page whose
@@ -94,15 +48,12 @@ this set until a re-arm, and nothing arms by tag alone.";
 
 // ── mode ──────────────────────────────────────────────────────────────────────
 
-/// How an armed row acts, in the vocabulary its KIND admits (§ 4).
+/// How an armed row acts, in the vocabulary its kind admits (§ 4).
 ///
-/// The split is not cosmetic: `warn`/`block` is check-ENFORCEMENT vocabulary, and a
-/// hook can never veto or mutate, so hook activation is binary. A hook row carrying
-/// `warn` or `block` is a defect, not a tolerated value ([`ArmFault::ModeKind`]).
-///
-/// A row's kind is recoverable from its mode — `warn`/`block` ⇒ check, `armed` ⇒
-/// hook — which is why the artifact needs no sixth column. `off` alone is shared,
-/// and an `off` row never fires, so its kind is never load-bearing.
+/// `warn`/`block` is check-enforcement vocabulary; a hook can never veto or
+/// mutate, so hook activation is binary ([`ArmFault::ModeKind`]). A row's kind
+/// is recoverable from its mode (`warn`/`block` ⇒ check, `armed` ⇒ hook), so
+/// the artifact needs no sixth column; `off` alone is shared and never fires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Mode {
     /// Attested-off: the reviewer read the page at this rev and chose not to
@@ -142,9 +93,8 @@ impl Mode {
 
     /// Whether `kind` admits this mode — the § 4 vocabulary split.
     ///
-    /// Matched on the MODE rather than the pair: the match stays exhaustive over
-    /// [`Mode`], so adding a mode without deciding which kind admits it is a compile
-    /// error rather than a silent `false`.
+    /// Matched on the mode so the match stays exhaustive: adding a mode without
+    /// deciding which kind admits it is a compile error, not a silent `false`.
     #[must_use]
     pub fn admits(self, kind: RuleKind) -> bool {
         match self {
@@ -322,15 +272,11 @@ impl std::error::Error for PathFault {}
 
 /// Validate a workspace path bound for a rendered cell.
 ///
-/// The charset guard follows the retired slug validator's doctrine — sit at INTAKE
-/// so every renderer inherits it, and make the hostile bytes UNREPRESENTABLE rather
-/// than removable. It is narrower than that slug charset because a path legitimately
-/// carries `/`, `.`, `_`, digits and case; it refuses exactly what breaks a
-/// backtick-quoted table cell: `|`, a backtick, and any control character (newline
-/// and CR among them).
-///
-/// The artifact deliberately renders the page as a PLAIN path, never a wikilink, so
-/// the `[`/`]`/`#`/`^` hazards that forced the slug charset never arise here.
+/// The guard sits at intake so every renderer inherits it, making hostile bytes
+/// unrepresentable rather than escaped. It refuses exactly what breaks a
+/// backtick-quoted table cell: `|`, a backtick, and any control character. The
+/// page renders as a plain path, never a wikilink, so `[`/`]`/`#`/`^` never
+/// arise here.
 fn validate_workspace_path(path: &str) -> Result<(), PathFault> {
     if path.starts_with('/') {
         return Err(PathFault::Absolute);
@@ -595,17 +541,14 @@ impl std::error::Error for ArmFault {}
 
 /// **The ARM act.** Narrow to `root`, resolve, and pin the winners the requests name.
 ///
-/// This is the one act that turns a DISCOVERED page into an ARMED one, and it is
-/// deliberately a single indivisible step: it narrows the candidate set to `root`'s
-/// chain (§ 3 amendment), resolves it through the LANDED resolver
-/// ([`RuleIndex::resolve`] — never a second copy), and pins the winner's page and
-/// rev. Narrowing and resolution cannot drift apart because the caller cannot
-/// interpose between them, which is what makes `scope` a truthful column.
+/// The one act that turns a discovered page into an armed one, as a single
+/// indivisible step: narrow to `root`'s chain (§ 3), resolve through the landed
+/// resolver ([`RuleIndex::resolve`]), pin the winner's page and rev. The caller
+/// cannot interpose between narrowing and resolution, which keeps `scope`
+/// truthful.
 ///
-/// The act is ALL-OR-NOTHING and reports EVERY fault: a partially-landed artifact
-/// would silently drop a rule the reviewer meant to arm, which is the exact failure
-/// mode — silent non-enforcement — the ruling exists to prevent. One round-trip
-/// therefore names every problem.
+/// All-or-nothing, reporting every fault: a partially-landed artifact would
+/// silently drop a rule the reviewer meant to arm.
 ///
 /// # Errors
 /// Every [`ArmFault`] the requests hit, in request order.
@@ -741,11 +684,10 @@ impl ArmedArtifact {
     }
 
     /// **The selection law.** The rows governing a write at `path`: per id, the
-    /// DEEPEST armed row whose arm root contains `path`.
+    /// deepest armed row whose arm root contains `path`.
     ///
-    /// An inner arm shadows an outer arm on one chain; sibling scopes never interact,
-    /// because neither one's root contains the other's paths. Selection orders
-    /// already-attested rows and admits no page that was never armed — it is not a
+    /// An inner arm shadows an outer arm on one chain; sibling scopes never
+    /// interact. Selection orders already-attested rows only — it is not a
     /// re-resolution, so it cannot undo the freeze.
     #[must_use]
     pub fn select_at(&self, path: &str) -> Vec<&ArmedRow> {
@@ -766,43 +708,26 @@ impl ArmedArtifact {
         nearest.into_values().collect()
     }
 
-    /// **What governs a write at `path` — the ONE call a door or a feeder makes.**
+    /// What governs a write at `path` — the one call a door or a feeder makes.
     ///
-    /// Selection and verification are BOTH required and their order is not a
-    /// preference: each of the two obvious compositions is wrong, in opposite
-    /// directions, so neither may be assembled at a call site.
-    ///
-    /// - **Verify-then-select FAILS OPEN.** Filtering to the firing rows first
-    ///   deletes a red INNER row before selection runs, so the stale OUTER row it
-    ///   was shadowing wins the id and fires on the inner path. Editing a pinned
-    ///   inner page would then hand governance back to an outer rule — a cap escape
-    ///   performed with an ordinary page edit.
-    /// - **Verify-everything refuses TOO WIDE.** [`ArmedVerdict::refusing`] over the
-    ///   whole artifact lets a drifted check armed at `sessions/a` refuse a write at
-    ///   `sessions/b`, coupling subtrees that § 3's narrowing amendment rules
-    ///   independent.
-    ///
-    /// So: SELECT first, over every attested row — a red row still shadows, which is
-    /// exactly what makes it fail closed — and then verify EXACTLY the selected
-    /// rows. A red selected row refuses (check) or falls silent (hook) for that id
-    /// AT THIS PATH, and no sibling scope is touched either way.
+    /// Selects first over every attested row (a red row still shadows, which is
+    /// what makes it fail closed), then verifies exactly the selected rows.
+    /// Never compose these by hand: verify-then-select fails OPEN (a red inner
+    /// row stops shadowing, so a stale outer row fires on its path), and
+    /// verifying the whole artifact refuses TOO WIDE (a sibling scope's drift
+    /// refuses this write).
     #[must_use]
     pub fn verify_at(&self, path: &str, pages: &dyn PageSource) -> ArmedVerdict {
         verify_rows(self.select_at(path).into_iter(), pages)
     }
 
     /// Re-hash every pinned page through the injected source and split the rows into
-    /// those that still stand and those that reddened.
+    /// those that still stand and those that reddened. A red row never fires on
+    /// its new bytes.
     ///
-    /// A row reddens when its page's bytes no longer hash to the pinned rev, or when
-    /// the page is gone. A red row NEVER fires on its new bytes — that is the freeze
-    /// and the fail-closed gate in one act.
-    ///
-    /// **This is a whole-artifact HEALTH report, not a gate.** It applies no
-    /// selection, so neither its `firing()` nor its `refusing()` answers "what
-    /// governs this write" — see [`ArmedArtifact::verify_at`] for why both ways of
-    /// composing it by hand are wrong. Use it to render the artifact's state; use
-    /// `verify_at` to decide anything.
+    /// A whole-artifact HEALTH report, not a gate: it applies no selection, so
+    /// neither `firing()` nor `refusing()` answers "what governs this write" —
+    /// use [`ArmedArtifact::verify_at`] to decide anything.
     #[must_use]
     pub fn verify(&self, pages: &dyn PageSource) -> ArmedVerdict {
         verify_rows(self.rows.iter(), pages)
@@ -829,8 +754,7 @@ impl ArmedArtifact {
 
 /// Re-hash the given rows and split them into those that still stand and those that
 /// reddened. The one implementation behind both [`ArmedArtifact::verify`] and
-/// [`ArmedArtifact::verify_at`] — they differ only in WHICH rows they hand it, and a
-/// second copy is how the two would drift into disagreeing about what "red" means.
+/// [`ArmedArtifact::verify_at`] — they differ only in which rows they hand it.
 fn verify_rows<'a>(
     rows: impl Iterator<Item = &'a ArmedRow>,
     pages: &dyn PageSource,
@@ -869,22 +793,12 @@ fn verify_rows<'a>(
 /// Whether a row's mode is one its PAGE's kind admits, answered from the pinned
 /// bytes rather than from the row.
 ///
-/// **The row cannot attest its own kind.** The § 4 table carries five columns and
-/// `kind` is not one of them; the mode word is all a reader has, and the two
-/// vocabularies are disjoint only by convention (`off|warn|block` for a check,
-/// `off|armed` for a hook). So a hand-edited hook row reading `block` parses
-/// clean — and would hand a hook the veto the ruling denies it, which is the one
-/// power the check/hook split exists to withhold.
-///
-/// Re-deriving the kind from the pinned page closes that without a sixth column:
-/// the page is ALREADY read here to verify the rev, the registration tag is the
-/// one name for the kind (ruling § 1), and the rev check immediately above proves
-/// these bytes are the attested bytes — so the kind is as attested as the rev is.
-/// A column would have been a second place for the kind to be wrong.
-///
-/// A page that no longer registers at all (its tag was removed under a pinned rev
-/// — impossible while the rev holds, but not a state to trust) reddens too: an
-/// armed row whose page is not a rule page is not a row that may fire.
+/// The row cannot attest its own kind: the § 4 table has no `kind` column, so a
+/// hand-edited hook row reading `block` parses clean — and would hand a hook the
+/// veto the ruling denies it. Re-deriving the kind from the pinned page (already
+/// read for the rev check, which proves these are the attested bytes) closes
+/// that without a sixth column. A page that no longer registers at all reddens
+/// too.
 fn mode_outside_its_kind(row: &ArmedRow, bytes: &str) -> Option<Redness> {
     let registration = crate::registration::register_page(crate::registration::PageRef {
         layer: ScopeLayer::Workspace,
@@ -1041,12 +955,9 @@ impl ArmedVerdict {
 
     /// The red rows that must REFUSE the write.
     ///
-    /// Failing closed splits by kind, and the split is forced by the ruling rather
-    /// than chosen: a red CHECK row means a LAW cannot be evaluated, so letting the
-    /// write land would silently disable a gate — it refuses. A red HOOK row means a
-    /// REACTION cannot be evaluated, and a hook may never veto or mutate, so refusing
-    /// the write on its behalf would hand it exactly the power the ruling denies it —
-    /// it falls silent instead, still red and still reported.
+    /// The split is forced by the ruling: a red CHECK row is a law that cannot
+    /// be evaluated, so it refuses; a red HOOK row falls silent — a hook may
+    /// never veto — but stays red and reported.
     pub fn refusing(&self) -> impl Iterator<Item = &RedRow> {
         self.red.iter().filter(|r| r.row.mode.enforces())
     }
@@ -1299,19 +1210,10 @@ mod tests {
 
     // ── the kind↔mode binding (F3) ────────────────────────────────────────────
 
-    /// **A hand-edited hook row may not buy itself a veto.**
-    ///
-    /// The § 4 table carries no `kind` column, and the two mode vocabularies are
-    /// disjoint only by convention, so `parse_artifact` reads the mode word with no
-    /// way to know which vocabulary it belongs to: a hook row edited from `armed` to
-    /// `block` parses perfectly well. Nothing else in the system would object — the
-    /// rev still matches, the page is still there — and the door would hand a HOOK
-    /// the power to refuse a write, which is the single power the check/hook split
-    /// exists to withhold ("a hook may never veto or mutate").
-    ///
-    /// The row is verified against its PAGE's registration tag, so the edit reddens
-    /// instead of arming. Note what the attacker had to do here: nothing but edit
-    /// one word in the artifact — no page edit, so no rev change to catch it.
+    /// A hand-edited hook row (`armed` → `block`) parses clean — no page edit,
+    /// so no rev change catches it. The mode is verified against the page's
+    /// registration tag, so the row reddens and fails closed instead of buying
+    /// itself a veto.
     #[test]
     fn a_hand_edited_hook_row_reaching_for_a_veto_reddens() {
         let ws = Workspace::default().hook("notify.md", "task.review-notify");
@@ -1344,9 +1246,8 @@ mod tests {
         );
     }
 
-    /// The mirror case: a CHECK row hand-edited to a hook's vocabulary. Both
-    /// directions redden, because the defect is "mode outside its kind", not "hooks
-    /// are special".
+    /// The mirror case: a CHECK row hand-edited to a hook's vocabulary reddens
+    /// too — the defect is "mode outside its kind", not "hooks are special".
     #[test]
     fn a_hand_edited_check_row_in_hook_vocabulary_reddens() {
         let ws = Workspace::default().check("law.md", "reviewer-not-owner");
@@ -1445,8 +1346,7 @@ mod tests {
 
     #[test]
     fn check_pages_and_hook_pages_are_attested_by_one_fingerprint_law() {
-        // Byte-identical bodies but for the tag: each page is pinned by the SAME
-        // page-rev law, and neither is hashed by a kind-specific rule.
+        // Byte-identical bodies but for the tag: one page-rev law pins both kinds.
         let ws = Workspace::default().hook("h.md", "h").check("c.md", "c");
         let hook = arm_one(&ws, "h", Mode::Armed).expect("hook arms");
         let check = arm_one(&ws, "c", Mode::Block).expect("check arms");
@@ -1510,8 +1410,7 @@ mod tests {
 
     #[test]
     fn a_hook_row_carrying_a_check_mode_is_unrepresentable_not_tolerated() {
-        // The vocabulary split is enforced at the ACT, so no rendered artifact can
-        // carry a hook row at `block` in the first place.
+        // Enforced at the ACT: no rendered artifact carries a hook row at `block`.
         assert!(!Mode::Block.admits(RuleKind::Hook));
         assert!(!Mode::Warn.admits(RuleKind::Hook));
         assert!(!Mode::Armed.admits(RuleKind::Check));
@@ -1611,16 +1510,10 @@ mod tests {
 
     // ── the composed law: select at P, then verify exactly those rows ─────────
 
-    /// **Verify-then-select would FAIL OPEN, and this pins it.**
-    ///
-    /// One id armed at two roots on one chain. The INNER page drifts. Whole-artifact
-    /// verification therefore reports the OUTER row as firing — and if selection ran
-    /// over that firing set, the outer row would win the id at the inner path and
-    /// fire there. A page edit would have moved governance from the inner rule to an
-    /// outer one, which is a cap escape performed without any arming act.
-    ///
-    /// The composed call selects FIRST, so the red inner row still shadows the outer
-    /// row and then fails closed on its own drift: nothing fires at that path.
+    /// One id armed at two roots on one chain; the inner page drifts. The red
+    /// inner row must still shadow the outer row and fail closed at its path —
+    /// verify-then-select would instead hand the inner path to the stale outer
+    /// row, a cap escape by page edit.
     #[test]
     fn a_drifted_inner_row_fails_closed_instead_of_handing_its_path_to_the_outer_row() {
         let mut ws = Workspace::default()
@@ -1682,12 +1575,8 @@ mod tests {
         assert_eq!(outside.firing()[0].page(), "notify.md");
     }
 
-    /// **Un-narrowed `refusing()` would refuse TOO WIDE, and this pins it.**
-    ///
     /// A drifted CHECK armed at `sessions/a` must not refuse a write under the
-    /// sibling `sessions/b`: § 3's narrowing amendment rules sibling subtrees
-    /// independent, and coupling them would let any writer refuse writes outside its
-    /// own authority by editing a page in its own scope.
+    /// sibling `sessions/b` — § 3 rules sibling subtrees independent.
     #[test]
     fn a_sibling_scopes_drift_does_not_refuse_this_write() {
         let mut ws = Workspace::default().check("sessions/a/law.md", "law");
@@ -1732,15 +1621,10 @@ mod tests {
 
     // ── arming freezes resolution (THE CAP-ESCAPE GUARDRAIL) ──────────────────
 
-    /// **The cap-escape guardrail, in mechanism form.** A page that appears AFTER
-    /// arming — a deeper override candidate, which live resolution would now hand
-    /// the id to — does not enter the armed set until a re-arm.
-    ///
-    /// This is the whole reason the tag does not arm: if discovery alone changed
-    /// armed behavior, any writer with put access could drop a deeper page into the
-    /// tree and silently take over an armed id, running reactive code under the
-    /// armed set's caps without any reviewer act. The artifact is bytes pinned at
-    /// arm time, so the takeover is not representable.
+    /// A page that appears after arming — a deeper override candidate live
+    /// resolution would now hand the id to — does not enter the armed set until
+    /// a re-arm. Otherwise any writer with put access could drop a deeper page
+    /// and silently take over an armed id without any reviewer act.
     #[test]
     fn a_deeper_override_candidate_appearing_after_arming_is_the_cap_escape_guardrail() {
         let mut ws = Workspace::default().hook("rules.md", "shared");
@@ -2000,11 +1884,9 @@ mod tests {
         );
     }
 
-    /// The dual-kind decision, recorded in a test so it is not re-derived: a page
-    /// carrying BOTH registration tags is refused at ARM. Discovery admits it (the
-    /// upstream card pinned that deliberately); the mode column is typed by kind, so
-    /// a dual-kind id has no single vocabulary and the ambiguity is answered
-    /// fail-closed rather than by inventing a compound mode grammar.
+    /// A page carrying BOTH registration tags is refused at ARM: the mode
+    /// column is typed by kind, so a dual-kind id has no single vocabulary.
+    /// Discovery admits such a page; arming answers the ambiguity fail-closed.
     #[test]
     fn a_dual_kind_page_is_refused_at_arm_and_told_how_to_split() {
         let body = "---\ntags: [rules/check, rules/hook]\nid: dual\n---\n";
@@ -2106,9 +1988,8 @@ mod tests {
         );
     }
 
-    /// A named deferral, pinned rather than hidden: § 4 spells the `page` column as
-    /// a WORKSPACE path, so a user-space winner has no unambiguous spelling in a
-    /// per-workspace artifact. Refused by name; the spelling is a ruling question.
+    /// § 4 spells the `page` column as a workspace path, so a user-space winner
+    /// has no unambiguous spelling here — refused by name, not silently dropped.
     #[test]
     fn a_user_space_winner_is_a_named_deferral_not_a_silent_drop() {
         let body = hook_page("u");
@@ -2223,8 +2104,7 @@ mod tests {
         let headless = page.replace(ARTIFACT_TITLE, "# something else");
         assert!(parse_artifact(&headless).is_err(), "titleless is corrupt");
 
-        // Header stripped — the columns can no longer be trusted to be the attested
-        // ones, so the page is refused rather than reinterpreted.
+        // Header stripped — the columns can no longer be trusted.
         let unheaded = page.replace(ARTIFACT_HEADER, "| a | b | c | d | e |");
         assert!(parse_artifact(&unheaded).is_err(), "re-columned is corrupt");
 

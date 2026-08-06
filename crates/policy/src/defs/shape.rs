@@ -98,8 +98,7 @@ fn is_iso(v: &FmValue) -> bool {
 }
 
 /// The three Go layouts: RFC3339 (`2006-01-02T15:04:05Z07:00`),
-/// `2006-01-02T15:04:05` (fraction tolerated by RFC3339 branch in Go via
-/// time.Parse? no — Go's naive layout is seconds-exact), `2006-01-02T15:04`.
+/// `2006-01-02T15:04:05` (seconds-exact), `2006-01-02T15:04`.
 fn parses_iso_layout(s: &str) -> bool {
     let b = s.as_bytes();
     let date_ok = b.len() >= 10

@@ -6,43 +6,6 @@
 //! [`evaluate_hooks`] runs armed, in-scope HOOKs and returns advisory-only
 //! [`HookOutcome`]s. [`SLICE1_CAPS`] is what slice 1 admits. Hooks never
 //! block a write; CHECKs do.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::HashSet;
 
@@ -318,12 +281,13 @@ pub fn evaluate_hooks_for_test_metered(
 ///
 /// This API accepts only [`crate::CounterfactualRule`], so widened caps cannot
 /// cross into ordinary policy code. Everything else is the production evaluator:
-/// metering, capability routing, global sequencing, typed findings, and — since the
-/// R13 adapter ruling — the SAME canonical [`intent_from_effect`] projection for
-/// every domain. A raw `md.*` descriptor carrying no canonical action or receipt is
-/// [`HookEvalError::MalformedIntent`] here exactly as it is in production; the proof
-/// executes the projected [`Intent`] through the `run` adapter and the production
-/// batch executor. Explicit graph fuel replaces runtime depth suppression.
+/// metering, capability routing, global sequencing, typed findings, and the same
+/// canonical [`intent_from_effect`] projection for every domain. A raw `md.*`
+/// descriptor carrying no canonical action or receipt is
+/// [`HookEvalError::MalformedIntent`] here exactly as it is in production; the
+/// proof executes the projected [`Intent`] through the `run` adapter and the
+/// production batch executor. Explicit graph fuel replaces runtime depth
+/// suppression.
 ///
 /// # Errors
 /// A non-budget predicate fault has the same [`HookEvalError::Eval`] surface as the
@@ -469,12 +433,11 @@ fn project_hook_telemetry(row: RawHookTelemetry) -> Result<HookTestTelemetry, Ho
 /// emitted descriptor passes before it can be called armed.
 ///
 /// It validates the receipt against the landed change's canonical address, the
-/// declared `action` against the emitted kind, and the argument surface against the
-/// closed intent shape. It is public because the pre-arming corpus proof needs the
-/// PRODUCTION seam rather than a proof-only copy (R13 ruling §3): raw `md.*`
-/// descriptors must fault here exactly as they do in production, and the canonical
-/// `Intent` this returns is what the `run` adapter turns into the executor's
-/// `ApplyRequest`.
+/// declared `action` against the emitted kind, and the argument surface against
+/// the closed intent shape. Public because the pre-arming corpus proof needs the
+/// production seam rather than a proof-only copy: raw `md.*` descriptors must
+/// fault here exactly as they do in production, and the canonical `Intent` this
+/// returns is what the `run` adapter turns into the executor's `ApplyRequest`.
 ///
 /// # Errors
 /// [`HookEvalError::MalformedIntent`] — a missing/forged receipt, an `action` that
@@ -559,22 +522,11 @@ fn take_required(
 /// `how:` shape → caps against the slice-1 allowlist → the fenced predicate →
 /// `effects::validate` under the full limits → the capability ceiling.
 ///
-/// # Crate-private ON PURPOSE — the kind seam is ONE enforcement point
-/// A leg loader reachable from outside `policy` is a second way to turn a page
-/// into a rule, and the second way skips the kind seam. That is not hypothetical:
-/// the feeder defect this cutover fixed was exactly a caller reaching a leg loader
-/// directly, so a ruled-shape hook page armed cleanly and could never fire. The
-/// ONLY callers are [`crate::load_rule`] and its corpus twin, which share one
-/// pipeline; `pub(crate)` makes that structural rather than a convention a future
-/// caller can breach.
-///
-/// # The `kind:` assertion is gone, and nothing replaced it
-/// The folder generation asserted `kind: hook` here because the FILENAME claimed
-/// the kind, and a `HOOK.md` whose frontmatter said otherwise was a genuine
-/// contradiction. A page has no filename claim to contradict: the tag
-/// `rules/hook` IS the kind (ruling § 1), and the one place a `kind:` key may
-/// still be checked against it is [`crate::load_rule`]'s kind seam — the single
-/// enforcement point.
+/// Crate-private on purpose: the kind seam has ONE enforcement point,
+/// [`crate::load_rule`] (and its corpus twin) — a leg loader reachable from
+/// outside `policy` would be a second way to turn a page into a rule that skips
+/// it. No `kind:` assertion here: the tag `rules/hook` IS the kind (ruling § 1),
+/// checked only at the kind seam.
 ///
 /// # Errors
 /// [`LoadError::HookMalformed`], [`LoadError::HookCapDeferred`],
@@ -663,15 +615,9 @@ fn load_hook_with_caps(
 }
 
 /// Only the HOOK frontmatter keys the loader reads. Other keys are permitted (a
-/// declaration may carry descriptive frontmatter — the founding pages carry `type:`,
-/// `rule:`, `pack:`, `tags:`) and ignored.
-///
-/// `kind:` is one of the ignored ones, and deliberately so. It was read here while a
-/// `HOOK.md` filename claimed the leg and the key had to agree with it; under tag
-/// registration the tag IS the kind, so the key may restate it, may be absent, and
-/// is checked against the tag at exactly ONE place — [`crate::load_rule`]'s kind
-/// seam. A field here would be a second reader of the same key, which is how two
-/// enforcement points are built.
+/// declaration may carry descriptive frontmatter) and ignored — `kind:` among
+/// them, deliberately: it is checked against the tag at exactly one place,
+/// [`crate::load_rule`]'s kind seam, and a field here would be a second reader.
 #[derive(serde::Deserialize)]
 struct HookFrontmatter {
     severity: Option<String>,
@@ -848,10 +794,8 @@ mod tests {
     use super::*;
     use effects::{ChangeFact, ChangeFactKind, EventFacts};
 
-    /// Design §5.2's `HOOK.md` declaration, verbatim in its frontmatter. Its tiny
-    /// direct-`send` predicate is the C1 loader baseline; C2's positive boundary below
-    /// swaps in the founding `intent()` / `receipt_addr()` body without weakening the
-    /// direct-constructor ceiling controls.
+    /// The founding `HOOK.md` declaration (design §5.2), verbatim in its
+    /// frontmatter; its tiny direct-`send` predicate is the loader baseline.
     const FOUNDING_HOOK: &str = "\
 ---
 kind: hook
@@ -933,13 +877,9 @@ how:
     /// load-bearing on its own. A refusal must name the field it is about.
     #[test]
     fn each_conjunct_is_load_bearing_and_names_its_field() {
-        // Owned strings so each mutation is exactly one edit off the SAME baseline.
-        // `kind:` is NOT among the conjuncts. It was, while the FILENAME claimed the
-        // leg and `HOOK.md` saying `kind: check` was a contradiction. Under tag
-        // registration the tag IS the kind (ruling § 1): absent DERIVES, and a
-        // contradicting key is refused ONCE, at `load_rule`'s kind seam, against the
-        // tag rather than against a filename. Asserting it a second time here would
-        // rebuild the second enforcement point the seam exists to remove.
+        // Owned strings so each mutation is exactly one edit off the same baseline.
+        // `kind:` is not among the conjuncts: it is checked once, at `load_rule`'s
+        // kind seam, and asserting it here would rebuild a second enforcement point.
         let mutations: Vec<(&str, String, &str)> = vec![
             (
                 "severity absent",
@@ -1188,22 +1128,10 @@ def on_change(event):
         );
     }
 
-    /// **The founding DEMO page does not load as written, and this pins why.**
-    ///
-    /// `foundation-panel/round-2/demo/rules/task-review-notify.md` (2026-07-18) is
-    /// slice 1's origin, and design §5.2 is its corrected form. The two frontmatters
-    /// diverge in three ways, so anyone copying the demo page verbatim gets a
-    /// refusal:
-    ///
-    /// | demo page | design §5.2 | consequence |
-    /// |---|---|---|
-    /// | `scope: "tasks/*.md"` | `paths: ["tasks/*.md"]` | refused — no `paths:` |
-    /// | `budget: { steps: 20k, mem: 2mb }` | integers | `20k` is not a number |
-    /// | no `caps:` | `caps: [proto.send]` | refused — the ceiling is undeclared |
-    ///
-    /// The design's form is the one that loads; the demo page is the older sketch.
-    /// Pinned as a test rather than reported once, because the demo page is what a
-    /// reader is pointed at first.
+    /// The founding demo page's frontmatter is an older sketch and does not
+    /// load: `scope:` instead of `paths:`, `20k`/`2mb` budget units instead of
+    /// integers, and no `caps:`. Pinned as a test because the demo page is what
+    /// a reader is pointed at first.
     #[test]
     fn the_founding_demo_pages_frontmatter_does_not_load_as_written() {
         let demo = "\

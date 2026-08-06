@@ -1,30 +1,6 @@
 //! Binding law (U4.3) — refuses one-sided artifact↔page divergence at the
 //! door. Keeps the attested artifact and the live page in lockstep: a write
 //! that would break the binding refuses with a typed, recoverable fault.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use crate::change::ChangeOp;
 
@@ -116,13 +92,9 @@ pub enum DoorLaw {
 ///    (file side).
 /// 4. otherwise → [`DoorLaw::Clear`].
 ///
-/// # Why the page side asks a set rather than a shape
-/// The folder generation could answer "is this an armed law?" from the path alone
-/// — `conventions/<slug>/CHECK.md` was the shape, and the slug was the key. A rule
-/// page has no reserved shape: it is an ordinary page that registers by tag and
-/// lives wherever its author put it. So the question is membership in what the
-/// workspace ATTESTED, which is the artifact's rows, and it is answered by the
-/// caller who already resolved them.
+/// The page side asks membership in what the workspace attested (the artifact's
+/// rows), not a path shape: a rule page has no reserved shape — it registers by
+/// tag and lives wherever its author put it.
 #[must_use]
 pub fn classify_door_law(
     op: ChangeOp,

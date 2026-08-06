@@ -2,31 +2,6 @@
 //! fact surface, and metered predicate evaluation. Pin verify before run.
 //! [`facts_from_document`] builds [`FactDoc`]s from a real AST so no
 //! `syntax`/`model` type crosses the load-gate fence.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::cell::RefCell;
 
@@ -65,14 +40,11 @@ pub(crate) fn parse_manifest(source: &str) -> Result<Manifest, CompileError> {
     })
 }
 
-/// Ruleset-level budget class = max class over used assertions (schema doc L188),
-/// surfaced by `compile` so P6-VERDICTS can detect corpus-class-ness at load
-/// (a corpus-class pack loaded sidecar-mode is later refused `daemon_only` —
-/// NOT defined here). Stand-in: a conservative textual scan of rule-page sources
-/// for the §4 vocabulary's file/corpus assertion names. P6-EVAL replaces this
-/// with precise per-assertion analysis once real rule parsing lands; until then
-/// over-classification (flag Corpus/File when unsure) is the safe direction for
-/// a load gate.
+/// Ruleset-level budget class = max class over used assertions, surfaced by
+/// `compile` so corpus-class-ness is detectable at load (a corpus-class pack
+/// loaded sidecar-mode is later refused `daemon_only`, not defined here). A
+/// conservative textual scan of rule-page sources for the §4 file/corpus
+/// assertion names; over-classification is the safe direction for a load gate.
 pub(crate) fn classify_budget_class(rule_sources: &[String]) -> BudgetClass {
     let mut max = BudgetClass::Node;
     for src in rule_sources {
@@ -168,11 +140,10 @@ pub(crate) fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
 
 // ── Injected world-model facts (rulepack-api@1) ──────────────────────────────
 
-/// One world-model node exposed to a predicate as a Starlark struct. This is the
-/// fact-injection surface: production (load gate AND `evaluate`) builds it from a
-/// real `model::Document` AST via [`facts_from_document`]; the synthetic per-line
-/// `facts_from_markdown` builder survives test-only — the *source* of the facts
-/// changes, this shape does not.
+/// One world-model node exposed to a predicate as a Starlark struct — the
+/// fact-injection surface. Production builds it from a real `model::Document`
+/// AST via [`facts_from_document`]; the synthetic `facts_from_markdown` builder
+/// is test-only.
 pub(crate) struct FactNode {
     /// `"heading"` / `"paragraph"` / … — the world-model node kind.
     pub kind: &'static str,
@@ -191,12 +162,11 @@ pub(crate) struct FactNode {
 /// The document a predicate evaluates over: path + nodes in document order. The
 /// injected `doc` value (see module docs) is this, allocated as a Starlark struct.
 ///
-/// PUBLIC but OPAQUE (fields `pub(crate)`): it is the return type of the load
-/// gate's injected fact builder (`compile`'s `build_facts` closure) and of
-/// [`crate::facts_from_document`], so the composition layer (sidecar) can hand
-/// policy facts through the SAME plane production evaluation uses — WITHOUT the
-/// closure signature naming `syntax::`/`model::` types (the fence holds at the
-/// type level). Consumers pass it; only policy reads it.
+/// Public but opaque (fields `pub(crate)`): the return type of the load gate's
+/// injected fact builder and of [`crate::facts_from_document`], so the
+/// composition layer hands policy facts through the same plane production
+/// evaluation uses without the closure signature naming `syntax::`/`model::`
+/// types. Consumers pass it; only policy reads it.
 pub struct FactDoc {
     pub(crate) path: String,
     pub(crate) nodes: Vec<FactNode>,
@@ -205,12 +175,9 @@ pub struct FactDoc {
 /// Build the injected fact surface synthetically from a fixture's markdown body,
 /// one node per non-blank line (headings carry level + hpath, else paragraph).
 ///
-/// TEST-ONLY: retired from the production admission path at P6-VERDICTS (the
-/// load-gate unification) — its per-line paragraph fabrication demonstrates
-/// fixtures on a fact plane production NEVER reproduces (the real world model is
-/// paragraph-blind), which is exactly the synthetic-pass/real-fail drift the load
-/// gate exists to kill. Kept only as an in-crate test helper for the unit tests
-/// that still exercise the synthetic shape directly.
+/// Test-only: retired from the production admission path — its per-line
+/// paragraph fabrication demonstrates fixtures on a fact plane production never
+/// reproduces (the real world model is paragraph-blind).
 #[cfg(test)]
 pub(crate) fn facts_from_markdown(path: &str, body: &str) -> FactDoc {
     let mut nodes = Vec::new();
@@ -264,28 +231,20 @@ fn heading_level(line: &str) -> Option<u8> {
 }
 
 /// Derive the injected fact surface from a REAL `model::Document` AST — the
-/// production fact plane, feeding the [`FactDoc`] / [`FactNode`] shape from real
-/// nodes so no predicate changes. PUBLIC (like `evaluate`, it names
-/// `model::Document` — no NEW dep edge, `model` is already a `policy` dep): the
-/// composition layer (sidecar) calls it inside the load gate's injected builder
-/// so fixtures demonstrate over the same plane `evaluate` runs (P6-VERDICTS
-/// load-gate unification). The synthetic per-line stand-in (`facts_from_markdown`)
-/// is retired from the production path — test-only now.
+/// production fact plane. Public: the composition layer calls it inside the
+/// load gate's injected builder so fixtures demonstrate over the same plane
+/// `evaluate` runs.
 ///
-/// The world-model tree flattens to `doc.nodes` in document order (a preorder walk
-/// of the already span-sorted tree, §1 total order). The root `Document` node is
-/// NOT emitted — it *is* `doc` (its `path` + `nodes` surface). A model `Section`
-/// injects as a `"heading"` fact carrying the section's real coordinates: its
-/// heading-through-subtree `span`, its content-addressed `node_rev`, and its
-/// `hpath` — so a §11.1 finding a predicate emits off a section fact carries the
-/// section's wire coordinates verbatim (the §11.1 worked verdict: `Goals` → span
-/// `[20,150]`, `node_rev 5a8faa717fbcdb04`).
+/// The world-model tree flattens to `doc.nodes` in document order (preorder
+/// walk, §1 total order). The root `Document` node is not emitted — it *is*
+/// `doc`. A model `Section` injects as a `"heading"` fact carrying the
+/// section's real coordinates (heading-through-subtree `span`,
+/// content-addressed `node_rev`, `hpath`), so a §11.1 finding carries the wire
+/// coordinates verbatim.
 ///
 /// The model is paragraph-blind (no `Paragraph` node is minted from the dialect
 /// stream today), so a section that opens directly onto a subsection has no
-/// intervening content fact — exactly what makes `blurb-required` fire on `Goals`
-/// (its first following node is the deeper `Q3` heading) but not on `Q3` (its next
-/// heading `Q4` is a same-level sibling).
+/// intervening content fact.
 #[must_use]
 pub fn facts_from_document(doc: &Document) -> FactDoc {
     let path = match &doc.root.kind {
@@ -441,12 +400,11 @@ pub(crate) const FACT_VOCAB_VERSION: u32 = 1;
 /// vocabulary and is refused loud with [`CompileError::UnsupportedVocab`] — at COMPILE
 /// time, before any fixture runs, never at eval time.
 ///
-/// Node/doc FIELD access (`node.kind`, `doc.nodes`) is attribute access, not a name,
-/// so it is out of this check's scope by construction — the vocabulary boundary this
-/// enforces is the set of *global names* a predicate may reach for, which is exactly
-/// where the §11.2 line lives (the injected fact surface vs. everything else). The
-/// check leans on starlark's own name resolution (`AstModuleLint`), so it tracks the
-/// real binding rules (params, comprehensions, locals) rather than a hand-rolled scan.
+/// Node/doc FIELD access (`node.kind`, `doc.nodes`) is attribute access, not a
+/// name, so it is out of this check's scope by construction — the boundary is
+/// the set of *global names* a predicate may reach for. The check leans on
+/// starlark's own name resolution (`AstModuleLint`), so it tracks the real
+/// binding rules rather than a hand-rolled scan.
 pub(crate) fn check_when_vocab(predicates: &[Predicate]) -> Result<(), CompileError> {
     use starlark::analysis::AstModuleLint;
     use std::collections::HashSet;
@@ -484,9 +442,9 @@ pub(crate) fn check_when_vocab(predicates: &[Predicate]) -> Result<(), CompileEr
 // ── The sealed evaluation bridge ─────────────────────────────────────────────
 
 /// Raised when a fixture evaluation exceeds the pack's per-eval `{steps, mem}`
-/// budget. At the load gate this is a fixture failure (pack refused); once
-/// P6-EVAL wires real evaluation, the same exhaustion surfaces on the wire as
-/// the `budget_exceeded` FINDING (never an error frame, §8).
+/// budget. At the load gate this is a fixture failure (pack refused); on the
+/// wire the same exhaustion surfaces as the `budget_exceeded` FINDING (never an
+/// error frame, §8).
 #[derive(Debug)]
 pub(crate) struct BudgetExhausted {
     pub steps: u64,
@@ -503,8 +461,8 @@ pub(crate) enum EvalError {
 }
 
 /// The evaluation core: run every predicate over one injected [`FactDoc`], metered
-/// cumulatively under `budget`. Separated from fixture parsing so P6-EVAL can call
-/// it with facts built from real ASTs, and so tests can inject facts directly.
+/// cumulatively under `budget`. Separated from fixture parsing so the wire path
+/// can call it with facts built from real ASTs, and tests can inject facts.
 pub(crate) fn eval_over_facts(
     predicates: &[Predicate],
     facts: &FactDoc,
@@ -632,27 +590,20 @@ fn heap_bytes(heap: Heap<'_>) -> u64 {
 /// Evaluate one predicate over the injected facts, metered.
 ///
 /// starlark-rust enforces its `set_max_*` limits only at coarse (~1000-event)
-/// boundaries — checked on loop backedges and call boundaries — so those are
-/// best-effort *runaway* guards (they stop an infinite loop, and bound a growing
-/// allocation to roughly one over-budget chunk), NOT a hard wall-time/RSS bound:
-/// a single non-looping allocating expression (`"x" * n`, `list(range(n))`) runs
-/// to completion before any guard fires. starlark's own docs say as much and
-/// point at OS-level subprocess limits for a true bound (a P6-EVAL / daemon
-/// concern, not this load gate's). This unit makes exhaustion *loud and safe*:
+/// boundaries — best-effort runaway guards, not a hard wall-time/RSS bound: a
+/// single non-looping allocating expression (`"x" * n`) runs to completion
+/// before any guard fires. Exhaustion is therefore made loud and safe:
 ///
-/// - The load gate's real verdict bound is the EXACT post-eval accounting —
-///   `get_total_tick_count()` for steps, PEAK heap-arena bytes for mem — compared
-///   to the declared budget by the caller. Over-budget ⇒ the pack is refused; the
-///   direction is conservative (it never falsely admits an over-budget pack).
+/// - The real verdict bound is the EXACT post-eval accounting
+///   (`get_total_tick_count()` for steps, PEAK heap-arena bytes for mem)
+///   against the declared budget — conservative, never falsely admitting an
+///   over-budget pack.
 /// - Mem counts the whole eval arena's high-water mark (injected facts + engine
-///   working set + the arena's minimum chunk), not just the predicate's own bytes
-///   — so set realistic budgets (the shipped fixtures use 4 MiB; a sub-chunk budget
-///   refuses even a no-op). The arena grows in chunks, so a before/after delta
-///   rounds to zero; the peak is the honest coarse meter (and matches the guard).
-/// - A pathological overrun (a multi-GiB allocation) trips a `len overflow` assert
-///   INSIDE the engine; [`std::panic::catch_unwind`] converts that panic into a
-///   clean [`EvalError::Runtime`] (⇒ `FixtureFailed`) so it can never escape
-///   `compile()` and crash the loader.
+///   working set + the arena's minimum chunk), so set realistic budgets — a
+///   sub-chunk budget refuses even a no-op.
+/// - A pathological overrun trips a `len overflow` assert inside the engine;
+///   [`std::panic::catch_unwind`] converts that panic into a clean
+///   [`EvalError::Runtime`] (⇒ `FixtureFailed`) so it never crashes the loader.
 fn run_predicate(
     globals: &Globals,
     predicate: &Predicate,

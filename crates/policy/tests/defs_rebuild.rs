@@ -1,11 +1,4 @@
 //! Def rebuild unit gates — rev neutralization and plan-edit application.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use policy::defs::{PlanEdit, Seg, rebuild, rev8};
 
@@ -468,23 +461,19 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
 }
 
 // ---------------------------------------------------------------------------
-// g2d — the address the READ face publishes must be WRITABLE here
+// the address the READ face publishes must be WRITABLE here
 // ---------------------------------------------------------------------------
 
 /// The dogfood shape that shipped broken: an H1 whose text carries an em-dash,
 /// a comma and — decisively — SPACES, with a child addressed beneath it.
 const G2D: &str = "---\ntype: note\n---\n\n# Dogfood — the socket MCP surface, exercised by a working agent\n\nintro\n\n## Results\n\nresult body\n\n## The `view_path` finding\n\nfinding body\n";
 
-/// **The requirement, as a round trip.** `read` publishes the containment chain
-/// as segments; those exact segments, handed back verbatim, must address the
-/// section. This is the case that refused in production with `E_NO_MATCH`.
-///
-/// Why it failed, and why one segment did not: the chain was keyed through
-/// `sanitize_heading`, which maps ASCII space AND `/` both to `-`, so the parent
-/// segment's only key was `Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent`.
-/// A single-segment address survived on the bare-title arm, which never
-/// sanitizes — which is exactly why the em-dash looked innocent and the
-/// SPACES were the culprit.
+/// The requirement, as a round trip: `read` publishes the containment chain as
+/// segments; those exact segments, handed back verbatim, must address the
+/// section. The chain was previously keyed through `sanitize_heading` (spaces
+/// and `/` both map to `-`), so this exact case refused in production with
+/// `E_NO_MATCH` — while a single-segment address survived on the never-sanitized
+/// bare-title arm.
 #[test]
 fn published_multisegment_address_is_writable() {
     let parent = "Dogfood — the socket MCP surface, exercised by a working agent";
@@ -577,7 +566,7 @@ fn the_sanitized_spelling_is_not_an_address() {
 }
 
 // ---------------------------------------------------------------------------
-// g2d — the occurrence `n` survives the policy boundary (card requirement 2)
+// the occurrence `n` survives the policy boundary
 // ---------------------------------------------------------------------------
 
 /// Two same-raw-text siblings under one parent, plus a same-titled section
@@ -587,9 +576,8 @@ const DUP: &str = "---\ntype: note\n---\n\n# Log\n\n## Entry\n\nfirst entry\n\n#
 
 /// The address the read face publishes over duplicate headings — occurrence on
 /// the ambiguous segment — must resolve HERE to the same section the committer
-/// picks. This is the boundary that dropped `n` (PlanEdit.target was
-/// Vec<String>), which made the pre-flight refuse E_AMBIGUOUS an address the
-/// splice below resolves — the g2d two-answers bug in its occurrence form.
+/// picks. This boundary previously dropped `n` (`PlanEdit.target` was
+/// `Vec<String>`), making the pre-flight refuse an address the splice resolves.
 #[test]
 fn published_occurrence_address_resolves_through_the_policy_boundary() {
     // n:2 lands in the SECOND same-parent occurrence, not the first, and not

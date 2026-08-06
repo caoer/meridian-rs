@@ -1,27 +1,6 @@
 //! Conformance candidate rebuild — Go `body.ApplyForConformance` parity.
 //! Rebuilds the candidate body under def rules so the verdict compares
 //! normalized forms. Rev neutralization and string fidelity are load-bearing.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use super::BodyError;
 use super::go_fmt::go_quote;
@@ -38,13 +17,12 @@ pub struct Seg {
 }
 
 /// Render segments for a HUMAN to read — refusal strings and context values
-/// only, NEVER an address anything resolves against. C-08 rules the address
-/// itself is the array; this join exists for the same reason the read face's
-/// does, and for no other: "it existed only to make the read path pretty."
+/// only, never an address anything resolves against (C-08: the address is the
+/// array).
 ///
-/// It is the ESCAPING encoding (`/` inside a segment writes `\/`, a literal
-/// `\` doubles), so it stays injective and a refusal names exactly one address.
-/// An occurrence rides as `#n` on the segment carrying one (the same render
+/// The escaping encoding (`/` inside a segment writes `\/`, a literal `\`
+/// doubles) stays injective, so a refusal names exactly one address. An
+/// occurrence rides as `#n` on the segment carrying one (the same render
 /// `wire-serve::display_hpath` uses).
 fn hpath_display(segs: &[Seg]) -> String {
     segs.iter()
@@ -67,8 +45,8 @@ pub struct PlanEdit {
     pub op: String,
     /// The address as SEGMENTS (C-08): a heading path one segment per heading,
     /// or a single segment carrying a `^id` / `#^id` block, a new section name,
-    /// or a frontmatter key. Never a joined string — see [`PlanEdit`]'s wire
-    /// twin `wire::CheckWriteEdit::at` for why the join was the bug.
+    /// or a frontmatter key. Never a joined string (see the wire twin
+    /// `wire::CheckWriteEdit::at`).
     pub target: Vec<Seg>,
     pub find: String,
     pub body: String,
@@ -611,11 +589,10 @@ fn plan_create_section(view: &DocView<'_>, e: &PlanEdit) -> Result<Vec<SpliceOp>
         b.push(b'\n');
     }
     b.extend_from_slice(b"# ");
-    // PRESERVED BYTE-EXACTLY, and known wrong (Leader ruling, own card): the
-    // committer creates the LAST segment under the parent the earlier segments
-    // name, so a candidate heading spelled `Notes/Fresh` is a section that will
-    // never exist. Left alone here because it is a policy-evaluation defect, not
-    // an addressing one, and it predates this change.
+    // Preserved byte-exactly, and known wrong: the committer creates the LAST
+    // segment under the parent the earlier segments name, so a candidate heading
+    // spelled `Notes/Fresh` is a section that will never exist. A pre-existing
+    // policy-evaluation defect, deliberately left alone.
     b.extend_from_slice(hpath_display(&e.target).as_bytes());
     b.push(b'\n');
     b.extend_from_slice(&ensure_trailing_nl(&e.body));

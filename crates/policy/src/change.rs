@@ -2,24 +2,6 @@
 //! [`Change`] is what `check_change(change)` reads; derived from before/after
 //! states. Closed 14-key fact vocabulary; purity guard classifies sources.
 //! Shared by `mrd test` (U1.2) and the door `gate()` (U4.2).
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,10 +9,9 @@ use model::{Document, Edit, EditKind, NodeKind, PutAt, Ref, YamlMap, resolve};
 
 use crate::BudgetClass;
 
-/// The rule-language / injected-fact-API pin this surface implements. Kept as a
-/// stable external wire-contract identifier (plan decision #18): the `@1`→`@2`
-/// bump is the sanctioned load-gate door — a change to the injected fact surface
-/// is a pin bump, gated at load, never a silent widening.
+/// The rule-language / injected-fact-API pin this surface implements. A stable
+/// external wire-contract identifier: a change to the injected fact surface is a
+/// pin bump, gated at load, never a silent widening.
 pub const RULEPACK_API_V2: &str = "rulepack-api@2";
 
 /// The write operation a change describes (wire §4). Pure classification — the
@@ -97,8 +78,7 @@ pub struct DocFacts {
 /// One declared edge as data BEFORE resolution: the ref, the rev it is pinned at,
 /// and the (engine-ignored) claim. The caller declares these from the after
 /// document's `meridian-lock` block; [`derive_change`] resolves each to an
-/// [`Edge`]. (R1.3 corrected the source named here — the legacy `^inputs` lock
-/// was this slot's origin when the type was written; the type is unchanged.)
+/// [`Edge`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeDecl {
     /// The declared ref (`selector`), exactly as the lock spells it.
@@ -462,11 +442,9 @@ pub const CHANGE_FACT_VOCAB: [(&str, BudgetClass); 14] = [
     ("target_facts", BudgetClass::Corpus),
 ];
 
-/// A class-tier default per-eval p99 (µs) for [`crate::vocab`]. These are
-/// monotonic class DEFAULTS (a one-hop fact costs more than a change-local one),
-/// NOT per-key measured SLAs — per-key bench calibration against the frozen
-/// corpus is U1.5's (`test --corpus` fuel budgets). Kept small and declared so
-/// the surface has a cost shape without inventing a measurement.
+/// A class-tier default per-eval p99 (µs) for [`crate::vocab`]: monotonic class
+/// defaults (a one-hop fact costs more than a change-local one), not per-key
+/// measured SLAs.
 #[must_use]
 pub(crate) fn class_default_p99(class: BudgetClass) -> u32 {
     match class {

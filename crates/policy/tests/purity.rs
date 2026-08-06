@@ -1,16 +1,5 @@
 //! Door-fact purity: the closed 14-key change surface admits no git, clock,
 //! random, or I/O sources. [`assert_vocab_pure`] is the executable law.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use policy::{CHANGE_FACT_VOCAB, assert_vocab_pure, impure_source, vocab, vocab_keys};
 

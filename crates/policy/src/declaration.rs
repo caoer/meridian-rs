@@ -2,23 +2,6 @@
 //! LEG, never a file (a page has no filename to name). A loaded [`Rule`] runs
 //! its check leg over a [`Change`] and returns [`Refusal`]s that cite their
 //! passing case.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use crate::check_eval::{self, CheckError, CheckLimits};
 

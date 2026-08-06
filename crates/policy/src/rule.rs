@@ -3,37 +3,6 @@
 //! evaluability, parsing the legs registration tags declare through the same
 //! parsers the convention folder loader uses. Takes the [`Registration`]
 //! rather than re-deriving one, and verifies bytes against the registered rev.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use crate::check_eval::CheckLimits;
 use crate::declaration::{CheckOutcome, LoadError};
@@ -183,11 +152,9 @@ pub enum RuleLoadError {
     },
     /// The page declares a leg whose entry point its block never defines.
     ///
-    /// The folder loader could not meet this case: two legs meant two files, so a
-    /// `CHECK.md` holding only `def on_change` was a file whose own name refuted it.
-    /// One page carrying both tags shares ONE fenced block between both legs, so the
-    /// entry point is the only thing that still distinguishes them — and a law that
-    /// silently cannot fire is exactly what fail-closed exists to prevent.
+    /// One page carrying both tags shares ONE fenced block between both legs,
+    /// so the entry point is the only thing distinguishing them — and a law
+    /// that silently cannot fire is exactly what fail-closed exists to prevent.
     EntryMissing {
         /// The offending page.
         page: String,
@@ -367,12 +334,10 @@ fn load_rule_with_hook_loader(
         });
     }
 
-    // The kind seam (ruled 2026-08-01). `kind:` may restate the tag or be absent —
-    // absent DERIVES from the tag, which is why nothing below reads it again. It may
-    // not contradict, and this is the one place that is enforced: a page that armed
-    // as one leg while calling itself another would otherwise fault on every write.
-    // Checked before the legs, because a page that cannot say what it is has no
-    // declaration worth parsing.
+    // The kind seam: `kind:` may restate the tag or be absent — absent derives
+    // from the tag, which is why nothing below reads it again. It may not
+    // contradict, and this is the one place that is enforced. Checked before the
+    // legs: a page that cannot say what it is has no declaration worth parsing.
     if let Some(declared) = declared_kind(bytes)
         && !registration
             .kinds()
@@ -712,12 +677,10 @@ def check_change(change):
         )
     }
 
-    /// **A defect the folder loader could not have.** Two tags on one page share
-    /// ONE fenced block, so a page can claim the law leg while defining only the
-    /// reaction's entry point. Under `CHECK.md` + `HOOK.md` the filenames kept the
-    /// two apart; under tags only the entry point does, and the law's silence would
-    /// otherwise surface as a runtime `MissingEntry` on the first real change —
-    /// after the page had been registered, resolved, and possibly armed.
+    /// Two tags on one page share ONE fenced block, so a page can claim the law
+    /// leg while defining only the reaction's entry point. The law's silence
+    /// would otherwise surface as a runtime `MissingEntry` on the first real
+    /// change — after the page had been registered, resolved, and possibly armed.
     #[test]
     fn a_declared_leg_without_its_entry_point_is_refused_at_load() {
         let both = HOOK_PAGE.replace("rules/hook]", "rules/hook, rules/check]");
@@ -769,11 +732,10 @@ def check_change(change):
         assert!(err.to_string().contains("rules/check"), "{err}");
     }
 
-    // ── the kind seam (ruled 2026-08-01) ──────────────────────────────────────
+    // ── the kind seam ─────────────────────────────────────────────────────────
 
-    /// Arm 1: a `kind:` that RESTATES the tag is legal — the corpus is full of
-    /// pages carrying it, and a migration that refused them would make the tag law
-    /// a rewrite order rather than a registration change.
+    /// A `kind:` that RESTATES the tag is legal — the corpus is full of pages
+    /// carrying it.
     #[test]
     fn a_kind_that_agrees_with_the_tag_loads() {
         let with_kind = HOOK_PAGE.replace("severity: info", "kind: hook\nseverity: info");
@@ -782,8 +744,7 @@ def check_change(change):
         assert!(rule.hook().is_some());
     }
 
-    /// Arm 2: an ABSENT `kind:` derives from the tag — the preferred form, and the
-    /// only one that keeps one name for one thing.
+    /// An ABSENT `kind:` derives from the tag — the preferred form.
     #[test]
     fn an_absent_kind_derives_from_the_tag() {
         assert!(
@@ -799,9 +760,8 @@ def check_change(change):
         assert!(rule.hook().is_some(), "and the derived leg is what loaded");
     }
 
-    /// Arm 3: a CONTRADICTING `kind:` fails load loudly. Without this the page arms
-    /// as a hook, calls itself a check, and the disagreement surfaces on the first
-    /// write instead of at load.
+    /// A CONTRADICTING `kind:` fails load loudly — otherwise the disagreement
+    /// surfaces on the first write instead of at load.
     #[test]
     fn a_kind_that_contradicts_the_tag_fails_load_loudly() {
         for declared in ["check", "schedule", "hook-ish"] {
@@ -893,13 +853,10 @@ def check_change(change):
         assert!(rendered.contains("caps:"), "{rendered}");
     }
 
-    /// The founding demo's frontmatter, verbatim from
-    /// `18-02-meridian-rs/…/demo/rules/task-review-notify.md` AFTER the registration
-    /// migration — the tag and the id are added, the founding declaration is not
-    /// rewritten. Registration and loadability are different questions, and this
-    /// page is the case that proves it: it registers by tag, and it still does not
-    /// load, for the three incompatibilities `25e6d3ac` pinned (`scope:` not
-    /// `paths:`, string budgets, no `caps:`).
+    /// The founding demo's frontmatter after the registration migration — tag
+    /// and id added, declaration not rewritten. Registration and loadability are
+    /// different questions: it registers by tag and still does not load
+    /// (`scope:` not `paths:`, string budgets, no `caps:`).
     const FOUNDING_DEMO: &str = r#"---
 type: rule
 rule: task-review-notify

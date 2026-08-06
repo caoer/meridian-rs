@@ -6,11 +6,9 @@ use std::collections::HashMap;
 
 use policy::{BudgetClass, CompileError, CompiledRuleset, PackFiles, RulesetPin};
 
-/// The real parse→facts builder the composition layer (sidecar) injects into the
-/// load gate — fixtures demonstrate over the SAME fact plane production `evaluate`
-/// runs (P6-VERDICTS load-gate unification), NOT the retired synthetic per-line
-/// stand-in. Every `compile` call below routes through the thin wrapper so the
-/// gates read unchanged while running on real facts.
+/// The real parse→facts builder the composition layer injects into the load
+/// gate — fixtures demonstrate over the same fact plane production `evaluate`
+/// runs.
 fn real_facts(path: &str, body: &str) -> policy::FactDoc {
     let mut doc = model::build(body.to_string(), syntax::parse(body));
     if let model::NodeKind::Document { path: p, .. } = &mut doc.root.kind {
@@ -19,9 +17,7 @@ fn real_facts(path: &str, body: &str) -> policy::FactDoc {
     policy::facts_from_document(&doc)
 }
 
-/// `policy::compile` with `real_facts` injected — the signature adaptation the
-/// unification forces on every call site (behaviour unchanged; the fact plane is
-/// now the production one).
+/// `policy::compile` with `real_facts` injected.
 fn compile(
     pin: &RulesetPin,
     source: &str,
@@ -97,13 +93,8 @@ def check(doc):
             )
 ```
 "#;
-// PASS demonstrated over the REAL fact plane (P6-VERDICTS load-gate unification):
-// the world model is paragraph-blind (and list-blind — `DialectKind` mints no
-// bare prose or list node), so the heading's blurb must be a real dialect node. A
-// wikilink is: `Goals` is followed by a `wikilink` (non-heading) node, so
-// `has_blurb` holds and the rule is satisfied. (The retired synthetic per-line
-// builder faked a paragraph node here; that drift is exactly what this unit kills
-// — see the fail-first artifact.)
+// PASS demonstrated over the real fact plane: the world model is paragraph- and
+// list-blind, so the heading's blurb must be a real dialect node — a wikilink is.
 const FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n";
 // FAIL under real facts: a heading immediately followed by another heading (no
 // intervening node) demonstrates the violation.
@@ -140,14 +131,11 @@ fn load_gate_refuses_pack_with_failing_fixture() {
     }
 }
 
-/// STANDING TRIPWIRE (P6-VERDICTS load-gate unification, fail-first pin): the
-/// synthetic-only blurb-pass fixture — `# Goals` + a bare prose line, which the
-/// RETIRED per-line builder faked as a paragraph node so the fixture "passed" — is
-/// REFUSED by the real load gate. The real world model is paragraph-blind: no
-/// paragraph node exists, so `Goals` opens directly onto EOF and `blurb-required`
-/// fires (demonstrated:fail ≠ declared:pass). This IS the synthetic-pass/real-fail
-/// drift the unification kills; a frozen worked value can never show paragraph-grain
-/// facts. If this ever passes, the synthetic plane leaked back into admission — STOP.
+/// Standing tripwire: the synthetic-only blurb-pass fixture (`# Goals` + a bare
+/// prose line, which the retired per-line builder faked as a paragraph node) is
+/// REFUSED by the real load gate — the real world model is paragraph-blind, so
+/// `Goals` opens onto EOF and `blurb-required` fires. If this ever passes, the
+/// synthetic plane leaked back into admission.
 #[test]
 fn synthetic_only_pass_fixture_is_refused_by_real_load_gate() {
     let files = MemFiles::new(&[
@@ -296,8 +284,8 @@ fn unreadable_rule_is_malformed() {
 }
 
 // ── P6-STARLARK pack-verbatim gates (impl-taskpack §9 gates 1 & 3) ───────────
-// Gate 2 (`grep -rn 'starlark' crates/wire` = 0) is a
-// wire-invariance grep gate, evidenced in the task card — not a Rust test.
+// Gate 2 (`grep -rn 'starlark' crates/wire` = 0) is a wire-invariance grep gate,
+// not a Rust test.
 
 /// Gate 1 — a real fenced Starlark block from a rule page, evaluated over the
 /// injected `doc` facts, produces the expected verdict. The conforming pack's

@@ -1,12 +1,4 @@
 //! Ruleset evaluate gates — compile pin, fixture run, severity surfaces.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::HashMap;
 use std::fs;
@@ -16,9 +8,7 @@ use model::NodeKind;
 use policy::{CompileError, CompiledRuleset, PackFiles, RulesetPin, Severity, evaluate};
 
 /// `policy::compile` with the real parse→facts builder injected — the load gate
-/// demonstrates its fixtures over the SAME plane `evaluate` runs (P6-VERDICTS
-/// unification). `build_doc` is the real AST path the sidecar composes; the
-/// retired synthetic per-line builder is gone from production admission.
+/// demonstrates its fixtures over the same plane `evaluate` runs.
 fn compile(
     pin: &RulesetPin,
     source: &str,
@@ -63,8 +53,8 @@ fn pin() -> RulesetPin {
     }
 }
 
-/// The frozen wsfix fixture on disk (M2-BUILD oracle bytes; `testsuite/data/wsfix`).
-/// Read from the real file — never a hand-copied string (task binding constraint).
+/// The frozen wsfix fixture on disk (`testsuite/data/wsfix`). Read from the
+/// real file — never a hand-copied string.
 fn wsfix(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../testsuite/data/wsfix")
@@ -125,14 +115,11 @@ fixtures: [fixtures/blurb-pass.md, fixtures/blurb-fail.md]
 rules: [rules/blurb-required.md]
 ";
 
-// Load-gate fixtures demonstrated over the REAL fact plane (P6-VERDICTS
-// unification): the world model is paragraph-blind (and list-blind), so the
-// "blurb" between a heading and its deeper subsection must be a real dialect node
-// — a wikilink is. PASS: `Goals` is followed by a `wikilink` before `Sub`, so no
-// heading opens directly onto a deeper heading (rule satisfied). FAIL: `Goals`
-// opens directly onto the deeper `Sub` with no intervening node (the violation).
-// The retired synthetic per-line builder faked a paragraph node for the pass case
-// — see fail-first artifact.
+// Load-gate fixtures demonstrated over the real fact plane: the world model is
+// paragraph- and list-blind, so the "blurb" between a heading and its deeper
+// subsection must be a real dialect node — a wikilink is. PASS: `Goals` is
+// followed by a `wikilink` before `Sub`. FAIL: `Goals` opens directly onto the
+// deeper `Sub` with no intervening node.
 const BLURB_FX_PASS: &str = "---\nexpect: pass\n---\n# Goals\n\n[[intro]]\n\n## Sub\n\n[[more]]\n";
 const BLURB_FX_FAIL: &str = "---\nexpect: fail\n---\n# Goals\n## Sub\nmore\n";
 
@@ -163,7 +150,7 @@ fn p6_eval_gate1_worked_verdict_over_wsfix_s2() {
         "exactly the `Goals` section fires: {verdicts:?}"
     );
     let v = &verdicts[0];
-    // The frozen §11.1 verdict (wire-contract.md L617–619), field for field.
+    // The frozen §11.1 worked verdict, field for field.
     assert_eq!(v.rule, "blurb-required");
     assert_eq!(v.severity, Severity::Warn);
     assert_eq!(v.path, "notes/plan.md");

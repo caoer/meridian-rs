@@ -1,24 +1,6 @@
 //! Frontmatter typed values with Go yaml.v3 OUTCOME parity — closed value
 //! set the def checker accepts. Structure this subset carefully: continuation
 //! of an unconsumed value is a structural fault, not a soft parse.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 

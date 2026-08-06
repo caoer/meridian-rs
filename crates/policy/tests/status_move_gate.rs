@@ -1,13 +1,5 @@
 //! Status-move CHECK gate: legal transitions name themselves; illegal ones
 //! refuse with a message that cites the allowed move.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
 
 use std::collections::BTreeMap;
 
