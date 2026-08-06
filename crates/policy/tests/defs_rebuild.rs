@@ -24,7 +24,9 @@ fn run(prev_raw: &str, edits: &[PlanEdit]) -> Result<model::Document, policy::de
 fn edit(op: &str, target: &str) -> PlanEdit {
     PlanEdit {
         op: op.to_string(),
-        target: target.to_string(),
+        // C-08: the address is an ARRAY. The helper keeps taking the human
+        // spelling so the cases read as before, and splits it at the one door.
+        target: target.split('/').map(str::to_string).collect(),
         ..PlanEdit::default()
     }
 }
@@ -444,5 +446,118 @@ fn rebuild_candidate_bytes_match_go_plan_semantics() {
         ),
         "E_AMBIGUOUS: \"Notes\" is ambiguous: 2 sections share this heading — qualify with the full heading path or an ordinal; candidates: 1 (line 6), 2 (line 10)",
         "ambiguous-heading",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// g2d — the address the READ face publishes must be WRITABLE here
+// ---------------------------------------------------------------------------
+
+/// The dogfood shape that shipped broken: an H1 whose text carries an em-dash,
+/// a comma and — decisively — SPACES, with a child addressed beneath it.
+const G2D: &str = "---\ntype: note\n---\n\n# Dogfood — the socket MCP surface, exercised by a working agent\n\nintro\n\n## Results\n\nresult body\n\n## The `view_path` finding\n\nfinding body\n";
+
+/// **The requirement, as a round trip.** `read` publishes the containment chain
+/// as segments; those exact segments, handed back verbatim, must address the
+/// section. This is the case that refused in production with `E_NO_MATCH`.
+///
+/// Why it failed, and why one segment did not: the chain was keyed through
+/// `sanitize_heading`, which maps ASCII space AND `/` both to `-`, so the parent
+/// segment's only key was `Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent`.
+/// A single-segment address survived on the bare-title arm, which never
+/// sanitizes — which is exactly why the em-dash looked innocent and the
+/// SPACES were the culprit.
+#[test]
+fn published_multisegment_address_is_writable() {
+    let parent = "Dogfood — the socket MCP surface, exercised by a working agent";
+
+    for leaf in ["Results", "The `view_path` finding"] {
+        let got = run(
+            G2D,
+            &[PlanEdit {
+                op: "append".to_string(),
+                target: vec![parent.to_string(), leaf.to_string()],
+                body: "appended".to_string(),
+                ..PlanEdit::default()
+            }],
+        )
+        .unwrap_or_else(|e| panic!("two-segment address must resolve for {leaf:?}: {}", e.render()));
+        assert!(
+            got.raw.contains("appended"),
+            "the append must land for {leaf:?}"
+        );
+    }
+
+    // The single-segment case that always worked keeps working.
+    let got = run(
+        G2D,
+        &[PlanEdit {
+            op: "append".to_string(),
+            target: vec![parent.to_string()],
+            body: "one-seg".to_string(),
+            ..PlanEdit::default()
+        }],
+    )
+    .expect("single-segment H1 address still resolves");
+    assert!(got.raw.contains("one-seg"));
+}
+
+/// A segment containing the JOINER is the case escaping exists for, and the one
+/// a later reader will try to "simplify" back into a split. `["Notes","Slash/Title Here"]`
+/// addresses the real child; `["Notes","Slash","Title Here"]` names a third level
+/// that does not exist and must FALL CLOSED rather than collapse onto it.
+#[test]
+fn a_segment_may_contain_the_joiner_and_stays_distinct() {
+    let got = run(
+        DOC,
+        &[PlanEdit {
+            op: "append".to_string(),
+            target: vec!["Notes".to_string(), "Slash/Title Here".to_string()],
+            body: "landed".to_string(),
+            ..PlanEdit::default()
+        }],
+    )
+    .expect("a segment carrying '/' is addressable as ONE segment");
+    assert!(got.raw.contains("landed"));
+
+    assert_err(
+        run(
+            DOC,
+            &[PlanEdit {
+                op: "append".to_string(),
+                target: vec![
+                    "Notes".to_string(),
+                    "Slash".to_string(),
+                    "Title Here".to_string(),
+                ],
+                body: "must not land".to_string(),
+                ..PlanEdit::default()
+            }],
+        ),
+        "E_NO_MATCH: no section addressed by \"Notes/Slash/Title Here\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "split-of-a-slash-bearing-segment-falls-closed",
+    );
+}
+
+/// The retired law, pinned as a NEGATIVE so it cannot creep back: the sanitized
+/// spelling is no longer an address. `sanitize_heading` is many-to-one (C-11),
+/// so accepting it is what let `A/B`, `A B` and `A-B` collide.
+#[test]
+fn the_sanitized_spelling_is_not_an_address() {
+    assert_err(
+        run(
+            G2D,
+            &[PlanEdit {
+                op: "append".to_string(),
+                target: vec![
+                    "Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent".to_string(),
+                    "Results".to_string(),
+                ],
+                body: "must not land".to_string(),
+                ..PlanEdit::default()
+            }],
+        ),
+        "E_NO_MATCH: no section addressed by \"Dogfood-—-the-socket-MCP-surface,-exercised-by-a-working-agent/Results\" — address the section by its `hpath` segments, exactly as `md toc` publishes them — one array entry per heading, raw text, no joining",
+        "sanitized-spelling-refused",
     );
 }

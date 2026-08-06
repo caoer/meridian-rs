@@ -222,7 +222,7 @@ fn decode_check_write(obj: &Map<String, Value>) -> Result<Op, Box<ErrorBody>> {
         check_fields(e, op, &["op", "at", "find", "body", "rev", "all"])?;
         edits.push(wire::CheckWriteEdit {
             op: req_str(e, op, "op")?,
-            at: req_str(e, op, "at")?,
+            at: req_segs(e, op, "at")?,
             find: opt_str(e, op, "find")?.unwrap_or_default(),
             body: opt_str(e, op, "body")?.unwrap_or_default(),
             rev: opt_str(e, op, "rev")?.unwrap_or_default(),

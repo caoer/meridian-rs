@@ -207,7 +207,10 @@ fn a_decorated_link_round_trips_to_disk_with_no_fp_token() {
     // Plan: strip needle and payload.
     let mut plan = pin_free_args("plan.md");
     plan.plan_edits = vec![wire::PlanEdit::Match {
-        hpath: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
+        hpath: vec![wire::HpathSeg {
+            h: "Plan".into(),
+            n: None,
+        }],
         old: decorated.clone(),
         new: format!("{decorated} — reviewed."),
         all: true,
@@ -323,7 +326,7 @@ fn the_pre_flight_and_the_write_see_the_same_stripped_bytes() {
         "2026-07-25T00:00:00Z",
         &[wire::CheckWriteEdit {
             op: "replace".into(),
-            at: "Plan".into(),
+            at: vec![wire::HpathSeg { h: "Plan".into(), n: None }],
             find: decorated.into(),
             body: format!("{decorated} — reviewed."),
             rev: String::new(),

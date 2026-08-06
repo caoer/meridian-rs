@@ -61,14 +61,20 @@ pub fn verdict(
 /// `split_fp` (one peel, the address owner's rule) is used rather than the
 /// document strip, so a laundered address refuses in BOTH entry points instead of
 /// resolving in one.
-fn strip_fp_address(at: &str) -> String {
-    for prefix in ["#^", "^"] {
-        if let Some(id) = at.strip_prefix(prefix) {
-            let (base, _fp) = syntax::split_fp(id);
-            return format!("{prefix}{base}");
+fn strip_fp_address(at: &[wire::HpathSeg]) -> Vec<String> {
+    // Only the BLOCK-REF forms carry a claim-link slot, and a block ref is a
+    // lone segment — a heading segment rides verbatim, `n` included in the text
+    // it is compared against nowhere (the rebuild plane resolves on raw text and
+    // refuses duplicates loudly rather than picking an occurrence).
+    if let [only] = at {
+        for prefix in ["#^", "^"] {
+            if let Some(id) = only.h.strip_prefix(prefix) {
+                let (base, _fp) = syntax::split_fp(id);
+                return vec![format!("{prefix}{base}")];
+            }
         }
     }
-    at.to_string()
+    at.iter().map(|s| s.h.clone()).collect()
 }
 
 /// **The CANDIDATE this op judges** — the plan lowered over `prev`, carrying the
