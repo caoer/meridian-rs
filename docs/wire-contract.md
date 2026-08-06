@@ -158,7 +158,7 @@ Block ids match `[A-Za-z0-9-]+` — Obsidian app-exact — on BOTH planes. This 
 
 ### §3.1 Frames
 
-NDJSON, one JSON object per line; stdout carries frames only, logs go to stderr (`echo '{"id":1,"op":"hello",…}' | sidecar` debuggability is a contract property). Three frame types, classified by the **raw** `id` key:
+NDJSON, one JSON object per line, on the one wire door — the daemon's unix socket (§3.3): the socket carries frames only, logs go to the daemon's stderr (`echo '{"id":1,"op":"hello",…}' | nc -U "$SOCKET"` debuggability is a contract property — the pipe test outlived the sidecar's DROP because the socket speaks the same line dialogue). Three frame types, classified by the **raw** `id` key:
 
 - key `id` present → Request/Response (correlated)
 - key `id` absent → Notification (§7 deltas ride here)
@@ -183,7 +183,7 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
 
 ```json
 {"id":1,"op":"hello","proto":1,"client":"md-cli/0.3"}
-{"id":1,"ok":true,"body":{"proto":1,"server":"meridian-sidecar/2.0",
+{"id":1,"ok":true,"body":{"proto":1,"server":"meridian-daemon/0.1",
   "caps":["toc","cat","extract","resolve","resolve.content","links","links.require_fingerprint",
           "splice","splice.if_node_rev","splice.if_fingerprint","splice.dry","splice.receipt",
           "splice.verdicts","fingerprint","diff","sub"],
@@ -196,6 +196,16 @@ Correlation: one response per request, id echoed by value; in-flight uniqueness 
 
 **Evolution:** strict server — unknown request fields and unknown enum values in requests are rejected loudly; tolerant client — unknown response fields and unknown open-kind strings are ignored. Server-first rollout.
 
+### §3.3 Hosts — one wire door
+
+**RULED — DROP (ZT, 2026-08-06, session `06-00-adhoc`).** The stdio sidecar host (`crates/sidecar`, deployed `ccc-sidecar`) is deleted; the daemon's unix socket is the **only** wire door. ZT, verbatim: *"there is no reason to have sidecar ever existed. debugability is lie, sending data over socket do the same job."* This executes R3b ("sidecar death row", session `05-19-meridian-socket-mcp-leg`), whose precondition — ccc-statusd's markdown ops moved off the exec'd sidecar onto the registry socket — shipped 2026-08-05.
+
+- The socket speaks the same NDJSON line dialogue (§3.1), so pipe debuggability transfers whole; a second binary bought no observability the socket lacks.
+- Identity was never the door's job: `actor` rides each frame as data (§9) on either transport, so removing a door removes no attribution. One resident server, connection-scoped transport, per-frame identity — the topology herdr (single UDS) and shellkit (identity injection at the server) already run.
+- `daemon_only` (§8) retires with the host: every wire door is now daemon-backed, so no wire deployment lacks the resident corpus index.
+- In-process paths (`mrd` over the engine crates) remain out of wire scope (§ A.1) — a CLI is not a wire door.
+
+Consequences are threaded at §3.1 (pipe debuggability restated at the socket), §3.2 (hello `server` names the daemon), §8 (`daemon_only` retired), §13 (crate row), § A.1 (one-door enumeration).
 
 ## §4 The op surface
 
@@ -585,7 +595,7 @@ Every error frame carries `code` + `recovery` from the CLOSED six-class enum; ea
 | `resync` | your picture of the world is stale; re-plan | `fingerprint_mismatch{expected,actual,changed}`, `fingerprint_unknown` |
 | `respawn` | the channel itself is broken | `bad_frame`, `unsupported_proto`, `internal` |
 
-W4 dispositions: v1's `not_found` is **retired** — `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is the one env code that names the engine's own deployment: it fires when a corpus-class rules pack — one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2) — is loaded against a sidecar-mode engine that has no resident index, so the ruleset cannot run and is refused loud (the `BudgetClass::Corpus` law, §11.3); a single-file op never raises it, since every §4 op is served from disk bytes alone (§10.3). Null-id frames: §3.1. Three declared deltas from the ruled class table (previously undeclared, now fixed): `fingerprint_mismatch` rebound refresh→`resync` (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` rebound fix→`respawn` (a protocol mismatch is a channel property; no request edit repairs it), and `bad_id` dropped (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). All three are behavior-preserving relabelings, now declared. Deviation-from-v1 rows: `not_found` retirement (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
+W4 dispositions: v1's `not_found` is **retired** — `file_not_found` (env: the file is gone) is distinct from `ref_not_found` (refresh: the name dangles), and `io_error` carries its cause. `ref_not_found.stage` makes the two-stage decomposition observable in every failure (1 = vault-namespace miss, no `dest`; 2 = subpath miss, `dest` present — §4.5). `budget_exceeded` is deliberately NOT here: it is a typed *finding* inside `verdicts` (§11), never a wire error. **`daemon_only`** (env class) is **RETIRED** (hosts ruling, §3.3, 2026-08-06): it named the one deployment gap — a corpus-class rules pack, one whose WHEN needs the resident corpus name index (e.g. `link_resolves`, §11.2), loaded against a sidecar-mode engine with no resident index (the `BudgetClass::Corpus` law, §11.3). With the sidecar host deleted, every wire door is daemon-backed and the resident index is always reachable, so the code is unmintable; the `BudgetClass::Corpus` law stands, now gating nothing at the wire. Null-id frames: §3.1. Three declared deltas from the ruled class table (previously undeclared, now fixed): `fingerprint_mismatch` rebound refresh→`resync` (a failed world guard invalidates the plan, not one node's picture — §5.1's split), `unsupported_proto` rebound fix→`respawn` (a protocol mismatch is a channel property; no request edit repairs it), and `bad_id` dropped (folded into `bad_request` + `id:null`/`id_raw`, §3.1 — one malformed-envelope code, not two). All three are behavior-preserving relabelings, now declared. Deviation-from-v1 rows: `not_found` retirement (this table), unknown-`kinds` rejection (§4.3) — each with its rationale at the cited section; the consolidated ledger is §18.
 
 ## §9 actor and now — wire inputs, never ambient
 
@@ -721,7 +731,7 @@ Sequencing below uses the **panel ladder** numbering (dialect → facts/check pa
 | `crates/wire-map` | `prefix_16b` (implemented, contract examples as passing tests), the one model+wire projection seam | `project` implements the superset-by-embedding predicates (§15) |
 | `crates/policy` | `Violation`/`Severity`/`RulesetPin`/`CompiledRuleset`/`CompileError` — already this schema's §11 shapes; `authorize` stays deferred off the splice path (actor is a wire input, not an engine gate — §9) | `evaluate` output rides splice responses as `verdicts` |
 | `crates/query` | `backlinks` seam | serves `links` with the §10 triple |
-| `crates/sidecar` | `serve` loop (implemented), <300-line target | `dispatch` implements §4 |
+| `crates/sidecar` | **DELETED** — hosts ruling (§3.3, 2026-08-06): the daemon socket is the one wire door; the registry host serves §4 | — |
 | `crates/testsuite` / GT | consolidated test binary, GT pack + provenance | GT regenerated from THIS contract: lane pack demoted; resolution GT = app-generated `obsidian-compat@1.12.7`; every deviation row ships a fixture the deviated-from dialect FAILS (the discrimination law); `wsfix/` values join as fixtures |
 
 The draft implementation plan sequenced against this table is a downstream deliverable; this section is its contract.
@@ -839,7 +849,7 @@ These are **current law**, not optional history. Detail that only implements cod
 
 ### A.1 Fingerprint-or-force (every wire door)
 
-Content-mutating writes on every **wire door** (daemon socket and sidecar stdio) require fingerprint match **or** `force`. Guard fields stay **schema-optional** (a guardless frame still **decodes**). A content-mutating write with neither fingerprint nor `force` is refused **after decode** as `guard_required` (recovery: `fix`) — semantic refusal, not a frame rejection. `force` is any client's refuse→rewrite path; MCP is not a separate trust plane. In-process paths (`mrd` without the wire door) are out of this ruling's reach by **scope**, not trust.
+Content-mutating writes on the **wire door** (the daemon socket — the only door, §3.3) require fingerprint match **or** `force`. Guard fields stay **schema-optional** (a guardless frame still **decodes**). A content-mutating write with neither fingerprint nor `force` is refused **after decode** as `guard_required` (recovery: `fix`) — semantic refusal, not a frame rejection. `force` is any client's refuse→rewrite path; MCP is not a separate trust plane. In-process paths (`mrd` without the wire door) are out of this ruling's reach by **scope**, not trust.
 
 ### A.2 Armed change plane (block is a feature)
 

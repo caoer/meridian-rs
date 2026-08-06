@@ -36,13 +36,14 @@ not in `wire`, it is not on the wire. The standing contract in
 - **`wire-serve` is the serve choke-point.** The strict-decode pass, the read
  arms (incl. the composed `read`), the `splice → commit` write choke-point,
  and the standing vocabulary projection are ONE implementation here. "One
- served implementation, two hosts": the per-workspace `sidecar` and the
- resident `registry` daemon both dispatch through these arms. (Hosts share
- the LEAVES, not the dispatch shell.)
+ served implementation, one host": the resident `registry` daemon dispatches
+ through these arms. (The host shares the LEAVES, not the dispatch shell.
+ The former second host — the per-workspace `sidecar` stdio binary — was
+ ruled DROP, wire-contract §3.3, 2026-08-06.)
 
 Everything else that names both `wire` and `model` is a host, a client, or a
 test member consuming those two organs — never a second place where bridge
-behavior may live: `sidecar` and `registry` (the two hosts, wiring-only),
+behavior may live: `registry` (the host, wiring-only),
 `mrd` (a local client), `render` (consumes projection facts to produce the
 text face), `check`/`preset`/`realise` (engine planes over wire vocabulary),
 `testsuite` (observes). Growth pressure inside a host or client is the signal
@@ -77,8 +78,7 @@ which laws it carries. In one line each:
 | `transport` | Untyped NDJSON envelope + codec seam; framing without meaning |
 | `policy` | Ruleset compile + assertion evaluation under budgets; edit-time verdicts; the blocking `gate` at the armed change plane (`policy::authorize`) — see § Amendment |
 | `query` | Corpus reads over the model's borrowed index; applies nothing |
-| `wire-serve` | The shared typed edge (Law 3 choke-point): strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the standing projection — one implementation, two hosts. Agent/stored address seam: `put` translates cross-root `root:` into `obsidian://` stored form and `read` translates back, at the candidate document (see `address-grammar.md` §9). Reads `config` for the mount table lazily when a candidate can carry a cross-root position. |
-| `sidecar` | The per-workspace NDJSON host binary — wiring only; dispatches through `wire-serve` (Law 3) |
+| `wire-serve` | The shared typed edge (Law 3 choke-point): strict decode, read arms incl. the composed `read`, the `splice → commit` write choke-point, the standing projection — one implementation, one host (wire-contract §3.3). Agent/stored address seam: `put` translates cross-root `root:` into `obsidian://` stored form and `read` translates back, at the candidate document (see `address-grammar.md` §9). Reads `config` for the mount table lazily when a candidate can carry a cross-root position. |
 | `render` | The compiled-in render plane: `Renderer` + node-grain walker producing TOON-compact projection through its own encoder (`render::toon`), with block-elision and claim-link decoration hooks. Decorations arrive as data — no `render → lock → fingerprint` edge. |
 | `lock` | The `meridian-lock` fenced-block format: canonical writer/reader, engine sole-writer; owns the reserved `meridian-*` block-language namespace. Reads current R4 schema and fails loud on unsupported versions. |
 | `effects` | The effect kernel: pure Starlark evaluation — rules in, effect descriptors out; zero I/O, advisory-only |

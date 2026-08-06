@@ -31,7 +31,8 @@ write), `fingerprint`, `diff`, `sub`, plus standing additives (`plan_edits`,
 
 **As shipped (may lag design — treat gaps as debt, not law):**
 
-The sidecar answers protocol 1 as `meridian-sidecar/2.0`. Live binaries still
+The daemon answers protocol 1 as `meridian-daemon/0.1`; the stdio sidecar
+host is DROPPED (wire-contract §3.3, 2026-08-06). Live binaries still
 carry a dual negotiation path and some legacy `root` / `if_root` spellings in
 code and caps tables; **standing emission and agent teaching use
 `fingerprint` / `if_fingerprint` / segments** per `wire-contract.md`.
