@@ -45,8 +45,7 @@ const SUN_PATH_CAPACITY: usize = 104;
 /// Voice the degrade on a face a person reads — nothing on the warm path.
 ///
 /// Goes to stderr: stdout must stay byte-identical between the warm and degraded paths, since
-/// that output is piped and diffed. `mrd sql` degrades the same way and calls this same
-/// function, so line 1 names the daemonless PATH rather than one arm's mechanism.
+/// that output is piped and diffed.
 pub(crate) fn voice_degrade(source: &EngineSource) {
     if !matches!(source, EngineSource::Ephemeral) {
         return;

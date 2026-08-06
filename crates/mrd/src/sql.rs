@@ -4,6 +4,14 @@
 //! its `view_path` wire op were DROPPED by ruling — `wire-contract.md` §10.4,
 //! 2026-08-06).
 //!
+//! # DML contract
+//! The contract is **writes nothing durable**, not read-only SQL: DML against
+//! the ephemeral projection is accepted and dies with the process. A
+//! statement-kind guard would add a SQL classifier to prevent self-harm with
+//! no durability behind it — under `agent` the sandbox already blocks every
+//! durable exit (`enable_external_access=false`, `lock_configuration=true`).
+//! `dml_against_the_ephemeral_view_is_accepted_and_writes_nothing` pins this.
+//!
 //! # Order of operations (§Q3, buffered)
 //! 1. fold `F0` + build the `:memory:` view from the corpus;
 //! 2. apply the `--execution-profile` sandbox (B5 order), execute the query to
@@ -306,6 +314,7 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
         });
     }
 
+    test_fold_race_hook();
     let f_now = fold_live(workspace)?;
     if as_of == f_now {
         return Ok(ephemeral_frame(
@@ -318,8 +327,8 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
         ));
     }
 
-    // A mid-build change: `--fresh` gets one bounded retry, `--verify`/default
-    // report STALE at the F0 build.
+    // A mid-build change: `--fresh` gets one bounded retry; the default
+    // reports STALE at the F0 build.
     if args.fresh {
         let retry = build_and_run_ephemeral(workspace, args);
         if let Ok(EphemeralRun {
@@ -329,6 +338,7 @@ fn ephemeral_query(workspace: &Path, args: &SqlArgs) -> Result<Frame, Fail> {
             error: None,
         }) = retry
         {
+            test_fold_race_hook();
             let f_now2 = fold_live(workspace)?;
             let state = if as_of2 == f_now2 {
                 QueryState::FreshAtSample
@@ -508,6 +518,26 @@ fn run_user_query(
         out.push(r);
     }
     Ok((columns, out))
+}
+
+/// Determinism hook for the STALE/RACED e2e gates: the §Q3 window (build →
+/// post-result fold) is intra-process, so a test driving the real binary
+/// cannot land a corpus mutation inside it from outside. When
+/// `MRD_SQL_TEST_MUTATE` names a file, append one line to it before each
+/// post-result fold — each fire moves the corpus, so the fold can never match
+/// the build's `as_of`. Unset (production), this is a no-op env read.
+fn test_fold_race_hook() {
+    let Ok(path) = std::env::var("MRD_SQL_TEST_MUTATE") else {
+        return;
+    };
+    use std::io::Write as _;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "moved");
+    }
 }
 
 /// Sample `live` = a full-corpus disk fold (§Q3 step 5, `fs::domain_snapshot`).

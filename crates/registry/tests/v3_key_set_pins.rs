@@ -766,6 +766,21 @@ fn the_remaining_error_key_sets_are_pinned() {
         &["code", "recovery"],
         "unknown_op error",
     );
+
+    // The daemon served `view_path` until it was DROPPED by ruling
+    // (wire-contract §10.4, 2026-08-06). The dropped name must answer
+    // unknown_op like any stranger — never a partial dispatch remnant.
+    let dropped = conn.call(&json!({"id": 27, "op": "view_path"}));
+    assert_eq!(
+        dropped["error"]["code"],
+        json!("unknown_op"),
+        "the dropped view_path op refuses clean: {dropped}"
+    );
+    pin_keys(
+        &dropped["error"],
+        &["code", "recovery"],
+        "unknown_op (dropped view_path) error",
+    );
     fx.shutdown();
 }
 

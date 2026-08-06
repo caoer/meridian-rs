@@ -334,7 +334,6 @@ const BATCHES = [
     { n: 40, rel: 'crates/mrd/src/put_cmd.rs' },
     { n: 37, rel: 'crates/mrd/tests/journal_genesis.rs' },
     { n: 33, rel: 'crates/mrd/tests/status_walltime.rs' },
-    { n: 33, rel: 'crates/mrd/src/view_status.rs' },
   ] },
   { crate: 'mrd', total: 202, files: [
     { n: 32, rel: 'crates/mrd/tests/run_cli.rs' },
@@ -503,11 +502,9 @@ const BATCHES = [
   ] },
   { crate: 'registry', total: 430, files: [
     { n: 59, rel: 'crates/registry/tests/read_mint.rs' },
-    { n: 58, rel: 'crates/registry/tests/view_path_e2e.rs' },
     { n: 57, rel: 'crates/registry/tests/write_e2e.rs' },
     { n: 53, rel: 'crates/registry/src/client.rs' },
     { n: 51, rel: 'crates/registry/tests/engine_rpc.rs' },
-    { n: 45, rel: 'crates/registry/src/refresh.rs' },
     { n: 41, rel: 'crates/registry/src/engine.rs' },
     { n: 39, rel: 'crates/registry/src/state.rs' },
     { n: 27, rel: 'crates/registry/tests/rpc.rs' },
@@ -607,7 +604,6 @@ const BATCHES = [
     { n: 22, rel: 'crates/sidecar/tests/hook_notify.rs' },
     { n: 19, rel: 'crates/sidecar/tests/v2_compat_e2e.rs' },
     { n: 9, rel: 'crates/sidecar/src/main.rs' },
-    { n: 6, rel: 'crates/sidecar/tests/view_path_daemon_only.rs' },
   ] },
   { crate: 'transport-proto', total: 197, files: [
     { n: 142, rel: 'crates/transport-proto/tests/wire_agreement.rs' },

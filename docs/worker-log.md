@@ -59,7 +59,6 @@ Operator `mrd resolve` is workspace-identity resolution (drawer / root discovery
 |---|---|
 | Receipt pretty join / goldens | still may emit join-string targets |
 | MCP `at` string | agent face lag |
-| `Op::ViewPath` | not agent core |
 | Dual wire vocabulary in code | legacy `root` keys vs standing `fingerprint` |
 | `mdfs_config.yaml` | legacy sole domain-config read path in `fs::Domain::load` — docs teach `meridian/domain.md` only |
 | `run` bracket Display strings | may still say `mdfs_config.yaml` in error text while bracketing both domain surfaces |
